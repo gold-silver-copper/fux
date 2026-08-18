@@ -1,0 +1,8 @@
+[package]
+name = "fux"
+version = "0.1.0"
+edition = "2024"
+description = "Placeholder crate."
+license = "MIT"
+
+[dependencies]
