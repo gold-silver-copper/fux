@@ -3,12 +3,12 @@
 Paste the section below into a Claude Code session opened in an empty directory that will become
 the wrapper's repo. Put `docs/wrapper-design.md` from the fux repo next to it as `DESIGN.md`
 first; the prompt refers to it. Written 3 Sep 2026 against herdr 0.8.2, koh 0.11.0 and vt100
-0.16.2. Replace `NAME` throughout with the crate name you chose.
+0.16.2. The crate name is `zor` (Slavic root for sight; free on crates.io as of 3 Sep 2026).
 
 ---
 
-Build `NAME` 0.1.0 from `DESIGN.md` in this directory. Read it in full before writing anything;
-every decision below is either stated there or is a consequence of it. `NAME` is a pty
+Build `zor` 0.1.0 from `DESIGN.md` in this directory. Read it in full before writing anything;
+every decision below is either stated there or is a consequence of it. `zor` is a pty
 passthrough that wraps a shell or an agent, keeps a `vt100::Screen` of what the child draws,
 identifies the agent by the pty's foreground process group, evaluates per-agent rules with
 hysteresis, and announces the state in-band as `OSC 7877` and out-of-band as JSON event lines.
@@ -131,7 +131,7 @@ period; heartbeat cadence; `seq` monotonic and unchanged across heartbeats.
 - `fn processes_in_group(pgid) -> Vec<Process>`: Linux reads `/proc/*/stat` for pgid and ppid and
   `/proc/<pid>/cmdline` for argv; macOS uses `proc_listpids`, `proc_pidinfo` with
   `PROC_PIDTBSDINFO` for pgid and ppid, and `sysctl KERN_PROCARGS2` for argv. Both return an
-  empty vec on any error; identification then falls back to the command `NAME` was given.
+  empty vec on any error; identification then falls back to the command `zor` was given.
 - `fn set_raw(fd) -> Result<Guard>`: `tcgetattr`/`cfmakeraw`/`tcsetattr` with the guard restoring
   on drop and on panic. `fn winsize(fd) -> (u16, u16)`.
 
@@ -142,7 +142,7 @@ say so.
 ## 5. `pty`: spawn and passthrough
 
 `src/pty.rs`. `Pty::spawn(command, argv, size, env)` with `portable-pty`, `TERM` and the parent
-environment inherited, `NAME_PID` set so a nested `NAME` can detect it and pass through without a
+environment inherited, `NAME_PID` set so a nested `zor` can detect it and pass through without a
 second emulator. Two threads: **reader** copies master → stdout, writing each chunk to stdout
 *before* sending a copy over a channel to the main loop; **writer** copies stdin → master. The main
 loop owns `Screen`, `Machine`, the platform poller and the emitters, and blocks on the channel
@@ -188,11 +188,11 @@ carries the expected fields; a full pipe drops rather than blocks.
 
 ## 7. `cli` and `main`
 
-`src/cli.rs`, `src/main.rs`. Clap with the surface from `DESIGN.md`: `NAME [opts] [--] cmd…`,
+`src/cli.rs`, `src/main.rs`. Clap with the surface from `DESIGN.md`: `zor [opts] [--] cmd…`,
 `--events`, `--title`, `--no-osc`, `--rules`, `--agent`, `--debug`, and the subcommands `check
 <fixture> [--agent]` and `agents`. Default command `$SHELL -l` or `/bin/sh -l`. Rule sets load
 from the bundle (`include_str!` under `rules/*.toml`, registered in `src/rules/bundle.rs`), then
-`$XDG_CONFIG_HOME/NAME/rules/*.toml`, then each `--rules` dir; a later set with the same `id`
+`$XDG_CONFIG_HOME/zor/rules/*.toml`, then each `--rules` dir; a later set with the same `id`
 replaces an earlier one entirely. `--debug` prints each verdict and each machine event to stderr
 with the matched rule id. `SIGUSR1` writes a fixture file (format below) to `$TMPDIR` and prints
 its path to stderr.
@@ -213,7 +213,7 @@ Fixture format, `tests/fixtures/<agent>/<name>.txt`:
 `check` loads a fixture, evaluates it against the named or auto-detected rule set, and prints the
 verdict, exiting 1 on mismatch with `expect`. The test suite walks every fixture and does the same.
 
-Write `rules/claude.toml` from fixtures you capture yourself by running `NAME --debug -- claude`
+Write `rules/claude.toml` from fixtures you capture yourself by running `zor --debug -- claude`
 and pressing `SIGUSR1` in each state: idle at the prompt, working with the spinner, blocked on a
 permission prompt, blocked on a plan approval, the transcript viewer (`ctrl+o`), and idle with
 "Do you want to proceed?" typed into the prompt box as a guard test. Signals worth encoding, from

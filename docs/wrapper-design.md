@@ -1,4 +1,4 @@
-# The Shape of the Wrapper
+# The Shape of zor
 
 A small dedicated program that runs a shell or an agent in a pty, watches what the agent draws,
 and announces the agent's state, **working**, **blocked**, **idle**, or **none**, in-band as an
@@ -7,9 +7,9 @@ it; so does tmux, kitty, and plain koh on a phone.
 
 - **Status:** proposal, audited against source (herdr 0.8.2, koh 0.11.0, vt100 0.16.2).
 - **Date:** 3 Sep 2026
-- **Working name:** `lens` in this document; the crate name is undecided.
+- **Name:** `zor`, from the Slavic root for sight (*vzor*, *zorkij*). Free on crates.io, 3 Sep 2026.
 - **Relation to fux:** replaces the *Detection* section of `design.md`. fux spawns every pane
-  through `lens` and reads its state OSC via koh's `take_unhandled_oscs()`. Detection code,
+  through `zor` and reads its state OSC via koh's `take_unhandled_oscs()`. Detection code,
   rules, hysteresis, and fixtures leave fux entirely.
 
 ---
@@ -20,7 +20,7 @@ Detection is a pure function of one pane's byte stream plus its child process tr
 nothing with layout, transport, or control. Kept inside fux it is useful only to fux users; as its
 own binary it is useful the day it compiles:
 
-- `lens -- claude` under tmux shows state in the window title through tmux's title passthrough.
+- `zor -- claude` under tmux shows state in the window title through tmux's title passthrough.
 - `koh connect` on Termux with `--on-bell` already notifies on the bell; with the wrapper the
   title carries the state glyph too, with no change to koh.
 - A shell script can read the event line stream and do anything.
@@ -39,16 +39,16 @@ detection is a property of the pane and not of how the user typed the command.
 ## Surface
 
 ```sh
-lens [options] [--] <command> [args…]    # run <command> in a pty; default: $SHELL -l
-lens --events <path> …                   # also write event lines to a unix socket or fifo
-lens --events - …                        # …or to fd 3 (stdout is the pty's)
-lens --title never|prefix|replace …      # how to touch OSC 0/2 (default: prefix)
-lens --no-osc …                          # never emit the state OSC (title only)
-lens --rules <dir> …                     # extra rule files; later files win on the same agent
-lens --agent <id> …                      # skip identification, force one rule set
-lens --debug …                           # dump matched rules to stderr on each change
-lens check <fixture.txt> [--agent id]    # evaluate one captured screen, print the verdict
-lens agents                              # list the bundled rule sets and their versions
+zor [options] [--] <command> [args…]    # run <command> in a pty; default: $SHELL -l
+zor --events <path> …                   # also write event lines to a unix socket or fifo
+zor --events - …                        # …or to fd 3 (stdout is the pty's)
+zor --title never|prefix|replace …      # how to touch OSC 0/2 (default: prefix)
+zor --no-osc …                          # never emit the state OSC (title only)
+zor --rules <dir> …                     # extra rule files; later files win on the same agent
+zor --agent <id> …                      # skip identification, force one rule set
+zor --debug …                           # dump matched rules to stderr on each change
+zor check <fixture.txt> [--agent id]    # evaluate one captured screen, print the verdict
+zor agents                              # list the bundled rule sets and their versions
 ```
 
 Everything not listed passes through untouched. The wrapper is transparent to the program inside:
@@ -106,7 +106,7 @@ touched it and prints nothing else.
 
 ### Identification: the process tree, not the command line
 
-`lens -- claude` knows the agent. `lens` wrapping a shell does not, and must watch for one. On each
+`zor -- claude` knows the agent. `zor` wrapping a shell does not, and must watch for one. On each
 tick, the foreground process group of the pty (`tcgetpgrp` on the master) is resolved to its
 processes (`/proc/<pid>/stat` on Linux, `proc_listpids` with `KERN_PROCARGS2` on macOS) and each
 process name is normalised (`node /usr/bin/claude` is `claude`; a `.js` entry point's basename
@@ -233,14 +233,14 @@ fux is a terminal and takes the OSC.
 ## Rule sets and fixtures
 
 Rule sets are bundled in the binary with `include_str!` and overridable by `--rules <dir>` and by
-`$XDG_CONFIG_HOME/lens/rules/*.toml`. The first release ships rules for the agents the author can
+`$XDG_CONFIG_HOME/zor/rules/*.toml`. The first release ships rules for the agents the author can
 capture panes for, Claude Code first; the rest follow as fixtures arrive. There is no remote
 manifest update; a rule change is a release.
 
-A fixture is a captured screen: `lens --debug` writes one on request (a keybinding, or
+A fixture is a captured screen: `zor --debug` writes one on request (a keybinding, or
 `SIGUSR1`) as a text file with the visible rows, the title, the progress state, and the expected
 verdict in a header. `tests/fixtures/<agent>/<name>.txt`. The test suite evaluates every fixture
-and asserts the verdict; `lens check` does the same for one file from the shell. A rule set is not
+and asserts the verdict; `zor check` does the same for one file from the shell. A rule set is not
 merged without a fixture for every state it can produce and for every guard it carries.
 
 The hysteresis machine is tested separately with a scripted verdict sequence and a mock clock;
@@ -252,7 +252,7 @@ asserts the bytes reaching stdout are identical apart from the wrapper's own OSC
 
 ## What fux does with it
 
-- Spawns every pane as `lens --title never -- $SHELL` (or the configured default command). fux
+- Spawns every pane as `zor --title never -- $SHELL` (or the configured default command). fux
   draws its own status, so it does not want the title touched.
 - Reads OSC 7877 from `take_unhandled_oscs()` on each pane drain and sets the pane's agent state
   in `WorkspaceState`.
@@ -260,7 +260,7 @@ asserts the bytes reaching stdout are identical apart from the wrapper's own OSC
 - Fires its notifier on transitions into **blocked** and **idle**, as before.
 - Nothing else. fux carries no rules, no regex, no hysteresis, no process-tree code.
 
-A user running plain koh on a phone runs `lens -- claude` on the host and gets the title glyph in
+A user running plain koh on a phone runs `zor -- claude` on the host and gets the title glyph in
 koh's status line and the bell hook as before.
 
 ---
@@ -284,7 +284,7 @@ region reads higher.
 
 `proc_listpids` and `KERN_PROCARGS2` are unpleasant. herdr's `platform/macos.rs` shows what works;
 the wrapper writes its own with the same syscalls. Failure degrades to identification by the
-command line given to `lens`, so `lens -- claude` always works.
+command line given to `zor`, so `zor -- claude` always works.
 
 ### The OSC number — *pick once*
 
@@ -327,7 +327,6 @@ one in any script. The `state=` key/value form means a collision is detectable, 
 
 ## Open questions
 
-- **The name.** `lens` is a placeholder and is taken on crates.io.
 - **Should fux also accept the OSC from an unwrapped pane?** A future agent could emit OSC 7877
   itself. Yes, trivially, since fux reads the OSC and does not care who wrote it. Worth
   documenting the OSC as a contract agents may adopt.

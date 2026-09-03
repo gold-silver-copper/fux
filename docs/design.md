@@ -1,7 +1,7 @@
 # The Shape of fux
 
 An agent workspace: a small native terminal multiplexer built directly on koh's per-pty emulator and
-mosh-grade peer-to-peer attach path, with agent-state detection delegated to a separate wrapper
+mosh-grade peer-to-peer attach path, with agent-state detection delegated to zor, a separate wrapper
 program around each pane (see `wrapper-design.md`). One `cargo install`-able binary, one process, no sandbox.
 
 - **Status:** proposal, audited against source. Supersedes the zellij-based draft of 2 Sep 2026.
@@ -262,7 +262,7 @@ ESC ] 7877 ; state=<working|blocked|idle|none> ; agent=<id> ; seq=<n> ST
 
 fux's whole involvement:
 
-- **Spawn.** Every pane is `<wrapper> --title never -- <command>`; the wrapper path and the
+- **Spawn.** Every pane is `zor --title never -- <command>`; the zor path and the
   default command are config. fux draws its own status, so titles are left alone.
 - **Read.** koh's `ServerTerminal` keeps unhandled OSCs in a ring (`take_unhandled_oscs()`, 16 ×
   256 bytes, koh 0.11). On each pane drain fux drains that ring, parses OSC 7877 payloads in
@@ -471,7 +471,7 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 ### The wrapper
 
 - [ ] **Build it first**, per `wrapper-design.md` and `wrapper-prompt.md`; fux's pane spawn and
-      OSC reader are written against its contract. Pick a crate name (`lens` is taken).
+      OSC reader are written against its contract. Crate name: `zor`.
 
 ### crates.io and accounts
 
