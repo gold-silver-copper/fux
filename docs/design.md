@@ -65,7 +65,7 @@ any `SyncState`, so this is a new state type with a diff, not a new protocol.
 | Layer | Runs on | Built from | New code |
 |---|---|---|---|
 | **Panes** | host | koh `pty::Pty` + `terminal::ServerTerminal`, one pair per pane. Bytes in, `vt100::Screen` out, with OSC 0/1/2/52/9;4 and BEL captured by callbacks. | none |
-| **Workspace** | host | `WorkspaceState` and its diff; BSP layout ported from herdr; tabs; input router decoding keys and SGR mouse; scroll and copy mode viewports; detection; notifier; control socket; workspace manager. | ~5k lines |
+| **Workspace** | host | `WorkspaceState` and its diff; BSP layout designed fresh (herdr's as the reference); tabs; input router decoding keys and SGR mouse; scroll and copy mode viewports; detection; notifier; control socket; workspace manager. | ~5k lines |
 | **Transport** | both | koh `ssp::Transport`, `transport_iroh`, session retention, allow-lists, keys, made generic over the synced state and the host on the server side and the renderer on the client side. | koh 0.11.0 (shipped) |
 | **Client** | any terminal | ratatui compositor over the replica: panes as widgets, borders, tab bar, status line, popups; ratatui's `Buffer` diff drives the real terminal through a `Backend` over koh's `KohBackend`; koh's predictor on the focused pane's grid. | ~1.5k lines |
 
@@ -139,6 +139,43 @@ Inside a workspace, a tmux-style prefix (default `Ctrl-a`) then: `|` `-` split, 
 mode, `d` detach, `s` workspace picker, `?` help. Mouse click focuses a pane; wheel scrolls the
 pane under the cursor; Shift-drag selects text. Everything else goes to the focused pty verbatim. Configuration
 is a TOML file with the bindings and the default command; there is no layout language.
+
+---
+
+## Reference code is studied, not copied
+
+herdr and zellij are reference material, the way vt100's source is. Nothing from either tree is
+ported verbatim, `layout.rs` included. For each subsystem the method is the same: read the
+reference implementation for what it gets right (the invariants, the edge cases it learned the hard
+way, the constants it tuned), write those down, and then design the fux version from scratch as
+the most idiomatic Rust that satisfies them. The reference is a test oracle and a checklist of
+behaviour, not a starting point for the code.
+
+What that means concretely:
+
+- **Layout tree.** herdr's `TileLayout` is a `Box<Node>` binary tree with `f32` ratios, a `Vec<bool>`
+  path to address a split, global `PaneId` allocation, and a `prev_focus` field guarded by comments
+  about which methods may touch it. fux keeps the invariants (BSP, ratio per split, focus survives
+  close, directional navigation by geometry) and designs its own representation: an arena of nodes
+  with typed indices so the tree is `Clone`, serialisable into the synced state, and free of
+  recursive `Box` walks; a `NonZeroU16` ratio in fixed point so the diff is exact; a focus history
+  that the type system keeps consistent instead of a comment. herdr's `find_in_direction` geometry
+  cases and its tests are the acceptance suite.
+- **Detection.** The manifest *vocabulary* (regions, priorities, negative guards) and the
+  hysteresis constants are the knowledge worth keeping. fux defines its own manifest schema, rule
+  evaluator and region enum over `vt100::Screen`, then converts herdr's twenty-one manifests into
+  that schema with a script kept in `tools/`. Converted data is regenerated, never hand-edited, so
+  upstream manifest changes can be pulled again. Captured-pane fixtures validate that fux's
+  evaluator agrees with herdr's on each one.
+- **Grid and copy mode.** zellij's grid edge cases (wide glyphs at the right margin, wrapped-line
+  selection, scrollback with resize) are read for the cases, and fux's `PaneView` and copy mode are
+  written to handle them, with a test per case.
+- **Anything else.** The same rule: extract the behaviour, discard the code.
+
+The cost is that nothing arrives for free; the layout tree in particular is a week that a copy
+would have saved. The gains are one consistent style across the crate, no Apache-2.0 code to
+attribute (only the converted manifest data), no carried-over design debt, and a codebase the
+maintainer understands end to end because they wrote it.
 
 ---
 
@@ -227,11 +264,11 @@ of them and carries rules keyed on the braille spinner range, the `esc to interr
 progress, and negative guards so that a user typing "do you want to proceed?" cannot impersonate a
 state change.
 
-The manifests are data and port verbatim, with Apache-2.0 attribution. The evaluator is rewritten,
-not ported: herdr's is 3.2k lines (`manifest.rs` 1.5k, `detect/mod.rs` 1.6k) over its own
+The manifests are the corpus; fux's own schema and evaluator consume a converted copy of them, with
+Apache-2.0 attribution on the data (see *Reference code is studied, not copied*). herdr's evaluator
+is not reused: herdr's is 3.2k lines (`manifest.rs` 1.5k, `detect/mod.rs` 1.6k) over its own
 libghostty-vt screen type, plus 1k of manifest-update code fux does not need. A fresh evaluator over
-`vt100::Screen::rows()` and the title, validated against herdr's manifests with captured-pane
-fixtures, is the plan. Agent identification uses the pane's child process name via the pty's pid,
+`vt100::Screen::rows()` and the title, validated against captured-pane fixtures, is the plan. Agent identification uses the pane's child process name via the pty's pid,
 as herdr's `identify_agent` does.
 
 Debounce is inherited, not rediscovered: a working-to-idle transition is confirmed three times at
@@ -241,9 +278,8 @@ between a status indicator people trust and one they learn to ignore.
 Detection runs on the server on each pane drain, natively. Cost is regex over the bottom-*n* lines
 of the pane that changed, not every pane every frame.
 
-One gap: vt100 0.16.2's `Callbacks` has no hook for OSC 9;4 progress. koh's callbacks would need an
-`unknown_osc` passthrough or fux parses the raw drain for `ESC ] 9;4`. Rules on `osc_progress` are
-disabled until then.
+OSC 9;4 progress comes from `ServerTerminal::progress()` in koh 0.11, so `osc_progress` rules are
+live from the start.
 
 ---
 
@@ -283,11 +319,12 @@ The toolchain floor is koh's 1.91 (iroh 1.0). fux declares the same `rust-versio
 | Component | License | Use in fux |
 |---|---|---|
 | koh | MIT (0.10.0) | library dependency |
-| herdr | Apache-2.0 | manifests vendored; `layout.rs` BSP tree ported; hysteresis constants and region vocabulary reimplemented |
+| herdr | Apache-2.0 | manifest data converted and vendored; no code reused |
 | zellij | MIT | reference only |
 | fux | MIT | |
 
-Apache-2.0 code and data in an MIT crate needs attribution and a NOTICE entry; nothing else.
+Apache-2.0 data in an MIT crate needs attribution and a NOTICE entry; nothing else. No Apache-2.0
+code enters the tree.
 herdr's libghostty-vt bindings and ratatui UI are not used.
 
 ---
@@ -379,8 +416,9 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 - **A composited `vt100::Screen` cannot be built from cells**, only from a parser; one reason
   the synced state is the workspace, not a screen.
 - **Input decoding is fux's job on the host.** koh's client stays a byte pipe for keys.
-- **herdr's UI and emulator are not reusable.** libghostty-vt via zig and ratatui; only the
-  layout tree, manifests, constants and notifier paths port.
+- **herdr's UI and emulator are not reusable.** libghostty-vt via zig and ratatui. Its layout
+  tree, detection model, constants and notifier paths are studied and redesigned, not ported.
+  Decided 3 Sep 2026.
 - **Termux clears the floor.** rust 1.98 on termux-packages `master`, koh's floor is 1.91.
 - **No plugin system.** A local control socket with commands and events, panes and popups as the
   UI surface, config bindings and hooks for the rest. See *Control, not plugins*.
@@ -388,8 +426,8 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
   `ratatui-widgets` for borders, tab bar, status line and popups; not the umbrella crate. A fux
   `Backend` over koh's `KohBackend` turns ratatui's buffer diff into the real terminal repaint.
   Each pane is a widget over its `PaneView` grid, marking wide-glyph continuations as skip cells.
-  Panes stay `vt100::Screen` on the host; ratatui is never the emulator. herdr's `layout.rs`
-  already targets ratatui's `Rect`, so it ports as a copy. Pure Rust; builds on Termux.
+  Panes stay `vt100::Screen` on the host; ratatui is never the emulator. fux's layout tree
+  targets ratatui's `Rect` directly, as herdr's does. Pure Rust; builds on Termux.
 - **Sync the workspace, composite on the client** (tier A above). Decided 3 Sep 2026.
 - **Prediction per pane on the client, in v1.** koh's predictor over the focused `PaneView` via a
   cell-reader trait. Decided 3 Sep 2026.
@@ -398,7 +436,8 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
   [name]` attaches or creates, bare `fux` opens a picker (or the only workspace). Decided 3 Sep 2026.
 - **Tabs in v1.** Each workspace holds a list of layout trees with a tab bar in the status line;
   `zoom` is a per-tab toggle and the phone's default view. Decided 3 Sep 2026.
-- **OSC 9;4 progress via `unknown_osc` in koh's `Callbacks`.** Detection reads progress from the
+- **OSC 9;4 progress via `ServerTerminal::progress()` in koh 0.11** (planned as an `unknown_osc`
+  callback; shipped as a host-side accessor). Detection reads progress from the
   pane's terminal; `osc_progress` rules stay enabled. Decided 3 Sep 2026.
 - **Bell hook `--on-bell` on `koh connect`** (`ConnectConfig.bell_command`) for plain koh users
   on Termux. fux's own client sees agent state in the replica and notifies directly. Decided
@@ -434,8 +473,9 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 
 ### herdr
 
-- [ ] **Attribution.** herdr's Apache-2.0 LICENSE text into a NOTICE entry before the manifests
-      or the ported `layout.rs` land.
+- [ ] **Attribution.** herdr's Apache-2.0 LICENSE text into a NOTICE entry before the converted
+      manifests land.
+- [ ] **Manifest converter** in `tools/`, so herdr's manifests can be re-pulled.
 - [ ] Optional: upstream manifest fixes so the fixture set stays shared.
 
 ### crates.io and accounts
@@ -457,6 +497,8 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
   no ratatui backend crate.
 - All workspace logic is on the host; the client renders, predicts, and selects.
 - Local attach uses the same transport as remote attach.
-- Manifests port verbatim; the evaluator is rewritten; the layout tree is ported from herdr.
+- Reference code is studied, not copied: herdr and zellij supply invariants, edge cases, constants
+  and test oracles; every fux subsystem is designed fresh as idiomatic Rust. Manifests are the one
+  thing vendored, as converted data.
 - Programmatic control over a unix socket instead of plugins; the CLI is a thin client for it.
 - Named workspaces, tabs, zoom, and mouse selection are all v1.
