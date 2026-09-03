@@ -374,21 +374,19 @@ In the order they block work.
 3. **Bare `fux` semantics.** One workspace per user, named `main`, in `$XDG_RUNTIME_DIR`, or
    named workspaces like tmux sessions? Recommendation: one workspace per user for v1; tabs later
    cover the "several projects" case without a second server.
-4. **Control API versioning.** A `version` field on every reply from day one, or a `hello`
-   exchange? Recommendation: `version` on replies, and additive changes only.
-5. **Tabs in v1?** herdr has workspaces, zellij has tabs. A BSP tree with 4 to 6 agent panes
+4. **Tabs in v1?** herdr has workspaces, zellij has tabs. A BSP tree with 4 to 6 agent panes
    fits a laptop screen; on the phone it does not, and the phone wants one pane at a time.
    Recommendation: no tabs, but a **zoom** toggle (focused pane fills the screen), which is also the
    phone's default view.
-6. **OSC 9;4 progress.** Add `unknown_osc` to koh's `Callbacks` or parse it in fux's drain?
-7. **Phone notification hook.** `--on-bell` on `koh connect` versus a `bell_command` field in
+5. **OSC 9;4 progress.** Add `unknown_osc` to koh's `Callbacks` or parse it in fux's drain?
+6. **Phone notification hook.** `--on-bell` on `koh connect` versus a `bell_command` field in
    `ConnectConfig` used by fux's own client build. The first serves plain koh users too.
-8. **Copy mode.** Scroll mode ships in v1; selection and copy via OSC 52 (koh already forwards
+7. **Copy mode.** Scroll mode ships in v1; selection and copy via OSC 52 (koh already forwards
    clipboard out-of-band) can be v1.1.
-9. **Prediction per pane.** koh's predictor runs on the client over the composite. Typing into a
+8. **Prediction per pane.** koh's predictor runs on the client over the composite. Typing into a
    pane still predicts correctly for plain text; it will mispredict across borders. Acceptable for
    v1; measure.
-10. **Windows.** Out of scope, as in koh.
+9. **Windows.** Out of scope, as in koh.
 
 ### Settled
 
@@ -402,6 +400,8 @@ In the order they block work.
 - **Termux clears the floor.** rust 1.98 on termux-packages `master`, koh's floor is 1.91.
 - **No plugin system.** A local control socket with commands and events, panes and popups as the
   UI surface, config bindings and hooks for the rest. See *Control, not plugins*.
+- **No control API versioning in v1.** Decided 3 Sep 2026: no version field and no handshake
+  until something actually changes; scripts written against v1 are on notice.
 
 ---
 
