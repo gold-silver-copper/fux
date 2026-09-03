@@ -86,6 +86,29 @@ through the provider. `tracing_subscriber::fmt().init()` must move out of `serve
 path (or become `try_init`), because an embedding binary initialises its own subscriber and
 `init` panics on a second call.
 
+## 1b. The state type rides on the ALPN, not in the envelope
+
+Two different `SyncState`s will now share one wire format: the SSP envelope carries an opaque
+`diff: Vec<u8>`, so a client expecting `TerminalScreen` that attaches to a host serving another
+state would postcard-decode garbage. Do **not** add a type tag to `Instruction` (that changes the
+encoding and forces a `PROTOCOL_VERSION` bump). Use QUIC's ALPN negotiation, which iroh already
+performs in the handshake: one ALPN per state type.
+
+- `transport_iroh::ALPN` (`koh/iroh/1`) stays the ALPN for `TerminalScreen`. Add
+  `pub const TERMINAL_ALPN: &[u8] = ALPN;` as the explicit name and keep `ALPN` as an alias.
+- `serve_with(config, provider, alpn: &'static [u8])` binds the endpoint with that ALPN;
+  `serve` passes `TERMINAL_ALPN`. `bind_endpoint*` already take the accept flag; extend them (or
+  add `bind_endpoint_alpns`) to take the ALPN list so an embedding server can serve several
+  state types on one endpoint with one `HostProvider` per ALPN. `Incoming::alpn()` selects the
+  provider in the accept loop; an ALPN with no provider is refused before the handshake, exactly
+  like the connection cap.
+- `connect_with(config, alpn, …)` dials with that ALPN; `connect` passes `TERMINAL_ALPN`.
+  `IrohConnector::new` gains the ALPN. A server that does not speak it fails the handshake; map
+  that error to a readable message ("server does not serve <alpn>") through the existing
+  `server_close_reason` path or the iroh handshake error, whichever surfaces.
+- The e2e loopback helpers (`bind_endpoint_local`, `loopback_addr`) and every existing test keep
+  working with the default ALPN.
+
 ## 2. Shared sessions
 
 Add `SharedHost<H>`: a `HostProvider` that lazily constructs one host on the first admitted
@@ -159,8 +182,9 @@ under the Termux section with `--on-bell 'termux-notification -t "koh bell"'`.
 
 - `src/lib.rs` "Public API stability": add `SessionHost`, `HostProvider`, `serve_with`,
   `ClientState`, `ClientTerminal`, `connect_with`, `predict::ScreenView` and `ServerTerminal`'s
-  new accessors to the supported surface. State that `TerminalScreen` on the wire is unchanged and
-  `PROTOCOL_VERSION` stays 3.
+  new accessors to the supported surface, plus `TERMINAL_ALPN`. State that `TerminalScreen` on
+  the wire is unchanged, `PROTOCOL_VERSION` stays 3, and the state type a connection carries is
+  selected by ALPN.
 - `README.md` "As a library": a second example, twenty lines, of a custom state: a `SyncState`
   wrapping a `String`, a `SessionHost` that appends input to it, `serve_with(config,
   SharedHost::new(...))`, and `connect_with` with a `ClientTerminal` that prints it.
@@ -214,6 +238,12 @@ path and must pass without semantic edits.
   replica within 10 s; `set_exited(7)` on the host, assert `connect_with` returns `Some(7)`.
 - `tests/exit_status.rs`, `tests/reattach.rs`, `tests/e2e_reconnect.rs`, `tests/parity.rs`,
   `tests/pty.rs`: unchanged apart from type names; they are the pty-host regression suite.
+- `tests/e2e_generic_host.rs`, ALPN cases (KH-02): a client dialing `TERMINAL_ALPN` against an
+  endpoint that only serves `b"test/grid/1"` fails at the handshake with a message naming the
+  ALPN, and never reaches `ClientSession`; an endpoint serving both ALPNs with two providers
+  routes each connection to the right host, proven by typing a marker on each and reading it
+  back from the matching replica. `src/transport_iroh/mod.rs`: a unit test that
+  `TERMINAL_ALPN == ALPN` and that the default `ServeConfig`/`ConnectConfig` paths use it.
 
 ### 7.2 Shared sessions (KS-)
 
@@ -305,7 +335,7 @@ path and must pass without semantic edits.
 
 Two paragraphs on the why: fux syncs a workspace, not a screen, through koh's transport, so the
 server must host any `SyncState` producer and the client must render any `ClientState`; shared
-sessions let a laptop and a phone view one workspace. Then a checklist of the eight sections
+sessions let a laptop and a phone view one workspace. Then a checklist of the sections
 with what was done, the list of new design ids, and the test count before and after (`cargo test
 -- --list | wc -l`). State explicitly: wire, key format, `PROTOCOL_VERSION`, CLI flags and
 defaults unchanged; `serve` and `connect` are unchanged wrappers over `serve_with` and
