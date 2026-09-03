@@ -60,8 +60,12 @@ Implement `rules::view::ScreenView` for it: `lines() -> impl Iterator<Item = Cow
 the **detection window** from `DESIGN.md` *Rules*: on the primary screen, `rows` lines ending at
 the later of the last non-blank viewport row and the cursor row, reaching into scrollback via
 `set_scrollback` when the viewport bottom is blank, trailing blank lines dropped; on the
-alternate screen, the last `rows` rows. Each line right-trimmed, wide glyphs once, continuation
-cells skipped. Plus `title() -> &str`, `progress() -> Option<Progress>`, `size() -> (u16, u16)`.
+alternate screen, the last `rows` rows; when the whole viewport is blank the window ends at the
+viewport bottom. Each line right-trimmed, wide glyphs once, continuation cells skipped. The
+joined text (`text() -> &str`, cached) has lines separated by `\n` and ends with `\n`, so `^`
+and `\A` anchors sit at line starts. Plus `title() -> &str`, `progress() -> Option<Progress>`
+(`None` until the first report; a clear yields `Some(Progress { state: 0, percent: 0 })`),
+`size() -> (u16, u16)`.
 
 Tests: title set, cleared, stripped and capped; bell count; OSC 9;4 with each state and with
 malformed params; `changed` is false after feeding bytes that repaint identical content; a row
@@ -75,27 +79,33 @@ viewport to live afterwards.
 
 - **Schema** (`schema.rs`): serde types for a rule file, `deny_unknown_fields`. Top level: `id`,
   `aliases: Vec<String>`, `process_names: Vec<String>` (what `ident` matches; defaults to
-  `[id] + aliases`), `prompt_marker: Option<String>`, `rules: Vec<Rule>`. `Gate` is one recursive
+  `[id] + aliases`), `prompt_marker: Option<String>`, `block_markers: Vec<String>` (line prefixes that mean the agent
+  has answered since the last prompt; used by `whole_unless_at_prompt`), `rules: Vec<Rule>`. `Gate` is one recursive
   type with optional lists `contains`, `regex`, `line_regex`, `all`, `any`, `not`. `Rule` is a
   `Gate` flattened together with `id`, `state: State`, `priority: i32` (default 0), `region:
-  Region` (default `whole`), `visible_idle: bool`, `visible_blocker: bool`. `State` is
+  Region` (default `whole`), `visible_idle: bool`, `visible_blocker: bool`, `visible_working:
+  bool`. `State` is
   `Working | Blocked | Idle | Skip`. `Region` is the enum from the design's table; the
   parameterised ones parse from `bottom(12)` form with `FromStr` and serialise back. Load-time
   validation, each failure naming the file, the rule and the problem: unique rule ids; every
   regex compiles; every positive gate (`all`, `any` members, the rule itself) has at least one
-  matcher; `not` gates have a matcher; `visible_idle` only on idle rules and `visible_blocker`
-  only on blocked; `skip` rules carry no flags; at most 128 rules, 512 gates, 1024 matchers, 512
-  chars per matcher, nesting depth 8.
+  matcher; `not` gates have a matcher; `visible_idle` only on idle rules, `visible_blocker`
+  only on blocked, `visible_working` only on working; `skip` rules carry no flags; at most 128
+  rules, 512 gates, 1024 matchers, 32 matchers per gate, 512 chars per matcher, nesting depth 8.
 - **Regions** (`region.rs`): `fn extract<'a>(region, view: &'a impl ScreenView) -> RegionText<'a>`,
   computed lazily and memoised per evaluation in a small `RegionCache` that also caches the
   lowercased form for `contains`. Implement every row of the design's table exactly as written
-  there; in particular: a **horizontal rule** is a line whose trimmed text starts with `─`
-  (U+2500) and is either that single character or a run of at least three of it, nothing else;
+  there; in particular: a **horizontal rule** is a line whose trimmed text starts with a run of `─`
+  (U+2500) where either nothing follows the run or the run is at least three long (`──` is a
+  rule, `─── done` is a rule, `---` is not);
   `prompt_box` is the lines strictly between the second rule counting up from the bottom and the
   next rule below it, empty with fewer than two rules; `bottom_non_empty(n)` starts at the
   *n*-th non-empty line from the bottom and runs to the end, blanks included; `top_non_empty(n)`
-  mirrors it from the top; `after_last_prompt_marker` and `whole_unless_at_prompt` use the rule
-  set's `prompt_marker` (a line equal to the marker, or starting with the marker and a space).
+  mirrors it from the top; `after_last_prompt_marker` uses the rule
+  set's `prompt_marker` (a line equal to the marker, or starting with the marker and a space);
+  `whole_unless_at_prompt` is empty when the last such marker line has no later line starting
+  with one of `block_markers`, and the whole text otherwise. `progress` is
+  `format!("{state}:{percent}")` or empty when `progress()` is `None`.
   Document each region's exact definition in its doc comment; that comment is the contract rule
   authors read.
 - **Gates** (`matcher.rs`): a gate matches when **all** of its parts hold: every `contains`
@@ -105,7 +115,8 @@ viewport to live afterwards.
   if `any` is non-empty; no `not` sub-gate matches.
 - **Evaluation** (`eval.rs`): `fn evaluate(set: &RuleSet, view: &impl ScreenView) -> Verdict`.
   Evaluate every rule, take the highest priority match; ties resolve to the earlier rule in the
-  file. `Verdict { state, visible_idle, visible_blocker, rule: Option<RuleId>, region }`. **No
+  file. `Verdict { state, visible_idle, visible_blocker, visible_working, rule: Option<RuleId>,
+  region }`. **No
   rule matching means `Idle` with both flags false and `rule: None`**: the working signals
   vanishing is how an agent shows it finished, and the state machine relies on this to leave
   working. A `Skip` verdict means "leave the current state alone"; return it as such, the state
@@ -114,15 +125,17 @@ viewport to live afterwards.
   Option<(AgentId, Pid)>`. `Job { leader: Pid, processes: Vec<Process> }`, `Process { pid, ppid,
   comm, argv0: Option<String>, argv: Vec<String>, env_agent: Option<String> }` from `platform`.
   A process with `env_agent` (the `ZOR_AGENT` variable) that names a loaded set wins outright.
-  Otherwise normalise: effective name is `argv0` if present else `comm`; if that is a generic
-  runtime or shell (`sh bash zsh fish tmux node bun deno python python3`), scan `argv[1..]` for
-  the wrapped script: skip flags, and the next entry after a flag that takes a value
-  (`-r --require --import --loader -e -c -p -m` and their `=` forms; treat `-e -c -p -m` as
-  eval flags and return `None`), stop at `--`; strip surrounding quotes; basename; strip
-  `.js .mjs .cjs .py`. If the result matches no set, `fs::canonicalize` the path and try the
-  target's basename. Match against `process_names`. Among matches: the leader if it matches;
-  else the highest score (3 when the name came from a wrapped script, 2 for a direct binary,
-  1 for a bare runtime name), earliest process on ties.
+  Otherwise normalise: effective name is `argv0` if present (macOS; `None` on Linux) else
+  `comm`; `tmux` is never an agent; if the name is a generic runtime or shell (`sh bash zsh fish
+  node bun python python3`), scan `argv[1..]` for the wrapped script: return `None` on an eval
+  flag (`-e --eval -p --print` for node and bun; `-c -m` for python; `-c` for shells); skip
+  other flags and the value following one that takes a value (`-r --require --loader --import
+  --experimental-loader --inspect-port -W -X -o -S -L`, `=` forms included); stop at `--`; strip
+  surrounding quotes; basename; strip `.js .mjs .cjs .py`. If the result matches no set,
+  `fs::canonicalize` the path and try the target's basename. Match against `process_names`.
+  Among matches: the leader if it matches; else the highest score (3 when the normalised name
+  differs from `comm`, which covers a wrapped script and a changed process title; 2 for a direct
+  binary; 1 for a bare runtime name), earliest process on ties.
 
 Tests: each region on a hand-written screen with the expected lines, including `prompt_box`
 with zero, one and two rules and a blank line inside `bottom_non_empty(3)`; a `---` line is not
@@ -131,7 +144,9 @@ nesting; `contains` is case-insensitive; `line_regex` versus `regex` on a multi-
 priority ties go to the earlier rule; no match yields plain `Idle`; `Skip`; flags dropped on a
 state mismatch; each validation failure names the rule; identification prefers the leader,
 resolves `node /x/bin/claude` and `node -r ./hook.js /x/claude.js` to `claude`, returns `None`
-for `node -e …` and for a plain shell, honours `ZOR_AGENT`, and follows a symlink.
+for `node -e …`, `python -m …`, `tmux` and a plain shell, honours `ZOR_AGENT`, follows a
+symlink, and gives a title-changed process (argv0 ≠ comm) score 3; `whole_unless_at_prompt`
+with and without a block marker after the last prompt line.
 
 ## 3. `state`: the hysteresis machine
 
@@ -146,8 +161,8 @@ Option<Verdict>, agent: Option<AgentId>, now: Instant) -> Vec<Event>`, `fn tick(
   Any other verdict, or a change of agent, cancels the hold. If the hold is still open 700 ms
   after it opened, `tick` publishes the idle: the cap forces publication, it never cancels.
 - **Immediate.** Every other transition publishes on its first verdict: into working, into
-  blocked, blocked → idle, working → idle with `visible_idle`, and a change of `visible_idle` or
-  `visible_blocker` with the state unchanged.
+  blocked, blocked → idle, working → idle with `visible_idle`, and a change of any `visible_*`
+  flag with the state unchanged.
 - **Startup grace.** For 3 s after `AgentFound` (first identification or a replacement) idle
   verdicts are dropped; working and blocked pass. This deviates from herdr, which drops every
   verdict in the window; say so in a comment.
@@ -161,8 +176,9 @@ Option<Verdict>, agent: Option<AgentId>, now: Instant) -> Vec<Event>`, `fn tick(
 - **Heartbeat.** Any stable state repeats as `Event::Heartbeat` every 800 ms with the same `seq`,
   event channel only.
 
-`Event` is `Changed { state, agent, seq, visible_idle, visible_blocker, exited }`, `Heartbeat
-{ state, agent, seq, visible_blocker }`, `AgentFound { id, pid }`, `AgentLost`. `seq` is a `u64`
+`Event` is `Changed { state, previous, agent, seq, visible: Flags, exited }`, `Heartbeat
+{ state, agent, seq, visible: Flags }`, `AgentFound { id, pid }`, `AgentLost`; `Flags` is three
+bools. `seq` is a `u64`
 that increments on `Changed` only. `observe` takes `Option<Verdict>`, the current
 `Option<AgentId>`, an `exited: bool`, and `now`.
 
@@ -180,14 +196,15 @@ monotonic and unchanged across heartbeats.
 
 - `fn foreground_pgid(child: Pid) -> Option<Pid>`, cheap, called every tick: Linux parses
   `tpgid` (field 8 after the closing `)`) from `/proc/<child>/stat`; macOS `proc_pidinfo(child,
-  PROC_PIDTBSDINFO)` and `e_tpgid`. Do not use `tcgetpgrp` on the master; it is unspecified on a
-  macOS ptmx.
+  PROC_PIDTBSDINFO)` and `e_tpgid`. On Linux fall back to `tcgetpgrp(master)` when `tpgid` reads
+  0; never use it on macOS, where it is unspecified on a ptmx.
 - `fn leader(pgid) -> Option<Process>`, the cheap lookup tried first.
 - `fn job(child: Pid, pgid) -> Job`, the full listing: Linux walks `/proc/<pid>/task/*/children`
   breadth-first from `child` and from `pgid`, keeping processes whose `pgrp` (stat field 5)
   equals `pgid`, with `comm` from stat and argv from `/proc/<pid>/cmdline`; macOS
   `proc_listpids(PROC_PGRP_ONLY, pgid)`, `pbi_pgid` confirmed via `PROC_PIDTBSDINFO`, argv and
-  `argv0` from `sysctl KERN_PROCARGS2` (argv0 is the process title). Read `ZOR_AGENT` from
+  `argv0` from `sysctl KERN_PROCARGS2` (argv0 is the process title; Linux has no equivalent and
+  leaves it `None`). Read `ZOR_AGENT` from
   `/proc/<pid>/environ` and from the `KERN_PROCARGS2` environment block into `env_agent`. An
   empty job on any error; identification then falls back to `--agent` or the command `zor` was
   given, if that names a set.
@@ -197,7 +214,7 @@ monotonic and unchanged across heartbeats.
   identified, after 30 s with no pgid at all, and inside an acquisition window (8 s, opened when
   the pgid changed while unidentified or when the screen changed with no agent; probe at 500 ms
   for the first 1.5 s, then every 2 s). Report `Exited` when the identified agent is gone and the
-  foreground job is the pane shell again (the child pid alone); count a miss when the foreground
+  foreground job contains the pane shell (the child pid, with or without other members); count a miss when the foreground
   job is something else with no agent in it, and report `AgentLost` after six consecutive misses.
   A different agent, or the same agent under a new pid, is `AgentFound` again, and the caller
   clears title and progress evidence.
@@ -220,7 +237,10 @@ second emulator. Two threads: **reader** copies master → stdout, writing each 
 loop owns `Screen`, `Machine`, the probe scheduler and the emitters, and blocks on the channel
 with a timeout equal to the machine's next deadline or the probe's, whichever is sooner. It
 evaluates rules only when the screen `changed` since the last evaluation or a hold is pending;
-an idle pane that draws nothing costs nothing. `SIGWINCH` (via `signal-hook`) forwards the new size to the master and to `Screen`.
+an idle pane that draws nothing costs nothing. `SIGWINCH` (via `signal-hook`) forwards the new size, `ws_xpixel` and `ws_ypixel` included,
+from `TIOCGWINSZ` on stdin to `TIOCSWINSZ` on the master and the rows and cols to `Screen`; the
+initial spawn size carries the pixel fields too. zor sets no `TERM` or `COLORTERM`, answers no
+XTGETTCAP or DA, and tracks no kitty keyboard state; the real terminal does all of that.
 `SIGCHLD` or a closed master ends the loop; exit with the child's status, restoring the terminal
 first.
 
@@ -240,16 +260,19 @@ signal death.
 
 `src/emit/{osc,title,events}.rs`.
 
-- `osc::state(state, agent, seq) -> Vec<u8>` produces
+- `osc::state(&Report) -> Vec<u8>` produces
   `ESC ] 7877 ; state=… ; agent=… ; seq=… ESC \` exactly as `DESIGN.md` gives it; `agent=` is
-  omitted for `none`. Also `osc::parse(payload: &[u8]) -> Option<StateReport>` for consumers and
+  omitted for `none`; `visible=idle,blocker,working` lists the set flags and is omitted when
+  none; `exited=1` when set; `message=` percent-encoded, 128 bytes max, only for self-reports
+  passed through. `osc::parse` accepts unknown keys and ignores them. Also `osc::parse(payload: &[u8]) -> Option<StateReport>` for consumers and
   for the round-trip test; export it from the library so fux can use the same parser.
 - `title`: with `prefix`, on every child OSC 0/2 rewrite to `<glyph> <original>`; on a state
   change, re-emit the last title with the new glyph; with `replace`, emit `<glyph> <agent>`; with
   `never`, pass through. Glyphs `●` `◐` `○`; none for `none`. On exit, if a title was ever
   rewritten, emit the last original title unprefixed.
-- `events`: one JSON object per line with `t`, `state`/`agent`/`seq`/`pid`/`code`, plus
-  `visible_blocker` and `exited` when true, as in the design and `ts` as seconds since the epoch with millisecond precision. Sink is a unix socket
+- `events`: one JSON object per line with `t`, `state`, `previous`, `agent`, `seq`, `pid`,
+  `code`, `title` (the child's current unprefixed title), `visible` (array of set flag names,
+  omitted when empty) and `exited` when true, as in the design and `ts` as seconds since the epoch with millisecond precision. Sink is a unix socket
   (connected once at start; reconnect on `EPIPE` at most once per second), a fifo, or fd 3. All
   writes non-blocking; a `WouldBlock` drops the line and increments a counter reported at exit
   under `--debug`.
@@ -267,7 +290,8 @@ carries the expected fields; a full pipe drops rather than blocks.
 from the bundle (`include_str!` under `rules/*.toml`, registered in `src/rules/bundle.rs`), then
 `$XDG_CONFIG_HOME/zor/rules/*.toml`, then each `--rules` dir; a later set with the same `id`
 replaces an earlier one entirely. `--debug` prints each verdict and each machine event to stderr
-with the matched rule id. `SIGUSR1` writes a fixture file (format below) to `$TMPDIR` and prints
+with the matched rule id, and logs any `OSC 7877` or `OSC 21337` the child emits itself so the
+self-report path can be studied before it is wired (do not act on them in 0.1.0). `SIGUSR1` writes a fixture file (format below) to `$TMPDIR` and prints
 its path to stderr.
 
 ## 8. Fixtures, the Claude rule set, and `check`
@@ -285,8 +309,9 @@ Fixture format, `tests/fixtures/<agent>/<name>.txt`:
 
 `SIGUSR1` writes the detection window, not the raw viewport, so a fixture is what the rules saw.
 
-`check` loads a fixture, evaluates it against the named or auto-detected rule set, and prints the
-verdict, exiting 1 on mismatch with `expect`. The test suite walks every fixture and does the same.
+`matched` is required and names the rule id the evaluator must pick (or `none` for the idle
+fallback). `check` loads a fixture, evaluates it against the named or auto-detected rule set, and
+prints the verdict and rule id, exiting 1 on mismatch with `expect` or `matched`. The test suite walks every fixture and does the same.
 
 Write `rules/claude.toml` from fixtures you capture yourself by running `zor --debug -- claude`
 and sending `SIGUSR1` in each state: idle at the prompt, working with the spinner, blocked on a
@@ -295,13 +320,15 @@ transcript viewer (`ctrl+o`), the model picker, and idle with "Do you want to pr
 into the prompt box as a guard test. Signals to verify from the captures and encode if present:
 the title starting with a spinner glyph (braille U+2800–U+28FF or half circles U+25D0–U+25D3)
 followed by a space as working at the top priority, and starting with `✳` as a low-priority idle;
-`progress` matching `^0:` as low-priority idle; a footer line starting with `⏸` or `⏵` and
+`progress` equal to `0:0` (a cleared report) as low-priority idle; a footer line starting with `⏸` or `⏵` and
 containing `esc to interrupt`, or an activity line starting with one of `*·✢✶✻✽` and ending in
 `…`, in `bottom_non_empty(12)` as working; `esc to cancel` together with `enter to confirm` or
 `enter to select` in `after_last_rule` as blocked with `visible_blocker`; `do you want to
-proceed?` with numbered yes/no lines as blocked with `visible_blocker`; a `prompt_box` whose
+proceed?` corroborated by a command preview and a numbered `yes`/`no` line, on `whole`, as
+blocked with `visible_blocker`; a `prompt_box` whose
 first line starts with `❯` as idle with `visible_idle`, guarded by `not` against the blocked
-texts; skip rules for the transcript viewer and the model picker. Set `prompt_marker = "❯"`.
+texts; skip rules for the transcript viewer and the model picker. Mark the spinner and footer rules `visible_working`. Set `prompt_marker = "❯"`; Claude needs
+no `block_markers`.
 Confirm from a capture that the prompt is delimited by two full-width `─` rules, which is what
 `prompt_box` assumes. The Claude set needs a fixture per state and for the guard before it is
 committed; if you cannot run Claude Code in this
