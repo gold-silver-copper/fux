@@ -256,17 +256,17 @@ State transitions are native events on the server, so:
 
 ---
 
-## Distribution: one crate, two feature sets, nothing to embed
+## Distribution: one crate, one build, nothing to embed
 
-- `cargo install fux` builds the default `workspace` feature: koh's library tree plus the tiler and
-  detection. No wasm, no committed artifacts, no `include_bytes!`.
-- `cargo install fux --no-default-features` builds a client-only binary: `connect`, `id`, `key`,
-  which is koh's client tree. This is the slim option for a phone that only ever attaches; the full
-  build also compiles on Termux, so a phone can host a workspace and be attached to from the
-  desktop. koh's Termux install notes (`pkg install rust clang pkg-config`) and its Android test
-  suites apply directly. Termux ships rust 1.98, above koh's 1.91 floor.
-- Prebuilt `aarch64-linux-android` binaries are the primary phone distribution once fux is public;
-  `cargo install` is the fallback.
+- `cargo install fux` builds the whole thing everywhere: koh's library tree, the tiler, detection
+  and the control socket. No features to choose, no wasm, no committed artifacts, no
+  `include_bytes!`. A phone and a desktop run the same binary and can each host a workspace or
+  attach to the other's.
+- On Termux the build is koh's plus ratatui-core and the tiler, all pure Rust. koh's install notes
+  (`pkg install rust clang pkg-config`) and its Android test suites apply directly. Termux ships
+  rust 1.98, above koh's 1.91 floor.
+- Prebuilt `aarch64-linux-android` binaries are a convenience once fux is public; `cargo install`
+  is the same build.
 
 The toolchain floor is koh's 1.91 (iroh 1.0). fux declares the same `rust-version`.
 
@@ -409,8 +409,7 @@ In the order they block work.
   to `process`. Each pane is a widget that copies `vt100::Screen::cell` into `Buffer` cells,
   marking wide-glyph continuations as skip cells. Panes stay `vt100::Screen`; ratatui is never
   the emulator. herdr's `layout.rs` already targets ratatui's `Rect`, so it ports as a copy. It
-  lives with the tiler under the `workspace` feature only because a client-only build has nothing
-  to paint; it is pure Rust and builds on Termux, so a phone can host a workspace too.
+  is pure Rust and builds on Termux.
 - **No control API versioning in v1.** Decided 3 Sep 2026: no version field and no handshake
   until something actually changes; scripts written against v1 are on notice.
 
@@ -446,8 +445,8 @@ In the order they block work.
 
 ### Decisions already made
 
-- fux is one crate, one binary. Default `workspace` feature is the server and tiler;
-  `--no-default-features` is the client-only slim build. Both build on Termux.
+- fux is one crate, one binary, one build. No Cargo features; phone and desktop builds are
+  identical and each can host or attach.
 - fux stays MIT; koh is MIT as of 0.10.0.
 - Build the multiplexer, do not embed zellij. Depend on koh as a library; the only koh change is
   the session host seam plus two small hooks.
