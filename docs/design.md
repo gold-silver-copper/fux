@@ -162,19 +162,20 @@ What that means concretely:
   that the type system keeps consistent instead of a comment. herdr's `find_in_direction` geometry
   cases and its tests are the acceptance suite.
 - **Detection.** The manifest *vocabulary* (regions, priorities, negative guards) and the
-  hysteresis constants are the knowledge worth keeping. fux defines its own manifest schema, rule
-  evaluator and region enum over `vt100::Screen`, then converts herdr's twenty-one manifests into
-  that schema with a script kept in `tools/`. Converted data is regenerated, never hand-edited, so
-  upstream manifest changes can be pulled again. Captured-pane fixtures validate that fux's
-  evaluator agrees with herdr's on each one.
+  hysteresis constants are the knowledge worth keeping. fux defines its own rule schema, rule
+  evaluator and region enum over `vt100::Screen`, and writes its own rules per agent from observed
+  panes. herdr's manifests are read to learn which signals each agent emits (spinner ranges,
+  footers, prompt markers, the guards that stop user text from impersonating a state change), not
+  copied or converted; nothing from herdr's tree, code or data, enters fux. Captured-pane fixtures
+  are the acceptance suite.
 - **Grid and copy mode.** zellij's grid edge cases (wide glyphs at the right margin, wrapped-line
   selection, scrollback with resize) are read for the cases, and fux's `PaneView` and copy mode are
   written to handle them, with a test per case.
 - **Anything else.** The same rule: extract the behaviour, discard the code.
 
 The cost is that nothing arrives for free; the layout tree in particular is a week that a copy
-would have saved. The gains are one consistent style across the crate, no Apache-2.0 code to
-attribute (only the converted manifest data), no carried-over design debt, and a codebase the
+would have saved. The gains are one consistent style across the crate, nothing Apache-2.0 to
+attribute, no carried-over design debt, and a codebase the
 maintainer understands end to end because they wrote it.
 
 ---
@@ -264,9 +265,9 @@ of them and carries rules keyed on the braille spinner range, the `esc to interr
 progress, and negative guards so that a user typing "do you want to proceed?" cannot impersonate a
 state change.
 
-The manifests are the corpus; fux's own schema and evaluator consume a converted copy of them, with
-Apache-2.0 attribution on the data (see *Reference code is studied, not copied*). herdr's evaluator
-is not reused: herdr's is 3.2k lines (`manifest.rs` 1.5k, `detect/mod.rs` 1.6k) over its own
+herdr's manifests are studied for the signals they encode; fux writes its own rules in its own
+schema and ships no herdr data (see *Reference code is studied, not copied*). herdr's evaluator
+is not reused either: herdr's is 3.2k lines (`manifest.rs` 1.5k, `detect/mod.rs` 1.6k) over its own
 libghostty-vt screen type, plus 1k of manifest-update code fux does not need. A fresh evaluator over
 `vt100::Screen::rows()` and the title, validated against captured-pane fixtures, is the plan. Agent identification uses the pane's child process name via the pty's pid,
 as herdr's `identify_agent` does.
@@ -319,13 +320,12 @@ The toolchain floor is koh's 1.91 (iroh 1.0). fux declares the same `rust-versio
 | Component | License | Use in fux |
 |---|---|---|
 | koh | MIT (0.10.0) | library dependency |
-| herdr | Apache-2.0 | manifest data converted and vendored; no code reused |
+| herdr | Apache-2.0 | reference only |
 | zellij | MIT | reference only |
 | fux | MIT | |
 
-Apache-2.0 data in an MIT crate needs attribution and a NOTICE entry; nothing else. No Apache-2.0
-code enters the tree.
-herdr's libghostty-vt bindings and ratatui UI are not used.
+Nothing from herdr or zellij enters the tree, so no attribution or NOTICE entry is needed; fux is
+plain MIT with koh as its only third-party dependency of note.
 
 ---
 
@@ -473,16 +473,13 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 
 ### herdr
 
-- [ ] **Attribution.** herdr's Apache-2.0 LICENSE text into a NOTICE entry before the converted
-      manifests land.
-- [ ] **Manifest converter** in `tools/`, so herdr's manifests can be re-pulled.
-- [ ] Optional: upstream manifest fixes so the fixture set stays shared.
+- Nothing. herdr is reference material only: no code, no manifest data, no attribution.
 
 ### crates.io and accounts
 
 - [ ] **`fux` is already yours** (0.1.0 placeholder, 18 Aug 2026).
-- [ ] **Public remote for fux.** `references/` stays gitignored; CI uses crates.io koh and vendored
-      herdr manifests. Nothing else is needed from the reference trees.
+- [ ] **Public remote for fux.** `references/` stays gitignored; CI uses crates.io koh. Nothing is
+      needed from the reference trees.
 - [ ] **CI:** stable Rust at 1.91 floor, macOS and Linux; `aarch64-linux-android` cross build for
       the phone binary once fux is public. No wasm target.
 
@@ -498,7 +495,7 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 - All workspace logic is on the host; the client renders, predicts, and selects.
 - Local attach uses the same transport as remote attach.
 - Reference code is studied, not copied: herdr and zellij supply invariants, edge cases, constants
-  and test oracles; every fux subsystem is designed fresh as idiomatic Rust. Manifests are the one
-  thing vendored, as converted data.
+  and test oracles; every fux subsystem is designed fresh as idiomatic Rust, detection rules included.
+  No herdr code or data is vendored.
 - Programmatic control over a unix socket instead of plugins; the CLI is a thin client for it.
 - Named workspaces, tabs, zoom, and mouse selection are all v1.
