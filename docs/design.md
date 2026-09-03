@@ -260,9 +260,11 @@ State transitions are native events on the server, so:
 
 - `cargo install fux` builds the default `workspace` feature: koh's library tree plus the tiler and
   detection. No wasm, no committed artifacts, no `include_bytes!`.
-- `cargo install fux --no-default-features` builds the phone binary: `connect`, `id`, `key` only,
-  which is koh's client tree. koh's Termux install notes (`pkg install rust clang pkg-config`) and
-  its Android test suites apply directly. Termux ships rust 1.98, above koh's 1.91 floor.
+- `cargo install fux --no-default-features` builds a client-only binary: `connect`, `id`, `key`,
+  which is koh's client tree. This is the slim option for a phone that only ever attaches; the full
+  build also compiles on Termux, so a phone can host a workspace and be attached to from the
+  desktop. koh's Termux install notes (`pkg install rust clang pkg-config`) and its Android test
+  suites apply directly. Termux ships rust 1.98, above koh's 1.91 floor.
 - Prebuilt `aarch64-linux-android` binaries are the primary phone distribution once fux is public;
   `cargo install` is the fallback.
 
@@ -400,13 +402,15 @@ In the order they block work.
 - **Termux clears the floor.** rust 1.98 on termux-packages `master`, koh's floor is 1.91.
 - **No plugin system.** A local control socket with commands and events, panes and popups as the
   UI surface, config bindings and hooks for the rest. See *Control, not plugins*.
-- **ratatui paints the composite, behind the `workspace` feature.** `ratatui-core` for `Buffer`,
+- **ratatui paints the composite.** `ratatui-core` for `Buffer`,
   `Rect` and `Layout`, `ratatui-widgets` for borders, the status line and popups; not the umbrella
   crate, so no second terminal backend enters the server. fux implements ratatui's `Backend` for
   koh's virtual `ServerTerminal`: `draw` turns changed cells into cursor moves and SGR bytes fed
   to `process`. Each pane is a widget that copies `vt100::Screen::cell` into `Buffer` cells,
   marking wide-glyph continuations as skip cells. Panes stay `vt100::Screen`; ratatui is never
-  the emulator. herdr's `layout.rs` already targets ratatui's `Rect`, so it ports as a copy.
+  the emulator. herdr's `layout.rs` already targets ratatui's `Rect`, so it ports as a copy. It
+  lives with the tiler under the `workspace` feature only because a client-only build has nothing
+  to paint; it is pure Rust and builds on Termux, so a phone can host a workspace too.
 - **No control API versioning in v1.** Decided 3 Sep 2026: no version field and no handshake
   until something actually changes; scripts written against v1 are on notice.
 
@@ -442,8 +446,8 @@ In the order they block work.
 
 ### Decisions already made
 
-- fux is one crate, one binary. Default `workspace` feature is the server and tiler; the phone
-  build is `--no-default-features`, which is koh's client.
+- fux is one crate, one binary. Default `workspace` feature is the server and tiler;
+  `--no-default-features` is the client-only slim build. Both build on Termux.
 - fux stays MIT; koh is MIT as of 0.10.0.
 - Build the multiplexer, do not embed zellij. Depend on koh as a library; the only koh change is
   the session host seam plus two small hooks.
