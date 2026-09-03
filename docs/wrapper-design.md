@@ -106,73 +106,139 @@ touched it and prints nothing else.
 
 ### Identification: the process tree, not the command line
 
-`zor -- claude` knows the agent. `zor` wrapping a shell does not, and must watch for one. On each
-tick, the foreground process group of the pty (`tcgetpgrp` on the master) is resolved to its
-processes (`/proc/<pid>/stat` on Linux, `proc_listpids` with `KERN_PROCARGS2` on macOS) and each
-process name is normalised (`node /usr/bin/claude` is `claude`; a `.js` entry point's basename
-counts) and matched against the agent ids and aliases of the loaded rule sets. Ties go to the
-process group leader, then the deepest descendant. This is herdr's `identify_agent_in_job` model,
-reimplemented.
+`zor -- claude` knows the agent. `zor` wrapping a shell does not, and must watch for one. Two
+lookups, at different costs:
+
+- **Foreground pgid, every tick, cheap.** The child shell's controlling-terminal foreground group:
+  field `tpgid` of `/proc/<child>/stat` on Linux, `proc_pidinfo(PROC_PIDTBSDINFO).e_tpgid` on
+  macOS. `tcgetpgrp` on the pty master is not relied on; it is unspecified on a macOS ptmx.
+- **Job listing, on demand, expensive.** The processes in that group: on Linux a breadth-first
+  walk of `/proc/<pid>/task/*/children` from the child and from the group leader, keeping those
+  whose pgrp matches, with `comm` and `/proc/<pid>/cmdline`; on macOS `proc_listpids` with
+  `PROC_PGRP_ONLY`, `pbi_pgid` checked, and argv plus `argv0` from `KERN_PROCARGS2` (`argv0`
+  reflects a runtime's `process.title`). A leader-only lookup is tried first and the full listing
+  only if the leader is not an agent.
+
+A process name is normalised before matching: `argv0` if present, else `comm`; if that is a
+generic runtime or shell (`sh`, `bash`, `zsh`, `fish`, `node`, `bun`, `deno`, `python*`), scan
+argv for the wrapped script, skipping flags and the values of flags that take one, stopping at
+`--`, giving up on eval flags (`-e`, `-c`, `-p`, `-m`); strip quotes, take the basename, strip
+`.js`, `.mjs`, `.py`; canonicalise symlinks and try again on the target's basename. The result
+is matched against each rule set's `process_names`. Among several matches in one job the group
+leader wins; otherwise a score (3 for a name derived from a wrapped script, 2 for a direct binary,
+1 for a bare runtime), earliest process on ties. A `ZOR_AGENT=<id>` variable in a process's
+environment beats name matching, which is how a launcher script or an unknown fork can declare
+itself; `--agent` sets the same thing for the command zor spawns.
 
 Identification is polled, not evented, because there is no portable event for "the foreground
-job changed". Cadence follows the state: 500 ms while no agent is identified, 5 s while one is
-(agents do not change identity mid-run), and 100 ms for eight seconds after the shell prompt
-regains the foreground, since the next agent launch is likely then. A missing agent is confirmed
-six polls in a row before the state drops to **none**, so a brief subprocess (the agent shelling
-out) does not flicker the indicator.
+job changed". The tick reads only the pgid: every 500 ms while unidentified, 300 ms while
+identified, 100 ms while an idle transition is pending. The job listing runs when the pgid
+changes, every 5 s while identified (a process can `exec` in place), and inside an
+**acquisition window**: for 8 s after the pgid changed while unidentified, or after the screen
+changed with no agent, probe every 500 ms for the first 1.5 s and every 2 s after, since the next
+agent launch is likely then.
 
-### Rules: regions, priorities, guards
+Losing the agent has two cases. When the shell is the foreground job again, the agent exited: an
+`idle` with an exit marker is emitted at once, and the next probe clears the agent, emitting
+`none`. When the foreground job is something else and contains no agent (the agent shelled out,
+or the listing failed), the agent is kept until six consecutive probes miss it, about thirty
+seconds at the identified cadence; a subprocess does not flicker the indicator. A new agent in
+the pgid, or the same agent relaunched, is a replacement: title and progress evidence are
+cleared and the startup grace restarts.
 
-Each agent has a rule set: a TOML file with an id, aliases, and an ordered list of rules. A rule
-names a target state, a priority, a region, and a matcher. The highest-priority matching rule
-wins; a rule with `state = "skip"` matches and vetoes the update, which is how a transcript
-viewer or a settings screen (both look like nothing) is kept from flipping the state to idle.
+### Rules: regions, gates, priorities
 
-Regions are computed lazily from the `ScreenView` on each evaluation:
+Each agent has a rule set: a TOML file with an id, aliases, `process_names`, an optional
+`prompt_marker`, and a list of rules. A rule names a target state, a priority, a region, a gate,
+and up to two flags. The highest-priority rule whose gate matches wins; earlier in the file wins
+a tie. If no rule matches while an agent is identified, the verdict is **idle**: the working
+signals disappearing is how most agents show they have finished, and a rule set need not encode
+"nothing is happening". A rule with `state = "skip"` matches and vetoes the update, which is how
+a transcript viewer or a model picker (both look like nothing) is kept from flipping the state to
+idle.
+
+**The detection text.** Regions read a window, not the raw viewport. On the primary screen the
+window is the last *rows* lines ending at the later of the last non-blank viewport row and the
+cursor row, which reaches into scrollback when the bottom of the viewport is blank; trailing
+blank lines are trimmed, each line is right-trimmed, wide-glyph continuation cells are skipped.
+On the alternate screen it is simply the last *rows* rows. The wrapper's `vt100::Parser` keeps a
+scrollback of at least *rows* lines for this.
+
+Regions are computed lazily from the `ScreenView` and memoised per evaluation:
 
 | Region | Content |
 |---|---|
-| `title` | the OSC 0/2 title |
-| `progress` | the OSC 9;4 state and percent, as `state:percent` text |
-| `bottom(n)` | the last *n* rows |
-| `bottom_non_empty(n)` | the last *n* rows that have any glyph |
-| `whole` | every row |
-| `prompt_box` | rows inside the last box-drawing frame that touches the bottom margin |
-| `above_prompt_box` | rows above that frame |
-| `last_line_above_prompt_box` | the last non-empty row above that frame |
-| `after_last_rule` | rows after the last row that is a horizontal rule |
-| `after_last_prompt_marker` | rows after the last row starting with the agent's prompt marker |
+| `title` | the OSC 0/2 title, control characters stripped, 256 chars |
+| `progress` | the OSC 9;4 report as `<state>:<percent>` (`3:0`, `1:42`), empty when cleared |
+| `whole` | the detection text |
+| `bottom(n)` | the last *n* lines of it |
+| `bottom_non_empty(n)` | from the *n*-th non-empty line counting up, through to the end, blank lines between included |
+| `top_non_empty(n)` | from the start through the *n*-th non-empty line |
+| `prompt_box` | the lines strictly between the second horizontal rule counting up from the bottom and the next rule below it; empty with fewer than two rules |
+| `above_prompt_box` | everything before that upper rule; the whole text when there is no box |
+| `last_line_above_prompt_box` | the last non-empty line of the above |
+| `after_last_rule` | the lines after the last horizontal rule |
+| `after_last_prompt_marker` | the lines after the last line that is the rule set's `prompt_marker` alone or starts with it followed by a space |
+| `whole_unless_at_prompt` | the detection text, or empty when the last non-empty line is a prompt-marker line |
 
-Matchers are `regex` (a list, any matches), `contains` (a list of substrings, all present), `any`
-(a list of sub-matchers, one suffices), and `not` (a sub-matcher that must fail). `not` is the
-negative guard: the Claude rule for **blocked** matches "Do you want to proceed?" in
-`after_last_rule` but not when the same text is inside `prompt_box`, which is where a user typing
-it would appear.
+A **horizontal rule** is a line whose trimmed text starts with `─` (U+2500) and is either that
+single character or a run of at least three. Only `─`; `---` in a transcript is text.
 
-The region vocabulary, the priority ladder (title at 1100, skips at 1000, blocked at 980, working
-between 965 and 975, idle at 950) and the guard idea come from studying herdr's manifests. The
-schema, the region implementations and every rule file are written fresh from captured panes. No
-herdr data is converted or vendored. See *Reference code is studied, not copied* in `design.md`.
+**Gates** are conjunctive and nest:
+
+- `contains: [..]`, every substring present, case-insensitive against the lowercased region.
+- `regex: [..]`, every pattern matches the region text (lines joined with `\n`).
+- `line_regex: [..]`, every pattern matches at least one line.
+- `all: [gate..]`, `any: [gate..]` (at least one), `not: [gate..]` (none).
+
+A rule is a gate with metadata. Disjunction is spelled `any`; a negative guard is `not`. The
+Claude rule for **blocked** matches "do you want to proceed?" plus numbered yes/no lines in
+`after_last_rule` and not when the prompt box holds the same text, which is where a user typing
+it would appear. Load-time validation: every positive gate has at least one matcher, regexes
+compile, ids are unique, and a set stays under 128 rules, 512 gates, 1024 matchers, 512 characters
+per matcher, nesting depth 8.
+
+**Flags.** `visible_idle = true` on an idle rule means the screen shows an unmistakable prompt;
+that idle bypasses the hold below. `visible_blocker = true` on a blocked rule means a prompt the
+user must answer is on screen; that blocked is re-announced periodically and outranks any state
+the agent reports about itself.
+
+The region vocabulary, the gate algebra, the priority ladder (title at 1100, skips at 1000,
+blocked at 980, working between 965 and 975, idle at 950, title-idle and progress-idle at 250)
+and the flag idea come from studying herdr's manifests. The schema, the region implementations
+and every rule file are written fresh from captured panes. No herdr data is converted or
+vendored. See *Reference code is studied, not copied* in `design.md`.
 
 ### Hysteresis
 
 Raw verdicts are noisy: a spinner frame is a row that changes, a prompt redraw briefly looks idle.
 The state machine between verdict and emission:
 
-- **working → idle** is confirmed by three consecutive idle verdicts spaced 100 ms apart, capped at
-  700 ms after the first. A working verdict in between resets the count.
-- **anything → blocked** and **anything → working** emit immediately. Waiting on a blocked prompt
-  costs the user time; a false working costs nothing.
-- **startup grace:** for three seconds after an agent is first identified, idle verdicts are not
-  emitted. Agents draw their prompt before they start working on a queued argument.
-- **none** is emitted when identification loses the agent (after the six-poll confirmation) and
-  the screen has been quiet for two seconds.
-- A stable state is re-announced every 800 ms only on the event channel, never in-band, so a
-  consumer that attached late gets a value without waiting for a change.
+- **working → plain idle is held.** The first idle verdict starts a hold and switches the tick to
+  100 ms; each further idle verdict counts a confirmation; the idle is published at three
+  confirmations, four idle verdicts in a row, about 300 ms. Any other verdict cancels the hold. If
+  the hold is still open 700 ms after it started, the idle is published anyway: the cap forces
+  publication, it does not cancel.
+- **Everything else publishes at once:** into working, into blocked, blocked → idle, and
+  working → idle when the rule carries `visible_idle`. Waiting on a blocked prompt costs the user
+  time; a false working costs nothing.
+- **Startup grace:** for three seconds after an agent is first identified or replaced, idle
+  verdicts are ignored. Agents draw their prompt before they start working on a queued argument.
+  (herdr ignores every verdict in the window, blocked included; zor lets working and blocked
+  through, since a permission prompt in the first three seconds is real.)
+- **Skip** and an unidentified pane leave the state alone; the tick ends with the hold cleared.
+- **Agent loss** is handled by identification (above): idle with an exit marker, then none.
+- **Blocked re-announce:** while a `visible_blocker` state persists it is re-sent on the event
+  channel every 800 ms, so a notifier can nag. In-band it is sent once.
+- **Heartbeat:** a stable state is repeated on the event channel every 800 ms with the same `seq`,
+  so a consumer that attached late gets a value. This is zor's, not herdr's.
+- **Idle scan skip:** while idle with no hold pending and no screen change since the last scan,
+  the screen is not re-read.
 
-These constants are herdr's, which spent months tuning them against real agents. They are the one
-thing the wrapper takes from herdr as-is, as numbers, since there is no other way to arrive at
-them than the same months.
+The constants (100 ms, three confirmations, 700 ms cap, 800 ms refresh, 3 s grace, 500/300 ms
+ticks, 5 s reprobe, 8 s acquisition, six misses) are herdr's, which spent months tuning them
+against real agents. They are the one thing the wrapper takes from herdr as-is, as numbers,
+since there is no other way to arrive at them than the same months.
 
 ---
 
@@ -214,14 +280,17 @@ One JSON object per line, on the path given by `--events` (unix socket, connecte
 a fifo; or fd 3):
 
 ```json
-{"t":"state","state":"blocked","agent":"claude","seq":12,"ts":1756900000.123}
+{"t":"state","state":"blocked","agent":"claude","seq":12,"visible_blocker":true,"ts":1756900000.123}
+{"t":"state","state":"idle","agent":"claude","seq":13,"exited":true,"ts":1756900900.000}
 {"t":"agent","agent":"claude","pid":48211,"ts":1756899990.001}
 {"t":"agent","agent":null,"ts":1756901000.500}
 {"t":"exit","code":0,"ts":1756901001.000}
 ```
 
 The stable-state refresh every 800 ms goes here as a `state` line with the same `seq`, so a
-consumer can distinguish a change (new `seq`) from a heartbeat. Writes are non-blocking and a
+consumer can distinguish a change (new `seq`) from a heartbeat; a persisting `visible_blocker`
+is re-sent on the same cadence for notifiers that nag. `exited` marks the idle that an agent's
+exit synthesises. Writes are non-blocking and a
 full pipe drops lines rather than stalling the pty; the next line carries the current state, so a
 dropped line costs nothing durable.
 
@@ -277,8 +346,8 @@ parser is in ground state. The passthrough test runs the vttest-style corpus thr
 ### Double emulation cost — *bounded*
 
 Two vt100 screens per pane under fux. **Mitigation:** measured with fux's chaos harness at 40
-panes before v1; if it matters, the wrapper's screen can be shrunk to the bottom 40 rows since no
-region reads higher.
+panes before v1. The screen cannot be shrunk below the pane's rows plus an equal scrollback, since
+the detection window reaches into scrollback; a 200×50 vt100 screen is under a megabyte.
 
 ### Process-tree lookup on macOS — *reimplemented, not copied*
 
@@ -295,15 +364,26 @@ one in any script. The `state=` key/value form means a collision is detectable, 
 
 ## Read from source
 
-- `herdr/src/pane/agent_detection.rs:5-13` — the hysteresis constants: 100 ms recheck, 3
-  confirmations, 700 ms cap, 800 ms stable refresh, 3 s startup grace
-- `herdr/src/pane.rs:276-284` — process recheck cadences: 6 miss confirmations, 5 s identified,
-  8 s acquisition window, 500 ms fast recheck, 2 s idle reset
-- `herdr/src/detect/mod.rs:239-271` — `identify_agent_in_job`: group leader first, then best score
-- `herdr/src/detect/manifests/claude.toml` — the priority ladder and the `skip_state_update`
-  transcript-viewer rule
-- `herdr/src/detect/manifest.rs:1104` — `validate_region_name`, the region vocabulary
-- `herdr/src/platform/macos.rs:272-390` — `foreground_job`, `tcgetpgrp` on the master fd
+- `herdr/src/pane/agent_detection.rs:5-13`, `:36-77`, `:154-182` — the hysteresis constants and
+  the hold: 100 ms recheck, 3 confirmations, 700 ms cap forces publication, 800 ms blocked
+  refresh, 3 s startup grace; `visible_idle` bypasses the hold
+- `herdr/src/pane.rs:276-284`, `:463-535`, `:2171-2196`, `:2372-2385`, `:998-1020` — tick rates
+  500/300/100 ms, probe on pgid change or every 5 s, 8 s acquisition window at 500 ms then 2 s,
+  grace window, six-miss confirmation for a foreign foreground job
+- `herdr/src/pane.rs:330-414` — shell back in foreground: immediate idle with exit, then clear
+- `herdr/src/detect/mod.rs:243-271`, `:317-373`, `:511-570`, `:685-720` — job member choice
+  (leader, then 3/2/1 score), name normalisation, runtime list, symlink canonicalisation
+- `herdr/src/detect/manifest.rs:140-198`, `:446-564`, `:1104-1127`, `:1237-1283`, `:1286-1530` —
+  schema, evaluation and the idle fallback, region names, gate semantics (all conjunctive,
+  `contains` lowercased), region extraction, `prompt_box` from the second rule up, the `─`-only
+  rule test
+- `herdr/src/pane/terminal.rs:2616-2624`, `:2756-2839`, `:3385-3399` — the detection window:
+  rows ending at max(last non-blank, cursor), into scrollback; alt screen last rows
+- `herdr/src/detect/manifests/claude.toml`, `codex.toml` — priority ladders, `line_regex`, `all`,
+  `skip_state_update`, `visible_*`, `top_non_empty_lines(20)`
+- `herdr/src/platform/linux.rs:203-262`, `:335-343`; `macos.rs:322-346`, `:362-386`, `:393-420` —
+  children walk, `tpgid` from stat; `proc_listpids(PROC_PGRP_ONLY)`, `e_tpgid`, `KERN_PROCARGS2`
+- `herdr/src/platform/mod.rs:346-354` — the `HERDR_AGENT` environment hint
 - `koh/src/terminal/server.rs:9-20`, `:95-106`, `:210-217` — OSC 9;4 parsing, the unhandled OSC
   ring (16 × 256), `progress()` and `take_unhandled_oscs()`
 - `koh/src/client/cli.rs:44-88` — `BellHook`, `KOH_TITLE` in the hook's environment
@@ -316,11 +396,17 @@ one in any script. The `state=` key/value form means a collision is detectable, 
 - One binary, one crate, pure Rust, MIT. Depends on vt100, portable-pty, regex, serde, toml,
   libc. Not on koh.
 - Passthrough first: write before parse, never answer queries, insert only in ground state.
-- Wrap the shell, identify by process tree; `--agent` and a bare agent command short-circuit it.
+- Wrap the shell, identify by process tree with herdr's normalisation and scoring; `ZOR_AGENT`
+  in a process environment and `--agent` short-circuit it.
+- Gates are conjunctive, `contains` is case-insensitive, no match with an agent means idle,
+  `prompt_box` is rule-delimited, the detection window reaches into scrollback.
 - OSC 7877 with key/value payload, ST-terminated, once per change. Title prefix by default.
 - JSON event lines out-of-band, non-blocking, with an 800 ms heartbeat.
-- herdr's hysteresis and recheck constants are adopted as numbers. Everything else is written
+- herdr's hysteresis and recheck constants are adopted as numbers, and its state machine as
+  behaviour, with one deviation: the startup grace swallows idle only. Everything else is written
   fresh from captured panes; no herdr code or data enters the tree.
+- Not adopted from herdr: remote rule updates and versions, lifecycle-hook authority, handoff
+  suppression, the resize replay workaround, Windows.
 - Rules bundled, overridable from a directory, shipped per release. No remote updates.
 - A rule set needs a fixture per state and per guard before it merges.
 - Linux and macOS, including Termux. Windows out of scope.
@@ -329,4 +415,6 @@ one in any script. The `state=` key/value form means a collision is detectable, 
 
 - **Should fux also accept the OSC from an unwrapped pane?** A future agent could emit OSC 7877
   itself. Yes, trivially, since fux reads the OSC and does not care who wrote it. Worth
-  documenting the OSC as a contract agents may adopt.
+  documenting the OSC as a contract agents may adopt. If zor sees the agent inside it emit OSC
+  7877, a screen-visible blocker still outranks the agent's self-report; otherwise the
+  self-report wins over the rules.

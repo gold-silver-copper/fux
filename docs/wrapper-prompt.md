@@ -38,7 +38,10 @@ that is the *Surface* section of `DESIGN.md` plus install instructions.
   `tests/fixtures/<agent>/*.txt`.
 - **No herdr code or data.** You may read a herdr checkout if one is at `../references/herdr` for
   behaviour, constants and signal vocabulary; you may not copy a line of Rust or TOML from it. The
-  rule files you write come from the fixtures you capture, not from herdr's manifests.
+  rule files you write come from the fixtures you capture, not from herdr's manifests. Where
+  `DESIGN.md` states an exact semantic (the rule test, `prompt_box`, gate conjunction, the idle
+  fallback, the hold), implement exactly that; it was audited against herdr's behaviour and the
+  Claude rules depend on it.
 
 ## 1. `screen`: the emulator with callbacks
 
@@ -49,55 +52,86 @@ ignore other OSC 9 subcommands), and a `changed` flag set by any callback or by 
 screen contents differ. `process(&mut self, bytes)` feeds the parser and returns whether the
 parser ended in ground state (`vt100` exposes this through the parser's state; if it does not in
 0.16.2, track it by scanning for an unterminated `ESC` in the last chunk and say so in a comment).
-`resize(rows, cols)`.
+`resize(rows, cols)`. Construct the parser with a scrollback of at least `rows` lines (grow it on
+resize); the detection window needs it. The title is control-character-stripped and capped at 256
+chars; an empty OSC 0/2 clears it.
 
-Implement `rules::view::ScreenView` for it: `rows() -> impl Iterator<Item = Cow<str>>` of the
-visible rows with trailing whitespace trimmed, `title() -> &str`, `progress() -> Option<Progress>`,
-`size() -> (u16, u16)`. Wide glyphs contribute once; continuation cells are skipped.
+Implement `rules::view::ScreenView` for it: `lines() -> impl Iterator<Item = Cow<str>>` yielding
+the **detection window** from `DESIGN.md` *Rules*: on the primary screen, `rows` lines ending at
+the later of the last non-blank viewport row and the cursor row, reaching into scrollback via
+`set_scrollback` when the viewport bottom is blank, trailing blank lines dropped; on the
+alternate screen, the last `rows` rows. Each line right-trimmed, wide glyphs once, continuation
+cells skipped. Plus `title() -> &str`, `progress() -> Option<Progress>`, `size() -> (u16, u16)`.
 
-Tests: title set and cleared; bell count; OSC 9;4 with each state and with malformed params;
-`changed` is false after feeding bytes that repaint identical content; a row with a CJK glyph
-reads back as one character.
+Tests: title set, cleared, stripped and capped; bell count; OSC 9;4 with each state and with
+malformed params; `changed` is false after feeding bytes that repaint identical content; a row
+with a CJK glyph reads back as one character; a screen whose bottom half is blank yields a window
+that starts in scrollback; the alternate screen yields its own rows; the window restores the
+viewport to live afterwards.
 
 ## 2. `rules`: regions, matchers, evaluation, identification
 
 `src/rules/{mod,view,region,matcher,schema,eval,ident}.rs`.
 
-- **Schema** (`schema.rs`): serde types for a rule file. Top level: `id`, `aliases: Vec<String>`,
-  `process_names: Vec<String>` (what `ident` matches; defaults to `[id] + aliases`),
-  `prompt_marker: Option<String>`, `rules: Vec<Rule>`. `Rule`: `id`, `state: State`,
-  `priority: i32`, `region: Region`, and exactly one of `regex: Vec<String>`,
-  `contains: Vec<String>`, `any: Vec<Matcher>`, plus optional `not: Box<Matcher>`. `State` is
-  `Working | Blocked | Idle | Skip`. `Region` is the enum from the design's table; `bottom(n)` and
-  `bottom_non_empty(n)` parse from the string form with `FromStr` and serialise back. Reject a file
-  with duplicate rule ids or an invalid regex at load time with an error naming the file, the rule
-  and the problem.
+- **Schema** (`schema.rs`): serde types for a rule file, `deny_unknown_fields`. Top level: `id`,
+  `aliases: Vec<String>`, `process_names: Vec<String>` (what `ident` matches; defaults to
+  `[id] + aliases`), `prompt_marker: Option<String>`, `rules: Vec<Rule>`. `Gate` is one recursive
+  type with optional lists `contains`, `regex`, `line_regex`, `all`, `any`, `not`. `Rule` is a
+  `Gate` flattened together with `id`, `state: State`, `priority: i32` (default 0), `region:
+  Region` (default `whole`), `visible_idle: bool`, `visible_blocker: bool`. `State` is
+  `Working | Blocked | Idle | Skip`. `Region` is the enum from the design's table; the
+  parameterised ones parse from `bottom(12)` form with `FromStr` and serialise back. Load-time
+  validation, each failure naming the file, the rule and the problem: unique rule ids; every
+  regex compiles; every positive gate (`all`, `any` members, the rule itself) has at least one
+  matcher; `not` gates have a matcher; `visible_idle` only on idle rules and `visible_blocker`
+  only on blocked; `skip` rules carry no flags; at most 128 rules, 512 gates, 1024 matchers, 512
+  chars per matcher, nesting depth 8.
 - **Regions** (`region.rs`): `fn extract<'a>(region, view: &'a impl ScreenView) -> RegionText<'a>`,
-  computed lazily and memoised per evaluation in a small `RegionCache`. `prompt_box` finds the last
-  run of rows whose first non-space glyph is a box-drawing character (U+2500–U+257F) and that
-  reaches the bottom non-empty row; `after_last_rule` treats a row of three or more of `─`, `═`,
-  `-` or `=` as a rule; `after_last_prompt_marker` uses the rule set's `prompt_marker`. Document
-  each region's exact definition in its doc comment; that comment is the contract rule authors
-  read.
-- **Matchers** (`matcher.rs`): `regex` (any of the list, compiled once at load), `contains` (all
-  substrings, case-sensitive), `any` (one sub-matcher matches), `not` (the sub-matcher fails).
-  Matching is over the region text joined with `\n`.
+  computed lazily and memoised per evaluation in a small `RegionCache` that also caches the
+  lowercased form for `contains`. Implement every row of the design's table exactly as written
+  there; in particular: a **horizontal rule** is a line whose trimmed text starts with `─`
+  (U+2500) and is either that single character or a run of at least three of it, nothing else;
+  `prompt_box` is the lines strictly between the second rule counting up from the bottom and the
+  next rule below it, empty with fewer than two rules; `bottom_non_empty(n)` starts at the
+  *n*-th non-empty line from the bottom and runs to the end, blanks included; `top_non_empty(n)`
+  mirrors it from the top; `after_last_prompt_marker` and `whole_unless_at_prompt` use the rule
+  set's `prompt_marker` (a line equal to the marker, or starting with the marker and a space).
+  Document each region's exact definition in its doc comment; that comment is the contract rule
+  authors read.
+- **Gates** (`matcher.rs`): a gate matches when **all** of its parts hold: every `contains`
+  needle is in the lowercased region text (needles are lowercased at load); every `regex`
+  matches the region text (lines joined with `\n`, compiled once at load); every `line_regex`
+  matches at least one line; every `all` sub-gate matches; at least one `any` sub-gate matches
+  if `any` is non-empty; no `not` sub-gate matches.
 - **Evaluation** (`eval.rs`): `fn evaluate(set: &RuleSet, view: &impl ScreenView) -> Verdict`.
   Evaluate every rule, take the highest priority match; ties resolve to the earlier rule in the
-  file. `Verdict` carries the state, the matched rule id and region, or `Verdict::NoMatch`. A
-  `Skip` state means "leave the current state alone"; return it as such, the state machine handles
-  it.
-- **Identification** (`ident.rs`): `fn identify(processes: &[Process], sets: &[RuleSet]) ->
-  Option<(AgentId, Pid)>`. `Process` is `{ pid, ppid, pgid, name, argv }` from `platform`.
-  Normalise a name: basename of argv[0]; if that is an interpreter (`node`, `bun`, `deno`,
-  `python3?`, `sh`, `bash`, `zsh`), the basename of the first argv entry that is not a flag,
-  with `.js`/`.mjs`/`.py` stripped. Match against each set's `process_names`. Prefer the process
-  group leader; otherwise the deepest descendant by `ppid` chain.
+  file. `Verdict { state, visible_idle, visible_blocker, rule: Option<RuleId>, region }`. **No
+  rule matching means `Idle` with both flags false and `rule: None`**: the working signals
+  vanishing is how an agent shows it finished, and the state machine relies on this to leave
+  working. A `Skip` verdict means "leave the current state alone"; return it as such, the state
+  machine handles it. Flags survive only when the winning rule's state carries them.
+- **Identification** (`ident.rs`): `fn identify(job: &Job, sets: &[RuleSet]) ->
+  Option<(AgentId, Pid)>`. `Job { leader: Pid, processes: Vec<Process> }`, `Process { pid, ppid,
+  comm, argv0: Option<String>, argv: Vec<String>, env_agent: Option<String> }` from `platform`.
+  A process with `env_agent` (the `ZOR_AGENT` variable) that names a loaded set wins outright.
+  Otherwise normalise: effective name is `argv0` if present else `comm`; if that is a generic
+  runtime or shell (`sh bash zsh fish tmux node bun deno python python3`), scan `argv[1..]` for
+  the wrapped script: skip flags, and the next entry after a flag that takes a value
+  (`-r --require --import --loader -e -c -p -m` and their `=` forms; treat `-e -c -p -m` as
+  eval flags and return `None`), stop at `--`; strip surrounding quotes; basename; strip
+  `.js .mjs .cjs .py`. If the result matches no set, `fs::canonicalize` the path and try the
+  target's basename. Match against `process_names`. Among matches: the leader if it matches;
+  else the highest score (3 when the name came from a wrapped script, 2 for a direct binary,
+  1 for a bare runtime name), earliest process on ties.
 
-Tests: each region on a hand-written screen with the expected rows; each matcher including `not`
-as a guard; priority ties; `Skip`; a rule file with a bad regex fails to load with the rule id in
-the message; identification prefers the leader, resolves `node /x/bin/claude` to `claude`, and
-returns `None` for a plain shell.
+Tests: each region on a hand-written screen with the expected lines, including `prompt_box`
+with zero, one and two rules and a blank line inside `bottom_non_empty(3)`; a `---` line is not
+a rule; each gate part, conjunction across parts, `any` as disjunction, `not` as a guard,
+nesting; `contains` is case-insensitive; `line_regex` versus `regex` on a multi-line region;
+priority ties go to the earlier rule; no match yields plain `Idle`; `Skip`; flags dropped on a
+state mismatch; each validation failure names the rule; identification prefers the leader,
+resolves `node /x/bin/claude` and `node -r ./hook.js /x/claude.js` to `claude`, returns `None`
+for `node -e …` and for a plain shell, honours `ZOR_AGENT`, and follows a symlink.
 
 ## 3. `state`: the hysteresis machine
 
@@ -106,38 +140,76 @@ Option<Verdict>, agent: Option<AgentId>, now: Instant) -> Vec<Event>`, `fn tick(
 -> Vec<Event>`, `fn next_deadline(&self) -> Option<Instant>`. The constants from `DESIGN.md`
 *Hysteresis* in a `Config` with those defaults:
 
-- working → idle needs 3 consecutive idle verdicts at least 100 ms apart, all within 700 ms of the
-  first; a working verdict resets the count.
-- transitions into working or blocked emit on the first verdict.
-- idle verdicts within 3 s of the agent first being identified are ignored.
-- agent lost: the caller passes `agent: None` only after its own six-poll confirmation; the
-  machine then waits 2 s of no screen change before emitting `none`.
-- `Skip` and `NoMatch` leave the state alone.
-- an 800 ms heartbeat event (`Event::Heartbeat(state)`) while a state is stable, for the event
-  channel only.
+- **Hold.** Only working → idle with `visible_idle == false` is held. The first such verdict
+  opens the hold (no publish) and `next_deadline` moves to 100 ms; each further plain-idle
+  verdict adds a confirmation; at 3 confirmations the idle is published (four verdicts in a row).
+  Any other verdict, or a change of agent, cancels the hold. If the hold is still open 700 ms
+  after it opened, `tick` publishes the idle: the cap forces publication, it never cancels.
+- **Immediate.** Every other transition publishes on its first verdict: into working, into
+  blocked, blocked → idle, working → idle with `visible_idle`, and a change of `visible_idle` or
+  `visible_blocker` with the state unchanged.
+- **Startup grace.** For 3 s after `AgentFound` (first identification or a replacement) idle
+  verdicts are dropped; working and blocked pass. This deviates from herdr, which drops every
+  verdict in the window; say so in a comment.
+- **Skip** and a `None` verdict (no agent identified) leave the state alone and cancel any hold.
+- **Agent exit.** The caller reports `Exited { agent }` when the shell is back in the foreground
+  (see §4): publish `idle` with `exited: true` immediately, then on the caller's `AgentLost`
+  publish `none`. A six-miss loss (foreign foreground job) comes straight as `AgentLost`.
+- **Blocked re-announce.** While the current state carries `visible_blocker`, emit
+  `Event::Heartbeat` every 800 ms with the same `seq`; the emitter sends it on the event channel
+  only.
+- **Heartbeat.** Any stable state repeats as `Event::Heartbeat` every 800 ms with the same `seq`,
+  event channel only.
 
-`Event` is `Changed { state, agent, seq }`, `Heartbeat { state, agent, seq }`, `AgentFound(id,
-pid)`, `AgentLost`. `seq` is a `u64` that increments on `Changed` only.
+`Event` is `Changed { state, agent, seq, visible_idle, visible_blocker, exited }`, `Heartbeat
+{ state, agent, seq, visible_blocker }`, `AgentFound { id, pid }`, `AgentLost`. `seq` is a `u64`
+that increments on `Changed` only. `observe` takes `Option<Verdict>`, the current
+`Option<AgentId>`, an `exited: bool`, and `now`.
 
-Tests, all with a fake clock: the three-confirmation path including a reset; the 700 ms cap
-expiring; blocked emitting immediately; startup grace swallowing idle; `none` after the quiet
-period; heartbeat cadence; `seq` monotonic and unchanged across heartbeats.
+Tests, all with a fake clock: the three-confirmation path publishing on the fourth verdict; a
+working verdict mid-hold cancelling it; the 700 ms cap publishing with only one confirmation;
+`visible_idle` bypassing the hold; blocked publishing immediately from working and from a held
+idle; blocked → idle publishing immediately; startup grace swallowing idle but not blocked;
+`Skip` and `None` cancelling a hold without publishing; exit producing `idle(exited)` then `none`;
+blocked re-announce cadence and its absence for a plain blocked; heartbeat cadence; `seq`
+monotonic and unchanged across heartbeats.
 
 ## 4. `platform`: process tree and terminal control
 
 `src/platform/{mod,linux,macos}.rs`, `cfg`-gated, the only `unsafe`.
 
-- `fn foreground_pgid(master_fd) -> Option<Pid>` via `tcgetpgrp`.
-- `fn processes_in_group(pgid) -> Vec<Process>`: Linux reads `/proc/*/stat` for pgid and ppid and
-  `/proc/<pid>/cmdline` for argv; macOS uses `proc_listpids`, `proc_pidinfo` with
-  `PROC_PIDTBSDINFO` for pgid and ppid, and `sysctl KERN_PROCARGS2` for argv. Both return an
-  empty vec on any error; identification then falls back to the command `zor` was given.
+- `fn foreground_pgid(child: Pid) -> Option<Pid>`, cheap, called every tick: Linux parses
+  `tpgid` (field 8 after the closing `)`) from `/proc/<child>/stat`; macOS `proc_pidinfo(child,
+  PROC_PIDTBSDINFO)` and `e_tpgid`. Do not use `tcgetpgrp` on the master; it is unspecified on a
+  macOS ptmx.
+- `fn leader(pgid) -> Option<Process>`, the cheap lookup tried first.
+- `fn job(child: Pid, pgid) -> Job`, the full listing: Linux walks `/proc/<pid>/task/*/children`
+  breadth-first from `child` and from `pgid`, keeping processes whose `pgrp` (stat field 5)
+  equals `pgid`, with `comm` from stat and argv from `/proc/<pid>/cmdline`; macOS
+  `proc_listpids(PROC_PGRP_ONLY, pgid)`, `pbi_pgid` confirmed via `PROC_PIDTBSDINFO`, argv and
+  `argv0` from `sysctl KERN_PROCARGS2` (argv0 is the process title). Read `ZOR_AGENT` from
+  `/proc/<pid>/environ` and from the `KERN_PROCARGS2` environment block into `env_agent`. An
+  empty job on any error; identification then falls back to `--agent` or the command `zor` was
+  given, if that names a set.
+- The **probe scheduler** lives in `platform/probe.rs` (no `unsafe`): tick every 500 ms while
+  unidentified, 300 ms while identified, 100 ms while the state machine reports a hold; each tick
+  reads `foreground_pgid`; run `leader` then `job` when the pgid changed, every 5 s while
+  identified, after 30 s with no pgid at all, and inside an acquisition window (8 s, opened when
+  the pgid changed while unidentified or when the screen changed with no agent; probe at 500 ms
+  for the first 1.5 s, then every 2 s). Report `Exited` when the identified agent is gone and the
+  foreground job is the pane shell again (the child pid alone); count a miss when the foreground
+  job is something else with no agent in it, and report `AgentLost` after six consecutive misses.
+  A different agent, or the same agent under a new pid, is `AgentFound` again, and the caller
+  clears title and progress evidence.
 - `fn set_raw(fd) -> Result<Guard>`: `tcgetattr`/`cfmakeraw`/`tcsetattr` with the guard restoring
   on drop and on panic. `fn winsize(fd) -> (u16, u16)`.
 
-Tests: a spawned `sleep` child appears in its own group with the right name; `set_raw` restores
-on drop (compare `tcgetattr` before and after). Mark them `#[ignore]` under CI without a tty and
-say so.
+Tests: a spawned `sleep` child appears as its group's leader with the right `comm` and argv; a
+`sh -c 'sleep 30'` job lists both processes; `ZOR_AGENT` set on a spawned child is read back;
+`set_raw` restores on drop (compare `tcgetattr` before and after). The probe scheduler is tested
+with a fake clock and a scripted pgid sequence: cadence per state, the 5 s reprobe, the
+acquisition window's two phases, six misses, and exit-versus-miss classification. Mark the
+tty-dependent ones `#[ignore]` under CI without a tty and say so.
 
 ## 5. `pty`: spawn and passthrough
 
@@ -145,9 +217,10 @@ say so.
 environment inherited, `ZOR_PID` set so a nested `zor` can detect it and pass through without a
 second emulator. Two threads: **reader** copies master → stdout, writing each chunk to stdout
 *before* sending a copy over a channel to the main loop; **writer** copies stdin → master. The main
-loop owns `Screen`, `Machine`, the platform poller and the emitters, and blocks on the channel
-with a timeout equal to the machine's next deadline or the identification cadence, whichever is
-sooner. `SIGWINCH` (via `signal-hook`) forwards the new size to the master and to `Screen`.
+loop owns `Screen`, `Machine`, the probe scheduler and the emitters, and blocks on the channel
+with a timeout equal to the machine's next deadline or the probe's, whichever is sooner. It
+evaluates rules only when the screen `changed` since the last evaluation or a hold is pending;
+an idle pane that draws nothing costs nothing. `SIGWINCH` (via `signal-hook`) forwards the new size to the master and to `Screen`.
 `SIGCHLD` or a closed master ends the loop; exit with the child's status, restoring the terminal
 first.
 
@@ -175,8 +248,8 @@ signal death.
   change, re-emit the last title with the new glyph; with `replace`, emit `<glyph> <agent>`; with
   `never`, pass through. Glyphs `●` `◐` `○`; none for `none`. On exit, if a title was ever
   rewritten, emit the last original title unprefixed.
-- `events`: one JSON object per line with `t`, `state`/`agent`/`seq`/`pid`/`code` as in the
-  design and `ts` as seconds since the epoch with millisecond precision. Sink is a unix socket
+- `events`: one JSON object per line with `t`, `state`/`agent`/`seq`/`pid`/`code`, plus
+  `visible_blocker` and `exited` when true, as in the design and `ts` as seconds since the epoch with millisecond precision. Sink is a unix socket
   (connected once at start; reconnect on `EPIPE` at most once per second), a fifo, or fd 3. All
   writes non-blocking; a `WouldBlock` drops the line and increments a counter reported at exit
   under `--debug`.
@@ -207,20 +280,31 @@ Fixture format, `tests/fixtures/<agent>/<name>.txt`:
 # progress: 3:0
 # expect: working
 # matched: spinner_footer
-<visible rows, exactly as displayed, trailing whitespace trimmed>
+<the detection window, exactly as displayed, trailing whitespace trimmed>
 ```
+
+`SIGUSR1` writes the detection window, not the raw viewport, so a fixture is what the rules saw.
 
 `check` loads a fixture, evaluates it against the named or auto-detected rule set, and prints the
 verdict, exiting 1 on mismatch with `expect`. The test suite walks every fixture and does the same.
 
 Write `rules/claude.toml` from fixtures you capture yourself by running `zor --debug -- claude`
-and pressing `SIGUSR1` in each state: idle at the prompt, working with the spinner, blocked on a
-permission prompt, blocked on a plan approval, the transcript viewer (`ctrl+o`), and idle with
-"Do you want to proceed?" typed into the prompt box as a guard test. Signals worth encoding, from
-observation: the title spinner glyph range (braille U+2800–U+28FF and half circles U+25D0–U+25D3),
-the `esc to interrupt` footer, the `╭─╮` prompt box, `❯` as the prompt marker, and `Do you want
-to proceed?` and `Yes` `No` option rows above the box for blocked. The Claude set needs a fixture
-per state and for the guard before it is committed; if you cannot run Claude Code in this
+and sending `SIGUSR1` in each state: idle at the prompt, working with the spinner, blocked on a
+permission prompt, blocked on a plan approval, blocked on a select list (`enter to select`), the
+transcript viewer (`ctrl+o`), the model picker, and idle with "Do you want to proceed?" typed
+into the prompt box as a guard test. Signals to verify from the captures and encode if present:
+the title starting with a spinner glyph (braille U+2800–U+28FF or half circles U+25D0–U+25D3)
+followed by a space as working at the top priority, and starting with `✳` as a low-priority idle;
+`progress` matching `^0:` as low-priority idle; a footer line starting with `⏸` or `⏵` and
+containing `esc to interrupt`, or an activity line starting with one of `*·✢✶✻✽` and ending in
+`…`, in `bottom_non_empty(12)` as working; `esc to cancel` together with `enter to confirm` or
+`enter to select` in `after_last_rule` as blocked with `visible_blocker`; `do you want to
+proceed?` with numbered yes/no lines as blocked with `visible_blocker`; a `prompt_box` whose
+first line starts with `❯` as idle with `visible_idle`, guarded by `not` against the blocked
+texts; skip rules for the transcript viewer and the model picker. Set `prompt_marker = "❯"`.
+Confirm from a capture that the prompt is delimited by two full-width `─` rules, which is what
+`prompt_box` assumes. The Claude set needs a fixture per state and for the guard before it is
+committed; if you cannot run Claude Code in this
 session, commit the rule file as `rules/claude.toml.draft` with the fixtures it still needs listed
 at the top, and leave the bundle empty.
 
