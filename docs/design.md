@@ -41,73 +41,78 @@ pty layers total about 5.6k lines; zellij's pane and tab code alone is over 32k.
 
 ---
 
-## Architecture: one process, three layers, no boundary
+## Architecture: one binary at both ends, the workspace is the synced state
 
 ```
-  phone / other terminal            DESKTOP — ONE NATIVE PROCESS (fux server)
-  ┌──────────────┐                  ┌────────────────────────────────────────────────────┐
-  │ fux connect  │   iroh QUIC      │  TRANSPORT (koh, unchanged)                         │
-  │ = koh client │ <──datagrams──>  │  iroh endpoint · SSP Transport<TerminalScreen,      │
-  │  raw keys →  │   ScreenDiff     │  UserInput> · ServerTerminal "virtual screen"       │
-  │  ← repaint   │                  │        ▲ escape bytes           │ keys, resize       │
-  └──────────────┘                  │        │                        ▼                   │
-  ┌──────────────┐   iroh loopback  │  WORKSPACE (fux)                                    │
-  │ fux (local)  │ <──────────────> │  compositor · BSP layout · input router · status    │
-  │ = same client│                  │  line · scroll mode · detection · notifier          │
-  └──────────────┘                  │        ▲ vt100::Screen per pane │ bytes to pty       │
-                                    │        │                        ▼                   │
-                                    │  PANES (koh, unchanged)                             │
-                                    │  Pty + ServerTerminal  ×N   (one per agent CLI)     │
-                                    └────────────────────────────────────────────────────┘
+  ANY TERMINAL (fux client)                          HOST (fux server)
+  ┌──────────────────────────────┐   iroh QUIC     ┌───────────────────────────────────────┐
+  │ WorkspaceState (replica)     │ <─datagrams──── │ WorkspaceState (authoritative)         │
+  │  layout · tabs · focus ·     │  WorkspaceDiff: │  layout · tabs · focus · status ·       │
+  │  status · per-pane grids     │  changed pane   │  per-pane grids ← Pty + ServerTerminal │
+  │            │                 │  cells, layout  │            ▲              ×N            │
+  │  compositor (ratatui)        │  edits          │  input router · detection · notifier   │
+  │  + prediction on focused pane│ ─keys, resize─> │  control socket · workspace manager     │
+  │            │ Buffer diff     │                 └───────────────────────────────────────┘
+  │  real terminal (KohBackend)  │                    koh: ssp · transport_iroh · pty ·
+  └──────────────────────────────┘                    terminal · predict — generic over state
 ```
 
-| Layer | Built from | New code |
-|---|---|---|
-| **Panes** | koh `pty::Pty` + `terminal::ServerTerminal`, one pair per pane. Bytes in, `vt100::Screen` out, with OSC 0/1/2/52 and BEL captured by callbacks. | none |
-| **Workspace** | fux. A BSP split tree ported from herdr's `layout.rs`, a ratatui-core compositor that paints pane screens plus borders and a status line into an escape-byte stream, an input router that decodes keys and SGR mouse from the client byte stream, scroll mode over `vt100::Screen::set_scrollback`, detection over each pane's screen, and the control socket. | ~5.5k lines |
-| **Transport** | koh `ssp::Transport`, `transport_iroh`, session retention, allow-lists, keys. The composited screen is a `ServerTerminal` like any other; koh diffs and ships it. | none |
+The same binary runs on the phone, the laptop and the host. What crosses the network is not a
+screen but the workspace: a layout tree per tab, the focused pane, status segments, and for each
+pane the cells of its visible viewport. koh's `Transport<Local, Remote>` is already generic over
+any `SyncState`, so this is a new state type with a diff, not a new protocol.
 
-### The compositor writes escape bytes, because that is the only way in
+| Layer | Runs on | Built from | New code |
+|---|---|---|---|
+| **Panes** | host | koh `pty::Pty` + `terminal::ServerTerminal`, one pair per pane. Bytes in, `vt100::Screen` out, with OSC 0/1/2/52/9;4 and BEL captured by callbacks. | none |
+| **Workspace** | host | `WorkspaceState` and its diff; BSP layout ported from herdr; tabs; input router decoding keys and SGR mouse; scroll and copy mode viewports; detection; notifier; control socket; workspace manager. | ~5k lines |
+| **Transport** | both | koh `ssp::Transport`, `transport_iroh`, session retention, allow-lists, keys, made generic over the synced state and the host on the server side and the renderer on the client side. | koh 0.11 |
+| **Client** | any terminal | ratatui compositor over the replica: panes as widgets, borders, tab bar, status line, popups; ratatui's `Buffer` diff drives the real terminal through a `Backend` over koh's `KohBackend`; koh's predictor on the focused pane's grid. | ~1.5k lines |
 
-koh's wire delta is `ScreenDiff.vt = vt100::Screen::state_diff(base)`, and a `vt100::Screen` exists
-only as the output of a `vt100::Parser`; `TerminalScreen::from_bytes` and `blank_screen` both go
-through a parser. There is no cell-level constructor. So the compositor does what tmux's
-screen-write layer does: for each pane it reads `Screen::cell(row, col)` (contents, wide-char flags,
-fg, bg, bold, dim, italic, underline, inverse) and emits cursor moves plus minimal SGR into one
-`ServerTerminal` sized to the client's terminal. That virtual screen is the session's screen; koh's
-`state_diff` against the previous frame is the wire payload, exactly as if a real program had drawn
-it. The composite terminal owns the input modes: it asserts SGR mouse reporting and bracketed paste
-so the router receives clicks and pastes, and forwards them to a pane only if that pane's own screen
-has the mode set.
+### Why the workspace, not the screen, is what syncs
 
-The alternative, a fux-specific multi-pane `SyncState` synced directly (the `Transport` is generic
-over any `Clone + Default + PartialEq` state with a serde diff), would move compositing to the phone
-and save bandwidth on partial redraws. It is not v1: it would need a fux client, and the phone should
-stay a plain `koh connect`.
+Three tiers were on the table. Escape bytes into a `vt100::Parser` (what a pty does) throws
+ratatui's diff away and rebuilds it. A composited cell grid as the state removes the parse round
+trip but still resends every cell that moves when a split closes or a tab switches. Syncing the
+workspace itself sends only the cells of the panes that changed; layout edits are a few bytes; a
+tab switch to already-seen panes sends nothing. It also lets each client fit the layout to its own
+terminal, which is the only way a phone shows a laptop-sized workspace sensibly. ratatui's buffer
+diff then does exactly what it exists for: minimal repaint of a real terminal.
 
-### One workspace, many attachments
+`WorkspaceState`: tabs (each a layout tree of pane ids, with zoom), focus, status segments, title,
+bell count, popups as floating panes, and `panes: map<PaneId, PaneView>` where `PaneView` is the
+visible rows of the pane at its current viewport (scrolled or live), cursor, modes and agent state.
+`WorkspaceDiff` is layout edits plus per-pane changed-cell runs against the base, with a full pane
+grid when the base does not have that pane at that size. `SyncState` needs `diff_from`, `apply`,
+`PartialEq`, a decode limit and a resource budget; the budget is cells summed over panes, as
+`TerminalScreen`'s is today.
 
-koh today keys one detachable session per client endpoint id, with a `Pty` inside each `Session`.
-fux wants the opposite: one workspace, attached to by the local terminal and any allowed phone at
-once, driven by an in-process compositor instead of a pty. That is the one change koh must take (see
-the koh checklist): a session host trait with `write_input`, `resize`, an output byte stream and
-`try_wait`, implemented by `Pty` today and by fux's workspace tomorrow, plus a `shared` mode in which
-every authorized peer attaches to the same host. Everything else in `run_attached` (snapshot gating,
-input coalescing, cursor-key normalisation, reaping) applies unchanged.
+### What koh has to become generic over
 
-Resize policy with several viewers: koh's input coalescing already keeps only the last resize per
-frame, so the workspace follows the most recent resize from any client. tmux's "smallest attached
-client" rule can come later.
+- **Server:** `serve` takes a host that produces the state. Today's host is a pty whose
+  `ServerTerminal` snapshot is a `TerminalScreen`; fux's host is the workspace manager whose
+  snapshot is a `WorkspaceState`. The host trait is `snapshot() -> S`, `input(&[u8])`,
+  `resize(rows, cols)`, `changed: Notify`, `exited() -> Option<u32>`. `run_attached`'s snapshot
+  gating, input coalescing and reaping apply unchanged.
+- **Client:** `connect` takes a renderer for the remote state. Today's renderer is `render.rs`
+  painting a `TerminalScreen` cell by cell; fux's is the ratatui compositor. `KohBackend` stays the
+  terminal seam.
+- **Prediction:** `predict.rs` reads cells from a `vt100::Screen`; it moves to a cell-reader trait
+  so it can run over the focused `PaneView`.
+- **Shared sessions:** all authorized peers attach to the same host instead of one session per
+  endpoint id, with a per-client viewport size reported back so the host can size ptys. Pane sizes
+  follow the workspace's own geometry, chosen by the host from the attached clients (last resize
+  wins for v1); a smaller client clips or zooms.
+
+The pty path keeps `TerminalScreen` and today's `koh` binary unchanged. Everything above is
+additive and lands as koh 0.11.
 
 ### Local attach is remote attach over loopback
 
-`fux` with no arguments finds or starts the server, then runs koh's client against it over iroh on
-the local machine. One code path for local and phone, and detach, reconnect and prediction come for
-free. It costs a QUIC handshake and one SSP loop per local viewer, which is what mosh users pay for
-`tmux` inside `mosh` and is not noticeable. A unix-socket channel behind the same trait as
-`IrohChannel` is a later optimisation, not a v1 requirement. The server daemonises on first `fux`,
-the way tmux and zellij do; `fux serve` in the foreground is the same server for people who want it
-under a supervisor.
+`fux` finds or starts the server, then attaches over iroh on the local machine. One code path for
+local and remote; detach, reconnect and prediction come free. A unix-socket channel behind the
+`IrohChannel` seam is a later optimisation. The server daemonises on first `fux`; `fux serve` in the
+foreground is the same server under a supervisor.
 
 ---
 
@@ -247,12 +252,9 @@ State transitions are native events on the server, so:
 - **Desktop:** the notifier calls `notify-send` on Linux and `terminal-notifier`, falling back to
   `osascript`, on macOS, the two paths herdr uses. Runs in the server process, which is where the
   panes are, regardless of whether anyone is attached.
-- **Phone:** the composited screen already carries koh's out-of-band title and bell. On a
-  blocked transition the workspace bumps the composite bell count and sets the title to
-  `fux: 2 blocked`. koh's client rings the local terminal on a bell-count increase; a small
-  `--on-bell <cmd>` hook on `koh connect` (or the equivalent field on `ConnectConfig`) lets Termux
-  run `termux-notification`. That is one koh change and no protocol change. A dedicated state field
-  on `ScreenDiff` is the upgrade path if the title channel proves too coarse.
+- **Phone:** the fux client holds the workspace replica, agent state included, so it notifies
+  directly: `termux-notification` on Termux, the same notifier module as the host elsewhere. No
+  bell or title tricks. Plain `koh connect` users still get the bell hook.
 - **Status line:** every pane shows agent and state; blocked panes are highlighted; the tab-less
   v1 status line is one row.
 
@@ -296,7 +298,7 @@ Every agent CLI renders through koh's `vt100`. Tested 3 Sep 2026 with plain koh 
 Claude Code renders correctly. Where a later CLI falls short, koh owns the pin and can patch or
 fork vt100; it is a 5k-line crate.
 
-### Input decoding does not exist in koh — *build it in the router, server-side*
+### Input decoding does not exist in koh — *build it in the router, host-side*
 
 koh's client is a raw byte pass-through: no key decoding, no mouse parsing, no kitty keyboard
 protocol; its one interception is the `Ctrl-^` escape. That is the right shape for the phone, so the
@@ -311,19 +313,19 @@ A phone at 40×90 and a desktop at 200×60 cannot both see the workspace at nati
 **Mitigation:** follow the most recent resize, which koh's coalescing already implements; each pty is
 resized to its pane. Add tmux's smallest-client rule when it hurts.
 
-### Compositing cost — *bounded and measurable*
+### Diff cost — *bounded and measurable*
 
-Painting N panes' cells into the virtual screen on every change, then `state_diff` against the last
-frame. A 200×60 grid is 12k cells; both passes are linear in cells and native. The expensive
-operation in koh's loop is the snapshot clone, and it is already rate-gated.
-**Mitigation:** composite only panes whose screen changed since the last frame; measure with the
-chaos harness before optimising further.
+`diff_from` compares each pane's grid against the base, linear in visible cells; a 200×60
+workspace is 12k cells. The client's ratatui diff is the same size. koh's snapshot gating already
+rate-limits how often the host is asked for a state.
+**Mitigation:** keep a per-pane dirty flag from the drain so unchanged panes are skipped in both
+diff and snapshot; measure with the chaos harness before optimising further.
 
-### koh needs two small changes — *same author, same week*
+### koh 0.11 is a real release, not a patch — *same author, sequenced*
 
-The host trait plus shared-session mode, and the bell hook. Both are additive and land as koh 0.11.
-Until they do, fux develops against a git dependency on the koh branch and pins the release when it
-ships.
+Generic server and client, the host trait, shared sessions, the predictor trait, `unknown_osc`,
+the bell hook. All additive, the pty path unchanged, but it is the largest koh change since the
+backend seam. fux develops against a git dependency on the koh branch and pins 0.11 when it ships.
 
 ---
 
@@ -363,45 +365,41 @@ All paths relative to `references/`.
 
 ## Open questions
 
-In the order they block work.
-
-2. **Session host trait shape in koh.** Minimum: `write_input(&[u8])`, `resize(rows, cols)`,
-   an output `Receiver<Vec<u8>>`, `try_wait() -> Option<ExitStatus>`. Does the drain task stay in
-   koh (host yields bytes) or move to the host (host feeds a `ServerTerminal`)? Bytes-out is
-   simpler and keeps `Session` unchanged.
-3. **Prediction per pane.** koh's predictor runs on the client over the composite. Typing into a
-   pane still predicts correctly for plain text; it will mispredict across borders. Acceptable for
-   v1; measure.
-4. **Windows.** Out of scope, as in koh.
+None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled below.
 
 ### Settled
 
-- **koh's stable API covers everything but the host seam.** Config types with public fields,
-  `Transport` generic over the state, clap off by default.
-- **The compositor must produce escape bytes.** No cell-level screen constructor exists in
-  vt100 0.16.2 or koh.
-- **Input decoding is fux's job on the server.** koh's client is deliberately a byte pipe.
+- **koh's stable API covers everything but the generic seams.** Config types with public fields,
+  `Transport` already generic over the state, clap off by default. The host trait is
+  `snapshot() -> S`, `input`, `resize`, `changed`, `exited`; the pty host stays as it is. Decided
+  3 Sep 2026.
+- **A composited `vt100::Screen` cannot be built from cells**, only from a parser; one reason
+  the synced state is the workspace, not a screen.
+- **Input decoding is fux's job on the host.** koh's client stays a byte pipe for keys.
 - **herdr's UI and emulator are not reusable.** libghostty-vt via zig and ratatui; only the
   layout tree, manifests, constants and notifier paths port.
 - **Termux clears the floor.** rust 1.98 on termux-packages `master`, koh's floor is 1.91.
 - **No plugin system.** A local control socket with commands and events, panes and popups as the
   UI surface, config bindings and hooks for the rest. See *Control, not plugins*.
-- **ratatui paints the composite.** `ratatui-core` for `Buffer`,
-  `Rect` and `Layout`, `ratatui-widgets` for borders, the status line and popups; not the umbrella
-  crate, so no second terminal backend enters the server. fux implements ratatui's `Backend` for
-  koh's virtual `ServerTerminal`: `draw` turns changed cells into cursor moves and SGR bytes fed
-  to `process`. Each pane is a widget that copies `vt100::Screen::cell` into `Buffer` cells,
-  marking wide-glyph continuations as skip cells. Panes stay `vt100::Screen`; ratatui is never
-  the emulator. herdr's `layout.rs` already targets ratatui's `Rect`, so it ports as a copy. It
-  is pure Rust and builds on Termux.
+- **ratatui paints on the client.** `ratatui-core` for `Buffer`, `Rect` and `Layout`,
+  `ratatui-widgets` for borders, tab bar, status line and popups; not the umbrella crate. A fux
+  `Backend` over koh's `KohBackend` turns ratatui's buffer diff into the real terminal repaint.
+  Each pane is a widget over its `PaneView` grid, marking wide-glyph continuations as skip cells.
+  Panes stay `vt100::Screen` on the host; ratatui is never the emulator. herdr's `layout.rs`
+  already targets ratatui's `Rect`, so it ports as a copy. Pure Rust; builds on Termux.
+- **Sync the workspace, composite on the client** (tier A above). Decided 3 Sep 2026.
+- **Prediction per pane on the client, in v1.** koh's predictor over the focused `PaneView` via a
+  cell-reader trait. Decided 3 Sep 2026.
+- **Windows is out of scope**, as in koh. Decided 3 Sep 2026.
 - **Named workspaces, like tmux sessions.** One server per user hosts many workspaces; `fux
   [name]` attaches or creates, bare `fux` opens a picker (or the only workspace). Decided 3 Sep 2026.
 - **Tabs in v1.** Each workspace holds a list of layout trees with a tab bar in the status line;
   `zoom` is a per-tab toggle and the phone's default view. Decided 3 Sep 2026.
 - **OSC 9;4 progress via `unknown_osc` in koh's `Callbacks`.** Detection reads progress from the
   pane's terminal; `osc_progress` rules stay enabled. Decided 3 Sep 2026.
-- **Phone bell hook is `--on-bell` on `koh connect`** (`ConnectConfig.bell_command`), so plain
-  koh users on Termux get `termux-notification` too. Decided 3 Sep 2026.
+- **Bell hook `--on-bell` on `koh connect`** (`ConnectConfig.bell_command`) for plain koh users
+  on Termux. fux's own client sees agent state in the replica and notifies directly. Decided
+  3 Sep 2026.
 - **Copy mode in v1 includes mouse selection.** Scroll viewport, keyboard selection, and
   drag-select with SGR mouse; copy goes out over koh's existing OSC 52 path. A pane that has
   mouse reporting on gets the mouse unless a modifier (default Shift) claims it for selection,
@@ -415,13 +413,15 @@ In the order they block work.
 
 ### koh (0.11)
 
-- [ ] **Session host trait and shared-session mode.** Abstract `Pty` behind a trait in
-      `server::session`; add `ServeConfig.host` (or a `serve_with(config, host_factory)`) so an
-      embedding binary can supply the in-process workspace; add a mode where all authorized peers
-      attach to one host instead of one session per endpoint id. Keeps `koh` binary behaviour.
-- [ ] **Bell hook on the client.** `--on-bell <cmd>` / `ConnectConfig.bell_command`, run on a
-      bell-count increase. Termux users get `termux-notification` for free.
+- [ ] **Generic server.** `serve` over `S: SyncState` and a host trait (`snapshot`, `input`,
+      `resize`, `changed`, `exited`); the pty host yields `TerminalScreen` as today.
+- [ ] **Generic client.** `connect` over the remote state plus a renderer trait; today's
+      `render.rs` becomes the `TerminalScreen` renderer. `KohBackend` unchanged.
+- [ ] **Shared sessions.** All authorized peers attach to one host; per-client viewport size is
+      reported so the host can choose pane geometry.
+- [ ] **Predictor over a cell-reader trait** instead of `vt100::Screen` directly.
 - [ ] **`unknown_osc` in `Callbacks`** for OSC 9;4 progress.
+- [ ] **Bell hook on the client.** `--on-bell <cmd>` / `ConnectConfig.bell_command`.
 - [x] **Agent-CLI rendering test** with plain koh from a phone: Claude Code renders correctly.
 - [ ] Optional: **local channel** behind the `IrohChannel` seam for unix-socket attach.
 
@@ -444,10 +444,12 @@ In the order they block work.
 - fux is one crate, one binary, one build. No Cargo features; phone and desktop builds are
   identical and each can host or attach.
 - fux stays MIT; koh is MIT as of 0.10.0.
-- Build the multiplexer, do not embed zellij. Depend on koh as a library; the only koh change is
-  the session host seam plus two small hooks.
-- The phone runs an unmodified koh client. All workspace logic is server-side.
+- Build the multiplexer, do not embed zellij. Depend on koh as a library, made generic over the
+  synced state in 0.11.
+- The synced state is the workspace; the client composites with ratatui-core and ratatui-widgets,
+  no ratatui backend crate.
+- All workspace logic is on the host; the client renders, predicts, and selects.
 - Local attach uses the same transport as remote attach.
 - Manifests port verbatim; the evaluator is rewritten; the layout tree is ported from herdr.
-- ratatui-core and ratatui-widgets render the composite; no ratatui backend crate.
 - Programmatic control over a unix socket instead of plugins; the CLI is a thin client for it.
+- Named workspaces, tabs, zoom, and mouse selection are all v1.
