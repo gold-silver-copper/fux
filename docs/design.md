@@ -4,11 +4,11 @@ A zellij-based agent workspace with a mosh-grade peer-to-peer attach path, shipp
 `cargo install`-able binary.
 
 - **Status:** proposal, audited against source
-- **Date:** 2 Sep 2026; open questions and checklist re-audited 3 Sep 2026
+- **Date:** 2 Sep 2026; open questions and checklist re-audited 3 Sep 2026; koh 0.10.0 landed 3 Sep 2026
 - **Reference trees:** `references/` — zellij `main` at 0.46.0 (af38660, 31 Aug 2026) ·
-  koh 0.9.1 (6c84ffe) · herdr 0.8.2 (94f6d9c, github.com/herdrdev/herdr)
+  koh 0.10.0 (fa637c2) · herdr 0.8.2 (94f6d9c, github.com/herdrdev/herdr)
 - **Published:** zellij / zellij-client / zellij-server / zellij-utils **0.45.1** (crates.io, 28 Aug
-  2026) · koh 0.9.1 · fux 0.1.0 placeholder. The `herdr` crate on crates.io (0.1.0) is an
+  2026) · koh **0.10.0** (crates.io, 3 Sep 2026; fux depends on it) · fux 0.1.0 placeholder. The `herdr` crate on crates.io (0.1.0) is an
   unrelated project; herdr proper is not published.
 
 ---
@@ -164,19 +164,19 @@ trust and one they learn to ignore.
 
 ---
 
-## Licensing: relicense koh, keep fux MIT
+## Licensing: koh relicensed, fux MIT
 
 | Component | License |
 |---|---|
 | zellij | MIT |
 | herdr | Apache-2.0 |
-| koh | GPL-3.0-or-later today; **relicensing to MIT** (same author as fux) |
+| koh | **MIT** as of 0.10.0 (was GPL-3.0-or-later through 0.9.1; same author as fux) |
 | fux | MIT |
 
-Linking koh as a library makes fux a derivative work, so koh's license has to be compatible before
-fux publishes anything past the placeholder. koh and fux share an author, so the decision is to
-relicense koh (MIT, or dual MIT/GPL) rather than move fux to GPL. Do this as a koh release before
-fux depends on it, so the crates.io metadata and the git history agree.
+Linking koh as a library makes fux a derivative work, so koh's license had to be compatible before
+fux publishes anything past the placeholder. koh and fux share an author, so koh was relicensed to
+MIT rather than moving fux to GPL. Done: koh 0.10.0 on crates.io carries `license = "MIT"`, and
+fux's `Cargo.toml` depends on that release.
 
 Porting herdr's manifests and matcher under Apache-2.0 into an MIT crate is fine with attribution
 and a NOTICE entry.
@@ -276,8 +276,8 @@ All paths relative to `references/`.
 - `koh/src/terminal/mod.rs:22`, `:132` — bell and OSC 2 title carried out-of-band over SSP
 - `koh/src/server/session.rs:57` — `spawn_session`: pty + vt100 emulator + drain task
 - `koh/src/terminal/server.rs:107` — `ServerTerminal`, the server-side screen model
-- `koh/Cargo.toml` — GPL-3.0-or-later (pending relicense), pinned `iroh = "=1.0.0"`, `vt100 = "=0.16.2"`, 1.91 floor;
-  `git shortlog -sn` shows a single author, so relicensing needs no third-party consent
+- `koh/Cargo.toml` — MIT (0.10.0), pinned `iroh = "=1.0.0"`, `vt100 = "=0.16.2"`, 1.91 floor; `cli` feature
+  owns clap and gates the binary, so `default-features = false` is the library tree
 - `zellij/zellij-utils/src/input/permission.rs:13`, `consts.rs:104` — `PermissionCache`: granted permissions
   persist as `permissions.kdl` in the cache dir, keyed by plugin name
 - `zellij/zellij-tile/src/shim.rs:1653`, `:1661` — `cli_pipe_output`, `pipe_message_to_plugin`: the plugin
@@ -316,7 +316,7 @@ draft are now answered from source and moved to *Settled by audit* below.
    ```
 
    Exercise from the phone: resize, split panes, scroll, a full-screen app inside a pane, detach
-   and reattach. fux itself will not need the wrapper: once koh's `cli` feature plan lands,
+   and reattach. fux itself will not need the wrapper: with koh 0.10.0's clap-free surface,
    `fux serve` fills `ServeConfig.command` with its own executable path, and bare `fux` is the
    attach path. koh could still grow `--shell` argument splitting so the test is reproducible
    without a script.
@@ -366,9 +366,9 @@ draft are now answered from source and moved to *Settled by audit* below.
   the user is never prompted. This is a cache-format dependency; pin it with the crates.
 - **koh's stable API is already declared.** `koh/src/lib.rs` names `server::serve`,
   `client::connect`, `client::run_id`, `keycmd::run` and the `ssp` core as the supported surface
-  and everything else as unstable. fux depends on exactly that set. The one gap is that the
-  argument structs are clap types with private fields; the `cli` feature plan in the koh checklist
-  replaces them with plain config types.
+  and everything else as unstable. fux depends on exactly that set. As of 0.10.0 each entry point
+  takes a plain config type with public fields (`ServeConfig`, `ConnectConfig`, `IdConfig`,
+  `KeyConfig`); the clap `*Args` structs live behind the `cli` feature, which fux turns off.
 
 ---
 
@@ -378,10 +378,9 @@ Work that has to happen in repos other than fux, or in accounts only you control
 
 ### koh
 
-- [ ] **Relicense to MIT** (or MIT/GPL dual). Change `license` in `Cargo.toml`, replace `COPYING`,
-      note it in the changelog. `git shortlog` shows one author, so no consent round is needed.
-- [ ] **Cut a koh release** carrying the new license so crates.io metadata and git agree. fux pins
-      that version. crates.io is at 0.9.1 (29 Jun 2026); the relicense makes 0.10.0.
+- [x] **Relicense to MIT.** Done in koh PR #13 (merged 3 Sep 2026).
+- [x] **Cut a koh release** carrying the new license. koh 0.10.0 published 3 Sep 2026, tagged
+      `v0.10.0`; fux pins `koh = "=0.10.0"` with `default-features = false` and `backend-termina`.
 - [ ] **Run the vt100 compatibility test** (open question 1) from a phone, using the wrapper
       script. Fix whatever zellij's client does that koh's emulator mishandles.
 - [ ] Optional: **let `--shell` take a command line.** With `ServeConfig.command` as argv,
@@ -391,10 +390,8 @@ Work that has to happen in repos other than fux, or in accounts only you control
 - [ ] **Decide the phone notification channel** (open question 2). If bell/title: make koh's client
       call `termux-notification` on bell or on a title change matching a pattern. If a state stream:
       add a frame type to SSP.
-- [ ] **Add a `cli` Cargo feature so fux can call koh without clap.** Every field of `ServeArgs`
-      is private, so fux cannot build one that points the pty at its own executable. Rather than
-      a builder on the clap struct, or a crate split, gate clap behind a feature. clap is confined
-      to `main.rs`, `keycmd.rs`, `server/cli.rs` and `client/cli.rs`, so the change is small:
+- [x] **Add a `cli` Cargo feature so fux can call koh without clap.** Shipped in 0.10.0 as
+      specified below (kept for the record):
       - `cli` feature, on by default, owns the `clap` dependency; the `koh` binary gets
         `required-features = ["cli"]`. `cargo install koh` is unchanged.
       - Each entry point takes a plain config type with public fields: `serve(ServeConfig)`,
@@ -407,7 +404,7 @@ Work that has to happen in repos other than fux, or in accounts only you control
         `key` too. Helpers reachable only from the clap structs get `#[cfg(feature = "cli")]` so
         `dead_code = "deny"` holds with the feature off.
       - fux depends on koh with `default-features = false`.
-      Blocks `fux serve` as designed; do it in the same release as the relicense.
+      CI now checks the library-only tree with clippy and fails if clap reappears in it.
 
 ### herdr
 
@@ -432,7 +429,7 @@ Work that has to happen in repos other than fux, or in accounts only you control
 
 - fux is one crate, one binary, with a default `workspace` Cargo feature; the phone build is
   `--no-default-features`.
-- fux stays MIT; koh relicenses.
+- fux stays MIT; koh relicensed to MIT in 0.10.0.
 - Depend on upstream zellij, pinned exactly; fork only when a host function is needed.
 - Depend on koh as a library, not an extraction: nearly all of koh is on fux's path, and the
   clap-free surface comes from a `cli` feature in koh rather than a crate split.

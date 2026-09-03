@@ -4,5 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "Placeholder crate."
 license = "MIT"
+# koh (pinned exactly, see docs/design.md) needs iroh 1.0's 1.91 floor.
+rust-version = "1.91"
 
 [dependencies]
+# Attach transport. Pinned exactly: fux uses koh's declared stable surface (`ServeConfig` & co.),
+# but the whole crate is on fux's path and iroh is `=`-pinned inside koh, so bump deliberately.
+# `default-features = false` drops the `cli` feature (and clap); fux brings its own parser.
+koh = { version = "=0.10.0", default-features = false, features = ["backend-termina"] }
