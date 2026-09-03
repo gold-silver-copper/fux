@@ -142,7 +142,7 @@ say so.
 ## 5. `pty`: spawn and passthrough
 
 `src/pty.rs`. `Pty::spawn(command, argv, size, env)` with `portable-pty`, `TERM` and the parent
-environment inherited, `NAME_PID` set so a nested `zor` can detect it and pass through without a
+environment inherited, `ZOR_PID` set so a nested `zor` can detect it and pass through without a
 second emulator. Two threads: **reader** copies master → stdout, writing each chunk to stdout
 *before* sending a copy over a channel to the main loop; **writer** copies stdin → master. The main
 loop owns `Screen`, `Machine`, the platform poller and the emitters, and blocks on the channel
