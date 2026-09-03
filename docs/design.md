@@ -188,8 +188,7 @@ API driven from its CLI, is the one fux adopts.
 
 The line is drawn by latency: **whatever must be synchronous with input or rendering lives in
 core; everything else is a process.** In core: the prefix key table, scroll and zoom modes,
-detection (it runs on every pane drain and wants the screen without a copy), the compositor, the
-status line renderer. Outside: anything that can be a command plus an event subscription. A program
+the OSC 7877 reader (it runs on every pane drain), the compositor, the status line renderer. Outside: anything that can be a command plus an event subscription. A program
 that wants a UI runs in a pane or a popup and gets a real terminal, which is more than any plugin
 drawing API offers.
 
@@ -470,8 +469,9 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 
 ### The wrapper
 
-- [ ] **Build it first**, per `wrapper-design.md` and `wrapper-prompt.md`; fux's pane spawn and
-      OSC reader are written against its contract. Crate name: `zor`.
+- [ ] **Build it**, per `wrapper-design.md` and `wrapper-prompt.md`, alongside fux per
+      `build-prompt.md`; fux's pane spawn and OSC reader are written against its contract. Crate
+      name: `zor`.
 
 ### crates.io and accounts
 
