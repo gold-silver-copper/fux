@@ -1,124 +1,292 @@
-# Prompt: koh 0.10.0 — MIT relicense and a clap-free library surface for fux
+# Prompt: koh 0.11.0 — generic session host and client state, shared sessions, OSC progress, bell hook
 
 Paste the section below into a Claude Code session opened in the koh repo. Audited against koh
-0.9.1 at 6c84ffe on 3 Sep 2026.
+0.10.0 at fa637c2 on 3 Sep 2026. The 0.10.0 prompt that preceded this one shipped in PR #13.
 
 ---
 
-Open a PR against `main` titled **"0.10.0: relicense to MIT, add `cli` feature and clap-free config
-types"**. Work on a branch named `fux-surface`. This release exists so that a downstream crate,
-`fux` (MIT), can depend on koh as a library, construct a serve/connect session without going
-through clap, and point the server's pty at an arbitrary argv instead of a shell path. Read
-`src/lib.rs`, `src/main.rs`, `src/server/cli.rs`, `src/client/cli.rs`, `src/keycmd.rs`,
-`src/pty.rs`, `src/server/session.rs`, `Cargo.toml`, `CHANGELOG.md`, `examples/chaos.rs`,
-`tests/e2e_pty_binary.rs` and `.github/workflows/ci.yml` before changing anything.
+Open a PR against `main` titled **"0.11.0: generic session host and client state, shared sessions,
+OSC 9;4 progress, bell hook"**. Work on a branch named `generic-host`. This release exists so that
+`fux`, a multiplexer built on koh, can sync its own workspace state through koh's SSP transport
+instead of a terminal screen: the server hosts an in-process state producer instead of a pty, and
+the client renders that state with its own compositor. The pty path, the `koh` binary, the wire
+protocol and `PROTOCOL_VERSION` must be unchanged by this PR.
 
-Constraints that hold throughout: `unsafe_code = "forbid"`, `dead_code = "deny"`, the clippy
-panic-prevention denies in `Cargo.toml`, and the layering guard in CI (`predict.rs` imports nothing
-from `crate::`; `server`/`client` never `use crate::wire`). Nothing here should need to touch
-`predict`, `ssp`, `wire` or `transport_iroh`.
+Read before changing anything: `src/lib.rs` (the layering law at lines 32–53), `src/ssp/mod.rs`
+(`SyncState`, line 82), `src/ssp/transport.rs` (`Transport<Local, Remote>`, line 52),
+`src/ssp/testkit.rs`, `src/sim.rs`, `src/terminal/mod.rs`, `src/terminal/server.rs`,
+`src/server/session.rs`, `src/server/mod.rs` (`ServerSession` line 120, `run_attached` line 246),
+`src/server/cli.rs` (`serve` line 188, the accept loop from line 305), `src/client/mod.rs`
+(`ClientTerminal` line 197, `ClientSession` line 346, `drive_connection` line 663),
+`src/client/cli.rs` (`connect` line 182), `src/client/render.rs`, `src/client/backend/mod.rs`
+(`KohBackend` line 106, `CaptureBackend` line 274), `src/predict.rs`, every file in `tests/`,
+`fuzz/`, `clippy.toml`, `Cargo.toml`, `CHANGELOG.md`, `docs/ARCHITECTURE.md` and
+`.github/workflows/ci.yml`.
 
-## 1. Relicense to MIT
+Constraints that hold throughout: `unsafe_code = "forbid"`, `dead_code = "deny"` (it covers test
+and example crates, so every helper must be used), the clippy panic-prevention denies, the
+layering guard in CI (`predict.rs` imports nothing from `crate::`; `server`/`client` never `use
+crate::wire`), `panic = "unwind"` in release. Every new test follows the house style: a long
+behavioural sentence for the name, the requirement or design id in a comment inside the test, the
+crate-level `#![allow(...)]` block at the top of every new integration target (copy it from
+`tests/reattach.rs:6-15`), `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` for
+anything that drives a real session, loopback endpoints from
+`transport_iroh::{bind_endpoint_local, loopback_addr}`, substring assertions on state contents,
+10 s marker deadlines. Give the new design ids the prefix `KH-` (host), `KC-` (client), `KS-`
+(shared sessions), `KO-` (OSC), `KB-` (bell) and add a section for them to `docs/ARCHITECTURE.md`.
 
-`git shortlog -sne` shows a single author, so no consent round is needed.
+## 1. A session host trait; the pty becomes one implementation
 
-- `Cargo.toml`: `license = "MIT"`.
-- Replace the contents of `COPYING` with the MIT license text, copyright the current year and the
-  name in `authors`. Keep the file name `COPYING`; the `exclude` comment in `Cargo.toml` says it
-  ships, and that stays true.
-- `README.md` "License" section (line 88): replace `GPL-3.0-or-later.` with MIT and one sentence
-  saying releases before 0.10.0 remain available under GPL-3.0-or-later.
-- `CHANGELOG.md` header: it says the library API is internal and unstable. Amend it to say the
-  config types and entry points in section 3 are covered by semver from 0.10.0.
-- `grep -rni "gpl" --exclude-dir=target .` and fix every remaining mention. `deny.toml` is
-  advisories-only and has no license policy, so it needs no change; confirm rather than assume.
+Today `server::session::Session` owns `emu: ServerTerminal` and `pty: Pty`, and `run_attached`
+calls `emu.set_echo_ack`, `emu.snapshot`, `pty.write_input`, `pty.resize` + `emu.resize`,
+`emu.register_input_frame`, and reads `child_alive`. Extract exactly that contract:
 
-## 2. Add a `cli` feature that owns clap
+```rust
+pub trait SessionHost: Send + 'static {
+    type State: SyncState + Send + Sync + 'static;
+    /// Rate-gated by the S-03 echo-ack logic exactly as `ServerTerminal::snapshot` is today.
+    fn snapshot(&mut self) -> Self::State;
+    fn input(&mut self, bytes: &[u8]);
+    fn resize(&mut self, client: ClientId, rows: u16, cols: u16);
+    fn register_input_frame(&mut self, frame: u64, now_ms: u64);
+    fn set_echo_ack(&mut self, now_ms: u64) -> bool;   // true when the ack advanced
+    fn application_cursor(&self) -> bool;               // for the DECCKM normaliser; `false` if N/A
+    fn exited(&self) -> Option<u32>;
+    fn client_detached(&mut self, client: ClientId) {}
+}
+```
 
-Goal: `cargo clippy --lib --no-default-features --features backend-termina` compiles the library
-with no clap in the dependency tree. `cargo install koh` is unchanged.
+- `ClientId` is a small `Copy` newtype the server allocates per connection. The pty host ignores
+  it; a multiplexer uses it for per-client viewport policy.
+- `PtyHost { emu: ServerTerminal, pty: Pty, child_alive }` implements it with today's bodies
+  moved verbatim. The drain task stays in `session.rs` and is started by `PtyHost::spawn`, which
+  is today's `spawn_session`. Keep `spawn_session` as a thin wrapper so `tests/*` keep compiling.
+- `Session<H: SessionHost>`, `SessionHandle<H>`, `SharedSession<H>`, `SessionStore<H>`,
+  `attach`, `detach`, `reap`, `teardown`, `run_reaper`, `ConnGuard` become generic. The
+  `changed: Notify` stays in `SessionHandle`; a host signals through it by holding a clone of
+  the `Arc<Notify>` handed to it at construction (add `fn attach_notify(&mut self, Arc<Notify>)`
+  with a default no-op, called once by `SessionHandle::new`).
+- `ServerSession` becomes `ServerSession<S: SyncState>` over `Transport<S, UserInput>`.
+  `run_attached<H>(conn, handle: SharedSession<H>, client: ClientId)` and `run_session<H>` keep
+  their loops line for line, with the `emu`/`pty` calls replaced by host calls.
+- `serve(ServeConfig)` keeps its signature and behaviour and is now
+  `serve_with(config, PtyHosts)` under the hood. Add:
 
-- `Cargo.toml`: make `clap` optional. Add `cli = ["dep:clap"]` and add `cli` to `default`. Give the
-  `[[bin]]` entry `required-features = ["cli"]`.
-- Two more targets need clap or the binary and must be gated the same way, or they break every
-  `--no-default-features --all-targets` build:
-  - `examples/chaos.rs` uses `clap::{Parser, Subcommand}`. Add an `[[example]] name = "chaos"`
-    entry with `required-features = ["cli"]`.
-  - `tests/e2e_pty_binary.rs` runs the `koh` binary through `CARGO_BIN_EXE_koh`, which only exists
-    when the bin is built. Add a `[[test]] name = "e2e_pty_binary"` entry with
-    `required-features = ["cli"]`.
-- clap is used in the library only in `src/keycmd.rs`, `src/server/cli.rs`, `src/client/cli.rs`.
-  Gate every clap-derived struct and every `use clap::…` behind `#[cfg(feature = "cli")]`. No
-  clap `env` attributes are in use, so nothing environment-related moves.
-- Any helper reachable only from a clap struct must be gated too, or `dead_code = "deny"` fails
-  with the feature off. Check with the feature off, not just on.
+```rust
+pub trait HostProvider<H: SessionHost>: Send + Sync + 'static {
+    /// Called on every admitted connection. Return the existing handle to share a host.
+    fn host_for(&self, peer: EndpointId, store: &SessionStore<H>) -> impl Future<Output = anyhow::Result<Option<(SharedSession<H>, AttachKind)>>> + Send;
+}
+pub async fn serve_with<H, P>(config: ServeConfig, provider: P) -> anyhow::Result<()>;
+```
 
-## 3. Plain config types as the stable surface
+`PtyHosts` reproduces today's per-peer `session::attach` semantics. The accept loop, admission,
+allow-list, `max_connections` and `max_sessions` are untouched; only the `attach` call goes
+through the provider. `tracing_subscriber::fmt().init()` must move out of `serve` into the `cli`
+path (or become `try_init`), because an embedding binary initialises its own subscriber and
+`init` panics on a second call.
 
-For each entry point, introduce a config struct with **public fields**, no clap derive, `Debug` and
-`Clone`, plus `Default` where every field has a sensible default. Move the real logic to take the
-config. Keep the existing `*Args` structs gated on `cli`, implement `From<ServeArgs> for
-ServeConfig` (and the others), and have the `cli`-gated old signatures delegate. Do not change the
-`koh` binary's flags, help text or defaults. Field names below are the current `*Args` fields;
-keep them, with the one substitution noted.
+## 2. Shared sessions
 
-- `server::ServeConfig` for `serve(ServeConfig) -> anyhow::Result<()>`. Fields: `key_file:
-  Option<PathBuf>`, `allow: Vec<String>`, `command: Vec<String>` (replaces `shell:
-  Option<String>`), `scrollback: u64`, `session_ttl_secs: u64`, `relay_url: Option<String>`,
-  `local: bool`, `max_connections: u32`, `max_sessions: u32`. `Default` uses the clap defaults
-  for the numeric knobs and an empty `allow`; keep the non-empty `allow` check at the `serve`
-  entry so a library caller gets the same error the CLI does.
-- `command` semantics: empty means the login shell, exactly as today. `command[0]` is the program
-  and the rest are arguments. Thread it through `server::session::spawn_session` into
-  `pty::Pty::spawn`, which currently takes `shell: Option<&str>` and passes it whole to
-  `CommandBuilder::new`. Change that parameter to a slice and add the tail with
-  `CommandBuilder::args`. Keep `TERM`, `default_shell` and `scrub_koh_env` exactly as they are.
-- `client::ConnectConfig` for `connect(ConnectConfig) -> anyhow::Result<Option<u32>>`. Fields:
-  `server: String`, `key_file: Option<PathBuf>`, `direct: Option<SocketAddr>`, `relay_url:
-  Option<String>`, `clipboard: bool`. No `Default`, since `server` is required.
-- `client::IdConfig` for `run_id(IdConfig)`. Field: `key_file: Option<PathBuf>`.
-- `keycmd::KeyConfig` for `keycmd::run(KeyConfig)`. Fields: `op: KeyOp` (`enum KeyOp { Passwd,
-  Info }`), `key_file: Option<PathBuf>`. The passphrase prompt (`rpassword`) and the QR renderer
-  (`qrcode`) stay in core, not behind `cli`.
-- `From<ServeArgs>` maps `shell: Some(s)` to `command: vec![s]`. Optionally also let `--shell`
-  repeat (`Vec<String>` with `num_args = 1`) so a command line can be hosted without a wrapper
-  script; if you do, document it in `--help` and the changelog.
+Add `SharedHost<H>`: a `HostProvider` that lazily constructs one host on the first admitted
+connection and hands every later peer the same `SharedSession`. `attach` already refcounts
+`attached`; make sure `detach` of one client never reaps a host another client is attached to,
+and that the TTL reaper applies to a shared host only when `attached == 0`, same as today. Each
+connection gets its own `ClientId`, `ServerSession` and `Transport`, so two viewers get
+independent SSP streams of the same state. `host.resize(client, …)` is called with each
+connection's coalesced resize (KOH-05 coalescing stays per connection); the pty host applies the
+last one it receives, which is today's behaviour with one client and the documented v1 policy
+with several. `client_detached` is called from `ConnGuard`'s drop so a host can forget that
+client's viewport.
 
-## 4. Documentation
+## 3. A generic client
 
-- `src/lib.rs` "Public API stability": the supported surface is now the four config types, the
-  four functions, and the `ssp` core. State that the `*Args` clap types are `cli`-only adapters and
-  not part of the stable surface. Mention the `cli` feature and that library users should set
-  `default-features = false` and pick exactly one `backend-*` feature. `cargo doc` runs in CI with
-  broken intra-doc links denied, so any link to a `*Args` type must be gated or dropped.
-- `README.md`: add a short "As a library" subsection showing `Cargo.toml` usage with
-  `default-features = false, features = ["backend-termina"]` and a short `serve(ServeConfig {
-  allow: …, command: vec!["zellij".into(), "attach".into(), "-c".into(), "main".into()],
-  ..Default::default() })` example. Note the binary is unaffected.
-- `CHANGELOG.md`: a `0.10.0` entry in the existing Keep a Changelog format. Changed: license,
-  `cli` default feature, config types as the stable surface. Added: `command` argv, any `--shell`
-  repetition. State that the wire protocol, `PROTOCOL_VERSION`/ALPN, the `koh-key-v1` format and
-  the CLI flags are unchanged.
-- Bump `version` to `0.10.0` in `Cargo.toml` and refresh `Cargo.lock`.
+Today `ClientSession` owns `Transport<UserInput, TerminalScreen>` and a `PredictionEngine`, and
+`ClientTerminal::render` takes `&vt100::Screen`. Generalise over the remote state:
 
-## 5. CI and tests
+```rust
+pub trait ClientState: SyncState + Send + 'static {
+    fn window(&self) -> render::WindowState<'_>;         // title, icon, clipboard, bell_count
+    fn exit_code(&self) -> Option<u32>;
+    fn input_modes(&self) -> InputModes;                  // bracketed paste, mouse mode+encoding, app cursor
+    fn predict_target(&self) -> Option<&dyn predict::ScreenView>;  // None disables prediction
+}
+pub trait ClientTerminal<S: ClientState> {
+    fn render(&mut self, state: &S, overlay: &Overlay, status: Option<&str>) -> io::Result<()>;
+    fn size(&self) -> io::Result<(u16, u16)>;
+    fn suspend_resume(&mut self) -> io::Result<()> { Ok(()) }
+}
+```
 
-- The two existing jobs `clippy (crossterm backend)` and `clippy (qwertty backend)` run
-  `--all-targets --no-default-features --features backend-…`. With the bin, example and test
-  gated, they still pass without `cli`, and that is what proves the gating. Leave them as they
-  are; they are now the no-clap tripwire for those backends.
-- Add one job, `clippy (library, no cli)`: `cargo clippy --lib --locked --no-default-features
-  --features backend-termina -- -D warnings`. This is the exact configuration fux builds.
-- The MSRV job runs `cargo check --locked --all-targets` on 1.91 with defaults; it needs no
-  change, but run it.
-- Tests. `src/pty.rs` has a `mod tests` with `resolve_shell` and `scrub` tests but no live spawn
-  test; `tests/e2e_pty_binary.rs` shows how a real pty is driven. Add:
-  - In `src/pty.rs`: `Pty::spawn` with `["sh", "-c", "exit 7"]` reaps exit code 7, proving the
-    argument tail reaches the child. Allocating a pty works on the Linux and macOS CI runners.
-  - In `src/pty.rs`: an empty command resolves to `default_shell()`.
-  - In `src/server/cli.rs` under `cfg(feature = "cli")`: `From<ServeArgs>` maps `--shell x` to
-    `command == ["x"]`, and the numeric defaults match `ServeConfig::default()`.
-- Run, and paste the results into the PR description:
+- `TerminalScreen` implements `ClientState`; `TerminaTerminal<B>` implements
+  `ClientTerminal<TerminalScreen>` by calling today's `render::render` with `state.screen()`.
+  The `WindowState` and input-mode mirroring that `render.rs` does out of band stays where it
+  is; the trait just names where the data comes from.
+- `ClientSession<S>`, `drive_connection<S, T>`, the reconnect loop and the escape machine
+  become generic. `connect(ConnectConfig)` keeps its signature and behaviour. Add
+  `connect_with<S: ClientState, T: ClientTerminal<S>>(config, term: T, input: impl Stream of
+  Vec<u8>, resize: …) -> anyhow::Result<Option<u32>>` so an embedding binary supplies its own
+  terminal and input source; `connect` calls it with `TerminaTerminal` and the stdin thread.
+- `predict.rs`: replace every `&vt100::Screen` parameter with `&dyn ScreenView` (or a generic
+  `S: ScreenView`), where `ScreenView` is a trait defined **in `predict.rs`** (the layering guard
+  forbids `use crate::` there) with `size`, `cursor_position`, `cell(row, col) -> Option<CellView>`
+  (`contents: &str`, `is_wide_continuation`, `fgcolor`, `bgcolor`), and
+  `application_cursor`. Implement it for `vt100::Screen` in the same file. The 21 existing
+  predictor tests must pass unchanged apart from type names.
+
+## 4. OSC 9;4 progress on the server side
+
+`terminal/server.rs`'s `Callbacks` implements `vt100::Callbacks` for title, icon, clipboard and
+bell. vt100 0.16.2 also has `unhandled_osc(&mut self, &mut Screen, params: &[&[u8]])`. Implement
+it to parse ConEmu/Windows Terminal progress, `OSC 9 ; 4 ; <state> ; <percent> ST`, into
+`progress: Option<Progress { state: u8, percent: u8 }>` on `Callbacks`, exposed as
+`ServerTerminal::progress()` and cleared by state 0. Also keep the last 16 unhandled OSC
+payloads in a bounded ring, exposed as `ServerTerminal::take_unhandled_oscs() -> Vec<Vec<u8>>`
+(each capped at 256 bytes; drop, never grow). Do **not** add either to `TerminalScreen` or
+`ScreenDiff`: this is host-side information for an embedding server, and putting it on the wire
+would change `ScreenDiff`'s encoding and force a `PROTOCOL_VERSION` bump.
+
+## 5. Bell hook on the client
+
+`ConnectConfig.bell_command: Option<String>` and `--on-bell <CMD>` on `koh connect`. When the
+remote bell count increases, run `sh -c CMD` detached, with stdin, stdout and stderr on
+`/dev/null` (the TUI owns the terminal), `KOH_BELL_COUNT` and `KOH_TITLE` in the environment,
+and the `KOH_*` scrub from `pty.rs` applied first. Rate-limit to one spawn per second, coalescing
+bursts. Never wait on the child; reap it on a background task. Document in `--help` and README
+under the Termux section with `--on-bell 'termux-notification -t "koh bell"'`.
+
+## 6. Documentation
+
+- `src/lib.rs` "Public API stability": add `SessionHost`, `HostProvider`, `serve_with`,
+  `ClientState`, `ClientTerminal`, `connect_with`, `predict::ScreenView` and `ServerTerminal`'s
+  new accessors to the supported surface. State that `TerminalScreen` on the wire is unchanged and
+  `PROTOCOL_VERSION` stays 3.
+- `README.md` "As a library": a second example, twenty lines, of a custom state: a `SyncState`
+  wrapping a `String`, a `SessionHost` that appends input to it, `serve_with(config,
+  SharedHost::new(...))`, and `connect_with` with a `ClientTerminal` that prints it.
+- `docs/ARCHITECTURE.md`: the host and client seams, the shared-session semantics, and the new
+  ids.
+- `CHANGELOG.md`: a `0.11.0` entry in the existing format. Changed: `Session`, `ServerSession`,
+  `ClientSession`, `ClientTerminal`, `run_attached`, `run_session`, `predict` signatures. Added:
+  the traits and functions above, `--on-bell`, `progress()`. State explicitly: wire, key format,
+  `PROTOCOL_VERSION`, the `koh` binary's flags and defaults unchanged.
+- Bump `version` to `0.11.0`; refresh `Cargo.lock`.
+
+## 7. Tests
+
+The bar: every new seam has a unit test that needs no iroh, tokio or pty; every behaviour a user
+can observe has an e2e test over loopback iroh; every untrusted parse has a fuzz target; every
+invariant with a state space has a proptest. Existing tests are the regression suite for the pty
+path and must pass without semantic edits.
+
+### Test doubles to add (reuse them everywhere below)
+
+- `src/ssp/testkit.rs`: `pub struct GridState { cells: BTreeMap<u32, Vec<u8>> }`, a `SyncState`
+  whose diff is the changed entries, sized so diffs can exceed one datagram (this mirrors a
+  multiplexer's per-pane grids). Keep `LogState` for the existing tests.
+- `src/server/session.rs` tests: `ScriptedHost` implementing `SessionHost<State = GridState>`:
+  records every call in a `Vec<HostCall>`, appends input bytes into a cell, exposes
+  `set_exited(code)`, and fires `changed` on demand.
+- `src/client/mod.rs` tests: `GridTerminal` implementing `ClientTerminal<GridState>` that stores
+  the latest state, and `impl ClientState for GridState` with `predict_target: None`.
+- `tests/` targets that need them define their own `MockTerminal` exactly as
+  `tests/e2e_loopback.rs:32-53` does; do not add a `tests/common` module.
+
+### 7.1 Host trait and pty host (KH-)
+
+- `src/server/session.rs`: `PtyHost` snapshot/input/resize/exited match the pre-PR behaviour:
+  spawn `["sh", "-c", "printf HELLO; exit 3"]`, drain until `snapshot().screen().contents()`
+  contains `HELLO`, then `exited() == Some(3)`.
+- `src/server/mod.rs`: the existing `ServerSession` unit tests (9) pass over `GridState`
+  instead of `TerminalScreen` where they do not depend on screen contents, proving the core is
+  state-agnostic. Add one test that `run_session` over a `ScriptedHost` calls
+  `register_input_frame` with the frame number the client sent and `resize` with the clamped
+  geometry.
+- `src/server/session.rs`: `attach`/`detach`/`reap` over `ScriptedHost` reproduce the six
+  existing `#[tokio::test]`s' outcomes; `run_reaper` never reaps a host with `attached > 0`.
+- `tests/integration.rs`: `integration_converges_generic_state_lossy`: a `SimHarness<UserInput,
+  GridState>` at loss 0.3 for seeds 1..6 with a scripted producer mutating random cells each
+  step, converging to `b_view_of_a() == a`. Extend `src/sim.rs` with a `run_generic_session`
+  so `examples/chaos.rs` can drive it too.
+- `tests/e2e_generic_host.rs`: server built with `serve_with`-equivalent accept loop and a
+  `SharedHost<EchoHost>` where `EchoHost` appends input into a `GridState` cell; client over
+  `connect_with` with a `MockTerminal<GridState>`; type a marker, assert it appears in the
+  replica within 10 s; `set_exited(7)` on the host, assert `connect_with` returns `Some(7)`.
+- `tests/exit_status.rs`, `tests/reattach.rs`, `tests/e2e_reconnect.rs`, `tests/parity.rs`,
+  `tests/pty.rs`: unchanged apart from type names; they are the pty-host regression suite.
+
+### 7.2 Shared sessions (KS-)
+
+- `tests/shared_session.rs`, two tests:
+  - `two_peers_share_one_pty_host`: two client endpoints, `SharedHost<PtyHost>` with
+    `["sh"]`; peer A types `echo SHARED_MARKER_1\r`; peer B's replica shows it within 10 s
+    without typing; B disconnects; A types a second marker and still sees it; A disconnects;
+    after `session_ttl` the reaper tears the host down (use a 1 s TTL).
+  - `resize_from_either_client_reaches_host`: with `ScriptedHost`, resize from A then from B;
+    the host's call log shows both with distinct `ClientId`s and the last one wins in the pty
+    host's `emu.size()`.
+- `src/server/session.rs` proptest, 128 cases: arbitrary sequences of `attach(peer_i)`,
+  `detach(peer_i)`, `reap`, `run_reaper` tick over a `SharedHost<ScriptedHost>` never drive
+  `attached` negative, never reap while `attached > 0`, and always reap once `attached == 0`
+  and the TTL has elapsed. Put the id `KS-01` in the doc comment as `KSSP-01` is in
+  `src/ssp/transport.rs:1061`.
+- `tests/admission.rs`: add a case that `max_connections` still counts per connection, not per
+  host, with a shared host.
+
+### 7.3 Generic client (KC-)
+
+- `src/client/mod.rs`: the existing 12 unit tests pass; add `client_session_over_grid_state_
+  applies_diffs_and_reports_exit` using `Transport<GridState, UserInput>` on the fake server
+  side, the pattern of the tests at lines 1104–1179.
+- `src/client/render.rs` and `src/client/backend/mod.rs`: the 18 `CaptureBackend` tests pass;
+  add one proving `TerminaTerminal::render` over `TerminalScreen` through the `ClientTerminal<
+  TerminalScreen>` impl emits byte-identical output to calling `render::render` directly.
+- `src/predict.rs`: the 21 tests pass over the `vt100::Screen` impl of `ScreenView`. Add
+  `predictor_runs_over_a_non_vt100_screen_view`: a 5×10 `Vec<Vec<char>>` fake implementing
+  `ScreenView`; typing three bytes yields three overlay cells at the right columns. Extend the
+  existing proptest at line 1012 to run its cases over both impls.
+- `tests/e2e_loopback.rs`: add `connect_with_over_terminal_screen_matches_connect`: the same
+  marker test through `connect_with(…, MockTerminal)` so the public generic entry point is
+  exercised end to end.
+
+### 7.4 OSC 9;4 (KO-)
+
+- `src/terminal/server.rs` unit tests: `\x1b]9;4;1;50\x1b\\` yields `Some(Progress { state: 1,
+  percent: 50 })`; `9;4;0` clears it; `9;4;1;150`, `9;4;x`, `9;4`, an empty param list and a
+  4 KiB payload yield `None` and do not panic; the ring keeps the last 16 and truncates each to
+  256 bytes; `take_unhandled_oscs` drains.
+- `tests/pty.rs`: a real child `printf '\033]9;4;1;42\033\\'` observed through `PtyHost` gives
+  `progress() == Some(Progress { state: 1, percent: 42 })`.
+- `fuzz/fuzz_targets/server_process.rs`: arbitrary bytes into `ServerTerminal::process` followed
+  by `snapshot()`, `progress()` and `take_unhandled_oscs()`, sized 24×80 with scrollback 100,
+  using the same `catch_unwind` containment the drain path uses. Add it to `fuzz/Cargo.toml`
+  and to the CI fuzz smoke with the same `-max_total_time=45 -rss_limit_mb=4096`.
+
+### 7.5 Bell hook (KB-)
+
+- Pure logic first: `BellHook::observe(count, now_ms) -> Option<Spawn>` with the rate limit and
+  coalescing as a unit test table: counts `[0,1,1,2,3]` at times `[0,0,10,20,1500]` spawn at
+  index 1 and 4 only.
+- `src/client/mod.rs`: the spawn uses `/dev/null` for all three fds and the scrubbed env; assert
+  by running `sh -c 'env > $KOH_TEST_OUT'` with `KOH_KEY_PASSPHRASE` set in the parent and
+  checking the file lacks it and has `KOH_BELL_COUNT`.
+- `tests/bell_hook.rs`: pty host running `["sh"]`; client over `connect_with` with
+  `bell_command = Some("touch <tempdir>/rang")`; type `printf '\a'\r`; poll for the file for
+  10 s. Then type it five times in 200 ms and assert the file's mtime changed at most twice
+  within 2 s.
+
+### 7.6 CI
+
+- The `gate` job's `cargo test --locked` picks up every new `tests/*.rs` automatically; confirm
+  in the job log that `e2e_generic_host`, `shared_session` and `bell_hook` ran on both OSes.
+- Extend the layering guard: `predict.rs` still imports nothing from `crate::` (the `ScreenView`
+  trait lives there), and add a third check that `src/ssp` never imports from `crate::terminal`
+  or `crate::server` (the generic seam must not leak back).
+- `backends` job: the three clippy runs and the no-clap check pass with the generic code; add
+  `cargo clippy --all-targets --locked --no-default-features --features backend-termina -- -D
+  warnings` so the library-plus-tests tree is checked without `cli`.
+- `fuzz` job: build and smoke the third target.
+- Run and paste into the PR description:
 
   ```sh
   cargo fmt --all --check
@@ -126,17 +294,21 @@ keep them, with the one substitution noted.
   cargo clippy --lib --locked --no-default-features --features backend-termina -- -D warnings
   cargo clippy --all-targets --locked --no-default-features --features backend-crossterm -- -D warnings
   cargo test --locked
+  cargo test --locked --test pty --test shared_session --test e2e_generic_host --test bell_hook -- --nocapture
   cargo doc --no-deps --locked
+  cargo +nightly fuzz build
   cargo build --release --locked
-  cargo package --locked --allow-dirty --list | grep -E 'COPYING|CHANGELOG'
+  cargo tree --locked --no-default-features --features backend-termina -e normal | grep -c clap   # expect 0
   ```
 
-## 6. PR description
+## 8. PR description
 
-Two paragraphs on the why: fux depends on koh as a library and needs a clap-free, argv-capable
-server entry point; the relicense makes that dependency legal for an MIT crate. Then a checklist of
-the six sections above with what was done. State explicitly: no wire, key-format or CLI behaviour
-change; `cargo install koh` produces the same dependency tree as before, plus the `cli` feature
-name; the three gated targets and why.
+Two paragraphs on the why: fux syncs a workspace, not a screen, through koh's transport, so the
+server must host any `SyncState` producer and the client must render any `ClientState`; shared
+sessions let a laptop and a phone view one workspace. Then a checklist of the eight sections
+with what was done, the list of new design ids, and the test count before and after (`cargo test
+-- --list | wc -l`). State explicitly: wire, key format, `PROTOCOL_VERSION`, CLI flags and
+defaults unchanged; `serve` and `connect` are unchanged wrappers over `serve_with` and
+`connect_with`; the pty host is today's code moved, not rewritten.
 
 Do not publish to crates.io. Do not tag. Stop after the PR is open and report its URL.
