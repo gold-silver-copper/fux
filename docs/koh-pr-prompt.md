@@ -99,9 +99,9 @@ performs in the handshake: one ALPN per state type.
 - `serve_with(config, provider, alpn: &'static [u8])` binds the endpoint with that ALPN;
   `serve` passes `TERMINAL_ALPN`. `bind_endpoint*` already take the accept flag; extend them (or
   add `bind_endpoint_alpns`) to take the ALPN list so an embedding server can serve several
-  state types on one endpoint with one `HostProvider` per ALPN. `Incoming::alpn()` selects the
-  provider in the accept loop; an ALPN with no provider is refused before the handshake, exactly
-  like the connection cap.
+  state types on one endpoint with one `HostProvider` per ALPN. The accepted `Connection::alpn()`
+  (iroh 1.0, `endpoint/connection.rs:1066`) selects the provider in the accept loop; an ALPN not in
+  the bound list never completes the TLS handshake, so nothing else is needed for rejection.
 - `connect_with(config, alpn, …)` dials with that ALPN; `connect` passes `TERMINAL_ALPN`.
   `IrohConnector::new` gains the ALPN. A server that does not speak it fails the handshake; map
   that error to a readable message ("server does not serve <alpn>") through the existing
