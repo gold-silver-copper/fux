@@ -1,8 +1,8 @@
 # The Shape of fux
 
 An agent workspace: a small native terminal multiplexer built directly on koh's per-pty emulator and
-mosh-grade peer-to-peer attach path, with herdr's agent-state detection running natively on the
-panes. One `cargo install`-able binary, one process, no sandbox.
+mosh-grade peer-to-peer attach path, with agent-state detection delegated to a separate wrapper
+program around each pane (see `wrapper-design.md`). One `cargo install`-able binary, one process, no sandbox.
 
 - **Status:** proposal, audited against source. Supersedes the zellij-based draft of 2 Sep 2026.
 - **Date:** 3 Sep 2026
@@ -22,7 +22,7 @@ one of its risks came from the seam:
 
 | Cost of the zellij route | Native route |
 |---|---|
-| Detection interpreted on wasmi, on a copy of pane text, behind a permission cache hack | Detection reads the `vt100::Screen` fux already owns |
+| Detection interpreted on wasmi, on a copy of pane text, behind a permission cache hack | Detection is a separate wrapper program; fux reads one OSC |
 | Two vt100 passes per frame: zellij emulates each pane, koh re-emulates zellij's output | koh's emulators *are* the panes; one compositing pass |
 | Exact pins on crates that exist to serve one binary; 1.95 toolchain floor; committed wasm artifact; CI wasm target; a pipe protocol | None of it |
 | The one risk that could sink the design: zellij's client rendering cleanly under koh's grid | Nothing renders under anything |
@@ -50,7 +50,7 @@ pty layers total about 5.6k lines; zellij's pane and tab code alone is over 32k.
   │  layout · tabs · focus ·     │  WorkspaceDiff: │  layout · tabs · focus · status ·       │
   │  status · per-pane grids     │  changed pane   │  per-pane grids ← Pty + ServerTerminal │
   │            │                 │  cells, layout  │            ▲              ×N            │
-  │  compositor (ratatui)        │  edits          │  input router · detection · notifier   │
+  │  compositor (ratatui)        │  edits          │  input router · state reader · notifier │
   │  + prediction on focused pane│ ─keys, resize─> │  control socket · workspace manager     │
   │            │ Buffer diff     │                 └───────────────────────────────────────┘
   │  real terminal (KohBackend)  │                    koh: ssp · transport_iroh · pty ·
@@ -65,7 +65,7 @@ any `SyncState`, so this is a new state type with a diff, not a new protocol.
 | Layer | Runs on | Built from | New code |
 |---|---|---|---|
 | **Panes** | host | koh `pty::Pty` + `terminal::ServerTerminal`, one pair per pane. Bytes in, `vt100::Screen` out, with OSC 0/1/2/52/9;4 and BEL captured by callbacks. | none |
-| **Workspace** | host | `WorkspaceState` and its diff; BSP layout designed fresh (herdr's as the reference); tabs; input router decoding keys and SGR mouse; scroll and copy mode viewports; detection; notifier; control socket; workspace manager. | ~5k lines |
+| **Workspace** | host | `WorkspaceState` and its diff; BSP layout designed fresh (herdr's as the reference); tabs; input router decoding keys and SGR mouse; scroll and copy mode viewports; agent-state OSC reader; notifier; control socket; workspace manager. | ~5k lines |
 | **Transport** | both | koh `ssp::Transport`, `transport_iroh`, session retention, allow-lists, keys, made generic over the synced state and the host on the server side and the renderer on the client side. | koh 0.11.0 (shipped) |
 | **Client** | any terminal | ratatui compositor over the replica: panes as widgets, borders, tab bar, status line, popups; ratatui's `Buffer` diff drives the real terminal through a `Backend` over koh's `KohBackend`; koh's predictor on the focused pane's grid. | ~1.5k lines |
 
@@ -161,13 +161,10 @@ What that means concretely:
   recursive `Box` walks; a `NonZeroU16` ratio in fixed point so the diff is exact; a focus history
   that the type system keeps consistent instead of a comment. herdr's `find_in_direction` geometry
   cases and its tests are the acceptance suite.
-- **Detection.** The manifest *vocabulary* (regions, priorities, negative guards) and the
-  hysteresis constants are the knowledge worth keeping. fux defines its own rule schema, rule
-  evaluator and region enum over `vt100::Screen`, and writes its own rules per agent from observed
-  panes. herdr's manifests are read to learn which signals each agent emits (spinner ranges,
-  footers, prompt markers, the guards that stop user text from impersonating a state change), not
-  copied or converted; nothing from herdr's tree, code or data, enters fux. Captured-pane fixtures
-  are the acceptance suite.
+- **Detection.** Lives in the wrapper, not in fux; `wrapper-design.md` applies the same rule
+  there. herdr's manifests are read to learn which signals each agent emits, and the wrapper
+  writes its own rules in its own schema from captured panes. Nothing from herdr enters either
+  tree.
 - **Grid and copy mode.** zellij's grid edge cases (wide glyphs at the right margin, wrapped-line
   selection, scrollback with resize) are read for the cases, and fux's `PaneView` and copy mode are
   written to handle them, with a test per case.
@@ -252,35 +249,32 @@ the socket. If the phone ever needs control it goes through a binding, not a net
 
 ---
 
-## Detection: herdr's model, on the pane's own screen
+## Detection: a separate program, one OSC to read
 
-Each pane's `ServerTerminal` already yields, on every drain, the live `vt100::Screen`, the OSC 0/2
-title, and the bell count. That is the input herdr's detectors consume. herdr classifies each pane as
-**working**, **blocked** or **idle** using per-agent TOML manifests (21 of them, `amp.toml` to
-`qwen.toml`) of prioritised regex rules scoped to named regions: twelve fixed regions
-(`whole_recent`, `osc_title`, `osc_progress`, `prompt_box_body`, `above_prompt_box`,
-`last_non_empty_above_prompt_box`, `after_last_horizontal_rule`, and the prompt-marker family) plus
-the parameterised `bottom_lines(n)` and `bottom_non_empty_lines(n)`. The Claude manifest uses nine
-of them and carries rules keyed on the braille spinner range, the `esc to interrupt` footer, OSC 9;4
-progress, and negative guards so that a user typing "do you want to proceed?" cannot impersonate a
-state change.
+Agent-state detection is not fux code. It is a small dedicated wrapper, designed in
+`wrapper-design.md`, that runs each pane's shell in a pty, keeps its own `vt100::Screen`,
+identifies the agent from the pty's foreground process group, evaluates its rules with herdr-grade
+hysteresis, and announces the result in-band as
 
-herdr's manifests are studied for the signals they encode; fux writes its own rules in its own
-schema and ships no herdr data (see *Reference code is studied, not copied*). herdr's evaluator
-is not reused either: herdr's is 3.2k lines (`manifest.rs` 1.5k, `detect/mod.rs` 1.6k) over its own
-libghostty-vt screen type, plus 1k of manifest-update code fux does not need. A fresh evaluator over
-`vt100::Screen::rows()` and the title, validated against captured-pane fixtures, is the plan. Agent identification uses the pane's child process name via the pty's pid,
-as herdr's `identify_agent` does.
+```
+ESC ] 7877 ; state=<working|blocked|idle|none> ; agent=<id> ; seq=<n> ST
+```
 
-Debounce is inherited, not rediscovered: a working-to-idle transition is confirmed three times at
-100 ms, capped at 700 ms, with a 3 s startup grace window. That hysteresis is most of the difference
-between a status indicator people trust and one they learn to ignore.
+fux's whole involvement:
 
-Detection runs on the server on each pane drain, natively. Cost is regex over the bottom-*n* lines
-of the pane that changed, not every pane every frame.
+- **Spawn.** Every pane is `<wrapper> --title never -- <command>`; the wrapper path and the
+  default command are config. fux draws its own status, so titles are left alone.
+- **Read.** koh's `ServerTerminal` keeps unhandled OSCs in a ring (`take_unhandled_oscs()`, 16 ×
+  256 bytes, koh 0.11). On each pane drain fux drains that ring, parses OSC 7877 payloads in
+  `seq` order, and sets the pane's `agent` and `state` in `WorkspaceState`. Any other payload is
+  discarded.
+- **Use.** The status line and tab bar show agent and state; the notifier fires on transitions
+  into blocked and idle. The control socket emits the same transitions as events.
 
-OSC 9;4 progress comes from `ServerTerminal::progress()` in koh 0.11, so `osc_progress` rules are
-live from the start.
+fux carries no rules, no regex, no hysteresis and no process-tree code, and needs no change when
+an agent's UI changes. A pane whose program emits OSC 7877 itself, with no wrapper, works the
+same way. If the wrapper is not installed, panes run bare and show no agent state; nothing else
+degrades.
 
 ---
 
@@ -301,7 +295,7 @@ State transitions are native events on the server, so:
 
 ## Distribution: one crate, one build, nothing to embed
 
-- `cargo install fux` builds the whole thing everywhere: koh's library tree, the tiler, detection
+- `cargo install fux` builds the whole thing everywhere: koh's library tree, the tiler, the OSC reader
   and the control socket. No features to choose, no wasm, no committed artifacts, no
   `include_bytes!`. A phone and a desktop run the same binary and can each host a workspace or
   attach to the other's.
@@ -394,9 +388,7 @@ All paths relative to `references/`.
 - `koh/README.md:73` — "As a library"; `:109` — no scrollback sync, no Windows
 - `vt100-0.16.2/src/screen.rs:113`, `:148`, `:273`, `:534` — `set_scrollback` viewport; `rows`; `rows_formatted`; `cell`
 - `herdr/src/layout.rs:1`, `:73`, `:84`, `:350` — BSP tree: `Node`, `TileLayout`, `find_in_direction`; depends only on ratatui `Rect`/`Direction`
-- `herdr/src/detect/manifests/claude.toml` — rule regions, priorities, negative guards
-- `herdr/src/detect/manifest.rs:1104` — `validate_region_name`, the region vocabulary
-- `herdr/src/pane/agent_detection.rs:5` — idle confirmation hysteresis constants
+- `herdr/src/detect/`, `herdr/src/pane/agent_detection.rs` — read for the wrapper; see `wrapper-design.md`
 - `herdr/src/platform/linux.rs:554`, `macos.rs:547`, `:643` — `notify-send`; `terminal-notifier` first, `osascript` fallback
 - `herdr/build.rs:6`, `Cargo.toml` — libghostty-vt built with zig: why herdr's emulator is not reused; ratatui 0.30, the version fux's compositor targets
 - `herdr/src` — 224k lines total; `client/` 35k, `server/` 22.5k, `pane/` 10.6k, `detect/` 5.3k
@@ -417,7 +409,8 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
   the synced state is the workspace, not a screen.
 - **Input decoding is fux's job on the host.** koh's client stays a byte pipe for keys.
 - **herdr's UI and emulator are not reusable.** libghostty-vt via zig and ratatui. Its layout
-  tree, detection model, constants and notifier paths are studied and redesigned, not ported.
+  tree and notifier paths are studied and redesigned, not ported; its detection model moves to
+  the wrapper.
   Decided 3 Sep 2026.
 - **Termux clears the floor.** rust 1.98 on termux-packages `master`, koh's floor is 1.91.
 - **No plugin system.** A local control socket with commands and events, panes and popups as the
@@ -437,8 +430,8 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 - **Tabs in v1.** Each workspace holds a list of layout trees with a tab bar in the status line;
   `zoom` is a per-tab toggle and the phone's default view. Decided 3 Sep 2026.
 - **OSC 9;4 progress via `ServerTerminal::progress()` in koh 0.11** (planned as an `unknown_osc`
-  callback; shipped as a host-side accessor). Detection reads progress from the
-  pane's terminal; `osc_progress` rules stay enabled. Decided 3 Sep 2026.
+  callback; shipped as a host-side accessor). The wrapper reads progress from its own screen;
+  fux reads only OSC 7877 from the same ring. Decided 3 Sep 2026.
 - **Bell hook `--on-bell` on `koh connect`** (`ConnectConfig.bell_command`) for plain koh users
   on Termux. fux's own client sees agent state in the replica and notifies directly. Decided
   3 Sep 2026.
@@ -475,6 +468,11 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 
 - Nothing. herdr is reference material only: no code, no manifest data, no attribution.
 
+### The wrapper
+
+- [ ] **Build it first**, per `wrapper-design.md` and `wrapper-prompt.md`; fux's pane spawn and
+      OSC reader are written against its contract. Pick a crate name (`lens` is taken).
+
 ### crates.io and accounts
 
 - [ ] **`fux` is already yours** (0.1.0 placeholder, 18 Aug 2026).
@@ -495,7 +493,9 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 - All workspace logic is on the host; the client renders, predicts, and selects.
 - Local attach uses the same transport as remote attach.
 - Reference code is studied, not copied: herdr and zellij supply invariants, edge cases, constants
-  and test oracles; every fux subsystem is designed fresh as idiomatic Rust, detection rules included.
-  No herdr code or data is vendored.
+  and test oracles; every fux subsystem is designed fresh as idiomatic Rust. No herdr code or
+  data is vendored.
+- Agent-state detection is a separate program. fux spawns panes through it and reads OSC 7877;
+  the wrapper is designed in `wrapper-design.md`. Decided 3 Sep 2026.
 - Programmatic control over a unix socket instead of plugins; the CLI is a thin client for it.
 - Named workspaces, tabs, zoom, and mouse selection are all v1.
