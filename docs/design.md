@@ -6,10 +6,10 @@ panes. One `cargo install`-able binary, one process, no sandbox.
 
 - **Status:** proposal, audited against source. Supersedes the zellij-based draft of 2 Sep 2026.
 - **Date:** 3 Sep 2026
-- **Reference trees:** `references/` — koh 0.10.0 (fa637c2) · herdr 0.8.2 (94f6d9c,
+- **Reference trees:** `references/` — koh 0.11.0 (7d1f514) · herdr 0.8.2 (94f6d9c,
   github.com/herdrdev/herdr) · zellij `main` at 0.46.0 (af38660), kept for grid edge cases only
-- **Published:** koh **0.10.0** (crates.io, 3 Sep 2026; fux depends on it, `default-features =
-  false`, `backend-termina`) · fux 0.1.0 placeholder. herdr proper is not published; the `herdr`
+- **Published:** koh **0.11.0** (crates.io, 3 Sep 2026, tag `v0.11.0`; fux pins `=0.10.0` until the
+  first generic-host code lands, then `=0.11.0`, `default-features = false`, `backend-termina`) · fux 0.1.0 placeholder. herdr proper is not published; the `herdr`
   crate on crates.io is unrelated.
 
 ---
@@ -66,7 +66,7 @@ any `SyncState`, so this is a new state type with a diff, not a new protocol.
 |---|---|---|---|
 | **Panes** | host | koh `pty::Pty` + `terminal::ServerTerminal`, one pair per pane. Bytes in, `vt100::Screen` out, with OSC 0/1/2/52/9;4 and BEL captured by callbacks. | none |
 | **Workspace** | host | `WorkspaceState` and its diff; BSP layout ported from herdr; tabs; input router decoding keys and SGR mouse; scroll and copy mode viewports; detection; notifier; control socket; workspace manager. | ~5k lines |
-| **Transport** | both | koh `ssp::Transport`, `transport_iroh`, session retention, allow-lists, keys, made generic over the synced state and the host on the server side and the renderer on the client side. | koh 0.11 |
+| **Transport** | both | koh `ssp::Transport`, `transport_iroh`, session retention, allow-lists, keys, made generic over the synced state and the host on the server side and the renderer on the client side. | koh 0.11.0 (shipped) |
 | **Client** | any terminal | ratatui compositor over the replica: panes as widgets, borders, tab bar, status line, popups; ratatui's `Buffer` diff drives the real terminal through a `Backend` over koh's `KohBackend`; koh's predictor on the focused pane's grid. | ~1.5k lines |
 
 ### Why the workspace, not the screen, is what syncs
@@ -105,7 +105,9 @@ grid when the base does not have that pane at that size. `SyncState` needs `diff
   wins for v1); a smaller client clips or zooms.
 
 The pty path keeps `TerminalScreen` and today's `koh` binary unchanged. Everything above is
-additive and lands as koh 0.11.
+additive and shipped as koh 0.11.0 (3 Sep 2026): `serve_with`/`connect_with` with the state type
+selected by ALPN, `SessionHost`/`HostProvider`/`SharedHost`, `ClientState`, `predict::ScreenView`,
+`ServerTerminal::progress()`/`take_unhandled_oscs()`, and `ConnectConfig::bell_command`.
 
 ### Local attach is remote attach over loopback
 
@@ -321,11 +323,12 @@ rate-limits how often the host is asked for a state.
 **Mitigation:** keep a per-pane dirty flag from the drain so unchanged panes are skipped in both
 diff and snapshot; measure with the chaos harness before optimising further.
 
-### koh 0.11 is a real release, not a patch — *same author, sequenced*
+### koh 0.11 is a real release, not a patch — *shipped 3 Sep 2026*
 
-Generic server and client, the host trait, shared sessions, the predictor trait, `unknown_osc`,
-the bell hook. All additive, the pty path unchanged, but it is the largest koh change since the
-backend seam. fux develops against a git dependency on the koh branch and pins 0.11 when it ships.
+Generic server and client, the host trait, shared sessions, the predictor trait, OSC 9;4 capture,
+the bell hook. All additive, the pty path and wire protocol (`PROTOCOL_VERSION` 3) unchanged, but
+it was the largest koh change since the backend seam. It is on crates.io as 0.11.0; fux pins it
+exactly. Retired as a risk.
 
 ---
 
@@ -411,19 +414,23 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 
 ## Your side: koh and everything else outside this repo
 
-### koh (0.11)
+### koh (0.11) — *shipped as 0.11.0, 3 Sep 2026 (PR #14)*
 
-- [ ] **Generic server.** `serve` over `S: SyncState` and a host trait (`snapshot`, `input`,
-      `resize`, `changed`, `exited`); the pty host yields `TerminalScreen` as today.
-- [ ] **Generic client.** `connect` over the remote state plus a renderer trait; today's
-      `render.rs` becomes the `TerminalScreen` renderer. `KohBackend` unchanged.
-- [ ] **Shared sessions.** All authorized peers attach to one host; per-client viewport size is
-      reported so the host can choose pane geometry.
-- [ ] **Predictor over a cell-reader trait** instead of `vt100::Screen` directly.
-- [ ] **`unknown_osc` in `Callbacks`** for OSC 9;4 progress.
-- [ ] **Bell hook on the client.** `--on-bell <cmd>` / `ConnectConfig.bell_command`.
+- [x] **Generic server.** `serve_with` over `S: SyncState` and `SessionHost` (`snapshot`, `input`,
+      `resize(client, ..)`, `stamp_echo_ack`, `alive`, `attach_notify`, `client_detached`);
+      `PtyHost` yields `TerminalScreen` as today. State type selected by ALPN.
+- [x] **Generic client.** `connect_with` over `ClientState`; `ClientTerminal<S>::render` and
+      `client::InputModes`. `KohBackend` unchanged.
+- [x] **Shared sessions.** `SharedHost` and `ClientId`; every peer attaches to one host and
+      `resize` carries the client id so the host can choose pane geometry.
+- [x] **Predictor over `predict::ScreenView`** instead of `vt100::Screen` directly.
+- [x] **OSC 9;4 progress** via `ServerTerminal::progress()`; other unhandled OSCs via a bounded
+      `take_unhandled_oscs()` ring instead of an `unknown_osc` callback.
+- [x] **Bell hook on the client.** `--on-bell <cmd>` / `ConnectConfig::bell_command` /
+      `client::BellHook`, rate-limited to one spawn per second.
 - [x] **Agent-CLI rendering test** with plain koh from a phone: Claude Code renders correctly.
-- [ ] Optional: **local channel** behind the `IrohChannel` seam for unix-socket attach.
+- [ ] Optional: **local channel** behind the `IrohChannel` seam for unix-socket attach (not in
+      0.11; local attach goes over iroh loopback).
 
 ### herdr
 
@@ -444,8 +451,8 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 - fux is one crate, one binary, one build. No Cargo features; phone and desktop builds are
   identical and each can host or attach.
 - fux stays MIT; koh is MIT as of 0.10.0.
-- Build the multiplexer, do not embed zellij. Depend on koh as a library, made generic over the
-  synced state in 0.11.
+- Build the multiplexer, do not embed zellij. Depend on koh 0.11.0 as a library, generic over the
+  synced state with the state type selected by ALPN.
 - The synced state is the workspace; the client composites with ratatui-core and ratatui-widgets,
   no ratatui backend crate.
 - All workspace logic is on the host; the client renders, predicts, and selects.
