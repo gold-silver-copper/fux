@@ -114,7 +114,7 @@ under a supervisor.
 ## Surface: what the binary does
 
 ```sh
-fux                          # attach to the local workspace, starting the server if needed
+fux [name]                   # attach to a workspace, creating it and the server if needed
 fux serve [--allow <id>]     # run the server in the foreground; --allow exposes it to a peer
 fux connect <id>             # attach to a remote workspace, mosh-style (koh connect)
 fux id                       # print this machine's endpoint id (koh id)
@@ -127,9 +127,10 @@ fux new | split | focus | …  # the common control commands, also exposed as to
 `connect(ConnectConfig)` behind fux's own clap layer. `serve` is koh's `serve(ServeConfig)` with the
 host set to the in-process workspace. Everything else is a thin client for the control socket.
 
-Inside the workspace, a tmux-style prefix (default `Ctrl-a`) then: `|` `-` split, `hjkl` focus,
-`x` close, `c` new pane, `[` scroll mode, `d` detach, `?` help. Mouse click focuses a pane; wheel
-scrolls the pane under the cursor. Everything else goes to the focused pty verbatim. Configuration
+Inside a workspace, a tmux-style prefix (default `Ctrl-a`) then: `|` `-` split, `hjkl` focus,
+`x` close, `c` new pane, `t` new tab, `n` `p` next and previous tab, `z` zoom, `[` scroll and copy
+mode, `d` detach, `s` workspace picker, `?` help. Mouse click focuses a pane; wheel scrolls the
+pane under the cursor; Shift-drag selects text. Everything else goes to the focused pty verbatim. Configuration
 is a TOML file with the bindings and the default command; there is no layout language.
 
 ---
@@ -167,7 +168,8 @@ JSON. Every message carries an `id`; the server answers with the same `id`. Two 
 | `resize <ID> <+n\|-n>` | grow or shrink along the split axis |
 | `send-keys <ID> <bytes>` | write to a pane's pty; keys as text or as `\x1b` escapes |
 | `capture <ID> [--attrs] [--scrollback N]` | pane text, plain or with cell attributes, optionally with history |
-| `list` | panes with id, command, pid, cwd, title, agent, state, geometry, focus |
+| `tab <new\|next\|prev\|N>`, `workspace <list\|new\|kill>` | tab and workspace management |
+| `list` | workspaces, tabs, and panes with id, command, pid, cwd, title, agent, state, geometry, focus |
 | `set-status <segment> <text>` | write a named status-line segment; empty text removes it |
 | `popup [--size WxH] -- argv…` | run a program in a centred overlay pane until it exits |
 | `subscribe [events…]` | turn this connection into an event stream (below) |
@@ -288,14 +290,11 @@ herdr's libghostty-vt bindings and ratatui UI are not used.
 
 ## Risks
 
-### vt100 fidelity is now load-bearing for every pane — *test it first*
+### vt100 fidelity is load-bearing for every pane — *tested, retired*
 
-Under zellij, koh's `vt100` only had to render zellij's output. Now every agent CLI renders through
-it. koh already hosts shells and has parity tests ported from mosh, but Claude Code, Codex and the
-rest use box drawing, wide glyphs, synchronized output, and OSC sequences vt100 may drop.
-**Mitigation:** the compatibility test needs no fux code: `koh serve --allow <phone-id> --shell
-claude` and drive it from a phone. Do this before writing the compositor. Where vt100 falls short,
-koh owns the pin and can patch or fork it; it is a 5k-line crate.
+Every agent CLI renders through koh's `vt100`. Tested 3 Sep 2026 with plain koh from a phone:
+Claude Code renders correctly. Where a later CLI falls short, koh owns the pin and can patch or
+fork vt100; it is a 5k-line crate.
 
 ### Input decoding does not exist in koh — *build it in the router, server-side*
 
@@ -366,29 +365,14 @@ All paths relative to `references/`.
 
 In the order they block work.
 
-1. **Does vt100 render the agent CLIs?** Testable today with plain koh from a phone:
-   `koh serve --allow <phone-id> --shell claude`, then Codex, then a full-screen app. Exercise
-   resize, spinner, prompt box, scrollback. This is the one risk that can sink the design.
 2. **Session host trait shape in koh.** Minimum: `write_input(&[u8])`, `resize(rows, cols)`,
    an output `Receiver<Vec<u8>>`, `try_wait() -> Option<ExitStatus>`. Does the drain task stay in
    koh (host yields bytes) or move to the host (host feeds a `ServerTerminal`)? Bytes-out is
    simpler and keeps `Session` unchanged.
-3. **Bare `fux` semantics.** One workspace per user, named `main`, in `$XDG_RUNTIME_DIR`, or
-   named workspaces like tmux sessions? Recommendation: one workspace per user for v1; tabs later
-   cover the "several projects" case without a second server.
-4. **Tabs in v1?** herdr has workspaces, zellij has tabs. A BSP tree with 4 to 6 agent panes
-   fits a laptop screen; on the phone it does not, and the phone wants one pane at a time.
-   Recommendation: no tabs, but a **zoom** toggle (focused pane fills the screen), which is also the
-   phone's default view.
-5. **OSC 9;4 progress.** Add `unknown_osc` to koh's `Callbacks` or parse it in fux's drain?
-6. **Phone notification hook.** `--on-bell` on `koh connect` versus a `bell_command` field in
-   `ConnectConfig` used by fux's own client build. The first serves plain koh users too.
-7. **Copy mode.** Scroll mode ships in v1; selection and copy via OSC 52 (koh already forwards
-   clipboard out-of-band) can be v1.1.
-8. **Prediction per pane.** koh's predictor runs on the client over the composite. Typing into a
+3. **Prediction per pane.** koh's predictor runs on the client over the composite. Typing into a
    pane still predicts correctly for plain text; it will mispredict across borders. Acceptable for
    v1; measure.
-9. **Windows.** Out of scope, as in koh.
+4. **Windows.** Out of scope, as in koh.
 
 ### Settled
 
@@ -410,6 +394,18 @@ In the order they block work.
   marking wide-glyph continuations as skip cells. Panes stay `vt100::Screen`; ratatui is never
   the emulator. herdr's `layout.rs` already targets ratatui's `Rect`, so it ports as a copy. It
   is pure Rust and builds on Termux.
+- **Named workspaces, like tmux sessions.** One server per user hosts many workspaces; `fux
+  [name]` attaches or creates, bare `fux` opens a picker (or the only workspace). Decided 3 Sep 2026.
+- **Tabs in v1.** Each workspace holds a list of layout trees with a tab bar in the status line;
+  `zoom` is a per-tab toggle and the phone's default view. Decided 3 Sep 2026.
+- **OSC 9;4 progress via `unknown_osc` in koh's `Callbacks`.** Detection reads progress from the
+  pane's terminal; `osc_progress` rules stay enabled. Decided 3 Sep 2026.
+- **Phone bell hook is `--on-bell` on `koh connect`** (`ConnectConfig.bell_command`), so plain
+  koh users on Termux get `termux-notification` too. Decided 3 Sep 2026.
+- **Copy mode in v1 includes mouse selection.** Scroll viewport, keyboard selection, and
+  drag-select with SGR mouse; copy goes out over koh's existing OSC 52 path. A pane that has
+  mouse reporting on gets the mouse unless a modifier (default Shift) claims it for selection,
+  the xterm convention. Decided 3 Sep 2026.
 - **No control API versioning in v1.** Decided 3 Sep 2026: no version field and no handshake
   until something actually changes; scripts written against v1 are on notice.
 
@@ -425,8 +421,8 @@ In the order they block work.
       attach to one host instead of one session per endpoint id. Keeps `koh` binary behaviour.
 - [ ] **Bell hook on the client.** `--on-bell <cmd>` / `ConnectConfig.bell_command`, run on a
       bell-count increase. Termux users get `termux-notification` for free.
-- [ ] **`unknown_osc` in `Callbacks`** (or expose raw drain bytes) for OSC 9;4.
-- [ ] **Run the agent-CLI rendering test** (open question 1) with plain koh from a phone.
+- [ ] **`unknown_osc` in `Callbacks`** for OSC 9;4 progress.
+- [x] **Agent-CLI rendering test** with plain koh from a phone: Claude Code renders correctly.
 - [ ] Optional: **local channel** behind the `IrohChannel` seam for unix-socket attach.
 
 ### herdr
