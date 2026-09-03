@@ -64,7 +64,7 @@ pty layers total about 5.6k lines; zellij's pane and tab code alone is over 32k.
 | Layer | Built from | New code |
 |---|---|---|
 | **Panes** | koh `pty::Pty` + `terminal::ServerTerminal`, one pair per pane. Bytes in, `vt100::Screen` out, with OSC 0/1/2/52 and BEL captured by callbacks. | none |
-| **Workspace** | fux. A BSP split tree ported from herdr's `layout.rs`, a compositor that paints pane screens plus borders and a status line into an escape-byte stream, an input router that decodes keys and SGR mouse from the client byte stream, scroll mode over `vt100::Screen::set_scrollback`, and detection over each pane's screen. | ~5k lines |
+| **Workspace** | fux. A BSP split tree ported from herdr's `layout.rs`, a compositor that paints pane screens plus borders and a status line into an escape-byte stream, an input router that decodes keys and SGR mouse from the client byte stream, scroll mode over `vt100::Screen::set_scrollback`, detection over each pane's screen, and the control socket. | ~5.5k lines |
 | **Transport** | koh `ssp::Transport`, `transport_iroh`, session retention, allow-lists, keys. The composited screen is a `ServerTerminal` like any other; koh diffs and ships it. | none |
 
 ### The compositor writes escape bytes, because that is the only way in
@@ -119,20 +119,89 @@ fux serve [--allow <id>]     # run the server in the foreground; --allow exposes
 fux connect <id>             # attach to a remote workspace, mosh-style (koh connect)
 fux id                       # print this machine's endpoint id (koh id)
 fux key passwd | info        # identity key management (koh key)
-fux new [--cwd] [-- cmd…]    # open a pane in the running workspace, from any shell
-fux status [--json]          # pane list with agent states, for scripts and agents
+fux ctl <command> [args…]    # drive the running workspace over the control socket (see Control)
+fux new | split | focus | …  # the common control commands, also exposed as top-level verbs
 ```
 
 `id`, `key` and `connect` are koh's `run_id(IdConfig)`, `keycmd::run(KeyConfig)` and
 `connect(ConnectConfig)` behind fux's own clap layer. `serve` is koh's `serve(ServeConfig)` with the
-host set to the in-process workspace. `new` and `status` talk to the running server over a small
-control socket, so an agent in one pane can open another; this is the herdr "agent-native" idea in
-its cheapest form.
+host set to the in-process workspace. Everything else is a thin client for the control socket.
 
 Inside the workspace, a tmux-style prefix (default `Ctrl-a`) then: `|` `-` split, `hjkl` focus,
 `x` close, `c` new pane, `[` scroll mode, `d` detach, `?` help. Mouse click focuses a pane; wheel
 scrolls the pane under the cursor. Everything else goes to the focused pty verbatim. Configuration
 is a TOML file with the bindings and the default command; there is no layout language.
+
+---
+
+## Control, not plugins
+
+fux has no plugin system. What multiplexer plugins do splits into four capabilities: observe
+(events, pane text), act (split, focus, send keys), draw (status segments, pickers, overlays), and
+intercept input (modal keys, remapping). zellij's wasm sandbox exists to hand those four to untrusted
+third-party code safely and portably, which is right for a project with a plugin ecosystem and wrong
+for a personal tool where every author is you or an agent you are running. herdr's answer, a socket
+API driven from its CLI, is the one fux adopts.
+
+The line is drawn by latency: **whatever must be synchronous with input or rendering lives in
+core; everything else is a process.** In core: the prefix key table, scroll and zoom modes,
+detection (it runs on every pane drain and wants the screen without a copy), the compositor, the
+status line renderer. Outside: anything that can be a command plus an event subscription. A program
+that wants a UI runs in a pane or a popup and gets a real terminal, which is more than any plugin
+drawing API offers.
+
+### The socket
+
+A unix socket, mode 0600, at `$XDG_RUNTIME_DIR/fux/<workspace>.sock`, speaking newline-delimited
+JSON. Every message carries an `id`; the server answers with the same `id`. Two message kinds:
+
+**Commands** (request, one reply):
+
+| Command | Effect |
+|---|---|
+| `new [--cwd DIR] [-- argv…]` | open a pane; returns its id |
+| `split <h\|v> [--target ID] [-- argv…]` | split a pane and run a command in the new half |
+| `focus <ID\|left\|right\|up\|down>` | move focus |
+| `zoom [ID]` | toggle the focused (or given) pane filling the screen |
+| `kill <ID>` | close a pane and its process |
+| `resize <ID> <+n\|-n>` | grow or shrink along the split axis |
+| `send-keys <ID> <bytes>` | write to a pane's pty; keys as text or as `\x1b` escapes |
+| `capture <ID> [--attrs] [--scrollback N]` | pane text, plain or with cell attributes, optionally with history |
+| `list` | panes with id, command, pid, cwd, title, agent, state, geometry, focus |
+| `set-status <segment> <text>` | write a named status-line segment; empty text removes it |
+| `popup [--size WxH] -- argv…` | run a program in a centred overlay pane until it exits |
+| `subscribe [events…]` | turn this connection into an event stream (below) |
+
+**Events** (stream on a subscribed connection, one JSON object per line):
+
+| Event | Payload |
+|---|---|
+| `pane.opened`, `pane.closed` | id, command, exit status on close |
+| `pane.focused` | id |
+| `pane.title` | id, title |
+| `agent.state` | id, agent, old state, new state, timestamp |
+| `pane.output` | id; rate-capped to one per pane per 250 ms; a nudge to `capture`, not the data |
+| `workspace.resized` | rows, cols |
+| `client.attached`, `client.detached` | endpoint id or `local` |
+
+An agent that must wait until another agent is genuinely blocked is one `subscribe agent.state`
+and a filter. A session picker is `popup -- fzf` fed by `list`. A "notify me on Slack" companion is
+a twenty-line script.
+
+### Bindings and hooks
+
+The TOML config binds prefix keys to either built-ins or external commands. An external command
+runs with `FUX_PANE`, `FUX_SOCKET` and `FUX_CWD` in its environment, so a binding is the same
+program a user would run from a shell. `hooks` is a list of commands the server starts on boot and
+restarts on exit; that is herdr's daemon shape without a separate concept, for people who want a
+long-lived companion.
+
+### What this costs
+
+A companion process can be slow or dead, so the core must be complete without it. fux with nothing
+attached to the socket is fully usable, which is not true of a zellij layout that references a
+plugin that failed to load. Remote viewers over koh receive the screen and send keys; they never see
+the socket. If the phone ever needs control it goes through a binding, not a network API.
 
 ---
 
@@ -305,9 +374,8 @@ In the order they block work.
 3. **Bare `fux` semantics.** One workspace per user, named `main`, in `$XDG_RUNTIME_DIR`, or
    named workspaces like tmux sessions? Recommendation: one workspace per user for v1; tabs later
    cover the "several projects" case without a second server.
-4. **Control socket for `fux new` and `fux status`.** Unix socket with newline JSON, or reuse
-   the iroh endpoint with a second ALPN? Recommendation: unix socket; it is local by definition and
-   agents can call it with a shell one-liner.
+4. **Control API versioning.** A `version` field on every reply from day one, or a `hello`
+   exchange? Recommendation: `version` on replies, and additive changes only.
 5. **Tabs in v1?** herdr has workspaces, zellij has tabs. A BSP tree with 4 to 6 agent panes
    fits a laptop screen; on the phone it does not, and the phone wants one pane at a time.
    Recommendation: no tabs, but a **zoom** toggle (focused pane fills the screen), which is also the
@@ -332,6 +400,8 @@ In the order they block work.
 - **herdr's UI and emulator are not reusable.** libghostty-vt via zig and ratatui; only the
   layout tree, manifests, constants and notifier paths port.
 - **Termux clears the floor.** rust 1.98 on termux-packages `master`, koh's floor is 1.91.
+- **No plugin system.** A local control socket with commands and events, panes and popups as the
+  UI surface, config bindings and hooks for the rest. See *Control, not plugins*.
 
 ---
 
@@ -373,3 +443,4 @@ In the order they block work.
 - The phone runs an unmodified koh client. All workspace logic is server-side.
 - Local attach uses the same transport as remote attach.
 - Manifests port verbatim; the evaluator is rewritten; the layout tree is ported from herdr.
+- Programmatic control over a unix socket instead of plugins; the CLI is a thin client for it.
