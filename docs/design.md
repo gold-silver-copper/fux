@@ -64,7 +64,7 @@ pty layers total about 5.6k lines; zellij's pane and tab code alone is over 32k.
 | Layer | Built from | New code |
 |---|---|---|
 | **Panes** | koh `pty::Pty` + `terminal::ServerTerminal`, one pair per pane. Bytes in, `vt100::Screen` out, with OSC 0/1/2/52 and BEL captured by callbacks. | none |
-| **Workspace** | fux. A BSP split tree ported from herdr's `layout.rs`, a compositor that paints pane screens plus borders and a status line into an escape-byte stream, an input router that decodes keys and SGR mouse from the client byte stream, scroll mode over `vt100::Screen::set_scrollback`, detection over each pane's screen, and the control socket. | ~5.5k lines |
+| **Workspace** | fux. A BSP split tree ported from herdr's `layout.rs`, a ratatui-core compositor that paints pane screens plus borders and a status line into an escape-byte stream, an input router that decodes keys and SGR mouse from the client byte stream, scroll mode over `vt100::Screen::set_scrollback`, detection over each pane's screen, and the control socket. | ~5.5k lines |
 | **Transport** | koh `ssp::Transport`, `transport_iroh`, session retention, allow-lists, keys. The composited screen is a `ServerTerminal` like any other; koh diffs and ships it. | none |
 
 ### The compositor writes escape bytes, because that is the only way in
@@ -355,7 +355,7 @@ All paths relative to `references/`.
 - `herdr/src/detect/manifest.rs:1104` — `validate_region_name`, the region vocabulary
 - `herdr/src/pane/agent_detection.rs:5` — idle confirmation hysteresis constants
 - `herdr/src/platform/linux.rs:554`, `macos.rs:547`, `:643` — `notify-send`; `terminal-notifier` first, `osascript` fallback
-- `herdr/build.rs:6`, `Cargo.toml` — libghostty-vt built with zig; ratatui 0.30: why herdr's UI and emulator are not reused
+- `herdr/build.rs:6`, `Cargo.toml` — libghostty-vt built with zig: why herdr's emulator is not reused; ratatui 0.30, the version fux's compositor targets
 - `herdr/src` — 224k lines total; `client/` 35k, `server/` 22.5k, `pane/` 10.6k, `detect/` 5.3k
 
 ---
@@ -400,6 +400,13 @@ In the order they block work.
 - **Termux clears the floor.** rust 1.98 on termux-packages `master`, koh's floor is 1.91.
 - **No plugin system.** A local control socket with commands and events, panes and popups as the
   UI surface, config bindings and hooks for the rest. See *Control, not plugins*.
+- **ratatui paints the composite, behind the `workspace` feature.** `ratatui-core` for `Buffer`,
+  `Rect` and `Layout`, `ratatui-widgets` for borders, the status line and popups; not the umbrella
+  crate, so no second terminal backend enters the server. fux implements ratatui's `Backend` for
+  koh's virtual `ServerTerminal`: `draw` turns changed cells into cursor moves and SGR bytes fed
+  to `process`. Each pane is a widget that copies `vt100::Screen::cell` into `Buffer` cells,
+  marking wide-glyph continuations as skip cells. Panes stay `vt100::Screen`; ratatui is never
+  the emulator. herdr's `layout.rs` already targets ratatui's `Rect`, so it ports as a copy.
 - **No control API versioning in v1.** Decided 3 Sep 2026: no version field and no handshake
   until something actually changes; scripts written against v1 are on notice.
 
@@ -443,4 +450,5 @@ In the order they block work.
 - The phone runs an unmodified koh client. All workspace logic is server-side.
 - Local attach uses the same transport as remote attach.
 - Manifests port verbatim; the evaluator is rewritten; the layout tree is ported from herdr.
+- ratatui-core and ratatui-widgets render the composite; no ratatui backend crate.
 - Programmatic control over a unix socket instead of plugins; the CLI is a thin client for it.
