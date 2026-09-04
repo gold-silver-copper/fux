@@ -75,7 +75,7 @@ jobs:
       - run: cargo build --locked --bin fux
       - run: cargo build --manifest-path zor/Cargo.toml --locked --bin zor
       - run: cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
-      - run: cargo check --manifest-path zor/Cargo.toml --no-default-features --locked
+      - run: cargo check --manifest-path zor/Cargo.toml --no-default-features --all-targets --locked
 
   android-cross-check:
     name: Android aarch64 cross-check (not runtime coverage)

@@ -146,6 +146,7 @@ fn dependency_and_ci_surfaces_keep_the_verification_layers_enabled() {
         "test --all-features --locked",
         "doc --no-deps --all-features --locked",
         "tests/verify/fixture-child/Cargo.toml",
+        "--no-default-features --all-targets --locked",
         "aarch64-linux-android",
         "cargo package --locked",
     ] {
