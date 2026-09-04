@@ -589,7 +589,7 @@ fn decode_hex(value: &str) -> io::Result<Vec<u8>> {
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .chunks(2)
         .map(|pair| {
             let text = std::str::from_utf8(pair).map_err(invalid)?;
             u8::from_str_radix(text, 16).map_err(invalid)
