@@ -1,0 +1,41 @@
+name: Nightly verification
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-corpus:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/koh
+          path: references/koh
+          ref: v0.12.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/zor
+          path: zor
+          ref: main
+      - run: cargo build --locked --bin fux
+      - run: cargo build --manifest-path zor/Cargo.toml --locked --bin zor
+      - name: Repeat deterministic corpus and ownership checks
+        run: |
+          for pass in 1 2 3; do
+            cargo test --test chaos --test verification_corpus --test verification_structure --test verification_loom --locked
+            cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
+          done
+      - name: Extended deterministic property cases
+        env:
+          PROPTEST_CASES: 4096
+        run: cargo test --test chaos --test verification_corpus --locked

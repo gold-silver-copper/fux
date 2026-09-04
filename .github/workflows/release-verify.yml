@@ -1,0 +1,26 @@
+name: Release artifact verification
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/koh
+          path: references/koh
+          ref: v0.12.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/zor
+          path: zor
+          ref: main
+      - run: tests/verify/release-package.sh

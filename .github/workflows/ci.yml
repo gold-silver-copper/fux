@@ -45,8 +45,37 @@ jobs:
       - run: cargo +${{ matrix.rust }} clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} test --all-features --locked -- --test-threads=1
       - run: cargo +${{ matrix.rust }} doc --no-deps --all-features --locked
+      - name: Build exact binaries for the binary verification corpus
+        run: |
+          cargo +${{ matrix.rust }} build --locked --bin fux
+          cargo +${{ matrix.rust }} build --manifest-path zor/Cargo.toml --locked --bin zor
       - run: cargo +${{ matrix.rust }} clippy --manifest-path tests/verify/fixture-child/Cargo.toml --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
+
+  verification-layers:
+    name: Verification layers / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/koh
+          path: references/koh
+          ref: v0.12.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/zor
+          path: zor
+          ref: main
+      - run: cargo test --test verification_corpus --test verification_structure --test verification_loom --locked
+      - run: cargo build --locked --bin fux
+      - run: cargo build --manifest-path zor/Cargo.toml --locked --bin zor
+      - run: cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
+      - run: cargo check --manifest-path zor/Cargo.toml --no-default-features --locked
 
   android-cross-check:
     name: Android aarch64 cross-check (not runtime coverage)
