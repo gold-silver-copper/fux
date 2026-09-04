@@ -29,6 +29,7 @@ pub trait BinaryDriver {
         query: &[u8],
         expected: &[u8],
     ) -> Result<Vec<u8>, String>;
+    fn copy_input(&mut self, client: &str, bytes: &[u8]) -> Result<(), String>;
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
     fn subscribe(
@@ -143,6 +144,16 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                             bytes_hex: hex(&observed),
                         },
                     );
+                }
+                Step::CopyInput { client, bytes } => {
+                    push(
+                        &mut transcript,
+                        Event::Input {
+                            client: client.clone(),
+                            bytes_hex: hex(bytes),
+                        },
+                    );
+                    self.driver.copy_input(client, bytes)?;
                 }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {

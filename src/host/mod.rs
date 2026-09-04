@@ -415,159 +415,203 @@ impl WorkspaceHost {
         if self.killed {
             return;
         }
-        if self.copy_mode.active() {
-            let mut shared = lock(&self.shared);
-            let prior_state = shared.state.clone();
-            let focused = shared.state.active_tab().and_then(|active| {
-                shared
-                    .state
-                    .tabs()
-                    .iter()
-                    .find(|tab| tab.id == active)
-                    .map(|tab| tab.focused)
-            });
-            if let Some(focused) = focused {
-                if !self.copy_mode.targets(focused) {
-                    self.copy_mode.reset_synced(&mut shared.state);
-                } else {
-                    let _ = self.copy_mode.key(bytes, &mut shared.state, focused);
-                }
-                if total_resource_units(&shared, &shared.state) > self.resources.max_units {
-                    shared.state = prior_state;
-                    self.copy_mode.reset_synced(&mut shared.state);
-                }
-                drop(shared);
-                self.refresh_pane_view(focused);
-                if let Some(changed) = &self.changed {
-                    changed.pulse();
-                }
-                return;
+        if let Some(remainder) = self.route_copy_input(bytes) {
+            if !remainder.is_empty() {
+                self.route_input(&remainder);
             }
-            self.copy_mode.reset_synced(&mut shared.state);
             return;
         }
-        let actions = lock(&self.router).feed(bytes, monotonic_ms());
-        for action in actions {
-            match action {
-                Action::Forward(bytes) => self.write_focused(&bytes),
-                Action::Command(Command::Focus(direction)) => {
-                    if let Some(pane) = self.focus(direction) {
-                        self.publish_local_event(crate::control::Event::PaneFocused {
-                            id: 0,
-                            pane: pane.0,
-                        });
-                    }
+        let now = monotonic_ms();
+        let mut forwarded = Vec::new();
+        for (offset, byte) in bytes.iter().enumerate() {
+            if offset > 0
+                && let Some(suffix) = bytes.get(offset..)
+                && let Some(remainder) = self.route_copy_input(suffix)
+            {
+                self.flush_routed_input(&mut forwarded);
+                if !remainder.is_empty() {
+                    self.route_input(&remainder);
                 }
-                Action::Command(Command::Close) => {
-                    if let Some((pane, status)) = self.close_focused(false) {
-                        self.publish_local_event(crate::control::Event::PaneClosed {
-                            id: 0,
-                            pane: pane.0,
-                            exit_status: status,
-                        });
-                    }
+                break;
+            }
+            let actions = lock(&self.router).feed(std::slice::from_ref(byte), now);
+            for action in actions {
+                if !matches!(&action, Action::Forward(_)) {
+                    self.flush_routed_input(&mut forwarded);
                 }
-                Action::Command(Command::SplitHorizontal) => {
-                    if let Ok(pane) = self.add_pane_with_axis(
-                        self.default_command.clone(),
-                        crate::state::Axis::Horizontal,
-                    ) {
-                        self.publish_local_event(crate::control::Event::PaneOpened {
-                            id: 0,
-                            pane: pane.0,
-                            command: self.default_command.clone(),
-                        });
-                        self.start_pending();
-                    }
-                }
-                Action::Command(Command::SplitVertical) => {
-                    if let Ok(pane) = self.add_pane_with_axis(
-                        self.default_command.clone(),
-                        crate::state::Axis::Vertical,
-                    ) {
-                        self.publish_local_event(crate::control::Event::PaneOpened {
-                            id: 0,
-                            pane: pane.0,
-                            command: self.default_command.clone(),
-                        });
-                        self.start_pending();
-                    }
-                }
-                Action::Command(Command::NewPane) => {
-                    if let Ok(pane) = self.add_pane(self.default_command.clone()) {
-                        self.publish_local_event(crate::control::Event::PaneOpened {
-                            id: 0,
-                            pane: pane.0,
-                            command: self.default_command.clone(),
-                        });
-                        self.start_pending();
-                    }
-                }
-                Action::Command(Command::NewTab) => {
-                    if let Ok(change) =
-                        tab_action(self, crate::control::TabAction::New { name: None })
-                    {
-                        self.publish_tab_change(change, 0);
-                        self.start_pending();
-                    }
-                    self.apply_geometry();
-                }
-                Action::Command(Command::NextTab) => {
-                    if let Ok(change) = tab_action(self, crate::control::TabAction::Next) {
-                        self.publish_tab_change(change, 0);
-                    }
-                    self.apply_geometry();
-                }
-                Action::Command(Command::PreviousTab) => {
-                    if let Ok(change) = tab_action(self, crate::control::TabAction::Previous) {
-                        self.publish_tab_change(change, 0);
-                    }
-                    self.apply_geometry();
-                }
-                Action::Command(Command::Zoom) => self.toggle_zoom(),
-                Action::Command(Command::CopyMode) => {
-                    let mut shared = lock(&self.shared);
-                    if let Some((focused, pane)) = shared
-                        .state
-                        .active_tab()
-                        .and_then(|active| shared.state.tabs().iter().find(|tab| tab.id == active))
-                        .and_then(|tab| {
-                            shared
-                                .state
-                                .pane(tab.focused)
-                                .cloned()
-                                .map(|pane| (tab.focused, pane))
-                        })
-                    {
-                        self.copy_mode.enter(&pane);
-                        self.copy_mode.sync(&mut shared.state, focused);
-                        // `sync` establishes the pane target after entry.
-                        let _ = self.copy_mode.key(&[], &mut shared.state, focused);
-                        drop(shared);
-                        if let Some(changed) = &self.changed {
-                            changed.pulse();
+                match action {
+                    Action::Forward(bytes) => match self.route_copy_input(&bytes) {
+                        Some(remainder) if !remainder.is_empty() => forwarded.extend(remainder),
+                        Some(_) => {}
+                        None => forwarded.extend(bytes),
+                    },
+                    Action::Command(Command::Focus(direction)) => {
+                        if let Some(pane) = self.focus(direction) {
+                            self.publish_local_event(crate::control::Event::PaneFocused {
+                                id: 0,
+                                pane: pane.0,
+                            });
                         }
                     }
+                    Action::Command(Command::Close) => {
+                        if let Some((pane, status)) = self.close_focused(false) {
+                            self.publish_local_event(crate::control::Event::PaneClosed {
+                                id: 0,
+                                pane: pane.0,
+                                exit_status: status,
+                            });
+                        }
+                    }
+                    Action::Command(Command::SplitHorizontal) => {
+                        if let Ok(pane) = self.add_pane_with_axis(
+                            self.default_command.clone(),
+                            crate::state::Axis::Horizontal,
+                        ) {
+                            self.publish_local_event(crate::control::Event::PaneOpened {
+                                id: 0,
+                                pane: pane.0,
+                                command: self.default_command.clone(),
+                            });
+                            self.start_pending();
+                        }
+                    }
+                    Action::Command(Command::SplitVertical) => {
+                        if let Ok(pane) = self.add_pane_with_axis(
+                            self.default_command.clone(),
+                            crate::state::Axis::Vertical,
+                        ) {
+                            self.publish_local_event(crate::control::Event::PaneOpened {
+                                id: 0,
+                                pane: pane.0,
+                                command: self.default_command.clone(),
+                            });
+                            self.start_pending();
+                        }
+                    }
+                    Action::Command(Command::NewPane) => {
+                        if let Ok(pane) = self.add_pane(self.default_command.clone()) {
+                            self.publish_local_event(crate::control::Event::PaneOpened {
+                                id: 0,
+                                pane: pane.0,
+                                command: self.default_command.clone(),
+                            });
+                            self.start_pending();
+                        }
+                    }
+                    Action::Command(Command::NewTab) => {
+                        if let Ok(change) =
+                            tab_action(self, crate::control::TabAction::New { name: None })
+                        {
+                            self.publish_tab_change(change, 0);
+                            self.start_pending();
+                        }
+                        self.apply_geometry();
+                    }
+                    Action::Command(Command::NextTab) => {
+                        if let Ok(change) = tab_action(self, crate::control::TabAction::Next) {
+                            self.publish_tab_change(change, 0);
+                        }
+                        self.apply_geometry();
+                    }
+                    Action::Command(Command::PreviousTab) => {
+                        if let Ok(change) = tab_action(self, crate::control::TabAction::Previous) {
+                            self.publish_tab_change(change, 0);
+                        }
+                        self.apply_geometry();
+                    }
+                    Action::Command(Command::Zoom) => self.toggle_zoom(),
+                    Action::Command(Command::CopyMode) => {
+                        let mut shared = lock(&self.shared);
+                        if let Some((focused, pane)) = shared
+                            .state
+                            .active_tab()
+                            .and_then(|active| {
+                                shared.state.tabs().iter().find(|tab| tab.id == active)
+                            })
+                            .and_then(|tab| {
+                                shared
+                                    .state
+                                    .pane(tab.focused)
+                                    .cloned()
+                                    .map(|pane| (tab.focused, pane))
+                            })
+                        {
+                            self.copy_mode.enter(&pane);
+                            self.copy_mode.sync(&mut shared.state, focused);
+                            // `sync` establishes the pane target after entry.
+                            let _ = self.copy_mode.key(&[], &mut shared.state, focused);
+                            drop(shared);
+                            if let Some(changed) = &self.changed {
+                                changed.pulse();
+                            }
+                        }
+                    }
+                    Action::Command(Command::External(argv)) => self.run_external_binding(argv),
+                    Action::Command(Command::WorkspacePicker) => {
+                        self.set_transient_status(
+                            "picker",
+                            "workspace picker requires a named manager attachment",
+                        );
+                    }
+                    Action::Command(Command::Help) => self.set_transient_status(
+                        "help",
+                        "prefix: |/- split, hjkl focus, t/n/p tabs, x close, z zoom, [ copy",
+                    ),
+                    Action::Command(Command::Detach) => self.set_transient_status(
+                        "error",
+                        "detach is handled by the client escape sequence",
+                    ),
+                    Action::Mouse(mouse) => self.route_mouse(mouse),
                 }
-                Action::Command(Command::External(argv)) => self.run_external_binding(argv),
-                Action::Command(Command::WorkspacePicker) => {
-                    self.set_transient_status(
-                        "picker",
-                        "workspace picker requires a named manager attachment",
-                    );
-                }
-                Action::Command(Command::Help) => self.set_transient_status(
-                    "help",
-                    "prefix: |/- split, hjkl focus, t/n/p tabs, x close, z zoom, [ copy",
-                ),
-                Action::Command(Command::Detach) => self.set_transient_status(
-                    "error",
-                    "detach is handled by the client escape sequence",
-                ),
-                Action::Mouse(mouse) => self.route_mouse(mouse),
             }
         }
+        self.flush_routed_input(&mut forwarded);
         self.schedule_router_timeout();
+    }
+
+    fn flush_routed_input(&mut self, forwarded: &mut Vec<u8>) {
+        if !forwarded.is_empty() {
+            self.write_focused(forwarded);
+            forwarded.clear();
+        }
+    }
+
+    fn route_copy_input(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        if !self.copy_mode.active() {
+            return None;
+        }
+        let mut shared = lock(&self.shared);
+        let prior_state = shared.state.clone();
+        let focused = shared.state.active_tab().and_then(|active| {
+            shared
+                .state
+                .tabs()
+                .iter()
+                .find(|tab| tab.id == active)
+                .map(|tab| tab.focused)
+        });
+        let Some(focused) = focused else {
+            self.copy_mode.reset_synced(&mut shared.state);
+            return Some(Vec::new());
+        };
+        let remainder = if !self.copy_mode.targets(focused) {
+            self.copy_mode.reset_synced(&mut shared.state);
+            Vec::new()
+        } else {
+            self.copy_mode
+                .key_with_remainder(bytes, &mut shared.state, focused)
+                .1
+        };
+        if total_resource_units(&shared, &shared.state) > self.resources.max_units {
+            shared.state = prior_state;
+            self.copy_mode.reset_synced(&mut shared.state);
+        }
+        drop(shared);
+        self.refresh_pane_view(focused);
+        if let Some(changed) = &self.changed {
+            changed.pulse();
+        }
+        Some(remainder)
     }
 
     fn set_transient_status(&mut self, segment: &str, text: &str) {

@@ -132,6 +132,18 @@ fn scenario_decoder_rejects_unknown_and_unbounded_input() {
         *query = b"\x1b[c".to_vec();
     }
     assert!(terminal_reply.validate().is_err());
+
+    let mut copy_input: Scenario =
+        serde_json::from_str(PREFIX_AND_PASTE).expect("copy input scenario");
+    let step = copy_input
+        .steps
+        .iter_mut()
+        .find(|step| matches!(step, verify::schema::Step::CopyInput { .. }))
+        .expect("copy input step");
+    if let verify::schema::Step::CopyInput { client, .. } = step {
+        *client = "bob".into();
+    }
+    assert!(copy_input.validate().is_err());
 }
 
 #[test]

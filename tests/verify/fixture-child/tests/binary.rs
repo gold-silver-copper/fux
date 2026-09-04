@@ -259,11 +259,29 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         decode_hex(encoded)
     }
 
+    fn copy_input(&mut self, client: &str, bytes: &[u8]) -> Result<(), String> {
+        if client != "alice" || self.client.is_none() {
+            return Err(format!("copy_input references unattached client {client:?}"));
+        }
+        if bytes != b"q" {
+            return Err("binary copy_input currently supports exiting with q".into());
+        }
+        self.client
+            .as_mut()
+            .ok_or("client is detached")?
+            .write(bytes);
+        Ok(())
+    }
+
     fn input(
         &mut self,
         bytes: &[u8],
     ) -> Result<Vec<verification::interpreters::ObservedAction>, String> {
         use verification::interpreters::ObservedAction;
+        if bytes == [2, b'['] {
+            self.client.as_mut().ok_or("client is detached")?.write(bytes);
+            return Ok(vec![ObservedAction::Command("copy_mode".into())]);
+        }
         if bytes == [2, b'|'] || bytes == [2, b'|', 2, b'-'] {
             self.client.as_mut().ok_or("client is detached")?.write(bytes);
             let split_count: usize = if bytes.len() == 2 { 1 } else { 2 };

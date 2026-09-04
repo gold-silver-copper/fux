@@ -7,6 +7,8 @@
     { "kind": "attach", "client": "alice" },
     { "kind": "control", "request": { "command": "list", "id": 41 } },
     { "kind": "resize", "client": "alice", "size": { "rows": 30, "columns": 100 } },
+    { "kind": "prefix", "client": "alice", "key": 91 },
+    { "kind": "copy_input", "client": "alice", "bytes": [113] },
     { "kind": "terminal_reply", "pane": 1, "query": [27, 91, 54, 110], "bytes": [27, 91, 49, 59, 49, 82] },
     {
       "kind": "subscribe",
@@ -33,7 +35,7 @@
       "kind": "expect",
       "expected": {
         "forwarded": [[2], [27, 91, 50, 48, 48, 126, 65, 2, 124, 66, 27, 91, 50, 48, 49, 126]],
-        "commands": ["split_horizontal", "split_vertical"],
+        "commands": ["copy_mode", "split_horizontal", "split_vertical"],
         "subscriptions": [
           {
             "request_id": 77,

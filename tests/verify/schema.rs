@@ -247,9 +247,17 @@ impl Scenario {
         }
         let mut inner_columns = self.initial_size.columns.saturating_sub(2);
         let mut child_output_columns = std::collections::BTreeMap::<u32, usize>::new();
+        let mut copy_mode = false;
+        let mut attached_clients = std::collections::BTreeSet::<String>::new();
         for step in &self.steps {
             validate_step(step)?;
             match step {
+                Step::Attach { client } | Step::Reconnect { client } => {
+                    attached_clients.insert(client.clone());
+                }
+                Step::Detach { client } | Step::Disconnect { client } => {
+                    attached_clients.remove(client);
+                }
                 Step::Resize { size, .. } => {
                     inner_columns = size.columns.saturating_sub(2);
                     if child_output_columns
@@ -275,6 +283,17 @@ impl Scenario {
                     return Err(
                         "serialized terminal_reply supports pane-1 DSR at the initial cursor only"
                             .into(),
+                    );
+                }
+                Step::Prefix { key: b'[', .. } => copy_mode = true,
+                Step::CopyInput { client, bytes }
+                    if attached_clients.contains(client) && copy_mode && bytes == b"q" =>
+                {
+                    copy_mode = false;
+                }
+                Step::CopyInput { .. } => {
+                    return Err(
+                        "serialized copy_input currently supports q after prefix-[ only".into(),
                     );
                 }
                 _ => {}

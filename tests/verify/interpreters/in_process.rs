@@ -29,6 +29,11 @@ impl Interpreter for InProcessInterpreter {
         let mut child_output = std::collections::BTreeMap::<u32, Vec<u8>>::new();
         let mut attached_clients = std::collections::BTreeSet::new();
         let mut known_clients = std::collections::BTreeSet::new();
+        let mut copy_mode = fux::client::CopyMode::default();
+        let mut copy_state = fux::state::WorkspaceState::default();
+        copy_state
+            .insert_pane(fux::state::PaneId(1), fux::state::PaneView::default())
+            .map_err(|error| format!("copy fixture pane failed: {error:?}"))?;
         for step in &scenario.steps {
             match step {
                 Step::Attach { client } => {
@@ -143,6 +148,25 @@ impl Interpreter for InProcessInterpreter {
                         },
                     );
                 }
+                Step::CopyInput { client, bytes } => {
+                    if !attached_clients.contains(client) {
+                        return Err(format!(
+                            "copy_input references unattached client {client:?}"
+                        ));
+                    }
+                    push(
+                        &mut transcript,
+                        Event::Input {
+                            client: client.clone(),
+                            bytes_hex: hex(bytes),
+                        },
+                    );
+                    if !copy_mode.key(bytes, &mut copy_state, fux::state::PaneId(1))
+                        || copy_mode.active()
+                    {
+                        return Err("production copy mode did not consume exit key".into());
+                    }
+                }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
                         Step::Prefix { client, key } => (client, vec![0x02, *key]),
@@ -159,6 +183,15 @@ impl Interpreter for InProcessInterpreter {
                     for action in router.feed(&bytes, now) {
                         let before = commands.len();
                         append_action(&mut transcript, action, &mut forwarded, &mut commands)?;
+                        if commands.get(before).is_some_and(|name| name == "copy_mode") {
+                            let pane = copy_state
+                                .pane(fux::state::PaneId(1))
+                                .cloned()
+                                .ok_or_else(|| "copy fixture pane disappeared".to_owned())?;
+                            copy_mode.enter(&pane);
+                            copy_mode.sync(&mut copy_state, fux::state::PaneId(1));
+                            let _ = copy_mode.key(&[], &mut copy_state, fux::state::PaneId(1));
+                        }
                         if commands.len() > before
                             && matches!(
                                 commands.last().map(String::as_str),

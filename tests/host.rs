@@ -1137,6 +1137,102 @@ fn copy_mode_command_is_shared_and_yanks_into_workspace_clipboard() {
 
 #[cfg(unix)]
 #[test]
+fn copy_mode_consumes_trailing_bytes_from_the_same_input_batch() {
+    let mut host = host_for_script("cat", 32);
+    host.input(b"\x01[qZ");
+    wait_until(&mut host, Duration::from_secs(2), |state| {
+        state.pane(PaneId(1)).is_some_and(|pane| {
+            pane.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains('Z')
+        })
+    });
+    let visible = host
+        .snapshot()
+        .pane(PaneId(1))
+        .map(|pane| {
+            pane.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    assert!(!visible.contains('q'), "copy exit key leaked: {visible:?}");
+    host.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_mode_does_not_reparse_a_literal_prefix_suffix() {
+    let mut host = host_for_script("cat", 32);
+    host.input(b"\x01[q\x01\x01|");
+    wait_until(&mut host, Duration::from_secs(2), |state| {
+        state.pane(PaneId(1)).is_some_and(|pane| {
+            pane.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains('|')
+        })
+    });
+    assert_eq!(
+        host.snapshot().panes().len(),
+        1,
+        "literal suffix opened pane"
+    );
+    host.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_mode_consumes_later_commands_from_the_same_input_batch() {
+    let mut host = host_for_script("cat", 32);
+    host.input(b"\x01[\x01x");
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(host.snapshot().panes().len(), 1, "modal suffix closed pane");
+    assert!(
+        host.snapshot()
+            .pane(PaneId(1))
+            .is_some_and(|pane| pane.copy.active),
+        "copy mode did not retain the modal command suffix"
+    );
+    host.input(b"q");
+    host.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
+fn multi_kilobyte_input_batch_reaches_the_child_exactly() {
+    let mut host = host_for_script("stty raw -echo; printf READY; cat", 32);
+    wait_until(&mut host, Duration::from_secs(2), |state| {
+        state.pane(PaneId(1)).is_some_and(|pane| {
+            pane.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains("READY")
+        })
+    });
+    let payload: Vec<u8> = (0..1536).map(|index| b'A' + (index % 26) as u8).collect();
+    host.input(&payload);
+    let expected = String::from_utf8(payload).expect("ASCII payload");
+    wait_until(&mut host, Duration::from_secs(2), |state| {
+        state.pane(PaneId(1)).is_some_and(|pane| {
+            pane.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .replace(' ', "")
+                .contains(&expected)
+        })
+    });
+    host.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
 fn viewport_offset_rebuilds_cells_from_bounded_terminal_scrollback() {
     // Phase F2 copy mode: synchronized viewport cells come from the cloned history screen.
     let mut host = host_for_script("seq 1 30; sleep 2", 32);

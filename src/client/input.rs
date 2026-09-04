@@ -72,12 +72,22 @@ impl CopyMode {
 
     /// Handles copy-mode keys. Returns true when the bytes were consumed locally.
     pub fn key(&mut self, input: &[u8], state: &mut WorkspaceState, pane_id: PaneId) -> bool {
+        self.key_with_remainder(input, state, pane_id).0
+    }
+
+    /// Handles copy-mode keys and returns bytes following a command that exits the mode.
+    pub fn key_with_remainder(
+        &mut self,
+        input: &[u8],
+        state: &mut WorkspaceState,
+        pane_id: PaneId,
+    ) -> (bool, Vec<u8>) {
         if !self.active {
-            return false;
+            return (false, input.to_vec());
         }
         let Some(pane) = state.pane(pane_id).cloned() else {
             self.reset();
-            return true;
+            return (true, Vec::new());
         };
         self.target = Some(pane_id);
         self.pending.extend_from_slice(input);
@@ -155,12 +165,16 @@ impl CopyMode {
             }
         }
         self.pending.drain(..offset);
+        let remainder = if self.active {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.pending)
+        };
         if !self.active {
-            self.pending.clear();
             self.target = None;
         }
         self.sync(state, pane_id);
-        true
+        (true, remainder)
     }
 
     /// Updates a selection from an SGR mouse event. Coordinates are pane-content coordinates.

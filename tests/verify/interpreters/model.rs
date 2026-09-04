@@ -28,6 +28,7 @@ impl Interpreter for ModelInterpreter {
         let mut child_output = std::collections::BTreeMap::<u32, Vec<u8>>::new();
         let mut attached_clients = std::collections::BTreeSet::new();
         let mut known_clients = std::collections::BTreeSet::new();
+        let mut copy_mode = false;
         for step in &scenario.steps {
             match step {
                 Step::Attach { client } => {
@@ -139,6 +140,20 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                 }
+                Step::CopyInput { client, bytes } => {
+                    if !attached_clients.contains(client) || !copy_mode || bytes != b"q" {
+                        return Err("model copy_input currently supports exiting with q".into());
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Input {
+                            client: client.clone(),
+                            bytes_hex: hex(bytes),
+                        },
+                    );
+                    copy_mode = false;
+                }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
                         Step::Prefix { client, key } => (client, vec![0x02, *key]),
@@ -173,6 +188,9 @@ impl Interpreter for ModelInterpreter {
                                     "model",
                                     Event::Command { name: name.into() },
                                 );
+                                if name == "copy_mode" {
+                                    copy_mode = true;
+                                }
                                 if matches!(name, "split_horizontal" | "split_vertical")
                                     && subscriptions.last().is_some_and(|subscription| {
                                         subscription
