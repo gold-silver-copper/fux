@@ -421,8 +421,15 @@ fn final_natural_pane_is_a_durable_non_live_tombstone() {
     session.resize(client, 24, 80);
     assert_eq!(control.attached_clients(), 1);
     let deadline = Instant::now() + Duration::from_secs(3);
-    while !control.is_empty() && Instant::now() < deadline {
-        let _ = session.snapshot();
+    while Instant::now() < deadline {
+        let state = session.snapshot();
+        let settled = control.is_empty()
+            && state
+                .pane(PaneId(1))
+                .is_some_and(|pane| pane.exit_status == Some(9));
+        if settled {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(control.is_empty());
