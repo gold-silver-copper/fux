@@ -2585,7 +2585,11 @@ fn finish_pane(shared: &Arc<Mutex<Shared>>, pane_id: PaneId) {
     };
     // EOF on the PTY can become visible just before the child status is waitable. Preserve the
     // terminal status rather than publishing a terminal snapshot with an indeterminate exit.
-    let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    // A wrapper can observe its child exit only after the PTY reader sees EOF. Under a saturated
+    // runner, giving that wrapper just one second can publish a permanent `None` status even though
+    // the real status becomes waitable moments later. Keep this bounded, but leave enough scheduling
+    // slack to preserve the authoritative exit code before publishing the terminal snapshot.
+    let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let ready = {
             let mut runtime = lock(&runtime);
