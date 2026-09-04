@@ -12,6 +12,8 @@ use fux::state::{AgentState, Direction, PaneId, WorkspaceState};
 use koh::client::{ClientTerminal, IrohConnector, run_client};
 #[cfg(unix)]
 use koh::predict::{DisplayPreference, Overlay};
+#[cfg(unix)]
+use koh::server::session::SessionHandle;
 use koh::server::{ChangeSignal, ClientId, SessionHost};
 #[cfg(unix)]
 use koh::server::{Hosts, SharedHost};
@@ -27,6 +29,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 #[cfg(unix)]
 use tokio_util::sync::CancellationToken;
+
+#[allow(dead_code)]
+#[path = "verify/transcript.rs"]
+mod verification_transcript;
 
 fn flattened(actions: &[Action]) -> (Vec<u8>, Vec<Command>, Vec<MouseEvent>) {
     let mut bytes = Vec::new();
@@ -1373,6 +1379,28 @@ struct SemanticTerminal {
 }
 
 #[cfg(unix)]
+struct LifecycleSink {
+    events: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+#[cfg(unix)]
+impl fux::host::WorkspaceEventSink for LifecycleSink {
+    fn publish(&self, event: fux::control::Event) {
+        let name = match event {
+            fux::control::Event::ClientAttached { .. } => Some("client.attached"),
+            fux::control::Event::ClientDetached { .. } => Some("client.detached"),
+            _ => None,
+        };
+        if let Some(name) = name {
+            self.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(name);
+        }
+    }
+}
+
+#[cfg(unix)]
 impl ClientTerminal<WorkspaceState> for SemanticTerminal {
     fn render(
         &mut self,
@@ -1397,35 +1425,83 @@ impl ClientTerminal<WorkspaceState> for SemanticTerminal {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_viewer_reconnects_after_forced_loopback_loss_without_state_reset() {
-    let provider = SharedHost::new(|| WorkspaceHost::spawn(vec!["/bin/cat".into()], 32, None));
+    let lifecycle = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let workspace_control = Arc::new(std::sync::Mutex::new(None));
+    let provider = SharedHost::new_with_handles({
+        let lifecycle = Arc::clone(&lifecycle);
+        let workspace_control = Arc::clone(&workspace_control);
+        move || {
+            let (session, control) = WorkspaceHost::shared(vec!["/bin/cat".into()], 32, None)?;
+            control.set_event_sink(Arc::new(LifecycleSink {
+                events: Arc::clone(&lifecycle),
+            }));
+            *workspace_control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
+            Ok(SessionHandle::new(session))
+        }
+    });
     let hosts = Arc::new(Hosts::new().with(fux::FUX_ALPN, provider));
-    let server = match bind_endpoint_local_alpns(generate_secret_key(), hosts.alpns()).await {
-        Ok(server) => server,
-        Err(error) if format!("{error:#}").contains("Operation not permitted") => return,
-        Err(error) => panic!("bind server: {error:#}"),
-    };
+    let server = bind_endpoint_local_alpns(generate_secret_key(), hosts.alpns())
+        .await
+        .expect("bind loopback verification server");
     let address = loopback_addr(&server);
     let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
+    let (server_stop_tx, server_stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_shutdown = CancellationToken::new();
     let accept = {
         let hosts = Arc::clone(&hosts);
+        let server_shutdown = server_shutdown.clone();
         tokio::spawn(async move {
             let mut first_drop = Some(drop_rx);
-            while let Some(incoming) = server.accept().await {
+            let mut connections = tokio::task::JoinSet::new();
+            let mut server_stop_rx = server_stop_rx;
+            loop {
+                let incoming = tokio::select! {
+                    _ = &mut server_stop_rx => break,
+                    incoming = server.accept() => incoming,
+                };
+                let Some(incoming) = incoming else { break };
                 let hosts = Arc::clone(&hosts);
+                let connection_shutdown = server_shutdown.clone();
                 let drop = first_drop.take();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     if let Ok(connection) = incoming.await {
                         if let Some(drop) = drop {
                             let victim = connection.clone();
-                            tokio::spawn(async move {
-                                if drop.await.is_ok() {
-                                    IrohChannel::new(victim).close(0, b"deterministic loss");
+                            let serve = hosts.serve_connection(connection);
+                            tokio::pin!(serve);
+                            tokio::select! {
+                                () = &mut serve => {}
+                                result = drop => {
+                                    if result.is_ok() {
+                                        IrohChannel::new(victim).close(0, b"deterministic loss");
+                                    }
+                                    serve.await;
                                 }
-                            });
+                                () = connection_shutdown.cancelled() => {
+                                    IrohChannel::new(victim).close(0, b"verification shutdown");
+                                    serve.await;
+                                }
+                            }
+                        } else {
+                            let victim = connection.clone();
+                            let serve = hosts.serve_connection(connection);
+                            tokio::pin!(serve);
+                            tokio::select! {
+                                () = &mut serve => {}
+                                () = connection_shutdown.cancelled() => {
+                                    IrohChannel::new(victim).close(0, b"verification shutdown");
+                                    serve.await;
+                                }
+                            }
                         }
-                        hosts.serve_connection(connection).await;
                     }
                 });
+            }
+            server_shutdown.cancel();
+            while let Some(result) = connections.join_next().await {
+                result.expect("loopback connection task");
             }
         })
     };
@@ -1490,6 +1566,45 @@ async fn remote_viewer_reconnects_after_forced_loopback_loss_without_state_reset
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
+    let observed = lifecycle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(
+        observed,
+        ["client.attached", "client.detached", "client.attached"],
+        "transport loss and reconnect must publish one ordered lifecycle transition apiece"
+    );
+    let canonical = observed
+        .iter()
+        .enumerate()
+        .map(|(sequence, state)| verification_transcript::Entry {
+            sequence: u64::try_from(sequence).expect("bounded lifecycle sequence"),
+            source: "loopback".into(),
+            event: verification_transcript::Event::Lifecycle {
+                resource: "client:viewer".into(),
+                state: (*state).into(),
+            },
+        })
+        .collect::<Vec<_>>();
+    let encoded =
+        verification_transcript::encode_jsonl(&canonical).expect("canonical reconnect transcript");
+    verification_transcript::assert_fixture_safe(&encoded)
+        .expect("reconnect transcript secret audit");
+    if std::env::var_os("FUX_RECORD_FIXTURES").is_some() {
+        std::fs::write(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/verify/fixtures/transport_reconnect.jsonl"),
+            &encoded,
+        )
+        .expect("record reconnect golden");
+    } else {
+        assert_eq!(
+            encoded,
+            include_str!("verify/fixtures/transport_reconnect.jsonl"),
+            "loopback reconnect lifecycle diverged from its reviewed golden"
+        );
+    }
     shutdown.cancel();
     drop(input_tx);
     tokio::time::timeout(Duration::from_secs(3), client)
@@ -1497,7 +1612,50 @@ async fn remote_viewer_reconnects_after_forced_loopback_loss_without_state_reset
         .expect("client cleanup deadline")
         .expect("client task")
         .expect("client loop");
-    accept.abort();
+    server_stop_tx.send(()).expect("stop loopback server");
+    tokio::time::timeout(Duration::from_secs(3), accept)
+        .await
+        .expect("server cleanup deadline")
+        .expect("server task");
+    wait_for_lifecycle_count(&lifecycle, 4).await;
+    assert_eq!(
+        *lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        [
+            "client.attached",
+            "client.detached",
+            "client.attached",
+            "client.detached"
+        ],
+        "client cleanup must publish one final detach"
+    );
+    workspace_control
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .expect("workspace control was created")
+        .shutdown();
+}
+
+#[cfg(unix)]
+async fn wait_for_lifecycle_count(
+    lifecycle: &Arc<std::sync::Mutex<Vec<&'static str>>>,
+    count: usize,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while lifecycle
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len()
+        < count
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "lifecycle cleanup deadline expired"
+        );
+        tokio::task::yield_now().await;
+    }
 }
 
 #[cfg(unix)]
