@@ -1,5 +1,5 @@
 use super::super::oracle::input::{Outcome, PrefixOracle};
-use super::super::schema::{Scenario, Step};
+use super::super::schema::{ExpectedSubscription, Scenario, Step};
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
 
@@ -12,6 +12,7 @@ impl Interpreter for ModelInterpreter {
         let mut transcript = Vec::new();
         let mut forwarded = Vec::new();
         let mut commands = Vec::new();
+        let mut subscriptions = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -95,6 +96,20 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                 }
+                Step::Subscribe { request_id, events } => {
+                    subscriptions.push(ExpectedSubscription {
+                        request_id: *request_id,
+                        events: events.clone(),
+                    });
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Subscription {
+                            request_id: *request_id,
+                            events: events.clone(),
+                        },
+                    );
+                }
                 Step::AdvanceClock { milliseconds } => {
                     push(
                         &mut transcript,
@@ -118,9 +133,12 @@ impl Interpreter for ModelInterpreter {
                     }
                 }
                 Step::Expect { expected } => {
-                    if forwarded != expected.forwarded || commands != expected.commands {
+                    if forwarded != expected.forwarded
+                        || commands != expected.commands
+                        || subscriptions != expected.subscriptions
+                    {
                         return Err(format!(
-                            "model expectation mismatch: forwarded={forwarded:?}, commands={commands:?}"
+                            "model expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"
                         ));
                     }
                     push(

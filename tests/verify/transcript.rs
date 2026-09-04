@@ -41,6 +41,10 @@ pub enum Event {
         request_id: u64,
         subscription_id: u64,
     },
+    Subscription {
+        request_id: u64,
+        events: Vec<String>,
+    },
     Resize {
         pane: String,
         rows: u16,

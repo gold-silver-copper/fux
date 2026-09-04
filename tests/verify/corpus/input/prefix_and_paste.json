@@ -4,6 +4,21 @@
   "applicability": "all",
   "initial_size": { "rows": 24, "columns": 80 },
   "steps": [
+    {
+      "kind": "subscribe",
+      "request_id": 77,
+      "events": [
+        "pane.opened",
+        "pane.closed",
+        "pane.focused",
+        "pane.title",
+        "agent.state",
+        "pane.output",
+        "workspace.resized",
+        "client.attached",
+        "client.detached"
+      ]
+    },
     { "kind": "prefix", "client": "alice", "key": 2 },
     { "kind": "paste", "client": "alice", "bytes": [65, 2, 124, 66] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 48, 59, 49, 59, 49, 77] },
@@ -17,6 +32,22 @@
       "expected": {
         "forwarded": [[2], [27, 91, 50, 48, 48, 126, 65, 2, 124, 66, 27, 91, 50, 48, 49, 126]],
         "commands": ["split_horizontal", "split_vertical"],
+        "subscriptions": [
+          {
+            "request_id": 77,
+            "events": [
+              "pane.opened",
+              "pane.closed",
+              "pane.focused",
+              "pane.title",
+              "agent.state",
+              "pane.output",
+              "workspace.resized",
+              "client.attached",
+              "client.detached"
+            ]
+          }
+        ],
         "owned_resources": 0
       }
     }

@@ -1,4 +1,4 @@
-use super::super::schema::{Scenario, Step};
+use super::super::schema::{ExpectedSubscription, Scenario, Step};
 use super::super::transcript::{Entry, Event, hex};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16,6 +16,11 @@ pub enum ObservedAction {
 pub trait BinaryDriver {
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
+    fn subscribe(
+        &mut self,
+        request_id: u64,
+        events: &[String],
+    ) -> Result<ExpectedSubscription, String>;
     fn cleanup(&mut self) -> Result<usize, String>;
 }
 
@@ -33,6 +38,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut transcript = Vec::new();
         let mut forwarded = Vec::new();
         let mut commands = Vec::new();
+        let mut subscriptions = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -129,10 +135,24 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         other => return Err(format!("unexpected binary mouse action: {other:?}")),
                     }
                 }
+                Step::Subscribe { request_id, events } => {
+                    let subscription = self.driver.subscribe(*request_id, events)?;
+                    subscriptions.push(subscription.clone());
+                    push(
+                        &mut transcript,
+                        Event::Subscription {
+                            request_id: subscription.request_id,
+                            events: subscription.events,
+                        },
+                    );
+                }
                 Step::Expect { expected } => {
-                    if forwarded != expected.forwarded || commands != expected.commands {
+                    if forwarded != expected.forwarded
+                        || commands != expected.commands
+                        || subscriptions != expected.subscriptions
+                    {
                         return Err(format!(
-                            "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}"
+                            "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"
                         ));
                     }
                     let owned_resources = self.driver.cleanup()?;

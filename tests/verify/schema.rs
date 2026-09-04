@@ -156,6 +156,8 @@ pub struct Expected {
     #[serde(default)]
     pub control_events: Vec<ExpectedControlEvent>,
     #[serde(default)]
+    pub subscriptions: Vec<ExpectedSubscription>,
+    #[serde(default)]
     pub terminal_frames: Vec<ExpectedTerminalFrame>,
     #[serde(default)]
     pub pty_resizes: Vec<ExpectedResize>,
@@ -186,6 +188,13 @@ pub struct ExpectedControlEvent {
     pub request_id: u64,
     #[serde(default)]
     pub subscription_id: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedSubscription {
+    pub request_id: u64,
+    pub events: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -277,6 +286,7 @@ fn validate_step(step: &Step) -> Result<(), String> {
                 + expected.commands.len()
                 + expected.snapshots.len()
                 + expected.control_events.len()
+                + expected.subscriptions.len()
                 + expected.terminal_frames.len()
                 + expected.pty_resizes.len()
                 + expected.signals.len();
@@ -295,6 +305,14 @@ fn validate_step(step: &Step) -> Result<(), String> {
             }
             for event in &expected.control_events {
                 bounded_text("control event", &event.name)?;
+            }
+            for subscription in &expected.subscriptions {
+                if subscription.events.len() > 32 {
+                    return Err("expected subscription has more than 32 filters".into());
+                }
+                for event in &subscription.events {
+                    bounded_text("subscription event", event)?;
+                }
             }
             for frame in &expected.terminal_frames {
                 validate_size(Size {

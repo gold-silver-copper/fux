@@ -1,4 +1,4 @@
-use super::super::schema::{Scenario, Step};
+use super::super::schema::{ExpectedSubscription, Scenario, Step};
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
 use fux::host::{Action, Command, InputRouter};
@@ -13,6 +13,7 @@ impl Interpreter for InProcessInterpreter {
         let mut transcript = Vec::new();
         let mut forwarded = Vec::new();
         let mut commands = Vec::new();
+        let mut subscriptions = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -72,6 +73,41 @@ impl Interpreter for InProcessInterpreter {
                         }
                     }
                 }
+                Step::Subscribe { request_id, events } => {
+                    let frame = serde_json::to_vec(&serde_json::json!({
+                        "command": "subscribe",
+                        "id": request_id,
+                        "events": events,
+                    }))
+                    .map_err(|error| error.to_string())?;
+                    let request = fux::control::decode_request_frame(&frame)
+                        .map_err(|error| error.to_string())?;
+                    let fux::control::Request::Subscribe { id, events } = request else {
+                        return Err("production decoder changed subscribe variant".into());
+                    };
+                    let names = events
+                        .into_iter()
+                        .map(|event_kind| {
+                            let value = serde_json::to_value(event_kind)
+                                .map_err(|error| error.to_string())?;
+                            value
+                                .as_str()
+                                .map(str::to_owned)
+                                .ok_or_else(|| "event kind did not serialize as text".to_owned())
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    subscriptions.push(ExpectedSubscription {
+                        request_id: id,
+                        events: names.clone(),
+                    });
+                    push(
+                        &mut transcript,
+                        Event::Subscription {
+                            request_id: id,
+                            events: names,
+                        },
+                    );
+                }
                 Step::AdvanceClock { milliseconds } => {
                     now = now.saturating_add(*milliseconds);
                     push(
@@ -85,9 +121,12 @@ impl Interpreter for InProcessInterpreter {
                     }
                 }
                 Step::Expect { expected } => {
-                    if forwarded != expected.forwarded || commands != expected.commands {
+                    if forwarded != expected.forwarded
+                        || commands != expected.commands
+                        || subscriptions != expected.subscriptions
+                    {
                         return Err(format!(
-                            "production expectation mismatch: forwarded={forwarded:?}, commands={commands:?}"
+                            "production expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"
                         ));
                     }
                     push(

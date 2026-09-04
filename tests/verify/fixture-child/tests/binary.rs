@@ -87,6 +87,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         server,
         environment: &environment,
         mouse_enabled: false,
+        subscribers: Vec::new(),
     };
     let binary = BinaryInterpreter::new(driver)
         .run(&scenario)
@@ -103,6 +104,7 @@ struct PrefixBinaryDriver<'a> {
     server: OwnedChild,
     environment: &'a PrivateEnvironment,
     mouse_enabled: bool,
+    subscribers: Vec<Jsonl>,
 }
 
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
@@ -182,7 +184,32 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         })
     }
 
+    fn subscribe(
+        &mut self,
+        request_id: u64,
+        events: &[String],
+    ) -> Result<verification::schema::ExpectedSubscription, String> {
+        let stream = UnixStream::connect(self.environment.control_socket())
+            .map_err(|error| error.to_string())?;
+        let mut subscriber = Jsonl::new(stream);
+        subscriber.send(json!({
+            "command": "subscribe",
+            "id": request_id,
+            "events": events,
+        }));
+        let reply = subscriber.receive();
+        if reply["id"] != request_id || reply["status"] != "accepted" {
+            return Err(format!("subscription was not accepted: {reply}"));
+        }
+        self.subscribers.push(subscriber);
+        Ok(verification::schema::ExpectedSubscription {
+            request_id,
+            events: events.to_vec(),
+        })
+    }
+
     fn cleanup(&mut self) -> Result<usize, String> {
+        self.subscribers.clear();
         self.primary.send(json!({"command":"quit"}));
         if self.primary.receive()["event"] != "cleanup" {
             return Err("primary fixture did not clean up".into());
