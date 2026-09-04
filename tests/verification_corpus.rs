@@ -144,6 +144,22 @@ fn scenario_decoder_rejects_unknown_and_unbounded_input() {
         *client = "bob".into();
     }
     assert!(copy_input.validate().is_err());
+
+    let mut post_exit: Scenario =
+        serde_json::from_str(PREFIX_AND_PASTE).expect("post-exit scenario");
+    let exit = post_exit
+        .steps
+        .iter()
+        .position(|step| matches!(step, verify::schema::Step::ChildExit { .. }))
+        .expect("child exit step");
+    post_exit.steps.insert(
+        exit + 1,
+        verify::schema::Step::ChildOutput {
+            pane: 1,
+            bytes: b"late".to_vec(),
+        },
+    );
+    assert!(post_exit.validate().is_err());
 }
 
 #[test]

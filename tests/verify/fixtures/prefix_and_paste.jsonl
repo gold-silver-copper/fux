@@ -32,4 +32,5 @@
 {"sequence":31,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"reconnected"}}
 {"sequence":32,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"disconnected"}}
 {"sequence":33,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"reconnected"}}
-{"sequence":34,"source":"model","event":{"kind":"cleanup","owned_resources":0}}
+{"sequence":34,"source":"model","event":{"kind":"child_exit","process":"pane-1","status":7}}
+{"sequence":35,"source":"model","event":{"kind":"cleanup","owned_resources":0}}

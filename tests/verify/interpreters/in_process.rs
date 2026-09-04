@@ -22,6 +22,7 @@ impl Interpreter for InProcessInterpreter {
         let mut control_replies = Vec::new();
         let mut pty_resizes = Vec::new();
         let mut terminal_frames = Vec::new();
+        let mut exit_status = None;
         let mut terminal_size = (
             scenario.initial_size.rows.saturating_sub(3),
             scenario.initial_size.columns.saturating_sub(2),
@@ -166,6 +167,43 @@ impl Interpreter for InProcessInterpreter {
                     {
                         return Err("production copy mode did not consume exit key".into());
                     }
+                }
+                Step::ChildExit { pane, status } => {
+                    if *pane != 1 || exit_status.is_some() {
+                        return Err(format!("production cannot exit pane {pane} twice"));
+                    }
+                    let shell = fux::host::platform_tool_from(
+                        "sh",
+                        None,
+                        None,
+                        cfg!(target_os = "android"),
+                    );
+                    let command = vec![shell, "-c".into(), format!("exit {status}")];
+                    let (mut pty, receiver) =
+                        koh::pty::Pty::spawn(2, 2, &command, "xterm-256color")
+                            .map_err(|error| error.to_string())?;
+                    drop(receiver);
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                    let observed = loop {
+                        if let Some(observed) = pty.try_wait().map_err(|error| error.to_string())? {
+                            break i32::try_from(observed.exit_code())
+                                .map_err(|error| error.to_string())?;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            pty.shutdown();
+                            return Err("production child exit deadline expired".into());
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    };
+                    pty.shutdown();
+                    exit_status = Some(observed);
+                    push(
+                        &mut transcript,
+                        Event::ChildExit {
+                            process: format!("pane-{pane}"),
+                            status: observed,
+                        },
+                    );
                 }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
@@ -398,6 +436,7 @@ impl Interpreter for InProcessInterpreter {
                         || control_replies != expected.control_replies
                         || pty_resizes != expected.pty_resizes
                         || terminal_frames != expected.terminal_frames
+                        || exit_status != expected.exit_status
                     {
                         return Err(format!(
                             "production expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

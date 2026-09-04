@@ -30,6 +30,7 @@ pub trait BinaryDriver {
         expected: &[u8],
     ) -> Result<Vec<u8>, String>;
     fn copy_input(&mut self, client: &str, bytes: &[u8]) -> Result<(), String>;
+    fn child_exit(&mut self, pane: u32, status: i32) -> Result<i32, String>;
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
     fn subscribe(
@@ -62,6 +63,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut control_replies = Vec::new();
         let mut pty_resizes = Vec::new();
         let mut terminal_frames = Vec::new();
+        let mut exit_status = None;
         for step in &scenario.steps {
             match step {
                 Step::Attach { client } => {
@@ -154,6 +156,17 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         },
                     );
                     self.driver.copy_input(client, bytes)?;
+                }
+                Step::ChildExit { pane, status } => {
+                    let observed = self.driver.child_exit(*pane, *status)?;
+                    exit_status = Some(observed);
+                    push(
+                        &mut transcript,
+                        Event::ChildExit {
+                            process: format!("pane-{pane}"),
+                            status: observed,
+                        },
+                    );
                 }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
@@ -319,6 +332,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         || control_replies != expected.control_replies
                         || pty_resizes != expected.pty_resizes
                         || terminal_frames != expected.terminal_frames
+                        || exit_status != expected.exit_status
                     {
                         return Err(format!(
                             "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

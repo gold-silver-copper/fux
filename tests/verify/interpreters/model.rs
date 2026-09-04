@@ -21,6 +21,7 @@ impl Interpreter for ModelInterpreter {
         let mut control_replies = Vec::new();
         let mut pty_resizes = Vec::new();
         let mut terminal_frames = Vec::new();
+        let mut exit_status = None;
         let mut terminal_size = (
             scenario.initial_size.rows.saturating_sub(3),
             scenario.initial_size.columns.saturating_sub(2),
@@ -153,6 +154,20 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                     copy_mode = false;
+                }
+                Step::ChildExit { pane, status } => {
+                    if *pane != 1 || exit_status.is_some() {
+                        return Err(format!("model cannot exit pane {pane} twice"));
+                    }
+                    exit_status = Some(*status);
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::ChildExit {
+                            process: format!("pane-{pane}"),
+                            status: *status,
+                        },
+                    );
                 }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
@@ -370,6 +385,7 @@ impl Interpreter for ModelInterpreter {
                         || control_replies != expected.control_replies
                         || pty_resizes != expected.pty_resizes
                         || terminal_frames != expected.terminal_frames
+                        || exit_status != expected.exit_status
                     {
                         return Err(format!(
                             "model expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

@@ -31,6 +31,7 @@
     { "kind": "reconnect", "client": "alice" },
     { "kind": "disconnect", "client": "alice" },
     { "kind": "reconnect", "client": "alice" },
+    { "kind": "child_exit", "pane": 1, "status": 7 },
     {
       "kind": "expect",
       "expected": {
@@ -56,6 +57,7 @@
           { "rows": 27, "columns": 98, "cells": ["RETAINED_"], "cursor": null, "synchronized": null },
           { "rows": 27, "columns": 98, "cells": ["RETAINED_FRAME"], "cursor": null, "synchronized": null }
         ],
+        "exit_status": 7,
         "owned_resources": 0
       }
     }

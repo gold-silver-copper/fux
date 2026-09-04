@@ -92,6 +92,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         retained_output: None,
         lifecycle_subscriber: None,
         disconnected_viewer: None,
+        primary_exited: false,
     };
     let binary = BinaryInterpreter::new(driver)
         .run(scenario)
@@ -114,6 +115,7 @@ struct PrefixBinaryDriver<'a> {
     retained_output: Option<String>,
     lifecycle_subscriber: Option<Jsonl>,
     disconnected_viewer: Option<u64>,
+    primary_exited: bool,
 }
 
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
@@ -271,6 +273,39 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             .ok_or("client is detached")?
             .write(bytes);
         Ok(())
+    }
+
+    fn child_exit(&mut self, pane: u32, status: i32) -> Result<i32, String> {
+        if pane != 1 || self.primary_exited {
+            return Err(format!("binary cannot exit pane {pane}"));
+        }
+        let stream = UnixStream::connect(self.environment.control_socket())
+            .map_err(|error| error.to_string())?;
+        let mut subscriber = Jsonl::new(stream);
+        subscriber.send(json!({
+            "command": "subscribe",
+            "id": 93,
+            "events": ["pane.closed"],
+        }));
+        let accepted = subscriber.receive();
+        if accepted["id"] != 93 || accepted["status"] != "accepted" {
+            return Err(format!("pane-close subscription was not accepted: {accepted}"));
+        }
+        self.primary.send(json!({"command": "exit", "status": status}));
+        let cleanup = self.primary.receive();
+        if cleanup["event"] != "cleanup" || cleanup["descendants"] != 0 {
+            return Err(format!("primary fixture exit did not clean up: {cleanup}"));
+        }
+        self.primary_exited = true;
+        let event = subscriber.receive();
+        if event["event"] != "pane.closed"
+            || event["id"] != 93
+            || event["pane"] != pane
+            || event["exit_status"] != status
+        {
+            return Err(format!("unexpected raw pane-close event: {event}"));
+        }
+        Ok(status)
     }
 
     fn input(
@@ -474,9 +509,11 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
 
     fn cleanup(&mut self) -> Result<usize, String> {
         self.subscribers.clear();
-        self.primary.send(json!({"command":"quit"}));
-        if self.primary.receive()["event"] != "cleanup" {
-            return Err("primary fixture did not clean up".into());
+        if !self.primary_exited {
+            self.primary.send(json!({"command":"quit"}));
+            if self.primary.receive()["event"] != "cleanup" {
+                return Err("primary fixture did not clean up".into());
+            }
         }
         for secondary in &mut self.secondary {
             secondary.send(json!({"command":"quit"}));
@@ -1559,6 +1596,12 @@ struct Jsonl {
 }
 impl Jsonl {
     fn new(stream: UnixStream) -> Self {
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("fixture control read timeout");
+        stream
+            .set_write_timeout(Some(DEADLINE))
+            .expect("fixture control write timeout");
         Self {
             reader: BufReader::new(stream.try_clone().expect("clone fixture control")),
             writer: stream,

@@ -249,7 +249,11 @@ impl Scenario {
         let mut child_output_columns = std::collections::BTreeMap::<u32, usize>::new();
         let mut copy_mode = false;
         let mut attached_clients = std::collections::BTreeSet::<String>::new();
+        let mut child_exited = false;
         for step in &self.steps {
+            if child_exited && !matches!(step, Step::Expect { .. }) {
+                return Err("only expect may follow serialized child_exit".into());
+            }
             validate_step(step)?;
             match step {
                 Step::Attach { client } | Step::Reconnect { client } => {
@@ -294,6 +298,14 @@ impl Scenario {
                 Step::CopyInput { .. } => {
                     return Err(
                         "serialized copy_input currently supports q after prefix-[ only".into(),
+                    );
+                }
+                Step::ChildExit { pane, status } if *pane == 1 && (0..=125).contains(status) => {
+                    child_exited = true;
+                }
+                Step::ChildExit { .. } => {
+                    return Err(
+                        "serialized child_exit supports pane 1 and status 0-125 only".into(),
                     );
                 }
                 _ => {}
