@@ -22,6 +22,12 @@ pub enum Event {
     Command {
         name: String,
     },
+    Mouse {
+        code: u16,
+        column: u16,
+        row: u16,
+        release: bool,
+    },
     Clock {
         milliseconds: u64,
     },

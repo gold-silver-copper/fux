@@ -6,6 +6,11 @@
   "steps": [
     { "kind": "prefix", "client": "alice", "key": 2 },
     { "kind": "paste", "client": "alice", "bytes": [65, 2, 124, 66] },
+    { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 48, 59, 49, 59, 49, 77] },
+    { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 48, 59, 49, 59, 49, 109] },
+    { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 51, 50, 59, 49, 59, 49, 77] },
+    { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 51, 53, 59, 49, 59, 49, 77] },
+    { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 54, 52, 59, 49, 59, 49, 77] },
     { "kind": "prefix", "client": "alice", "key": 124 },
     {
       "kind": "expect",

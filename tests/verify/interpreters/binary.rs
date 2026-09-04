@@ -5,10 +5,17 @@ use super::super::transcript::{Entry, Event, hex};
 pub enum ObservedAction {
     Forward(Vec<u8>),
     Command(String),
+    Mouse {
+        code: u16,
+        column: u16,
+        row: u16,
+        release: bool,
+    },
 }
 
 pub trait BinaryDriver {
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
+    fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
     fn cleanup(&mut self) -> Result<usize, String>;
 }
 
@@ -57,6 +64,9 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                                 commands.push(name.clone());
                                 push(&mut transcript, Event::Command { name });
                             }
+                            other => {
+                                return Err(format!("unexpected binary input action: {other:?}"));
+                            }
                         }
                     }
                 }
@@ -87,7 +97,36 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                                 commands.push(name.clone());
                                 push(&mut transcript, Event::Command { name });
                             }
+                            other => {
+                                return Err(format!("unexpected binary paste action: {other:?}"));
+                            }
                         }
+                    }
+                }
+                Step::MouseInput { client, bytes } => {
+                    push(
+                        &mut transcript,
+                        Event::Input {
+                            client: client.clone(),
+                            bytes_hex: hex(bytes),
+                        },
+                    );
+                    match self.driver.mouse_input(bytes)? {
+                        ObservedAction::Mouse {
+                            code,
+                            column,
+                            row,
+                            release,
+                        } => push(
+                            &mut transcript,
+                            Event::Mouse {
+                                code,
+                                column,
+                                row,
+                                release,
+                            },
+                        ),
+                        other => return Err(format!("unexpected binary mouse action: {other:?}")),
                     }
                 }
                 Step::Expect { expected } => {

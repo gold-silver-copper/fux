@@ -47,6 +47,31 @@ impl Interpreter for InProcessInterpreter {
                         append_action(&mut transcript, action, &mut forwarded, &mut commands)?;
                     }
                 }
+                Step::MouseInput { client, bytes } => {
+                    push(
+                        &mut transcript,
+                        Event::Input {
+                            client: client.clone(),
+                            bytes_hex: hex(bytes),
+                        },
+                    );
+                    for action in router.feed(bytes, now) {
+                        match action {
+                            Action::Mouse(mouse) => push(
+                                &mut transcript,
+                                Event::Mouse {
+                                    code: mouse.code,
+                                    column: mouse.column,
+                                    row: mouse.row,
+                                    release: mouse.release,
+                                },
+                            ),
+                            other => {
+                                return Err(format!("unexpected mouse action: {other:?}"));
+                            }
+                        }
+                    }
+                }
                 Step::AdvanceClock { milliseconds } => {
                     now = now.saturating_add(*milliseconds);
                     push(

@@ -85,6 +85,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         listener: &fixture_listener,
         server,
         environment: &environment,
+        mouse_enabled: false,
     };
     let binary = BinaryInterpreter::new(driver)
         .run(&scenario)
@@ -99,6 +100,7 @@ struct PrefixBinaryDriver<'a> {
     listener: &'a UnixListener,
     server: OwnedChild,
     environment: &'a PrivateEnvironment,
+    mouse_enabled: bool,
 }
 
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
@@ -127,6 +129,47 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         Ok(vec![ObservedAction::Forward(decode_hex(encoded)?)])
     }
 
+    fn mouse_input(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<verification::interpreters::ObservedAction, String> {
+        use verification::interpreters::ObservedAction;
+        if !self.mouse_enabled {
+            self.primary.send(json!({
+                "command":"write",
+                "chunks_hex":["1b5b3f31303033681b5b3f3130303668"]
+            }));
+            if self.primary.receive()["bytes"] != 16 {
+                return Err("fixture did not enable SGR mouse mode".into());
+            }
+            self.client.wait_for_output_bytes(b"\x1b[?1006h");
+            self.mouse_enabled = true;
+        }
+        let (code, column, row, release) = parse_sgr_mouse(bytes)?;
+        self.primary
+            .send(json!({"command":"read_exact", "bytes":bytes.len()}));
+        let outer = format!(
+            "\x1b[<{code};{};{}{}",
+            column.saturating_add(1),
+            row.saturating_add(1),
+            if release { 'm' } else { 'M' }
+        );
+        self.client.write(outer.as_bytes());
+        let observed = self.primary.receive()["bytes_hex"]
+            .as_str()
+            .ok_or_else(|| "fixture did not report mouse bytes".to_owned())?
+            .to_owned();
+        if decode_hex(&observed)? != bytes {
+            return Err(format!("host mouse re-encoding mismatch: {observed}"));
+        }
+        Ok(ObservedAction::Mouse {
+            code,
+            column,
+            row,
+            release,
+        })
+    }
+
     fn cleanup(&mut self) -> Result<usize, String> {
         self.primary.send(json!({"command":"quit"}));
         if self.primary.receive()["event"] != "cleanup" {
@@ -148,6 +191,34 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }
         Ok(0)
     }
+}
+
+fn parse_sgr_mouse(bytes: &[u8]) -> Result<(u16, u16, u16, bool), String> {
+    let tail = bytes
+        .strip_prefix(b"\x1b[<")
+        .ok_or_else(|| "mouse input is not SGR encoded".to_owned())?;
+    let (terminator, body) = tail
+        .split_last()
+        .ok_or_else(|| "mouse input has no SGR terminator".to_owned())?;
+    let release = match terminator {
+        b'M' => false,
+        b'm' => true,
+        _ => return Err("mouse input has no SGR terminator".into()),
+    };
+    let body = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut fields = body.split(';');
+    let mut next = || {
+        fields
+            .next()
+            .ok_or_else(|| "missing mouse field".to_owned())?
+            .parse::<u16>()
+            .map_err(|error| error.to_string())
+    };
+    let result = (next()?, next()?, next()?, release);
+    if fields.next().is_some() || result.1 == 0 || result.2 == 0 {
+        return Err("invalid mouse fields".into());
+    }
+    Ok(result)
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {

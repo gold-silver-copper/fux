@@ -74,6 +74,27 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                 }
+                Step::MouseInput { client, bytes } => {
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Input {
+                            client: client.clone(),
+                            bytes_hex: hex(bytes),
+                        },
+                    );
+                    let (code, column, row, release) = parse_sgr_mouse(bytes)?;
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Mouse {
+                            code,
+                            column,
+                            row,
+                            release,
+                        },
+                    );
+                }
                 Step::AdvanceClock { milliseconds } => {
                     push(
                         &mut transcript,
@@ -119,6 +140,34 @@ impl Interpreter for ModelInterpreter {
         }
         Ok(transcript)
     }
+}
+
+fn parse_sgr_mouse(bytes: &[u8]) -> Result<(u16, u16, u16, bool), String> {
+    let tail = bytes
+        .strip_prefix(b"\x1b[<")
+        .ok_or_else(|| "mouse input is not SGR encoded".to_owned())?;
+    let (terminator, body) = tail
+        .split_last()
+        .ok_or_else(|| "mouse input has no SGR terminator".to_owned())?;
+    let release = match terminator {
+        b'M' => false,
+        b'm' => true,
+        _ => return Err("mouse input has no SGR terminator".into()),
+    };
+    let body = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut fields = body.split(';');
+    let parse = |value: &str| value.parse::<u16>().map_err(|error| error.to_string());
+    let mut next = || {
+        fields
+            .next()
+            .ok_or_else(|| "mouse input must contain three SGR fields".to_owned())
+            .and_then(parse)
+    };
+    let (code, column, row) = (next()?, next()?, next()?);
+    if fields.next().is_some() || column == 0 || row == 0 {
+        return Err("mouse coordinates are one based".into());
+    }
+    Ok((code, column, row, release))
 }
 
 fn push(transcript: &mut Vec<Entry>, source: &str, event: Event) {
