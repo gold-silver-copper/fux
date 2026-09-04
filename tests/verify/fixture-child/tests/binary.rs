@@ -102,6 +102,9 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     let captured = run(&fux, ["binary", "capture", "1"], &environment);
     assert!(captured.status.success());
     assert!(String::from_utf8_lossy(&captured.stdout).contains("binary"));
+    let mut reattached = TerminalChild::spawn(&fux, &environment, 40, 120);
+    reattached.wait_for_text("binary");
+    reattached.detach();
 
     server.terminate(Signal::SIGTERM);
     server.wait();
