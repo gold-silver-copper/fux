@@ -88,12 +88,24 @@ fn pure_model_verification_has_no_wall_clock_or_placeholder_escape_hatches() {
             );
         }
     }
-    for file in [
-        Path::new("tests/verification_corpus.rs"),
-        Path::new("tests/verify/interpreters/model.rs"),
-        Path::new("tests/verify/interpreters/in_process.rs"),
+    let mut guarded = Vec::new();
+    for root in [
+        "src",
+        "tests",
+        "zor/src",
+        "zor/tests",
+        "tests/verify/fixture-child/src",
+        "tests/verify/fixture-child/tests",
     ] {
-        let source = read(file);
+        if Path::new(root).is_dir() {
+            guarded.extend(rust_files(root));
+        }
+    }
+    for file in guarded {
+        if file == Path::new("tests/verification_structure.rs") {
+            continue;
+        }
+        let source = read(&file);
         for forbidden in ["#[ignore", "todo!", "unimplemented!"] {
             assert!(
                 !source.contains(forbidden),
@@ -162,7 +174,12 @@ fn rust_files(root: &str) -> Vec<PathBuf> {
         for entry in fs::read_dir(directory).expect("read source directory") {
             let path = entry.expect("source entry").path();
             if path.is_dir() {
-                visit(&path, output);
+                if !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("target" | ".git")
+                ) {
+                    visit(&path, output);
+                }
             } else if path.extension().is_some_and(|extension| extension == "rs") {
                 output.push(path);
             }
