@@ -4,7 +4,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -1624,70 +1624,105 @@ impl Drop for OwnedChild {
 
 struct Jsonl {
     writer: UnixStream,
-    reader: BufReader<UnixStream>,
+    reader: UnixStream,
+    read_buffer: Vec<u8>,
 }
 impl Jsonl {
     fn new(stream: UnixStream) -> Self {
-        stream
-            .set_read_timeout(Some(Duration::from_millis(50)))
-            .expect("fixture control read timeout");
-        stream
-            .set_write_timeout(Some(DEADLINE))
-            .expect("fixture control write timeout");
+        let reader = stream.try_clone().expect("clone fixture control");
+        reader
+            .set_nonblocking(true)
+            .expect("fixture control nonblocking reader");
         Self {
-            reader: BufReader::new(stream.try_clone().expect("clone fixture control")),
+            reader,
+            read_buffer: Vec::new(),
             writer: stream,
         }
     }
     fn send(&mut self, value: Value) {
-        serde_json::to_writer(&mut self.writer, &value).expect("fixture request");
-        self.writer.write_all(b"\n").expect("fixture newline");
-        self.writer.flush().expect("fixture flush");
-    }
-    fn receive(&mut self) -> Value {
-        let mut line = String::new();
+        let mut frame = serde_json::to_vec(&value).expect("fixture request");
+        frame.push(b'\n');
         let deadline = Instant::now() + DEADLINE;
-        loop {
-            match self.reader.read_line(&mut line) {
-                Ok(_) => break,
+        let mut written = 0;
+        while written < frame.len() {
+            match self.writer.write(&frame[written..]) {
+                Ok(0) => panic!("fixture control closed during write"),
+                Ok(count) => written += count,
                 Err(error)
                     if matches!(
                         error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => panic!("fixture control write: {error}"),
+            }
+            assert!(Instant::now() < deadline, "fixture write deadline expired");
+            if written < frame.len() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    fn receive(&mut self) -> Value {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            if let Some(newline) = self.read_buffer.iter().position(|byte| *byte == b'\n') {
+                assert!(
+                    newline < fux::control::MAX_FRAME_BYTES + 1,
+                    "JSONL response exceeded control protocol frame bound"
+                );
+                let frame: Vec<u8> = self.read_buffer.drain(..=newline).collect();
+                return serde_json::from_slice(&frame).expect("fixture JSON");
+            }
+            let mut chunk = [0_u8; 4096];
+            match self.reader.read(&mut chunk) {
+                Ok(0) => panic!("fixture closed unexpectedly"),
+                Ok(count) => self.read_buffer.extend_from_slice(&chunk[..count]),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
                     ) => {}
                 Err(error) => panic!("fixture response: {error}"),
+            }
+            if !self.read_buffer.contains(&b'\n') {
+                assert!(
+                    self.read_buffer.len() <= fux::control::MAX_FRAME_BYTES,
+                    "JSONL response exceeded control protocol frame bound"
+                );
             }
             assert!(
                 Instant::now() < deadline,
                 "fixture response deadline expired"
             );
+            std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(!line.is_empty(), "fixture closed unexpectedly");
-        serde_json::from_str(&line).expect("fixture JSON")
     }
 
     fn expect_no_frame(&mut self, timeout: Duration) {
-        self.reader
-            .get_mut()
-            .set_read_timeout(Some(timeout))
-            .expect("short no-frame deadline");
-        let mut line = String::new();
-        let result = self.reader.read_line(&mut line);
-        self.reader
-            .get_mut()
-            .set_read_timeout(Some(DEADLINE))
-            .expect("restore frame deadline");
         assert!(
-            matches!(
-                result,
-                Err(ref error)
+            self.read_buffer.is_empty(),
+            "buffered fixture bytes before duplicate-event check"
+        );
+        let deadline = Instant::now() + timeout;
+        loop {
+            let mut chunk = [0_u8; 4096];
+            match self.reader.read(&mut chunk) {
+                Ok(0) => panic!("fixture closed while checking for duplicate event"),
+                Ok(count) => panic!(
+                    "unexpected duplicate event bytes: {:?}",
+                    &chunk[..count]
+                ),
+                Err(error)
                     if matches!(
                         error.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    )
-            ),
-            "unexpected duplicate event frame: {line:?} ({result:?})"
-        );
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => panic!("fixture duplicate-event read: {error}"),
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 
