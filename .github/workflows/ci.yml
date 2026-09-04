@@ -45,6 +45,8 @@ jobs:
       - run: cargo +${{ matrix.rust }} clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} test --all-features --locked -- --test-threads=1
       - run: cargo +${{ matrix.rust }} doc --no-deps --all-features --locked
+      - run: cargo +${{ matrix.rust }} clippy --manifest-path tests/verify/fixture-child/Cargo.toml --locked -- -D warnings
+      - run: cargo +${{ matrix.rust }} test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
 
   android-cross-check:
     name: Android aarch64 cross-check (not runtime coverage)
