@@ -312,6 +312,71 @@ fn simultaneous_first_binary_clients_elect_one_workspace_and_both_attach() {
     );
 }
 
+// Golden path 9: terminate the foreground daemon at each externally observable
+// startup boundary and require the same complete rollback every time.
+#[test]
+fn sigterm_at_each_binary_startup_phase_rolls_back_all_owned_resources() {
+    for phase in ["manager", "pane", "descriptor", "control"] {
+        let fux = binary("FUX_BIN", "target/debug/fux");
+        let zor = binary("ZOR_BIN", "zor/target/debug/zor");
+        let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
+        let environment = PrivateEnvironment::new(&format!("p{}", &phase[..1]));
+        let fixture_listener =
+            UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
+        let id = run(&fux, ["id"], &environment);
+        assert!(id.status.success(), "id failed in {phase}");
+        let allow = String::from_utf8(id.stdout)
+            .expect("endpoint id")
+            .trim()
+            .to_owned();
+        environment.write_config(&fixture, &zor);
+        let mut server = OwnedChild::spawn(
+            Command::new(&fux)
+                .args(["serve", "--allow", &allow, "--name", "binary"])
+                .env_clear()
+                .envs(environment.variables())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        );
+
+        let fixture_pid = match phase {
+            "manager" => {
+                wait_for_path(&environment.manager_socket());
+                None
+            }
+            "pane" => {
+                let mut child = Jsonl::new(accept_with_deadline(&fixture_listener));
+                let ready = child.receive();
+                assert_eq!(ready["event"], "ready");
+                ready["pid"]
+                    .as_u64()
+                    .and_then(|pid| i32::try_from(pid).ok())
+            }
+            "descriptor" => {
+                wait_for_path(&environment.descriptor());
+                None
+            }
+            "control" => {
+                wait_for_path(&environment.control_socket());
+                None
+            }
+            _ => unreachable!(),
+        };
+        server.terminate(Signal::SIGTERM);
+        server.wait();
+        wait_for_absent(&environment.manager_socket());
+        wait_for_absent(&environment.control_socket());
+        wait_for_absent(&environment.descriptor());
+        if let Some(pid) = fixture_pid {
+            wait_for_process_absent(pid);
+        }
+        let lock = fux::daemon::StartupLock::acquire(&environment.root.join("run/fux"))
+            .expect("startup lock released");
+        drop(lock);
+    }
+}
+
 struct PrivateEnvironment {
     root: PathBuf,
 }

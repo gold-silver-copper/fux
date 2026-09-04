@@ -528,6 +528,13 @@ fn parse_popup_options(args: &[String]) -> Result<(Option<u16>, Option<u16>, Vec
 async fn serve(args: ServeArgs) -> Result<ExitCode> {
     use std::collections::BTreeSet;
     use std::sync::Arc;
+    // Register both termination handlers before acquiring any owned runtime resource. Unix
+    // signals remain queued until the main loop polls them, so a SIGINT/SIGTERM delivered during
+    // endpoint or pane startup still takes the normal, fully-owned shutdown path below.
+    let mut interrupt =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut terminate =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let config_path = fux::config::default_path()?;
     let live = Arc::new(runtime::LiveConfig::load(config_path)?);
     let config = live.snapshot();
@@ -618,10 +625,11 @@ async fn serve(args: ServeArgs) -> Result<ExitCode> {
             descriptor.name, descriptor.endpoint_id
         );
     }
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     loop {
         tokio::select! {
-            result = tokio::signal::ctrl_c() => { result?; break; }
+            signal = interrupt.recv() => {
+                if signal.is_some() { break; }
+            }
             signal = terminate.recv() => {
                 if signal.is_some() { break; }
             }
