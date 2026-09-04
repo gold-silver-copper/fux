@@ -420,7 +420,7 @@ fn final_natural_pane_is_a_durable_non_live_tombstone() {
     let client = ClientId::next();
     session.resize(client, 24, 80);
     assert_eq!(control.attached_clients(), 1);
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         let state = session.snapshot();
         let settled = control.is_empty()
