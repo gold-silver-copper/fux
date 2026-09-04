@@ -174,6 +174,7 @@ fn complete_example_round_trips_without_losing_policy_or_limits() {
     // Phase F5 configuration: the frozen schema has a stable human-readable TOML round trip.
     let source = r#"
 prefix = "C-b"
+local-network = true
 default-command = { argv = ["/bin/zsh", "-l"] }
 zor-path = "/opt/bin/zor"
 clipboard = "read-only"
@@ -205,6 +206,7 @@ max-status-segments = 16
 max-total-cells = 200000
 "#;
     let parsed = Config::from_toml(source).expect("complete example");
+    assert!(parsed.local_network);
     let encoded = parsed.to_toml_pretty().expect("serialize complete config");
     let reparsed = Config::from_toml(&encoded).expect("reparse complete config");
     assert_eq!(reparsed, parsed);

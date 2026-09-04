@@ -2836,6 +2836,69 @@ mod host_unit_tests {
     }
 
     #[test]
+    fn mouse_mode_and_encoding_matrix_is_explicit() {
+        let modes = |mouse_mode, mouse_encoding| PaneModes {
+            mouse_mode,
+            mouse_encoding,
+            ..PaneModes::default()
+        };
+        let event = |code, release| MouseEvent {
+            code,
+            column: 99,
+            row: 99,
+            release,
+        };
+        let press = event(0, false);
+        let release = event(0, true);
+        let drag = event(32, false);
+        let hover = event(35, false);
+        let wheel = event(64, false);
+
+        for (mode, expected) in [
+            (MouseMode::None, [false, false, false, false, false]),
+            (MouseMode::Press, [true, false, false, false, true]),
+            (MouseMode::PressRelease, [true, true, false, false, true]),
+            (MouseMode::ButtonMotion, [true, true, true, false, true]),
+            (MouseMode::AnyMotion, [true, true, true, true, true]),
+        ] {
+            let observed = [press, release, drag, hover, wheel]
+                .map(|event| encode_mouse(event, 9, 7, modes(mode, MouseEncoding::Sgr)).is_some());
+            assert_eq!(observed, expected, "unexpected filtering for {mode:?}");
+        }
+
+        let sgr = modes(MouseMode::AnyMotion, MouseEncoding::Sgr);
+        assert_eq!(
+            encode_mouse(press, 9, 7, sgr),
+            Some(b"\x1b[<0;9;7M".to_vec())
+        );
+        assert_eq!(
+            encode_mouse(release, 9, 7, sgr),
+            Some(b"\x1b[<0;9;7m".to_vec())
+        );
+        assert_eq!(
+            encode_mouse(drag, 9, 7, sgr),
+            Some(b"\x1b[<32;9;7M".to_vec())
+        );
+        assert_eq!(
+            encode_mouse(wheel, 9, 7, sgr),
+            Some(b"\x1b[<64;9;7M".to_vec())
+        );
+
+        let default = modes(MouseMode::AnyMotion, MouseEncoding::Default);
+        assert_eq!(
+            encode_mouse(press, 9, 7, default),
+            Some(vec![0x1b, b'[', b'M', 32, 41, 39])
+        );
+        assert!(encode_mouse(press, 224, 7, default).is_none());
+
+        let utf8 = modes(MouseMode::AnyMotion, MouseEncoding::Utf8);
+        assert_eq!(
+            encode_mouse(press, 224, 7, utf8),
+            Some(b"\x1b[M \xc4\x80'".to_vec())
+        );
+    }
+
+    #[test]
     fn completed_pane_workers_are_reaped_during_churn() {
         let mut host = WorkspaceHost::spawn(vec!["/bin/cat".into()], 0, None).expect("host");
         host.attach_notify(ChangeSignal::default());
