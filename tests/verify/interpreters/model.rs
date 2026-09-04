@@ -1,5 +1,7 @@
 use super::super::oracle::input::{Outcome, PrefixOracle};
-use super::super::schema::{ExpectedControlEvent, ExpectedSubscription, Scenario, Step};
+use super::super::schema::{
+    ExpectedControlEvent, ExpectedControlReply, ExpectedSubscription, Scenario, Step,
+};
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
 
@@ -14,6 +16,7 @@ impl Interpreter for ModelInterpreter {
         let mut commands = Vec::new();
         let mut subscriptions: Vec<ExpectedSubscription> = Vec::new();
         let mut control_events = Vec::new();
+        let mut control_replies = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -139,6 +142,44 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                 }
+                Step::Control { request } => {
+                    let name = request
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "control request omitted command".to_owned())?;
+                    let request_id = request
+                        .get("id")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| "control request omitted id".to_owned())?;
+                    if name != "list" {
+                        return Err(
+                            "independent model currently supports list control requests".into()
+                        );
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::ControlRequest {
+                            name: name.into(),
+                            request_id,
+                        },
+                    );
+                    let reply = ExpectedControlReply {
+                        request_id,
+                        status: "completed".into(),
+                        result_kind: "listing".into(),
+                    };
+                    control_replies.push(reply.clone());
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::ControlReply {
+                            request_id,
+                            status: reply.status,
+                            result_kind: reply.result_kind,
+                        },
+                    );
+                }
                 Step::AdvanceClock { milliseconds } => {
                     push(
                         &mut transcript,
@@ -166,6 +207,7 @@ impl Interpreter for ModelInterpreter {
                         || commands != expected.commands
                         || subscriptions != expected.subscriptions
                         || control_events != expected.control_events
+                        || control_replies != expected.control_replies
                     {
                         return Err(format!(
                             "model expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

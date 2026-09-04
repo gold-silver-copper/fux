@@ -1,4 +1,6 @@
-use super::super::schema::{ExpectedControlEvent, ExpectedSubscription, Scenario, Step};
+use super::super::schema::{
+    ExpectedControlEvent, ExpectedControlReply, ExpectedSubscription, Scenario, Step,
+};
 use super::super::transcript::{Entry, Event, hex};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,6 +24,7 @@ pub trait BinaryDriver {
         request_id: u64,
         events: &[String],
     ) -> Result<ExpectedSubscription, String>;
+    fn control(&mut self, request: &serde_json::Value) -> Result<ExpectedControlReply, String>;
     fn cleanup(&mut self) -> Result<usize, String>;
 }
 
@@ -41,6 +44,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut commands = Vec::new();
         let mut subscriptions = Vec::new();
         let mut control_events = Vec::new();
+        let mut control_replies = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -159,11 +163,39 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         },
                     );
                 }
+                Step::Control { request } => {
+                    let name = request
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "control request omitted command".to_owned())?;
+                    let request_id = request
+                        .get("id")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| "control request omitted id".to_owned())?;
+                    push(
+                        &mut transcript,
+                        Event::ControlRequest {
+                            name: name.into(),
+                            request_id,
+                        },
+                    );
+                    let reply = self.driver.control(request)?;
+                    control_replies.push(reply.clone());
+                    push(
+                        &mut transcript,
+                        Event::ControlReply {
+                            request_id: reply.request_id,
+                            status: reply.status,
+                            result_kind: reply.result_kind,
+                        },
+                    );
+                }
                 Step::Expect { expected } => {
                     if forwarded != expected.forwarded
                         || commands != expected.commands
                         || subscriptions != expected.subscriptions
                         || control_events != expected.control_events
+                        || control_replies != expected.control_replies
                     {
                         return Err(format!(
                             "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

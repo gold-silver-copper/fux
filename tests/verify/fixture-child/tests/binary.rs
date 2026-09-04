@@ -236,6 +236,34 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         })
     }
 
+    fn control(
+        &mut self,
+        request: &Value,
+    ) -> Result<verification::schema::ExpectedControlReply, String> {
+        let stream = UnixStream::connect(self.environment.control_socket())
+            .map_err(|error| error.to_string())?;
+        let mut connection = Jsonl::new(stream);
+        connection.send(request.clone());
+        let reply = connection.receive();
+        let request_id = reply["id"]
+            .as_u64()
+            .ok_or_else(|| format!("control reply omitted id: {reply}"))?;
+        let status = reply["status"]
+            .as_str()
+            .ok_or_else(|| format!("control reply omitted status: {reply}"))?
+            .to_owned();
+        let result_kind = reply
+            .pointer("/result/kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("control reply omitted result kind: {reply}"))?
+            .to_owned();
+        Ok(verification::schema::ExpectedControlReply {
+            request_id,
+            status,
+            result_kind,
+        })
+    }
+
     fn cleanup(&mut self) -> Result<usize, String> {
         self.subscribers.clear();
         self.primary.send(json!({"command":"quit"}));

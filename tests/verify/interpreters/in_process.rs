@@ -1,4 +1,6 @@
-use super::super::schema::{ExpectedControlEvent, ExpectedSubscription, Scenario, Step};
+use super::super::schema::{
+    ExpectedControlEvent, ExpectedControlReply, ExpectedSubscription, Scenario, Step,
+};
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
 use fux::host::{Action, Command, InputRouter};
@@ -15,6 +17,7 @@ impl Interpreter for InProcessInterpreter {
         let mut commands = Vec::new();
         let mut subscriptions: Vec<ExpectedSubscription> = Vec::new();
         let mut control_events = Vec::new();
+        let mut control_replies = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -141,6 +144,50 @@ impl Interpreter for InProcessInterpreter {
                         },
                     );
                 }
+                Step::Control { request } => {
+                    let frame = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+                    let decoded = fux::control::decode_request_frame(&frame)
+                        .map_err(|error| error.to_string())?;
+                    let fux::control::Request::List { id } = decoded else {
+                        return Err("production scenario currently supports list requests".into());
+                    };
+                    push(
+                        &mut transcript,
+                        Event::ControlRequest {
+                            name: "list".into(),
+                            request_id: id,
+                        },
+                    );
+                    let wire_reply = serde_json::to_value(fux::control::Reply::Completed {
+                        id,
+                        result: fux::control::CommandResult::Listing {
+                            workspaces: Vec::new(),
+                        },
+                    })
+                    .map_err(|error| error.to_string())?;
+                    let reply = ExpectedControlReply {
+                        request_id: id,
+                        status: wire_reply
+                            .get("status")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or_else(|| "production reply omitted status".to_owned())?
+                            .into(),
+                        result_kind: wire_reply
+                            .pointer("/result/kind")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or_else(|| "production reply omitted result kind".to_owned())?
+                            .into(),
+                    };
+                    control_replies.push(reply.clone());
+                    push(
+                        &mut transcript,
+                        Event::ControlReply {
+                            request_id: id,
+                            status: reply.status,
+                            result_kind: reply.result_kind,
+                        },
+                    );
+                }
                 Step::AdvanceClock { milliseconds } => {
                     now = now.saturating_add(*milliseconds);
                     push(
@@ -158,6 +205,7 @@ impl Interpreter for InProcessInterpreter {
                         || commands != expected.commands
                         || subscriptions != expected.subscriptions
                         || control_events != expected.control_events
+                        || control_replies != expected.control_replies
                     {
                         return Err(format!(
                             "production expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

@@ -4,6 +4,7 @@
   "applicability": "all",
   "initial_size": { "rows": 24, "columns": 80 },
   "steps": [
+    { "kind": "control", "request": { "command": "list", "id": 41 } },
     {
       "kind": "subscribe",
       "request_id": 77,
@@ -31,6 +32,9 @@
         "control_events": [
           { "name": "pane.opened", "request_id": 77, "subscription_id": 77 },
           { "name": "pane.opened", "request_id": 77, "subscription_id": 77 }
+        ],
+        "control_replies": [
+          { "request_id": 41, "status": "completed", "result_kind": "listing" }
         ],
         "owned_resources": 0
       }

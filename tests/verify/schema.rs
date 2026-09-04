@@ -158,6 +158,8 @@ pub struct Expected {
     #[serde(default)]
     pub subscriptions: Vec<ExpectedSubscription>,
     #[serde(default)]
+    pub control_replies: Vec<ExpectedControlReply>,
+    #[serde(default)]
     pub terminal_frames: Vec<ExpectedTerminalFrame>,
     #[serde(default)]
     pub pty_resizes: Vec<ExpectedResize>,
@@ -195,6 +197,14 @@ pub struct ExpectedControlEvent {
 pub struct ExpectedSubscription {
     pub request_id: u64,
     pub events: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedControlReply {
+    pub request_id: u64,
+    pub status: String,
+    pub result_kind: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -287,6 +297,7 @@ fn validate_step(step: &Step) -> Result<(), String> {
                 + expected.snapshots.len()
                 + expected.control_events.len()
                 + expected.subscriptions.len()
+                + expected.control_replies.len()
                 + expected.terminal_frames.len()
                 + expected.pty_resizes.len()
                 + expected.signals.len();
@@ -313,6 +324,10 @@ fn validate_step(step: &Step) -> Result<(), String> {
                 for event in &subscription.events {
                     bounded_text("subscription event", event)?;
                 }
+            }
+            for reply in &expected.control_replies {
+                bounded_text("control reply status", &reply.status)?;
+                bounded_text("control reply result kind", &reply.result_kind)?;
             }
             for frame in &expected.terminal_frames {
                 validate_size(Size {

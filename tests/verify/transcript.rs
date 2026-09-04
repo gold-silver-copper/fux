@@ -45,6 +45,15 @@ pub enum Event {
         request_id: u64,
         events: Vec<String>,
     },
+    ControlRequest {
+        name: String,
+        request_id: u64,
+    },
+    ControlReply {
+        request_id: u64,
+        status: String,
+        result_kind: String,
+    },
     Resize {
         pane: String,
         rows: u16,
