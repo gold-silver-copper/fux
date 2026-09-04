@@ -4,7 +4,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -113,6 +113,66 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     );
 }
 
+// Golden path 7: the installed-style binary boundary retains final output, OSC state,
+// and the real status until the final client detaches, then retires every artifact.
+#[test]
+fn natural_last_pane_exit_is_observable_before_binary_workspace_retirement() {
+    let fux = binary("FUX_BIN", "target/debug/fux");
+    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
+    let environment = PrivateEnvironment::new("nat");
+    let fixture_listener =
+        UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
+
+    let id = run(&fux, ["id"], &environment);
+    assert!(
+        id.status.success(),
+        "id failed: {}",
+        String::from_utf8_lossy(&id.stderr)
+    );
+    let allow = String::from_utf8(id.stdout)
+        .expect("endpoint id")
+        .trim()
+        .to_owned();
+    environment.write_config(&fixture, &zor);
+    let mut server = OwnedChild::spawn(
+        Command::new(&fux)
+            .args(["serve", "--allow", &allow, "--name", "binary"])
+            .env_clear()
+            .envs(environment.variables())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    );
+    wait_for_path(&environment.manager_socket());
+    wait_for_path(&environment.control_socket());
+    let mut fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
+    assert_eq!(fixture.receive()["event"], "ready");
+    let mut client = TerminalChild::spawn(&fux, &environment, 24, 80);
+    wait_for_list(&fux, &environment, "\"width\":80");
+
+    fixture.send(json!({"command":"write", "chunks_hex":["46494e414c5f42494e415259"]}));
+    assert_eq!(fixture.receive()["bytes"], 12);
+    fixture.send(json!({
+        "command":"agent",
+        "payload":"state=blocked;agent=final-child;seq=41"
+    }));
+    wait_for_list(&fux, &environment, "blocked");
+    fixture.send(json!({"command":"exit", "status":29}));
+    assert_eq!(fixture.receive()["event"], "cleanup");
+
+    client.wait_for_text("FINAL_BINARY");
+    client.wait_status(29);
+
+    server.wait();
+    wait_for_absent(&environment.manager_socket());
+    wait_for_absent(&environment.control_socket());
+    assert!(
+        !environment.descriptor().exists(),
+        "workspace descriptor leaked"
+    );
+}
+
 struct PrivateEnvironment {
     root: PathBuf,
 }
@@ -202,6 +262,7 @@ struct TerminalChild {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     reader: Option<std::thread::JoinHandle<()>>,
+    output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
 }
 
 impl TerminalChild {
@@ -222,25 +283,45 @@ impl TerminalChild {
         }
         let child = pair.slave.spawn_command(command).expect("spawn fux client");
         drop(pair.slave);
-        let mut output = pair.master.try_clone_reader().expect("client reader");
+        let mut terminal = pair.master.try_clone_reader().expect("client reader");
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = std::sync::Arc::clone(&output);
         let reader = std::thread::spawn(move || {
-            let mut sink = std::io::sink();
-            let _ = std::io::copy(&mut output, &mut sink);
+            let mut chunk = [0_u8; 4096];
+            while let Ok(count) = terminal.read(&mut chunk) {
+                if count == 0 {
+                    break;
+                }
+                let mut captured = captured
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let remaining = 1024 * 1024 - captured.len().min(1024 * 1024);
+                captured.extend_from_slice(&chunk[..count.min(remaining)]);
+            }
         });
         let writer = pair.master.take_writer().expect("client writer");
         Self {
             child,
             writer,
             reader: Some(reader),
+            output,
         }
     }
 
     fn detach(&mut self) {
         self.write(&[1, b'd']);
+        self.wait_success();
+    }
+
+    fn wait_success(&mut self) {
+        self.wait_status(0);
+    }
+
+    fn wait_status(&mut self, expected: u32) {
         let deadline = Instant::now() + DEADLINE;
         loop {
             if let Some(status) = self.child.try_wait().expect("wait client") {
-                assert!(status.success(), "client detach status {status}");
+                assert_eq!(status.exit_code(), expected, "client status {status}");
                 break;
             }
             assert!(Instant::now() < deadline, "client detach deadline expired");
@@ -248,6 +329,28 @@ impl TerminalChild {
         }
         if let Some(reader) = self.reader.take() {
             reader.join().expect("client reader");
+        }
+    }
+
+    fn wait_for_text(&self, needle: &str) {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let bytes = self
+                .output
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let mut terminal = vt100::Parser::new(24, 80, 0);
+            terminal.process(&bytes);
+            if terminal.screen().contents().contains(needle) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "client never painted final output; bytes={}",
+                String::from_utf8_lossy(&bytes)
+            );
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
@@ -371,7 +474,9 @@ fn wait_for_list(fux: &Path, environment: &PrivateEnvironment, state: &str) {
         }
         assert!(
             Instant::now() < deadline,
-            "agent state `{state}` did not reach binary list"
+            "`{state}` did not reach binary list; stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
         std::thread::sleep(Duration::from_millis(5));
     }

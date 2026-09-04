@@ -17,6 +17,7 @@ fux = { path = "../../.." }
 koh = { version = "=0.12.0", path = "../../../references/koh", default-features = false, features = ["backend-termina"] }
 nix = { version = "0.30", features = ["signal"] }
 portable-pty = "=0.9.0"
+vt100 = "0.16"
 
 [lints.rust]
 unsafe_code = "forbid"
