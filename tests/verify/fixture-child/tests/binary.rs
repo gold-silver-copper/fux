@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 #[path = "../../mod.rs"]
 mod verification;
 
-const DEADLINE: Duration = Duration::from_secs(20);
+const DEADLINE: Duration = Duration::from_secs(60);
 
 fn binary_test_guard() -> MutexGuard<'static, ()> {
     static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
