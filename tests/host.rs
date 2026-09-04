@@ -7,17 +7,17 @@
 use fux::host::{
     Action, Command, InputRouter, MouseEvent, WorkspaceHost, platform_tool_from, resolve_zor_path,
 };
-use fux::state::{AgentState, Direction, PaneId};
+use fux::state::{AgentState, Direction, PaneId, WorkspaceState};
 #[cfg(unix)]
-use koh::client::{IrohConnector, run_client};
+use koh::client::{ClientTerminal, IrohConnector, run_client};
 #[cfg(unix)]
-use koh::predict::DisplayPreference;
+use koh::predict::{DisplayPreference, Overlay};
 use koh::server::{ChangeSignal, ClientId, SessionHost};
 #[cfg(unix)]
 use koh::server::{Hosts, SharedHost};
 #[cfg(unix)]
 use koh::transport_iroh::{
-    bind_endpoint_local, bind_endpoint_local_alpns, generate_secret_key, loopback_addr,
+    IrohChannel, bind_endpoint_local, bind_endpoint_local_alpns, generate_secret_key, loopback_addr,
 };
 use std::path::PathBuf;
 #[cfg(unix)]
@@ -1265,4 +1265,166 @@ async fn workspace_host_round_trips_through_hosts_and_run_client() {
     .expect("run client");
     assert_eq!(result, Some(7));
     accept.abort();
+}
+
+#[cfg(unix)]
+struct SemanticTerminal {
+    latest: Arc<std::sync::Mutex<WorkspaceState>>,
+}
+
+#[cfg(unix)]
+impl ClientTerminal<WorkspaceState> for SemanticTerminal {
+    fn render(
+        &mut self,
+        state: &WorkspaceState,
+        _overlay: &Overlay,
+        _status: Option<&str>,
+    ) -> std::io::Result<()> {
+        *self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = state.clone();
+        Ok(())
+    }
+
+    fn size(&self) -> std::io::Result<(u16, u16)> {
+        Ok((24, 80))
+    }
+}
+
+// Golden path 10: force the first real QUIC connection down while retaining the
+// authoritative WorkspaceHost, then prove the reconnect converges to that same state.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_viewer_reconnects_after_forced_loopback_loss_without_state_reset() {
+    let provider = SharedHost::new(|| WorkspaceHost::spawn(vec!["/bin/cat".into()], 32, None));
+    let hosts = Arc::new(Hosts::new().with(fux::FUX_ALPN, provider));
+    let server = match bind_endpoint_local_alpns(generate_secret_key(), hosts.alpns()).await {
+        Ok(server) => server,
+        Err(error) if format!("{error:#}").contains("Operation not permitted") => return,
+        Err(error) => panic!("bind server: {error:#}"),
+    };
+    let address = loopback_addr(&server);
+    let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
+    let accept = {
+        let hosts = Arc::clone(&hosts);
+        tokio::spawn(async move {
+            let mut first_drop = Some(drop_rx);
+            while let Some(incoming) = server.accept().await {
+                let hosts = Arc::clone(&hosts);
+                let drop = first_drop.take();
+                tokio::spawn(async move {
+                    if let Ok(connection) = incoming.await {
+                        if let Some(drop) = drop {
+                            let victim = connection.clone();
+                            tokio::spawn(async move {
+                                if drop.await.is_ok() {
+                                    IrohChannel::new(victim).close(0, b"deterministic loss");
+                                }
+                            });
+                        }
+                        hosts.serve_connection(connection).await;
+                    }
+                });
+            }
+        })
+    };
+
+    let endpoint = bind_endpoint_local(generate_secret_key(), false)
+        .await
+        .expect("bind reconnecting client");
+    let connector = IrohConnector::with_alpn(endpoint, address, fux::FUX_ALPN);
+    let channel = connector.connect().await.expect("initial connection");
+    let latest = Arc::new(std::sync::Mutex::new(WorkspaceState::default()));
+    let terminal = SemanticTerminal {
+        latest: Arc::clone(&latest),
+    };
+    let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>(16);
+    let (_resize_tx, resize_rx) = mpsc::channel::<()>(2);
+    let shutdown = CancellationToken::new();
+    let client_shutdown = shutdown.clone();
+    let client = tokio::spawn(async move {
+        run_client(
+            channel,
+            connector,
+            DisplayPreference::Never,
+            (24, 80),
+            input_rx,
+            resize_rx,
+            terminal,
+            client_shutdown,
+        )
+        .await
+    });
+
+    input_tx
+        .send(b"MARK_ONE".to_vec())
+        .await
+        .expect("first input");
+    wait_for_semantic_text(&latest, "MARK_ONE").await;
+    let before = latest
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    drop_tx.send(()).expect("drop first connection");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let _ = input_tx.send(b"MARK_TWO".to_vec()).await;
+        let current = latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if visible_workspace_text(&current).contains("MARK_TWO") {
+            assert!(
+                visible_workspace_text(&current).contains("MARK_ONE"),
+                "reconnect replaced rather than retained the authoritative workspace"
+            );
+            assert_eq!(current.tabs(), before.tabs());
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "reconnect deadline expired"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    shutdown.cancel();
+    drop(input_tx);
+    tokio::time::timeout(Duration::from_secs(3), client)
+        .await
+        .expect("client cleanup deadline")
+        .expect("client task")
+        .expect("client loop");
+    accept.abort();
+}
+
+#[cfg(unix)]
+async fn wait_for_semantic_text(latest: &Arc<std::sync::Mutex<WorkspaceState>>, needle: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if visible_workspace_text(&state).contains(needle) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "semantic frame deadline expired"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(unix)]
+fn visible_workspace_text(state: &WorkspaceState) -> String {
+    state
+        .panes()
+        .values()
+        .flat_map(|pane| pane.cells.iter())
+        .map(|cell| cell.text.as_str())
+        .collect()
 }
