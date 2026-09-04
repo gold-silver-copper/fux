@@ -335,6 +335,10 @@ impl Scenario {
                         "serialized child_exit supports pane 1 and status 0-125 only".into(),
                     );
                 }
+                Step::Signal { pane: 1, .. } => child_exited = true,
+                Step::Signal { .. } => {
+                    return Err("serialized signal supports pane 1 only".into());
+                }
                 _ => {}
             }
         }

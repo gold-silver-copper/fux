@@ -1,0 +1,5 @@
+{"sequence":0,"source":"model","event":{"kind":"lifecycle","resource":"daemon","state":"running"}}
+{"sequence":1,"source":"model","event":{"kind":"signal","process":"pane-1","name":"kill"}}
+{"sequence":2,"source":"model","event":{"kind":"child_exit","process":"pane-1","status":137}}
+{"sequence":3,"source":"model","event":{"kind":"lifecycle","resource":"daemon","state":"stopped"}}
+{"sequence":4,"source":"model","event":{"kind":"cleanup","owned_resources":0}}

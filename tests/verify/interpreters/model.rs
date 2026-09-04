@@ -1,7 +1,7 @@
 use super::super::oracle::input::{Outcome, PrefixOracle};
 use super::super::schema::{
-    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription,
-    ExpectedTerminalFrame, Scenario, Step,
+    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSignal,
+    ExpectedSubscription, ExpectedTerminalFrame, Scenario, Signal, Step,
 };
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
@@ -22,6 +22,7 @@ impl Interpreter for ModelInterpreter {
         let mut pty_resizes = Vec::new();
         let mut terminal_frames = Vec::new();
         let mut exit_status = None;
+        let mut signals = Vec::new();
         let mut terminal_size = (
             scenario.initial_size.rows.saturating_sub(3),
             scenario.initial_size.columns.saturating_sub(2),
@@ -183,6 +184,33 @@ impl Interpreter for ModelInterpreter {
                         Event::ChildExit {
                             process: format!("pane-{pane}"),
                             status: *status,
+                        },
+                    );
+                }
+                Step::Signal { pane, signal } => {
+                    if *pane != 1 || exit_status.is_some() {
+                        return Err(format!("model cannot signal pane {pane}"));
+                    }
+                    let observed = ExpectedSignal {
+                        process: format!("pane-{pane}"),
+                        signal: *signal,
+                    };
+                    signals.push(observed);
+                    exit_status = Some(signal_status(*signal));
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Signal {
+                            process: format!("pane-{pane}"),
+                            name: signal_name(*signal).into(),
+                        },
+                    );
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::ChildExit {
+                            process: format!("pane-{pane}"),
+                            status: signal_status(*signal),
                         },
                     );
                 }
@@ -416,6 +444,7 @@ impl Interpreter for ModelInterpreter {
                         || control_replies != expected.control_replies
                         || pty_resizes != expected.pty_resizes
                         || terminal_frames != expected.terminal_frames
+                        || signals != expected.signals
                         || exit_status != expected.exit_status
                     {
                         return Err(format!(
@@ -438,6 +467,24 @@ impl Interpreter for ModelInterpreter {
             }
         }
         Ok(transcript)
+    }
+}
+
+fn signal_name(signal: Signal) -> &'static str {
+    match signal {
+        Signal::Hup => "hup",
+        Signal::Int => "int",
+        Signal::Term => "term",
+        Signal::Kill => "kill",
+    }
+}
+
+fn signal_status(signal: Signal) -> i32 {
+    128 + match signal {
+        Signal::Hup => 1,
+        Signal::Int => 2,
+        Signal::Term => 15,
+        Signal::Kill => 9,
     }
 }
 

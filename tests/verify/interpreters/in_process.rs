@@ -1,6 +1,6 @@
 use super::super::schema::{
-    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription,
-    ExpectedTerminalFrame, Scenario, Step,
+    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSignal,
+    ExpectedSubscription, ExpectedTerminalFrame, Scenario, Signal, Step,
 };
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
@@ -41,6 +41,7 @@ impl Interpreter for InProcessInterpreter {
         let mut pty_resizes = Vec::new();
         let mut terminal_frames = Vec::new();
         let mut exit_status = None;
+        let mut signals = Vec::new();
         let mut terminal_size = (
             scenario.initial_size.rows.saturating_sub(3),
             scenario.initial_size.columns.saturating_sub(2),
@@ -262,6 +263,32 @@ impl Interpreter for InProcessInterpreter {
                         Event::ChildExit {
                             process: format!("pane-{pane}"),
                             status: observed,
+                        },
+                    );
+                }
+                Step::Signal { pane, signal } => {
+                    if *pane != 1 || exit_status.is_some() {
+                        return Err(format!("production cannot signal pane {pane}"));
+                    }
+                    let observed_status = observe_signal(*signal)?;
+                    let observed = ExpectedSignal {
+                        process: format!("pane-{pane}"),
+                        signal: *signal,
+                    };
+                    signals.push(observed);
+                    exit_status = Some(observed_status);
+                    push(
+                        &mut transcript,
+                        Event::Signal {
+                            process: format!("pane-{pane}"),
+                            name: signal_name(*signal).into(),
+                        },
+                    );
+                    push(
+                        &mut transcript,
+                        Event::ChildExit {
+                            process: format!("pane-{pane}"),
+                            status: observed_status,
                         },
                     );
                 }
@@ -514,6 +541,7 @@ impl Interpreter for InProcessInterpreter {
                         || control_replies != expected.control_replies
                         || pty_resizes != expected.pty_resizes
                         || terminal_frames != expected.terminal_frames
+                        || signals != expected.signals
                         || exit_status != expected.exit_status
                     {
                         return Err(format!(
@@ -535,6 +563,75 @@ impl Interpreter for InProcessInterpreter {
             }
         }
         Ok(transcript)
+    }
+}
+
+fn observe_signal(signal: Signal) -> Result<i32, String> {
+    use nix::sys::signal::{Signal as NixSignal, kill};
+    use nix::unistd::Pid;
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let executable =
+        fux::host::platform_tool_from("sleep", None, None, cfg!(target_os = "android"));
+    struct OwnedProcess(Option<std::process::Child>);
+    impl Drop for OwnedProcess {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    let mut child = OwnedProcess(Some(
+        std::process::Command::new(executable)
+            .arg("30")
+            .spawn()
+            .map_err(|error| error.to_string())?,
+    ));
+    let native = match signal {
+        Signal::Hup => NixSignal::SIGHUP,
+        Signal::Int => NixSignal::SIGINT,
+        Signal::Term => NixSignal::SIGTERM,
+        Signal::Kill => NixSignal::SIGKILL,
+    };
+    kill(
+        Pid::from_raw(
+            i32::try_from(child.0.as_ref().ok_or("signal child missing")?.id())
+                .map_err(|error| error.to_string())?,
+        ),
+        native,
+    )
+    .map_err(|error| error.to_string())?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child
+            .0
+            .as_mut()
+            .ok_or("signal child missing")?
+            .try_wait()
+            .map_err(|error| error.to_string())?
+        {
+            child.0.take();
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("signal child exit deadline expired".into());
+        }
+        std::thread::yield_now();
+    };
+    let observed = status
+        .signal()
+        .ok_or_else(|| format!("signal fixture exited normally: {status}"))?;
+    Ok(128 + observed)
+}
+
+fn signal_name(signal: Signal) -> &'static str {
+    match signal {
+        Signal::Hup => "hup",
+        Signal::Int => "int",
+        Signal::Term => "term",
+        Signal::Kill => "kill",
     }
 }
 

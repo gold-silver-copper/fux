@@ -1,6 +1,6 @@
 use super::super::schema::{
-    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription,
-    ExpectedTerminalFrame, Scenario, Size, Step,
+    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSignal,
+    ExpectedSubscription, ExpectedTerminalFrame, Scenario, Signal, Size, Step,
 };
 use super::super::transcript::{Entry, Event, hex};
 
@@ -32,6 +32,7 @@ pub trait BinaryDriver {
     ) -> Result<Vec<u8>, String>;
     fn copy_input(&mut self, client: &str, bytes: &[u8]) -> Result<(), String>;
     fn child_exit(&mut self, pane: u32, status: i32) -> Result<i32, String>;
+    fn signal(&mut self, pane: u32, signal: Signal) -> Result<i32, String>;
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
     fn subscribe(
@@ -65,6 +66,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut pty_resizes = Vec::new();
         let mut terminal_frames = Vec::new();
         let mut exit_status = None;
+        let mut signals = Vec::new();
         let mut owned_resources = None;
         for step in &scenario.steps {
             match step {
@@ -177,6 +179,29 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         Event::ChildExit {
                             process: format!("pane-{pane}"),
                             status: observed,
+                        },
+                    );
+                }
+                Step::Signal { pane, signal } => {
+                    let observed_status = self.driver.signal(*pane, *signal)?;
+                    let observed = ExpectedSignal {
+                        process: format!("pane-{pane}"),
+                        signal: *signal,
+                    };
+                    signals.push(observed);
+                    exit_status = Some(observed_status);
+                    push(
+                        &mut transcript,
+                        Event::Signal {
+                            process: format!("pane-{pane}"),
+                            name: signal_name(*signal).into(),
+                        },
+                    );
+                    push(
+                        &mut transcript,
+                        Event::ChildExit {
+                            process: format!("pane-{pane}"),
+                            status: observed_status,
                         },
                     );
                 }
@@ -355,6 +380,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         || control_replies != expected.control_replies
                         || pty_resizes != expected.pty_resizes
                         || terminal_frames != expected.terminal_frames
+                        || signals != expected.signals
                         || exit_status != expected.exit_status
                     {
                         return Err(format!(
@@ -374,6 +400,15 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
             }
         }
         Ok(transcript)
+    }
+}
+
+fn signal_name(signal: Signal) -> &'static str {
+    match signal {
+        Signal::Hup => "hup",
+        Signal::Int => "int",
+        Signal::Term => "term",
+        Signal::Kill => "kill",
     }
 }
 

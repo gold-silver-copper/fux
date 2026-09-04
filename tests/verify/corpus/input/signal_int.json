@@ -1,0 +1,1 @@
+{"schema_version":1,"name":"signal_int","applicability":"all","initial_size":{"rows":24,"columns":80},"steps":[{"kind":"start_daemon"},{"kind":"signal","pane":1,"signal":"int"},{"kind":"shutdown"},{"kind":"expect","expected":{"signals":[{"process":"pane-1","signal":"int"}],"exit_status":130,"owned_resources":0}}]}

@@ -30,6 +30,22 @@ fn serialized_input_scenarios_agree_through_model_in_process_and_real_binaries()
             "prefix-paste",
             include_str!("../../corpus/input/prefix_and_paste.json"),
         ),
+        (
+            "signal-hup",
+            include_str!("../../corpus/input/signal_hup.json"),
+        ),
+        (
+            "signal-int",
+            include_str!("../../corpus/input/signal_int.json"),
+        ),
+        (
+            "signal-term",
+            include_str!("../../corpus/input/signal_term.json"),
+        ),
+        (
+            "signal-kill",
+            include_str!("../../corpus/input/signal_kill.json"),
+        ),
     ] {
         let scenario: Scenario = serde_json::from_str(source).expect("strict scenario");
         assert_binary_scenario(&scenario, name);
@@ -69,6 +85,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         allow,
         client: None,
         primary: None,
+        primary_pid: None,
         secondary: Vec::new(),
         listener: &fixture_listener,
         server: None,
@@ -93,6 +110,7 @@ struct PrefixBinaryDriver<'a> {
     allow: String,
     client: Option<TerminalChild>,
     primary: Option<Jsonl>,
+    primary_pid: Option<i32>,
     secondary: Vec<Jsonl>,
     listener: &'a UnixListener,
     server: Option<OwnedChild>,
@@ -132,8 +150,15 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         wait_for_path(&self.environment.manager_socket());
         wait_for_path(&self.environment.control_socket());
         let mut primary = Jsonl::new(accept_with_deadline(self.listener));
-        if primary.receive()["event"] != "ready" {
+        let ready = primary.receive();
+        if ready["event"] != "ready" {
             return Err("primary fixture did not become ready".into());
+        }
+        self.primary_pid = ready["pid"]
+            .as_u64()
+            .and_then(|pid| i32::try_from(pid).ok());
+        if self.primary_pid.is_none() {
+            return Err(format!("primary fixture omitted a valid pid: {ready}"));
         }
         self.primary = Some(primary);
         Ok(())
@@ -331,6 +356,53 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             || event["pane"] != pane
             || event["exit_status"] != status
         {
+            return Err(format!("unexpected raw pane-close event: {event}"));
+        }
+        Ok(status)
+    }
+
+    fn signal(
+        &mut self,
+        pane: u32,
+        signal: verification::schema::Signal,
+    ) -> Result<i32, String> {
+        if pane != 1 || self.primary_exited {
+            return Err(format!("binary cannot signal pane {pane}"));
+        }
+        let stream = UnixStream::connect(self.environment.control_socket())
+            .map_err(|error| error.to_string())?;
+        let mut subscriber = Jsonl::new(stream);
+        subscriber.send(json!({
+            "command": "subscribe",
+            "id": 94,
+            "events": ["pane.closed"],
+        }));
+        let accepted = subscriber.receive();
+        if accepted["id"] != 94 || accepted["status"] != "accepted" {
+            return Err(format!("pane-close subscription was not accepted: {accepted}"));
+        }
+        let native = match signal {
+            verification::schema::Signal::Hup => Signal::SIGHUP,
+            verification::schema::Signal::Int => Signal::SIGINT,
+            verification::schema::Signal::Term => Signal::SIGTERM,
+            verification::schema::Signal::Kill => Signal::SIGKILL,
+        };
+        kill(
+            Pid::from_raw(
+                self.primary_pid
+                    .ok_or_else(|| "primary fixture pid is unavailable".to_owned())?,
+            ),
+            native,
+        )
+        .map_err(|error| error.to_string())?;
+        self.primary_exited = true;
+        self.primary = None;
+        let event = subscriber.receive();
+        let status = event["exit_status"]
+            .as_i64()
+            .and_then(|status| i32::try_from(status).ok())
+            .ok_or_else(|| format!("pane-close signal event omitted status: {event}"))?;
+        if event["event"] != "pane.closed" || event["id"] != 94 || event["pane"] != pane {
             return Err(format!("unexpected raw pane-close event: {event}"));
         }
         Ok(status)

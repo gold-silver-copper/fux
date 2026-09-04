@@ -16,6 +16,14 @@ const PREFIX_AND_PASTE: &str = include_str!("verify/corpus/input/prefix_and_past
 const PREFIX_AND_PASTE_GOLDEN: &str = include_str!("verify/fixtures/prefix_and_paste.jsonl");
 const PREFIX_TIMEOUT: &str = include_str!("verify/corpus/input/prefix_timeout.json");
 const PREFIX_TIMEOUT_GOLDEN: &str = include_str!("verify/fixtures/prefix_timeout.jsonl");
+const SIGNAL_HUP: &str = include_str!("verify/corpus/input/signal_hup.json");
+const SIGNAL_HUP_GOLDEN: &str = include_str!("verify/fixtures/signal_hup.jsonl");
+const SIGNAL_INT: &str = include_str!("verify/corpus/input/signal_int.json");
+const SIGNAL_INT_GOLDEN: &str = include_str!("verify/fixtures/signal_int.jsonl");
+const SIGNAL_TERM: &str = include_str!("verify/corpus/input/signal_term.json");
+const SIGNAL_TERM_GOLDEN: &str = include_str!("verify/fixtures/signal_term.jsonl");
+const SIGNAL_KILL: &str = include_str!("verify/corpus/input/signal_kill.json");
+const SIGNAL_KILL_GOLDEN: &str = include_str!("verify/fixtures/signal_kill.jsonl");
 const WIDE_OSC_CASSETTE: &str = include_str!("verify/fixtures/terminal/wide_osc.json");
 
 #[test]
@@ -43,6 +51,26 @@ fn prefix_timeout_agrees_across_independent_interpreters_and_the_golden() {
         PREFIX_TIMEOUT_GOLDEN,
         "prefix_timeout.jsonl",
     );
+}
+
+#[test]
+fn signal_hup_agrees_across_independent_interpreters_and_the_golden() {
+    assert_scenario_golden(SIGNAL_HUP, SIGNAL_HUP_GOLDEN, "signal_hup.jsonl");
+}
+
+#[test]
+fn signal_int_agrees_across_independent_interpreters_and_the_golden() {
+    assert_scenario_golden(SIGNAL_INT, SIGNAL_INT_GOLDEN, "signal_int.jsonl");
+}
+
+#[test]
+fn signal_term_agrees_across_independent_interpreters_and_the_golden() {
+    assert_scenario_golden(SIGNAL_TERM, SIGNAL_TERM_GOLDEN, "signal_term.jsonl");
+}
+
+#[test]
+fn signal_kill_agrees_across_independent_interpreters_and_the_golden() {
+    assert_scenario_golden(SIGNAL_KILL, SIGNAL_KILL_GOLDEN, "signal_kill.jsonl");
 }
 
 fn assert_scenario_golden(source: &str, golden: &str, fixture_name: &str) {
