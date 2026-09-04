@@ -151,6 +151,17 @@ fn natural_last_pane_exit_is_observable_before_binary_workspace_retirement() {
     let mut client = TerminalChild::spawn(&fux, &environment, 24, 80);
     wait_for_list(&fux, &environment, "\"width\":80");
 
+    fixture.send(json!({"command":"write", "chunks_hex":["61cc81", "e7958c", "6263"]}));
+    assert_eq!(fixture.receive()["bytes"], 8);
+    client.wait_for_text("á界bc");
+    client.write(&[1, b'[']);
+    client.wait_for_inverse(1, 6);
+    client.write(b" hhhhhy");
+    client.wait_for_output_bytes(b"\x1b]52;c;YcyB55WMYmM=\x07");
+    fixture.send(json!({"command":"read_exact", "bytes":1}));
+    client.write(b"Z");
+    assert_eq!(fixture.receive()["bytes_hex"], "5a");
+
     fixture.send(json!({"command":"write", "chunks_hex":["46494e414c5f42494e415259"]}));
     assert_eq!(fixture.receive()["bytes"], 12);
     fixture.send(json!({
@@ -294,7 +305,7 @@ impl PrivateEnvironment {
 
     fn write_config(&self, fixture: &Path, zor: &Path) {
         let document = format!(
-            "default-command = {{ argv = [{:?}, {:?}, \"--deadline-ms=30000\"] }}\nzor-path = {:?}\n[notifications]\nenabled = false\n",
+            "default-command = {{ argv = [{:?}, {:?}, \"--deadline-ms=30000\"] }}\nzor-path = {:?}\nclipboard = \"write-only\"\n[notifications]\nenabled = false\n",
             fixture.display().to_string(),
             format!("--control={}", self.fixture_socket().display()),
             zor.display().to_string(),
@@ -417,6 +428,57 @@ impl TerminalChild {
                 Instant::now() < deadline,
                 "client never painted final output; bytes={}",
                 String::from_utf8_lossy(&bytes)
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_for_inverse(&self, row: u16, column: u16) {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let bytes = self
+                .output
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let mut terminal = vt100::Parser::new(24, 80, 0);
+            terminal.process(&bytes);
+            if terminal
+                .screen()
+                .cell(row, column)
+                .is_some_and(vt100::Cell::inverse)
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "copy-mode cursor was not painted"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_for_output_bytes(&self, needle: &[u8]) {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let found = self
+                .output
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .windows(needle.len())
+                .any(|window| window == needle);
+            if found {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "client never emitted expected terminal bytes; output={:?}",
+                String::from_utf8_lossy(
+                    &self
+                        .output
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                )
             );
             std::thread::sleep(Duration::from_millis(5));
         }
