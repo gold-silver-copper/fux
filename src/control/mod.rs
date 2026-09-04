@@ -7,9 +7,10 @@ mod socket;
 
 pub use protocol::{
     AgentStatus, Axis, ClientIdentity, CommandResult, ControlError, ErrorCode, Event, EventKind,
-    FocusTarget, PaneGeometry, PaneSummary, Reply, ReplyError, ReplyState, Request, TabAction,
-    TabSummary, WorkspaceAction, WorkspaceSummary, decode_key_bytes, decode_request_frame,
-    error_reply, read_request, write_frame,
+    FocusTarget, PaneCopySummary, PaneCursorSummary, PaneGeometry, PaneModesSummary, PaneSummary,
+    Reply, ReplyError, ReplyState, Request, TabAction, TabSummary, WorkspaceAction,
+    WorkspaceSummary, decode_key_bytes, decode_request_frame, error_reply, read_request,
+    write_frame,
 };
 pub use queue::{EventQueue, EventReceiver, PublishOutcome};
 #[cfg(unix)]

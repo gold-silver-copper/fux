@@ -2,6 +2,37 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TerminalModes {
+    pub alternate_screen: bool,
+    pub application_keypad: bool,
+    pub application_cursor: bool,
+    pub bracketed_paste: bool,
+    pub mouse_mode: String,
+    pub mouse_encoding: String,
+}
+
+impl Default for TerminalModes {
+    fn default() -> Self {
+        Self {
+            alternate_screen: false,
+            application_keypad: false,
+            application_cursor: false,
+            bracketed_paste: false,
+            mouse_mode: "none".into(),
+            mouse_encoding: "default".into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalSelection {
+    pub cursor: (u16, u16),
+    pub anchor: Option<(u16, u16)>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Entry {
     pub sequence: u64,
     pub source: String,
@@ -74,6 +105,10 @@ pub enum Event {
         cells: Vec<String>,
         cursor: Option<(u16, u16)>,
         synchronized: Option<bool>,
+        modes: TerminalModes,
+        status: std::collections::BTreeMap<String, String>,
+        selection: Option<TerminalSelection>,
+        prediction_target: Option<u32>,
     },
     Lifecycle {
         resource: String,

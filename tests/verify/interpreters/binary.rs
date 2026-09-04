@@ -40,6 +40,7 @@ pub trait BinaryDriver {
     fn kill_pane(&mut self, pane: u32) -> Result<i32, String>;
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
+    fn enable_mouse_tracking(&mut self, pane: u32) -> Result<(), String>;
     fn subscribe(
         &mut self,
         request_id: u64,
@@ -176,8 +177,15 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                             cells: frame.cells,
                             cursor: frame.cursor,
                             synchronized: frame.synchronized,
+                            modes: frame.modes,
+                            status: frame.status,
+                            selection: frame.selection,
+                            prediction_target: frame.prediction_target,
                         },
                     );
+                }
+                Step::EnableMouseTracking { pane } => {
+                    self.driver.enable_mouse_tracking(*pane)?;
                 }
                 Step::ExpectInput { pane, bytes } => {
                     if *pane != 1 {
@@ -440,7 +448,8 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         || exit_status != expected.exit_status
                     {
                         return Err(format!(
-                            "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"
+                            "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}, terminal_frames={terminal_frames:?}, expected_terminal_frames={:?}",
+                            expected.terminal_frames,
                         ));
                     }
                     let owned_resources = owned_resources

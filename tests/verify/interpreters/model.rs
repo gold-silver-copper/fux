@@ -32,6 +32,11 @@ impl Interpreter for ModelInterpreter {
         let mut known_clients = std::collections::BTreeSet::new();
         let mut client_workspaces = std::collections::BTreeMap::new();
         let mut copy_mode = false;
+        let mut copy_cursor = (0_u16, 0_u16);
+        let mut focused_pane = 1_u32;
+        let mut next_pane = 2_u32;
+        let mut terminal_modes = super::super::transcript::TerminalModes::default();
+        let mut terminal_status = std::collections::BTreeMap::new();
         let mut daemon_running = false;
         let mut workspaces = std::collections::BTreeSet::new();
         let mut transport_lost = false;
@@ -183,12 +188,24 @@ impl Interpreter for ModelInterpreter {
                     let accumulated = child_output.entry(*pane).or_default();
                     accumulated.extend_from_slice(bytes);
                     let text = String::from_utf8_lossy(accumulated).into_owned();
+                    let cursor_column = u16::try_from(text.chars().count())
+                        .unwrap_or(u16::MAX)
+                        .min(terminal_size.1);
                     let frame = ExpectedTerminalFrame {
                         rows: terminal_size.0,
                         columns: terminal_size.1,
                         cells: vec![text],
-                        cursor: None,
+                        cursor: Some((0, cursor_column)),
                         synchronized: None,
+                        modes: terminal_modes.clone(),
+                        status: terminal_status.clone(),
+                        selection: copy_mode.then_some(
+                            super::super::transcript::TerminalSelection {
+                                cursor: copy_cursor,
+                                anchor: None,
+                            },
+                        ),
+                        prediction_target: (focused_pane == *pane && !copy_mode).then_some(*pane),
                     };
                     terminal_frames.push(frame.clone());
                     push(
@@ -200,6 +217,10 @@ impl Interpreter for ModelInterpreter {
                             cells: frame.cells,
                             cursor: frame.cursor,
                             synchronized: frame.synchronized,
+                            modes: frame.modes,
+                            status: frame.status,
+                            selection: frame.selection,
+                            prediction_target: frame.prediction_target,
                         },
                     );
                 }
@@ -351,6 +372,17 @@ impl Interpreter for ModelInterpreter {
                                 );
                                 if name == "copy_mode" {
                                     copy_mode = true;
+                                    let column = child_output
+                                        .get(&1)
+                                        .map(|bytes| String::from_utf8_lossy(bytes).chars().count())
+                                        .and_then(|count| u16::try_from(count).ok())
+                                        .unwrap_or(0)
+                                        .min(terminal_size.1);
+                                    copy_cursor = (0, column);
+                                }
+                                if matches!(name, "split_horizontal" | "split_vertical") {
+                                    focused_pane = next_pane;
+                                    next_pane = next_pane.saturating_add(1);
                                 }
                                 if matches!(name, "split_horizontal" | "split_vertical")
                                     && subscriptions.last().is_some_and(|subscription| {
@@ -427,6 +459,13 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                 }
+                Step::EnableMouseTracking { pane } => {
+                    if *pane != 1 {
+                        return Err(format!("model has no pane {pane}"));
+                    }
+                    terminal_modes.mouse_mode = "anymotion".into();
+                    terminal_modes.mouse_encoding = "sgr".into();
+                }
                 Step::Subscribe { request_id, events } => {
                     subscriptions.push(ExpectedSubscription {
                         request_id: *request_id,
@@ -450,11 +489,30 @@ impl Interpreter for ModelInterpreter {
                         .get("id")
                         .and_then(serde_json::Value::as_u64)
                         .ok_or_else(|| "control request omitted id".to_owned())?;
-                    if name != "list" {
-                        return Err(
-                            "independent model currently supports list control requests".into()
-                        );
-                    }
+                    let result_kind = match name {
+                        "list" => "listing",
+                        "set-status" => {
+                            let segment = request
+                                .get("segment")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or_else(|| "set_status omitted segment".to_owned())?;
+                            let text = request
+                                .get("text")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or_else(|| "set_status omitted text".to_owned())?;
+                            if text.is_empty() {
+                                terminal_status.remove(segment);
+                            } else {
+                                terminal_status.insert(segment.to_owned(), text.to_owned());
+                            }
+                            "unit"
+                        }
+                        _ => {
+                            return Err(
+                                "independent model does not support this control request".into()
+                            );
+                        }
+                    };
                     push(
                         &mut transcript,
                         "model",
@@ -466,7 +524,7 @@ impl Interpreter for ModelInterpreter {
                     let reply = ExpectedControlReply {
                         request_id,
                         status: "completed".into(),
-                        result_kind: "listing".into(),
+                        result_kind: result_kind.into(),
                     };
                     control_replies.push(reply.clone());
                     push(

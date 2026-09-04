@@ -8,9 +8,11 @@
     { "kind": "attach", "client": "alice" },
     { "kind": "control", "request": { "command": "list", "id": 41 } },
     { "kind": "resize", "client": "alice", "size": { "rows": 30, "columns": 100 } },
-    { "kind": "prefix", "client": "alice", "key": 91 },
-    { "kind": "copy_input", "client": "alice", "bytes": [113] },
     { "kind": "terminal_reply", "pane": 1, "query": [27, 91, 54, 110], "bytes": [27, 91, 49, 59, 49, 82] },
+    { "kind": "prefix", "client": "alice", "key": 91 },
+    { "kind": "child_output", "pane": 1, "bytes": [67, 79, 80, 89] },
+    { "kind": "copy_input", "client": "alice", "bytes": [113] },
+    { "kind": "control", "request": { "command": "set-status", "id": 42, "segment": "ci", "text": "green" } },
     {
       "kind": "subscribe",
       "request_id": 77,
@@ -20,6 +22,7 @@
     { "kind": "expect_input", "pane": 1, "bytes": [2] },
     { "kind": "paste", "client": "alice", "bytes": [65, 2, 124, 66] },
     { "kind": "expect_input", "pane": 1, "bytes": [27, 91, 50, 48, 48, 126, 65, 2, 124, 66, 27, 91, 50, 48, 49, 126] },
+    { "kind": "enable_mouse_tracking", "pane": 1 },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 48, 59, 49, 59, 49, 77] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 48, 59, 49, 59, 49, 109] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 51, 50, 59, 49, 59, 49, 77] },
@@ -50,14 +53,67 @@
           { "name": "pane.opened", "request_id": 77, "subscription_id": 77 }
         ],
         "control_replies": [
-          { "request_id": 41, "status": "completed", "result_kind": "listing" }
+          { "request_id": 41, "status": "completed", "result_kind": "listing" },
+          { "request_id": 42, "status": "completed", "result_kind": "unit" }
         ],
         "pty_resizes": [
           { "pane": 1, "rows": 27, "columns": 98 }
         ],
         "terminal_frames": [
-          { "rows": 27, "columns": 98, "cells": ["RETAINED_"], "cursor": null, "synchronized": null },
-          { "rows": 27, "columns": 98, "cells": ["RETAINED_FRAME"], "cursor": null, "synchronized": null }
+          {
+            "rows": 27,
+            "columns": 98,
+            "cells": ["COPY"],
+            "cursor": [0, 4],
+            "synchronized": null,
+            "modes": {
+              "alternate_screen": false,
+              "application_keypad": false,
+              "application_cursor": false,
+              "bracketed_paste": false,
+              "mouse_mode": "none",
+              "mouse_encoding": "default"
+            },
+            "status": {},
+            "selection": { "cursor": [0, 0], "anchor": null },
+            "prediction_target": null
+          },
+          {
+            "rows": 27,
+            "columns": 98,
+            "cells": ["COPYRETAINED_"],
+            "cursor": [0, 13],
+            "synchronized": null,
+            "modes": {
+              "alternate_screen": false,
+              "application_keypad": false,
+              "application_cursor": false,
+              "bracketed_paste": false,
+              "mouse_mode": "anymotion",
+              "mouse_encoding": "sgr"
+            },
+            "status": { "ci": "green" },
+            "selection": null,
+            "prediction_target": 1
+          },
+          {
+            "rows": 27,
+            "columns": 98,
+            "cells": ["COPYRETAINED_FRAME"],
+            "cursor": [0, 18],
+            "synchronized": null,
+            "modes": {
+              "alternate_screen": false,
+              "application_keypad": false,
+              "application_cursor": false,
+              "bracketed_paste": false,
+              "mouse_mode": "anymotion",
+              "mouse_encoding": "sgr"
+            },
+            "status": { "ci": "green" },
+            "selection": null,
+            "prediction_target": 1
+          }
         ],
         "exit_status": 7,
         "owned_resources": 0

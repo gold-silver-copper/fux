@@ -88,6 +88,9 @@ impl Interpreter for InProcessInterpreter {
         let mut known_clients = std::collections::BTreeSet::new();
         let mut client_workspaces = std::collections::BTreeMap::new();
         let mut copy_mode = fux::client::CopyMode::default();
+        let mut focused_pane = 1_u32;
+        let mut next_pane = 2_u32;
+        let mut terminal_status = std::collections::BTreeMap::new();
         let mut daemon_running = false;
         let mut daemon = None;
         let mut daemon_root = None;
@@ -305,12 +308,42 @@ impl Interpreter for InProcessInterpreter {
                     let mut parser = vt100::Parser::new(terminal_size.0, terminal_size.1, 0);
                     parser.process(accumulated);
                     let text = parser.screen().contents().trim_end().to_owned();
+                    let pane_view = fux::state::PaneView::from_vt100(
+                        parser.screen(),
+                        String::new(),
+                        Default::default(),
+                        0,
+                    )
+                    .map_err(|_| "production terminal frame was invalid".to_owned())?;
                     let frame = ExpectedTerminalFrame {
                         rows: terminal_size.0,
                         columns: terminal_size.1,
                         cells: vec![text],
-                        cursor: None,
+                        cursor: (!pane_view.cursor.hidden)
+                            .then_some((pane_view.cursor.row, pane_view.cursor.column)),
                         synchronized: None,
+                        modes: super::super::transcript::TerminalModes {
+                            alternate_screen: pane_view.modes.alternate_screen,
+                            application_keypad: pane_view.modes.application_keypad,
+                            application_cursor: pane_view.modes.application_cursor,
+                            bracketed_paste: pane_view.modes.bracketed_paste,
+                            mouse_mode: format!("{:?}", pane_view.modes.mouse_mode)
+                                .to_ascii_lowercase(),
+                            mouse_encoding: format!("{:?}", pane_view.modes.mouse_encoding)
+                                .to_ascii_lowercase(),
+                        },
+                        status: terminal_status.clone(),
+                        selection: copy_state
+                            .pane(fux::state::PaneId(*pane))
+                            .filter(|view| view.copy.active)
+                            .map(|view| super::super::transcript::TerminalSelection {
+                                cursor: (view.copy.cursor_row, view.copy.cursor_column),
+                                anchor: view.copy.anchor,
+                            }),
+                        prediction_target: (focused_pane == *pane
+                            && pane_view.viewport_offset == 0
+                            && !copy_mode.active())
+                        .then_some(*pane),
                     };
                     terminal_frames.push(frame.clone());
                     push(
@@ -321,6 +354,10 @@ impl Interpreter for InProcessInterpreter {
                             cells: frame.cells,
                             cursor: frame.cursor,
                             synchronized: frame.synchronized,
+                            modes: frame.modes,
+                            status: frame.status,
+                            selection: frame.selection,
+                            prediction_target: frame.prediction_target,
                         },
                     );
                 }
@@ -497,6 +534,12 @@ impl Interpreter for InProcessInterpreter {
                             copy_mode.sync(&mut copy_state, fux::state::PaneId(1));
                             let _ = copy_mode.key(&[], &mut copy_state, fux::state::PaneId(1));
                         }
+                        if commands.get(before).is_some_and(|name| {
+                            matches!(name.as_str(), "split_horizontal" | "split_vertical")
+                        }) {
+                            focused_pane = next_pane;
+                            next_pane = next_pane.saturating_add(1);
+                        }
                         if commands.len() > before
                             && matches!(
                                 commands.last().map(String::as_str),
@@ -605,27 +648,51 @@ impl Interpreter for InProcessInterpreter {
                         },
                     );
                 }
+                Step::EnableMouseTracking { pane } => {
+                    if *pane != 1 {
+                        return Err(format!("production interpreter has no pane {pane}"));
+                    }
+                    child_output
+                        .entry(*pane)
+                        .or_default()
+                        .extend_from_slice(b"\x1b[?1003h\x1b[?1006h");
+                }
                 Step::Control { request } => {
                     let frame = serde_json::to_vec(request).map_err(|error| error.to_string())?;
                     let decoded = fux::control::decode_request_frame(&frame)
                         .map_err(|error| error.to_string())?;
-                    let fux::control::Request::List { id } = decoded else {
-                        return Err("production scenario currently supports list requests".into());
+                    let (id, name, result) = match decoded {
+                        fux::control::Request::List { id } => (
+                            id,
+                            "list",
+                            fux::control::CommandResult::Listing {
+                                workspaces: Vec::new(),
+                            },
+                        ),
+                        fux::control::Request::SetStatus { id, segment, text } => {
+                            if text.is_empty() {
+                                terminal_status.remove(&segment);
+                            } else {
+                                terminal_status.insert(segment, text);
+                            }
+                            (id, "set-status", fux::control::CommandResult::Unit)
+                        }
+                        _ => {
+                            return Err(
+                                "production scenario does not support this control request".into(),
+                            );
+                        }
                     };
                     push(
                         &mut transcript,
                         Event::ControlRequest {
-                            name: "list".into(),
+                            name: name.into(),
                             request_id: id,
                         },
                     );
-                    let wire_reply = serde_json::to_value(fux::control::Reply::Completed {
-                        id,
-                        result: fux::control::CommandResult::Listing {
-                            workspaces: Vec::new(),
-                        },
-                    })
-                    .map_err(|error| error.to_string())?;
+                    let wire_reply =
+                        serde_json::to_value(fux::control::Reply::Completed { id, result })
+                            .map_err(|error| error.to_string())?;
                     let reply = ExpectedControlReply {
                         request_id: id,
                         status: wire_reply

@@ -287,6 +287,7 @@ pub enum CommandResult {
 pub struct WorkspaceSummary {
     pub name: String,
     pub focused: bool,
+    pub status: BTreeMap<String, String>,
     pub tabs: Vec<TabSummary>,
 }
 
@@ -311,6 +312,38 @@ pub struct PaneSummary {
     pub state: AgentStatus,
     pub geometry: PaneGeometry,
     pub focused: bool,
+    pub cursor: PaneCursorSummary,
+    pub modes: PaneModesSummary,
+    pub copy: PaneCopySummary,
+    pub viewport_offset: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaneCursorSummary {
+    pub row: u16,
+    pub column: u16,
+    pub hidden: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaneModesSummary {
+    pub alternate_screen: bool,
+    pub application_keypad: bool,
+    pub application_cursor: bool,
+    pub bracketed_paste: bool,
+    pub mouse_mode: String,
+    pub mouse_encoding: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaneCopySummary {
+    pub active: bool,
+    pub cursor_row: u16,
+    pub cursor_column: u16,
+    pub anchor: Option<(u16, u16)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -109,6 +109,9 @@ pub enum Step {
         client: String,
         bytes: Vec<u8>,
     },
+    EnableMouseTracking {
+        pane: u32,
+    },
     Control {
         request: serde_json::Value,
     },
@@ -218,6 +221,14 @@ pub struct ExpectedTerminalFrame {
     pub cursor: Option<(u16, u16)>,
     #[serde(default)]
     pub synchronized: Option<bool>,
+    #[serde(default)]
+    pub modes: super::transcript::TerminalModes,
+    #[serde(default)]
+    pub status: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub selection: Option<super::transcript::TerminalSelection>,
+    #[serde(default)]
+    pub prediction_target: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -252,6 +263,7 @@ impl Scenario {
         let mut client_workspaces = std::collections::BTreeMap::<String, String>::new();
         let mut workspaces = std::collections::BTreeSet::<String>::new();
         let mut transport_lost = false;
+        let mut mouse_tracking = false;
         let mut child_exited = false;
         #[derive(Clone, Copy, Eq, PartialEq)]
         enum DaemonPhase {
@@ -339,6 +351,19 @@ impl Scenario {
                 } if !transport_lost => {}
                 Step::Transport { .. } => {
                     return Err("serialized transport fault violates link lifecycle".into());
+                }
+                Step::EnableMouseTracking { pane: 1 } if !mouse_tracking => {
+                    mouse_tracking = true;
+                }
+                Step::EnableMouseTracking { .. } => {
+                    return Err("serialized mouse tracking is one-shot for pane 1".into());
+                }
+                Step::MouseInput { client, .. }
+                    if mouse_tracking && attached_clients.contains(client) => {}
+                Step::MouseInput { .. } => {
+                    return Err(
+                        "serialized mouse input requires tracking and an attached client".into(),
+                    );
                 }
                 Step::DeleteWorkspace { workspace }
                     if !client_workspaces.iter().any(|(client, current)| {
@@ -522,6 +547,40 @@ fn validate_step(step: &Step) -> Result<(), String> {
                     if cell.len() > MAX_NAME_BYTES || cell.contains('\0') {
                         return Err("terminal cell exceeds its text bound".into());
                     }
+                }
+                bounded_text("terminal mouse mode", &frame.modes.mouse_mode)?;
+                bounded_text("terminal mouse encoding", &frame.modes.mouse_encoding)?;
+                if !matches!(
+                    frame.modes.mouse_mode.as_str(),
+                    "none" | "press" | "pressrelease" | "buttonmotion" | "anymotion"
+                ) {
+                    return Err("terminal mouse mode is unknown".into());
+                }
+                if !matches!(
+                    frame.modes.mouse_encoding.as_str(),
+                    "default" | "utf8" | "sgr"
+                ) {
+                    return Err("terminal mouse encoding is unknown".into());
+                }
+                if frame.status.len() > 32 {
+                    return Err("terminal status has more than 32 segments".into());
+                }
+                for (segment, text) in &frame.status {
+                    bounded_text("terminal status segment", segment)?;
+                    bounded_text("terminal status text", text)?;
+                }
+                if let Some(selection) = frame.selection {
+                    for (row, column) in [Some(selection.cursor), selection.anchor]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if row >= frame.rows || column >= frame.columns {
+                            return Err("terminal selection is outside the frame".into());
+                        }
+                    }
+                }
+                if frame.prediction_target.is_some_and(|pane| pane != 1) {
+                    return Err("terminal prediction target must identify the captured pane".into());
                 }
             }
             for resize in &expected.pty_resizes {

@@ -1350,6 +1350,34 @@ impl WorkspaceHost {
     }
 }
 
+fn control_cursor(cursor: crate::state::Cursor) -> crate::control::PaneCursorSummary {
+    crate::control::PaneCursorSummary {
+        row: cursor.row,
+        column: cursor.column,
+        hidden: cursor.hidden,
+    }
+}
+
+fn control_modes(modes: crate::state::PaneModes) -> crate::control::PaneModesSummary {
+    crate::control::PaneModesSummary {
+        alternate_screen: modes.alternate_screen,
+        application_keypad: modes.application_keypad,
+        application_cursor: modes.application_cursor,
+        bracketed_paste: modes.bracketed_paste,
+        mouse_mode: format!("{:?}", modes.mouse_mode).to_ascii_lowercase(),
+        mouse_encoding: format!("{:?}", modes.mouse_encoding).to_ascii_lowercase(),
+    }
+}
+
+fn control_copy(copy: crate::state::CopyState) -> crate::control::PaneCopySummary {
+    crate::control::PaneCopySummary {
+        active: copy.active,
+        cursor_row: copy.cursor_row,
+        cursor_column: copy.cursor_column,
+        anchor: copy.anchor,
+    }
+}
+
 impl WorkspaceControl {
     pub fn same_instance(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
@@ -1455,6 +1483,10 @@ impl WorkspaceControl {
                                 height: runtime.geometry.height,
                             },
                             focused: tab.focused == pane_id,
+                            cursor: control_cursor(view.cursor),
+                            modes: control_modes(view.modes),
+                            copy: control_copy(view.copy),
+                            viewport_offset: view.viewport_offset,
                         })
                     })
                     .collect(),
@@ -1490,6 +1522,10 @@ impl WorkspaceControl {
                             height: runtime.geometry.height,
                         },
                         focused: top == Some(pane_id),
+                        cursor: control_cursor(view.cursor),
+                        modes: control_modes(view.modes),
+                        copy: control_copy(view.copy),
+                        viewport_offset: view.viewport_offset,
                     })
                 })
                 .collect();
@@ -1503,6 +1539,7 @@ impl WorkspaceControl {
         crate::control::WorkspaceSummary {
             name,
             focused: true,
+            status: shared.state.metadata().status.clone(),
             tabs,
         }
     }

@@ -203,6 +203,88 @@ fn scenario_decoder_rejects_unknown_and_unbounded_input() {
     }
     assert!(child_output.validate().is_err());
 
+    let invalid_frames = [
+        ("mode", verify::schema::MAX_NAME_BYTES + 1),
+        ("status", verify::schema::MAX_NAME_BYTES + 1),
+    ];
+    for (kind, length) in invalid_frames {
+        let mut scenario: Scenario =
+            serde_json::from_str(PREFIX_AND_PASTE).expect("terminal frame scenario");
+        let frame = scenario
+            .steps
+            .iter_mut()
+            .find_map(|step| match step {
+                verify::schema::Step::Expect { expected } => expected.terminal_frames.first_mut(),
+                _ => None,
+            })
+            .expect("expected terminal frame");
+        if kind == "mode" {
+            frame.modes.mouse_mode = "x".repeat(length);
+        } else {
+            frame.status.insert("x".repeat(length), "value".into());
+        }
+        assert!(scenario.validate().is_err());
+    }
+
+    let mut scenario: Scenario =
+        serde_json::from_str(PREFIX_AND_PASTE).expect("terminal selection scenario");
+    let frame = scenario
+        .steps
+        .iter_mut()
+        .find_map(|step| match step {
+            verify::schema::Step::Expect { expected } => expected.terminal_frames.first_mut(),
+            _ => None,
+        })
+        .expect("expected terminal frame");
+    frame.selection = Some(verify::transcript::TerminalSelection {
+        cursor: (frame.rows, 0),
+        anchor: None,
+    });
+    assert!(scenario.validate().is_err());
+
+    let mut invalid_semantics: Scenario =
+        serde_json::from_str(PREFIX_AND_PASTE).expect("terminal semantics scenario");
+    let frame = invalid_semantics
+        .steps
+        .iter_mut()
+        .find_map(|step| match step {
+            verify::schema::Step::Expect { expected } => expected.terminal_frames.first_mut(),
+            _ => None,
+        })
+        .expect("expected terminal frame");
+    frame.modes.mouse_mode = "invented".into();
+    frame.prediction_target = Some(2);
+    assert!(invalid_semantics.validate().is_err());
+
+    let mouse_scenario: Scenario =
+        serde_json::from_str(PREFIX_AND_PASTE).expect("mouse lifecycle scenario");
+    let mut missing_enable = mouse_scenario.clone();
+    missing_enable
+        .steps
+        .retain(|step| !matches!(step, verify::schema::Step::EnableMouseTracking { .. }));
+    assert!(missing_enable.validate().is_err());
+
+    let mut duplicate_enable = mouse_scenario.clone();
+    let enable_index = duplicate_enable
+        .steps
+        .iter()
+        .position(|step| matches!(step, verify::schema::Step::EnableMouseTracking { .. }))
+        .expect("mouse enable step");
+    duplicate_enable.steps.insert(
+        enable_index,
+        verify::schema::Step::EnableMouseTracking { pane: 1 },
+    );
+    assert!(duplicate_enable.validate().is_err());
+
+    let mut wrong_pane = mouse_scenario;
+    let enable = wrong_pane
+        .steps
+        .iter_mut()
+        .find(|step| matches!(step, verify::schema::Step::EnableMouseTracking { .. }))
+        .expect("mouse enable step");
+    *enable = verify::schema::Step::EnableMouseTracking { pane: 2 };
+    assert!(wrong_pane.validate().is_err());
+
     for invalid in [Vec::new(), b"trailing ".to_vec(), vec![b'X'; 79]] {
         let mut child_output: Scenario =
             serde_json::from_str(PREFIX_LITERAL).expect("child output bounds scenario");

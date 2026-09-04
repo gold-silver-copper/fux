@@ -491,12 +491,18 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         let observed = wait_for_captured_line(&self.fux, self.environment, pane, &expected)?;
         self.retained_output = Some(observed.clone());
         let observed_size = fixture_size(self.primary_mut()?);
+        let workspace = self.client_workspace.as_deref().unwrap_or("binary");
+        let semantics = terminal_semantics(&self.fux, self.environment, workspace, pane)?;
         Ok(verification::schema::ExpectedTerminalFrame {
             rows: observed_size.0,
             columns: observed_size.1,
             cells: vec![observed],
-            cursor: None,
+            cursor: semantics.cursor,
             synchronized: None,
+            modes: semantics.modes,
+            status: semantics.status,
+            selection: semantics.selection,
+            prediction_target: semantics.prediction_target,
         })
     }
 
@@ -663,6 +669,18 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         use verification::interpreters::ObservedAction;
         if bytes == [2, b'['] {
             self.client.as_mut().ok_or("client is detached")?.write(bytes);
+            let workspace = self.client_workspace.as_deref().unwrap_or("binary");
+            let deadline = Instant::now() + DEADLINE;
+            loop {
+                let semantics = terminal_semantics(&self.fux, self.environment, workspace, 1)?;
+                if semantics.selection.is_some() {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err("copy mode did not become observable".into());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
             return Ok(vec![ObservedAction::Command("copy_mode".into())]);
         }
         if bytes == [2, b'|'] || bytes == [2, b'|', 2, b'-'] {
@@ -729,18 +747,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
     ) -> Result<verification::interpreters::ObservedAction, String> {
         use verification::interpreters::ObservedAction;
         if !self.mouse_enabled {
-            self.primary_mut()?.send(json!({
-                "command":"write",
-                "chunks_hex":["1b5b3f31303033681b5b3f3130303668"]
-            }));
-            if self.primary_mut()?.receive()["bytes"] != 16 {
-                return Err("fixture did not enable SGR mouse mode".into());
-            }
-            self.client
-                .as_mut()
-                .ok_or("client is detached")?
-                .wait_for_output_bytes(b"\x1b[?1006h");
-            self.mouse_enabled = true;
+            return Err("mouse input requires an enable_mouse_tracking step".into());
         }
         let (code, column, row, release) = parse_sgr_mouse(bytes)?;
         self.primary_mut()?
@@ -768,6 +775,35 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             row,
             release,
         })
+    }
+
+    fn enable_mouse_tracking(&mut self, pane: u32) -> Result<(), String> {
+        if pane != 1 || self.mouse_enabled {
+            return Err(format!("cannot enable mouse tracking for pane {pane}"));
+        }
+        self.primary_mut()?.send(json!({
+            "command":"write",
+            "chunks_hex":["1b5b3f31303033681b5b3f3130303668"]
+        }));
+        if self.primary_mut()?.receive()["bytes"] != 16 {
+            return Err("fixture did not enable SGR mouse mode".into());
+        }
+        let workspace = self.client_workspace.as_deref().unwrap_or("binary");
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let semantics = terminal_semantics(&self.fux, self.environment, workspace, pane)?;
+            if semantics.modes.mouse_mode == "anymotion"
+                && semantics.modes.mouse_encoding == "sgr"
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("mouse tracking did not become observable".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.mouse_enabled = true;
+        Ok(())
     }
 
     fn subscribe(
@@ -896,6 +932,84 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }
         Ok(0)
     }
+}
+
+struct FrameSemantics {
+    cursor: Option<(u16, u16)>,
+    modes: verification::transcript::TerminalModes,
+    status: std::collections::BTreeMap<String, String>,
+    selection: Option<verification::transcript::TerminalSelection>,
+    prediction_target: Option<u32>,
+}
+
+fn terminal_semantics(
+    fux: &Path,
+    environment: &PrivateEnvironment,
+    workspace: &str,
+    pane: u32,
+) -> Result<FrameSemantics, String> {
+    let output = run(fux, [workspace, "list"], environment);
+    if !output.status.success() {
+        return Err(format!(
+            "terminal semantics listing failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    let workspaces = value
+        .pointer("/result/value/workspaces")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("terminal semantics omitted workspaces: {value}"))?;
+    let workspace_value = workspaces
+        .iter()
+        .find(|candidate| candidate["name"].as_str() == Some(workspace))
+        .ok_or_else(|| format!("terminal semantics omitted workspace {workspace:?}: {value}"))?;
+    let pane_value = workspace_value["tabs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|tab| tab["panes"].as_array())
+        .flatten()
+        .find(|candidate| candidate["id"].as_u64() == Some(u64::from(pane)))
+        .ok_or_else(|| format!("terminal semantics omitted pane {pane}: {value}"))?;
+    let cursor = (!pane_value["cursor"]["hidden"].as_bool().unwrap_or(true))
+        .then(|| {
+            Some((
+                u16::try_from(pane_value["cursor"]["row"].as_u64()?).ok()?,
+                u16::try_from(pane_value["cursor"]["column"].as_u64()?).ok()?,
+            ))
+        })
+        .flatten();
+    let modes = serde_json::from_value(pane_value["modes"].clone())
+        .map_err(|error| format!("invalid pane modes: {error}"))?;
+    let copy = &pane_value["copy"];
+    let selection = copy["active"].as_bool().unwrap_or(false).then(|| {
+        let cursor_row = u16::try_from(copy["cursor_row"].as_u64()?).ok()?;
+        let cursor_column = u16::try_from(copy["cursor_column"].as_u64()?).ok()?;
+        let anchor = copy["anchor"].as_array().and_then(|anchor| {
+            Some((
+                u16::try_from(anchor.first()?.as_u64()?).ok()?,
+                u16::try_from(anchor.get(1)?.as_u64()?).ok()?,
+            ))
+        });
+        Some(verification::transcript::TerminalSelection {
+            cursor: (cursor_row, cursor_column),
+            anchor,
+        })
+    }).flatten();
+    let status = serde_json::from_value(workspace_value["status"].clone())
+        .map_err(|error| format!("invalid workspace status: {error}"))?;
+    let prediction_target = (pane_value["focused"].as_bool() == Some(true)
+        && pane_value["viewport_offset"].as_u64() == Some(0)
+        && selection.is_none())
+        .then_some(pane);
+    Ok(FrameSemantics {
+        cursor,
+        modes,
+        status,
+        selection,
+        prediction_target,
+    })
 }
 
 fn assert_horizontal_then_vertical_layout(

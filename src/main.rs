@@ -1117,6 +1117,7 @@ fn workspace_control_action(id: u64, action: fux::control::WorkspaceAction) -> R
                     .map(|name| fux::control::WorkspaceSummary {
                         name,
                         focused: false,
+                        status: Default::default(),
                         tabs: Vec::new(),
                     })
                     .collect(),
@@ -1128,6 +1129,7 @@ fn workspace_control_action(id: u64, action: fux::control::WorkspaceAction) -> R
                 workspaces: vec![fux::control::WorkspaceSummary {
                     name: descriptor.name,
                     focused: true,
+                    status: Default::default(),
                     tabs: Vec::new(),
                 }],
             },
