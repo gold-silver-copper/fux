@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / Rust ${{ matrix.rust }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust: stable
+          - os: macos-latest
+            rust: stable
+          - os: ubuntu-latest
+            rust: 1.91.0
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/koh
+          path: references/koh
+          ref: v0.12.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/zor
+          path: zor
+          ref: v0.1.0
+      - name: Install Rust
+        run: rustup toolchain install "${{ matrix.rust }}" --profile minimal --component rustfmt,clippy
+      - run: cargo +${{ matrix.rust }} fmt --all --check
+      - run: cargo +${{ matrix.rust }} clippy --all-targets --all-features --locked -- -D warnings
+      - run: cargo +${{ matrix.rust }} test --all-features --locked
+      - run: cargo +${{ matrix.rust }} doc --no-deps --all-features --locked
+
+  android-cross-check:
+    name: Android aarch64 cross-check (not runtime coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/koh
+          path: references/koh
+          ref: v0.12.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/zor
+          path: zor
+          ref: v0.1.0
+      - run: rustup target add aarch64-linux-android
+      - run: cargo check --target aarch64-linux-android --locked
+
+  cross-repository:
+    name: zor integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/koh
+          path: references/koh
+          ref: v0.12.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/zor
+          path: zor
+          ref: v0.1.0
+      - name: Build zor and expose its exact path to tests
+        run: |
+          cargo build --manifest-path zor/Cargo.toml --locked
+          echo "ZOR_BIN=$GITHUB_WORKSPACE/zor/target/debug/zor" >> "$GITHUB_ENV"
+          echo "FUX_REQUIRE_ZOR_BIN=1" >> "$GITHUB_ENV"
+      - run: cargo test --all-features --locked
+
+  package:
+    name: Package (requires koh 0.12.0 and zor 0.1.0 on crates.io)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          submodules: recursive
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/koh
+          path: references/koh
+          ref: v0.12.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: gold-silver-copper/zor
+          path: zor
+          ref: v0.1.0
+      - run: cargo package --locked

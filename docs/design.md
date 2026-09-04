@@ -6,10 +6,10 @@ program around each pane (see `wrapper-design.md`). One `cargo install`-able bin
 
 - **Status:** proposal, audited against source. Supersedes the zellij-based draft of 2 Sep 2026.
 - **Date:** 3 Sep 2026
-- **Reference trees:** `references/` — koh 0.11.0 (7d1f514) · herdr 0.8.2 (94f6d9c,
+- **Reference trees:** `references/` — koh 0.12.0 (5e8620b) · herdr 0.8.2 (94f6d9c,
   github.com/herdrdev/herdr) · zellij `main` at 0.46.0 (af38660), kept for grid edge cases only
-- **Published:** koh **0.11.0** (crates.io, 3 Sep 2026, tag `v0.11.0`; fux pins `=0.10.0` until the
-  first generic-host code lands, then `=0.11.0`, `default-features = false`, `backend-termina`) · fux 0.1.0 placeholder. herdr proper is not published; the `herdr`
+- **Dependency:** published koh **0.12.0** (fux pins
+  `=0.12.0`, `default-features = false`, `backend-termina`) · fux 0.1.0 placeholder. herdr proper is not published; the `herdr`
   crate on crates.io is unrelated.
 
 ---
@@ -194,7 +194,8 @@ drawing API offers.
 
 ### The socket
 
-A unix socket, mode 0600, at `$XDG_RUNTIME_DIR/fux/<workspace>.sock`, speaking newline-delimited
+A unix socket, mode 0600, at `$XDG_RUNTIME_DIR/fux/<workspace>.sock` (or the private macOS
+`$HOME/Library/Caches/fux-runtime/fux` fallback), speaking newline-delimited
 JSON. Every message carries an `id`; the server answers with the same `id`. Two message kinds:
 
 **Commands** (request, one reply):
@@ -208,7 +209,7 @@ JSON. Every message carries an `id`; the server answers with the same `id`. Two 
 | `kill <ID>` | close a pane and its process |
 | `resize <ID> <+n\|-n>` | grow or shrink along the split axis |
 | `send-keys <ID> <bytes>` | write to a pane's pty; keys as text or as `\x1b` escapes |
-| `capture <ID> [--attrs] [--scrollback N]` | pane text, plain or with cell attributes, optionally with history |
+| `capture <ID> [--attrs] [--scrollback N]` | pane text, plain or with cell attributes, optionally with history; captured text is capped at 128 KiB so the encoded reply fits the 1 MiB frame |
 | `tab <new\|next\|prev\|N>`, `workspace <list\|new\|kill>` | tab and workspace management |
 | `list` | workspaces, tabs, and panes with id, command, pid, cwd, title, agent, state, geometry, focus |
 | `set-status <segment> <text>` | write a named status-line segment; empty text removes it |
@@ -312,7 +313,7 @@ The toolchain floor is koh's 1.91 (iroh 1.0). fux declares the same `rust-versio
 
 | Component | License | Use in fux |
 |---|---|---|
-| koh | MIT (0.10.0) | library dependency |
+| koh | MIT (0.11.0) | library dependency |
 | herdr | Apache-2.0 | reference only |
 | zellij | MIT | reference only |
 | fux | MIT | |
@@ -396,6 +397,13 @@ All paths relative to `references/`.
 
 ## Open questions
 
+- **Execution clarification (3 Sep 2026):** focus and zoom are per-tab, while pane ids remain
+  workspace-global. Named workspaces use one iroh endpoint per workspace plus an atomic local
+  descriptor; this preserves koh's one-host-per-ALPN connection model without modifying koh.
+- **Execution clarification (3 Sep 2026):** detach is encoded client-side as koh's `0x1e '.'`
+  sequence because `SessionHost::input` does not identify the sending client. Scrollback and
+  capture clone `ServerTerminal::snapshot().screen()` and move only the clone's viewport.
+
 None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled below.
 
 ### Settled
@@ -475,8 +483,8 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 
 ### crates.io and accounts
 
-- [ ] **`fux` is already yours** (0.1.0 placeholder, 18 Aug 2026).
-- [ ] **Public remote for fux.** `references/` stays gitignored; CI uses crates.io koh. Nothing is
+- [x] **`fux` is already yours** (0.1.0 placeholder, 18 Aug 2026; implementation releases from 0.2.0).
+- [x] **Public remote for fux.** `references/` stays gitignored; CI uses released koh source. Nothing is
       needed from the reference trees.
 - [ ] **CI:** stable Rust at 1.91 floor, macOS and Linux; `aarch64-linux-android` cross build for
       the phone binary once fux is public. No wasm target.
@@ -485,7 +493,7 @@ None blocking. Everything raised in the audits of 2 and 3 Sep 2026 is settled be
 
 - fux is one crate, one binary, one build. No Cargo features; phone and desktop builds are
   identical and each can host or attach.
-- fux stays MIT; koh is MIT as of 0.10.0.
+- fux stays MIT; koh is MIT as of 0.11.0.
 - Build the multiplexer, do not embed zellij. Depend on koh 0.11.0 as a library, generic over the
   synced state with the state type selected by ALPN.
 - The synced state is the workspace; the client composites with ratatui-core and ratatui-widgets,

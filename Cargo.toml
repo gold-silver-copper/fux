@@ -1,14 +1,66 @@
 [package]
 name = "fux"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "Placeholder crate."
+description = "Agent-native terminal workspace"
 license = "MIT"
-# koh (pinned exactly, see docs/design.md) needs iroh 1.0's 1.91 floor.
 rust-version = "1.91"
+repository = "https://github.com/gold-silver-copper/fux"
+homepage = "https://github.com/gold-silver-copper/fux"
+documentation = "https://docs.rs/fux"
+readme = "README.md"
 
 [dependencies]
-# Attach transport. Pinned exactly: fux uses koh's declared stable surface (`ServeConfig` & co.),
-# but the whole crate is on fux's path and iroh is `=`-pinned inside koh, so bump deliberately.
-# `default-features = false` drops the `cli` feature (and clap); fux brings its own parser.
-koh = { version = "=0.10.0", default-features = false, features = ["backend-termina"] }
+# Application error context and top-level error propagation.
+anyhow = "1.0"
+# Encoding OSC 52 clipboard payloads.
+base64 = "0.22"
+# Derive-based parsing for fux's independent command surface.
+clap = { version = "4.5", features = ["derive"] }
+# QUIC endpoint identifiers used by named-workspace routing.
+iroh = "=1.0.0"
+# Session synchronization and bounded terminal transport.
+koh = { version = "=0.12.0", path = "references/koh", default-features = false, features = ["backend-termina"] }
+# Safe Unix signal and process-group operations.
+nix = { version = "0.30", features = ["signal", "socket"] }
+# Terminal rendering primitives without ratatui's umbrella crate.
+ratatui-core = "=0.1.0"
+# Serialization for synchronized workspace and control-protocol values.
+serde = { version = "1.0", features = ["derive"] }
+# Newline-delimited JSON control protocol and persisted descriptors.
+serde_json = "1.0"
+# Async runtime for endpoints, sessions, PTY drains, and signals.
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+# Cancellation tokens for owned tasks and process reaping.
+tokio-util = "0.7"
+# User configuration decoding.
+toml = "0.9"
+# Structured diagnostics that do not corrupt terminal output.
+tracing = "0.1"
+# Bounded daemon diagnostics and foreground stderr formatting.
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+# Authoritative terminal emulation and pane snapshots.
+vt100 = "=0.16.2"
+# Validate synchronized terminal cells before rendering untrusted peer state.
+unicode-segmentation = "1.12.0"
+unicode-width = "0.2.0"
+# Minimal OSC 7877 model/parser shared with the wrapper.
+zor = { version = "=0.1.0", path = "zor", default-features = false }
+
+[dev-dependencies]
+# Property tests for state/diff/layout/parser invariants.
+proptest = "1.7"
+
+[lints.rust]
+dead_code = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"

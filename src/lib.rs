@@ -1,14 +1,14 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+#![forbid(unsafe_code)]
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod client;
+pub mod config;
+pub mod control;
+pub mod daemon;
+pub mod host;
+pub mod state;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+pub const FUX_ALPN: &[u8] = b"fux/1";
+
+pub fn parse_agent_report(input: &[u8]) -> Result<zor::osc::Report, zor::osc::Error> {
+    zor::osc::parse(input)
 }
