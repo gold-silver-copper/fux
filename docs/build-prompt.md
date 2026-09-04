@@ -2,8 +2,8 @@
 
 Paste the section below into a coding-agent session opened in a directory containing two sibling
 Git repositories: this checkout at `fux/`, with its gitignored `references/` trees present, and an
-empty, already `git init`-ed `zor/`. It was audited on 4 Sep 2026 against the published koh 0.12.1
-release (`5e8620b633d7ab2770d18610c8ccc47313693150`), herdr
+empty, already `git init`-ed `zor/`. It was audited on 4 Sep 2026 against the reviewed koh 0.12.1
+candidate (`a7977295891d8619e0adc26a96a5fea251c8fc07`; registry publication/tag currently blocked), herdr
 0.8.2 (`94f6d9c`), zellij main (`af38660`), and vt100 0.16.2.
 
 The prompt deliberately resolves implementation gaps that the design documents leave open. In
@@ -78,7 +78,7 @@ remain independent.
 
 This phase is sequential. Do not begin the larger modules until its tests pass.
 
-1. Verify that `fux/references/koh` is tag `v0.12.1`. Read the exact signatures of
+1. Verify that `fux/references/koh` is the reviewed koh 0.12.1 release commit. Read the exact signatures of
    `SyncState`, `SessionHost`, `ChangeSignal`, `HostProvider`, `SharedHost`, `Hosts`, `serve_with`,
    `ClientState`, `ClientTerminal`, `ClientIoTasks`, `spawn_client_io`, `connect_with`, `KohBackend`,
    `ScreenView`, `Pty` (including owned group shutdown), and `ServerTerminal` (including bounded

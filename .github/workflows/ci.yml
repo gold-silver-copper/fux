@@ -33,12 +33,12 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: v0.12.0
+          ref: a7977295891d8619e0adc26a96a5fea251c8fc07
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.1
+          ref: v0.1.2
       - name: Install Rust
         run: rustup toolchain install "${{ matrix.rust }}" --profile minimal --component rustfmt,clippy
       - run: cargo +${{ matrix.rust }} fmt --all --check
@@ -65,12 +65,12 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: v0.12.0
+          ref: a7977295891d8619e0adc26a96a5fea251c8fc07
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: main
+          ref: v0.1.2
       - run: cargo test --test verification_corpus --test verification_structure --test verification_loom --locked
       - run: cargo build --locked --bin fux
       - run: cargo build --manifest-path zor/Cargo.toml --locked --bin zor
@@ -88,12 +88,12 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: v0.12.0
+          ref: a7977295891d8619e0adc26a96a5fea251c8fc07
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.1
+          ref: v0.1.2
       - run: rustup target add aarch64-linux-android
       - name: Select Android NDK compiler
         run: |
@@ -113,12 +113,12 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: v0.12.0
+          ref: a7977295891d8619e0adc26a96a5fea251c8fc07
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.1
+          ref: v0.1.2
       - name: Build zor and expose its exact path to tests
         run: |
           cargo build --manifest-path zor/Cargo.toml --locked
@@ -127,7 +127,7 @@ jobs:
       - run: cargo test --all-features --locked -- --test-threads=1
 
   package:
-    name: Package (requires koh 0.12.0 and zor 0.1.1 on crates.io)
+    name: Package (requires koh 0.12.1 and zor 0.1.2 on crates.io)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -137,10 +137,10 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: v0.12.0
+          ref: a7977295891d8619e0adc26a96a5fea251c8fc07
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.1
+          ref: v0.1.2
       - run: cargo package --locked

@@ -55,7 +55,9 @@ does not constitute Android runtime coverage. Windows hosting is not supported i
 terminal-emulator OSC collision behavior, and genuine Claude Code rules still need human evidence.
 
 The development checkout uses local path dependencies for koh and zor while published packages
-resolve the matching koh 0.12.1 and zor 0.1.2 releases from the registry.
+resolve the matching koh 0.12.1 and zor 0.1.2 releases from the registry once published. Both
+uploads are currently blocked by the crates.io owner-account lock recorded in
+`docs/release-readiness.md`.
 
 ## Development
 

@@ -21,12 +21,12 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: v0.12.0
+          ref: a7977295891d8619e0adc26a96a5fea251c8fc07
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: main
+          ref: v0.1.2
       - run: cargo build --locked --bin fux
       - run: cargo build --manifest-path zor/Cargo.toml --locked --bin zor
       - name: Repeat deterministic corpus and ownership checks
