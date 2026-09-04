@@ -14,6 +14,7 @@ impl Interpreter for ModelInterpreter {
         let mut oracle = PrefixOracle::new(0x02);
         let mut transcript = Vec::new();
         let mut forwarded = Vec::new();
+        let mut expected_input_index = 0_usize;
         let mut commands = Vec::new();
         let mut subscriptions: Vec<ExpectedSubscription> = Vec::new();
         let mut control_events = Vec::new();
@@ -95,6 +96,18 @@ impl Interpreter for ModelInterpreter {
                             synchronized: frame.synchronized,
                         },
                     );
+                }
+                Step::ExpectInput { pane, bytes } => {
+                    if *pane != 1 {
+                        return Err(format!("model has no pane {pane}"));
+                    }
+                    if forwarded.get(expected_input_index) != Some(bytes) {
+                        return Err(format!(
+                            "model PTY input mismatch at {expected_input_index}: expected={bytes:?}, observed={:?}",
+                            forwarded.get(expected_input_index)
+                        ));
+                    }
+                    expected_input_index += 1;
                 }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {

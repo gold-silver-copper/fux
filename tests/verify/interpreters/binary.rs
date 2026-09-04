@@ -47,6 +47,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         scenario.validate()?;
         let mut transcript = Vec::new();
         let mut forwarded = Vec::new();
+        let mut expected_input_index = 0_usize;
         let mut commands = Vec::new();
         let mut subscriptions = Vec::new();
         let mut control_events = Vec::new();
@@ -98,6 +99,18 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                             synchronized: frame.synchronized,
                         },
                     );
+                }
+                Step::ExpectInput { pane, bytes } => {
+                    if *pane != 1 {
+                        return Err(format!("binary interpreter has no pane {pane}"));
+                    }
+                    if forwarded.get(expected_input_index) != Some(bytes) {
+                        return Err(format!(
+                            "binary PTY input mismatch at {expected_input_index}: expected={bytes:?}, observed={:?}",
+                            forwarded.get(expected_input_index)
+                        ));
+                    }
+                    expected_input_index += 1;
                 }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {

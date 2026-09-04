@@ -13,7 +13,9 @@
       "events": ["pane.opened"]
     },
     { "kind": "prefix", "client": "alice", "key": 2 },
+    { "kind": "expect_input", "pane": 1, "bytes": [2] },
     { "kind": "paste", "client": "alice", "bytes": [65, 2, 124, 66] },
+    { "kind": "expect_input", "pane": 1, "bytes": [27, 91, 50, 48, 48, 126, 65, 2, 124, 66, 27, 91, 50, 48, 49, 126] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 48, 59, 49, 59, 49, 77] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 48, 59, 49, 59, 49, 109] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 51, 50, 59, 49, 59, 49, 77] },
