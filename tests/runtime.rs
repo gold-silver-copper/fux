@@ -148,6 +148,14 @@ fn reload_is_transactional_and_environment_scrubs_secrets() {
     )
     .expect("mutable config");
     assert!(!live.reload().expect("mutable reload").notifications.enabled);
+    fs::write(&path, "prefix = 'C-b'\nlocal-network = true\n").expect("network policy config");
+    assert!(
+        live.reload()
+            .expect_err("network policy requires restart")
+            .to_string()
+            .contains("restart")
+    );
+    assert!(!live.snapshot().local_network);
     fs::write(
         &path,
         "prefix = 'C-b'\ndefault-command = { argv = ['/bin/false'] }\n",

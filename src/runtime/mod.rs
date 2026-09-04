@@ -511,7 +511,8 @@ impl LiveConfig {
             bail!("prefix and binding keys must encode exactly one byte at runtime");
         }
         let current = read_lock(&self.current);
-        if candidate.default_command != current.default_command
+        if candidate.local_network != current.local_network
+            || candidate.default_command != current.default_command
             || candidate.zor_path != current.zor_path
             || candidate.clipboard != current.clipboard
             || candidate.history != current.history
