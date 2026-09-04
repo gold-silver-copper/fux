@@ -134,7 +134,11 @@ fn main() -> ExitCode {
 fn is_notification_invocation() -> bool {
     env::args_os()
         .next()
-        .and_then(|path| std::path::PathBuf::from(path).file_name().map(OsStr::to_owned))
+        .and_then(|path| {
+            std::path::PathBuf::from(path)
+                .file_name()
+                .map(OsStr::to_owned)
+        })
         .is_some_and(|name| name == "terminal-notifier" || name == "notify-send")
 }
 
