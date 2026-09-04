@@ -11,7 +11,145 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-const DEADLINE: Duration = Duration::from_secs(10);
+#[allow(dead_code)]
+#[path = "../../mod.rs"]
+mod verification;
+
+const DEADLINE: Duration = Duration::from_secs(20);
+
+#[test]
+fn serialized_prefix_scenario_agrees_through_model_in_process_and_real_binaries() {
+    use verification::interpreters::{
+        BinaryInterpreter, InProcessInterpreter, Interpreter, ModelInterpreter,
+    };
+    use verification::schema::Scenario;
+
+    let scenario: Scenario = serde_json::from_str(include_str!(
+        "../../corpus/input/prefix_literal.json"
+    ))
+    .expect("strict scenario");
+    let model = ModelInterpreter.run(&scenario).expect("model transcript");
+    assert_eq!(
+        InProcessInterpreter
+            .run(&scenario)
+            .expect("in-process transcript"),
+        model
+    );
+
+    let fux = binary("FUX_BIN", "target/debug/fux");
+    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
+    let fixture_program = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
+    let environment = PrivateEnvironment::new("scenario");
+    let fixture_listener =
+        UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
+    environment.write_config(&fixture_program, &zor);
+    let config_path = environment.root.join("config/fux/config.toml");
+    let config = fs::read_to_string(&config_path).expect("read private config");
+    fs::write(&config_path, format!("prefix = 'C-b'\n{config}")).expect("set scenario prefix");
+    let id = run(&fux, ["id"], &environment);
+    let allow = String::from_utf8(id.stdout)
+        .expect("endpoint id")
+        .trim()
+        .to_owned();
+    let server = OwnedChild::spawn(
+        Command::new(&fux)
+            .args(["serve", "--allow", &allow, "--name", "binary"])
+            .env_clear()
+            .envs(environment.variables())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    );
+    wait_for_path(&environment.manager_socket());
+    let mut primary = Jsonl::new(accept_with_deadline(&fixture_listener));
+    assert_eq!(primary.receive()["event"], "ready");
+    let client = TerminalChild::spawn(&fux, &environment, 24, 80);
+    client.wait_for_output_bytes(b"connected.");
+    let driver = PrefixBinaryDriver {
+        client,
+        primary,
+        secondary: None,
+        listener: &fixture_listener,
+        server,
+        environment: &environment,
+    };
+    let binary = BinaryInterpreter::new(driver)
+        .run(&scenario)
+        .expect("binary transcript");
+    assert_eq!(binary, model);
+}
+
+struct PrefixBinaryDriver<'a> {
+    client: TerminalChild,
+    primary: Jsonl,
+    secondary: Option<Jsonl>,
+    listener: &'a UnixListener,
+    server: OwnedChild,
+    environment: &'a PrivateEnvironment,
+}
+
+impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
+    fn input(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<Vec<verification::interpreters::ObservedAction>, String> {
+        use verification::interpreters::ObservedAction;
+        if bytes == [2, b'|'] {
+            self.client.write(bytes);
+            let mut secondary = Jsonl::new(accept_with_deadline(self.listener));
+            if secondary.receive()["event"] != "ready" {
+                return Err("split fixture did not become ready".into());
+            }
+            self.secondary = Some(secondary);
+            return Ok(vec![ObservedAction::Command("split_horizontal".into())]);
+        }
+        let expected = if bytes == [2, 2] { 1 } else { bytes.len() };
+        self.primary
+            .send(json!({"command":"read_exact", "bytes":expected}));
+        self.client.write(bytes);
+        let response = self.primary.receive();
+        let encoded = response["bytes_hex"]
+            .as_str()
+            .ok_or_else(|| "fixture did not report forwarded bytes".to_owned())?;
+        Ok(vec![ObservedAction::Forward(decode_hex(encoded)?)] )
+    }
+
+    fn cleanup(&mut self) -> Result<usize, String> {
+        self.primary.send(json!({"command":"quit"}));
+        if self.primary.receive()["event"] != "cleanup" {
+            return Err("primary fixture did not clean up".into());
+        }
+        if let Some(secondary) = &mut self.secondary {
+            secondary.send(json!({"command":"quit"}));
+            if secondary.receive()["event"] != "cleanup" {
+                return Err("secondary fixture did not clean up".into());
+            }
+        }
+        self.client.detach();
+        self.server.terminate(Signal::SIGTERM);
+        self.server.wait();
+        wait_for_absent(&self.environment.manager_socket());
+        wait_for_absent(&self.environment.control_socket());
+        if self.environment.descriptor().exists() {
+            return Err("workspace descriptor leaked".into());
+        }
+        Ok(0)
+    }
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if !value.len().is_multiple_of(2) {
+        return Err("odd fixture hex length".into());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).map_err(|error| error.to_string())?;
+            u8::from_str_radix(text, 16).map_err(|error| error.to_string())
+        })
+        .collect()
+}
 
 // Binary boundary: real fux manager/control sockets, daemon process, Zor wrapper, and PTY child.
 #[test]

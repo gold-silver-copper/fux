@@ -1,3 +1,4 @@
+mod binary;
 mod in_process;
 mod model;
 
@@ -10,3 +11,4 @@ use super::transcript::Entry;
 pub trait Interpreter {
     fn run(&self, scenario: &Scenario) -> Result<Vec<Entry>, String>;
 }
+pub use binary::{BinaryDriver, BinaryInterpreter, ObservedAction};
