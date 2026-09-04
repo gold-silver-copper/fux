@@ -7,6 +7,7 @@
     { "kind": "attach", "client": "alice" },
     { "kind": "control", "request": { "command": "list", "id": 41 } },
     { "kind": "resize", "client": "alice", "size": { "rows": 30, "columns": 100 } },
+    { "kind": "terminal_reply", "pane": 1, "query": [27, 91, 54, 110], "bytes": [27, 91, 49, 59, 49, 82] },
     {
       "kind": "subscribe",
       "request_id": 77,

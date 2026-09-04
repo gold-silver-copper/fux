@@ -22,6 +22,12 @@ pub trait BinaryDriver {
     fn detach(&mut self, client: &str) -> Result<(), String>;
     fn reconnect(&mut self, client: &str) -> Result<(), String>;
     fn child_output(&mut self, pane: u32, bytes: &[u8]) -> Result<ExpectedTerminalFrame, String>;
+    fn terminal_reply(
+        &mut self,
+        pane: u32,
+        query: &[u8],
+        expected: &[u8],
+    ) -> Result<Vec<u8>, String>;
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
     fn subscribe(
@@ -111,6 +117,21 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         ));
                     }
                     expected_input_index += 1;
+                }
+                Step::TerminalReply { pane, query, bytes } => {
+                    let observed = self.driver.terminal_reply(*pane, query, bytes)?;
+                    if observed != *bytes {
+                        return Err(format!(
+                            "binary terminal reply mismatch: expected={bytes:?}, observed={observed:?}"
+                        ));
+                    }
+                    push(
+                        &mut transcript,
+                        Event::PtyWrite {
+                            pane: format!("pane-{pane}"),
+                            bytes_hex: hex(&observed),
+                        },
+                    );
                 }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {

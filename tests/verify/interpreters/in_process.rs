@@ -108,6 +108,27 @@ impl Interpreter for InProcessInterpreter {
                     }
                     expected_input_index += 1;
                 }
+                Step::TerminalReply { pane, query, bytes } => {
+                    if *pane != 1 {
+                        return Err(format!("production interpreter has no pane {pane}"));
+                    }
+                    let mut terminal =
+                        koh::terminal::ServerTerminal::new(terminal_size.0, terminal_size.1, 0);
+                    terminal.process(query);
+                    let observed = terminal.take_host_replies();
+                    if observed != *bytes {
+                        return Err(format!(
+                            "production terminal reply mismatch: expected={bytes:?}, observed={observed:?}"
+                        ));
+                    }
+                    push(
+                        &mut transcript,
+                        Event::PtyWrite {
+                            pane: format!("pane-{pane}"),
+                            bytes_hex: hex(&observed),
+                        },
+                    );
+                }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
                         Step::Prefix { client, key } => (client, vec![0x02, *key]),

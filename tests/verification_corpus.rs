@@ -120,6 +120,18 @@ fn scenario_decoder_rejects_unknown_and_unbounded_input() {
         );
         assert!(child_output.validate().is_err());
     }
+
+    let mut terminal_reply: Scenario =
+        serde_json::from_str(PREFIX_AND_PASTE).expect("terminal reply scenario");
+    let step = terminal_reply
+        .steps
+        .iter_mut()
+        .find(|step| matches!(step, verify::schema::Step::TerminalReply { .. }))
+        .expect("terminal reply step");
+    if let verify::schema::Step::TerminalReply { query, .. } = step {
+        *query = b"\x1b[c".to_vec();
+    }
+    assert!(terminal_reply.validate().is_err());
 }
 
 #[test]

@@ -109,6 +109,21 @@ impl Interpreter for ModelInterpreter {
                     }
                     expected_input_index += 1;
                 }
+                Step::TerminalReply { pane, query, bytes } => {
+                    if *pane != 1 || query != b"\x1b[6n" || bytes != b"\x1b[1;1R" {
+                        return Err(format!(
+                            "model terminal DSR reply mismatch for pane {pane}: {bytes:?}"
+                        ));
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::PtyWrite {
+                            pane: format!("pane-{pane}"),
+                            bytes_hex: hex(bytes),
+                        },
+                    );
+                }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
                         Step::Prefix { client, key } => (client, vec![0x02, *key]),

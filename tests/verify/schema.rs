@@ -75,6 +75,7 @@ pub enum Step {
     },
     TerminalReply {
         pane: u32,
+        query: Vec<u8>,
         bytes: Vec<u8>,
     },
     Signal {
@@ -265,6 +266,17 @@ impl Scenario {
                         return Err("serialized child_output must fit one visible pane row".into());
                     }
                 }
+                Step::TerminalReply { pane, query, bytes }
+                    if *pane != 1
+                        || query != b"\x1b[6n"
+                        || bytes != b"\x1b[1;1R"
+                        || child_output_columns.contains_key(pane) =>
+                {
+                    return Err(
+                        "serialized terminal_reply supports pane-1 DSR at the initial cursor only"
+                            .into(),
+                    );
+                }
                 _ => {}
             }
         }
@@ -299,8 +311,10 @@ fn validate_step(step: &Step) -> Result<(), String> {
                 );
             }
         }
-        Step::ExpectInput { bytes, .. } | Step::TerminalReply { bytes, .. } => {
-            bounded_bytes(bytes)?
+        Step::ExpectInput { bytes, .. } => bounded_bytes(bytes)?,
+        Step::TerminalReply { query, bytes, .. } => {
+            bounded_bytes(query)?;
+            bounded_bytes(bytes)?;
         }
         Step::Input { client, bytes }
         | Step::Paste { client, bytes }

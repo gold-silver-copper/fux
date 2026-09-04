@@ -196,6 +196,28 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         })
     }
 
+    fn terminal_reply(
+        &mut self,
+        pane: u32,
+        query: &[u8],
+        expected: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        if pane != 1 {
+            return Err(format!("binary fixture has no pane {pane}"));
+        }
+        self.primary.send(json!({
+            "command": "query",
+            "bytes_hex": verification::transcript::hex(query),
+            "reply_bytes": expected.len(),
+            "withhold": false,
+        }));
+        let response = self.primary.receive();
+        let encoded = response["bytes_hex"]
+            .as_str()
+            .ok_or_else(|| format!("fixture query omitted reply bytes: {response}"))?;
+        decode_hex(encoded)
+    }
+
     fn input(
         &mut self,
         bytes: &[u8],
