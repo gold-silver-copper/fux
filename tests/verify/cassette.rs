@@ -9,20 +9,19 @@ pub struct Cassette {
     pub name: String,
     pub rows: u16,
     pub columns: u16,
-    pub child_chunks_hex: Vec<String>,
-    pub host_input_hex: Vec<String>,
-    pub resizes: Vec<Resize>,
-    pub signals: Vec<Signal>,
+    pub actions: Vec<Action>,
     pub osc_payloads: Vec<String>,
-    pub exit_status: i32,
     pub expected: Expected,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Resize {
-    pub rows: u16,
-    pub columns: u16,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Action {
+    ChildOutput { bytes_hex: String },
+    HostInput { bytes_hex: String },
+    Resize { rows: u16, columns: u16 },
+    Signal { signal: Signal },
+    Exit { status: i32 },
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +30,11 @@ pub struct Expected {
     pub visible_cells: Vec<String>,
     pub title: String,
     pub agent_state: String,
+    pub final_rows: u16,
+    pub final_columns: u16,
+    pub pty_writes_hex: Vec<String>,
+    pub signals: Vec<Signal>,
+    pub exit_status: i32,
 }
 
 impl Cassette {
@@ -40,26 +44,47 @@ impl Cassette {
         }
         bounded_text("cassette name", &self.name, false)?;
         dimensions(self.rows, self.columns)?;
-        if self.child_chunks_hex.len() > 512
-            || self.host_input_hex.len() > 512
-            || self.resizes.len() > 512
-            || self.signals.len() > 512
+        if self.actions.len() > 512
             || self.osc_payloads.len() > 512
+            || self.expected.visible_cells.len() > 512
+            || self.expected.pty_writes_hex.len() > 512
+            || self.expected.signals.len() > 512
         {
             return Err("cassette collection exceeds 512 entries".into());
         }
         let mut bytes = 0usize;
-        for value in self.child_chunks_hex.iter().chain(&self.host_input_hex) {
+        let action_hex = self.actions.iter().filter_map(|action| match action {
+            Action::ChildOutput { bytes_hex } | Action::HostInput { bytes_hex } => Some(bytes_hex),
+            _ => None,
+        });
+        for value in action_hex.chain(&self.expected.pty_writes_hex) {
+            if value.len() > MAX_PAYLOAD_BYTES.saturating_mul(2) {
+                return Err("cassette encoded payload exceeds bound".into());
+            }
             bytes = bytes
-                .checked_add(value.len() / 2)
+                .checked_add(value.len().div_ceil(2))
                 .ok_or("cassette byte count overflow")?;
+            if bytes > MAX_PAYLOAD_BYTES {
+                return Err("cassette payload exceeds bound".into());
+            }
             decode_hex(value)?;
         }
-        if bytes > MAX_PAYLOAD_BYTES {
-            return Err("cassette payload exceeds bound".into());
+        let mut exits = 0;
+        for action in &self.actions {
+            if let Action::Resize { rows, columns } = action {
+                dimensions(*rows, *columns)?;
+            }
+            if matches!(action, Action::Exit { .. }) {
+                exits += 1;
+            }
         }
-        for resize in &self.resizes {
-            dimensions(resize.rows, resize.columns)?;
+        if exits != 1
+            || !self
+                .actions
+                .last()
+                .is_some_and(|action| matches!(action, Action::Exit { .. }))
+        {
+            return Err("cassette requires exactly one final exit action".into());
         }
         for payload in &self.osc_payloads {
             bounded_text("OSC payload", payload, false)?;
@@ -67,16 +92,9 @@ impl Cassette {
         for cell in &self.expected.visible_cells {
             bounded_text("expected cell", cell, true)?;
         }
+        dimensions(self.expected.final_rows, self.expected.final_columns)?;
         bounded_text("expected title", &self.expected.title, true)?;
         bounded_text("expected agent state", &self.expected.agent_state, false)
-    }
-
-    pub fn child_bytes(&self) -> Result<Vec<u8>, String> {
-        let mut bytes = Vec::new();
-        for chunk in &self.child_chunks_hex {
-            bytes.extend(decode_hex(chunk)?);
-        }
-        Ok(bytes)
     }
 }
 

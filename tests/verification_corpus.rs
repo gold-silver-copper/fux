@@ -681,19 +681,26 @@ fn terminal_cassette_replays_identically_at_every_byte_boundary() {
     let cassette: verify::cassette::Cassette =
         serde_json::from_str(WIDE_OSC_CASSETTE).expect("strict cassette");
     cassette.validate().expect("bounded cassette");
-    let bytes = cassette.child_bytes().expect("cassette bytes");
-    let expected = replay_terminal(&cassette, [&bytes[..]]);
-    for boundary in 0..=bytes.len() {
-        let head = bytes.get(..boundary).expect("bounded cassette head");
-        let tail = bytes.get(boundary..).expect("bounded cassette tail");
-        assert_eq!(
-            replay_terminal(&cassette, [head, tail]),
-            expected,
-            "terminal parser diverged at byte boundary {boundary}"
-        );
+    let expected = replay_terminal(&cassette, None);
+    for (action_index, action) in cassette.actions.iter().enumerate() {
+        if let verify::cassette::Action::ChildOutput { bytes_hex } = action {
+            let bytes = verify::cassette::decode_hex(bytes_hex).expect("validated child output");
+            for boundary in 0..=bytes.len() {
+                assert_eq!(
+                    replay_terminal(&cassette, Some((action_index, boundary))),
+                    expected,
+                    "terminal parser diverged at action {action_index} byte boundary {boundary}"
+                );
+            }
+        }
     }
-    assert_eq!(expected.0, cassette.expected.visible_cells);
-    assert_eq!(expected.1, cassette.expected.title);
+    assert_eq!(expected.cells, cassette.expected.visible_cells);
+    assert_eq!(expected.title, cassette.expected.title);
+    assert_eq!(expected.rows, cassette.expected.final_rows);
+    assert_eq!(expected.columns, cassette.expected.final_columns);
+    assert_eq!(expected.pty_writes_hex, cassette.expected.pty_writes_hex);
+    assert_eq!(expected.signals, cassette.expected.signals);
+    assert_eq!(expected.exit_status, cassette.expected.exit_status);
     let report = fux::parse_agent_report(
         cassette
             .osc_payloads
@@ -706,15 +713,59 @@ fn terminal_cassette_replays_identically_at_every_byte_boundary() {
         format!("{:?}", report.state()).to_ascii_lowercase(),
         cassette.expected.agent_state
     );
-    assert_eq!(cassette.exit_status, 7);
-    assert_eq!(cassette.resizes.first().expect("resize").rows, 5);
-    assert_eq!(cassette.signals, [verify::schema::Signal::Term]);
 }
 
-fn replay_terminal<'a>(
+#[test]
+fn terminal_cassette_rejects_unbounded_or_incomplete_actions() {
+    use verify::cassette::{Action, Cassette};
+
+    let mut cells: Cassette = serde_json::from_str(WIDE_OSC_CASSETTE).expect("cassette");
+    cells.expected.visible_cells = vec!["x".into(); 513];
+    assert!(cells.validate().is_err());
+
+    let mut actions: Cassette = serde_json::from_str(WIDE_OSC_CASSETTE).expect("cassette");
+    actions.actions.extend((0..512).map(|_| Action::Signal {
+        signal: verify::schema::Signal::Term,
+    }));
+    assert!(actions.validate().is_err());
+
+    let mut no_exit: Cassette = serde_json::from_str(WIDE_OSC_CASSETTE).expect("cassette");
+    no_exit
+        .actions
+        .retain(|action| !matches!(action, Action::Exit { .. }));
+    assert!(no_exit.validate().is_err());
+
+    let mut post_exit: Cassette = serde_json::from_str(WIDE_OSC_CASSETTE).expect("cassette");
+    post_exit.actions.push(Action::HostInput {
+        bytes_hex: "78".into(),
+    });
+    assert!(post_exit.validate().is_err());
+
+    let mut oversized: Cassette = serde_json::from_str(WIDE_OSC_CASSETTE).expect("cassette");
+    oversized.actions.insert(
+        0,
+        Action::HostInput {
+            bytes_hex: "00".repeat(verify::schema::MAX_PAYLOAD_BYTES + 1),
+        },
+    );
+    assert!(oversized.validate().is_err());
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct CassetteReplay {
+    cells: Vec<String>,
+    title: String,
+    rows: u16,
+    columns: u16,
+    pty_writes_hex: Vec<String>,
+    signals: Vec<verify::schema::Signal>,
+    exit_status: i32,
+}
+
+fn replay_terminal(
     cassette: &verify::cassette::Cassette,
-    chunks: impl IntoIterator<Item = &'a [u8]>,
-) -> (Vec<String>, String) {
+    split: Option<(usize, usize)>,
+) -> CassetteReplay {
     #[derive(Default)]
     struct Callbacks {
         title: String,
@@ -730,8 +781,51 @@ fn replay_terminal<'a>(
         32,
         Callbacks::default(),
     );
-    for chunk in chunks {
-        parser.process(chunk);
+    let mut rows = cassette.rows;
+    let mut columns = cassette.columns;
+    let mut router = fux::host::InputRouter::new(2, 40);
+    let mut pty_writes_hex = Vec::new();
+    let mut signals = Vec::new();
+    let mut exit_status = None;
+    for (action_index, action) in cassette.actions.iter().enumerate() {
+        match action {
+            verify::cassette::Action::ChildOutput { bytes_hex } => {
+                let bytes = verify::cassette::decode_hex(bytes_hex)
+                    .expect("validated cassette child output");
+                if split.is_some_and(|(index, _)| index == action_index) {
+                    let boundary = split.map_or(0, |(_, boundary)| boundary);
+                    parser.process(bytes.get(..boundary).expect("bounded child head"));
+                    parser.process(bytes.get(boundary..).expect("bounded child tail"));
+                } else {
+                    parser.process(&bytes);
+                }
+            }
+            verify::cassette::Action::HostInput { bytes_hex } => {
+                let bytes =
+                    verify::cassette::decode_hex(bytes_hex).expect("validated cassette host input");
+                let mut forwarded = Vec::new();
+                for action in router.feed(&bytes, 0) {
+                    assert!(
+                        matches!(action, fux::host::Action::Forward(_)),
+                        "cassette host input was not ordinary input: {action:?}"
+                    );
+                    if let fux::host::Action::Forward(bytes) = action {
+                        forwarded.extend(bytes);
+                    }
+                }
+                pty_writes_hex.push(verify::transcript::hex(&forwarded));
+            }
+            verify::cassette::Action::Resize {
+                rows: next_rows,
+                columns: next_columns,
+            } => {
+                rows = *next_rows;
+                columns = *next_columns;
+                parser.screen_mut().set_size(rows, columns);
+            }
+            verify::cassette::Action::Signal { signal } => signals.push(*signal),
+            verify::cassette::Action::Exit { status } => exit_status = Some(*status),
+        }
     }
     let pane = fux::state::PaneView::from_vt100(
         parser.screen(),
@@ -751,7 +845,15 @@ fn replay_terminal<'a>(
             }
         })
         .collect();
-    (cells, pane.title)
+    CassetteReplay {
+        cells,
+        title: pane.title,
+        rows,
+        columns,
+        pty_writes_hex,
+        signals,
+        exit_status: exit_status.expect("validated cassette exit action"),
+    }
 }
 
 fn production_command_name(command: &fux::host::Command) -> &'static str {

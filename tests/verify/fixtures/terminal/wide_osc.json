@@ -3,22 +3,26 @@
   "name": "wide_combining_title_progress_agent",
   "rows": 3,
   "columns": 12,
-  "child_chunks_hex": [
-    "41",
-    "e7958c",
-    "65cc81",
-    "1b5d323b6669787475726507",
-    "1b5d393b343b321b5c",
-    "1b5d373837373b73746174653d626c6f636b65643b6167656e743d666978747572653b7365713d311b5c"
+  "actions": [
+    { "kind": "child_output", "bytes_hex": "41e7958c65cc81" },
+    { "kind": "resize", "rows": 5, "columns": 20 },
+    { "kind": "child_output", "bytes_hex": "1b5d323b6669787475726507" },
+    { "kind": "child_output", "bytes_hex": "1b5d393b343b321b5c" },
+    { "kind": "child_output", "bytes_hex": "1b5d373837373b73746174653d626c6f636b65643b6167656e743d666978747572653b7365713d311b5c" },
+    { "kind": "host_input", "bytes_hex": "616263" },
+    { "kind": "host_input", "bytes_hex": "1b5b3f3163" },
+    { "kind": "signal", "signal": "term" },
+    { "kind": "exit", "status": 7 }
   ],
-  "host_input_hex": ["616263", "1b5b3f3163"],
-  "resizes": [{"rows": 5, "columns": 20}],
-  "signals": ["term"],
   "osc_payloads": ["7877;state=blocked;agent=fixture;seq=1"],
-  "exit_status": 7,
   "expected": {
     "visible_cells": ["A", "界", "é"],
     "title": "fixture",
-    "agent_state": "blocked"
+    "agent_state": "blocked",
+    "final_rows": 5,
+    "final_columns": 20,
+    "pty_writes_hex": ["616263", "1b5b3f3163"],
+    "signals": ["term"],
+    "exit_status": 7
   }
 }
