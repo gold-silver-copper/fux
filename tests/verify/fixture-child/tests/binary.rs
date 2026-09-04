@@ -9,6 +9,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 #[allow(dead_code)]
@@ -17,8 +18,17 @@ mod verification;
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
+fn binary_test_guard() -> MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn serialized_input_scenarios_agree_through_model_in_process_and_real_binaries() {
+    let _guard = binary_test_guard();
     use verification::schema::Scenario;
 
     for (name, source) in [
@@ -1238,6 +1248,7 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
 // Binary boundary: real fux manager/control sockets, daemon process, Zor wrapper, and PTY child.
 #[test]
 fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact() {
+    let _guard = binary_test_guard();
     let fux = binary("FUX_BIN", "target/debug/fux");
     let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
@@ -1396,6 +1407,7 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
 // and the real status until the final client detaches, then retires every artifact.
 #[test]
 fn natural_last_pane_exit_is_observable_before_binary_workspace_retirement() {
+    let _guard = binary_test_guard();
     let fux = binary("FUX_BIN", "target/debug/fux");
     let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
@@ -1465,6 +1477,7 @@ fn natural_last_pane_exit_is_observable_before_binary_workspace_retirement() {
 
 #[test]
 fn zor_wrapper_death_reaps_the_wrapped_child_and_retires_the_workspace() {
+    let _guard = binary_test_guard();
     let fux = binary("FUX_BIN", "target/debug/fux");
     let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
@@ -1536,6 +1549,7 @@ fn zor_wrapper_death_reaps_the_wrapped_child_and_retires_the_workspace() {
 // descendant that ignores HUP, and the client observes the real signal status.
 #[test]
 fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
+    let _guard = binary_test_guard();
     let fux = binary("FUX_BIN", "target/debug/fux");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
     let environment = PrivateEnvironment::new("kill");
@@ -1622,6 +1636,7 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
 // workspace, and fixture pane are created, and both clients attach to its state.
 #[test]
 fn simultaneous_first_binary_clients_elect_one_workspace_and_both_attach() {
+    let _guard = binary_test_guard();
     let fux = binary("FUX_BIN", "target/debug/fux");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
     let environment = std::sync::Arc::new(PrivateEnvironment::new("race"));
@@ -1703,6 +1718,7 @@ fn simultaneous_first_binary_clients_elect_one_workspace_and_both_attach() {
 // startup boundary and require the same complete rollback every time.
 #[test]
 fn sigterm_at_each_binary_startup_phase_rolls_back_all_owned_resources() {
+    let _guard = binary_test_guard();
     for phase in ["manager", "pane", "descriptor", "control"] {
         let fux = binary("FUX_BIN", "target/debug/fux");
         let zor = binary("ZOR_BIN", "zor/target/debug/zor");
@@ -1766,6 +1782,7 @@ fn sigterm_at_each_binary_startup_phase_rolls_back_all_owned_resources() {
 
 #[test]
 fn sigterm_cancels_a_stalled_startup_secret_transfer() {
+    let _guard = binary_test_guard();
     use std::io::Read as _;
 
     let fux = binary("FUX_BIN", "target/debug/fux");
