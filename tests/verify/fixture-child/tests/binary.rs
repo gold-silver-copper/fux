@@ -1623,10 +1623,9 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
 #[test]
 fn simultaneous_first_binary_clients_elect_one_workspace_and_both_attach() {
     let fux = binary("FUX_BIN", "target/debug/fux");
-    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
     let environment = std::sync::Arc::new(PrivateEnvironment::new("race"));
-    environment.write_config(&fixture, &zor);
+    environment.write_config_bare(&fixture);
     let fixture_listener =
         UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
@@ -1652,11 +1651,36 @@ fn simultaneous_first_binary_clients_elect_one_workspace_and_both_attach() {
     barrier.wait();
     let mut first = first.join().expect("first client spawn");
     let mut second = second.join().expect("second client spawn");
-    let mut fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
-    assert_eq!(fixture.receive()["event"], "ready");
     wait_for_path(&environment.manager_socket());
     wait_for_path(&environment.control_socket());
     wait_for_listing_shape(&fux, &environment, 1, 1);
+    let listing = run(&fux, ["binary", "list"], &environment);
+    assert!(
+        listing.status.success(),
+        "list failed: {}",
+        String::from_utf8_lossy(&listing.stderr)
+    );
+    let listing: Value = serde_json::from_slice(&listing.stdout).expect("listing JSON");
+    let elected_pid = listing
+        .pointer("/result/value/workspaces/0/tabs/0/panes/0/pid")
+        .and_then(Value::as_u64)
+        .expect("elected pane pid");
+    let mut fixture = {
+        let deadline = Instant::now() + DEADLINE;
+        let mut elected = None;
+        for _ in 0..2 {
+            let mut candidate = Jsonl::new(accept_before(&fixture_listener, deadline));
+            let Ok(ready) = candidate.try_receive_before(deadline) else {
+                continue;
+            };
+            assert_eq!(ready["event"], "ready");
+            if ready["pid"].as_u64() == Some(elected_pid) {
+                elected = Some(candidate);
+                break;
+            }
+        }
+        elected.expect("fixture connection for the elected workspace")
+    };
 
     fixture.send(json!({"command":"write", "chunks_hex":["454c45435445445f4f4e4345"]}));
     assert_eq!(fixture.receive()["bytes"], 12);
@@ -2266,6 +2290,11 @@ impl Jsonl {
     }
     fn receive(&mut self) -> Value {
         let deadline = Instant::now() + DEADLINE;
+        self.try_receive_before(deadline)
+            .unwrap_or_else(|error| panic!("fixture response: {error}"))
+    }
+
+    fn try_receive_before(&mut self, deadline: Instant) -> std::io::Result<Value> {
         loop {
             if let Some(newline) = self.read_buffer.iter().position(|byte| *byte == b'\n') {
                 assert!(
@@ -2273,18 +2302,19 @@ impl Jsonl {
                     "JSONL response exceeded control protocol frame bound"
                 );
                 let frame: Vec<u8> = self.read_buffer.drain(..=newline).collect();
-                return serde_json::from_slice(&frame).expect("fixture JSON");
+                return serde_json::from_slice(&frame)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
             }
             let mut chunk = [0_u8; 4096];
             match self.reader.read(&mut chunk) {
-                Ok(0) => panic!("fixture closed unexpectedly"),
+                Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
                 Ok(count) => self.read_buffer.extend_from_slice(&chunk[..count]),
                 Err(error)
                     if matches!(
                         error.kind(),
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
                     ) => {}
-                Err(error) => panic!("fixture response: {error}"),
+                Err(error) => return Err(error),
             }
             if !self.read_buffer.contains(&b'\n') {
                 assert!(
@@ -2292,10 +2322,9 @@ impl Jsonl {
                     "JSONL response exceeded control protocol frame bound"
                 );
             }
-            assert!(
-                Instant::now() < deadline,
-                "fixture response deadline expired"
-            );
+            if Instant::now() >= deadline {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -2425,10 +2454,13 @@ fn fixture_size(fixture: &mut Jsonl) -> (u16, u16) {
 }
 
 fn accept_with_deadline(listener: &UnixListener) -> UnixStream {
+    accept_before(listener, Instant::now() + DEADLINE)
+}
+
+fn accept_before(listener: &UnixListener, deadline: Instant) -> UnixStream {
     listener
         .set_nonblocking(true)
         .expect("nonblocking listener");
-    let deadline = Instant::now() + DEADLINE;
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
