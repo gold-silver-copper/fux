@@ -1,7 +1,7 @@
 # Implementation notes
 
 Phase 0 was checked on 2026-09-03 against koh 0.11.0. The completed implementation now requires
-koh 0.12.1 at reviewed follow-up commit `9e69fb4c0b0ea722612b059a09da2678a81320a9`
+koh 0.12.1 at reviewed follow-up commit `cfb6f3e5b623b8656171278be2a5a235928142d7`
 (PR #17 and registry publication are still pending), herdr at
 `94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0`, and zellij at
 `af38660c5884f50bb3726682fb92961326c4268f`.

@@ -33,7 +33,7 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: 9e69fb4c0b0ea722612b059a09da2678a81320a9
+          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
@@ -65,7 +65,7 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: 9e69fb4c0b0ea722612b059a09da2678a81320a9
+          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
@@ -88,7 +88,7 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: 9e69fb4c0b0ea722612b059a09da2678a81320a9
+          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
@@ -113,7 +113,7 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: 9e69fb4c0b0ea722612b059a09da2678a81320a9
+          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
@@ -137,7 +137,7 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: 9e69fb4c0b0ea722612b059a09da2678a81320a9
+          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor

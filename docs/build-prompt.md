@@ -3,7 +3,7 @@
 Paste the section below into a coding-agent session opened in a directory containing two sibling
 Git repositories: this checkout at `fux/`, with its gitignored `references/` trees present, and an
 empty, already `git init`-ed `zor/`. It was audited on 4 Sep 2026 against the reviewed koh 0.12.1
-follow-up candidate (`9e69fb4c0b0ea722612b059a09da2678a81320a9`; PR #17 and registry
+follow-up candidate (`cfb6f3e5b623b8656171278be2a5a235928142d7`; PR #17 and registry
 publication are still pending), herdr 0.8.2 (`94f6d9c`), zellij main (`af38660`), and vt100 0.16.2.
 
 The prompt deliberately resolves implementation gaps that the design documents leave open. In
