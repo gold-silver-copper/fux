@@ -1,0 +1,1 @@
+{"schema_version":1,"name":"workspace_shutdown_cleanup","applicability":"all","initial_size":{"rows":24,"columns":80},"steps":[{"kind":"start_daemon"},{"kind":"create_workspace","workspace":"remaining"},{"kind":"shutdown"},{"kind":"expect","expected":{"owned_resources":0}}]}

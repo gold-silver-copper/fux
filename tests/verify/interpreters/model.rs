@@ -32,6 +32,7 @@ impl Interpreter for ModelInterpreter {
         let mut known_clients = std::collections::BTreeSet::new();
         let mut copy_mode = false;
         let mut daemon_running = false;
+        let mut workspaces = std::collections::BTreeSet::new();
         for step in &scenario.steps {
             match step {
                 Step::StartDaemon => {
@@ -46,6 +47,7 @@ impl Interpreter for ModelInterpreter {
                             state: "running".into(),
                         },
                     );
+                    workspaces.insert("binary".into());
                 }
                 Step::Attach { client } => {
                     if !daemon_running {
@@ -102,6 +104,45 @@ impl Interpreter for ModelInterpreter {
                         Event::Lifecycle {
                             resource: format!("client:{client}"),
                             state: "disconnected".into(),
+                        },
+                    );
+                }
+                Step::CreateWorkspace { workspace } => {
+                    if !workspaces.insert(workspace.clone()) {
+                        return Err(format!("workspace {workspace:?} already exists"));
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: format!("workspace:{workspace}"),
+                            state: "created".into(),
+                        },
+                    );
+                }
+                Step::SelectWorkspace { workspace } => {
+                    if !workspaces.contains(workspace) {
+                        return Err(format!("workspace {workspace:?} does not exist"));
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: format!("workspace:{workspace}"),
+                            state: "selected".into(),
+                        },
+                    );
+                }
+                Step::DeleteWorkspace { workspace } => {
+                    if !workspaces.remove(workspace) {
+                        return Err(format!("workspace {workspace:?} does not exist"));
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: format!("workspace:{workspace}"),
+                            state: "deleted".into(),
                         },
                     );
                 }
@@ -233,6 +274,7 @@ impl Interpreter for ModelInterpreter {
                         return Err("model shutdown requires running daemon".into());
                     }
                     attached_clients.clear();
+                    workspaces.clear();
                     push(
                         &mut transcript,
                         "model",

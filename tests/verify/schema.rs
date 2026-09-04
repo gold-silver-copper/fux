@@ -249,6 +249,7 @@ impl Scenario {
         let mut child_output_columns = std::collections::BTreeMap::<u32, usize>::new();
         let mut copy_mode = false;
         let mut attached_clients = std::collections::BTreeSet::<String>::new();
+        let mut workspaces = std::collections::BTreeSet::<String>::new();
         let mut child_exited = false;
         #[derive(Clone, Copy, Eq, PartialEq)]
         enum DaemonPhase {
@@ -261,6 +262,7 @@ impl Scenario {
             match step {
                 Step::StartDaemon if daemon_phase == DaemonPhase::NotStarted => {
                     daemon_phase = DaemonPhase::Running;
+                    workspaces.insert("binary".into());
                 }
                 Step::Shutdown if daemon_phase == DaemonPhase::Running => {
                     daemon_phase = DaemonPhase::Stopped;
@@ -288,6 +290,18 @@ impl Scenario {
                 }
                 Step::Detach { client } | Step::Disconnect { client } => {
                     attached_clients.remove(client);
+                }
+                Step::CreateWorkspace { workspace } if workspaces.insert(workspace.clone()) => {}
+                Step::CreateWorkspace { workspace } => {
+                    return Err(format!("serialized workspace {workspace:?} already exists"));
+                }
+                Step::SelectWorkspace { workspace } if workspaces.contains(workspace) => {}
+                Step::SelectWorkspace { workspace } => {
+                    return Err(format!("serialized workspace {workspace:?} does not exist"));
+                }
+                Step::DeleteWorkspace { workspace } if workspaces.remove(workspace) => {}
+                Step::DeleteWorkspace { workspace } => {
+                    return Err(format!("serialized workspace {workspace:?} does not exist"));
                 }
                 Step::Resize { size, .. } => {
                     inner_columns = size.columns.saturating_sub(2);
@@ -369,10 +383,10 @@ fn validate_step(step: &Step) -> Result<(), String> {
         | Step::Prefix { client, .. } => bounded_text("client", client)?,
         Step::CreateWorkspace { workspace }
         | Step::SelectWorkspace { workspace }
-        | Step::DeleteWorkspace { workspace } => bounded_text("workspace", workspace)?,
+        | Step::DeleteWorkspace { workspace } => validate_workspace(workspace)?,
         Step::SwitchWorkspace { client, workspace } => {
             bounded_text("client", client)?;
-            bounded_text("workspace", workspace)?;
+            validate_workspace(workspace)?;
         }
         Step::Resize { client, size } => {
             bounded_text("client", client)?;
@@ -488,6 +502,19 @@ fn validate_size(size: Size) -> Result<(), String> {
         || size.columns > MAX_DIMENSION
     {
         return Err(format!("dimensions must be in 1..={MAX_DIMENSION}"));
+    }
+    Ok(())
+}
+
+fn validate_workspace(workspace: &str) -> Result<(), String> {
+    if workspace.is_empty()
+        || workspace.len() > 64
+        || matches!(workspace, "." | "..")
+        || !workspace
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("workspace name is unsafe".into());
     }
     Ok(())
 }

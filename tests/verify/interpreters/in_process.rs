@@ -8,6 +8,43 @@ use fux::host::{Action, Command, InputRouter};
 
 pub struct InProcessInterpreter;
 
+struct WorkspaceEndpoint {
+    id: String,
+    address: std::net::SocketAddrV4,
+}
+
+impl fux::daemon::EndpointHandle for WorkspaceEndpoint {
+    fn endpoint_id(&self) -> &str {
+        &self.id
+    }
+
+    fn direct_addr(&self) -> std::net::SocketAddrV4 {
+        self.address
+    }
+
+    fn close(&mut self) {}
+
+    fn reap_terminal_sessions(&mut self, _: u64, _: u64) {}
+}
+
+#[derive(Default)]
+struct WorkspaceFactory(u16);
+
+impl fux::daemon::EndpointFactory for WorkspaceFactory {
+    fn create(
+        &mut self,
+        name: &str,
+        _: &std::path::Path,
+        _: &std::collections::BTreeSet<String>,
+    ) -> Result<Box<dyn fux::daemon::EndpointHandle>, fux::daemon::ManagerError> {
+        self.0 = self.0.saturating_add(1);
+        Ok(Box::new(WorkspaceEndpoint {
+            id: format!("verification-{name}-{}", self.0),
+            address: std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, self.0),
+        }))
+    }
+}
+
 struct PrivateDaemonRoot(std::path::PathBuf);
 
 impl PrivateDaemonRoot {
@@ -53,6 +90,7 @@ impl Interpreter for InProcessInterpreter {
         let mut daemon_running = false;
         let mut daemon = None;
         let mut daemon_root = None;
+        let mut workspace_factory = WorkspaceFactory::default();
         let mut copy_state = fux::state::WorkspaceState::default();
         copy_state
             .insert_pane(fux::state::PaneId(1), fux::state::PaneView::default())
@@ -86,6 +124,11 @@ impl Interpreter for InProcessInterpreter {
                         )
                         .map_err(|error| error.to_string())?,
                     );
+                    daemon
+                        .as_mut()
+                        .ok_or("production daemon was not created")?
+                        .create_or_find("binary", &mut workspace_factory)
+                        .map_err(|error| error.to_string())?;
                     daemon_root = Some(root);
                     push(
                         &mut transcript,
@@ -146,6 +189,59 @@ impl Interpreter for InProcessInterpreter {
                         Event::Lifecycle {
                             resource: format!("client:{client}"),
                             state: "disconnected".into(),
+                        },
+                    );
+                }
+                Step::CreateWorkspace { workspace } => {
+                    let descriptor = daemon
+                        .as_mut()
+                        .ok_or("production daemon is not running")?
+                        .create_or_find(workspace, &mut workspace_factory)
+                        .map_err(|error| error.to_string())?;
+                    if descriptor.name != *workspace {
+                        return Err("production daemon created the wrong workspace".into());
+                    }
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("workspace:{workspace}"),
+                            state: "created".into(),
+                        },
+                    );
+                }
+                Step::SelectWorkspace { workspace } => {
+                    if !matches!(
+                        daemon
+                            .as_ref()
+                            .ok_or("production daemon is not running")?
+                            .resolve(Some(workspace))
+                            .map_err(|error| error.to_string())?,
+                        fux::daemon::Resolution::Attach(ref descriptor)
+                            if descriptor.name == *workspace
+                    ) {
+                        return Err(format!(
+                            "production workspace {workspace:?} was not selected"
+                        ));
+                    }
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("workspace:{workspace}"),
+                            state: "selected".into(),
+                        },
+                    );
+                }
+                Step::DeleteWorkspace { workspace } => {
+                    daemon
+                        .as_mut()
+                        .ok_or("production daemon is not running")?
+                        .kill(workspace)
+                        .map_err(|error| error.to_string())?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("workspace:{workspace}"),
+                            state: "deleted".into(),
                         },
                     );
                 }

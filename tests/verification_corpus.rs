@@ -26,6 +26,12 @@ const SIGNAL_KILL: &str = include_str!("verify/corpus/input/signal_kill.json");
 const SIGNAL_KILL_GOLDEN: &str = include_str!("verify/fixtures/signal_kill.jsonl");
 const KILL_PANE: &str = include_str!("verify/corpus/input/kill_pane.json");
 const KILL_PANE_GOLDEN: &str = include_str!("verify/fixtures/kill_pane.jsonl");
+const WORKSPACE_LIFECYCLE: &str = include_str!("verify/corpus/input/workspace_lifecycle.json");
+const WORKSPACE_LIFECYCLE_GOLDEN: &str = include_str!("verify/fixtures/workspace_lifecycle.jsonl");
+const WORKSPACE_SHUTDOWN_CLEANUP: &str =
+    include_str!("verify/corpus/input/workspace_shutdown_cleanup.json");
+const WORKSPACE_SHUTDOWN_CLEANUP_GOLDEN: &str =
+    include_str!("verify/fixtures/workspace_shutdown_cleanup.jsonl");
 const WIDE_OSC_CASSETTE: &str = include_str!("verify/fixtures/terminal/wide_osc.json");
 
 #[test]
@@ -80,6 +86,24 @@ fn kill_pane_agrees_across_independent_interpreters_and_the_golden() {
     assert_scenario_golden(KILL_PANE, KILL_PANE_GOLDEN, "kill_pane.jsonl");
 }
 
+#[test]
+fn workspace_lifecycle_agrees_across_independent_interpreters_and_the_golden() {
+    assert_scenario_golden(
+        WORKSPACE_LIFECYCLE,
+        WORKSPACE_LIFECYCLE_GOLDEN,
+        "workspace_lifecycle.jsonl",
+    );
+}
+
+#[test]
+fn workspace_shutdown_cleanup_agrees_across_all_interpreters() {
+    assert_scenario_golden(
+        WORKSPACE_SHUTDOWN_CLEANUP,
+        WORKSPACE_SHUTDOWN_CLEANUP_GOLDEN,
+        "workspace_shutdown_cleanup.jsonl",
+    );
+}
+
 fn assert_scenario_golden(source: &str, golden: &str, fixture_name: &str) {
     let scenario: Scenario = serde_json::from_str(source).expect("strict scenario");
     scenario.validate().expect("bounded scenario");
@@ -130,6 +154,20 @@ fn scenario_decoder_rejects_unknown_and_unbounded_input() {
         *client = "x".repeat(verify::schema::MAX_NAME_BYTES + 1);
     }
     assert!(resize.validate().is_err());
+
+    for invalid in ["../x".to_owned(), ".".to_owned(), "x".repeat(65)] {
+        let mut workspace: Scenario =
+            serde_json::from_str(WORKSPACE_LIFECYCLE).expect("workspace scenario");
+        let step = workspace
+            .steps
+            .iter_mut()
+            .find(|step| matches!(step, verify::schema::Step::CreateWorkspace { .. }))
+            .expect("workspace creation step");
+        if let verify::schema::Step::CreateWorkspace { workspace } = step {
+            *workspace = invalid;
+        }
+        assert!(workspace.validate().is_err());
+    }
 
     let mut child_output: Scenario =
         serde_json::from_str(PREFIX_AND_PASTE).expect("child output scenario");

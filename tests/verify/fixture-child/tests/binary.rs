@@ -50,6 +50,14 @@ fn serialized_input_scenarios_agree_through_model_in_process_and_real_binaries()
             "kill-pane",
             include_str!("../../corpus/input/kill_pane.json"),
         ),
+        (
+            "ws",
+            include_str!("../../corpus/input/workspace_lifecycle.json"),
+        ),
+        (
+            "wsc",
+            include_str!("../../corpus/input/workspace_shutdown_cleanup.json"),
+        ),
     ] {
         let scenario: Scenario = serde_json::from_str(source).expect("strict scenario");
         assert_binary_scenario(&scenario, name);
@@ -91,6 +99,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         primary: None,
         primary_pid: None,
         secondary: Vec::new(),
+        workspaces: std::collections::BTreeMap::new(),
         listener: &fixture_listener,
         server: None,
         environment: &environment,
@@ -116,6 +125,7 @@ struct PrefixBinaryDriver<'a> {
     primary: Option<Jsonl>,
     primary_pid: Option<i32>,
     secondary: Vec<Jsonl>,
+    workspaces: std::collections::BTreeMap<String, WorkspaceFixture>,
     listener: &'a UnixListener,
     server: Option<OwnedChild>,
     environment: &'a PrivateEnvironment,
@@ -127,6 +137,11 @@ struct PrefixBinaryDriver<'a> {
     lifecycle_subscriber: Option<Jsonl>,
     disconnected_viewer: Option<u64>,
     primary_exited: bool,
+}
+
+struct WorkspaceFixture {
+    control: Jsonl,
+    pid: i32,
 }
 
 impl PrefixBinaryDriver<'_> {
@@ -261,6 +276,87 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             "client.detached",
         )?);
         self.lifecycle_subscriber = Some(subscriber);
+        Ok(())
+    }
+
+    fn create_workspace(&mut self, workspace: &str) -> Result<(), String> {
+        if workspace == "binary" || self.workspaces.contains_key(workspace) {
+            return Err(format!("binary workspace {workspace:?} already exists"));
+        }
+        let output = run(
+            &self.fux,
+            ["workspace", "new", workspace],
+            self.environment,
+        );
+        if !output.status.success() {
+            return Err(format!(
+                "workspace creation failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let mut control = Jsonl::new(accept_with_deadline(self.listener));
+        let ready = control.receive();
+        if ready["event"] != "ready" {
+            return Err(format!("workspace fixture did not become ready: {ready}"));
+        }
+        let pid = ready["pid"]
+            .as_u64()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .ok_or_else(|| format!("workspace fixture omitted a valid pid: {ready}"))?;
+        wait_for_path(&self.environment.workspace_descriptor(workspace));
+        self.workspaces
+            .insert(workspace.to_owned(), WorkspaceFixture { control, pid });
+        Ok(())
+    }
+
+    fn select_workspace(&mut self, workspace: &str) -> Result<(), String> {
+        if !self.workspaces.contains_key(workspace) {
+            return Err(format!("binary workspace {workspace:?} does not exist"));
+        }
+        let output = run(
+            &self.fux,
+            [workspace, "list"],
+            self.environment,
+        );
+        if !output.status.success() {
+            return Err(format!(
+                "workspace selection failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+        if value.pointer("/result/value/workspaces/0/name").and_then(Value::as_str)
+            != Some(workspace)
+        {
+            return Err(format!("selected workspace listing was not authoritative: {value}"));
+        }
+        Ok(())
+    }
+
+    fn delete_workspace(&mut self, workspace: &str) -> Result<(), String> {
+        let fixture = self
+            .workspaces
+            .remove(workspace)
+            .ok_or_else(|| format!("binary workspace {workspace:?} does not exist"))?;
+        let output = run(
+            &self.fux,
+            ["workspace", "kill", workspace],
+            self.environment,
+        );
+        if !output.status.success() {
+            self.workspaces.insert(workspace.to_owned(), fixture);
+            return Err(format!(
+                "workspace deletion failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        wait_for_absent(&self.environment.workspace_descriptor(workspace));
+        wait_for_absent(&self.environment.workspace_control_socket(workspace));
+        wait_for_process_absent(fixture.pid);
+        drop(fixture.control);
         Ok(())
     }
 
@@ -651,6 +747,11 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
     }
 
     fn shutdown(&mut self) -> Result<usize, String> {
+        let workspace_ownership: Vec<_> = self
+            .workspaces
+            .iter()
+            .map(|(name, fixture)| (name.clone(), fixture.pid))
+            .collect();
         self.subscribers.clear();
         if !self.primary_exited {
             self.primary_mut()?.send(json!({"command":"quit"}));
@@ -675,6 +776,12 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         server.wait();
         wait_for_absent(&self.environment.manager_socket());
         wait_for_absent(&self.environment.control_socket());
+        for (name, pid) in workspace_ownership {
+            wait_for_absent(&self.environment.workspace_descriptor(&name));
+            wait_for_absent(&self.environment.workspace_control_socket(&name));
+            wait_for_process_absent(pid);
+        }
+        self.workspaces.clear();
         if self.environment.descriptor().exists() {
             return Err("workspace descriptor leaked".into());
         }
@@ -1443,7 +1550,13 @@ impl PrivateEnvironment {
         self.root.join("run/fux/binary.sock")
     }
     fn descriptor(&self) -> PathBuf {
-        self.root.join("run/fux/workspaces/binary.json")
+        self.workspace_descriptor("binary")
+    }
+    fn workspace_descriptor(&self, name: &str) -> PathBuf {
+        self.root.join("run/fux/workspaces").join(format!("{name}.json"))
+    }
+    fn workspace_control_socket(&self, name: &str) -> PathBuf {
+        self.root.join("run/fux").join(format!("{name}.sock"))
     }
     fn notification_log(&self) -> PathBuf {
         self.root.join("notifications.jsonl")

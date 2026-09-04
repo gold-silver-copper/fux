@@ -23,6 +23,9 @@ pub trait BinaryDriver {
     fn detach(&mut self, client: &str) -> Result<(), String>;
     fn reconnect(&mut self, client: &str) -> Result<(), String>;
     fn disconnect(&mut self, client: &str) -> Result<(), String>;
+    fn create_workspace(&mut self, workspace: &str) -> Result<(), String>;
+    fn select_workspace(&mut self, workspace: &str) -> Result<(), String>;
+    fn delete_workspace(&mut self, workspace: &str) -> Result<(), String>;
     fn child_output(&mut self, pane: u32, bytes: &[u8]) -> Result<ExpectedTerminalFrame, String>;
     fn terminal_reply(
         &mut self,
@@ -118,6 +121,36 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         Event::Lifecycle {
                             resource: format!("client:{client}"),
                             state: "disconnected".into(),
+                        },
+                    );
+                }
+                Step::CreateWorkspace { workspace } => {
+                    self.driver.create_workspace(workspace)?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("workspace:{workspace}"),
+                            state: "created".into(),
+                        },
+                    );
+                }
+                Step::SelectWorkspace { workspace } => {
+                    self.driver.select_workspace(workspace)?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("workspace:{workspace}"),
+                            state: "selected".into(),
+                        },
+                    );
+                }
+                Step::DeleteWorkspace { workspace } => {
+                    self.driver.delete_workspace(workspace)?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("workspace:{workspace}"),
+                            state: "deleted".into(),
                         },
                     );
                 }
