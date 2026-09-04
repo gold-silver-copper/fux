@@ -111,6 +111,189 @@ fn workspace_control_mutates_the_same_shared_session_state() {
     session.shutdown();
 }
 
+#[test]
+fn workspace_control_request_matrix_is_exhaustive_and_conflicts_after_shutdown() {
+    use fux::control::{Axis, EventKind, FocusTarget, Reply, Request, TabAction, WorkspaceAction};
+
+    let (session, control) =
+        WorkspaceHost::shared(vec!["/bin/cat".into()], 32, None).expect("workspace");
+    let completed = |request: Request| {
+        let id = request.id();
+        let (reply, _) = control.dispatch(request);
+        assert!(
+            matches!(reply, Reply::Completed { .. }),
+            "request {id} unexpectedly failed: {reply:?}"
+        );
+        reply
+    };
+
+    let pane = match completed(Request::New {
+        id: 1,
+        cwd: None,
+        argv: Vec::new(),
+        env: Default::default(),
+    }) {
+        Reply::Completed {
+            result: fux::control::CommandResult::Pane { pane },
+            ..
+        } => pane,
+        other => panic!("new returned the wrong result: {other:?}"),
+    };
+    completed(Request::Split {
+        id: 2,
+        axis: Axis::Horizontal,
+        target: Some(pane),
+        argv: Vec::new(),
+        env: Default::default(),
+    });
+    completed(Request::Focus {
+        id: 3,
+        target: FocusTarget::Pane(pane),
+    });
+    completed(Request::Zoom {
+        id: 4,
+        pane: Some(pane),
+    });
+    completed(Request::Resize {
+        id: 5,
+        pane,
+        delta: 100,
+    });
+    completed(Request::SendKeys {
+        id: 6,
+        pane,
+        keys: "matrix".into(),
+    });
+    completed(Request::Capture {
+        id: 7,
+        pane,
+        attrs: false,
+        scrollback: 0,
+        max_bytes: 64,
+    });
+    completed(Request::Tab {
+        id: 8,
+        action: TabAction::New {
+            name: Some("matrix".into()),
+        },
+    });
+    completed(Request::SetStatus {
+        id: 9,
+        segment: "matrix".into(),
+        text: "covered".into(),
+    });
+    let popup = match completed(Request::Popup {
+        id: 10,
+        rows: Some(4),
+        cols: Some(8),
+        argv: Vec::new(),
+        env: Default::default(),
+    }) {
+        Reply::Completed {
+            result: fux::control::CommandResult::Pane { pane },
+            ..
+        } => pane,
+        other => panic!("popup returned the wrong result: {other:?}"),
+    };
+    completed(Request::Kill {
+        id: 11,
+        pane: popup,
+    });
+
+    for request in [
+        Request::List { id: 12 },
+        Request::Workspace {
+            id: 13,
+            action: WorkspaceAction::List,
+        },
+        Request::Subscribe {
+            id: 14,
+            events: vec![EventKind::PaneOpened],
+        },
+    ] {
+        let (reply, events) = control.dispatch(request);
+        assert!(matches!(reply, Reply::Failed { .. }));
+        assert!(events.is_empty());
+    }
+
+    control.shutdown();
+    let requests = [
+        Request::New {
+            id: 100,
+            cwd: None,
+            argv: Vec::new(),
+            env: Default::default(),
+        },
+        Request::Split {
+            id: 101,
+            axis: Axis::Vertical,
+            target: None,
+            argv: Vec::new(),
+            env: Default::default(),
+        },
+        Request::Focus {
+            id: 102,
+            target: FocusTarget::Right,
+        },
+        Request::Zoom {
+            id: 103,
+            pane: None,
+        },
+        Request::Kill { id: 104, pane },
+        Request::Resize {
+            id: 105,
+            pane,
+            delta: 1,
+        },
+        Request::SendKeys {
+            id: 106,
+            pane,
+            keys: "x".into(),
+        },
+        Request::Capture {
+            id: 107,
+            pane,
+            attrs: false,
+            scrollback: 0,
+            max_bytes: 1,
+        },
+        Request::List { id: 108 },
+        Request::Tab {
+            id: 109,
+            action: TabAction::Next,
+        },
+        Request::Workspace {
+            id: 110,
+            action: WorkspaceAction::List,
+        },
+        Request::SetStatus {
+            id: 111,
+            segment: "x".into(),
+            text: "y".into(),
+        },
+        Request::Popup {
+            id: 112,
+            rows: None,
+            cols: None,
+            argv: Vec::new(),
+            env: Default::default(),
+        },
+        Request::Subscribe {
+            id: 113,
+            events: Vec::new(),
+        },
+    ];
+    for request in requests {
+        let expected_id = request.id();
+        let (reply, events) = control.dispatch(request);
+        assert!(
+            matches!(reply, Reply::Failed { id, ref error } if id == expected_id && error.code == fux::control::ErrorCode::Conflict)
+        );
+        assert!(events.is_empty());
+    }
+    session.shutdown();
+}
+
 #[cfg(unix)]
 #[test]
 fn control_kill_waits_for_real_exit_and_shutdown_rejects_new_work() {

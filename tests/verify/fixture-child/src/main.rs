@@ -412,16 +412,14 @@ fn descendant(mode: &str) -> ExitCode {
         .ok()
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(0);
-    if announce_descendant().is_err() {
-        return ExitCode::from(73);
-    }
     match mode {
+        "ignore_hup" => wait_for_signal(false, status),
+        "wait_signal" => wait_for_signal(true, status),
+        _ if announce_descendant().is_err() => ExitCode::from(73),
         "exit" => ExitCode::from(status),
         "hold_pty" => loop {
             std::thread::park();
         },
-        "ignore_hup" => wait_for_signal(false, status),
-        "wait_signal" => wait_for_signal(true, status),
         _ => ExitCode::from(64),
     }
 }
@@ -467,6 +465,9 @@ fn wait_for_signal(include_hup: bool, status: u8) -> ExitCode {
     let Ok(mut signals) = signal_hook::iterator::Signals::new(watched) else {
         return ExitCode::from(71);
     };
+    if announce_descendant().is_err() {
+        return ExitCode::from(73);
+    }
     if signals.forever().next().is_some() {
         ExitCode::from(status)
     } else {

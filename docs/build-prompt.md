@@ -3,8 +3,8 @@
 Paste the section below into a coding-agent session opened in a directory containing two sibling
 Git repositories: this checkout at `fux/`, with its gitignored `references/` trees present, and an
 empty, already `git init`-ed `zor/`. It was audited on 4 Sep 2026 against the reviewed koh 0.12.1
-candidate (`a7977295891d8619e0adc26a96a5fea251c8fc07`; registry publication/tag currently blocked), herdr
-0.8.2 (`94f6d9c`), zellij main (`af38660`), and vt100 0.16.2.
+follow-up candidate (`e23f3ad08358518f779df94ff314b1862750fff7`; PR #17 and registry
+publication are still pending), herdr 0.8.2 (`94f6d9c`), zellij main (`af38660`), and vt100 0.16.2.
 
 The prompt deliberately resolves implementation gaps that the design documents leave open. In
 particular, it records the exact koh API and prerequisite revision, makes named workspaces

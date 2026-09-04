@@ -21,7 +21,7 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: a7977295891d8619e0adc26a96a5fea251c8fc07
+          ref: e23f3ad08358518f779df94ff314b1862750fff7
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor

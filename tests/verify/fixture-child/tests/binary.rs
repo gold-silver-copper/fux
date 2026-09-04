@@ -216,11 +216,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             .client_workspace
             .as_deref()
             .ok_or_else(|| format!("client {client:?} workspace is unknown"))?;
-        self.detached_topology = Some(workspace_topology(
-            &self.fux,
-            self.environment,
-            workspace,
-        )?);
+        self.detached_topology = Some(workspace_topology(&self.fux, self.environment, workspace)?);
         let mut process = self
             .client
             .take()
@@ -286,23 +282,18 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }));
         let accepted = subscriber.receive();
         if accepted["id"] != 91 || accepted["status"] != "accepted" {
-            return Err(format!("lifecycle subscription was not accepted: {accepted}"));
+            return Err(format!(
+                "lifecycle subscription was not accepted: {accepted}"
+            ));
         }
-        self.detached_topology = Some(workspace_topology(
-            &self.fux,
-            self.environment,
-            workspace,
-        )?);
+        self.detached_topology = Some(workspace_topology(&self.fux, self.environment, workspace)?);
         let mut process = self
             .client
             .take()
             .ok_or_else(|| format!("client {client:?} is already disconnected"))?;
         process.disconnect()?;
-        self.disconnected_viewer = Some(expect_viewer_event(
-            &mut subscriber,
-            91,
-            "client.detached",
-        )?);
+        self.disconnected_viewer =
+            Some(expect_viewer_event(&mut subscriber, 91, "client.detached")?);
         self.lifecycle_subscriber = Some(subscriber);
         Ok(())
     }
@@ -311,11 +302,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if workspace == "binary" || self.workspaces.contains_key(workspace) {
             return Err(format!("binary workspace {workspace:?} already exists"));
         }
-        let output = run(
-            &self.fux,
-            ["workspace", "new", workspace],
-            self.environment,
-        );
+        let output = run(&self.fux, ["workspace", "new", workspace], self.environment);
         if !output.status.success() {
             return Err(format!(
                 "workspace creation failed: stdout={} stderr={}",
@@ -342,11 +329,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if workspace != "binary" && !self.workspaces.contains_key(workspace) {
             return Err(format!("binary workspace {workspace:?} does not exist"));
         }
-        let output = run(
-            &self.fux,
-            [workspace, "list"],
-            self.environment,
-        );
+        let output = run(&self.fux, [workspace, "list"], self.environment);
         if !output.status.success() {
             return Err(format!(
                 "workspace selection failed: stdout={} stderr={}",
@@ -355,10 +338,14 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             ));
         }
         let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-        if value.pointer("/result/value/workspaces/0/name").and_then(Value::as_str)
+        if value
+            .pointer("/result/value/workspaces/0/name")
+            .and_then(Value::as_str)
             != Some(workspace)
         {
-            return Err(format!("selected workspace listing was not authoritative: {value}"));
+            return Err(format!(
+                "selected workspace listing was not authoritative: {value}"
+            ));
         }
         Ok(())
     }
@@ -433,7 +420,9 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }));
         let accepted = detached.receive();
         if accepted["id"] != 97 || accepted["status"] != "accepted" {
-            return Err(format!("source workspace lifecycle subscription failed: {accepted}"));
+            return Err(format!(
+                "source workspace lifecycle subscription failed: {accepted}"
+            ));
         }
         let mut attached = Jsonl::new(
             UnixStream::connect(self.environment.workspace_control_socket(workspace))
@@ -446,7 +435,9 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }));
         let accepted = attached.receive();
         if accepted["id"] != 98 || accepted["status"] != "accepted" {
-            return Err(format!("target workspace lifecycle subscription failed: {accepted}"));
+            return Err(format!(
+                "target workspace lifecycle subscription failed: {accepted}"
+            ));
         }
         let output = run(&self.fux, ["workspace", "list"], self.environment);
         let listing: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
@@ -530,7 +521,9 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
 
     fn copy_input(&mut self, client: &str, bytes: &[u8]) -> Result<(), String> {
         if client != "alice" || self.client.is_none() {
-            return Err(format!("copy_input references unattached client {client:?}"));
+            return Err(format!(
+                "copy_input references unattached client {client:?}"
+            ));
         }
         if bytes != b"q" {
             return Err("binary copy_input currently supports exiting with q".into());
@@ -556,7 +549,9 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }));
         let accepted = subscriber.receive();
         if accepted["id"] != 93 || accepted["status"] != "accepted" {
-            return Err(format!("pane-close subscription was not accepted: {accepted}"));
+            return Err(format!(
+                "pane-close subscription was not accepted: {accepted}"
+            ));
         }
         self.primary_mut()?
             .send(json!({"command": "exit", "status": status}));
@@ -576,11 +571,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         Ok(status)
     }
 
-    fn signal(
-        &mut self,
-        pane: u32,
-        signal: verification::schema::Signal,
-    ) -> Result<i32, String> {
+    fn signal(&mut self, pane: u32, signal: verification::schema::Signal) -> Result<i32, String> {
         if pane != 1 || self.primary_exited {
             return Err(format!("binary cannot signal pane {pane}"));
         }
@@ -594,7 +585,9 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }));
         let accepted = subscriber.receive();
         if accepted["id"] != 94 || accepted["status"] != "accepted" {
-            return Err(format!("pane-close subscription was not accepted: {accepted}"));
+            return Err(format!(
+                "pane-close subscription was not accepted: {accepted}"
+            ));
         }
         let native = match signal {
             verification::schema::Signal::Hup => Signal::SIGHUP,
@@ -638,7 +631,9 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }));
         let accepted = subscriber.receive();
         if accepted["id"] != 95 || accepted["status"] != "accepted" {
-            return Err(format!("pane-close subscription was not accepted: {accepted}"));
+            return Err(format!(
+                "pane-close subscription was not accepted: {accepted}"
+            ));
         }
         let mut control = Jsonl::new(
             UnixStream::connect(self.environment.control_socket())
@@ -668,7 +663,10 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
     ) -> Result<Vec<verification::interpreters::ObservedAction>, String> {
         use verification::interpreters::ObservedAction;
         if bytes == [2, b'['] {
-            self.client.as_mut().ok_or("client is detached")?.write(bytes);
+            self.client
+                .as_mut()
+                .ok_or("client is detached")?
+                .write(bytes);
             let workspace = self.client_workspace.as_deref().unwrap_or("binary");
             let deadline = Instant::now() + DEADLINE;
             loop {
@@ -684,7 +682,10 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             return Ok(vec![ObservedAction::Command("copy_mode".into())]);
         }
         if bytes == [2, b'|'] || bytes == [2, b'|', 2, b'-'] {
-            self.client.as_mut().ok_or("client is detached")?.write(bytes);
+            self.client
+                .as_mut()
+                .ok_or("client is detached")?
+                .write(bytes);
             let split_count: usize = if bytes.len() == 2 { 1 } else { 2 };
             for _ in 0..split_count {
                 let mut secondary = Jsonl::new(accept_with_deadline(self.listener));
@@ -733,7 +734,10 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         let expected = if bytes == [2, 2] { 1 } else { bytes.len() };
         self.primary_mut()?
             .send(json!({"command":"read_exact", "bytes":expected}));
-        self.client.as_mut().ok_or("client is detached")?.write(bytes);
+        self.client
+            .as_mut()
+            .ok_or("client is detached")?
+            .write(bytes);
         let response = self.primary_mut()?.receive();
         let encoded = response["bytes_hex"]
             .as_str()
@@ -792,8 +796,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         let deadline = Instant::now() + DEADLINE;
         loop {
             let semantics = terminal_semantics(&self.fux, self.environment, workspace, pane)?;
-            if semantics.modes.mouse_mode == "anymotion"
-                && semantics.modes.mouse_encoding == "sgr"
+            if semantics.modes.mouse_mode == "anymotion" && semantics.modes.mouse_encoding == "sgr"
             {
                 break;
             }
@@ -983,26 +986,30 @@ fn terminal_semantics(
     let modes = serde_json::from_value(pane_value["modes"].clone())
         .map_err(|error| format!("invalid pane modes: {error}"))?;
     let copy = &pane_value["copy"];
-    let selection = copy["active"].as_bool().unwrap_or(false).then(|| {
-        let cursor_row = u16::try_from(copy["cursor_row"].as_u64()?).ok()?;
-        let cursor_column = u16::try_from(copy["cursor_column"].as_u64()?).ok()?;
-        let anchor = copy["anchor"].as_array().and_then(|anchor| {
-            Some((
-                u16::try_from(anchor.first()?.as_u64()?).ok()?,
-                u16::try_from(anchor.get(1)?.as_u64()?).ok()?,
-            ))
-        });
-        Some(verification::transcript::TerminalSelection {
-            cursor: (cursor_row, cursor_column),
-            anchor,
+    let selection = copy["active"]
+        .as_bool()
+        .unwrap_or(false)
+        .then(|| {
+            let cursor_row = u16::try_from(copy["cursor_row"].as_u64()?).ok()?;
+            let cursor_column = u16::try_from(copy["cursor_column"].as_u64()?).ok()?;
+            let anchor = copy["anchor"].as_array().and_then(|anchor| {
+                Some((
+                    u16::try_from(anchor.first()?.as_u64()?).ok()?,
+                    u16::try_from(anchor.get(1)?.as_u64()?).ok()?,
+                ))
+            });
+            Some(verification::transcript::TerminalSelection {
+                cursor: (cursor_row, cursor_column),
+                anchor,
+            })
         })
-    }).flatten();
+        .flatten();
     let status = serde_json::from_value(workspace_value["status"].clone())
         .map_err(|error| format!("invalid workspace status: {error}"))?;
     let prediction_target = (pane_value["focused"].as_bool() == Some(true)
         && pane_value["viewport_offset"].as_u64() == Some(0)
         && selection.is_none())
-        .then_some(pane);
+    .then_some(pane);
     Ok(FrameSemantics {
         cursor,
         modes,
@@ -1135,11 +1142,7 @@ fn wait_for_captured_line(
 ) -> Result<String, String> {
     let deadline = Instant::now() + DEADLINE;
     loop {
-        let output = run(
-            fux,
-            ["binary", "capture", &pane.to_string()],
-            environment,
-        );
+        let output = run(fux, ["binary", "capture", &pane.to_string()], environment);
         if output.status.success() {
             let reply: Value = serde_json::from_slice(&output.stdout)
                 .map_err(|error| format!("invalid capture reply: {error}"))?;
@@ -1460,12 +1463,80 @@ fn natural_last_pane_exit_is_observable_before_binary_workspace_retirement() {
     );
 }
 
+#[test]
+fn zor_wrapper_death_reaps_the_wrapped_child_and_retires_the_workspace() {
+    let fux = binary("FUX_BIN", "target/debug/fux");
+    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
+    let environment = PrivateEnvironment::new("wrapper-death");
+    let fixture_listener =
+        UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
+
+    let id = run(&fux, ["id"], &environment);
+    assert!(
+        id.status.success(),
+        "id failed: {}",
+        String::from_utf8_lossy(&id.stderr)
+    );
+    let allow = String::from_utf8(id.stdout)
+        .expect("endpoint id")
+        .trim()
+        .to_owned();
+    environment.write_config(&fixture, &zor);
+    let mut server = OwnedChild::spawn(
+        Command::new(&fux)
+            .args(["serve", "--allow", &allow, "--name", "binary"])
+            .env_clear()
+            .envs(environment.variables())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    );
+    wait_for_path(&environment.manager_socket());
+    wait_for_path(&environment.control_socket());
+    let mut fixture_control = Jsonl::new(accept_with_deadline(&fixture_listener));
+    let ready = fixture_control.receive();
+    assert_eq!(ready["event"], "ready");
+    let child_pid =
+        i32::try_from(ready["pid"].as_u64().expect("fixture pid")).expect("fixture pid range");
+    let mut client = TerminalChild::spawn(&fux, &environment, 24, 80);
+    wait_for_list(&fux, &environment, "\"width\":80");
+
+    let listing = run(&fux, ["binary", "list"], &environment);
+    assert!(
+        listing.status.success(),
+        "list failed: {}",
+        String::from_utf8_lossy(&listing.stderr)
+    );
+    let listing: Value = serde_json::from_slice(&listing.stdout).expect("listing JSON");
+    let wrapper_pid = listing
+        .pointer("/result/value/workspaces/0/tabs/0/panes/0/pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| i32::try_from(pid).ok())
+        .expect("wrapper pid");
+    assert_ne!(
+        wrapper_pid, child_pid,
+        "Zor wrapper was not a distinct process"
+    );
+
+    kill(Pid::from_raw(wrapper_pid), Signal::SIGKILL).expect("kill Zor wrapper");
+    wait_for_process_absent(wrapper_pid);
+    wait_for_process_absent(child_pid);
+    client.wait_status(137);
+    server.wait();
+    wait_for_absent(&environment.manager_socket());
+    wait_for_absent(&environment.control_socket());
+    assert!(
+        !environment.descriptor().exists(),
+        "workspace descriptor leaked"
+    );
+}
+
 // Golden path 8: a control kill reaches the pane process group, including a
 // descendant that ignores HUP, and the client observes the real signal status.
 #[test]
 fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
     let fux = binary("FUX_BIN", "target/debug/fux");
-    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
     let environment = PrivateEnvironment::new("kill");
     let fixture_listener =
@@ -1481,7 +1552,7 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
         .expect("endpoint id")
         .trim()
         .to_owned();
-    environment.write_config(&fixture, &zor);
+    environment.write_config_bare(&fixture);
     let mut server = OwnedChild::spawn(
         Command::new(&fux)
             .args(["serve", "--allow", &allow, "--name", "binary"])
@@ -1510,12 +1581,23 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
     assert_eq!(ready["event"], "descendant_ready");
     assert_eq!(ready["pid"], spawned["pid"]);
 
+    let mut events = Jsonl::new(
+        UnixStream::connect(environment.control_socket()).expect("subscribe to pane close"),
+    );
+    events.send(json!({"command":"subscribe", "id":97, "events":["pane.closed"]}));
+    assert_eq!(events.receive()["status"], "accepted");
     let killed = run(&fux, ["binary", "kill", "1"], &environment);
     assert!(
         killed.status.success(),
         "control kill failed: stdout={} stderr={}",
         String::from_utf8_lossy(&killed.stdout),
         String::from_utf8_lossy(&killed.stderr)
+    );
+    let closed = events.receive();
+    assert_eq!(closed["event"], "pane.closed");
+    assert_eq!(
+        closed["exit_status"], 129,
+        "unexpected pane close: {closed}"
     );
     wait_for_process_absent(descendant_pid);
     client.wait_status(129);
@@ -1666,6 +1748,8 @@ fn sigterm_cancels_a_stalled_startup_secret_transfer() {
         std::os::unix::fs::PermissionsExt::from_mode(0o600),
     )
     .expect("private startup socket");
+    let stderr_path = environment.root.join("startup-stderr.log");
+    let stderr = std::fs::File::create(&stderr_path).expect("startup stderr");
     let mut server = OwnedChild::spawn(
         Command::new(&fux)
             .args(["serve", "--startup-channel"])
@@ -1674,9 +1758,34 @@ fn sigterm_cancels_a_stalled_startup_secret_transfer() {
             .envs(environment.variables())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null()),
+            .stderr(stderr),
     );
-    let mut startup = accept_with_deadline(&listener);
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    let deadline = Instant::now() + DEADLINE;
+    let mut startup = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("accept startup channel: {error}"),
+        }
+        if let Some(status) = server
+            .child
+            .as_mut()
+            .expect("startup server")
+            .try_wait()
+            .expect("wait startup server")
+        {
+            let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+            panic!("startup server exited with {status}: {stderr}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "startup connection deadline expired"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
     startup
         .set_read_timeout(Some(DEADLINE))
         .expect("bound startup read");
@@ -1696,11 +1805,10 @@ struct PrivateEnvironment {
 }
 
 impl PrivateEnvironment {
-    fn new(label: &str) -> Self {
+    fn new(_label: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root =
-            std::env::temp_dir().join(format!("fux-verify-{label}-{}-{nonce}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("fv-{:x}-{nonce:x}", std::process::id()));
         for directory in [
             root.clone(),
             root.join("run"),
@@ -1751,6 +1859,14 @@ impl PrivateEnvironment {
     }
 
     fn write_config(&self, fixture: &Path, zor: &Path) {
+        self.write_config_document(fixture, Some(zor));
+    }
+
+    fn write_config_bare(&self, fixture: &Path) {
+        self.write_config_document(fixture, None);
+    }
+
+    fn write_config_document(&self, fixture: &Path, zor: Option<&Path>) {
         fs::create_dir_all(self.root.join("bin")).expect("fixture bin directory");
         for name in ["terminal-notifier", "notify-send"] {
             let target = self.root.join("bin").join(name);
@@ -1758,6 +1874,9 @@ impl PrivateEnvironment {
                 fs::hard_link(fixture, target).expect("install fixture notifier");
             }
         }
+        let zor = zor
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.join("bin/missing-zor"));
         let document = format!(
             "default-command = {{ argv = [{:?}, {:?}, \"--deadline-ms=30000\"] }}\nzor-path = {:?}\nclipboard = \"write-only\"\nlocal-network = true\n[notifications]\nenabled = true\nnotify-blocked = true\nnotify-idle = true\n",
             fixture.display().to_string(),
@@ -1780,7 +1899,9 @@ impl PrivateEnvironment {
         self.workspace_descriptor("binary")
     }
     fn workspace_descriptor(&self, name: &str) -> PathBuf {
-        self.root.join("run/fux/workspaces").join(format!("{name}.json"))
+        self.root
+            .join("run/fux/workspaces")
+            .join(format!("{name}.json"))
     }
     fn workspace_control_socket(&self, name: &str) -> PathBuf {
         self.root.join("run/fux").join(format!("{name}.sock"))
@@ -1935,7 +2056,16 @@ impl TerminalChild {
 
     fn wait_status(&mut self, expected: u32) {
         let status = self.wait_exit();
-        assert_eq!(status.exit_code(), expected, "client status {status}");
+        let output = self
+            .output
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            status.exit_code(),
+            expected,
+            "client status {status}; terminal={}",
+            String::from_utf8_lossy(&output)
+        );
     }
 
     fn wait_exit(&mut self) -> portable_pty::ExitStatus {
@@ -2172,10 +2302,7 @@ impl Jsonl {
             let mut chunk = [0_u8; 4096];
             match self.reader.read(&mut chunk) {
                 Ok(0) => panic!("fixture closed while checking for duplicate event"),
-                Ok(count) => panic!(
-                    "unexpected duplicate event bytes: {:?}",
-                    &chunk[..count]
-                ),
+                Ok(count) => panic!("unexpected duplicate event bytes: {:?}", &chunk[..count]),
                 Err(error)
                     if matches!(
                         error.kind(),
