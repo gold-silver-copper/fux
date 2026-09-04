@@ -34,6 +34,8 @@ const WORKSPACE_SHUTDOWN_CLEANUP_GOLDEN: &str =
     include_str!("verify/fixtures/workspace_shutdown_cleanup.jsonl");
 const WORKSPACE_SWITCH: &str = include_str!("verify/corpus/input/workspace_switch.json");
 const WORKSPACE_SWITCH_GOLDEN: &str = include_str!("verify/fixtures/workspace_switch.jsonl");
+const TRANSPORT_FAULTS: &str = include_str!("verify/corpus/input/transport_faults.json");
+const TRANSPORT_FAULTS_GOLDEN: &str = include_str!("verify/fixtures/transport_faults.jsonl");
 const WIDE_OSC_CASSETTE: &str = include_str!("verify/fixtures/terminal/wide_osc.json");
 
 #[test]
@@ -112,6 +114,15 @@ fn workspace_switch_agrees_across_all_interpreters() {
         WORKSPACE_SWITCH,
         WORKSPACE_SWITCH_GOLDEN,
         "workspace_switch.jsonl",
+    );
+}
+
+#[test]
+fn transport_faults_agree_across_model_and_production() {
+    assert_scenario_golden(
+        TRANSPORT_FAULTS,
+        TRANSPORT_FAULTS_GOLDEN,
+        "transport_faults.jsonl",
     );
 }
 
@@ -332,6 +343,77 @@ fn selected_terminal_grid_operations_and_resource_floor_match_independent_oracle
     let minimum = verify::oracle::resource::conservative_minimum(&state);
     assert!(state.resource_units() >= minimum);
     assert_eq!(state.resource_units(), state.recompute_resource_units());
+}
+
+#[test]
+fn deterministic_transport_fault_matrix_converges_and_preserves_divergent_input() {
+    use koh::input::{UserInput, WireEvent};
+    use koh::ssp::SyncState as _;
+    use koh::ssp::testkit::{GridState, LinkParams, SimHarness};
+
+    let combined = LinkParams {
+        loss: 0.30,
+        min_delay_ms: 1,
+        max_delay_ms: 150,
+        dup: 0.10,
+    };
+    let mut observed_all_faults = false;
+    for seed in 1..=1024 {
+        let mut link = koh::ssp::testkit::Link::default();
+        let mut rng = koh::ssp::testkit::Rng::new(seed);
+        for id in 0_u8..64 {
+            link.push(&mut rng, 0, &combined, vec![id]);
+        }
+        let delivered = link.due(150);
+        let unique = delivered.iter().collect::<std::collections::BTreeSet<_>>();
+        let duplicated = unique.iter().any(|value| {
+            delivered
+                .iter()
+                .filter(|candidate| candidate == value)
+                .count()
+                > 1
+        });
+        let reordered = delivered.windows(2).any(|pair| {
+            pair.first()
+                .is_some_and(|left| pair.get(1).is_some_and(|right| left > right))
+        });
+        if unique.len() < 64 && duplicated && reordered {
+            observed_all_faults = true;
+            break;
+        }
+    }
+    assert!(
+        observed_all_faults,
+        "combined deterministic link trace must contain loss, duplication, and reordering"
+    );
+
+    let mut harness = SimHarness::<GridState, GridState>::new(combined, 44, 256);
+    for generation in 0_u32..64 {
+        harness.a_mut().cells.insert(
+            generation % 7,
+            format!("combined:{generation:02}").into_bytes(),
+        );
+        harness.a_mut().echo_ack = u64::from(generation);
+        harness.run_steps(2);
+    }
+    let authoritative = harness.a.current().clone();
+    harness.run_until(50_000, |state| state.b.remote_state() == &authoritative);
+    assert_eq!(harness.b.remote_state(), &authoritative);
+
+    let mut target = UserInput::default();
+    target.push_bytes(b"abd");
+    let mut divergent = UserInput::default();
+    divergent.push_bytes(b"abc");
+    assert_eq!(
+        target.diff_from(&divergent),
+        vec![WireEvent::Keys(b"d".to_vec())]
+    );
+    target.subtract_prefix(&divergent);
+    assert_eq!(
+        target.events(),
+        &[koh::input::InputEvent::Byte(b'd')],
+        "divergent prefix subtraction must retain the exact divergent byte"
+    );
 }
 
 proptest! {

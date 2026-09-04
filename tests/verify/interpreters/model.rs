@@ -1,7 +1,7 @@
 use super::super::oracle::input::{Outcome, PrefixOracle};
 use super::super::schema::{
     ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSignal,
-    ExpectedSubscription, ExpectedTerminalFrame, Scenario, Signal, Step,
+    ExpectedSubscription, ExpectedTerminalFrame, Scenario, Signal, Step, TransportFault,
 };
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
@@ -34,6 +34,7 @@ impl Interpreter for ModelInterpreter {
         let mut copy_mode = false;
         let mut daemon_running = false;
         let mut workspaces = std::collections::BTreeSet::new();
+        let mut transport_lost = false;
         for step in &scenario.steps {
             match step {
                 Step::StartDaemon => {
@@ -522,6 +523,22 @@ impl Interpreter for ModelInterpreter {
                         }
                     }
                 }
+                Step::Transport { fault } => {
+                    match fault {
+                        TransportFault::Lose if !transport_lost => transport_lost = true,
+                        TransportFault::Reconnect if transport_lost => transport_lost = false,
+                        TransportFault::Duplicate | TransportFault::Reorder if !transport_lost => {}
+                        _ => return Err("model transport fault violates link lifecycle".into()),
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: "transport".into(),
+                            state: transport_fault_name(*fault).into(),
+                        },
+                    );
+                }
                 Step::Expect { expected } => {
                     if forwarded != expected.forwarded
                         || commands != expected.commands
@@ -545,11 +562,6 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                 }
-                _ => {
-                    return Err(
-                        "scenario step is not supported by the model interpreter yet".into(),
-                    );
-                }
             }
         }
         Ok(transcript)
@@ -562,6 +574,15 @@ fn signal_name(signal: Signal) -> &'static str {
         Signal::Int => "int",
         Signal::Term => "term",
         Signal::Kill => "kill",
+    }
+}
+
+fn transport_fault_name(fault: TransportFault) -> &'static str {
+    match fault {
+        TransportFault::Lose => "lost",
+        TransportFault::Duplicate => "duplicated",
+        TransportFault::Reorder => "reordered",
+        TransportFault::Reconnect => "reconnected",
     }
 }
 

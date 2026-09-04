@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "name": "transport_faults",
+  "applicability": "production",
+  "initial_size": { "rows": 24, "columns": 80 },
+  "steps": [
+    { "kind": "start_daemon" },
+    { "kind": "transport", "fault": "duplicate" },
+    { "kind": "transport", "fault": "reorder" },
+    { "kind": "transport", "fault": "lose" },
+    { "kind": "transport", "fault": "reconnect" },
+    { "kind": "shutdown" },
+    { "kind": "expect", "expected": { "owned_resources": 0 } }
+  ]
+}

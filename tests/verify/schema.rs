@@ -251,6 +251,7 @@ impl Scenario {
         let mut attached_clients = std::collections::BTreeSet::<String>::new();
         let mut client_workspaces = std::collections::BTreeMap::<String, String>::new();
         let mut workspaces = std::collections::BTreeSet::<String>::new();
+        let mut transport_lost = false;
         let mut child_exited = false;
         #[derive(Clone, Copy, Eq, PartialEq)]
         enum DaemonPhase {
@@ -326,6 +327,18 @@ impl Scenario {
                     return Err(
                         "serialized switch requires an attached client and workspace".into(),
                     );
+                }
+                Step::Transport {
+                    fault: TransportFault::Lose,
+                } if !transport_lost => transport_lost = true,
+                Step::Transport {
+                    fault: TransportFault::Reconnect,
+                } if transport_lost => transport_lost = false,
+                Step::Transport {
+                    fault: TransportFault::Duplicate | TransportFault::Reorder,
+                } if !transport_lost => {}
+                Step::Transport { .. } => {
+                    return Err("serialized transport fault violates link lifecycle".into());
                 }
                 Step::DeleteWorkspace { workspace }
                     if !client_workspaces.iter().any(|(client, current)| {

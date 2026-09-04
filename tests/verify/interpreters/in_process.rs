@@ -1,6 +1,6 @@
 use super::super::schema::{
     ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSignal,
-    ExpectedSubscription, ExpectedTerminalFrame, Scenario, Signal, Step,
+    ExpectedSubscription, ExpectedTerminalFrame, Scenario, Signal, Step, TransportFault,
 };
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
@@ -695,6 +695,16 @@ impl Interpreter for InProcessInterpreter {
                         append_action(&mut transcript, action, &mut forwarded, &mut commands)?;
                     }
                 }
+                Step::Transport { fault } => {
+                    exercise_transport_fault(*fault)?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: "transport".into(),
+                            state: transport_fault_name(*fault).into(),
+                        },
+                    );
+                }
                 Step::Expect { expected } => {
                     if forwarded != expected.forwarded
                         || commands != expected.commands
@@ -715,11 +725,6 @@ impl Interpreter for InProcessInterpreter {
                         Event::Cleanup {
                             owned_resources: expected.owned_resources,
                         },
-                    );
-                }
-                _ => {
-                    return Err(
-                        "scenario step is not supported by the in-process interpreter yet".into(),
                     );
                 }
             }
@@ -795,6 +800,124 @@ fn signal_name(signal: Signal) -> &'static str {
         Signal::Term => "term",
         Signal::Kill => "kill",
     }
+}
+
+fn transport_fault_name(fault: TransportFault) -> &'static str {
+    match fault {
+        TransportFault::Lose => "lost",
+        TransportFault::Duplicate => "duplicated",
+        TransportFault::Reorder => "reordered",
+        TransportFault::Reconnect => "reconnected",
+    }
+}
+
+fn exercise_transport_fault(fault: TransportFault) -> Result<(), String> {
+    use koh::ssp::testkit::{GridState, Link, LinkParams, Rng, SimHarness};
+
+    match fault {
+        TransportFault::Lose => {
+            let mut link = Link::default();
+            link.push(
+                &mut Rng::new(1),
+                0,
+                &LinkParams {
+                    loss: 1.0,
+                    min_delay_ms: 0,
+                    max_delay_ms: 0,
+                    dup: 0.0,
+                },
+                b"lost".to_vec(),
+            );
+            if link.next_due().is_some() || !link.due(u64::MAX).is_empty() {
+                return Err("Koh loss seam delivered a dropped datagram".into());
+            }
+        }
+        TransportFault::Duplicate => {
+            let mut link = Link::default();
+            link.push(
+                &mut Rng::new(2),
+                0,
+                &LinkParams {
+                    loss: 0.0,
+                    min_delay_ms: 1,
+                    max_delay_ms: 1,
+                    dup: 1.0,
+                },
+                b"duplicate".to_vec(),
+            );
+            if link.due(1) != [b"duplicate".to_vec(), b"duplicate".to_vec()] {
+                return Err("Koh duplication seam did not deliver two exact datagrams".into());
+            }
+        }
+        TransportFault::Reorder => {
+            let params = LinkParams {
+                loss: 0.0,
+                min_delay_ms: 0,
+                max_delay_ms: 100,
+                dup: 0.0,
+            };
+            let reordered = (1..=1024).any(|seed| {
+                let mut link = Link::default();
+                let mut rng = Rng::new(seed);
+                link.push(&mut rng, 0, &params, b"first".to_vec());
+                link.push(&mut rng, 0, &params, b"second".to_vec());
+                link.due(100) == [b"second".to_vec(), b"first".to_vec()]
+            });
+            if !reordered {
+                return Err("Koh reorder seam produced no deterministic inversion".into());
+            }
+            let mut sender = koh::ssp::Transport::<GridState, GridState>::new(0, 128);
+            let mut receiver = koh::ssp::Transport::<GridState, GridState>::new(0, 128);
+            sender.set_connected(true);
+            receiver.set_connected(true);
+            let mut rng = Rng::new(99);
+            let payload = (0..4096)
+                .map(|_| rng.next_u64().to_le_bytes()[0])
+                .collect::<Vec<_>>();
+            sender.current_mut().cells.insert(7, payload);
+            let mut fragments = sender.tick(0);
+            if fragments.len() <= 1 {
+                return Err("Koh reorder row did not force a fragmented instruction".into());
+            }
+            fragments.reverse();
+            for fragment in fragments {
+                receiver.recv(1, &fragment);
+            }
+            if receiver.remote_state() != sender.current() {
+                return Err("Koh reversed fragments did not reconstruct exact state".into());
+            }
+        }
+        TransportFault::Reconnect => {
+            let mut harness = SimHarness::<GridState, GridState>::new(
+                LinkParams {
+                    loss: 0.30,
+                    min_delay_ms: 1,
+                    max_delay_ms: 100,
+                    dup: 0.10,
+                },
+                44,
+                256,
+            );
+            harness.a.set_connected(false);
+            harness.b.set_connected(false);
+            harness
+                .a_mut()
+                .cells
+                .insert(1, b"authoritative-after-loss".to_vec());
+            let expected = harness.a.current().clone();
+            harness.run_steps(32);
+            if harness.b.remote_state() == &expected {
+                return Err("Koh disconnected transport delivered outage state".into());
+            }
+            harness.a.set_connected(true);
+            harness.b.set_connected(true);
+            harness.run_until(50_000, |state| state.b.remote_state() == &expected);
+            if harness.b.remote_state() != &expected {
+                return Err("Koh reconnect seam did not converge".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn append_action(
