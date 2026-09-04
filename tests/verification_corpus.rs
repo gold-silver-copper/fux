@@ -84,6 +84,17 @@ fn scenario_decoder_rejects_unknown_and_unbounded_input() {
         verify::schema::MAX_STEPS,
     ));
     assert!(scenario.validate().is_err());
+
+    let mut resize: Scenario = serde_json::from_str(PREFIX_AND_PASTE).expect("resize scenario");
+    let step = resize
+        .steps
+        .iter_mut()
+        .find(|step| matches!(step, verify::schema::Step::Resize { .. }))
+        .expect("resize step");
+    if let verify::schema::Step::Resize { client, .. } = step {
+        *client = "x".repeat(verify::schema::MAX_NAME_BYTES + 1);
+    }
+    assert!(resize.validate().is_err());
 }
 
 #[test]

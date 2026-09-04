@@ -265,7 +265,10 @@ fn validate_step(step: &Step) -> Result<(), String> {
             bounded_text("client", client)?;
             bounded_text("workspace", workspace)?;
         }
-        Step::Resize { size, .. } => validate_size(*size)?,
+        Step::Resize { client, size } => {
+            bounded_text("client", client)?;
+            validate_size(*size)?;
+        }
         Step::ChildOutput { bytes, .. }
         | Step::ExpectInput { bytes, .. }
         | Step::TerminalReply { bytes, .. } => bounded_bytes(bytes)?,

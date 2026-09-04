@@ -77,7 +77,6 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
     let mut primary = Jsonl::new(accept_with_deadline(&fixture_listener));
     assert_eq!(primary.receive()["event"], "ready");
     let client = TerminalChild::spawn(&fux, &environment, 24, 80);
-    client.wait_for_output_bytes(b"connected.");
     let driver = PrefixBinaryDriver {
         fux: fux.clone(),
         client,
@@ -108,6 +107,14 @@ struct PrefixBinaryDriver<'a> {
 }
 
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
+    fn attach(&mut self, client: &str) -> Result<(), String> {
+        if client != "alice" {
+            return Err(format!("binary fixture has no client {client:?}"));
+        }
+        self.client.wait_for_output_bytes(b"connected.");
+        Ok(())
+    }
+
     fn input(
         &mut self,
         bytes: &[u8],
@@ -266,8 +273,12 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
 
     fn resize(
         &mut self,
+        client: &str,
         size: verification::schema::Size,
     ) -> Result<verification::schema::ExpectedResize, String> {
+        if client != "alice" {
+            return Err(format!("binary fixture has no client {client:?}"));
+        }
         let expected = (size.rows.saturating_sub(3), size.columns.saturating_sub(2));
         self.client.resize(size.rows, size.columns)?;
         let deadline = Instant::now() + DEADLINE;

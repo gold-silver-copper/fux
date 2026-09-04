@@ -4,6 +4,7 @@
   "applicability": "all",
   "initial_size": { "rows": 24, "columns": 80 },
   "steps": [
+    { "kind": "attach", "client": "alice" },
     { "kind": "input", "client": "alice", "bytes": [104, 105] },
     { "kind": "input", "client": "alice", "bytes": [2, 2] },
     { "kind": "input", "client": "alice", "bytes": [2, 124] },

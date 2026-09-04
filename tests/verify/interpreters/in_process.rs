@@ -20,8 +20,21 @@ impl Interpreter for InProcessInterpreter {
         let mut control_events = Vec::new();
         let mut control_replies = Vec::new();
         let mut pty_resizes = Vec::new();
+        let mut attached_clients = std::collections::BTreeSet::new();
         for step in &scenario.steps {
             match step {
+                Step::Attach { client } => {
+                    if !attached_clients.insert(client.clone()) {
+                        return Err(format!("client {client:?} attached twice"));
+                    }
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: "attached".into(),
+                        },
+                    );
+                }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
                         Step::Prefix { client, key } => (client, vec![0x02, *key]),
@@ -190,7 +203,10 @@ impl Interpreter for InProcessInterpreter {
                         },
                     );
                 }
-                Step::Resize { client: _, size } => {
+                Step::Resize { client, size } => {
+                    if !attached_clients.contains(client) {
+                        return Err(format!("resize references unattached client {client:?}"));
+                    }
                     let layout = fux::state::LayoutTree::new(fux::state::PaneId(1));
                     let geometry = layout
                         .geometry(fux::state::Rect {
@@ -213,6 +229,7 @@ impl Interpreter for InProcessInterpreter {
                     push(
                         &mut transcript,
                         Event::Resize {
+                            client: client.clone(),
                             pane: "pane-1".into(),
                             rows: resize.rows,
                             columns: resize.columns,

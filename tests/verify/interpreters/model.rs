@@ -19,8 +19,22 @@ impl Interpreter for ModelInterpreter {
         let mut control_events = Vec::new();
         let mut control_replies = Vec::new();
         let mut pty_resizes = Vec::new();
+        let mut attached_clients = std::collections::BTreeSet::new();
         for step in &scenario.steps {
             match step {
+                Step::Attach { client } => {
+                    if !attached_clients.insert(client.clone()) {
+                        return Err(format!("client {client:?} attached twice"));
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: "attached".into(),
+                        },
+                    );
+                }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
                         Step::Prefix { client, key } => (client, vec![0x02, *key]),
@@ -182,7 +196,10 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                 }
-                Step::Resize { client: _, size } => {
+                Step::Resize { client, size } => {
+                    if !attached_clients.contains(client) {
+                        return Err(format!("resize references unattached client {client:?}"));
+                    }
                     let resize = ExpectedResize {
                         pane: 1,
                         rows: size.rows.saturating_sub(3),
@@ -193,6 +210,7 @@ impl Interpreter for ModelInterpreter {
                         &mut transcript,
                         "model",
                         Event::Resize {
+                            client: client.clone(),
                             pane: "pane-1".into(),
                             rows: resize.rows,
                             columns: resize.columns,

@@ -18,6 +18,7 @@ pub enum ObservedAction {
 }
 
 pub trait BinaryDriver {
+    fn attach(&mut self, client: &str) -> Result<(), String>;
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
     fn subscribe(
@@ -26,7 +27,7 @@ pub trait BinaryDriver {
         events: &[String],
     ) -> Result<ExpectedSubscription, String>;
     fn control(&mut self, request: &serde_json::Value) -> Result<ExpectedControlReply, String>;
-    fn resize(&mut self, size: Size) -> Result<ExpectedResize, String>;
+    fn resize(&mut self, client: &str, size: Size) -> Result<ExpectedResize, String>;
     fn cleanup(&mut self) -> Result<usize, String>;
 }
 
@@ -50,6 +51,16 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut pty_resizes = Vec::new();
         for step in &scenario.steps {
             match step {
+                Step::Attach { client } => {
+                    self.driver.attach(client)?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: "attached".into(),
+                        },
+                    );
+                }
                 Step::Input { .. } | Step::Prefix { .. } => {
                     let (client, bytes) = match step {
                         Step::Prefix { client, key } => (client, vec![0x02, *key]),
@@ -193,12 +204,13 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         },
                     );
                 }
-                Step::Resize { client: _, size } => {
-                    let resize = self.driver.resize(*size)?;
+                Step::Resize { client, size } => {
+                    let resize = self.driver.resize(client, *size)?;
                     pty_resizes.push(resize);
                     push(
                         &mut transcript,
                         Event::Resize {
+                            client: client.clone(),
                             pane: "pane-1".into(),
                             rows: resize.rows,
                             columns: resize.columns,

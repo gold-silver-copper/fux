@@ -55,6 +55,7 @@ pub enum Event {
         result_kind: String,
     },
     Resize {
+        client: String,
         pane: String,
         rows: u16,
         columns: u16,

@@ -4,6 +4,7 @@
   "applicability": "all",
   "initial_size": { "rows": 24, "columns": 80 },
   "steps": [
+    { "kind": "attach", "client": "alice" },
     { "kind": "control", "request": { "command": "list", "id": 41 } },
     { "kind": "resize", "client": "alice", "size": { "rows": 30, "columns": 100 } },
     {
