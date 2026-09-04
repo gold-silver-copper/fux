@@ -339,6 +339,10 @@ impl Scenario {
                 Step::Signal { .. } => {
                     return Err("serialized signal supports pane 1 only".into());
                 }
+                Step::KillPane { pane: 1 } => child_exited = true,
+                Step::KillPane { .. } => {
+                    return Err("serialized kill_pane supports pane 1 only".into());
+                }
                 _ => {}
             }
         }

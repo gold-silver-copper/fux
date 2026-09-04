@@ -24,6 +24,8 @@ const SIGNAL_TERM: &str = include_str!("verify/corpus/input/signal_term.json");
 const SIGNAL_TERM_GOLDEN: &str = include_str!("verify/fixtures/signal_term.jsonl");
 const SIGNAL_KILL: &str = include_str!("verify/corpus/input/signal_kill.json");
 const SIGNAL_KILL_GOLDEN: &str = include_str!("verify/fixtures/signal_kill.jsonl");
+const KILL_PANE: &str = include_str!("verify/corpus/input/kill_pane.json");
+const KILL_PANE_GOLDEN: &str = include_str!("verify/fixtures/kill_pane.jsonl");
 const WIDE_OSC_CASSETTE: &str = include_str!("verify/fixtures/terminal/wide_osc.json");
 
 #[test]
@@ -71,6 +73,11 @@ fn signal_term_agrees_across_independent_interpreters_and_the_golden() {
 #[test]
 fn signal_kill_agrees_across_independent_interpreters_and_the_golden() {
     assert_scenario_golden(SIGNAL_KILL, SIGNAL_KILL_GOLDEN, "signal_kill.jsonl");
+}
+
+#[test]
+fn kill_pane_agrees_across_independent_interpreters_and_the_golden() {
+    assert_scenario_golden(KILL_PANE, KILL_PANE_GOLDEN, "kill_pane.jsonl");
 }
 
 fn assert_scenario_golden(source: &str, golden: &str, fixture_name: &str) {

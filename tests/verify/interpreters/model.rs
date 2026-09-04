@@ -214,6 +214,20 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                 }
+                Step::KillPane { pane } => {
+                    if *pane != 1 || exit_status.is_some() {
+                        return Err(format!("model cannot kill pane {pane}"));
+                    }
+                    exit_status = Some(129);
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::ChildExit {
+                            process: format!("pane-{pane}"),
+                            status: 129,
+                        },
+                    );
+                }
                 Step::Shutdown => {
                     if !std::mem::replace(&mut daemon_running, false) {
                         return Err("model shutdown requires running daemon".into());

@@ -46,6 +46,10 @@ fn serialized_input_scenarios_agree_through_model_in_process_and_real_binaries()
             "signal-kill",
             include_str!("../../corpus/input/signal_kill.json"),
         ),
+        (
+            "kill-pane",
+            include_str!("../../corpus/input/kill_pane.json"),
+        ),
     ] {
         let scenario: Scenario = serde_json::from_str(source).expect("strict scenario");
         assert_binary_scenario(&scenario, name);
@@ -405,6 +409,45 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if event["event"] != "pane.closed" || event["id"] != 94 || event["pane"] != pane {
             return Err(format!("unexpected raw pane-close event: {event}"));
         }
+        Ok(status)
+    }
+
+    fn kill_pane(&mut self, pane: u32) -> Result<i32, String> {
+        if pane != 1 || self.primary_exited {
+            return Err(format!("binary cannot kill pane {pane}"));
+        }
+        let mut subscriber = Jsonl::new(
+            UnixStream::connect(self.environment.control_socket())
+                .map_err(|error| error.to_string())?,
+        );
+        subscriber.send(json!({
+            "command": "subscribe",
+            "id": 95,
+            "events": ["pane.closed"],
+        }));
+        let accepted = subscriber.receive();
+        if accepted["id"] != 95 || accepted["status"] != "accepted" {
+            return Err(format!("pane-close subscription was not accepted: {accepted}"));
+        }
+        let mut control = Jsonl::new(
+            UnixStream::connect(self.environment.control_socket())
+                .map_err(|error| error.to_string())?,
+        );
+        control.send(json!({"command": "kill", "id": 96, "pane": pane}));
+        let reply = control.receive();
+        if reply["id"] != 96 || reply["status"] != "completed" {
+            return Err(format!("pane kill did not complete: {reply}"));
+        }
+        let event = subscriber.receive();
+        let status = event["exit_status"]
+            .as_i64()
+            .and_then(|status| i32::try_from(status).ok())
+            .ok_or_else(|| format!("pane-close kill event omitted status: {event}"))?;
+        if event["event"] != "pane.closed" || event["id"] != 95 || event["pane"] != pane {
+            return Err(format!("unexpected raw pane-close event: {event}"));
+        }
+        self.primary_exited = true;
+        self.primary = None;
         Ok(status)
     }
 

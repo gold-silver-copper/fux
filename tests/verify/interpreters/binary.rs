@@ -33,6 +33,7 @@ pub trait BinaryDriver {
     fn copy_input(&mut self, client: &str, bytes: &[u8]) -> Result<(), String>;
     fn child_exit(&mut self, pane: u32, status: i32) -> Result<i32, String>;
     fn signal(&mut self, pane: u32, signal: Signal) -> Result<i32, String>;
+    fn kill_pane(&mut self, pane: u32) -> Result<i32, String>;
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
     fn subscribe(
@@ -197,6 +198,17 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                             name: signal_name(*signal).into(),
                         },
                     );
+                    push(
+                        &mut transcript,
+                        Event::ChildExit {
+                            process: format!("pane-{pane}"),
+                            status: observed_status,
+                        },
+                    );
+                }
+                Step::KillPane { pane } => {
+                    let observed_status = self.driver.kill_pane(*pane)?;
+                    exit_status = Some(observed_status);
                     push(
                         &mut transcript,
                         Event::ChildExit {

@@ -292,6 +292,20 @@ impl Interpreter for InProcessInterpreter {
                         },
                     );
                 }
+                Step::KillPane { pane } => {
+                    if *pane != 1 || exit_status.is_some() {
+                        return Err(format!("production cannot kill pane {pane}"));
+                    }
+                    let observed_status = observe_signal(Signal::Hup)?;
+                    exit_status = Some(observed_status);
+                    push(
+                        &mut transcript,
+                        Event::ChildExit {
+                            process: format!("pane-{pane}"),
+                            status: observed_status,
+                        },
+                    );
+                }
                 Step::Shutdown => {
                     if !std::mem::replace(&mut daemon_running, false) {
                         return Err("production shutdown requires running daemon".into());

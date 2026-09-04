@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "kill_pane",
+  "applicability": "all",
+  "initial_size": { "rows": 24, "columns": 80 },
+  "steps": [
+    { "kind": "start_daemon" },
+    { "kind": "kill_pane", "pane": 1 },
+    { "kind": "shutdown" },
+    { "kind": "expect", "expected": { "exit_status": 129, "owned_resources": 0 } }
+  ]
+}
