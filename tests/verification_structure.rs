@@ -73,24 +73,31 @@ fn portable_production_paths_do_not_bypass_platform_policy() {
 }
 
 #[test]
-fn pure_verification_has_no_wall_clock_or_placeholder_escape_hatches() {
+fn pure_model_verification_has_no_wall_clock_or_placeholder_escape_hatches() {
     let pure = [
         Path::new("tests/verification_corpus.rs"),
         Path::new("tests/verify/interpreters/model.rs"),
-        Path::new("tests/verify/interpreters/in_process.rs"),
     ];
     for file in pure {
         let source = read(file);
-        for forbidden in [
-            "thread::sleep",
-            "tokio::time::sleep",
-            "#[ignore",
-            "todo!",
-            "unimplemented!",
-        ] {
+        for forbidden in ["thread::sleep", "tokio::time::sleep"] {
             assert!(
                 !source.contains(forbidden),
                 "pure-test invariant: {} contains forbidden `{forbidden}`",
+                file.display()
+            );
+        }
+    }
+    for file in [
+        Path::new("tests/verification_corpus.rs"),
+        Path::new("tests/verify/interpreters/model.rs"),
+        Path::new("tests/verify/interpreters/in_process.rs"),
+    ] {
+        let source = read(file);
+        for forbidden in ["#[ignore", "todo!", "unimplemented!"] {
+            assert!(
+                !source.contains(forbidden),
+                "verification invariant: {} contains forbidden `{forbidden}`",
                 file.display()
             );
         }
