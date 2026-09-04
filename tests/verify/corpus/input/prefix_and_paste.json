@@ -19,6 +19,8 @@
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 51, 50, 59, 49, 59, 49, 77] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 51, 53, 59, 49, 59, 49, 77] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 54, 52, 59, 49, 59, 49, 77] },
+    { "kind": "child_output", "pane": 1, "bytes": [82, 69, 84, 65, 73, 78, 69, 68, 95] },
+    { "kind": "child_output", "pane": 1, "bytes": [70, 82, 65, 77, 69] },
     { "kind": "input", "client": "alice", "bytes": [2, 124, 2, 45] },
     { "kind": "detach", "client": "alice" },
     { "kind": "reconnect", "client": "alice" },
@@ -42,6 +44,10 @@
         ],
         "pty_resizes": [
           { "pane": 1, "rows": 27, "columns": 98 }
+        ],
+        "terminal_frames": [
+          { "rows": 27, "columns": 98, "cells": ["RETAINED_"], "cursor": null, "synchronized": null },
+          { "rows": 27, "columns": 98, "cells": ["RETAINED_FRAME"], "cursor": null, "synchronized": null }
         ],
         "owned_resources": 0
       }

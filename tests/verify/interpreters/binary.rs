@@ -1,6 +1,6 @@
 use super::super::schema::{
-    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription, Scenario,
-    Size, Step,
+    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription,
+    ExpectedTerminalFrame, Scenario, Size, Step,
 };
 use super::super::transcript::{Entry, Event, hex};
 
@@ -21,6 +21,7 @@ pub trait BinaryDriver {
     fn attach(&mut self, client: &str) -> Result<(), String>;
     fn detach(&mut self, client: &str) -> Result<(), String>;
     fn reconnect(&mut self, client: &str) -> Result<(), String>;
+    fn child_output(&mut self, pane: u32, bytes: &[u8]) -> Result<ExpectedTerminalFrame, String>;
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
     fn subscribe(
@@ -51,6 +52,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut control_events = Vec::new();
         let mut control_replies = Vec::new();
         let mut pty_resizes = Vec::new();
+        let mut terminal_frames = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Attach { client } => {
@@ -80,6 +82,20 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         Event::Lifecycle {
                             resource: format!("client:{client}"),
                             state: "reconnected".into(),
+                        },
+                    );
+                }
+                Step::ChildOutput { pane, bytes } => {
+                    let frame = self.driver.child_output(*pane, bytes)?;
+                    terminal_frames.push(frame.clone());
+                    push(
+                        &mut transcript,
+                        Event::TerminalFrame {
+                            rows: frame.rows,
+                            columns: frame.columns,
+                            cells: frame.cells,
+                            cursor: frame.cursor,
+                            synchronized: frame.synchronized,
                         },
                     );
                 }
@@ -246,6 +262,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         || control_events != expected.control_events
                         || control_replies != expected.control_replies
                         || pty_resizes != expected.pty_resizes
+                        || terminal_frames != expected.terminal_frames
                     {
                         return Err(format!(
                             "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

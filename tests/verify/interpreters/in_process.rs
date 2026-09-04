@@ -1,6 +1,6 @@
 use super::super::schema::{
-    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription, Scenario,
-    Step,
+    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription,
+    ExpectedTerminalFrame, Scenario, Step,
 };
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
@@ -20,6 +20,12 @@ impl Interpreter for InProcessInterpreter {
         let mut control_events = Vec::new();
         let mut control_replies = Vec::new();
         let mut pty_resizes = Vec::new();
+        let mut terminal_frames = Vec::new();
+        let mut terminal_size = (
+            scenario.initial_size.rows.saturating_sub(3),
+            scenario.initial_size.columns.saturating_sub(2),
+        );
+        let mut child_output = std::collections::BTreeMap::<u32, Vec<u8>>::new();
         let mut attached_clients = std::collections::BTreeSet::new();
         let mut known_clients = std::collections::BTreeSet::new();
         for step in &scenario.steps {
@@ -58,6 +64,34 @@ impl Interpreter for InProcessInterpreter {
                         Event::Lifecycle {
                             resource: format!("client:{client}"),
                             state: "reconnected".into(),
+                        },
+                    );
+                }
+                Step::ChildOutput { pane, bytes } => {
+                    if *pane != 1 {
+                        return Err(format!("production interpreter has no pane {pane}"));
+                    }
+                    let accumulated = child_output.entry(*pane).or_default();
+                    accumulated.extend_from_slice(bytes);
+                    let mut parser = vt100::Parser::new(terminal_size.0, terminal_size.1, 0);
+                    parser.process(accumulated);
+                    let text = parser.screen().contents().trim_end().to_owned();
+                    let frame = ExpectedTerminalFrame {
+                        rows: terminal_size.0,
+                        columns: terminal_size.1,
+                        cells: vec![text],
+                        cursor: None,
+                        synchronized: None,
+                    };
+                    terminal_frames.push(frame.clone());
+                    push(
+                        &mut transcript,
+                        Event::TerminalFrame {
+                            rows: frame.rows,
+                            columns: frame.columns,
+                            cells: frame.cells,
+                            cursor: frame.cursor,
+                            synchronized: frame.synchronized,
                         },
                     );
                 }
@@ -252,6 +286,7 @@ impl Interpreter for InProcessInterpreter {
                         columns: rect.width.saturating_sub(2),
                     };
                     pty_resizes.push(resize);
+                    terminal_size = (resize.rows, resize.columns);
                     push(
                         &mut transcript,
                         Event::Resize {
@@ -281,6 +316,7 @@ impl Interpreter for InProcessInterpreter {
                         || control_events != expected.control_events
                         || control_replies != expected.control_replies
                         || pty_resizes != expected.pty_resizes
+                        || terminal_frames != expected.terminal_frames
                     {
                         return Err(format!(
                             "production expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

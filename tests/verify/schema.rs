@@ -216,7 +216,7 @@ pub struct ExpectedTerminalFrame {
     #[serde(default)]
     pub cursor: Option<(u16, u16)>,
     #[serde(default)]
-    pub synchronized: bool,
+    pub synchronized: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -244,8 +244,29 @@ impl Scenario {
         if self.steps.len() > MAX_STEPS {
             return Err(format!("scenario has more than {MAX_STEPS} steps"));
         }
+        let mut inner_columns = self.initial_size.columns.saturating_sub(2);
+        let mut child_output_columns = std::collections::BTreeMap::<u32, usize>::new();
         for step in &self.steps {
             validate_step(step)?;
+            match step {
+                Step::Resize { size, .. } => {
+                    inner_columns = size.columns.saturating_sub(2);
+                    if child_output_columns
+                        .values()
+                        .any(|columns| *columns > usize::from(inner_columns))
+                    {
+                        return Err("resize would wrap serialized child_output".into());
+                    }
+                }
+                Step::ChildOutput { pane, bytes } => {
+                    let columns = child_output_columns.entry(*pane).or_default();
+                    *columns = columns.saturating_add(bytes.len());
+                    if *columns > usize::from(inner_columns) {
+                        return Err("serialized child_output must fit one visible pane row".into());
+                    }
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -269,9 +290,18 @@ fn validate_step(step: &Step) -> Result<(), String> {
             bounded_text("client", client)?;
             validate_size(*size)?;
         }
-        Step::ChildOutput { bytes, .. }
-        | Step::ExpectInput { bytes, .. }
-        | Step::TerminalReply { bytes, .. } => bounded_bytes(bytes)?,
+        Step::ChildOutput { bytes, .. } => {
+            bounded_bytes(bytes)?;
+            if bytes.is_empty() || bytes.iter().any(|byte| !(0x21..=0x7e).contains(byte)) {
+                return Err(
+                    "serialized child_output currently supports nonempty ASCII graphic bytes only; use a terminal cassette for whitespace and control sequences"
+                        .into(),
+                );
+            }
+        }
+        Step::ExpectInput { bytes, .. } | Step::TerminalReply { bytes, .. } => {
+            bounded_bytes(bytes)?
+        }
         Step::Input { client, bytes }
         | Step::Paste { client, bytes }
         | Step::CopyInput { client, bytes }

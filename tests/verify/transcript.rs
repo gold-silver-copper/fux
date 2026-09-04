@@ -73,7 +73,7 @@ pub enum Event {
         columns: u16,
         cells: Vec<String>,
         cursor: Option<(u16, u16)>,
-        synchronized: bool,
+        synchronized: Option<bool>,
     },
     Lifecycle {
         resource: String,

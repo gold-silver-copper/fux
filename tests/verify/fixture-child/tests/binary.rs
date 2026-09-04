@@ -89,6 +89,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         subscribers: Vec::new(),
         client_size: scenario.initial_size,
         detached_topology: None,
+        retained_output: None,
     };
     let binary = BinaryInterpreter::new(driver)
         .run(scenario)
@@ -108,6 +109,7 @@ struct PrefixBinaryDriver<'a> {
     subscribers: Vec<(u64, Jsonl)>,
     client_size: verification::schema::Size,
     detached_topology: Option<Value>,
+    retained_output: Option<String>,
 }
 
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
@@ -156,8 +158,42 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
                 "workspace topology changed across reconnect: before={before}, after={after}"
             ));
         }
+        if let Some(expected) = self.retained_output.as_deref() {
+            wait_for_captured_line(&self.fux, self.environment, 1, expected)?;
+        }
         self.client = Some(process);
         Ok(())
+    }
+
+    fn child_output(
+        &mut self,
+        pane: u32,
+        bytes: &[u8],
+    ) -> Result<verification::schema::ExpectedTerminalFrame, String> {
+        if pane != 1 {
+            return Err(format!("binary fixture has no pane {pane}"));
+        }
+        let chunk = std::str::from_utf8(bytes)
+            .map_err(|error| format!("binary child output is not UTF-8: {error}"))?;
+        self.primary.send(json!({
+            "command": "write",
+            "chunks_hex": [verification::transcript::hex(bytes)],
+        }));
+        if self.primary.receive()["bytes"] != bytes.len() {
+            return Err("fixture reported a short child output write".into());
+        }
+        let mut expected = self.retained_output.take().unwrap_or_default();
+        expected.push_str(chunk);
+        let observed = wait_for_captured_line(&self.fux, self.environment, pane, &expected)?;
+        self.retained_output = Some(observed.clone());
+        let observed_size = fixture_size(&mut self.primary);
+        Ok(verification::schema::ExpectedTerminalFrame {
+            rows: observed_size.0,
+            columns: observed_size.1,
+            cells: vec![observed],
+            cursor: None,
+            synchronized: None,
+        })
     }
 
     fn input(
@@ -490,6 +526,48 @@ fn workspace_topology(fux: &Path, environment: &PrivateEnvironment) -> Result<Va
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(json!({ "workspaces": workspaces }))
+}
+
+fn wait_for_captured_line(
+    fux: &Path,
+    environment: &PrivateEnvironment,
+    pane: u32,
+    expected: &str,
+) -> Result<String, String> {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let output = run(
+            fux,
+            ["binary", "capture", &pane.to_string()],
+            environment,
+        );
+        if output.status.success() {
+            let reply: Value = serde_json::from_slice(&output.stdout)
+                .map_err(|error| format!("invalid capture reply: {error}"))?;
+            let captured = reply
+                .pointer("/result/value/text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("capture reply omitted text: {reply}"))?;
+            if let Some(observed) = captured
+                .lines()
+                .find(|line| line.contains(expected))
+                .map(str::trim_end)
+            {
+                if observed == expected {
+                    return Ok(observed.to_owned());
+                }
+                return Err(format!(
+                    "child output was not retained exactly: expected={expected:?}, observed={observed:?}"
+                ));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "pane {pane} did not capture child output {expected:?} before deadline"
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 fn required_field<'a>(value: &'a Value, field: &str, owner: &str) -> Result<&'a Value, String> {

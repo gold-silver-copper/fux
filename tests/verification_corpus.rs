@@ -95,6 +95,31 @@ fn scenario_decoder_rejects_unknown_and_unbounded_input() {
         *client = "x".repeat(verify::schema::MAX_NAME_BYTES + 1);
     }
     assert!(resize.validate().is_err());
+
+    let mut child_output: Scenario =
+        serde_json::from_str(PREFIX_AND_PASTE).expect("child output scenario");
+    let step = child_output
+        .steps
+        .iter_mut()
+        .find(|step| matches!(step, verify::schema::Step::ChildOutput { .. }))
+        .expect("child output step");
+    if let verify::schema::Step::ChildOutput { bytes, .. } = step {
+        *bytes = b"\x1b[31m".to_vec();
+    }
+    assert!(child_output.validate().is_err());
+
+    for invalid in [Vec::new(), b"trailing ".to_vec(), vec![b'X'; 79]] {
+        let mut child_output: Scenario =
+            serde_json::from_str(PREFIX_LITERAL).expect("child output bounds scenario");
+        child_output.steps.insert(
+            1,
+            verify::schema::Step::ChildOutput {
+                pane: 1,
+                bytes: invalid,
+            },
+        );
+        assert!(child_output.validate().is_err());
+    }
 }
 
 #[test]
