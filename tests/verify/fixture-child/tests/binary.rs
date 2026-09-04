@@ -88,6 +88,17 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     let mut popup_fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
     assert_eq!(popup_fixture.receive()["event"], "ready");
     wait_for_list(&fux, &environment, "\"name\":\"popups\"");
+    popup_fixture.send(json!({
+        "command":"write",
+        "chunks_hex":["1b5b3f31303030681b5b3f3130303668"]
+    }));
+    assert_eq!(popup_fixture.receive()["bytes"], 16);
+    client.wait_for_output_bytes(b"\x1b[?1006h");
+    popup_fixture.send(json!({"command":"read_exact", "bytes":9}));
+    // A 30x8 popup in the 120x39 workspace body has its border origin at (45,15).
+    // Clicking the first content cell is therefore outer (47,17), re-encoded as popup (1,1).
+    client.write(b"\x1b[<0;47;17M");
+    assert_eq!(popup_fixture.receive()["bytes_hex"], "1b5b3c303b313b314d");
     popup_fixture.send(json!({"command":"read_exact", "bytes":1}));
     client.write(b"q");
     assert_eq!(popup_fixture.receive()["bytes_hex"], "71");
