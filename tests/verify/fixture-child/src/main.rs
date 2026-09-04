@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::ffi::OsStr;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, ExitCode, Stdio};
@@ -70,6 +71,9 @@ enum Response {
         version: u16,
         pid: u32,
     },
+    DescendantReady {
+        pid: u32,
+    },
     Wrote {
         bytes: usize,
         chunks: usize,
@@ -138,7 +142,7 @@ fn run() -> io::Result<()> {
         .map_err(invalid)?
         .unwrap_or(DEFAULT_DEADLINE_MS)
         .clamp(1, 60_000);
-    let mut control = UnixStream::connect(path)?;
+    let mut control = UnixStream::connect(&path)?;
     control.set_read_timeout(Some(Duration::from_millis(deadline_ms)))?;
     control.set_write_timeout(Some(Duration::from_millis(deadline_ms)))?;
     send(
@@ -190,7 +194,13 @@ fn run() -> io::Result<()> {
                 return Err(invalid(error));
             }
         };
-        if handle(request, &mut control, &mut descendants, started + deadline)? {
+        if handle(
+            request,
+            &mut control,
+            &mut descendants,
+            started + deadline,
+            &path,
+        )? {
             break;
         }
     }
@@ -203,6 +213,7 @@ fn handle(
     control: &mut UnixStream,
     descendants: &mut Descendants,
     deadline: Instant,
+    control_path: &OsStr,
 ) -> io::Result<bool> {
     let mut stdout = io::stdout().lock();
     match request {
@@ -297,13 +308,14 @@ fn handle(
                     "FUX_FIXTURE_EXIT_STATUS",
                     exit_status.unwrap_or(0).to_string(),
                 )
+                .env("FUX_FIXTURE_DESCENDANT_CONTROL", control_path)
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
                 .spawn()?;
             let pid = child.id();
             if matches!(mode, DescendantMode::Exit) {
-                let status = child.wait()?.code().unwrap_or(128);
+                let status = wait_child_until(&mut child, deadline)?;
                 send(control, &Response::DescendantExit { status })?;
             } else {
                 descendants.children.push(child);
@@ -321,7 +333,7 @@ fn handle(
                 .children
                 .pop()
                 .ok_or_else(|| invalid("no descendant"))?;
-            let status = child.wait()?.code().unwrap_or(128);
+            let status = wait_child_until(&mut child, deadline)?;
             send(control, &Response::DescendantExit { status })?;
         }
         Request::FillStdout { bytes, byte } => {
@@ -361,6 +373,9 @@ fn descendant(mode: &str) -> ExitCode {
         .ok()
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(0);
+    if announce_descendant().is_err() {
+        return ExitCode::from(73);
+    }
     match mode {
         "exit" => ExitCode::from(status),
         "hold_pty" => loop {
@@ -369,6 +384,31 @@ fn descendant(mode: &str) -> ExitCode {
         "ignore_hup" => wait_for_signal(false, status),
         "wait_signal" => wait_for_signal(true, status),
         _ => ExitCode::from(64),
+    }
+}
+
+fn announce_descendant() -> io::Result<()> {
+    let path = env::var_os("FUX_FIXTURE_DESCENDANT_CONTROL")
+        .ok_or_else(|| invalid("FUX_FIXTURE_DESCENDANT_CONTROL is required"))?;
+    let mut control = UnixStream::connect(path)?;
+    send(
+        &mut control,
+        &Response::DescendantReady {
+            pid: std::process::id(),
+        },
+    )
+}
+
+fn wait_child_until(child: &mut Child, deadline: Instant) -> io::Result<i32> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status.code().unwrap_or(128));
+        }
+        if let Err(error) = wait_until(deadline) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
     }
 }
 
