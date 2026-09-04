@@ -8,7 +8,7 @@ use proptest::prelude::*;
 use std::num::NonZeroU16;
 use verify::interpreters::{InProcessInterpreter, Interpreter, ModelInterpreter};
 use verify::schema::Scenario;
-use verify::transcript::{assert_fixture_safe, encode_jsonl};
+use verify::transcript::{Entry, Event, assert_fixture_safe, encode_jsonl};
 
 const PREFIX_LITERAL: &str = include_str!("verify/corpus/input/prefix_literal.json");
 const PREFIX_LITERAL_GOLDEN: &str = include_str!("verify/fixtures/prefix_literal.jsonl");
@@ -375,6 +375,99 @@ proptest! {
             }
         }
         prop_assert_eq!(RATIO_SCALE, 10_000);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1024))]
+
+    #[test]
+    fn workspace_transitions_match_the_independent_oracle(
+        encoded_actions in prop::collection::vec((0_u8..3, 0_usize..4), 0..=24),
+    ) {
+        use verify::oracle::workspace::{Action, WorkspaceOracle};
+        use verify::schema::{Applicability, Expected, Size, Step};
+
+        const NAMES: [&str; 4] = ["binary", "alpha", "beta", "gamma"];
+        let mut oracle = WorkspaceOracle::started();
+        let mut steps = vec![Step::StartDaemon];
+        let mut expected = vec![Entry {
+            sequence: 0,
+            source: "model".into(),
+            event: Event::Lifecycle {
+                resource: "daemon".into(),
+                state: "running".into(),
+            },
+        }];
+        for (kind, name_index) in encoded_actions {
+            let name = *NAMES.get(name_index).expect("generated bounded name index");
+            let action = match kind {
+                0 => Action::Create(name),
+                1 => Action::Select(name),
+                _ => Action::Delete(name),
+            };
+            steps.push(match action {
+                Action::Create(workspace) => Step::CreateWorkspace { workspace: workspace.into() },
+                Action::Select(workspace) => Step::SelectWorkspace { workspace: workspace.into() },
+                Action::Delete(workspace) => Step::DeleteWorkspace { workspace: workspace.into() },
+            });
+            if let Some(transition) = oracle.apply(action) {
+                expected.push(Entry {
+                    sequence: u64::try_from(expected.len()).expect("bounded oracle transcript"),
+                    source: "model".into(),
+                    event: Event::Lifecycle {
+                        resource: format!("workspace:{}", transition.workspace),
+                        state: transition.state.into(),
+                    },
+                });
+            } else {
+                let mut rejected_steps = steps;
+                rejected_steps.push(Step::Shutdown);
+                rejected_steps.push(Step::Expect {
+                    expected: Expected::default(),
+                });
+                let rejected = Scenario {
+                    schema_version: 1,
+                    name: "generated_rejected_workspace_transition".into(),
+                    applicability: Applicability::Production,
+                    initial_size: Size { rows: 24, columns: 80 },
+                    steps: rejected_steps,
+                };
+                prop_assert!(
+                    rejected.validate().is_err(),
+                    "scenario validation accepted the first transition rejected by the oracle: {:?}",
+                    rejected.steps,
+                );
+                return Ok(());
+            }
+        }
+        steps.push(Step::Shutdown);
+        expected.push(Entry {
+            sequence: u64::try_from(expected.len()).expect("bounded oracle transcript"),
+            source: "model".into(),
+            event: Event::Lifecycle {
+                resource: "daemon".into(),
+                state: "stopped".into(),
+            },
+        });
+        steps.push(Step::Expect { expected: Expected::default() });
+        expected.push(Entry {
+            sequence: u64::try_from(expected.len()).expect("bounded oracle transcript"),
+            source: "model".into(),
+            event: Event::Cleanup { owned_resources: 0 },
+        });
+        let scenario = Scenario {
+            schema_version: 1,
+            name: "generated_workspace_transitions".into(),
+            applicability: Applicability::Production,
+            initial_size: Size { rows: 24, columns: 80 },
+            steps,
+        };
+        scenario.validate().expect("oracle accepted scenario was rejected");
+        prop_assert_eq!(
+            InProcessInterpreter.run(&scenario).expect("production workspace transcript"),
+            expected,
+        );
     }
 }
 
