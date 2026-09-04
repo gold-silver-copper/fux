@@ -11,12 +11,12 @@
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 51, 50, 59, 49, 59, 49, 77] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 51, 53, 59, 49, 59, 49, 77] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 54, 52, 59, 49, 59, 49, 77] },
-    { "kind": "prefix", "client": "alice", "key": 124 },
+    { "kind": "input", "client": "alice", "bytes": [2, 124, 2, 45] },
     {
       "kind": "expect",
       "expected": {
         "forwarded": [[2], [27, 91, 50, 48, 48, 126, 65, 2, 124, 66, 27, 91, 50, 48, 49, 126]],
-        "commands": ["split_horizontal"],
+        "commands": ["split_horizontal", "split_vertical"],
         "owned_resources": 0
       }
     }

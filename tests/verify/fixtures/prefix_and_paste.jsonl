@@ -12,6 +12,7 @@
 {"sequence":11,"source":"model","event":{"kind":"mouse","code":35,"column":1,"row":1,"release":false}}
 {"sequence":12,"source":"model","event":{"kind":"input","client":"alice","bytes_hex":"1b5b3c36343b313b314d"}}
 {"sequence":13,"source":"model","event":{"kind":"mouse","code":64,"column":1,"row":1,"release":false}}
-{"sequence":14,"source":"model","event":{"kind":"input","client":"alice","bytes_hex":"027c"}}
+{"sequence":14,"source":"model","event":{"kind":"input","client":"alice","bytes_hex":"027c022d"}}
 {"sequence":15,"source":"model","event":{"kind":"command","name":"split_horizontal"}}
-{"sequence":16,"source":"model","event":{"kind":"cleanup","owned_resources":0}}
+{"sequence":16,"source":"model","event":{"kind":"command","name":"split_vertical"}}
+{"sequence":17,"source":"model","event":{"kind":"cleanup","owned_resources":0}}

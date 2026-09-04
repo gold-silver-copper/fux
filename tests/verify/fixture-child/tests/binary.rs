@@ -81,7 +81,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
     let driver = PrefixBinaryDriver {
         client,
         primary,
-        secondary: None,
+        secondary: Vec::new(),
         listener: &fixture_listener,
         server,
         environment: &environment,
@@ -96,7 +96,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
 struct PrefixBinaryDriver<'a> {
     client: TerminalChild,
     primary: Jsonl,
-    secondary: Option<Jsonl>,
+    secondary: Vec<Jsonl>,
     listener: &'a UnixListener,
     server: OwnedChild,
     environment: &'a PrivateEnvironment,
@@ -109,14 +109,21 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         bytes: &[u8],
     ) -> Result<Vec<verification::interpreters::ObservedAction>, String> {
         use verification::interpreters::ObservedAction;
-        if bytes == [2, b'|'] {
+        if bytes == [2, b'|'] || bytes == [2, b'|', 2, b'-'] {
             self.client.write(bytes);
-            let mut secondary = Jsonl::new(accept_with_deadline(self.listener));
-            if secondary.receive()["event"] != "ready" {
-                return Err("split fixture did not become ready".into());
+            let split_count = if bytes.len() == 2 { 1 } else { 2 };
+            for _ in 0..split_count {
+                let mut secondary = Jsonl::new(accept_with_deadline(self.listener));
+                if secondary.receive()["event"] != "ready" {
+                    return Err("split fixture did not become ready".into());
+                }
+                self.secondary.push(secondary);
             }
-            self.secondary = Some(secondary);
-            return Ok(vec![ObservedAction::Command("split_horizontal".into())]);
+            let mut actions = vec![ObservedAction::Command("split_horizontal".into())];
+            if split_count == 2 {
+                actions.push(ObservedAction::Command("split_vertical".into()));
+            }
+            return Ok(actions);
         }
         let expected = if bytes == [2, 2] { 1 } else { bytes.len() };
         self.primary
@@ -175,7 +182,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if self.primary.receive()["event"] != "cleanup" {
             return Err("primary fixture did not clean up".into());
         }
-        if let Some(secondary) = &mut self.secondary {
+        for secondary in &mut self.secondary {
             secondary.send(json!({"command":"quit"}));
             if secondary.receive()["event"] != "cleanup" {
                 return Err("secondary fixture did not clean up".into());
