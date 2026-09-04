@@ -23,15 +23,7 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     let fixture_listener =
         UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
 
-    let id = run(
-        &fux,
-        [
-            "id",
-            "--key-file",
-            environment.client_key().to_str().expect("key path"),
-        ],
-        &environment,
-    );
+    let id = run(&fux, ["id"], &environment);
     assert!(
         id.status.success(),
         "id failed: {}",
@@ -65,6 +57,22 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
         String::from_utf8_lossy(&listed.stderr)
     );
     assert!(String::from_utf8_lossy(&listed.stdout).contains("fux-fixture-child"));
+
+    let split = run(&fux, ["binary", "split", "horizontal"], &environment);
+    assert!(
+        split.status.success(),
+        "split failed: {}",
+        String::from_utf8_lossy(&split.stderr)
+    );
+    let mut second_fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
+    assert_eq!(second_fixture.receive()["event"], "ready");
+    let mut client = TerminalChild::spawn(&fux, &environment, 40, 120);
+    wait_for_list(&fux, &environment, "\"width\":60");
+    // Zor samples an outer resize on its bounded 50 ms coordinator cadence.
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(fixture_size(&mut fixture), (37, 58));
+    assert_eq!(fixture_size(&mut second_fixture), (37, 58));
+    client.detach();
 
     for (sequence, state) in [(1, "working"), (2, "blocked"), (3, "idle")] {
         fixture.send(json!({
@@ -142,7 +150,7 @@ impl PrivateEnvironment {
 
     fn write_config(&self, fixture: &Path, zor: &Path) {
         let document = format!(
-            "default-command = {{ argv = [{:?}, {:?}, \"--deadline-ms=10000\"] }}\nzor-path = {:?}\n[notifications]\nenabled = false\n",
+            "default-command = {{ argv = [{:?}, {:?}, \"--deadline-ms=30000\"] }}\nzor-path = {:?}\n[notifications]\nenabled = false\n",
             fixture.display().to_string(),
             format!("--control={}", self.fixture_socket().display()),
             zor.display().to_string(),
@@ -152,9 +160,6 @@ impl PrivateEnvironment {
 
     fn fixture_socket(&self) -> PathBuf {
         self.root.join("fixture.sock")
-    }
-    fn client_key(&self) -> PathBuf {
-        self.root.join("client.key")
     }
     fn manager_socket(&self) -> PathBuf {
         self.root.join("run/fux/manager.sock")
@@ -175,6 +180,71 @@ impl Drop for PrivateEnvironment {
 
 struct OwnedChild {
     child: Option<Child>,
+}
+
+struct TerminalChild {
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    writer: Box<dyn Write + Send>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl TerminalChild {
+    fn spawn(fux: &Path, environment: &PrivateEnvironment, rows: u16, columns: u16) -> Self {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows,
+                cols: columns,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("client PTY");
+        let mut command = CommandBuilder::new(fux);
+        command.arg("binary");
+        for (key, value) in environment.variables() {
+            command.env(key, value);
+        }
+        let child = pair.slave.spawn_command(command).expect("spawn fux client");
+        drop(pair.slave);
+        let mut output = pair.master.try_clone_reader().expect("client reader");
+        let reader = std::thread::spawn(move || {
+            let mut sink = std::io::sink();
+            let _ = std::io::copy(&mut output, &mut sink);
+        });
+        let writer = pair.master.take_writer().expect("client writer");
+        Self {
+            child,
+            writer,
+            reader: Some(reader),
+        }
+    }
+
+    fn detach(&mut self) {
+        self.writer.write_all(&[1, b'd']).expect("detach input");
+        self.writer.flush().expect("detach flush");
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            if let Some(status) = self.child.try_wait().expect("wait client") {
+                assert!(status.success(), "client detach status {status}");
+                break;
+            }
+            assert!(Instant::now() < deadline, "client detach deadline expired");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if let Some(reader) = self.reader.take() {
+            reader.join().expect("client reader");
+        }
+    }
+}
+
+impl Drop for TerminalChild {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
 }
 
 impl OwnedChild {
@@ -285,6 +355,21 @@ fn wait_for_list(fux: &Path, environment: &PrivateEnvironment, state: &str) {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn fixture_size(fixture: &mut Jsonl) -> (u16, u16) {
+    fixture.send(json!({"command":"size"}));
+    let response = fixture.receive();
+    let rows = response["rows"]
+        .as_u64()
+        .and_then(|value| u16::try_from(value).ok());
+    let columns = response["columns"]
+        .as_u64()
+        .and_then(|value| u16::try_from(value).ok());
+    (
+        rows.expect("fixture rows"),
+        columns.expect("fixture columns"),
+    )
 }
 
 fn accept_with_deadline(listener: &UnixListener) -> UnixStream {
