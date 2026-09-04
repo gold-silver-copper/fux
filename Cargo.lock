@@ -1025,6 +1025,7 @@ dependencies = [
  "clap",
  "iroh",
  "koh",
+ "loom",
  "nix 0.30.1",
  "proptest",
  "ratatui-core",

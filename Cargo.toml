@@ -48,6 +48,8 @@ unicode-width = "0.2.0"
 zor = { version = "=0.1.1", path = "zor", default-features = false }
 
 [dev-dependencies]
+# Exhaustive compact ownership and ordering models for verification.
+loom = "0.7"
 # Property tests for state/diff/layout/parser invariants.
 proptest = "1.7"
 
