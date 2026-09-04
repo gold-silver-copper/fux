@@ -338,7 +338,8 @@ Implement `fux/src/control/` and `fux/src/config.rs`.
   distinguish accepted, completed, and failed operations.
 - Load `$XDG_CONFIG_HOME/fux/config.toml` with a deny-unknown-fields schema: prefix, bindings,
   default command, zor path, clipboard policy, notification policy, history/resource limits,
-  remote allow ids, and hooks. Validate before replacing live config. External bindings receive
+  remote allow ids, local-only network policy, and hooks. Validate before replacing live config;
+  changes to endpoint/network policy require a workspace restart. External bindings receive
   `FUX_PANE`, `FUX_SOCKET`, and `FUX_CWD`; scrub fux/koh secrets. Hooks use bounded exponential
   restart backoff, reset after a healthy interval, and terminate with the workspace.
 - Emit events after the authoritative mutation, in order. The notifier fires once on entering

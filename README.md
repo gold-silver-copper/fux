@@ -21,6 +21,9 @@ progress.
 Run `fux --help` for the current command surface. Configuration is loaded from
 `$XDG_CONFIG_HOME/fux/config.toml` or the platform config directory. Runtime descriptors and Unix
 sockets live below `$XDG_RUNTIME_DIR/fux` when available, with a private per-user fallback.
+Set `local-network = true` to create new workspace endpoints with Iroh's local-only network
+profile, disabling relay and discovery use. Changing this endpoint policy requires restarting the
+workspace; a live configuration reload rejects the change transactionally.
 
 ## Pane execution and history
 

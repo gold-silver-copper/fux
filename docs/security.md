@@ -40,3 +40,8 @@ removes detection while preserving shell availability; automation must tolerate 
 Do not include endpoint secret keys, captured terminal secrets, environment dumps, socket contents,
 or command histories in a public report. Provide the fux/zor revisions, platform, terminal emulator,
 minimal reproduction, and redacted diagnostics.
+
+For offline or LAN-contained deployments, `local-network = true` selects Iroh's local-only
+endpoint profile for newly created workspaces, without relay or discovery services. This setting
+is an endpoint exposure policy: changing it in a live configuration is rejected and requires a
+workspace restart, preventing mixed network policies within one running daemon.
