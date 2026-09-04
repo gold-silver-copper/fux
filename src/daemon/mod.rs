@@ -21,8 +21,8 @@ pub use manager::{
 pub use paths::{DaemonPaths, PathError, validate_workspace_name};
 pub use spawn::{
     Clock, DaemonConnector, DaemonSpawner, ProcessDaemonSpawner, ProcessTicket, SpawnError,
-    SpawnRequest, SpawnTicket, StdioPolicy, SystemClock, receive_startup_secret, report_startup,
-    sanitized_environment, start_or_connect,
+    SpawnRequest, SpawnTicket, StartupLock, StdioPolicy, SystemClock, receive_startup_secret,
+    report_startup, sanitized_environment, start_or_connect,
 };
 
 pub const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;

@@ -252,6 +252,63 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
     );
 }
 
+// Golden path 2: two bare clients race from an empty runtime. Exactly one daemon,
+// workspace, and fixture pane are created, and both clients attach to its state.
+#[test]
+fn simultaneous_first_binary_clients_elect_one_workspace_and_both_attach() {
+    let fux = binary("FUX_BIN", "target/debug/fux");
+    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
+    let environment = std::sync::Arc::new(PrivateEnvironment::new("race"));
+    environment.write_config(&fixture, &zor);
+    let fixture_listener =
+        UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+
+    let first = {
+        let fux = fux.clone();
+        let environment = std::sync::Arc::clone(&environment);
+        let barrier = std::sync::Arc::clone(&barrier);
+        std::thread::spawn(move || {
+            barrier.wait();
+            TerminalChild::spawn(&fux, &environment, 24, 80)
+        })
+    };
+    let second = {
+        let fux = fux.clone();
+        let environment = std::sync::Arc::clone(&environment);
+        let barrier = std::sync::Arc::clone(&barrier);
+        std::thread::spawn(move || {
+            barrier.wait();
+            TerminalChild::spawn(&fux, &environment, 24, 80)
+        })
+    };
+    barrier.wait();
+    let mut first = first.join().expect("first client spawn");
+    let mut second = second.join().expect("second client spawn");
+    let mut fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
+    assert_eq!(fixture.receive()["event"], "ready");
+    wait_for_path(&environment.manager_socket());
+    wait_for_path(&environment.control_socket());
+    wait_for_listing_shape(&fux, &environment, 1, 1);
+
+    fixture.send(json!({"command":"write", "chunks_hex":["454c45435445445f4f4e4345"]}));
+    assert_eq!(fixture.receive()["bytes"], 12);
+    first.wait_for_text("ELECTED_ONCE");
+    second.wait_for_text("ELECTED_ONCE");
+
+    fixture.send(json!({"command":"exit", "status":0}));
+    assert_eq!(fixture.receive()["event"], "cleanup");
+    first.wait_status(0);
+    second.wait_status(0);
+    wait_for_absent(&environment.manager_socket());
+    wait_for_absent(&environment.control_socket());
+    assert!(
+        !environment.descriptor().exists(),
+        "workspace descriptor leaked"
+    );
+}
+
 struct PrivateEnvironment {
     root: PathBuf,
 }
@@ -329,6 +386,12 @@ impl PrivateEnvironment {
 
 impl Drop for PrivateEnvironment {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "daemon log: {}",
+                fs::read_to_string(self.root.join("state/fux/daemon.log")).unwrap_or_default()
+            );
+        }
         let _ = fs::remove_dir_all(&self.root);
     }
 }
@@ -622,6 +685,43 @@ fn wait_for_list_absent(fux: &Path, environment: &PrivateEnvironment, value: &st
         assert!(
             Instant::now() < deadline,
             "`{value}` remained in binary list"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn wait_for_listing_shape(
+    fux: &Path,
+    environment: &PrivateEnvironment,
+    workspaces: usize,
+    panes: usize,
+) {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let output = run(fux, ["binary", "list"], environment);
+        if output.status.success()
+            && serde_json::from_slice::<Value>(&output.stdout).is_ok_and(|value| {
+                let listed = &value["result"]["value"]["workspaces"];
+                listed
+                    .as_array()
+                    .is_some_and(|items| items.len() == workspaces)
+                    && listed
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .flat_map(|workspace| workspace["tabs"].as_array().into_iter().flatten())
+                        .flat_map(|tab| tab["panes"].as_array().into_iter().flatten())
+                        .count()
+                        == panes
+            })
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "listing did not converge to {workspaces} workspace(s) and {panes} pane(s): stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
         std::thread::sleep(Duration::from_millis(5));
     }

@@ -71,6 +71,52 @@ pub struct ProcessDaemonSpawner {
     runtime_dir: PathBuf,
 }
 
+/// Serializes client-side daemon startup. The lock is advisory, process-owned, and automatically
+/// released on crash; the persistent file avoids unsafe unlink/recreate lock races.
+pub struct StartupLock {
+    _lock: nix::fcntl::Flock<std::fs::File>,
+}
+
+impl StartupLock {
+    pub fn acquire(runtime_dir: &std::path::Path) -> Result<Self, SpawnError> {
+        use nix::fcntl::{Flock, FlockArg};
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let path = runtime_dir.join("startup.lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&path)
+            .map_err(|error| SpawnError::Spawn(error.to_string()))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| SpawnError::Spawn(error.to_string()))?;
+        let directory =
+            std::fs::metadata(runtime_dir).map_err(|error| SpawnError::Spawn(error.to_string()))?;
+        if !metadata.file_type().is_file()
+            || metadata.uid() != directory.uid()
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(SpawnError::Spawn("unsafe daemon startup lock".into()));
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut file = file;
+        loop {
+            match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+                Ok(lock) => return Ok(Self { _lock: lock }),
+                Err((returned, nix::errno::Errno::EWOULDBLOCK)) => file = returned,
+                Err((_, error)) => return Err(SpawnError::Spawn(error.to_string())),
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(SpawnError::Timeout);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
 impl ProcessDaemonSpawner {
     pub fn new(runtime_dir: PathBuf) -> Self {
         Self { runtime_dir }
@@ -169,13 +215,13 @@ impl SpawnTicket for ProcessTicket {
         let Ok((stream, _)) = self.listener.accept() else {
             return None;
         };
-        if !same_user(&stream, channel_owner(&self.channel_path))
-            || stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(100)))
-                .is_err()
-        {
+        if !same_user(&stream, channel_owner(&self.channel_path)) {
             return None;
         }
+        // The one-shot reporter writes before closing. On macOS, changing flags or timeouts on an
+        // already-closed peer can return EINVAL even though its queued frame remains readable.
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(100)));
         let mut bytes = Vec::new();
         if stream.take(4097).read_to_end(&mut bytes).is_err() || bytes.len() > 4096 {
             return None;
@@ -210,6 +256,18 @@ impl ProcessTicket {
         self.armed
     }
 
+    /// A successful reply from this exact daemon's manager loop proves startup completed even if
+    /// the redundant one-shot READY frame raced with peer close on the local socket.
+    pub fn confirm_manager_ready(&mut self, pid: u32) -> bool {
+        if self.child.id() != pid {
+            return false;
+        }
+        self.complete = true;
+        self.armed = false;
+        self.ready = true;
+        true
+    }
+
     /// Sends bounded secret material only after the child connects over the same-user channel.
     pub fn send_secret(&mut self, secret: &[u8]) -> Result<(), SpawnError> {
         if secret.is_empty() || secret.len() > 4096 {
@@ -220,7 +278,10 @@ impl ProcessTicket {
             match self.listener.accept() {
                 Ok((mut stream, _)) if same_user(&stream, channel_owner(&self.channel_path)) => {
                     if stream
-                        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                        .set_nonblocking(false)
+                        .and_then(|()| {
+                            stream.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                        })
                         .and_then(|()| {
                             stream.set_write_timeout(Some(std::time::Duration::from_secs(1)))
                         })

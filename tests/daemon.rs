@@ -269,6 +269,91 @@ fn simultaneous_first_clients_elect_exactly_one_manager() {
 }
 
 #[test]
+fn simultaneous_first_clients_create_private_directories_without_a_mode_window() {
+    let root = test_root("prepare-race");
+    let paths = Arc::new(
+        DaemonPaths::from_env(
+            Some(root.join("run").into_os_string()),
+            Some(root.join("state").into_os_string()),
+            Some(root.clone().into_os_string()),
+        )
+        .expect("paths"),
+    );
+    let start = Arc::new(Barrier::new(3));
+    let mut threads = Vec::new();
+    for _ in 0..2 {
+        let paths = Arc::clone(&paths);
+        let start = Arc::clone(&start);
+        threads.push(std::thread::spawn(move || {
+            start.wait();
+            paths.prepare()
+        }));
+    }
+    start.wait();
+    for thread in threads {
+        thread
+            .join()
+            .expect("prepare thread")
+            .expect("private paths");
+    }
+    for directory in [
+        &paths.runtime_dir,
+        &paths.state_dir,
+        &paths.descriptors_dir,
+        &paths.keys_dir,
+    ] {
+        assert_eq!(
+            fs::metadata(directory)
+                .expect("directory metadata")
+                .permissions()
+                .mode()
+                & 0o077,
+            0,
+            "{} was transiently or finally public",
+            directory.display()
+        );
+    }
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
+fn startup_lock_serializes_contenders_and_refuses_symlinks() {
+    let (root, paths) = prepared_paths("startup-lock");
+    let first = StartupLock::acquire(&paths.runtime_dir).expect("first startup owner");
+    let runtime = paths.runtime_dir.clone();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (acquired_tx, acquired_rx) = mpsc::channel();
+    let contender = std::thread::spawn(move || {
+        started_tx.send(()).expect("started");
+        let lock = StartupLock::acquire(&runtime).expect("second startup owner");
+        acquired_tx.send(()).expect("acquired");
+        drop(lock);
+    });
+    started_rx.recv().expect("contender started");
+    assert!(
+        acquired_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "a second startup owner acquired the live lock"
+    );
+    drop(first);
+    acquired_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("contender acquired released lock");
+    contender.join().expect("contender");
+
+    let lock_path = paths.runtime_dir.join("startup.lock");
+    fs::remove_file(&lock_path).expect("remove lock file");
+    let victim = root.join("victim");
+    fs::write(&victim, "preserve").expect("victim");
+    symlink(&victim, &lock_path).expect("lock symlink");
+    assert!(StartupLock::acquire(&paths.runtime_dir).is_err());
+    assert_eq!(
+        fs::read_to_string(victim).expect("victim remains"),
+        "preserve"
+    );
+    fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn two_named_workspaces_have_distinct_endpoints_isolated_lifetimes_and_multiple_viewers() {
     // Phase F4 lifecycle: one endpoint/state owner per name; detach never destroys workspace state.
     let (root, paths) = prepared_paths("lifecycle");

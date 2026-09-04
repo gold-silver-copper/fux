@@ -22,7 +22,7 @@ iroh = "=1.0.0"
 # Session synchronization and bounded terminal transport.
 koh = { version = "=0.12.0", path = "references/koh", default-features = false, features = ["backend-termina"] }
 # Safe Unix signal and process-group operations.
-nix = { version = "0.30", features = ["signal", "socket"] }
+nix = { version = "0.30", features = ["fs", "signal", "socket"] }
 # Terminal rendering primitives without ratatui's umbrella crate.
 ratatui-core = "=0.1.0"
 # Serialization for synchronized workspace and control-protocol values.

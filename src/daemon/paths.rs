@@ -127,8 +127,11 @@ fn private_dir(path: &Path) -> Result<(), PathError> {
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir_all(path).map_err(|error| PathError::Io(error.to_string()))?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            use std::os::unix::fs::DirBuilderExt as _;
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700);
+            builder
+                .create(path)
                 .map_err(|error| PathError::Io(error.to_string()))?;
         }
         Err(error) => return Err(PathError::Io(error.to_string())),

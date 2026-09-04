@@ -1081,6 +1081,10 @@ fn start_workspace(
     name: &str,
 ) -> Result<fux::daemon::Descriptor> {
     use fux::daemon::{DaemonSpawner as _, SpawnTicket as _};
+    let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
+    if let Some(descriptor) = resolve_through_manager(paths, Some(name))? {
+        return Ok(descriptor);
+    }
     let executable = std::env::current_exe()?;
     let mut spawner = fux::daemon::ProcessDaemonSpawner::new(paths.runtime_dir.clone());
     let mut ticket = spawner.spawn(fux::daemon::SpawnRequest {
@@ -1111,11 +1115,12 @@ fn start_workspace(
         if startup_error.is_none() {
             startup_error = ticket.try_error();
         }
-        // A winning child must first disarm its cleanup ticket through READY. A losing child may
-        // reconnect immediately: dropping its still-armed ticket is precisely the desired reap.
-        if (ticket.is_ready() || startup_error.is_some())
-            && let Ok(Some(descriptor)) = resolve_through_manager(paths, Some(name))
-        {
+        // The manager accepts requests only after the endpoint, workspace, control server, and
+        // registries are ready. Its successful reply is therefore an independent readiness proof.
+        // Disarm only when the descriptor names this ticket's exact child; a losing contender's
+        // still-armed ticket is deliberately reaped on return.
+        if let Ok(Some(descriptor)) = resolve_through_manager(paths, Some(name)) {
+            let _ = ticket.confirm_manager_ready(descriptor.pid);
             return Ok(descriptor);
         }
         if std::time::Instant::now() >= deadline {
