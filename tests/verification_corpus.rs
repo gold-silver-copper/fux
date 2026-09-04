@@ -26,7 +26,7 @@ fn prefix_literal_agrees_across_independent_interpreters_and_the_golden() {
 }
 
 #[test]
-fn prefix_and_paste_agree_across_independent_interpreters_and_the_golden() {
+fn prefix_and_paste_agrees_across_independent_interpreters_and_the_golden() {
     assert_scenario_golden(
         PREFIX_AND_PASTE,
         PREFIX_AND_PASTE_GOLDEN,
