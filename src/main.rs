@@ -526,22 +526,54 @@ fn parse_popup_options(args: &[String]) -> Result<(Option<u16>, Option<u16>, Vec
 }
 
 async fn serve(args: ServeArgs) -> Result<ExitCode> {
-    use std::collections::BTreeSet;
     use std::sync::Arc;
-    // Register both termination handlers before acquiring any owned runtime resource. Unix
-    // signals remain queued until the main loop polls them, so a SIGINT/SIGTERM delivered during
-    // endpoint or pane startup still takes the normal, fully-owned shutdown path below.
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
+    // Potentially blocking user-controlled preflight (configuration files, passphrase prompts and
+    // key derivation) happens before signal interception and before daemon resources are acquired.
+    // A signal therefore retains its default immediate behavior if one of those operations stalls.
     let config_path = fux::config::default_path()?;
     let live = Arc::new(runtime::LiveConfig::load(config_path)?);
-    let config = live.snapshot();
     let paths = fux::daemon::DaemonPaths::discover()?;
     paths.prepare()?;
+    let preloaded_keys = if args.startup_channel.is_none() {
+        let client_key = koh::transport_iroh::default_key_path("client")?;
+        Some((
+            koh::transport_iroh::load_or_create_secret_key(&client_key)?,
+            koh::transport_iroh::load_or_create_secret_key(&paths.key(&args.name)?)?,
+        ))
+    } else {
+        None
+    };
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let runtime = serve_runtime(args, live, paths, preloaded_keys);
+    tokio::pin!(runtime);
+    tokio::select! {
+        result = &mut runtime => result,
+        signal = interrupt.recv() => {
+            if signal.is_none() { bail!("SIGINT handler closed") }
+            Ok(ExitCode::SUCCESS)
+        }
+        signal = terminate.recv() => {
+            if signal.is_none() { bail!("SIGTERM handler closed") }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+async fn serve_runtime(
+    args: ServeArgs,
+    live: std::sync::Arc<runtime::LiveConfig>,
+    paths: fux::daemon::DaemonPaths,
+    preloaded_keys: Option<(iroh::SecretKey, iroh::SecretKey)>,
+) -> Result<ExitCode> {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+    let config = live.snapshot();
     let _manager = fux::daemon::ManagerLock::bind(&paths)?;
     let transferred = match &args.startup_channel {
         Some(channel) => {
-            let mut bytes = fux::daemon::receive_startup_secret(channel)?;
+            let mut bytes = fux::daemon::receive_startup_secret_async(channel).await?;
             if bytes.len() != 64 {
                 bytes.fill(0);
                 bail!("invalid startup key bundle");
@@ -567,15 +599,9 @@ async fn serve(args: ServeArgs) -> Result<ExitCode> {
         }
         None => None,
     };
-    let (client_secret, server_secret) = if let Some(pair) = transferred {
-        pair
-    } else {
-        let client_key = koh::transport_iroh::default_key_path("client")?;
-        (
-            koh::transport_iroh::load_or_create_secret_key(&client_key)?,
-            koh::transport_iroh::load_or_create_secret_key(&paths.key(&args.name)?)?,
-        )
-    };
+    let (client_secret, server_secret) = transferred
+        .or(preloaded_keys)
+        .ok_or_else(|| anyhow::anyhow!("startup keys were not prepared"))?;
     let local_id = koh::transport_iroh::format_endpoint_id(&client_secret.public());
     let explicit_allow = args
         .allow
@@ -625,12 +651,6 @@ async fn serve(args: ServeArgs) -> Result<ExitCode> {
     }
     loop {
         tokio::select! {
-            signal = interrupt.recv() => {
-                if signal.is_some() { break; }
-            }
-            signal = terminate.recv() => {
-                if signal.is_some() { break; }
-            }
             () = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
                 let now = std::time::Instant::now();
                 let empty: Vec<_> = workspaces
@@ -713,7 +733,7 @@ async fn serve(args: ServeArgs) -> Result<ExitCode> {
 struct ServedWorkspace {
     descriptor: fux::daemon::Descriptor,
     shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    control_task: std::thread::JoinHandle<()>,
+    control_task: Option<std::thread::JoinHandle<()>>,
     hooks: std::sync::Arc<runtime::LiveHooks>,
     events: runtime::EventHub,
     control: fux::host::WorkspaceControl,
@@ -721,12 +741,50 @@ struct ServedWorkspace {
 }
 
 impl ServedWorkspace {
-    fn shutdown(self) {
+    fn cleanup(&mut self) {
         self.shutdown
             .store(true, std::sync::atomic::Ordering::Release);
         self.hooks.shutdown();
         self.control.shutdown();
-        let _ = self.control_task.join();
+        if let Some(control_task) = self.control_task.take() {
+            let _ = control_task.join();
+        }
+    }
+
+    fn shutdown(mut self) {
+        self.cleanup();
+    }
+}
+
+impl Drop for ServedWorkspace {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+struct WorkspaceStartupGuard {
+    control: fux::host::WorkspaceControl,
+    armed: bool,
+}
+
+impl WorkspaceStartupGuard {
+    fn new(control: fux::host::WorkspaceControl) -> Self {
+        Self {
+            control,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WorkspaceStartupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.control.shutdown();
+        }
     }
 }
 
@@ -743,6 +801,7 @@ async fn create_served_workspace(
         config.history.scrollback_lines as usize,
         Some(config.zor_path.clone()),
     )?;
+    let mut startup_guard = WorkspaceStartupGuard::new(control.clone());
     let session = Arc::new(Mutex::new(Some(session)));
     let descriptor = daemon
         .create_or_find_async(name, |_key, allow| {
@@ -793,7 +852,7 @@ async fn create_served_workspace(
         Ok(ServedWorkspace {
             descriptor,
             shutdown,
-            control_task,
+            control_task: Some(control_task),
             hooks,
             events,
             control: control.clone(),
@@ -801,8 +860,9 @@ async fn create_served_workspace(
         })
     })();
     if finish.is_err() {
-        control.shutdown();
         let _ = daemon.kill(name);
+    } else {
+        startup_guard.disarm();
     }
     finish
 }

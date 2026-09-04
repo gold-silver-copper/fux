@@ -30,7 +30,7 @@ serde = { version = "1.0", features = ["derive"] }
 # Newline-delimited JSON control protocol and persisted descriptors.
 serde_json = "1.0"
 # Async runtime for endpoints, sessions, PTY drains, and signals.
-tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.47", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 # Cancellation tokens for owned tasks and process reaping.
 tokio-util = "0.7"
 # User configuration decoding.

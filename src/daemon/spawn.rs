@@ -342,6 +342,27 @@ pub fn receive_startup_secret(address: &str) -> std::io::Result<Vec<u8>> {
     Ok(secret)
 }
 
+/// Cancellation-safe async variant used while the daemon is still starting.
+pub async fn receive_startup_secret_async(address: &str) -> std::io::Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    validate_channel(address)?;
+    let mut stream = tokio::net::UnixStream::connect(address).await?;
+    stream.write_all(b"SECRET").await?;
+    let mut length = [0_u8; 4];
+    stream.read_exact(&mut length).await?;
+    let length = usize::try_from(u32::from_be_bytes(length)).map_err(std::io::Error::other)?;
+    if length == 0 || length > 4096 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid startup secret size",
+        ));
+    }
+    let mut secret = vec![0_u8; length];
+    stream.read_exact(&mut secret).await?;
+    Ok(secret)
+}
+
 /// Child-side half of the private startup channel. Call once after manager bind succeeds or fails.
 pub fn report_startup(address: &str, error: Option<&str>) -> std::io::Result<()> {
     validate_channel(address)?;

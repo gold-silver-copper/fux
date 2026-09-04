@@ -377,6 +377,47 @@ fn sigterm_at_each_binary_startup_phase_rolls_back_all_owned_resources() {
     }
 }
 
+#[test]
+fn sigterm_cancels_a_stalled_startup_secret_transfer() {
+    use std::io::Read as _;
+
+    let fux = binary("FUX_BIN", "target/debug/fux");
+    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
+    let environment = PrivateEnvironment::new("stalled-secret");
+    environment.write_config(&fixture, &zor);
+    let startup_path = environment.root.join("startup.sock");
+    let listener = UnixListener::bind(&startup_path).expect("startup listener");
+    std::fs::set_permissions(
+        &startup_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )
+    .expect("private startup socket");
+    let mut server = OwnedChild::spawn(
+        Command::new(&fux)
+            .args(["serve", "--startup-channel"])
+            .arg(&startup_path)
+            .env_clear()
+            .envs(environment.variables())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    );
+    let mut startup = accept_with_deadline(&listener);
+    startup
+        .set_read_timeout(Some(DEADLINE))
+        .expect("bound startup read");
+    let mut request = [0_u8; 6];
+    startup.read_exact(&mut request).expect("startup request");
+    assert_eq!(&request, b"SECRET");
+
+    server.terminate(Signal::SIGTERM);
+    server.wait();
+    wait_for_absent(&environment.manager_socket());
+    assert!(!environment.descriptor().exists());
+    drop(startup);
+}
+
 struct PrivateEnvironment {
     root: PathBuf,
 }
