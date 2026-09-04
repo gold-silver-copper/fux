@@ -1,4 +1,4 @@
-use fux::state::{Axis, PaneId, RATIO_SCALE, Rect};
+use fux::state::{Axis, Direction, PaneId, RATIO_SCALE, Rect};
 
 #[derive(Clone, Debug)]
 pub enum Tree {
@@ -35,6 +35,52 @@ impl Tree {
         let mut output = Vec::new();
         self.geometry_into(area, &mut output);
         output
+    }
+
+    pub fn neighbour(&self, pane: PaneId, direction: Direction, area: Rect) -> Option<PaneId> {
+        let geometry = self.geometry(area);
+        let source = geometry
+            .iter()
+            .find_map(|(id, rect)| (*id == pane).then_some(rect))?;
+        let project = |rect: &Rect| match direction {
+            Direction::Left | Direction::Right => (
+                u32::from(rect.x),
+                u32::from(rect.x) + u32::from(rect.width),
+                u32::from(rect.y)..u32::from(rect.y) + u32::from(rect.height),
+            ),
+            Direction::Up | Direction::Down => (
+                u32::from(rect.y),
+                u32::from(rect.y) + u32::from(rect.height),
+                u32::from(rect.x)..u32::from(rect.x) + u32::from(rect.width),
+            ),
+        };
+        let (source_start, source_end, source_cross) = project(source);
+        let mut candidates = geometry
+            .iter()
+            .enumerate()
+            .filter(|(_, (id, _))| *id != pane)
+            .filter_map(|(order, (id, rect))| {
+                let (start, end, cross) = project(rect);
+                let gap = match direction {
+                    Direction::Left | Direction::Up if end <= source_start => source_start - end,
+                    Direction::Right | Direction::Down if start >= source_end => start - source_end,
+                    _ => return None,
+                };
+                let shared = source_cross
+                    .end
+                    .min(cross.end)
+                    .checked_sub(source_cross.start.max(cross.start))?;
+                (shared != 0).then_some((*id, shared, gap, order))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            right
+                .1
+                .cmp(&left.1)
+                .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.3.cmp(&right.3))
+        });
+        candidates.first().map(|candidate| candidate.0)
     }
 
     fn geometry_into(&self, area: Rect, output: &mut Vec<(PaneId, Rect)>) {

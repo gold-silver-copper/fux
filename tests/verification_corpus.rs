@@ -342,18 +342,38 @@ proptest! {
         first_ratio in fux::state::MIN_RATIO..=fux::state::MAX_RATIO,
         second_ratio in fux::state::MIN_RATIO..=fux::state::MAX_RATIO,
         horizontal in any::<bool>(),
+        second_horizontal in any::<bool>(),
+        split_first in any::<bool>(),
     ) {
         let first_axis = if horizontal { Axis::Horizontal } else { Axis::Vertical };
-        let second_axis = if horizontal { Axis::Vertical } else { Axis::Horizontal };
+        let second_axis = if second_horizontal { Axis::Horizontal } else { Axis::Vertical };
+        let split_target = if split_first { PaneId(1) } else { PaneId(2) };
         let mut production = LayoutTree::new(PaneId(1));
         production.split(PaneId(1), PaneId(2), first_axis, NonZeroU16::new(first_ratio).expect("ratio")).expect("split");
-        production.split(PaneId(2), PaneId(3), second_axis, NonZeroU16::new(second_ratio).expect("ratio")).expect("split");
+        production.split(split_target, PaneId(3), second_axis, NonZeroU16::new(second_ratio).expect("ratio")).expect("split");
 
         let mut oracle = verify::oracle::layout::Tree::Leaf(PaneId(1));
         assert!(oracle.split(PaneId(1), PaneId(2), first_axis, first_ratio));
-        assert!(oracle.split(PaneId(2), PaneId(3), second_axis, second_ratio));
+        assert!(oracle.split(split_target, PaneId(3), second_axis, second_ratio));
         let area = Rect { x: 7, y: 11, width, height };
         prop_assert_eq!(production.geometry(area).expect("geometry"), oracle.geometry(area));
+        for pane in [PaneId(1), PaneId(2), PaneId(3)] {
+            for direction in [
+                fux::state::Direction::Left,
+                fux::state::Direction::Right,
+                fux::state::Direction::Up,
+                fux::state::Direction::Down,
+            ] {
+                prop_assert_eq!(
+                    production.neighbour(pane, direction, area),
+                    oracle.neighbour(pane, direction, area),
+                    "directional focus diverged for pane={:?} direction={:?} area={:?}",
+                    pane,
+                    direction,
+                    area,
+                );
+            }
+        }
         prop_assert_eq!(RATIO_SCALE, 10_000);
     }
 }
