@@ -128,6 +128,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             }
             let commands = ["split_horizontal", "split_vertical"];
             let mut actions = Vec::with_capacity(split_count.saturating_mul(2));
+            let mut opened_panes = Vec::new();
             for command in commands.into_iter().take(split_count) {
                 actions.push(ObservedAction::Command(command.into()));
                 if let Some((request_id, subscriber)) = self.subscribers.first_mut() {
@@ -135,6 +136,11 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
                     if frame["event"] != "pane.opened" || frame["id"] != *request_id {
                         return Err(format!("unexpected raw split event: {frame}"));
                     }
+                    opened_panes.push(
+                        frame["pane"]
+                            .as_u64()
+                            .ok_or_else(|| format!("split event omitted pane id: {frame}"))?,
+                    );
                     actions.push(ObservedAction::ControlEvent(
                         verification::schema::ExpectedControlEvent {
                             name: "pane.opened".into(),
@@ -143,6 +149,15 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
                         },
                     ));
                 }
+            }
+            if let Some((_, subscriber)) = self.subscribers.first_mut() {
+                opened_panes.sort_unstable();
+                if opened_panes != [2, 3] {
+                    return Err(format!(
+                        "split events did not identify both new panes: {opened_panes:?}"
+                    ));
+                }
+                subscriber.expect_no_frame(Duration::from_millis(150));
             }
             return Ok(actions);
         }
