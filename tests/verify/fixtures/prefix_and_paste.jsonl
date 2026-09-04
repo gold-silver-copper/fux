@@ -27,4 +27,6 @@
 {"sequence":26,"source":"model","event":{"kind":"control_wire","name":"pane.opened","request_id":77,"subscription_id":77}}
 {"sequence":27,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"detached"}}
 {"sequence":28,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"reconnected"}}
-{"sequence":29,"source":"model","event":{"kind":"cleanup","owned_resources":0}}
+{"sequence":29,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"disconnected"}}
+{"sequence":30,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"reconnected"}}
+{"sequence":31,"source":"model","event":{"kind":"cleanup","owned_resources":0}}

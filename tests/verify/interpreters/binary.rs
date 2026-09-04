@@ -21,6 +21,7 @@ pub trait BinaryDriver {
     fn attach(&mut self, client: &str) -> Result<(), String>;
     fn detach(&mut self, client: &str) -> Result<(), String>;
     fn reconnect(&mut self, client: &str) -> Result<(), String>;
+    fn disconnect(&mut self, client: &str) -> Result<(), String>;
     fn child_output(&mut self, pane: u32, bytes: &[u8]) -> Result<ExpectedTerminalFrame, String>;
     fn terminal_reply(
         &mut self,
@@ -89,6 +90,16 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         Event::Lifecycle {
                             resource: format!("client:{client}"),
                             state: "reconnected".into(),
+                        },
+                    );
+                }
+                Step::Disconnect { client } => {
+                    self.driver.disconnect(client)?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: "disconnected".into(),
                         },
                     );
                 }

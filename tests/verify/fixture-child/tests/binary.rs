@@ -90,6 +90,8 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         client_size: scenario.initial_size,
         detached_topology: None,
         retained_output: None,
+        lifecycle_subscriber: None,
+        disconnected_viewer: None,
     };
     let binary = BinaryInterpreter::new(driver)
         .run(scenario)
@@ -110,6 +112,8 @@ struct PrefixBinaryDriver<'a> {
     client_size: verification::schema::Size,
     detached_topology: Option<Value>,
     retained_output: Option<String>,
+    lifecycle_subscriber: Option<Jsonl>,
+    disconnected_viewer: Option<u64>,
 }
 
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
@@ -148,6 +152,12 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             self.client_size.columns,
         );
         process.wait_for_output_bytes(b"connected.");
+        if let Some(subscriber) = self.lifecycle_subscriber.as_mut() {
+            let attached = expect_viewer_event(subscriber, 91, "client.attached")?;
+            if self.disconnected_viewer == Some(attached) {
+                return Err(format!("reconnect reused stale viewer identity {attached}"));
+            }
+        }
         let before = self
             .detached_topology
             .take()
@@ -162,6 +172,37 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             wait_for_captured_line(&self.fux, self.environment, 1, expected)?;
         }
         self.client = Some(process);
+        Ok(())
+    }
+
+    fn disconnect(&mut self, client: &str) -> Result<(), String> {
+        if client != "alice" {
+            return Err(format!("binary fixture has no client {client:?}"));
+        }
+        let stream = UnixStream::connect(self.environment.control_socket())
+            .map_err(|error| error.to_string())?;
+        let mut subscriber = Jsonl::new(stream);
+        subscriber.send(json!({
+            "command": "subscribe",
+            "id": 91,
+            "events": ["client.attached", "client.detached"],
+        }));
+        let accepted = subscriber.receive();
+        if accepted["id"] != 91 || accepted["status"] != "accepted" {
+            return Err(format!("lifecycle subscription was not accepted: {accepted}"));
+        }
+        self.detached_topology = Some(workspace_topology(&self.fux, self.environment)?);
+        let mut process = self
+            .client
+            .take()
+            .ok_or_else(|| format!("client {client:?} is already disconnected"))?;
+        process.disconnect()?;
+        self.disconnected_viewer = Some(expect_viewer_event(
+            &mut subscriber,
+            91,
+            "client.detached",
+        )?);
+        self.lifecycle_subscriber = Some(subscriber);
         Ok(())
     }
 
@@ -590,6 +631,21 @@ fn wait_for_captured_line(
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn expect_viewer_event(
+    subscriber: &mut Jsonl,
+    request_id: u64,
+    event_name: &str,
+) -> Result<u64, String> {
+    let frame = subscriber.receive();
+    if frame["event"] != event_name || frame["id"] != request_id {
+        return Err(format!("unexpected raw client lifecycle event: {frame}"));
+    }
+    frame
+        .pointer("/client/viewer")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("client lifecycle event omitted viewer identity: {frame}"))
 }
 
 fn required_field<'a>(value: &'a Value, field: &str, owner: &str) -> Result<&'a Value, String> {
@@ -1244,6 +1300,7 @@ struct TerminalChild {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     reader: Option<std::thread::JoinHandle<()>>,
+    reader_done: std::sync::mpsc::Receiver<()>,
     output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
 }
 
@@ -1268,6 +1325,7 @@ impl TerminalChild {
         let mut terminal = pair.master.try_clone_reader().expect("client reader");
         let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = std::sync::Arc::clone(&output);
+        let (reader_done_tx, reader_done) = std::sync::mpsc::sync_channel(1);
         let reader = std::thread::spawn(move || {
             let mut chunk = [0_u8; 4096];
             while let Ok(count) = terminal.read(&mut chunk) {
@@ -1280,6 +1338,7 @@ impl TerminalChild {
                 let remaining = 1024 * 1024 - captured.len().min(1024 * 1024);
                 captured.extend_from_slice(&chunk[..count.min(remaining)]);
             }
+            let _ = reader_done_tx.send(());
         });
         let writer = pair.master.take_writer().expect("client writer");
         Self {
@@ -1287,6 +1346,7 @@ impl TerminalChild {
             child,
             writer,
             reader: Some(reader),
+            reader_done,
             output,
         }
     }
@@ -1311,23 +1371,37 @@ impl TerminalChild {
         self.wait_success();
     }
 
+    fn disconnect(&mut self) -> Result<(), String> {
+        self.child.kill().map_err(|error| error.to_string())?;
+        self.wait_exit();
+        Ok(())
+    }
+
     fn wait_success(&mut self) {
         self.wait_status(0);
     }
 
     fn wait_status(&mut self, expected: u32) {
+        let status = self.wait_exit();
+        assert_eq!(status.exit_code(), expected, "client status {status}");
+    }
+
+    fn wait_exit(&mut self) -> portable_pty::ExitStatus {
         let deadline = Instant::now() + DEADLINE;
-        loop {
+        let status = loop {
             if let Some(status) = self.child.try_wait().expect("wait client") {
-                assert_eq!(status.exit_code(), expected, "client status {status}");
-                break;
+                break status;
             }
             assert!(Instant::now() < deadline, "client detach deadline expired");
             std::thread::sleep(Duration::from_millis(5));
-        }
+        };
         if let Some(reader) = self.reader.take() {
+            self.reader_done
+                .recv_timeout(DEADLINE)
+                .expect("client reader completion deadline expired");
             reader.join().expect("client reader");
         }
+        status
     }
 
     fn wait_for_text(&self, needle: &str) {

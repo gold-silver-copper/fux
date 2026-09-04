@@ -27,6 +27,8 @@
     { "kind": "input", "client": "alice", "bytes": [2, 124, 2, 45] },
     { "kind": "detach", "client": "alice" },
     { "kind": "reconnect", "client": "alice" },
+    { "kind": "disconnect", "client": "alice" },
+    { "kind": "reconnect", "client": "alice" },
     {
       "kind": "expect",
       "expected": {

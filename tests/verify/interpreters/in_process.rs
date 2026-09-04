@@ -68,6 +68,20 @@ impl Interpreter for InProcessInterpreter {
                         },
                     );
                 }
+                Step::Disconnect { client } => {
+                    if !attached_clients.remove(client) {
+                        return Err(format!(
+                            "disconnect references unattached client {client:?}"
+                        ));
+                    }
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: "disconnected".into(),
+                        },
+                    );
+                }
                 Step::ChildOutput { pane, bytes } => {
                     if *pane != 1 {
                         return Err(format!("production interpreter has no pane {pane}"));
