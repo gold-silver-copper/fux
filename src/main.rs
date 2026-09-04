@@ -531,10 +531,8 @@ async fn serve(args: ServeArgs) -> Result<ExitCode> {
     // Register both termination handlers before acquiring any owned runtime resource. Unix
     // signals remain queued until the main loop polls them, so a SIGINT/SIGTERM delivered during
     // endpoint or pane startup still takes the normal, fully-owned shutdown path below.
-    let mut interrupt =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let mut terminate =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let config_path = fux::config::default_path()?;
     let live = Arc::new(runtime::LiveConfig::load(config_path)?);
     let config = live.snapshot();

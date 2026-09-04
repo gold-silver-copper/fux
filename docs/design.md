@@ -6,10 +6,10 @@ program around each pane (see `wrapper-design.md`). One `cargo install`-able bin
 
 - **Status:** proposal, audited against source. Supersedes the zellij-based draft of 2 Sep 2026.
 - **Date:** 3 Sep 2026
-- **Reference trees:** `references/` — koh 0.12.0 (5e8620b) · herdr 0.8.2 (94f6d9c,
+- **Reference trees:** `references/` — koh 0.12.1 · herdr 0.8.2 (94f6d9c,
   github.com/herdrdev/herdr) · zellij `main` at 0.46.0 (af38660), kept for grid edge cases only
-- **Dependency:** published koh **0.12.0** (fux pins
-  `=0.12.0`, `default-features = false`, `backend-termina`) · fux 0.1.0 placeholder. herdr proper is not published; the `herdr`
+- **Dependency:** published koh **0.12.1** (fux pins
+  `=0.12.1`, `default-features = false`, `backend-termina`) · fux 0.1.0 placeholder. herdr proper is not published; the `herdr`
   crate on crates.io is unrelated.
 
 ---

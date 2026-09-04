@@ -13,7 +13,7 @@ zor-generated OSC 7877 in fux state and control events, sends input through both
 that the detachable workspace retains the completed child's screen. This local seam is not claimed
 as a real network outage/reconnect.
 
-Koh 0.12.0 and zor 0.1.1 are published. Release preparation reruns both the full package and
+Koh 0.12.1 and zor 0.1.2 are published. Release preparation reruns both the full package and
 publish-dry-run gates and inspects the resulting archive. No workflow publishes automatically.
 
 ## Human evidence still required
@@ -23,7 +23,7 @@ publish-dry-run gates and inspects the resulting archive. No workflow publishes 
 - OSC 7877 collision/passthrough checks on Terminal.app, iTerm2, kitty, alacritty, wezterm, Termux
   and tmux.
 - Provenance and schema confirmation for OSC 21337.
-- crates.io ownership and ordered zor-before-fux publication (completed with zor 0.1.1).
+- crates.io ownership and ordered zor-before-fux publication (completed with zor 0.1.2).
 - Real Android runtime attach, suspend/resume, resize and detach testing.
 - A real remote-relay session, including authorization rejection and reconnect.
 

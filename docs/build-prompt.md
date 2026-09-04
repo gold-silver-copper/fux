@@ -2,7 +2,7 @@
 
 Paste the section below into a coding-agent session opened in a directory containing two sibling
 Git repositories: this checkout at `fux/`, with its gitignored `references/` trees present, and an
-empty, already `git init`-ed `zor/`. It was audited on 3 Sep 2026 against the published koh 0.12.0
+empty, already `git init`-ed `zor/`. It was audited on 4 Sep 2026 against the published koh 0.12.1
 release (`5e8620b633d7ab2770d18610c8ccc47313693150`), herdr
 0.8.2 (`94f6d9c`), zellij main (`af38660`), and vt100 0.16.2.
 
@@ -44,22 +44,22 @@ remain independent.
   `unsafe_op_in_unsafe_fn = "deny"` and a `// SAFETY:` explanation on every block. Deny clippy's
   `unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`,
   `indexing_slicing`, and `string_slice` outside tests.
-- Keep load-bearing dependencies exact: koh `=0.12.0`, iroh `=1.0.0` where fux names iroh types,
+- Keep load-bearing dependencies exact: koh `=0.12.1`, iroh `=1.0.0` where fux names iroh types,
   vt100 `=0.16.2`, portable-pty `=0.9.0`, ratatui-core `=0.1.0`, ratatui-widgets `=0.3.0`, and zor
-  `=0.1.1`. Use compatible current releases for ordinary utility crates and commit both lockfiles.
+  `=0.1.2`. Use compatible current releases for ordinary utility crates and commit both lockfiles.
   Every direct dependency must have a one-line purpose comment in `Cargo.toml`.
 - fux uses koh with `default-features = false, features = ["backend-termina"]`. It has no Cargo
   features. zor has one feature, `cli`, enabled by default; its binary and every non-OSC module and
   dependency are gated by it. Declare the fux dependency as
-  `zor = { version = "=0.1.1", path = "../zor", default-features = false }`, so packaging strips
-  the development path after zor 0.1.1 exists on crates.io.
+  `zor = { version = "=0.1.2", path = "../zor", default-features = false }`, so packaging strips
+  the development path after zor 0.1.2 exists on crates.io.
 - Other expected fux dependencies are clap derive, serde, serde_json, toml, tokio with only the
   features actually used, tokio-util for reaper/task cancellation, nix for safe signal handling,
   anyhow, tracing, base64 for OSC 52, and proptest as a dev dependency. Do not assume koh depends
   on ratatui—it does not.
 - Study reference code for invariants, edge cases, constants, and test oracles. Do not copy Rust,
   TOML, schemas, prose, or fixtures from herdr or zellij. Use koh through the public API at the
-  pinned v0.12.0 revision; do not add further local patches or vendor it.
+  pinned v0.12.1 revision; do not add further local patches or vendor it.
 - Tests have behavioural sentence names and cite the relevant design heading or acceptance id in
   their first-line comment. Timing logic uses an injected clock. Real-session tests use koh's
   loopback endpoint helpers and bounded 10-second deadlines; short polling sleeps are allowed in
@@ -78,8 +78,7 @@ remain independent.
 
 This phase is sequential. Do not begin the larger modules until its tests pass.
 
-1. Verify that `fux/references/koh` is tag `v0.12.0` at
-   `5e8620b633d7ab2770d18610c8ccc47313693150`. Read the exact signatures of
+1. Verify that `fux/references/koh` is tag `v0.12.1`. Read the exact signatures of
    `SyncState`, `SessionHost`, `ChangeSignal`, `HostProvider`, `SharedHost`, `Hosts`, `serve_with`,
    `ClientState`, `ClientTerminal`, `ClientIoTasks`, `spawn_client_io`, `connect_with`, `KohBackend`,
    `ScreenView`, `Pty` (including owned group shutdown), and `ServerTerminal` (including bounded
@@ -273,7 +272,7 @@ Implement `fux/src/client/` after F1; it may proceed in parallel with F2.
   `connect_with(config, FUX_ALPN, make_terminal, input_rx, resize_rx)`. Obtain the public raw-stdin
   and SIGWINCH channels with `koh::client::spawn_client_io`; retain its `ClientIoTasks` owner for
   the session and always await `ClientIoTasks::shutdown` afterward. Koh's higher-level CLI adapters
-  remain disabled/private, but these cancellation-aware producers are part of koh 0.12.0's public API.
+  remain disabled/private, but these cancellation-aware producers are part of koh 0.12.1's public API.
 - Detach is client-side. Before `input_rx`, a tiny stateful preprocessor recognizes configured
   `prefix d` outside bracketed paste and emits koh's client escape `0x1e, b'.'`; the host cannot
   detach one viewer because `SessionHost::input` has no `ClientId`. On named-manager attachments,
@@ -390,7 +389,7 @@ notification policy against a fake executable.
    Also run `cargo check --no-default-features --locked` in zor, the fux Android check, all
    cross-repository integration tests, and any repository-specific layering/security checks.
    `cargo publish --dry-run` for zor comes first. A verified fux package cannot be built after Cargo
-   strips development paths until crates.io resolves both `koh =0.12.0` and `zor =0.1.1`: before
+   strips development paths until crates.io resolves both `koh =0.12.1` and `zor =0.1.2`: before
    then, attempt the command and record the exact unresolved prerequisites. `cargo package
    --no-verify --locked` also resolves registry dependencies and is not an archive-inspection
    workaround. Do not call either attempt a successful package gate. Rerun full `cargo package`

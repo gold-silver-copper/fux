@@ -1,6 +1,6 @@
 [package]
 name = "fux"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Agent-native terminal workspace"
 license = "MIT"
@@ -20,7 +20,7 @@ clap = { version = "4.5", features = ["derive"] }
 # QUIC endpoint identifiers used by named-workspace routing.
 iroh = "=1.0.0"
 # Session synchronization and bounded terminal transport.
-koh = { version = "=0.12.0", path = "references/koh", default-features = false, features = ["backend-termina"] }
+koh = { version = "=0.12.1", path = "references/koh", default-features = false, features = ["backend-termina"] }
 # Safe Unix signal and process-group operations.
 nix = { version = "0.30", features = ["fs", "signal", "socket"] }
 # Terminal rendering primitives without ratatui's umbrella crate.
@@ -45,7 +45,7 @@ vt100 = "=0.16.2"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.0"
 # Minimal OSC 7877 model/parser shared with the wrapper.
-zor = { version = "=0.1.1", path = "zor", default-features = false }
+zor = { version = "=0.1.2", path = "zor", default-features = false }
 
 [dev-dependencies]
 # Exhaustive compact ownership and ordering models for verification.

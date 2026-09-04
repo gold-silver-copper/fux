@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1854,7 +1854,7 @@ dependencies = [
 
 [[package]]
 name = "koh"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4828,4 +4828,4 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zor"
-version = "0.1.1"
+version = "0.1.2"

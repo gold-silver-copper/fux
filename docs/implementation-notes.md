@@ -1,7 +1,7 @@
 # Implementation notes
 
 Phase 0 was checked on 2026-09-03 against koh 0.11.0. The completed implementation now requires
-koh 0.12.0 at tag `v0.12.0` (`5e8620b633d7ab2770d18610c8ccc47313693150`), herdr at
+koh 0.12.1 at tag `v0.12.1`, herdr at
 `94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0`, and zellij at
 `af38660c5884f50bb3726682fb92961326c4268f`.
 
@@ -23,7 +23,7 @@ koh 0.12.0 at tag `v0.12.0` (`5e8620b633d7ab2770d18610c8ccc47313693150`), herdr 
 - koh owns PTYs through public `Pty`, while backend and callback ledgers needed by fux are private;
   fux supplies those integrations itself.
 - **3 Sep 2026 — zor integration:** the wrapper described by `wrapper-design.md` is implemented as
-  zor 0.1.1; fux consumes its OSC schema and production hosts execute the configured zor binary.
+  zor 0.1.2; fux consumes its OSC schema and production hosts execute the configured zor binary.
 - **3 Sep 2026 — shared copy viewport:** copy/scroll viewport and selection state are shared between
   viewers in v1. koh supplies `ClientId` for resize and detach callbacks, but not for input, so fux
   cannot safely maintain viewer-local copy state without extending the transport contract.

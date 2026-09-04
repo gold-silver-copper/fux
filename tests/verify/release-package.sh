@@ -12,8 +12,8 @@ cd "$repository"
 cargo package --manifest-path zor/Cargo.toml --locked
 cargo package --locked
 
-zor_package="$repository/zor/target/package/zor-0.1.1"
-fux_package="$repository/target/package/fux-0.2.0"
+zor_package="$repository/zor/target/package/zor-0.1.2"
+fux_package="$repository/target/package/fux-0.2.1"
 test -f "$zor_package/Cargo.toml"
 test -f "$fux_package/Cargo.toml"
 

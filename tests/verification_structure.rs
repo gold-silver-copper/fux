@@ -123,8 +123,8 @@ fn wire_events_have_the_documented_dotted_spellings_exactly_twice() {
 fn dependency_and_ci_surfaces_keep_the_verification_layers_enabled() {
     let manifest = read(Path::new("Cargo.toml"));
     for dependency in [
-        "koh = { version = \"=0.12.0\"",
-        "zor = { version = \"=0.1.1\"",
+        "koh = { version = \"=0.12.1\"",
+        "zor = { version = \"=0.1.2\"",
         "loom = \"0.7\"",
     ] {
         assert!(
