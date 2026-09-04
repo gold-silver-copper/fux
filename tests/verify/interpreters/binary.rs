@@ -19,6 +19,8 @@ pub enum ObservedAction {
 
 pub trait BinaryDriver {
     fn attach(&mut self, client: &str) -> Result<(), String>;
+    fn detach(&mut self, client: &str) -> Result<(), String>;
+    fn reconnect(&mut self, client: &str) -> Result<(), String>;
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
     fn mouse_input(&mut self, bytes: &[u8]) -> Result<ObservedAction, String>;
     fn subscribe(
@@ -58,6 +60,26 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         Event::Lifecycle {
                             resource: format!("client:{client}"),
                             state: "attached".into(),
+                        },
+                    );
+                }
+                Step::Detach { client } => {
+                    self.driver.detach(client)?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: "detached".into(),
+                        },
+                    );
+                }
+                Step::Reconnect { client } => {
+                    self.driver.reconnect(client)?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: "reconnected".into(),
                         },
                     );
                 }

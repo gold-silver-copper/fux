@@ -20,6 +20,8 @@
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 51, 53, 59, 49, 59, 49, 77] },
     { "kind": "mouse_input", "client": "alice", "bytes": [27, 91, 60, 54, 52, 59, 49, 59, 49, 77] },
     { "kind": "input", "client": "alice", "bytes": [2, 124, 2, 45] },
+    { "kind": "detach", "client": "alice" },
+    { "kind": "reconnect", "client": "alice" },
     {
       "kind": "expect",
       "expected": {

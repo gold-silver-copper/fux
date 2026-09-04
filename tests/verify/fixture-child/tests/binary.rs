@@ -41,10 +41,10 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         BinaryInterpreter, InProcessInterpreter, Interpreter, ModelInterpreter,
     };
 
-    let model = ModelInterpreter.run(&scenario).expect("model transcript");
+    let model = ModelInterpreter.run(scenario).expect("model transcript");
     assert_eq!(
         InProcessInterpreter
-            .run(&scenario)
+            .run(scenario)
             .expect("in-process transcript"),
         model
     );
@@ -79,7 +79,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
     let client = TerminalChild::spawn(&fux, &environment, 24, 80);
     let driver = PrefixBinaryDriver {
         fux: fux.clone(),
-        client,
+        client: Some(client),
         primary,
         secondary: Vec::new(),
         listener: &fixture_listener,
@@ -87,16 +87,18 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         environment: &environment,
         mouse_enabled: false,
         subscribers: Vec::new(),
+        client_size: scenario.initial_size,
+        detached_topology: None,
     };
     let binary = BinaryInterpreter::new(driver)
-        .run(&scenario)
+        .run(scenario)
         .expect("binary transcript");
     assert_eq!(binary, model);
 }
 
 struct PrefixBinaryDriver<'a> {
     fux: PathBuf,
-    client: TerminalChild,
+    client: Option<TerminalChild>,
     primary: Jsonl,
     secondary: Vec<Jsonl>,
     listener: &'a UnixListener,
@@ -104,6 +106,8 @@ struct PrefixBinaryDriver<'a> {
     environment: &'a PrivateEnvironment,
     mouse_enabled: bool,
     subscribers: Vec<(u64, Jsonl)>,
+    client_size: verification::schema::Size,
+    detached_topology: Option<Value>,
 }
 
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
@@ -111,7 +115,48 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if client != "alice" {
             return Err(format!("binary fixture has no client {client:?}"));
         }
-        self.client.wait_for_output_bytes(b"connected.");
+        self.client
+            .as_mut()
+            .ok_or_else(|| format!("client {client:?} is not running"))?
+            .wait_for_output_bytes(b"connected.");
+        Ok(())
+    }
+
+    fn detach(&mut self, client: &str) -> Result<(), String> {
+        if client != "alice" {
+            return Err(format!("binary fixture has no client {client:?}"));
+        }
+        self.detached_topology = Some(workspace_topology(&self.fux, self.environment)?);
+        let mut process = self
+            .client
+            .take()
+            .ok_or_else(|| format!("client {client:?} is already detached"))?;
+        process.detach_with_prefix(2);
+        Ok(())
+    }
+
+    fn reconnect(&mut self, client: &str) -> Result<(), String> {
+        if client != "alice" || self.client.is_some() {
+            return Err(format!("client {client:?} cannot reconnect"));
+        }
+        let process = TerminalChild::spawn(
+            &self.fux,
+            self.environment,
+            self.client_size.rows,
+            self.client_size.columns,
+        );
+        process.wait_for_output_bytes(b"connected.");
+        let before = self
+            .detached_topology
+            .take()
+            .ok_or_else(|| "reconnect had no detached workspace snapshot".to_owned())?;
+        let after = workspace_topology(&self.fux, self.environment)?;
+        if after != before {
+            return Err(format!(
+                "workspace topology changed across reconnect: before={before}, after={after}"
+            ));
+        }
+        self.client = Some(process);
         Ok(())
     }
 
@@ -121,7 +166,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
     ) -> Result<Vec<verification::interpreters::ObservedAction>, String> {
         use verification::interpreters::ObservedAction;
         if bytes == [2, b'|'] || bytes == [2, b'|', 2, b'-'] {
-            self.client.write(bytes);
+            self.client.as_mut().ok_or("client is detached")?.write(bytes);
             let split_count: usize = if bytes.len() == 2 { 1 } else { 2 };
             for _ in 0..split_count {
                 let mut secondary = Jsonl::new(accept_with_deadline(self.listener));
@@ -170,7 +215,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         let expected = if bytes == [2, 2] { 1 } else { bytes.len() };
         self.primary
             .send(json!({"command":"read_exact", "bytes":expected}));
-        self.client.write(bytes);
+        self.client.as_mut().ok_or("client is detached")?.write(bytes);
         let response = self.primary.receive();
         let encoded = response["bytes_hex"]
             .as_str()
@@ -191,7 +236,10 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             if self.primary.receive()["bytes"] != 16 {
                 return Err("fixture did not enable SGR mouse mode".into());
             }
-            self.client.wait_for_output_bytes(b"\x1b[?1006h");
+            self.client
+                .as_mut()
+                .ok_or("client is detached")?
+                .wait_for_output_bytes(b"\x1b[?1006h");
             self.mouse_enabled = true;
         }
         let (code, column, row, release) = parse_sgr_mouse(bytes)?;
@@ -203,7 +251,10 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             row.saturating_add(1),
             if release { 'm' } else { 'M' }
         );
-        self.client.write(outer.as_bytes());
+        self.client
+            .as_mut()
+            .ok_or("client is detached")?
+            .write(outer.as_bytes());
         let observed = self.primary.receive()["bytes_hex"]
             .as_str()
             .ok_or_else(|| "fixture did not report mouse bytes".to_owned())?
@@ -280,7 +331,11 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             return Err(format!("binary fixture has no client {client:?}"));
         }
         let expected = (size.rows.saturating_sub(3), size.columns.saturating_sub(2));
-        self.client.resize(size.rows, size.columns)?;
+        self.client
+            .as_ref()
+            .ok_or("client is detached")?
+            .resize(size.rows, size.columns)?;
+        self.client_size = size;
         let deadline = Instant::now() + DEADLINE;
         loop {
             let observed = fixture_size(&mut self.primary);
@@ -312,7 +367,9 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
                 return Err("secondary fixture did not clean up".into());
             }
         }
-        self.client.detach();
+        if let Some(mut client) = self.client.take() {
+            client.detach_with_prefix(2);
+        }
         self.server.terminate(Signal::SIGTERM);
         self.server.wait();
         wait_for_absent(&self.environment.manager_socket());
@@ -378,6 +435,67 @@ fn assert_horizontal_then_vertical_layout(
         ));
     }
     Ok(())
+}
+
+fn workspace_topology(fux: &Path, environment: &PrivateEnvironment) -> Result<Value, String> {
+    let output = run(fux, ["binary", "list"], environment);
+    if !output.status.success() {
+        return Err(format!(
+            "workspace listing failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    let workspaces = value
+        .pointer("/result/value/workspaces")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "workspace listing omitted workspaces".to_owned())?;
+    let workspaces = workspaces
+        .iter()
+        .map(|workspace| {
+            let tabs = workspace
+                .get("tabs")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "workspace omitted tabs".to_owned())?;
+            let tabs = tabs
+                .iter()
+                .map(|tab| {
+                    let panes = tab
+                        .get("panes")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| "tab omitted panes".to_owned())?;
+                    let panes = panes
+                        .iter()
+                        .map(|pane| {
+                            Ok(json!({
+                                "id": required_field(pane, "id", "pane")?,
+                                "geometry": required_field(pane, "geometry", "pane")?,
+                                "focused": required_field(pane, "focused", "pane")?,
+                            }))
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    Ok(json!({
+                        "index": required_field(tab, "index", "tab")?,
+                        "name": required_field(tab, "name", "tab")?,
+                        "focused": required_field(tab, "focused", "tab")?,
+                        "panes": panes,
+                    }))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(json!({
+                "name": required_field(workspace, "name", "workspace")?,
+                "focused": required_field(workspace, "focused", "workspace")?,
+                "tabs": tabs,
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(json!({ "workspaces": workspaces }))
+}
+
+fn required_field<'a>(value: &'a Value, field: &str, owner: &str) -> Result<&'a Value, String> {
+    value
+        .get(field)
+        .ok_or_else(|| format!("{owner} omitted {field}"))
 }
 
 fn parse_sgr_mouse(bytes: &[u8]) -> Result<(u16, u16, u16, bool), String> {
@@ -1085,7 +1203,11 @@ impl TerminalChild {
     }
 
     fn detach(&mut self) {
-        self.write(&[1, b'd']);
+        self.detach_with_prefix(1);
+    }
+
+    fn detach_with_prefix(&mut self, prefix: u8) {
+        self.write(&[prefix, b'd']);
         self.wait_success();
     }
 

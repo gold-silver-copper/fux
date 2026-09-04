@@ -20,18 +20,46 @@ impl Interpreter for ModelInterpreter {
         let mut control_replies = Vec::new();
         let mut pty_resizes = Vec::new();
         let mut attached_clients = std::collections::BTreeSet::new();
+        let mut known_clients = std::collections::BTreeSet::new();
         for step in &scenario.steps {
             match step {
                 Step::Attach { client } => {
                     if !attached_clients.insert(client.clone()) {
                         return Err(format!("client {client:?} attached twice"));
                     }
+                    known_clients.insert(client.clone());
                     push(
                         &mut transcript,
                         "model",
                         Event::Lifecycle {
                             resource: format!("client:{client}"),
                             state: "attached".into(),
+                        },
+                    );
+                }
+                Step::Detach { client } => {
+                    if !attached_clients.remove(client) {
+                        return Err(format!("detach references unattached client {client:?}"));
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: "detached".into(),
+                        },
+                    );
+                }
+                Step::Reconnect { client } => {
+                    if !known_clients.contains(client) || !attached_clients.insert(client.clone()) {
+                        return Err(format!("reconnect requires detached client {client:?}"));
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: "reconnected".into(),
                         },
                     );
                 }
