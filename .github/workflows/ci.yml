@@ -38,7 +38,7 @@ jobs:
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.0
+          ref: v0.1.1
       - name: Install Rust
         run: rustup toolchain install "${{ matrix.rust }}" --profile minimal --component rustfmt,clippy
       - run: cargo +${{ matrix.rust }} fmt --all --check
@@ -62,8 +62,13 @@ jobs:
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.0
+          ref: v0.1.1
       - run: rustup target add aarch64-linux-android
+      - name: Select Android NDK compiler
+        run: |
+          test -x "$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+          echo "CC_aarch64_linux_android=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
       - run: cargo check --target aarch64-linux-android --locked
 
   cross-repository:
@@ -82,7 +87,7 @@ jobs:
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.0
+          ref: v0.1.1
       - name: Build zor and expose its exact path to tests
         run: |
           cargo build --manifest-path zor/Cargo.toml --locked
@@ -91,7 +96,7 @@ jobs:
       - run: cargo test --all-features --locked
 
   package:
-    name: Package (requires koh 0.12.0 and zor 0.1.0 on crates.io)
+    name: Package (requires koh 0.12.0 and zor 0.1.1 on crates.io)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -106,5 +111,5 @@ jobs:
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.0
+          ref: v0.1.1
       - run: cargo package --locked

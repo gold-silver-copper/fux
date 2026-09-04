@@ -45,7 +45,7 @@ vt100 = "=0.16.2"
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.0"
 # Minimal OSC 7877 model/parser shared with the wrapper.
-zor = { version = "=0.1.0", path = "zor", default-features = false }
+zor = { version = "=0.1.1", path = "zor", default-features = false }
 
 [dev-dependencies]
 # Property tests for state/diff/layout/parser invariants.

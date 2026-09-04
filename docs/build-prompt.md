@@ -46,13 +46,13 @@ remain independent.
   `indexing_slicing`, and `string_slice` outside tests.
 - Keep load-bearing dependencies exact: koh `=0.12.0`, iroh `=1.0.0` where fux names iroh types,
   vt100 `=0.16.2`, portable-pty `=0.9.0`, ratatui-core `=0.1.0`, ratatui-widgets `=0.3.0`, and zor
-  `=0.1.0`. Use compatible current releases for ordinary utility crates and commit both lockfiles.
+  `=0.1.1`. Use compatible current releases for ordinary utility crates and commit both lockfiles.
   Every direct dependency must have a one-line purpose comment in `Cargo.toml`.
 - fux uses koh with `default-features = false, features = ["backend-termina"]`. It has no Cargo
   features. zor has one feature, `cli`, enabled by default; its binary and every non-OSC module and
   dependency are gated by it. Declare the fux dependency as
-  `zor = { version = "=0.1.0", path = "../zor", default-features = false }`, so packaging strips
-  the development path after zor 0.1.0 exists on crates.io.
+  `zor = { version = "=0.1.1", path = "../zor", default-features = false }`, so packaging strips
+  the development path after zor 0.1.1 exists on crates.io.
 - Other expected fux dependencies are clap derive, serde, serde_json, toml, tokio with only the
   features actually used, tokio-util for reaper/task cancellation, nix for safe signal handling,
   anyhow, tracing, base64 for OSC 52, and proptest as a dev dependency. Do not assume koh depends
@@ -390,7 +390,7 @@ notification policy against a fake executable.
    Also run `cargo check --no-default-features --locked` in zor, the fux Android check, all
    cross-repository integration tests, and any repository-specific layering/security checks.
    `cargo publish --dry-run` for zor comes first. A verified fux package cannot be built after Cargo
-   strips development paths until crates.io resolves both `koh =0.12.0` and `zor =0.1.0`: before
+   strips development paths until crates.io resolves both `koh =0.12.0` and `zor =0.1.1`: before
    then, attempt the command and record the exact unresolved prerequisites. `cargo package
    --no-verify --locked` also resolves registry dependencies and is not an archive-inspection
    workaround. Do not call either attempt a successful package gate. Rerun full `cargo package`
