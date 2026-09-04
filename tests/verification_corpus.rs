@@ -12,6 +12,7 @@ use verify::transcript::{assert_fixture_safe, encode_jsonl};
 
 const PREFIX_LITERAL: &str = include_str!("verify/corpus/input/prefix_literal.json");
 const PREFIX_LITERAL_GOLDEN: &str = include_str!("verify/fixtures/prefix_literal.jsonl");
+const WIDE_OSC_CASSETTE: &str = include_str!("verify/fixtures/terminal/wide_osc.json");
 
 #[test]
 fn prefix_literal_agrees_across_independent_interpreters_and_the_golden() {
@@ -243,6 +244,84 @@ fn every_default_prefix_command_matches_the_oracle_at_every_boundary() {
             assert_eq!(actual_name, expected_name);
         }
     }
+}
+
+#[test]
+fn terminal_cassette_replays_identically_at_every_byte_boundary() {
+    let cassette: verify::cassette::Cassette =
+        serde_json::from_str(WIDE_OSC_CASSETTE).expect("strict cassette");
+    cassette.validate().expect("bounded cassette");
+    let bytes = cassette.child_bytes().expect("cassette bytes");
+    let expected = replay_terminal(&cassette, [&bytes[..]]);
+    for boundary in 0..=bytes.len() {
+        let head = bytes.get(..boundary).expect("bounded cassette head");
+        let tail = bytes.get(boundary..).expect("bounded cassette tail");
+        assert_eq!(
+            replay_terminal(&cassette, [head, tail]),
+            expected,
+            "terminal parser diverged at byte boundary {boundary}"
+        );
+    }
+    assert_eq!(expected.0, cassette.expected.visible_cells);
+    assert_eq!(expected.1, cassette.expected.title);
+    let report = fux::parse_agent_report(
+        cassette
+            .osc_payloads
+            .first()
+            .expect("OSC payload")
+            .as_bytes(),
+    )
+    .expect("agent OSC");
+    assert_eq!(
+        format!("{:?}", report.state()).to_ascii_lowercase(),
+        cassette.expected.agent_state
+    );
+    assert_eq!(cassette.exit_status, 7);
+    assert_eq!(cassette.resizes.first().expect("resize").rows, 5);
+    assert_eq!(cassette.signals, [verify::schema::Signal::Term]);
+}
+
+fn replay_terminal<'a>(
+    cassette: &verify::cassette::Cassette,
+    chunks: impl IntoIterator<Item = &'a [u8]>,
+) -> (Vec<String>, String) {
+    #[derive(Default)]
+    struct Callbacks {
+        title: String,
+    }
+    impl vt100::Callbacks for Callbacks {
+        fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+            self.title = String::from_utf8_lossy(title).into_owned();
+        }
+    }
+    let mut parser = vt100::Parser::new_with_callbacks(
+        cassette.rows,
+        cassette.columns,
+        32,
+        Callbacks::default(),
+    );
+    for chunk in chunks {
+        parser.process(chunk);
+    }
+    let pane = fux::state::PaneView::from_vt100(
+        parser.screen(),
+        parser.callbacks().title.clone(),
+        Default::default(),
+        0,
+    )
+    .expect("cassette frame");
+    let cells = pane
+        .cells
+        .into_iter()
+        .filter_map(|cell| {
+            if cell.text.is_empty() {
+                None
+            } else {
+                Some(cell.text)
+            }
+        })
+        .collect();
+    (cells, pane.title)
 }
 
 fn production_command_name(command: &fux::host::Command) -> &'static str {
