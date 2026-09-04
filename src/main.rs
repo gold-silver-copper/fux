@@ -803,15 +803,21 @@ async fn create_served_workspace(
     )?;
     let mut startup_guard = WorkspaceStartupGuard::new(control.clone());
     let session = Arc::new(Mutex::new(Some(session)));
+    let local_network = config.local_network;
     let descriptor = daemon
         .create_or_find_async(name, |_key, allow| {
             let session = Arc::clone(&session);
             async move {
+                let profile = if local_network {
+                    fux::daemon::NetworkProfile::Local
+                } else {
+                    fux::daemon::NetworkProfile::Default
+                };
                 fux::daemon::bind_workspace_endpoint_with_secret(
                     server_secret,
                     &allow,
                     fux::FUX_ALPN,
-                    fux::daemon::NetworkProfile::Default,
+                    profile,
                     move || {
                         session
                             .lock()

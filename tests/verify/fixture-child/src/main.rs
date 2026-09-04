@@ -107,6 +107,15 @@ enum Response {
 }
 
 fn main() -> ExitCode {
+    if is_notification_invocation() {
+        return match record_notification() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("fixture-child notifier: {error}");
+                ExitCode::from(70)
+            }
+        };
+    }
     if let Some(mode) = env::args()
         .nth(1)
         .and_then(|value| value.strip_prefix("--descendant=").map(str::to_owned))
@@ -120,6 +129,32 @@ fn main() -> ExitCode {
             ExitCode::from(70)
         }
     }
+}
+
+fn is_notification_invocation() -> bool {
+    env::args_os()
+        .next()
+        .and_then(|path| std::path::PathBuf::from(path).file_name().map(OsStr::to_owned))
+        .is_some_and(|name| name == "terminal-notifier" || name == "notify-send")
+}
+
+fn record_notification() -> io::Result<()> {
+    let path = env::var_os("FUX_FIXTURE_NOTIFICATION_LOG")
+        .ok_or_else(|| invalid("FUX_FIXTURE_NOTIFICATION_LOG is required"))?;
+    let arguments: Vec<_> = env::args_os()
+        .skip(1)
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect();
+    let encoded = serde_json::to_vec(&arguments).map_err(invalid)?;
+    if encoded.len() > MAX_FRAME_BYTES {
+        return Err(invalid("notification arguments exceed fixture bound"));
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(&encoded)?;
+    file.write_all(b"\n")
 }
 
 fn run() -> io::Result<()> {

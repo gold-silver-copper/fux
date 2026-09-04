@@ -48,6 +48,12 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     wait_for_path(&environment.manager_socket());
     wait_for_path(&environment.control_socket());
 
+    let mut events = Jsonl::new(
+        UnixStream::connect(environment.control_socket()).expect("subscribe to binary events"),
+    );
+    events.send(json!({"command":"subscribe", "id":77, "events":["agent.state"]}));
+    assert_eq!(events.receive()["id"], 77);
+
     let mut fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
     assert_eq!(fixture.receive()["event"], "ready");
     let listed = run(&fux, ["binary", "list"], &environment);
@@ -88,7 +94,6 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     popup_fixture.send(json!({"command":"exit", "status":0}));
     assert_eq!(popup_fixture.receive()["event"], "cleanup");
     wait_for_list_absent(&fux, &environment, "\"name\":\"popups\"");
-    client.detach();
 
     for (sequence, state) in [(1, "working"), (2, "blocked"), (3, "idle")] {
         fixture.send(json!({
@@ -96,7 +101,28 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
             "payload":format!("state={state};agent=fixture;seq={sequence}")
         }));
         wait_for_list(&fux, &environment, state);
+        let event = events.receive();
+        assert_eq!(event["event"], "agent.state");
+        assert_eq!(event["id"], 77);
+        assert_eq!(event["new_state"], state, "event={event}");
+        let displayed = match state {
+            "working" => "Working",
+            "blocked" => "Blocked",
+            "idle" => "Idle",
+            _ => unreachable!(),
+        };
+        client.wait_for_text(displayed);
     }
+    fixture.send(json!({
+        "command":"agent",
+        "payload":"state=idle;agent=fixture;seq=3"
+    }));
+    events.expect_no_frame(Duration::from_millis(150));
+    wait_for_notification_count(&environment.notification_log(), 2);
+    let notifications = fs::read_to_string(environment.notification_log())
+        .expect("private notification transcript");
+    assert!(notifications.contains("fixture"));
+    client.detach();
     fixture.send(json!({"command":"write", "chunks_hex":["62696e617279"]}));
     assert_eq!(fixture.receive()["bytes"], 6);
     let captured = run(&fux, ["binary", "capture", "1"], &environment);
@@ -464,14 +490,29 @@ impl PrivateEnvironment {
                 "KOH_KEY_PASSPHRASE".into(),
                 "verification-only-passphrase".into(),
             ),
-            ("PATH".into(), "/usr/bin:/bin".into()),
+            (
+                "PATH".into(),
+                format!("{}:/usr/bin:/bin", self.root.join("bin").display()),
+            ),
+            ("DISPLAY".into(), "fixture-display".into()),
+            (
+                "FUX_FIXTURE_NOTIFICATION_LOG".into(),
+                self.notification_log().display().to_string(),
+            ),
             ("TERM".into(), "xterm-256color".into()),
         ]
     }
 
     fn write_config(&self, fixture: &Path, zor: &Path) {
+        fs::create_dir_all(self.root.join("bin")).expect("fixture bin directory");
+        for name in ["terminal-notifier", "notify-send"] {
+            let target = self.root.join("bin").join(name);
+            if !target.exists() {
+                fs::hard_link(fixture, target).expect("install fixture notifier");
+            }
+        }
         let document = format!(
-            "default-command = {{ argv = [{:?}, {:?}, \"--deadline-ms=30000\"] }}\nzor-path = {:?}\nclipboard = \"write-only\"\n[notifications]\nenabled = false\n",
+            "default-command = {{ argv = [{:?}, {:?}, \"--deadline-ms=30000\"] }}\nzor-path = {:?}\nclipboard = \"write-only\"\nlocal-network = true\n[notifications]\nenabled = true\nnotify-blocked = true\nnotify-idle = true\n",
             fixture.display().to_string(),
             format!("--control={}", self.fixture_socket().display()),
             zor.display().to_string(),
@@ -490,6 +531,26 @@ impl PrivateEnvironment {
     }
     fn descriptor(&self) -> PathBuf {
         self.root.join("run/fux/workspaces/binary.json")
+    }
+    fn notification_log(&self) -> PathBuf {
+        self.root.join("notifications.jsonl")
+    }
+}
+
+fn wait_for_notification_count(path: &Path, expected: usize) {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let count = fs::read_to_string(path)
+            .map(|contents| contents.lines().count())
+            .unwrap_or(0);
+        if count == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected {expected} notifications, observed {count}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -750,6 +811,30 @@ impl Jsonl {
         }
         assert!(!line.is_empty(), "fixture closed unexpectedly");
         serde_json::from_str(&line).expect("fixture JSON")
+    }
+
+    fn expect_no_frame(&mut self, timeout: Duration) {
+        self.reader
+            .get_mut()
+            .set_read_timeout(Some(timeout))
+            .expect("short no-frame deadline");
+        let mut line = String::new();
+        let result = self.reader.read_line(&mut line);
+        self.reader
+            .get_mut()
+            .set_read_timeout(Some(DEADLINE))
+            .expect("restore frame deadline");
+        assert!(
+            matches!(
+                result,
+                Err(ref error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    )
+            ),
+            "unexpected duplicate event frame: {line:?} ({result:?})"
+        );
     }
 }
 

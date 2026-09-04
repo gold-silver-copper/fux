@@ -41,6 +41,8 @@ pub struct Config {
     pub history: HistoryLimits,
     pub resources: ResourceLimits,
     pub remote_allow_ids: Vec<String>,
+    /// Bind workspace transport to loopback/direct sockets without relay discovery.
+    pub local_network: bool,
     pub hooks: Vec<Hook>,
 }
 
@@ -56,6 +58,7 @@ impl Default for Config {
             history: HistoryLimits::default(),
             resources: ResourceLimits::default(),
             remote_allow_ids: Vec::new(),
+            local_network: false,
             hooks: Vec::new(),
         }
     }
@@ -399,6 +402,7 @@ struct ConfigPatch {
     history: Option<HistoryLimits>,
     resources: Option<ResourceLimits>,
     remote_allow_ids: Option<Vec<String>>,
+    local_network: Option<bool>,
     hooks: Option<Vec<Hook>>,
 }
 
@@ -430,6 +434,9 @@ impl ConfigPatch {
         }
         if let Some(value) = self.remote_allow_ids {
             config.remote_allow_ids = value;
+        }
+        if let Some(value) = self.local_network {
+            config.local_network = value;
         }
         if let Some(value) = self.hooks {
             config.hooks = value;
