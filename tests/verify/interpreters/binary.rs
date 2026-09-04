@@ -18,6 +18,7 @@ pub enum ObservedAction {
 }
 
 pub trait BinaryDriver {
+    fn start_daemon(&mut self) -> Result<(), String>;
     fn attach(&mut self, client: &str) -> Result<(), String>;
     fn detach(&mut self, client: &str) -> Result<(), String>;
     fn reconnect(&mut self, client: &str) -> Result<(), String>;
@@ -40,7 +41,7 @@ pub trait BinaryDriver {
     ) -> Result<ExpectedSubscription, String>;
     fn control(&mut self, request: &serde_json::Value) -> Result<ExpectedControlReply, String>;
     fn resize(&mut self, client: &str, size: Size) -> Result<ExpectedResize, String>;
-    fn cleanup(&mut self) -> Result<usize, String>;
+    fn shutdown(&mut self) -> Result<usize, String>;
 }
 
 pub struct BinaryInterpreter<D> {
@@ -64,8 +65,19 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut pty_resizes = Vec::new();
         let mut terminal_frames = Vec::new();
         let mut exit_status = None;
+        let mut owned_resources = None;
         for step in &scenario.steps {
             match step {
+                Step::StartDaemon => {
+                    self.driver.start_daemon()?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: "daemon".into(),
+                            state: "running".into(),
+                        },
+                    );
+                }
                 Step::Attach { client } => {
                     self.driver.attach(client)?;
                     push(
@@ -165,6 +177,17 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         Event::ChildExit {
                             process: format!("pane-{pane}"),
                             status: observed,
+                        },
+                    );
+                }
+                Step::Shutdown => {
+                    let remaining = self.driver.shutdown()?;
+                    owned_resources = Some(remaining);
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: "daemon".into(),
+                            state: "stopped".into(),
                         },
                     );
                 }
@@ -338,7 +361,8 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                             "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"
                         ));
                     }
-                    let owned_resources = self.driver.cleanup()?;
+                    let owned_resources = owned_resources
+                        .ok_or_else(|| "binary expect requires shutdown".to_owned())?;
                     if owned_resources != expected.owned_resources {
                         return Err(format!(
                             "binary cleanup mismatch: owned_resources={owned_resources}"

@@ -160,6 +160,50 @@ fn scenario_decoder_rejects_unknown_and_unbounded_input() {
         },
     );
     assert!(post_exit.validate().is_err());
+
+    let mut restarted: Scenario = serde_json::from_str(PREFIX_LITERAL).expect("restart scenario");
+    let expect = restarted
+        .steps
+        .iter()
+        .position(|step| matches!(step, verify::schema::Step::Expect { .. }))
+        .expect("expect step");
+    restarted
+        .steps
+        .insert(expect, verify::schema::Step::StartDaemon);
+    assert!(restarted.validate().is_err());
+
+    let mut after_shutdown: Scenario =
+        serde_json::from_str(PREFIX_LITERAL).expect("post-shutdown scenario");
+    let expect = after_shutdown
+        .steps
+        .iter()
+        .position(|step| matches!(step, verify::schema::Step::Expect { .. }))
+        .expect("expect step");
+    after_shutdown.steps.insert(
+        expect,
+        verify::schema::Step::Input {
+            client: "alice".into(),
+            bytes: b"late".to_vec(),
+        },
+    );
+    assert!(after_shutdown.validate().is_err());
+
+    let mut no_start: Scenario = serde_json::from_str(PREFIX_LITERAL).expect("no-start scenario");
+    no_start.steps.remove(0);
+    assert!(no_start.validate().is_err());
+
+    let mut no_shutdown: Scenario =
+        serde_json::from_str(PREFIX_LITERAL).expect("no-shutdown scenario");
+    no_shutdown
+        .steps
+        .retain(|step| !matches!(step, verify::schema::Step::Shutdown));
+    assert!(no_shutdown.validate().is_err());
+
+    let mut no_expect: Scenario = serde_json::from_str(PREFIX_LITERAL).expect("no-expect scenario");
+    no_expect
+        .steps
+        .retain(|step| !matches!(step, verify::schema::Step::Expect { .. }));
+    assert!(no_expect.validate().is_err());
 }
 
 #[test]

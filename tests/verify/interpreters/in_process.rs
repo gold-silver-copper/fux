@@ -8,6 +8,24 @@ use fux::host::{Action, Command, InputRouter};
 
 pub struct InProcessInterpreter;
 
+struct PrivateDaemonRoot(std::path::PathBuf);
+
+impl PrivateDaemonRoot {
+    fn cleanup(self) -> Result<(), String> {
+        std::fs::remove_dir_all(&self.0).map_err(|error| error.to_string())?;
+        if self.0.exists() {
+            return Err(format!("private daemon root leaked: {}", self.0.display()));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PrivateDaemonRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 impl Interpreter for InProcessInterpreter {
     fn run(&self, scenario: &Scenario) -> Result<Vec<Entry>, String> {
         scenario.validate()?;
@@ -31,13 +49,55 @@ impl Interpreter for InProcessInterpreter {
         let mut attached_clients = std::collections::BTreeSet::new();
         let mut known_clients = std::collections::BTreeSet::new();
         let mut copy_mode = fux::client::CopyMode::default();
+        let mut daemon_running = false;
+        let mut daemon = None;
+        let mut daemon_root = None;
         let mut copy_state = fux::state::WorkspaceState::default();
         copy_state
             .insert_pane(fux::state::PaneId(1), fux::state::PaneView::default())
             .map_err(|error| format!("copy fixture pane failed: {error:?}"))?;
         for step in &scenario.steps {
             match step {
+                Step::StartDaemon => {
+                    if std::mem::replace(&mut daemon_running, true) {
+                        return Err("production daemon started twice".into());
+                    }
+                    static NEXT_DAEMON: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(1);
+                    let root = PrivateDaemonRoot(std::env::temp_dir().join(format!(
+                        "fux-verify-in-process-{}-{}",
+                        std::process::id(),
+                        NEXT_DAEMON.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    )));
+                    let paths = fux::daemon::DaemonPaths::from_env(
+                        Some(root.0.join("run").into_os_string()),
+                        Some(root.0.join("state").into_os_string()),
+                        Some(root.0.clone().into_os_string()),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    daemon = Some(
+                        fux::daemon::Daemon::new(
+                            paths,
+                            std::process::id(),
+                            Default::default(),
+                            "local".into(),
+                            0,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    );
+                    daemon_root = Some(root);
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: "daemon".into(),
+                            state: "running".into(),
+                        },
+                    );
+                }
                 Step::Attach { client } => {
+                    if !daemon_running {
+                        return Err("attach requires running daemon".into());
+                    }
                     if !attached_clients.insert(client.clone()) {
                         return Err(format!("client {client:?} attached twice"));
                     }
@@ -202,6 +262,24 @@ impl Interpreter for InProcessInterpreter {
                         Event::ChildExit {
                             process: format!("pane-{pane}"),
                             status: observed,
+                        },
+                    );
+                }
+                Step::Shutdown => {
+                    if !std::mem::replace(&mut daemon_running, false) {
+                        return Err("production shutdown requires running daemon".into());
+                    }
+                    attached_clients.clear();
+                    drop(daemon.take());
+                    daemon_root
+                        .take()
+                        .ok_or_else(|| "production daemon root was not owned".to_owned())?
+                        .cleanup()?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: "daemon".into(),
+                            state: "stopped".into(),
                         },
                     );
                 }

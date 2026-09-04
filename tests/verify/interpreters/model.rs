@@ -30,9 +30,26 @@ impl Interpreter for ModelInterpreter {
         let mut attached_clients = std::collections::BTreeSet::new();
         let mut known_clients = std::collections::BTreeSet::new();
         let mut copy_mode = false;
+        let mut daemon_running = false;
         for step in &scenario.steps {
             match step {
+                Step::StartDaemon => {
+                    if std::mem::replace(&mut daemon_running, true) {
+                        return Err("model daemon started twice".into());
+                    }
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: "daemon".into(),
+                            state: "running".into(),
+                        },
+                    );
+                }
                 Step::Attach { client } => {
+                    if !daemon_running {
+                        return Err("attach requires running daemon".into());
+                    }
                     if !attached_clients.insert(client.clone()) {
                         return Err(format!("client {client:?} attached twice"));
                     }
@@ -166,6 +183,20 @@ impl Interpreter for ModelInterpreter {
                         Event::ChildExit {
                             process: format!("pane-{pane}"),
                             status: *status,
+                        },
+                    );
+                }
+                Step::Shutdown => {
+                    if !std::mem::replace(&mut daemon_running, false) {
+                        return Err("model shutdown requires running daemon".into());
+                    }
+                    attached_clients.clear();
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: "daemon".into(),
+                            state: "stopped".into(),
                         },
                     );
                 }

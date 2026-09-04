@@ -250,9 +250,36 @@ impl Scenario {
         let mut copy_mode = false;
         let mut attached_clients = std::collections::BTreeSet::<String>::new();
         let mut child_exited = false;
-        for step in &self.steps {
-            if child_exited && !matches!(step, Step::Expect { .. }) {
-                return Err("only expect may follow serialized child_exit".into());
+        #[derive(Clone, Copy, Eq, PartialEq)]
+        enum DaemonPhase {
+            NotStarted,
+            Running,
+            Stopped,
+        }
+        let mut daemon_phase = DaemonPhase::NotStarted;
+        for (index, step) in self.steps.iter().enumerate() {
+            match step {
+                Step::StartDaemon if daemon_phase == DaemonPhase::NotStarted => {
+                    daemon_phase = DaemonPhase::Running;
+                }
+                Step::Shutdown if daemon_phase == DaemonPhase::Running => {
+                    daemon_phase = DaemonPhase::Stopped;
+                }
+                Step::Expect { .. }
+                    if daemon_phase == DaemonPhase::Stopped
+                        && index.checked_add(1) == Some(self.steps.len()) => {}
+                Step::StartDaemon => return Err("serialized daemon start is one-shot".into()),
+                Step::Shutdown => return Err("serialized shutdown requires running daemon".into()),
+                Step::Expect { .. } => {
+                    return Err("serialized expect must be final after shutdown".into());
+                }
+                _ if daemon_phase != DaemonPhase::Running => {
+                    return Err("serialized operation requires running daemon".into());
+                }
+                _ => {}
+            }
+            if child_exited && !matches!(step, Step::Shutdown | Step::Expect { .. }) {
+                return Err("only shutdown and expect may follow serialized child_exit".into());
             }
             validate_step(step)?;
             match step {
@@ -310,6 +337,16 @@ impl Scenario {
                 }
                 _ => {}
             }
+        }
+        if daemon_phase != DaemonPhase::Stopped
+            || self
+                .steps
+                .iter()
+                .filter(|step| matches!(step, Step::Expect { .. }))
+                .count()
+                != 1
+        {
+            return Err("serialized scenario must end with shutdown and one final expect".into());
         }
         Ok(())
     }

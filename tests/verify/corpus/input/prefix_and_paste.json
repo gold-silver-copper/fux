@@ -4,6 +4,7 @@
   "applicability": "all",
   "initial_size": { "rows": 24, "columns": 80 },
   "steps": [
+    { "kind": "start_daemon" },
     { "kind": "attach", "client": "alice" },
     { "kind": "control", "request": { "command": "list", "id": 41 } },
     { "kind": "resize", "client": "alice", "size": { "rows": 30, "columns": 100 } },
@@ -32,6 +33,7 @@
     { "kind": "disconnect", "client": "alice" },
     { "kind": "reconnect", "client": "alice" },
     { "kind": "child_exit", "pane": 1, "status": 7 },
+    { "kind": "shutdown" },
     {
       "kind": "expect",
       "expected": {

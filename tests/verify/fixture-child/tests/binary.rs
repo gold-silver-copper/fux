@@ -64,26 +64,14 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         .expect("endpoint id")
         .trim()
         .to_owned();
-    let server = OwnedChild::spawn(
-        Command::new(&fux)
-            .args(["serve", "--allow", &allow, "--name", "binary"])
-            .env_clear()
-            .envs(environment.variables())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null()),
-    );
-    wait_for_path(&environment.manager_socket());
-    let mut primary = Jsonl::new(accept_with_deadline(&fixture_listener));
-    assert_eq!(primary.receive()["event"], "ready");
-    let client = TerminalChild::spawn(&fux, &environment, 24, 80);
     let driver = PrefixBinaryDriver {
         fux: fux.clone(),
-        client: Some(client),
-        primary,
+        allow,
+        client: None,
+        primary: None,
         secondary: Vec::new(),
         listener: &fixture_listener,
-        server,
+        server: None,
         environment: &environment,
         mouse_enabled: false,
         subscribers: Vec::new(),
@@ -102,11 +90,12 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
 
 struct PrefixBinaryDriver<'a> {
     fux: PathBuf,
+    allow: String,
     client: Option<TerminalChild>,
-    primary: Jsonl,
+    primary: Option<Jsonl>,
     secondary: Vec<Jsonl>,
     listener: &'a UnixListener,
-    server: OwnedChild,
+    server: Option<OwnedChild>,
     environment: &'a PrivateEnvironment,
     mouse_enabled: bool,
     subscribers: Vec<(u64, Jsonl)>,
@@ -118,15 +107,53 @@ struct PrefixBinaryDriver<'a> {
     primary_exited: bool,
 }
 
+impl PrefixBinaryDriver<'_> {
+    fn primary_mut(&mut self) -> Result<&mut Jsonl, String> {
+        self.primary
+            .as_mut()
+            .ok_or_else(|| "binary daemon is not running".to_owned())
+    }
+}
+
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
+    fn start_daemon(&mut self) -> Result<(), String> {
+        if self.server.is_some() || self.primary.is_some() {
+            return Err("binary daemon started twice".into());
+        }
+        self.server = Some(OwnedChild::spawn(
+            Command::new(&self.fux)
+                .args(["serve", "--allow", &self.allow, "--name", "binary"])
+                .env_clear()
+                .envs(self.environment.variables())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        ));
+        wait_for_path(&self.environment.manager_socket());
+        wait_for_path(&self.environment.control_socket());
+        let mut primary = Jsonl::new(accept_with_deadline(self.listener));
+        if primary.receive()["event"] != "ready" {
+            return Err("primary fixture did not become ready".into());
+        }
+        self.primary = Some(primary);
+        Ok(())
+    }
+
     fn attach(&mut self, client: &str) -> Result<(), String> {
         if client != "alice" {
             return Err(format!("binary fixture has no client {client:?}"));
         }
-        self.client
-            .as_mut()
-            .ok_or_else(|| format!("client {client:?} is not running"))?
-            .wait_for_output_bytes(b"connected.");
+        if self.primary.is_none() || self.server.is_none() || self.client.is_some() {
+            return Err(format!("client {client:?} cannot attach"));
+        }
+        let process = TerminalChild::spawn(
+            &self.fux,
+            self.environment,
+            self.client_size.rows,
+            self.client_size.columns,
+        );
+        process.wait_for_output_bytes(b"connected.");
+        self.client = Some(process);
         Ok(())
     }
 
@@ -218,18 +245,18 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }
         let chunk = std::str::from_utf8(bytes)
             .map_err(|error| format!("binary child output is not UTF-8: {error}"))?;
-        self.primary.send(json!({
+        self.primary_mut()?.send(json!({
             "command": "write",
             "chunks_hex": [verification::transcript::hex(bytes)],
         }));
-        if self.primary.receive()["bytes"] != bytes.len() {
+        if self.primary_mut()?.receive()["bytes"] != bytes.len() {
             return Err("fixture reported a short child output write".into());
         }
         let mut expected = self.retained_output.take().unwrap_or_default();
         expected.push_str(chunk);
         let observed = wait_for_captured_line(&self.fux, self.environment, pane, &expected)?;
         self.retained_output = Some(observed.clone());
-        let observed_size = fixture_size(&mut self.primary);
+        let observed_size = fixture_size(self.primary_mut()?);
         Ok(verification::schema::ExpectedTerminalFrame {
             rows: observed_size.0,
             columns: observed_size.1,
@@ -248,13 +275,13 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if pane != 1 {
             return Err(format!("binary fixture has no pane {pane}"));
         }
-        self.primary.send(json!({
+        self.primary_mut()?.send(json!({
             "command": "query",
             "bytes_hex": verification::transcript::hex(query),
             "reply_bytes": expected.len(),
             "withhold": false,
         }));
-        let response = self.primary.receive();
+        let response = self.primary_mut()?.receive();
         let encoded = response["bytes_hex"]
             .as_str()
             .ok_or_else(|| format!("fixture query omitted reply bytes: {response}"))?;
@@ -291,8 +318,9 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if accepted["id"] != 93 || accepted["status"] != "accepted" {
             return Err(format!("pane-close subscription was not accepted: {accepted}"));
         }
-        self.primary.send(json!({"command": "exit", "status": status}));
-        let cleanup = self.primary.receive();
+        self.primary_mut()?
+            .send(json!({"command": "exit", "status": status}));
+        let cleanup = self.primary_mut()?.receive();
         if cleanup["event"] != "cleanup" || cleanup["descendants"] != 0 {
             return Err(format!("primary fixture exit did not clean up: {cleanup}"));
         }
@@ -365,10 +393,10 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             return Ok(actions);
         }
         let expected = if bytes == [2, 2] { 1 } else { bytes.len() };
-        self.primary
+        self.primary_mut()?
             .send(json!({"command":"read_exact", "bytes":expected}));
         self.client.as_mut().ok_or("client is detached")?.write(bytes);
-        let response = self.primary.receive();
+        let response = self.primary_mut()?.receive();
         let encoded = response["bytes_hex"]
             .as_str()
             .ok_or_else(|| "fixture did not report forwarded bytes".to_owned())?;
@@ -381,11 +409,11 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
     ) -> Result<verification::interpreters::ObservedAction, String> {
         use verification::interpreters::ObservedAction;
         if !self.mouse_enabled {
-            self.primary.send(json!({
+            self.primary_mut()?.send(json!({
                 "command":"write",
                 "chunks_hex":["1b5b3f31303033681b5b3f3130303668"]
             }));
-            if self.primary.receive()["bytes"] != 16 {
+            if self.primary_mut()?.receive()["bytes"] != 16 {
                 return Err("fixture did not enable SGR mouse mode".into());
             }
             self.client
@@ -395,7 +423,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             self.mouse_enabled = true;
         }
         let (code, column, row, release) = parse_sgr_mouse(bytes)?;
-        self.primary
+        self.primary_mut()?
             .send(json!({"command":"read_exact", "bytes":bytes.len()}));
         let outer = format!(
             "\x1b[<{code};{};{}{}",
@@ -407,7 +435,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             .as_mut()
             .ok_or("client is detached")?
             .write(outer.as_bytes());
-        let observed = self.primary.receive()["bytes_hex"]
+        let observed = self.primary_mut()?.receive()["bytes_hex"]
             .as_str()
             .ok_or_else(|| "fixture did not report mouse bytes".to_owned())?
             .to_owned();
@@ -490,7 +518,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         self.client_size = size;
         let deadline = Instant::now() + DEADLINE;
         loop {
-            let observed = fixture_size(&mut self.primary);
+            let observed = fixture_size(self.primary_mut()?);
             if observed == expected {
                 return Ok(verification::schema::ExpectedResize {
                     pane: 1,
@@ -507,11 +535,11 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }
     }
 
-    fn cleanup(&mut self) -> Result<usize, String> {
+    fn shutdown(&mut self) -> Result<usize, String> {
         self.subscribers.clear();
         if !self.primary_exited {
-            self.primary.send(json!({"command":"quit"}));
-            if self.primary.receive()["event"] != "cleanup" {
+            self.primary_mut()?.send(json!({"command":"quit"}));
+            if self.primary_mut()?.receive()["event"] != "cleanup" {
                 return Err("primary fixture did not clean up".into());
             }
         }
@@ -524,8 +552,12 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if let Some(mut client) = self.client.take() {
             client.detach_with_prefix(2);
         }
-        self.server.terminate(Signal::SIGTERM);
-        self.server.wait();
+        let mut server = self
+            .server
+            .take()
+            .ok_or_else(|| "binary daemon was not running during cleanup".to_owned())?;
+        server.terminate(Signal::SIGTERM);
+        server.wait();
         wait_for_absent(&self.environment.manager_socket());
         wait_for_absent(&self.environment.control_socket());
         if self.environment.descriptor().exists() {

@@ -4,10 +4,12 @@
   "applicability": "production",
   "initial_size": { "rows": 24, "columns": 80 },
   "steps": [
+    { "kind": "start_daemon" },
     { "kind": "attach", "client": "alice" },
     { "kind": "input", "client": "alice", "bytes": [2] },
     { "kind": "advance_clock", "milliseconds": 39 },
     { "kind": "advance_clock", "milliseconds": 1 },
+    { "kind": "shutdown" },
     {
       "kind": "expect",
       "expected": {

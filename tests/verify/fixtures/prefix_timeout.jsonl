@@ -1,6 +1,8 @@
-{"sequence":0,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"attached"}}
-{"sequence":1,"source":"model","event":{"kind":"input","client":"alice","bytes_hex":"02"}}
-{"sequence":2,"source":"model","event":{"kind":"clock","milliseconds":39}}
-{"sequence":3,"source":"model","event":{"kind":"clock","milliseconds":1}}
-{"sequence":4,"source":"model","event":{"kind":"pty_write","pane":"pane-1","bytes_hex":"02"}}
-{"sequence":5,"source":"model","event":{"kind":"cleanup","owned_resources":0}}
+{"sequence":0,"source":"model","event":{"kind":"lifecycle","resource":"daemon","state":"running"}}
+{"sequence":1,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"attached"}}
+{"sequence":2,"source":"model","event":{"kind":"input","client":"alice","bytes_hex":"02"}}
+{"sequence":3,"source":"model","event":{"kind":"clock","milliseconds":39}}
+{"sequence":4,"source":"model","event":{"kind":"clock","milliseconds":1}}
+{"sequence":5,"source":"model","event":{"kind":"pty_write","pane":"pane-1","bytes_hex":"02"}}
+{"sequence":6,"source":"model","event":{"kind":"lifecycle","resource":"daemon","state":"stopped"}}
+{"sequence":7,"source":"model","event":{"kind":"cleanup","owned_resources":0}}
