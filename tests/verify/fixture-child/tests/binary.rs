@@ -72,6 +72,22 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     std::thread::sleep(Duration::from_millis(150));
     assert_eq!(fixture_size(&mut fixture), (37, 58));
     assert_eq!(fixture_size(&mut second_fixture), (37, 58));
+
+    let popup = run(&fux, ["binary", "popup", "--size", "30x8"], &environment);
+    assert!(
+        popup.status.success(),
+        "popup failed: {}",
+        String::from_utf8_lossy(&popup.stderr)
+    );
+    let mut popup_fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
+    assert_eq!(popup_fixture.receive()["event"], "ready");
+    wait_for_list(&fux, &environment, "\"name\":\"popups\"");
+    popup_fixture.send(json!({"command":"read_exact", "bytes":1}));
+    client.write(b"q");
+    assert_eq!(popup_fixture.receive()["bytes_hex"], "71");
+    popup_fixture.send(json!({"command":"exit", "status":0}));
+    assert_eq!(popup_fixture.receive()["event"], "cleanup");
+    wait_for_list_absent(&fux, &environment, "\"name\":\"popups\"");
     client.detach();
 
     for (sequence, state) in [(1, "working"), (2, "blocked"), (3, "idle")] {
@@ -220,8 +236,7 @@ impl TerminalChild {
     }
 
     fn detach(&mut self) {
-        self.writer.write_all(&[1, b'd']).expect("detach input");
-        self.writer.flush().expect("detach flush");
+        self.write(&[1, b'd']);
         let deadline = Instant::now() + DEADLINE;
         loop {
             if let Some(status) = self.child.try_wait().expect("wait client") {
@@ -234,6 +249,11 @@ impl TerminalChild {
         if let Some(reader) = self.reader.take() {
             reader.join().expect("client reader");
         }
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.writer.write_all(bytes).expect("terminal input");
+        self.writer.flush().expect("detach flush");
     }
 }
 
@@ -352,6 +372,21 @@ fn wait_for_list(fux: &Path, environment: &PrivateEnvironment, state: &str) {
         assert!(
             Instant::now() < deadline,
             "agent state `{state}` did not reach binary list"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn wait_for_list_absent(fux: &Path, environment: &PrivateEnvironment, value: &str) {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let output = run(fux, ["binary", "list"], environment);
+        if output.status.success() && !String::from_utf8_lossy(&output.stdout).contains(value) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "`{value}` remained in binary list"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
