@@ -10,6 +10,8 @@ impl Interpreter for ModelInterpreter {
         scenario.validate()?;
         let mut oracle = PrefixOracle::new(0x02);
         let mut transcript = Vec::new();
+        let mut forwarded = Vec::new();
+        let mut commands = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { client, bytes } => {
@@ -23,19 +25,25 @@ impl Interpreter for ModelInterpreter {
                     );
                     for outcome in oracle.feed(bytes) {
                         match outcome {
-                            Outcome::Forward(bytes) => push(
-                                &mut transcript,
-                                "model",
-                                Event::PtyWrite {
-                                    pane: "pane-1".into(),
-                                    bytes_hex: hex(&bytes),
-                                },
-                            ),
-                            Outcome::Command(name) => push(
-                                &mut transcript,
-                                "model",
-                                Event::Command { name: name.into() },
-                            ),
+                            Outcome::Forward(bytes) => {
+                                forwarded.push(bytes.clone());
+                                push(
+                                    &mut transcript,
+                                    "model",
+                                    Event::PtyWrite {
+                                        pane: "pane-1".into(),
+                                        bytes_hex: hex(&bytes),
+                                    },
+                                );
+                            }
+                            Outcome::Command(name) => {
+                                commands.push(name.to_owned());
+                                push(
+                                    &mut transcript,
+                                    "model",
+                                    Event::Command { name: name.into() },
+                                );
+                            }
                         }
                     }
                 }
@@ -47,6 +55,11 @@ impl Interpreter for ModelInterpreter {
                     },
                 ),
                 Step::Expect { expected } => {
+                    if forwarded != expected.forwarded || commands != expected.commands {
+                        return Err(format!(
+                            "model expectation mismatch: forwarded={forwarded:?}, commands={commands:?}"
+                        ));
+                    }
                     push(
                         &mut transcript,
                         "model",

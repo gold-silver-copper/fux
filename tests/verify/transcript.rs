@@ -11,11 +11,57 @@ pub struct Entry {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Event {
-    Input { client: String, bytes_hex: String },
-    PtyWrite { pane: String, bytes_hex: String },
-    Command { name: String },
-    Clock { milliseconds: u64 },
-    Cleanup { owned_resources: usize },
+    Input {
+        client: String,
+        bytes_hex: String,
+    },
+    PtyWrite {
+        pane: String,
+        bytes_hex: String,
+    },
+    Command {
+        name: String,
+    },
+    Clock {
+        milliseconds: u64,
+    },
+    Snapshot {
+        workspace: String,
+        generation: u64,
+        stable_hash: String,
+    },
+    ControlWire {
+        name: String,
+        request_id: u64,
+        subscription_id: u64,
+    },
+    Resize {
+        pane: String,
+        rows: u16,
+        columns: u16,
+    },
+    Signal {
+        process: String,
+        name: String,
+    },
+    ChildExit {
+        process: String,
+        status: i32,
+    },
+    TerminalFrame {
+        rows: u16,
+        columns: u16,
+        cells: Vec<String>,
+        cursor: Option<(u16, u16)>,
+        synchronized: bool,
+    },
+    Lifecycle {
+        resource: String,
+        state: String,
+    },
+    Cleanup {
+        owned_resources: usize,
+    },
 }
 
 pub fn encode_jsonl(entries: &[Entry]) -> Result<String, serde_json::Error> {

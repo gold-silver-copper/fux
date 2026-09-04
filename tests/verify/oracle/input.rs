@@ -4,7 +4,7 @@ pub struct PrefixOracle {
     armed: bool,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Outcome {
     Forward(Vec<u8>),
     Command(&'static str),
@@ -25,8 +25,8 @@ impl PrefixOracle {
                 self.armed = false;
                 if *byte == self.prefix {
                     forward(&mut output, *byte);
-                } else if *byte == b'|' {
-                    output.push(Outcome::Command("split_horizontal"));
+                } else if let Some(command) = command(*byte) {
+                    output.push(Outcome::Command(command));
                 } else {
                     forward(&mut output, self.prefix);
                     forward(&mut output, *byte);
@@ -39,6 +39,28 @@ impl PrefixOracle {
         }
         output
     }
+}
+
+fn command(byte: u8) -> Option<&'static str> {
+    Some(match byte {
+        b'|' => "split_horizontal",
+        b'-' => "split_vertical",
+        b'h' => "focus_left",
+        b'j' => "focus_down",
+        b'k' => "focus_up",
+        b'l' => "focus_right",
+        b'x' => "close",
+        b'c' => "new_pane",
+        b't' => "new_tab",
+        b'n' => "next_tab",
+        b'p' => "previous_tab",
+        b'z' => "zoom",
+        b'[' => "copy_mode",
+        b'd' => "detach",
+        b's' => "workspace_picker",
+        b'?' => "help",
+        _ => return None,
+    })
 }
 
 fn forward(output: &mut Vec<Outcome>, byte: u8) {
