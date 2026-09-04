@@ -173,6 +173,74 @@ fn natural_last_pane_exit_is_observable_before_binary_workspace_retirement() {
     );
 }
 
+// Golden path 8: a control kill reaches the pane process group, including a
+// descendant that ignores HUP, and the client observes the real signal status.
+#[test]
+fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
+    let fux = binary("FUX_BIN", "target/debug/fux");
+    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
+    let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
+    let environment = PrivateEnvironment::new("kill");
+    let fixture_listener =
+        UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
+
+    let id = run(&fux, ["id"], &environment);
+    assert!(
+        id.status.success(),
+        "id failed: {}",
+        String::from_utf8_lossy(&id.stderr)
+    );
+    let allow = String::from_utf8(id.stdout)
+        .expect("endpoint id")
+        .trim()
+        .to_owned();
+    environment.write_config(&fixture, &zor);
+    let mut server = OwnedChild::spawn(
+        Command::new(&fux)
+            .args(["serve", "--allow", &allow, "--name", "binary"])
+            .env_clear()
+            .envs(environment.variables())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    );
+    wait_for_path(&environment.manager_socket());
+    wait_for_path(&environment.control_socket());
+    let mut fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
+    assert_eq!(fixture.receive()["event"], "ready");
+    let mut client = TerminalChild::spawn(&fux, &environment, 24, 80);
+    wait_for_list(&fux, &environment, "\"width\":80");
+
+    fixture.send(json!({
+        "command":"spawn", "mode":"ignore_hup", "exit_status":47
+    }));
+    let spawned = fixture.receive();
+    assert_eq!(spawned["event"], "spawned");
+    let descendant_pid =
+        i32::try_from(spawned["pid"].as_u64().expect("descendant pid")).expect("pid range");
+    let mut descendant = Jsonl::new(accept_with_deadline(&fixture_listener));
+    let ready = descendant.receive();
+    assert_eq!(ready["event"], "descendant_ready");
+    assert_eq!(ready["pid"], spawned["pid"]);
+
+    let killed = run(&fux, ["binary", "kill", "1"], &environment);
+    assert!(
+        killed.status.success(),
+        "control kill failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&killed.stdout),
+        String::from_utf8_lossy(&killed.stderr)
+    );
+    wait_for_process_absent(descendant_pid);
+    client.wait_status(129);
+    server.wait();
+    wait_for_absent(&environment.manager_socket());
+    wait_for_absent(&environment.control_socket());
+    assert!(
+        !environment.descriptor().exists(),
+        "workspace descriptor leaked"
+    );
+}
+
 struct PrivateEnvironment {
     root: PathBuf,
 }
@@ -521,8 +589,9 @@ fn accept_with_deadline(listener: &UnixListener) -> UnixStream {
         match listener.accept() {
             Ok((stream, _)) => {
                 stream
-                    .set_read_timeout(Some(Duration::from_millis(200)))
-                    .expect("fixture timeout");
+                    .set_nonblocking(false)
+                    .expect("blocking fixture stream");
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
                 return stream;
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -555,6 +624,17 @@ fn wait_for_absent(path: &Path) {
             Instant::now() < deadline,
             "{} leaked after shutdown",
             path.display()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn wait_for_process_absent(pid: i32) {
+    let deadline = Instant::now() + DEADLINE;
+    while kill(Pid::from_raw(pid), None).is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "descendant {pid} survived control kill"
         );
         std::thread::sleep(Duration::from_millis(5));
     }

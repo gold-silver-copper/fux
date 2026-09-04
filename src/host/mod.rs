@@ -841,7 +841,7 @@ impl WorkspaceHost {
             return None;
         }
         let _ = shared.state.remove_pane(pane_id);
-        let mut exit_status = None;
+        let mut exit_code = None;
         let mut deferred = None;
         if let Some(runtime) = shared.panes.remove(&pane_id) {
             let mut runtime = lock(&runtime);
@@ -850,16 +850,16 @@ impl WorkspaceHost {
                     && let Ok(Some(status)) =
                         pty.shutdown_process_group(std::time::Duration::from_millis(1_500))
                 {
-                    exit_status = Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX));
+                    exit_code = Some(status.exit_code());
                 }
             } else if let Some(pty) = runtime.pty.take() {
                 deferred = Some(pty);
             }
         }
         if shared.panes.is_empty() {
-            let _ = shared
-                .state
-                .update_metadata(|metadata| metadata.exit_code = Some(0));
+            let _ = shared.state.update_metadata(|metadata| {
+                metadata.exit_code = Some(exit_code.unwrap_or(0));
+            });
         }
         drop(shared);
         if let Some(mut pty) = deferred {
@@ -873,7 +873,10 @@ impl WorkspaceHost {
         if let Some(changed) = &self.changed {
             changed.pulse();
         }
-        Some((pane_id, exit_status))
+        Some((
+            pane_id,
+            exit_code.map(|code| i32::try_from(code).unwrap_or(i32::MAX)),
+        ))
     }
 
     fn close_popup(
