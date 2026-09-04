@@ -8,7 +8,7 @@ pub struct InProcessInterpreter;
 impl Interpreter for InProcessInterpreter {
     fn run(&self, scenario: &Scenario) -> Result<Vec<Entry>, String> {
         scenario.validate()?;
-        let mut router = InputRouter::new(0x02, 25);
+        let mut router = InputRouter::new(0x02, 40);
         let mut now = 0_u64;
         let mut transcript = Vec::new();
         let mut forwarded = Vec::new();

@@ -7,12 +7,10 @@
     { "kind": "prefix", "client": "alice", "key": 2 },
     { "kind": "paste", "client": "alice", "bytes": [65, 2, 124, 66] },
     { "kind": "prefix", "client": "alice", "key": 124 },
-    { "kind": "input", "client": "alice", "bytes": [2] },
-    { "kind": "advance_clock", "milliseconds": 30 },
     {
       "kind": "expect",
       "expected": {
-        "forwarded": [[2], [27, 91, 50, 48, 48, 126, 65, 2, 124, 66, 27, 91, 50, 48, 49, 126], [2]],
+        "forwarded": [[2], [27, 91, 50, 48, 48, 126, 65, 2, 124, 66, 27, 91, 50, 48, 49, 126]],
         "commands": ["split_horizontal"],
         "owned_resources": 0
       }

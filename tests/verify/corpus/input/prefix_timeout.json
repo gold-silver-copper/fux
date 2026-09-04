@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "prefix_timeout",
+  "applicability": "production",
+  "initial_size": { "rows": 24, "columns": 80 },
+  "steps": [
+    { "kind": "input", "client": "alice", "bytes": [2] },
+    { "kind": "advance_clock", "milliseconds": 39 },
+    { "kind": "advance_clock", "milliseconds": 1 },
+    {
+      "kind": "expect",
+      "expected": {
+        "forwarded": [[2]],
+        "commands": [],
+        "owned_resources": 0
+      }
+    }
+  ]
+}

@@ -48,7 +48,7 @@ impl PrefixOracle {
         if self.armed {
             self.pending_ms = self.pending_ms.saturating_add(milliseconds);
         }
-        if self.armed && self.pending_ms >= 25 {
+        if self.armed && self.pending_ms >= 40 {
             self.armed = false;
             self.pending_ms = 0;
             vec![Outcome::Forward(vec![self.prefix])]

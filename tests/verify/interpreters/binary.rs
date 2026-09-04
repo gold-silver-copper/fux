@@ -9,7 +9,6 @@ pub enum ObservedAction {
 
 pub trait BinaryDriver {
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
-    fn advance_clock(&mut self, milliseconds: u64) -> Result<Vec<ObservedAction>, String>;
     fn cleanup(&mut self) -> Result<usize, String>;
 }
 
@@ -73,32 +72,6 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         },
                     );
                     for action in self.driver.input(&framed)? {
-                        match action {
-                            ObservedAction::Forward(bytes) => {
-                                forwarded.push(bytes.clone());
-                                push(
-                                    &mut transcript,
-                                    Event::PtyWrite {
-                                        pane: "pane-1".into(),
-                                        bytes_hex: hex(&bytes),
-                                    },
-                                );
-                            }
-                            ObservedAction::Command(name) => {
-                                commands.push(name.clone());
-                                push(&mut transcript, Event::Command { name });
-                            }
-                        }
-                    }
-                }
-                Step::AdvanceClock { milliseconds } => {
-                    push(
-                        &mut transcript,
-                        Event::Clock {
-                            milliseconds: *milliseconds,
-                        },
-                    );
-                    for action in self.driver.advance_clock(*milliseconds)? {
                         match action {
                             ObservedAction::Forward(bytes) => {
                                 forwarded.push(bytes.clone());

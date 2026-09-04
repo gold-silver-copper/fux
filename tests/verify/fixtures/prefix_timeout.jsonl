@@ -1,0 +1,5 @@
+{"sequence":0,"source":"model","event":{"kind":"input","client":"alice","bytes_hex":"02"}}
+{"sequence":1,"source":"model","event":{"kind":"clock","milliseconds":39}}
+{"sequence":2,"source":"model","event":{"kind":"clock","milliseconds":1}}
+{"sequence":3,"source":"model","event":{"kind":"pty_write","pane":"pane-1","bytes_hex":"02"}}
+{"sequence":4,"source":"model","event":{"kind":"cleanup","owned_resources":0}}

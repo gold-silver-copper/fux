@@ -14,6 +14,8 @@ const PREFIX_LITERAL: &str = include_str!("verify/corpus/input/prefix_literal.js
 const PREFIX_LITERAL_GOLDEN: &str = include_str!("verify/fixtures/prefix_literal.jsonl");
 const PREFIX_AND_PASTE: &str = include_str!("verify/corpus/input/prefix_and_paste.json");
 const PREFIX_AND_PASTE_GOLDEN: &str = include_str!("verify/fixtures/prefix_and_paste.jsonl");
+const PREFIX_TIMEOUT: &str = include_str!("verify/corpus/input/prefix_timeout.json");
+const PREFIX_TIMEOUT_GOLDEN: &str = include_str!("verify/fixtures/prefix_timeout.jsonl");
 const WIDE_OSC_CASSETTE: &str = include_str!("verify/fixtures/terminal/wide_osc.json");
 
 #[test]
@@ -31,6 +33,15 @@ fn prefix_and_paste_agrees_across_independent_interpreters_and_the_golden() {
         PREFIX_AND_PASTE,
         PREFIX_AND_PASTE_GOLDEN,
         "prefix_and_paste.jsonl",
+    );
+}
+
+#[test]
+fn prefix_timeout_agrees_across_independent_interpreters_and_the_golden() {
+    assert_scenario_golden(
+        PREFIX_TIMEOUT,
+        PREFIX_TIMEOUT_GOLDEN,
+        "prefix_timeout.jsonl",
     );
 }
 
