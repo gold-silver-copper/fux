@@ -904,6 +904,7 @@ impl WorkspaceHost {
             let _ = shared.state.update_metadata(|metadata| {
                 metadata.exit_code = Some(exit_code.unwrap_or(0));
             });
+            shared.final_snapshot_pending = true;
         }
         drop(shared);
         if let Some(mut pty) = deferred {

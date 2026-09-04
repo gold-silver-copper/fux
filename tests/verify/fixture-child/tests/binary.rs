@@ -1566,7 +1566,19 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
     wait_for_path(&environment.control_socket());
     let mut fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
     assert_eq!(fixture.receive()["event"], "ready");
+    let mut events = Jsonl::new(
+        UnixStream::connect(environment.control_socket()).expect("subscribe to lifecycle events"),
+    );
+    events.send(json!({
+        "command":"subscribe",
+        "id":97,
+        "events":["client.attached", "pane.closed"]
+    }));
+    assert_eq!(events.receive()["status"], "accepted");
     let mut client = TerminalChild::spawn(&fux, &environment, 24, 80);
+    assert_eq!(events.receive()["event"], "client.attached");
+    let mut second_client = TerminalChild::spawn(&fux, &environment, 24, 80);
+    assert_eq!(events.receive()["event"], "client.attached");
     wait_for_list(&fux, &environment, "\"width\":80");
 
     fixture.send(json!({
@@ -1581,11 +1593,6 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
     assert_eq!(ready["event"], "descendant_ready");
     assert_eq!(ready["pid"], spawned["pid"]);
 
-    let mut events = Jsonl::new(
-        UnixStream::connect(environment.control_socket()).expect("subscribe to pane close"),
-    );
-    events.send(json!({"command":"subscribe", "id":97, "events":["pane.closed"]}));
-    assert_eq!(events.receive()["status"], "accepted");
     let killed = run(&fux, ["binary", "kill", "1"], &environment);
     assert!(
         killed.status.success(),
@@ -1601,6 +1608,7 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
     );
     wait_for_process_absent(descendant_pid);
     client.wait_status(129);
+    second_client.wait_status(129);
     server.wait();
     wait_for_absent(&environment.manager_socket());
     wait_for_absent(&environment.control_socket());

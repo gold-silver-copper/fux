@@ -322,7 +322,12 @@ fn control_kill_waits_for_real_exit_and_shutdown_rejects_new_work() {
         )),
         "unexpected close events: {events:?}"
     );
+    assert!(
+        session.alive(),
+        "explicit last-pane close must retain one final snapshot"
+    );
     assert_eq!(session.snapshot().metadata().exit_code, Some(23));
+    assert!(!session.alive(), "final snapshot must retire the workspace");
     control.shutdown();
     let before = session.snapshot().panes().len();
     session.input(b"\x01c");
