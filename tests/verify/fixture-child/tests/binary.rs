@@ -264,6 +264,31 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         })
     }
 
+    fn resize(
+        &mut self,
+        size: verification::schema::Size,
+    ) -> Result<verification::schema::ExpectedResize, String> {
+        let expected = (size.rows.saturating_sub(3), size.columns.saturating_sub(2));
+        self.client.resize(size.rows, size.columns)?;
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let observed = fixture_size(&mut self.primary);
+            if observed == expected {
+                return Ok(verification::schema::ExpectedResize {
+                    pane: 1,
+                    rows: observed.0,
+                    columns: observed.1,
+                });
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "fixture size did not converge: expected={expected:?}, observed={observed:?}"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     fn cleanup(&mut self) -> Result<usize, String> {
         self.subscribers.clear();
         self.primary.send(json!({"command":"quit"}));
@@ -986,6 +1011,7 @@ struct OwnedChild {
 }
 
 struct TerminalChild {
+    master: Box<dyn portable_pty::MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     reader: Option<std::thread::JoinHandle<()>>,
@@ -1028,11 +1054,23 @@ impl TerminalChild {
         });
         let writer = pair.master.take_writer().expect("client writer");
         Self {
+            master: pair.master,
             child,
             writer,
             reader: Some(reader),
             output,
         }
+    }
+
+    fn resize(&self, rows: u16, columns: u16) -> Result<(), String> {
+        self.master
+            .resize(portable_pty::PtySize {
+                rows,
+                cols: columns,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| error.to_string())
     }
 
     fn detach(&mut self) {

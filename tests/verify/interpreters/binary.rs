@@ -1,5 +1,6 @@
 use super::super::schema::{
-    ExpectedControlEvent, ExpectedControlReply, ExpectedSubscription, Scenario, Step,
+    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription, Scenario,
+    Size, Step,
 };
 use super::super::transcript::{Entry, Event, hex};
 
@@ -25,6 +26,7 @@ pub trait BinaryDriver {
         events: &[String],
     ) -> Result<ExpectedSubscription, String>;
     fn control(&mut self, request: &serde_json::Value) -> Result<ExpectedControlReply, String>;
+    fn resize(&mut self, size: Size) -> Result<ExpectedResize, String>;
     fn cleanup(&mut self) -> Result<usize, String>;
 }
 
@@ -45,6 +47,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut subscriptions = Vec::new();
         let mut control_events = Vec::new();
         let mut control_replies = Vec::new();
+        let mut pty_resizes = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -190,12 +193,25 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         },
                     );
                 }
+                Step::Resize { client: _, size } => {
+                    let resize = self.driver.resize(*size)?;
+                    pty_resizes.push(resize);
+                    push(
+                        &mut transcript,
+                        Event::Resize {
+                            pane: "pane-1".into(),
+                            rows: resize.rows,
+                            columns: resize.columns,
+                        },
+                    );
+                }
                 Step::Expect { expected } => {
                     if forwarded != expected.forwarded
                         || commands != expected.commands
                         || subscriptions != expected.subscriptions
                         || control_events != expected.control_events
                         || control_replies != expected.control_replies
+                        || pty_resizes != expected.pty_resizes
                     {
                         return Err(format!(
                             "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

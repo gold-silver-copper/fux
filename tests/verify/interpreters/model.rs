@@ -1,6 +1,7 @@
 use super::super::oracle::input::{Outcome, PrefixOracle};
 use super::super::schema::{
-    ExpectedControlEvent, ExpectedControlReply, ExpectedSubscription, Scenario, Step,
+    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription, Scenario,
+    Step,
 };
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
@@ -17,6 +18,7 @@ impl Interpreter for ModelInterpreter {
         let mut subscriptions: Vec<ExpectedSubscription> = Vec::new();
         let mut control_events = Vec::new();
         let mut control_replies = Vec::new();
+        let mut pty_resizes = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -180,6 +182,23 @@ impl Interpreter for ModelInterpreter {
                         },
                     );
                 }
+                Step::Resize { client: _, size } => {
+                    let resize = ExpectedResize {
+                        pane: 1,
+                        rows: size.rows.saturating_sub(3),
+                        columns: size.columns.saturating_sub(2),
+                    };
+                    pty_resizes.push(resize);
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Resize {
+                            pane: "pane-1".into(),
+                            rows: resize.rows,
+                            columns: resize.columns,
+                        },
+                    );
+                }
                 Step::AdvanceClock { milliseconds } => {
                     push(
                         &mut transcript,
@@ -208,6 +227,7 @@ impl Interpreter for ModelInterpreter {
                         || subscriptions != expected.subscriptions
                         || control_events != expected.control_events
                         || control_replies != expected.control_replies
+                        || pty_resizes != expected.pty_resizes
                     {
                         return Err(format!(
                             "model expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

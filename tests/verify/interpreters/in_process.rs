@@ -1,5 +1,6 @@
 use super::super::schema::{
-    ExpectedControlEvent, ExpectedControlReply, ExpectedSubscription, Scenario, Step,
+    ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSubscription, Scenario,
+    Step,
 };
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
@@ -18,6 +19,7 @@ impl Interpreter for InProcessInterpreter {
         let mut subscriptions: Vec<ExpectedSubscription> = Vec::new();
         let mut control_events = Vec::new();
         let mut control_replies = Vec::new();
+        let mut pty_resizes = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -188,6 +190,35 @@ impl Interpreter for InProcessInterpreter {
                         },
                     );
                 }
+                Step::Resize { client: _, size } => {
+                    let layout = fux::state::LayoutTree::new(fux::state::PaneId(1));
+                    let geometry = layout
+                        .geometry(fux::state::Rect {
+                            x: 0,
+                            y: 0,
+                            width: size.columns,
+                            height: size.rows.saturating_sub(1),
+                        })
+                        .map_err(|error| format!("production layout failed: {error:?}"))?;
+                    let rect = geometry
+                        .iter()
+                        .find_map(|(pane, rect)| (*pane == fux::state::PaneId(1)).then_some(rect))
+                        .ok_or_else(|| "production layout omitted pane".to_owned())?;
+                    let resize = ExpectedResize {
+                        pane: 1,
+                        rows: rect.height.saturating_sub(2),
+                        columns: rect.width.saturating_sub(2),
+                    };
+                    pty_resizes.push(resize);
+                    push(
+                        &mut transcript,
+                        Event::Resize {
+                            pane: "pane-1".into(),
+                            rows: resize.rows,
+                            columns: resize.columns,
+                        },
+                    );
+                }
                 Step::AdvanceClock { milliseconds } => {
                     now = now.saturating_add(*milliseconds);
                     push(
@@ -206,6 +237,7 @@ impl Interpreter for InProcessInterpreter {
                         || subscriptions != expected.subscriptions
                         || control_events != expected.control_events
                         || control_replies != expected.control_replies
+                        || pty_resizes != expected.pty_resizes
                     {
                         return Err(format!(
                             "production expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

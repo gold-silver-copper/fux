@@ -5,6 +5,7 @@
   "initial_size": { "rows": 24, "columns": 80 },
   "steps": [
     { "kind": "control", "request": { "command": "list", "id": 41 } },
+    { "kind": "resize", "client": "alice", "size": { "rows": 30, "columns": 100 } },
     {
       "kind": "subscribe",
       "request_id": 77,
@@ -35,6 +36,9 @@
         ],
         "control_replies": [
           { "request_id": 41, "status": "completed", "result_kind": "listing" }
+        ],
+        "pty_resizes": [
+          { "pane": 1, "rows": 27, "columns": 98 }
         ],
         "owned_resources": 0
       }
