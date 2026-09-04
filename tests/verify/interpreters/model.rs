@@ -1,5 +1,5 @@
 use super::super::oracle::input::{Outcome, PrefixOracle};
-use super::super::schema::{ExpectedSubscription, Scenario, Step};
+use super::super::schema::{ExpectedControlEvent, ExpectedSubscription, Scenario, Step};
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
 
@@ -12,7 +12,8 @@ impl Interpreter for ModelInterpreter {
         let mut transcript = Vec::new();
         let mut forwarded = Vec::new();
         let mut commands = Vec::new();
-        let mut subscriptions = Vec::new();
+        let mut subscriptions: Vec<ExpectedSubscription> = Vec::new();
+        let mut control_events = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -49,6 +50,34 @@ impl Interpreter for ModelInterpreter {
                                     "model",
                                     Event::Command { name: name.into() },
                                 );
+                                if matches!(name, "split_horizontal" | "split_vertical")
+                                    && subscriptions.last().is_some_and(|subscription| {
+                                        subscription
+                                            .events
+                                            .iter()
+                                            .any(|event| event == "pane.opened")
+                                    })
+                                {
+                                    let request_id = subscriptions
+                                        .last()
+                                        .map(|subscription| subscription.request_id)
+                                        .ok_or_else(|| "subscription disappeared".to_owned())?;
+                                    let event = ExpectedControlEvent {
+                                        name: "pane.opened".into(),
+                                        request_id,
+                                        subscription_id: request_id,
+                                    };
+                                    control_events.push(event.clone());
+                                    push(
+                                        &mut transcript,
+                                        "model",
+                                        Event::ControlWire {
+                                            name: event.name,
+                                            request_id,
+                                            subscription_id: request_id,
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
@@ -136,6 +165,7 @@ impl Interpreter for ModelInterpreter {
                     if forwarded != expected.forwarded
                         || commands != expected.commands
                         || subscriptions != expected.subscriptions
+                        || control_events != expected.control_events
                     {
                         return Err(format!(
                             "model expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

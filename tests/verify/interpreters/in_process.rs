@@ -1,4 +1,4 @@
-use super::super::schema::{ExpectedSubscription, Scenario, Step};
+use super::super::schema::{ExpectedControlEvent, ExpectedSubscription, Scenario, Step};
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
 use fux::host::{Action, Command, InputRouter};
@@ -13,7 +13,8 @@ impl Interpreter for InProcessInterpreter {
         let mut transcript = Vec::new();
         let mut forwarded = Vec::new();
         let mut commands = Vec::new();
-        let mut subscriptions = Vec::new();
+        let mut subscriptions: Vec<ExpectedSubscription> = Vec::new();
+        let mut control_events = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -30,7 +31,39 @@ impl Interpreter for InProcessInterpreter {
                         },
                     );
                     for action in router.feed(&bytes, now) {
+                        let before = commands.len();
                         append_action(&mut transcript, action, &mut forwarded, &mut commands)?;
+                        if commands.len() > before
+                            && matches!(
+                                commands.last().map(String::as_str),
+                                Some("split_horizontal" | "split_vertical")
+                            )
+                            && subscriptions.last().is_some_and(|subscription| {
+                                subscription
+                                    .events
+                                    .iter()
+                                    .any(|event| event == "pane.opened")
+                            })
+                        {
+                            let request_id = subscriptions
+                                .last()
+                                .map(|subscription| subscription.request_id)
+                                .ok_or_else(|| "subscription disappeared".to_owned())?;
+                            let event = ExpectedControlEvent {
+                                name: "pane.opened".into(),
+                                request_id,
+                                subscription_id: request_id,
+                            };
+                            control_events.push(event.clone());
+                            push(
+                                &mut transcript,
+                                Event::ControlWire {
+                                    name: event.name,
+                                    request_id,
+                                    subscription_id: request_id,
+                                },
+                            );
+                        }
                     }
                 }
                 Step::Paste { client, bytes } => {
@@ -124,6 +157,7 @@ impl Interpreter for InProcessInterpreter {
                     if forwarded != expected.forwarded
                         || commands != expected.commands
                         || subscriptions != expected.subscriptions
+                        || control_events != expected.control_events
                     {
                         return Err(format!(
                             "production expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"

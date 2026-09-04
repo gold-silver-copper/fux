@@ -7,17 +7,7 @@
     {
       "kind": "subscribe",
       "request_id": 77,
-      "events": [
-        "pane.opened",
-        "pane.closed",
-        "pane.focused",
-        "pane.title",
-        "agent.state",
-        "pane.output",
-        "workspace.resized",
-        "client.attached",
-        "client.detached"
-      ]
+      "events": ["pane.opened"]
     },
     { "kind": "prefix", "client": "alice", "key": 2 },
     { "kind": "paste", "client": "alice", "bytes": [65, 2, 124, 66] },
@@ -35,18 +25,12 @@
         "subscriptions": [
           {
             "request_id": 77,
-            "events": [
-              "pane.opened",
-              "pane.closed",
-              "pane.focused",
-              "pane.title",
-              "agent.state",
-              "pane.output",
-              "workspace.resized",
-              "client.attached",
-              "client.detached"
-            ]
+            "events": ["pane.opened"]
           }
+        ],
+        "control_events": [
+          { "name": "pane.opened", "request_id": 77, "subscription_id": 77 },
+          { "name": "pane.opened", "request_id": 77, "subscription_id": 77 }
         ],
         "owned_resources": 0
       }

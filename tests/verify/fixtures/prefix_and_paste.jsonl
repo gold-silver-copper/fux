@@ -1,4 +1,4 @@
-{"sequence":0,"source":"model","event":{"kind":"subscription","request_id":77,"events":["pane.opened","pane.closed","pane.focused","pane.title","agent.state","pane.output","workspace.resized","client.attached","client.detached"]}}
+{"sequence":0,"source":"model","event":{"kind":"subscription","request_id":77,"events":["pane.opened"]}}
 {"sequence":1,"source":"model","event":{"kind":"input","client":"alice","bytes_hex":"0202"}}
 {"sequence":2,"source":"model","event":{"kind":"pty_write","pane":"pane-1","bytes_hex":"02"}}
 {"sequence":3,"source":"model","event":{"kind":"input","client":"alice","bytes_hex":"1b5b3230307e41027c421b5b3230317e"}}
@@ -15,5 +15,7 @@
 {"sequence":14,"source":"model","event":{"kind":"mouse","code":64,"column":1,"row":1,"release":false}}
 {"sequence":15,"source":"model","event":{"kind":"input","client":"alice","bytes_hex":"027c022d"}}
 {"sequence":16,"source":"model","event":{"kind":"command","name":"split_horizontal"}}
-{"sequence":17,"source":"model","event":{"kind":"command","name":"split_vertical"}}
-{"sequence":18,"source":"model","event":{"kind":"cleanup","owned_resources":0}}
+{"sequence":17,"source":"model","event":{"kind":"control_wire","name":"pane.opened","request_id":77,"subscription_id":77}}
+{"sequence":18,"source":"model","event":{"kind":"command","name":"split_vertical"}}
+{"sequence":19,"source":"model","event":{"kind":"control_wire","name":"pane.opened","request_id":77,"subscription_id":77}}
+{"sequence":20,"source":"model","event":{"kind":"cleanup","owned_resources":0}}

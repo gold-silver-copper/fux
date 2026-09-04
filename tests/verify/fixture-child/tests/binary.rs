@@ -104,7 +104,7 @@ struct PrefixBinaryDriver<'a> {
     server: OwnedChild,
     environment: &'a PrivateEnvironment,
     mouse_enabled: bool,
-    subscribers: Vec<Jsonl>,
+    subscribers: Vec<(u64, Jsonl)>,
 }
 
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
@@ -115,7 +115,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         use verification::interpreters::ObservedAction;
         if bytes == [2, b'|'] || bytes == [2, b'|', 2, b'-'] {
             self.client.write(bytes);
-            let split_count = if bytes.len() == 2 { 1 } else { 2 };
+            let split_count: usize = if bytes.len() == 2 { 1 } else { 2 };
             for _ in 0..split_count {
                 let mut secondary = Jsonl::new(accept_with_deadline(self.listener));
                 if secondary.receive()["event"] != "ready" {
@@ -126,9 +126,23 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             if split_count == 2 {
                 assert_horizontal_then_vertical_layout(&self.fux, self.environment)?;
             }
-            let mut actions = vec![ObservedAction::Command("split_horizontal".into())];
-            if split_count == 2 {
-                actions.push(ObservedAction::Command("split_vertical".into()));
+            let commands = ["split_horizontal", "split_vertical"];
+            let mut actions = Vec::with_capacity(split_count.saturating_mul(2));
+            for command in commands.into_iter().take(split_count) {
+                actions.push(ObservedAction::Command(command.into()));
+                if let Some((request_id, subscriber)) = self.subscribers.first_mut() {
+                    let frame = subscriber.receive();
+                    if frame["event"] != "pane.opened" || frame["id"] != *request_id {
+                        return Err(format!("unexpected raw split event: {frame}"));
+                    }
+                    actions.push(ObservedAction::ControlEvent(
+                        verification::schema::ExpectedControlEvent {
+                            name: "pane.opened".into(),
+                            request_id: *request_id,
+                            subscription_id: *request_id,
+                        },
+                    ));
+                }
             }
             return Ok(actions);
         }
@@ -201,7 +215,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if reply["id"] != request_id || reply["status"] != "accepted" {
             return Err(format!("subscription was not accepted: {reply}"));
         }
-        self.subscribers.push(subscriber);
+        self.subscribers.push((request_id, subscriber));
         Ok(verification::schema::ExpectedSubscription {
             request_id,
             events: events.to_vec(),

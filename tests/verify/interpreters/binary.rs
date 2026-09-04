@@ -1,4 +1,4 @@
-use super::super::schema::{ExpectedSubscription, Scenario, Step};
+use super::super::schema::{ExpectedControlEvent, ExpectedSubscription, Scenario, Step};
 use super::super::transcript::{Entry, Event, hex};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -11,6 +11,7 @@ pub enum ObservedAction {
         row: u16,
         release: bool,
     },
+    ControlEvent(ExpectedControlEvent),
 }
 
 pub trait BinaryDriver {
@@ -39,6 +40,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut forwarded = Vec::new();
         let mut commands = Vec::new();
         let mut subscriptions = Vec::new();
+        let mut control_events = Vec::new();
         for step in &scenario.steps {
             match step {
                 Step::Input { .. } | Step::Prefix { .. } => {
@@ -69,6 +71,17 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                             ObservedAction::Command(name) => {
                                 commands.push(name.clone());
                                 push(&mut transcript, Event::Command { name });
+                            }
+                            ObservedAction::ControlEvent(event) => {
+                                control_events.push(event.clone());
+                                push(
+                                    &mut transcript,
+                                    Event::ControlWire {
+                                        name: event.name,
+                                        request_id: event.request_id,
+                                        subscription_id: event.subscription_id,
+                                    },
+                                );
                             }
                             other => {
                                 return Err(format!("unexpected binary input action: {other:?}"));
@@ -150,6 +163,7 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                     if forwarded != expected.forwarded
                         || commands != expected.commands
                         || subscriptions != expected.subscriptions
+                        || control_events != expected.control_events
                     {
                         return Err(format!(
                             "binary expectation mismatch: forwarded={forwarded:?}, commands={commands:?}, subscriptions={subscriptions:?}"
