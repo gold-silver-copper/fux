@@ -26,6 +26,7 @@ pub trait BinaryDriver {
     fn create_workspace(&mut self, workspace: &str) -> Result<(), String>;
     fn select_workspace(&mut self, workspace: &str) -> Result<(), String>;
     fn delete_workspace(&mut self, workspace: &str) -> Result<(), String>;
+    fn switch_workspace(&mut self, client: &str, workspace: &str) -> Result<(), String>;
     fn child_output(&mut self, pane: u32, bytes: &[u8]) -> Result<ExpectedTerminalFrame, String>;
     fn terminal_reply(
         &mut self,
@@ -151,6 +152,16 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
                         Event::Lifecycle {
                             resource: format!("workspace:{workspace}"),
                             state: "deleted".into(),
+                        },
+                    );
+                }
+                Step::SwitchWorkspace { client, workspace } => {
+                    self.driver.switch_workspace(client, workspace)?;
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: format!("workspace:{workspace}"),
                         },
                     );
                 }

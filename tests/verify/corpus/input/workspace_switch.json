@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "workspace_switch",
+  "applicability": "all",
+  "initial_size": { "rows": 24, "columns": 80 },
+  "steps": [
+    { "kind": "start_daemon" },
+    { "kind": "create_workspace", "workspace": "secondary" },
+    { "kind": "attach", "client": "alice" },
+    { "kind": "switch_workspace", "client": "alice", "workspace": "secondary" },
+    { "kind": "disconnect", "client": "alice" },
+    { "kind": "reconnect", "client": "alice" },
+    { "kind": "switch_workspace", "client": "alice", "workspace": "binary" },
+    { "kind": "delete_workspace", "workspace": "secondary" },
+    { "kind": "detach", "client": "alice" },
+    { "kind": "shutdown" },
+    { "kind": "expect", "expected": { "owned_resources": 0 } }
+  ]
+}

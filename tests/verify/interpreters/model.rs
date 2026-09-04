@@ -30,6 +30,7 @@ impl Interpreter for ModelInterpreter {
         let mut child_output = std::collections::BTreeMap::<u32, Vec<u8>>::new();
         let mut attached_clients = std::collections::BTreeSet::new();
         let mut known_clients = std::collections::BTreeSet::new();
+        let mut client_workspaces = std::collections::BTreeMap::new();
         let mut copy_mode = false;
         let mut daemon_running = false;
         let mut workspaces = std::collections::BTreeSet::new();
@@ -53,10 +54,14 @@ impl Interpreter for ModelInterpreter {
                     if !daemon_running {
                         return Err("attach requires running daemon".into());
                     }
+                    if !workspaces.contains("binary") {
+                        return Err("attach requires the binary workspace".into());
+                    }
                     if !attached_clients.insert(client.clone()) {
                         return Err(format!("client {client:?} attached twice"));
                     }
                     known_clients.insert(client.clone());
+                    client_workspaces.insert(client.clone(), "binary".to_owned());
                     push(
                         &mut transcript,
                         "model",
@@ -80,7 +85,12 @@ impl Interpreter for ModelInterpreter {
                     );
                 }
                 Step::Reconnect { client } => {
-                    if !known_clients.contains(client) || !attached_clients.insert(client.clone()) {
+                    if !known_clients.contains(client)
+                        || !client_workspaces
+                            .get(client)
+                            .is_some_and(|workspace| workspaces.contains(workspace))
+                        || !attached_clients.insert(client.clone())
+                    {
                         return Err(format!("reconnect requires detached client {client:?}"));
                     }
                     push(
@@ -134,7 +144,10 @@ impl Interpreter for ModelInterpreter {
                     );
                 }
                 Step::DeleteWorkspace { workspace } => {
-                    if !workspaces.remove(workspace) {
+                    if client_workspaces.iter().any(|(client, current)| {
+                        attached_clients.contains(client) && current == workspace
+                    }) || !workspaces.remove(workspace)
+                    {
                         return Err(format!("workspace {workspace:?} does not exist"));
                     }
                     push(
@@ -143,6 +156,22 @@ impl Interpreter for ModelInterpreter {
                         Event::Lifecycle {
                             resource: format!("workspace:{workspace}"),
                             state: "deleted".into(),
+                        },
+                    );
+                }
+                Step::SwitchWorkspace { client, workspace } => {
+                    if !attached_clients.contains(client) || !workspaces.contains(workspace) {
+                        return Err(format!(
+                            "client {client:?} cannot switch to workspace {workspace:?}"
+                        ));
+                    }
+                    client_workspaces.insert(client.clone(), workspace.clone());
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: format!("workspace:{workspace}"),
                         },
                     );
                 }
@@ -274,6 +303,7 @@ impl Interpreter for ModelInterpreter {
                         return Err("model shutdown requires running daemon".into());
                     }
                     attached_clients.clear();
+                    client_workspaces.clear();
                     workspaces.clear();
                     push(
                         &mut transcript,

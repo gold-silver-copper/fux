@@ -32,6 +32,8 @@ const WORKSPACE_SHUTDOWN_CLEANUP: &str =
     include_str!("verify/corpus/input/workspace_shutdown_cleanup.json");
 const WORKSPACE_SHUTDOWN_CLEANUP_GOLDEN: &str =
     include_str!("verify/fixtures/workspace_shutdown_cleanup.jsonl");
+const WORKSPACE_SWITCH: &str = include_str!("verify/corpus/input/workspace_switch.json");
+const WORKSPACE_SWITCH_GOLDEN: &str = include_str!("verify/fixtures/workspace_switch.jsonl");
 const WIDE_OSC_CASSETTE: &str = include_str!("verify/fixtures/terminal/wide_osc.json");
 
 #[test]
@@ -101,6 +103,15 @@ fn workspace_shutdown_cleanup_agrees_across_all_interpreters() {
         WORKSPACE_SHUTDOWN_CLEANUP,
         WORKSPACE_SHUTDOWN_CLEANUP_GOLDEN,
         "workspace_shutdown_cleanup.jsonl",
+    );
+}
+
+#[test]
+fn workspace_switch_agrees_across_all_interpreters() {
+    assert_scenario_golden(
+        WORKSPACE_SWITCH,
+        WORKSPACE_SWITCH_GOLDEN,
+        "workspace_switch.jsonl",
     );
 }
 

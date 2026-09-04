@@ -86,6 +86,7 @@ impl Interpreter for InProcessInterpreter {
         let mut child_output = std::collections::BTreeMap::<u32, Vec<u8>>::new();
         let mut attached_clients = std::collections::BTreeSet::new();
         let mut known_clients = std::collections::BTreeSet::new();
+        let mut client_workspaces = std::collections::BTreeMap::new();
         let mut copy_mode = fux::client::CopyMode::default();
         let mut daemon_running = false;
         let mut daemon = None;
@@ -142,10 +143,20 @@ impl Interpreter for InProcessInterpreter {
                     if !daemon_running {
                         return Err("attach requires running daemon".into());
                     }
+                    if !matches!(
+                        daemon
+                            .as_ref()
+                            .ok_or("production daemon is not running")?
+                            .resolve(Some("binary")),
+                        Ok(fux::daemon::Resolution::Attach(_))
+                    ) {
+                        return Err("attach requires the binary workspace".into());
+                    }
                     if !attached_clients.insert(client.clone()) {
                         return Err(format!("client {client:?} attached twice"));
                     }
                     known_clients.insert(client.clone());
+                    client_workspaces.insert(client.clone(), "binary".to_owned());
                     push(
                         &mut transcript,
                         Event::Lifecycle {
@@ -167,7 +178,18 @@ impl Interpreter for InProcessInterpreter {
                     );
                 }
                 Step::Reconnect { client } => {
-                    if !known_clients.contains(client) || !attached_clients.insert(client.clone()) {
+                    let workspace_exists = client_workspaces.get(client).is_some_and(|workspace| {
+                        daemon.as_ref().is_some_and(|daemon| {
+                            matches!(
+                                daemon.resolve(Some(workspace)),
+                                Ok(fux::daemon::Resolution::Attach(_))
+                            )
+                        })
+                    });
+                    if !known_clients.contains(client)
+                        || !workspace_exists
+                        || !attached_clients.insert(client.clone())
+                    {
                         return Err(format!("reconnect requires detached client {client:?}"));
                     }
                     push(
@@ -232,6 +254,11 @@ impl Interpreter for InProcessInterpreter {
                     );
                 }
                 Step::DeleteWorkspace { workspace } => {
+                    if client_workspaces.iter().any(|(client, current)| {
+                        attached_clients.contains(client) && current == workspace
+                    }) {
+                        return Err(format!("production workspace {workspace:?} is attached"));
+                    }
                     daemon
                         .as_mut()
                         .ok_or("production daemon is not running")?
@@ -242,6 +269,30 @@ impl Interpreter for InProcessInterpreter {
                         Event::Lifecycle {
                             resource: format!("workspace:{workspace}"),
                             state: "deleted".into(),
+                        },
+                    );
+                }
+                Step::SwitchWorkspace { client, workspace } => {
+                    if !attached_clients.contains(client)
+                        || !matches!(
+                            daemon
+                                .as_ref()
+                                .ok_or("production daemon is not running")?
+                                .resolve(Some(workspace))
+                                .map_err(|error| error.to_string())?,
+                            fux::daemon::Resolution::Attach(_)
+                        )
+                    {
+                        return Err(format!(
+                            "production client {client:?} cannot switch to {workspace:?}"
+                        ));
+                    }
+                    client_workspaces.insert(client.clone(), workspace.clone());
+                    push(
+                        &mut transcript,
+                        Event::Lifecycle {
+                            resource: format!("client:{client}"),
+                            state: format!("workspace:{workspace}"),
                         },
                     );
                 }
@@ -407,6 +458,7 @@ impl Interpreter for InProcessInterpreter {
                         return Err("production shutdown requires running daemon".into());
                     }
                     attached_clients.clear();
+                    client_workspaces.clear();
                     drop(daemon.take());
                     daemon_root
                         .take()

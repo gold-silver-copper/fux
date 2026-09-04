@@ -58,6 +58,10 @@ fn serialized_input_scenarios_agree_through_model_in_process_and_real_binaries()
             "wsc",
             include_str!("../../corpus/input/workspace_shutdown_cleanup.json"),
         ),
+        (
+            "wss",
+            include_str!("../../corpus/input/workspace_switch.json"),
+        ),
     ] {
         let scenario: Scenario = serde_json::from_str(source).expect("strict scenario");
         assert_binary_scenario(&scenario, name);
@@ -96,6 +100,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
         fux: fux.clone(),
         allow,
         client: None,
+        client_workspace: None,
         primary: None,
         primary_pid: None,
         secondary: Vec::new(),
@@ -122,6 +127,7 @@ struct PrefixBinaryDriver<'a> {
     fux: PathBuf,
     allow: String,
     client: Option<TerminalChild>,
+    client_workspace: Option<String>,
     primary: Option<Jsonl>,
     primary_pid: Option<i32>,
     secondary: Vec<Jsonl>,
@@ -198,6 +204,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         );
         process.wait_for_output_bytes(b"connected.");
         self.client = Some(process);
+        self.client_workspace = Some("binary".into());
         Ok(())
     }
 
@@ -205,7 +212,15 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if client != "alice" {
             return Err(format!("binary fixture has no client {client:?}"));
         }
-        self.detached_topology = Some(workspace_topology(&self.fux, self.environment)?);
+        let workspace = self
+            .client_workspace
+            .as_deref()
+            .ok_or_else(|| format!("client {client:?} workspace is unknown"))?;
+        self.detached_topology = Some(workspace_topology(
+            &self.fux,
+            self.environment,
+            workspace,
+        )?);
         let mut process = self
             .client
             .take()
@@ -218,11 +233,16 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if client != "alice" || self.client.is_some() {
             return Err(format!("client {client:?} cannot reconnect"));
         }
-        let process = TerminalChild::spawn(
+        let workspace = self
+            .client_workspace
+            .as_deref()
+            .ok_or_else(|| format!("client {client:?} has no previous workspace"))?;
+        let process = TerminalChild::spawn_workspace(
             &self.fux,
             self.environment,
             self.client_size.rows,
             self.client_size.columns,
+            workspace,
         );
         process.wait_for_output_bytes(b"connected.");
         if let Some(subscriber) = self.lifecycle_subscriber.as_mut() {
@@ -235,7 +255,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             .detached_topology
             .take()
             .ok_or_else(|| "reconnect had no detached workspace snapshot".to_owned())?;
-        let after = workspace_topology(&self.fux, self.environment)?;
+        let after = workspace_topology(&self.fux, self.environment, workspace)?;
         if after != before {
             return Err(format!(
                 "workspace topology changed across reconnect: before={before}, after={after}"
@@ -252,7 +272,11 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if client != "alice" {
             return Err(format!("binary fixture has no client {client:?}"));
         }
-        let stream = UnixStream::connect(self.environment.control_socket())
+        let workspace = self
+            .client_workspace
+            .as_deref()
+            .ok_or_else(|| format!("client {client:?} workspace is unknown"))?;
+        let stream = UnixStream::connect(self.environment.workspace_control_socket(workspace))
             .map_err(|error| error.to_string())?;
         let mut subscriber = Jsonl::new(stream);
         subscriber.send(json!({
@@ -264,7 +288,11 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if accepted["id"] != 91 || accepted["status"] != "accepted" {
             return Err(format!("lifecycle subscription was not accepted: {accepted}"));
         }
-        self.detached_topology = Some(workspace_topology(&self.fux, self.environment)?);
+        self.detached_topology = Some(workspace_topology(
+            &self.fux,
+            self.environment,
+            workspace,
+        )?);
         let mut process = self
             .client
             .take()
@@ -311,7 +339,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
     }
 
     fn select_workspace(&mut self, workspace: &str) -> Result<(), String> {
-        if !self.workspaces.contains_key(workspace) {
+        if workspace != "binary" && !self.workspaces.contains_key(workspace) {
             return Err(format!("binary workspace {workspace:?} does not exist"));
         }
         let output = run(
@@ -336,17 +364,30 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
     }
 
     fn delete_workspace(&mut self, workspace: &str) -> Result<(), String> {
-        let fixture = self
-            .workspaces
-            .remove(workspace)
-            .ok_or_else(|| format!("binary workspace {workspace:?} does not exist"))?;
+        if self.client.is_some() && self.client_workspace.as_deref() == Some(workspace) {
+            return Err(format!("binary workspace {workspace:?} is attached"));
+        }
+        let fixture = if workspace == "binary" {
+            if self.primary_exited || self.primary.is_none() {
+                return Err(format!("binary workspace {workspace:?} does not exist"));
+            }
+            None
+        } else {
+            Some(
+                self.workspaces
+                    .remove(workspace)
+                    .ok_or_else(|| format!("binary workspace {workspace:?} does not exist"))?,
+            )
+        };
         let output = run(
             &self.fux,
             ["workspace", "kill", workspace],
             self.environment,
         );
         if !output.status.success() {
-            self.workspaces.insert(workspace.to_owned(), fixture);
+            if let Some(fixture) = fixture {
+                self.workspaces.insert(workspace.to_owned(), fixture);
+            }
             return Err(format!(
                 "workspace deletion failed: stdout={} stderr={}",
                 String::from_utf8_lossy(&output.stdout),
@@ -355,8 +396,76 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }
         wait_for_absent(&self.environment.workspace_descriptor(workspace));
         wait_for_absent(&self.environment.workspace_control_socket(workspace));
-        wait_for_process_absent(fixture.pid);
-        drop(fixture.control);
+        let pid = fixture
+            .as_ref()
+            .map_or(self.primary_pid, |fixture| Some(fixture.pid))
+            .ok_or_else(|| format!("workspace {workspace:?} fixture pid is unavailable"))?;
+        wait_for_process_absent(pid);
+        if workspace == "binary" {
+            self.primary_exited = true;
+            self.primary = None;
+            self.primary_pid = None;
+        } else if let Some(fixture) = fixture {
+            drop(fixture.control);
+        }
+        Ok(())
+    }
+
+    fn switch_workspace(&mut self, client: &str, workspace: &str) -> Result<(), String> {
+        if client != "alice" || self.client.is_none() {
+            return Err(format!("binary client {client:?} is not attached"));
+        }
+        if workspace != "binary" && !self.workspaces.contains_key(workspace) {
+            return Err(format!("binary workspace {workspace:?} does not exist"));
+        }
+        let current = self
+            .client_workspace
+            .clone()
+            .ok_or_else(|| "binary client workspace is unknown".to_owned())?;
+        let mut detached = Jsonl::new(
+            UnixStream::connect(self.environment.workspace_control_socket(&current))
+                .map_err(|error| error.to_string())?,
+        );
+        detached.send(json!({
+            "command": "subscribe",
+            "id": 97,
+            "events": ["client.detached"],
+        }));
+        let accepted = detached.receive();
+        if accepted["id"] != 97 || accepted["status"] != "accepted" {
+            return Err(format!("source workspace lifecycle subscription failed: {accepted}"));
+        }
+        let mut attached = Jsonl::new(
+            UnixStream::connect(self.environment.workspace_control_socket(workspace))
+                .map_err(|error| error.to_string())?,
+        );
+        attached.send(json!({
+            "command": "subscribe",
+            "id": 98,
+            "events": ["client.attached"],
+        }));
+        let accepted = attached.receive();
+        if accepted["id"] != 98 || accepted["status"] != "accepted" {
+            return Err(format!("target workspace lifecycle subscription failed: {accepted}"));
+        }
+        let output = run(&self.fux, ["workspace", "list"], self.environment);
+        let listing: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
+        let names = listing["names"]
+            .as_array()
+            .ok_or_else(|| format!("manager workspace list omitted names: {listing}"))?;
+        let selection = names
+            .iter()
+            .position(|name| name.as_str() == Some(workspace))
+            .map(|index| format!("{}\n", index + 1))
+            .ok_or_else(|| format!("manager did not list workspace {workspace:?}: {listing}"))?;
+
+        let terminal = self.client.as_mut().ok_or("client is detached")?;
+        terminal.write(&[2, b's']);
+        terminal.wait_for_text("workspaces:");
+        terminal.write(selection.as_bytes());
+        expect_viewer_event(&mut detached, 97, "client.detached")?;
+        expect_viewer_event(&mut attached, 98, "client.attached")?;
+        self.client_workspace = Some(workspace.to_owned());
         Ok(())
     }
 
@@ -845,8 +954,12 @@ fn assert_horizontal_then_vertical_layout(
     Ok(())
 }
 
-fn workspace_topology(fux: &Path, environment: &PrivateEnvironment) -> Result<Value, String> {
-    let output = run(fux, ["binary", "list"], environment);
+fn workspace_topology(
+    fux: &Path,
+    environment: &PrivateEnvironment,
+    workspace: &str,
+) -> Result<Value, String> {
+    let output = run(fux, [workspace, "list"], environment);
     if !output.status.success() {
         return Err(format!(
             "workspace listing failed: {}",
@@ -1621,6 +1734,16 @@ struct TerminalChild {
 
 impl TerminalChild {
     fn spawn(fux: &Path, environment: &PrivateEnvironment, rows: u16, columns: u16) -> Self {
+        Self::spawn_workspace(fux, environment, rows, columns, "binary")
+    }
+
+    fn spawn_workspace(
+        fux: &Path,
+        environment: &PrivateEnvironment,
+        rows: u16,
+        columns: u16,
+        workspace: &str,
+    ) -> Self {
         use portable_pty::{CommandBuilder, PtySize, native_pty_system};
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -1631,7 +1754,7 @@ impl TerminalChild {
             })
             .expect("client PTY");
         let mut command = CommandBuilder::new(fux);
-        command.arg("binary");
+        command.arg(workspace);
         for (key, value) in environment.variables() {
             command.env(key, value);
         }

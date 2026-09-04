@@ -1,0 +1,11 @@
+{"sequence":0,"source":"model","event":{"kind":"lifecycle","resource":"daemon","state":"running"}}
+{"sequence":1,"source":"model","event":{"kind":"lifecycle","resource":"workspace:secondary","state":"created"}}
+{"sequence":2,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"attached"}}
+{"sequence":3,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"workspace:secondary"}}
+{"sequence":4,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"disconnected"}}
+{"sequence":5,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"reconnected"}}
+{"sequence":6,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"workspace:binary"}}
+{"sequence":7,"source":"model","event":{"kind":"lifecycle","resource":"workspace:secondary","state":"deleted"}}
+{"sequence":8,"source":"model","event":{"kind":"lifecycle","resource":"client:alice","state":"detached"}}
+{"sequence":9,"source":"model","event":{"kind":"lifecycle","resource":"daemon","state":"stopped"}}
+{"sequence":10,"source":"model","event":{"kind":"cleanup","owned_resources":0}}

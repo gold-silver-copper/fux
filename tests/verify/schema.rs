@@ -249,6 +249,7 @@ impl Scenario {
         let mut child_output_columns = std::collections::BTreeMap::<u32, usize>::new();
         let mut copy_mode = false;
         let mut attached_clients = std::collections::BTreeSet::<String>::new();
+        let mut client_workspaces = std::collections::BTreeMap::<String, String>::new();
         let mut workspaces = std::collections::BTreeSet::<String>::new();
         let mut child_exited = false;
         #[derive(Clone, Copy, Eq, PartialEq)]
@@ -285,8 +286,25 @@ impl Scenario {
             }
             validate_step(step)?;
             match step {
-                Step::Attach { client } | Step::Reconnect { client } => {
+                Step::Attach { client } if workspaces.contains("binary") => {
                     attached_clients.insert(client.clone());
+                    client_workspaces.insert(client.clone(), "binary".into());
+                }
+                Step::Attach { .. } => {
+                    return Err("serialized attach requires the binary workspace".into());
+                }
+                Step::Reconnect { client }
+                    if !attached_clients.contains(client)
+                        && client_workspaces
+                            .get(client)
+                            .is_some_and(|workspace| workspaces.contains(workspace)) =>
+                {
+                    attached_clients.insert(client.clone());
+                }
+                Step::Reconnect { client } => {
+                    return Err(format!(
+                        "serialized client {client:?} has no live workspace to reconnect"
+                    ));
                 }
                 Step::Detach { client } | Step::Disconnect { client } => {
                     attached_clients.remove(client);
@@ -299,7 +317,20 @@ impl Scenario {
                 Step::SelectWorkspace { workspace } => {
                     return Err(format!("serialized workspace {workspace:?} does not exist"));
                 }
-                Step::DeleteWorkspace { workspace } if workspaces.remove(workspace) => {}
+                Step::SwitchWorkspace { client, workspace }
+                    if attached_clients.contains(client) && workspaces.contains(workspace) =>
+                {
+                    client_workspaces.insert(client.clone(), workspace.clone());
+                }
+                Step::SwitchWorkspace { .. } => {
+                    return Err(
+                        "serialized switch requires an attached client and workspace".into(),
+                    );
+                }
+                Step::DeleteWorkspace { workspace }
+                    if !client_workspaces.iter().any(|(client, current)| {
+                        attached_clients.contains(client) && current == workspace
+                    }) && workspaces.remove(workspace) => {}
                 Step::DeleteWorkspace { workspace } => {
                     return Err(format!("serialized workspace {workspace:?} does not exist"));
                 }
