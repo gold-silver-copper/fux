@@ -151,7 +151,6 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
                 }
             }
             if let Some((_, subscriber)) = self.subscribers.first_mut() {
-                opened_panes.sort_unstable();
                 if opened_panes != [2, 3] {
                     return Err(format!(
                         "split events did not identify both new panes: {opened_panes:?}"
