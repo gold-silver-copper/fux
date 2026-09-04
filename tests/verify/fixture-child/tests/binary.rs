@@ -79,6 +79,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
     let client = TerminalChild::spawn(&fux, &environment, 24, 80);
     client.wait_for_output_bytes(b"connected.");
     let driver = PrefixBinaryDriver {
+        fux: fux.clone(),
         client,
         primary,
         secondary: Vec::new(),
@@ -94,6 +95,7 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
 }
 
 struct PrefixBinaryDriver<'a> {
+    fux: PathBuf,
     client: TerminalChild,
     primary: Jsonl,
     secondary: Vec<Jsonl>,
@@ -118,6 +120,9 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
                     return Err("split fixture did not become ready".into());
                 }
                 self.secondary.push(secondary);
+            }
+            if split_count == 2 {
+                assert_horizontal_then_vertical_layout(&self.fux, self.environment)?;
             }
             let mut actions = vec![ObservedAction::Command("split_horizontal".into())];
             if split_count == 2 {
@@ -198,6 +203,62 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }
         Ok(0)
     }
+}
+
+fn assert_horizontal_then_vertical_layout(
+    fux: &Path,
+    environment: &PrivateEnvironment,
+) -> Result<(), String> {
+    let output = run(fux, ["binary", "list"], environment);
+    if !output.status.success() {
+        return Err(format!(
+            "layout listing failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|error| error.to_string())?;
+    let panes = value
+        .pointer("/result/value/workspaces/0/tabs/0/panes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "layout listing omitted panes".to_owned())?;
+    let mut geometry = panes
+        .iter()
+        .map(|pane| {
+            let value = pane
+                .get("geometry")
+                .ok_or_else(|| "pane omitted geometry".to_owned())?;
+            Ok((
+                value.get("x").and_then(Value::as_u64),
+                value.get("y").and_then(Value::as_u64),
+                value.get("width").and_then(Value::as_u64),
+                value.get("height").and_then(Value::as_u64),
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if geometry
+        .iter()
+        .any(|item| item.0.is_none() || item.1.is_none() || item.2.is_none() || item.3.is_none())
+    {
+        return Err("pane geometry was not numeric".into());
+    }
+    geometry.sort_unstable();
+    if geometry.len() != 3 {
+        return Err(format!("expected three panes, observed {geometry:?}"));
+    }
+    let left = geometry[0];
+    let upper_right = geometry[1];
+    let lower_right = geometry[2];
+    let shape_matches = left.0 < upper_right.0
+        && upper_right.0 == lower_right.0
+        && upper_right.1 < lower_right.1
+        && upper_right.2 == lower_right.2
+        && left.3 == upper_right.3.zip(lower_right.3).map(|(a, b)| a + b);
+    if !shape_matches {
+        return Err(format!(
+            "real layout was not horizontal then vertical: {geometry:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn parse_sgr_mouse(bytes: &[u8]) -> Result<(u16, u16, u16, bool), String> {
