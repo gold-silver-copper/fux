@@ -429,7 +429,7 @@ impl LayoutTree {
             .iter()
             .enumerate()
             .find_map(|(index, node)| match node {
-                Some(Node::Split { first, second, .. }) if *first == child => {
+                Some(Node::Split { first, .. }) if *first == child => {
                     Some((NodeId(index as u32), true))
                 }
                 Some(Node::Split { second, .. }) if *second == child => {
