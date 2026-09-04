@@ -9,7 +9,7 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, Read};
 use std::net::SocketAddrV4;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
@@ -274,6 +274,10 @@ pub struct ManagerLock {
 impl ManagerLock {
     pub fn bind(paths: &DaemonPaths) -> Result<Self, ManagerError> {
         paths.prepare()?;
+        // Stale-socket inspection and replacement must be one election transaction. Without the
+        // process-owned startup lock, two contenders can both observe the old socket, then the
+        // loser can unlink the winner's newly bound socket and bind a second listener.
+        let _bind_lock = acquire_manager_bind_lock(&paths.runtime_dir)?;
         remove_stale_socket(&paths.manager_socket, &paths.runtime_dir)?;
         let listener = UnixListener::bind(&paths.manager_socket).map_err(ManagerError::Io)?;
         fs::set_permissions(&paths.manager_socket, fs::Permissions::from_mode(0o600))
@@ -288,6 +292,41 @@ impl ManagerLock {
     }
     pub fn listener(&self) -> &UnixListener {
         &self.listener
+    }
+}
+
+fn acquire_manager_bind_lock(
+    runtime_dir: &Path,
+) -> Result<nix::fcntl::Flock<fs::File>, ManagerError> {
+    use nix::fcntl::{Flock, FlockArg};
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(runtime_dir.join("manager.bind.lock"))
+        .map_err(ManagerError::Io)?;
+    let metadata = file.metadata().map_err(ManagerError::Io)?;
+    let directory = fs::metadata(runtime_dir).map_err(ManagerError::Io)?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != directory.uid()
+        || metadata.permissions().mode() & 0o077 != 0
+    {
+        return Err(ManagerError::Invalid);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut file = file;
+    loop {
+        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+            Ok(lock) => return Ok(lock),
+            Err((returned, nix::errno::Errno::EWOULDBLOCK)) => file = returned,
+            Err((_, error)) => return Err(ManagerError::Io(error.into())),
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(ManagerError::Invalid);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 impl Drop for ManagerLock {
