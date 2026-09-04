@@ -51,6 +51,10 @@ pub enum Step {
     SelectWorkspace {
         workspace: String,
     },
+    SwitchWorkspace {
+        client: String,
+        workspace: String,
+    },
     DeleteWorkspace {
         workspace: String,
     },
@@ -80,6 +84,9 @@ pub enum Step {
     ChildExit {
         pane: u32,
         status: i32,
+    },
+    KillPane {
+        pane: u32,
     },
     Input {
         client: String,
@@ -145,9 +152,67 @@ pub struct Expected {
     #[serde(default)]
     pub commands: Vec<String>,
     #[serde(default)]
+    pub snapshots: Vec<ExpectedSnapshot>,
+    #[serde(default)]
+    pub control_events: Vec<ExpectedControlEvent>,
+    #[serde(default)]
+    pub terminal_frames: Vec<ExpectedTerminalFrame>,
+    #[serde(default)]
+    pub pty_resizes: Vec<ExpectedResize>,
+    #[serde(default)]
+    pub signals: Vec<ExpectedSignal>,
+    #[serde(default)]
     pub exit_status: Option<i32>,
     #[serde(default)]
     pub owned_resources: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedSnapshot {
+    pub workspace: String,
+    pub generation: u64,
+    pub stable_hash: String,
+    #[serde(default)]
+    pub focused_pane: Option<u32>,
+    #[serde(default)]
+    pub pane_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedControlEvent {
+    pub name: String,
+    pub request_id: u64,
+    #[serde(default)]
+    pub subscription_id: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedTerminalFrame {
+    pub rows: u16,
+    pub columns: u16,
+    pub cells: Vec<String>,
+    #[serde(default)]
+    pub cursor: Option<(u16, u16)>,
+    #[serde(default)]
+    pub synchronized: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedResize {
+    pub pane: u32,
+    pub rows: u16,
+    pub columns: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedSignal {
+    pub process: String,
+    pub signal: Signal,
 }
 
 impl Scenario {
@@ -177,6 +242,10 @@ fn validate_step(step: &Step) -> Result<(), String> {
         Step::CreateWorkspace { workspace }
         | Step::SelectWorkspace { workspace }
         | Step::DeleteWorkspace { workspace } => bounded_text("workspace", workspace)?,
+        Step::SwitchWorkspace { client, workspace } => {
+            bounded_text("client", client)?;
+            bounded_text("workspace", workspace)?;
+        }
         Step::Resize { size, .. } => validate_size(*size)?,
         Step::ChildOutput { bytes, .. }
         | Step::ExpectInput { bytes, .. }
@@ -204,11 +273,51 @@ fn validate_step(step: &Step) -> Result<(), String> {
             bounded_bytes(&encoded)?;
         }
         Step::Expect { expected } => {
+            let expected_items = expected.forwarded.len()
+                + expected.commands.len()
+                + expected.snapshots.len()
+                + expected.control_events.len()
+                + expected.terminal_frames.len()
+                + expected.pty_resizes.len()
+                + expected.signals.len();
+            if expected_items > MAX_STEPS {
+                return Err("expectation contains too many items".into());
+            }
             for bytes in &expected.forwarded {
                 bounded_bytes(bytes)?;
             }
             for command in &expected.commands {
                 bounded_text("command", command)?;
+            }
+            for snapshot in &expected.snapshots {
+                bounded_text("workspace", &snapshot.workspace)?;
+                bounded_text("stable hash", &snapshot.stable_hash)?;
+            }
+            for event in &expected.control_events {
+                bounded_text("control event", &event.name)?;
+            }
+            for frame in &expected.terminal_frames {
+                validate_size(Size {
+                    rows: frame.rows,
+                    columns: frame.columns,
+                })?;
+                if frame.cells.len() > usize::from(MAX_DIMENSION) * usize::from(MAX_DIMENSION) {
+                    return Err("terminal frame has too many cells".into());
+                }
+                for cell in &frame.cells {
+                    if cell.len() > MAX_NAME_BYTES || cell.contains('\0') {
+                        return Err("terminal cell exceeds its text bound".into());
+                    }
+                }
+            }
+            for resize in &expected.pty_resizes {
+                validate_size(Size {
+                    rows: resize.rows,
+                    columns: resize.columns,
+                })?;
+            }
+            for signal in &expected.signals {
+                bounded_text("process", &signal.process)?;
             }
         }
         _ => {}

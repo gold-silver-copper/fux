@@ -119,6 +119,13 @@ fn main() -> ExitCode {
 }
 
 fn run() -> io::Result<()> {
+    let mut terminal = rustix::termios::tcgetattr(io::stdin())?;
+    terminal.make_raw();
+    rustix::termios::tcsetattr(
+        io::stdin(),
+        rustix::termios::OptionalActions::Now,
+        &terminal,
+    )?;
     let arguments: Vec<_> = env::args_os().skip(1).collect();
     let path = argument(&arguments, "--control=")
         .or_else(|| env::var_os("FUX_FIXTURE_CONTROL"))
