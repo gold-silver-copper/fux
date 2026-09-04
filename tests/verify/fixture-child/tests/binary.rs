@@ -24,10 +24,9 @@ fn serialized_prefix_scenario_agrees_through_model_in_process_and_real_binaries(
     };
     use verification::schema::Scenario;
 
-    let scenario: Scenario = serde_json::from_str(include_str!(
-        "../../corpus/input/prefix_literal.json"
-    ))
-    .expect("strict scenario");
+    let scenario: Scenario =
+        serde_json::from_str(include_str!("../../corpus/input/prefix_literal.json"))
+            .expect("strict scenario");
     let model = ModelInterpreter.run(&scenario).expect("model transcript");
     assert_eq!(
         InProcessInterpreter
@@ -111,7 +110,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         let encoded = response["bytes_hex"]
             .as_str()
             .ok_or_else(|| "fixture did not report forwarded bytes".to_owned())?;
-        Ok(vec![ObservedAction::Forward(decode_hex(encoded)?)] )
+        Ok(vec![ObservedAction::Forward(decode_hex(encoded)?)])
     }
 
     fn cleanup(&mut self) -> Result<usize, String> {
@@ -270,7 +269,24 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     wait_for_notification_count(&environment.notification_log(), 2);
     let notifications = fs::read_to_string(environment.notification_log())
         .expect("private notification transcript");
-    assert!(notifications.contains("fixture"));
+    let decoded: Vec<Vec<String>> = notifications
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("notification arguments"))
+        .collect();
+    let expected_arguments = if cfg!(target_os = "macos") {
+        vec!["-title", "fux", "-message", "fixture"]
+    } else {
+        vec!["fux", "fixture"]
+    };
+    assert_eq!(
+        decoded,
+        vec![expected_arguments.clone(), expected_arguments]
+    );
+    assert_notification_count_stays(
+        &environment.notification_log(),
+        2,
+        Duration::from_millis(300),
+    );
     client.detach();
     fixture.send(json!({"command":"write", "chunks_hex":["62696e617279"]}));
     assert_eq!(fixture.receive()["bytes"], 6);
@@ -698,6 +714,20 @@ fn wait_for_notification_count(path: &Path, expected: usize) {
         assert!(
             Instant::now() < deadline,
             "expected {expected} notifications, observed {count}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn assert_notification_count_stays(path: &Path, expected: usize, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        let count = fs::read_to_string(path)
+            .map(|contents| contents.lines().count())
+            .unwrap_or(0);
+        assert_eq!(
+            count, expected,
+            "notification count changed after duplicate state"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
