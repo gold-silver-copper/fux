@@ -108,6 +108,10 @@ impl InputRouter {
             .is_some_and(|since| now_ms.saturating_sub(since) >= self.ambiguity_timeout_ms)
         {
             self.pending_since_ms = None;
+            if self.command_mode {
+                self.command_mode = false;
+                return vec![Action::Forward(vec![self.prefix])];
+            }
             return self
                 .pending
                 .drain(..)
@@ -139,6 +143,7 @@ impl InputRouter {
         }
         if self.command_mode {
             self.command_mode = false;
+            self.pending_since_ms = None;
             if byte == self.prefix {
                 actions.push(Action::Forward(vec![byte]));
             } else if let Some(command) = self.bindings.get(&byte).cloned() {
@@ -150,6 +155,7 @@ impl InputRouter {
         }
         if self.pending.is_empty() && byte == self.prefix {
             self.command_mode = true;
+            self.pending_since_ms = Some(now_ms);
             return;
         }
         if self.pending.is_empty() && byte != 0x1b {

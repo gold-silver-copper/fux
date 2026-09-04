@@ -9,6 +9,7 @@ pub enum ObservedAction {
 
 pub trait BinaryDriver {
     fn input(&mut self, bytes: &[u8]) -> Result<Vec<ObservedAction>, String>;
+    fn advance_clock(&mut self, milliseconds: u64) -> Result<Vec<ObservedAction>, String>;
     fn cleanup(&mut self) -> Result<usize, String>;
 }
 
@@ -28,15 +29,76 @@ impl<D: BinaryDriver> BinaryInterpreter<D> {
         let mut commands = Vec::new();
         for step in &scenario.steps {
             match step {
-                Step::Input { client, bytes } => {
+                Step::Input { .. } | Step::Prefix { .. } => {
+                    let (client, bytes) = match step {
+                        Step::Prefix { client, key } => (client, vec![0x02, *key]),
+                        Step::Input { client, bytes } => (client, bytes.clone()),
+                        _ => return Err("input step dispatch mismatch".into()),
+                    };
                     push(
                         &mut transcript,
                         Event::Input {
                             client: client.clone(),
-                            bytes_hex: hex(bytes),
+                            bytes_hex: hex(&bytes),
                         },
                     );
-                    for action in self.driver.input(bytes)? {
+                    for action in self.driver.input(&bytes)? {
+                        match action {
+                            ObservedAction::Forward(bytes) => {
+                                forwarded.push(bytes.clone());
+                                push(
+                                    &mut transcript,
+                                    Event::PtyWrite {
+                                        pane: "pane-1".into(),
+                                        bytes_hex: hex(&bytes),
+                                    },
+                                );
+                            }
+                            ObservedAction::Command(name) => {
+                                commands.push(name.clone());
+                                push(&mut transcript, Event::Command { name });
+                            }
+                        }
+                    }
+                }
+                Step::Paste { client, bytes } => {
+                    let mut framed = b"\x1b[200~".to_vec();
+                    framed.extend_from_slice(bytes);
+                    framed.extend_from_slice(b"\x1b[201~");
+                    push(
+                        &mut transcript,
+                        Event::Input {
+                            client: client.clone(),
+                            bytes_hex: hex(&framed),
+                        },
+                    );
+                    for action in self.driver.input(&framed)? {
+                        match action {
+                            ObservedAction::Forward(bytes) => {
+                                forwarded.push(bytes.clone());
+                                push(
+                                    &mut transcript,
+                                    Event::PtyWrite {
+                                        pane: "pane-1".into(),
+                                        bytes_hex: hex(&bytes),
+                                    },
+                                );
+                            }
+                            ObservedAction::Command(name) => {
+                                commands.push(name.clone());
+                                push(&mut transcript, Event::Command { name });
+                            }
+                        }
+                    }
+                }
+                Step::AdvanceClock { milliseconds } => {
+                    push(
+                        &mut transcript,
+                        Event::Clock {
+                            milliseconds: *milliseconds,
+                        },
+                    );
+                    for action in self.driver.advance_clock(*milliseconds)? {
                         match action {
                             ObservedAction::Forward(bytes) => {
                                 forwarded.push(bytes.clone());

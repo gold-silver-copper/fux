@@ -15,15 +15,35 @@ impl Interpreter for InProcessInterpreter {
         let mut commands = Vec::new();
         for step in &scenario.steps {
             match step {
-                Step::Input { client, bytes } => {
+                Step::Input { .. } | Step::Prefix { .. } => {
+                    let (client, bytes) = match step {
+                        Step::Prefix { client, key } => (client, vec![0x02, *key]),
+                        Step::Input { client, bytes } => (client, bytes.clone()),
+                        _ => return Err("input step dispatch mismatch".into()),
+                    };
                     push(
                         &mut transcript,
                         Event::Input {
                             client: client.clone(),
-                            bytes_hex: hex(bytes),
+                            bytes_hex: hex(&bytes),
                         },
                     );
-                    for action in router.feed(bytes, now) {
+                    for action in router.feed(&bytes, now) {
+                        append_action(&mut transcript, action, &mut forwarded, &mut commands)?;
+                    }
+                }
+                Step::Paste { client, bytes } => {
+                    let mut framed = b"\x1b[200~".to_vec();
+                    framed.extend_from_slice(bytes);
+                    framed.extend_from_slice(b"\x1b[201~");
+                    push(
+                        &mut transcript,
+                        Event::Input {
+                            client: client.clone(),
+                            bytes_hex: hex(&framed),
+                        },
+                    );
+                    for action in router.feed(&framed, now) {
                         append_action(&mut transcript, action, &mut forwarded, &mut commands)?;
                     }
                 }

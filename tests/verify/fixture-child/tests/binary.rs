@@ -18,15 +18,29 @@ mod verification;
 const DEADLINE: Duration = Duration::from_secs(20);
 
 #[test]
-fn serialized_prefix_scenario_agrees_through_model_in_process_and_real_binaries() {
+fn serialized_input_scenarios_agree_through_model_in_process_and_real_binaries() {
+    use verification::schema::Scenario;
+
+    for (name, source) in [
+        (
+            "prefix-literal",
+            include_str!("../../corpus/input/prefix_literal.json"),
+        ),
+        (
+            "prefix-paste",
+            include_str!("../../corpus/input/prefix_and_paste.json"),
+        ),
+    ] {
+        let scenario: Scenario = serde_json::from_str(source).expect("strict scenario");
+        assert_binary_scenario(&scenario, name);
+    }
+}
+
+fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment_name: &str) {
     use verification::interpreters::{
         BinaryInterpreter, InProcessInterpreter, Interpreter, ModelInterpreter,
     };
-    use verification::schema::Scenario;
 
-    let scenario: Scenario =
-        serde_json::from_str(include_str!("../../corpus/input/prefix_literal.json"))
-            .expect("strict scenario");
     let model = ModelInterpreter.run(&scenario).expect("model transcript");
     assert_eq!(
         InProcessInterpreter
@@ -38,7 +52,7 @@ fn serialized_prefix_scenario_agrees_through_model_in_process_and_real_binaries(
     let fux = binary("FUX_BIN", "target/debug/fux");
     let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture_program = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
-    let environment = PrivateEnvironment::new("scenario");
+    let environment = PrivateEnvironment::new(environment_name);
     let fixture_listener =
         UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
     environment.write_config(&fixture_program, &zor);
@@ -65,12 +79,14 @@ fn serialized_prefix_scenario_agrees_through_model_in_process_and_real_binaries(
     let client = TerminalChild::spawn(&fux, &environment, 24, 80);
     client.wait_for_output_bytes(b"connected.");
     let driver = PrefixBinaryDriver {
+        fux: fux.clone(),
         client,
         primary,
         secondary: None,
         listener: &fixture_listener,
         server,
         environment: &environment,
+        prefix_pending: false,
     };
     let binary = BinaryInterpreter::new(driver)
         .run(&scenario)
@@ -79,12 +95,14 @@ fn serialized_prefix_scenario_agrees_through_model_in_process_and_real_binaries(
 }
 
 struct PrefixBinaryDriver<'a> {
+    fux: PathBuf,
     client: TerminalChild,
     primary: Jsonl,
     secondary: Option<Jsonl>,
     listener: &'a UnixListener,
     server: OwnedChild,
     environment: &'a PrivateEnvironment,
+    prefix_pending: bool,
 }
 
 impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
@@ -93,6 +111,21 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         bytes: &[u8],
     ) -> Result<Vec<verification::interpreters::ObservedAction>, String> {
         use verification::interpreters::ObservedAction;
+        if bytes == [2] {
+            let output = run(
+                &self.fux,
+                ["binary", "send-keys", "1", "\\x02"],
+                self.environment,
+            );
+            if !output.status.success() {
+                return Err(format!(
+                    "binary send-keys failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            self.prefix_pending = true;
+            return Ok(Vec::new());
+        }
         if bytes == [2, b'|'] {
             self.client.write(bytes);
             let mut secondary = Jsonl::new(accept_with_deadline(self.listener));
@@ -110,6 +143,25 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         let encoded = response["bytes_hex"]
             .as_str()
             .ok_or_else(|| "fixture did not report forwarded bytes".to_owned())?;
+        Ok(vec![ObservedAction::Forward(decode_hex(encoded)?)])
+    }
+
+    fn advance_clock(
+        &mut self,
+        milliseconds: u64,
+    ) -> Result<Vec<verification::interpreters::ObservedAction>, String> {
+        use verification::interpreters::ObservedAction;
+        if !self.prefix_pending {
+            return Ok(Vec::new());
+        }
+        self.primary
+            .send(json!({"command":"read_exact", "bytes":1}));
+        std::thread::sleep(Duration::from_millis(milliseconds));
+        let response = self.primary.receive();
+        self.prefix_pending = false;
+        let encoded = response["bytes_hex"]
+            .as_str()
+            .ok_or_else(|| "fixture did not report expired prefix".to_owned())?;
         Ok(vec![ObservedAction::Forward(decode_hex(encoded)?)])
     }
 

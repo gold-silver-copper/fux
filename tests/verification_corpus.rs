@@ -12,11 +12,30 @@ use verify::transcript::{assert_fixture_safe, encode_jsonl};
 
 const PREFIX_LITERAL: &str = include_str!("verify/corpus/input/prefix_literal.json");
 const PREFIX_LITERAL_GOLDEN: &str = include_str!("verify/fixtures/prefix_literal.jsonl");
+const PREFIX_AND_PASTE: &str = include_str!("verify/corpus/input/prefix_and_paste.json");
+const PREFIX_AND_PASTE_GOLDEN: &str = include_str!("verify/fixtures/prefix_and_paste.jsonl");
 const WIDE_OSC_CASSETTE: &str = include_str!("verify/fixtures/terminal/wide_osc.json");
 
 #[test]
 fn prefix_literal_agrees_across_independent_interpreters_and_the_golden() {
-    let scenario: Scenario = serde_json::from_str(PREFIX_LITERAL).expect("strict scenario");
+    assert_scenario_golden(
+        PREFIX_LITERAL,
+        PREFIX_LITERAL_GOLDEN,
+        "prefix_literal.jsonl",
+    );
+}
+
+#[test]
+fn prefix_and_paste_agree_across_independent_interpreters_and_the_golden() {
+    assert_scenario_golden(
+        PREFIX_AND_PASTE,
+        PREFIX_AND_PASTE_GOLDEN,
+        "prefix_and_paste.jsonl",
+    );
+}
+
+fn assert_scenario_golden(source: &str, golden: &str, fixture_name: &str) {
+    let scenario: Scenario = serde_json::from_str(source).expect("strict scenario");
     scenario.validate().expect("bounded scenario");
 
     let model = ModelInterpreter.run(&scenario).expect("model transcript");
@@ -32,10 +51,11 @@ fn prefix_literal_agrees_across_independent_interpreters_and_the_golden() {
     assert_fixture_safe(&encoded).expect("fixture secret audit");
     if std::env::var_os("FUX_RECORD_FIXTURES").is_some() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/verify/fixtures/prefix_literal.jsonl");
+            .join("tests/verify/fixtures")
+            .join(fixture_name);
         std::fs::write(path, &encoded).expect("explicit fixture record");
     } else {
-        assert_eq!(encoded, PREFIX_LITERAL_GOLDEN);
+        assert_eq!(encoded, golden);
     }
 }
 

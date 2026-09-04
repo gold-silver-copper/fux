@@ -2,6 +2,7 @@
 pub struct PrefixOracle {
     prefix: u8,
     armed: bool,
+    pending_ms: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -15,6 +16,7 @@ impl PrefixOracle {
         Self {
             prefix,
             armed: false,
+            pending_ms: 0,
         }
     }
 
@@ -23,6 +25,7 @@ impl PrefixOracle {
         for byte in bytes {
             if self.armed {
                 self.armed = false;
+                self.pending_ms = 0;
                 if *byte == self.prefix {
                     forward(&mut output, *byte);
                 } else if let Some(command) = command(*byte) {
@@ -33,11 +36,25 @@ impl PrefixOracle {
                 }
             } else if *byte == self.prefix {
                 self.armed = true;
+                self.pending_ms = 0;
             } else {
                 forward(&mut output, *byte);
             }
         }
         output
+    }
+
+    pub fn advance_clock(&mut self, milliseconds: u64) -> Vec<Outcome> {
+        if self.armed {
+            self.pending_ms = self.pending_ms.saturating_add(milliseconds);
+        }
+        if self.armed && self.pending_ms >= 25 {
+            self.armed = false;
+            self.pending_ms = 0;
+            vec![Outcome::Forward(vec![self.prefix])]
+        } else {
+            Vec::new()
+        }
     }
 }
 

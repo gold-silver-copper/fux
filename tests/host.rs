@@ -931,6 +931,10 @@ fn router_timeout_releases_partial_escape() {
     assert!(router.feed(b"\x1b[", 4).is_empty());
     assert!(router.flush_timeout(13).is_empty());
     assert_eq!(flattened(&router.flush_timeout(14)).0, b"\x1b[");
+
+    assert!(router.feed(b"\x01", 20).is_empty());
+    assert!(router.flush_timeout(29).is_empty());
+    assert_eq!(flattened(&router.flush_timeout(30)).0, b"\x01");
 }
 
 #[cfg(unix)]

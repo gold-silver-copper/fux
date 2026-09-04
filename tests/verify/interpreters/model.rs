@@ -14,16 +14,21 @@ impl Interpreter for ModelInterpreter {
         let mut commands = Vec::new();
         for step in &scenario.steps {
             match step {
-                Step::Input { client, bytes } => {
+                Step::Input { .. } | Step::Prefix { .. } => {
+                    let (client, bytes) = match step {
+                        Step::Prefix { client, key } => (client, vec![0x02, *key]),
+                        Step::Input { client, bytes } => (client, bytes.clone()),
+                        _ => return Err("input step dispatch mismatch".into()),
+                    };
                     push(
                         &mut transcript,
                         "model",
                         Event::Input {
                             client: client.clone(),
-                            bytes_hex: hex(bytes),
+                            bytes_hex: hex(&bytes),
                         },
                     );
-                    for outcome in oracle.feed(bytes) {
+                    for outcome in oracle.feed(&bytes) {
                         match outcome {
                             Outcome::Forward(bytes) => {
                                 forwarded.push(bytes.clone());
@@ -47,13 +52,50 @@ impl Interpreter for ModelInterpreter {
                         }
                     }
                 }
-                Step::AdvanceClock { milliseconds } => push(
-                    &mut transcript,
-                    "model",
-                    Event::Clock {
-                        milliseconds: *milliseconds,
-                    },
-                ),
+                Step::Paste { client, bytes } => {
+                    let mut framed = b"\x1b[200~".to_vec();
+                    framed.extend_from_slice(bytes);
+                    framed.extend_from_slice(b"\x1b[201~");
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Input {
+                            client: client.clone(),
+                            bytes_hex: hex(&framed),
+                        },
+                    );
+                    forwarded.push(framed.clone());
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::PtyWrite {
+                            pane: "pane-1".into(),
+                            bytes_hex: hex(&framed),
+                        },
+                    );
+                }
+                Step::AdvanceClock { milliseconds } => {
+                    push(
+                        &mut transcript,
+                        "model",
+                        Event::Clock {
+                            milliseconds: *milliseconds,
+                        },
+                    );
+                    for outcome in oracle.advance_clock(*milliseconds) {
+                        if let Outcome::Forward(bytes) = outcome {
+                            forwarded.push(bytes.clone());
+                            push(
+                                &mut transcript,
+                                "model",
+                                Event::PtyWrite {
+                                    pane: "pane-1".into(),
+                                    bytes_hex: hex(&bytes),
+                                },
+                            );
+                        }
+                    }
+                }
                 Step::Expect { expected } => {
                     if forwarded != expected.forwarded || commands != expected.commands {
                         return Err(format!(
