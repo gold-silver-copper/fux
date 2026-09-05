@@ -1,35 +1,27 @@
 # Release readiness
 
-This file distinguishes automated evidence from evidence that still needs an operator. A skipped or
-unavailable check is not green.
+Fux is independently buildable and packageable. It does not require koh or zor registry releases,
+sibling source trees, or integration patches. No publication is authorized by this refactor.
 
-## Automated gates
+## Automated evidence
 
-CI runs formatting, clippy, tests and documentation on stable Rust for Linux and macOS, plus an
-MSRV job on Linux at Rust 1.91. The Android job compile-checks `aarch64-linux-android`; it does not
-execute fux. The cross-repository job builds zor explicitly and exports `ZOR_BIN` without guessing
-a target path. The integration suite uses that exact binary with a captured rule, observes
-zor-generated OSC 7877 in fux state and control events, sends input through both PTYs, and verifies
-that the detachable workspace retains the completed child's screen. This local seam is not claimed
-as a real network outage/reconnect.
+A disposable fux-only checkout passed root and fixture tests offline. The release verifier packaged
+and installed fux and passed its eight real-binary scenarios against that installed binary. Default
+CI has Linux/macOS host jobs, an MSRV job, and an Android cross-check job. Hosted CI has not been run
+for this uncommitted change; configured jobs are not claimed as executed evidence.
 
-Zor 0.1.2 is tagged, but its crates.io upload and Koh 0.12.1 publication are blocked because the
-authenticated crates.io owner account is indefinitely locked for a usage-policy violation. Release preparation reruns both the full package and
-publish-dry-run gates and inspects the resulting archive. No workflow publishes automatically.
+Optional integration CI requires its explicit manual switch. Local tests have exercised real zor
+sidecar reports and failure isolation, authenticated koh gateway access, and automatic reconnect
+under forced loopback QUIC loss. See [the progress log](standalone-plan.md) for exact checks and
+coverage limits. The completion audit links current verification records.
 
-## Human evidence still required
+## Coverage limits
 
-- Genuine Claude Code captures for idle, working, permission/plan/select blockers, transcript and
-  model-picker skip states, plus the typed-prompt guard.
-- OSC 7877 collision/passthrough checks on Terminal.app, iTerm2, kitty, alacritty, wezterm, Termux
-  and tmux.
-- Provenance and schema confirmation for OSC 21337.
-- crates.io owner-account restoration and ordered koh-before-zor-before-fux publication.
-- Real Android runtime attach, suspend/resume, resize and detach testing.
-- A real remote-relay session, including authorization rejection and reconnect.
+Native runtime checks for this refactor ran on macOS. Android cross-compilation is not runtime
+coverage. Relay/NAT behavior, real Android suspend/resume, terminal-emulator OSC collision behavior,
+and genuine-agent observation rules still need environment-specific evidence before release claims
+covering those scenarios. Fux's standalone local operation does not depend on those integrations.
 
-## Local-environment caveats
-
-This workspace stages zor as a nested gitignored repository because the execution sandbox cannot
-write the intended sibling path. The manifest therefore uses the staging path. Release preparation
-must restore the audited sibling dependency layout before packaging.
+The requirement-by-requirement refactor audit is recorded in [standalone-audit.md](standalone-audit.md). Prior account/publication and
+coupled-build notes are preserved in [the historical snapshot](release-readiness-before-standalone.md)
+and must not be interpreted as current registry status or a prerequisite for packaging fux.

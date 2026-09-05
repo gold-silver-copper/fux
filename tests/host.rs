@@ -4,19 +4,17 @@
     reason = "integration-test failures should retain their assertion context"
 )]
 
+#[cfg(unix)]
+use fux::client::ClientTerminal;
+#[cfg(unix)]
+use fux::client::view::Overlay;
+use fux::host::session::{ChangeSignal, ClientId, SessionHost};
 use fux::host::{
     Action, Command, InputRouter, MouseEvent, WorkspaceHost, platform_tool_from, resolve_zor_path,
 };
+#[cfg(unix)]
+use fux::local::{client::Connection, server::LocalEndpoint};
 use fux::state::{AgentState, Direction, PaneId, WorkspaceState};
-#[cfg(unix)]
-use koh::client::ClientTerminal;
-#[cfg(unix)]
-use koh::embed::{Connection, NetworkProfile, Server};
-#[cfg(unix)]
-use koh::identity::Identity;
-#[cfg(unix)]
-use koh::predict::Overlay;
-use koh::server::{ChangeSignal, ClientId, SessionHost};
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::Arc;
@@ -25,10 +23,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 #[cfg(unix)]
 use tokio_util::sync::CancellationToken;
-
-#[allow(dead_code)]
-#[path = "verify/transcript.rs"]
-mod verification_transcript;
 
 fn flattened(actions: &[Action]) -> (Vec<u8>, Vec<Command>, Vec<MouseEvent>) {
     let mut bytes = Vec::new();
@@ -1496,28 +1490,21 @@ fn resize_and_detach_keep_safe_pty_geometry() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_host_round_trips_through_hosts_and_run_client() {
-    let identity = Identity::generate();
-    let mut server = Server::bind(
-        Identity::generate(),
-        &std::collections::BTreeSet::from([identity.endpoint_id()]),
-        fux::FUX_ALPN,
-        NetworkProfile::Local,
-        4,
-        || {
-            WorkspaceHost::spawn(
-                vec![
-                    "/bin/sh".into(),
-                    "-c".into(),
-                    "printf LOOPBACK_FUX; sleep 0.2; exit 7".into(),
-                ],
-                32,
-                None,
-            )
-        },
+    let root = local_test_root();
+    let host = WorkspaceHost::spawn(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "printf LOCAL_FUX; sleep 0.2; exit 7".into(),
+        ],
+        32,
+        None,
     )
-    .await
-    .expect("bind hosted application");
-    let connection = connect_to_server(&server, &identity).await;
+    .expect("host");
+    let mut server = LocalEndpoint::bind(&root.join("attach.sock"), host).expect("local bind");
+    let connection = Connection::connect(server.path())
+        .await
+        .expect("local attach");
     let (_input_tx, input_rx) = mpsc::channel::<Vec<u8>>(4);
     let (_resize_tx, resize_rx) = mpsc::channel::<()>(1);
     let terminal =
@@ -1525,19 +1512,14 @@ async fn workspace_host_round_trips_through_hosts_and_run_client() {
             .expect("terminal");
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        connection.run(
-            terminal,
-            input_rx,
-            resize_rx,
-            CancellationToken::new(),
-            None,
-        ),
+        connection.run(terminal, input_rx, resize_rx, CancellationToken::new()),
     )
     .await
     .expect("client timeout")
     .expect("run client");
     assert_eq!(result, Some(7));
     server.close();
+    std::fs::remove_dir_all(root).expect("cleanup");
 }
 
 #[cfg(unix)]
@@ -1587,151 +1569,67 @@ impl ClientTerminal<WorkspaceState> for SemanticTerminal {
     }
 }
 
-// Golden path 10: force the first real QUIC connection down while retaining the
-// authoritative WorkspaceHost, then prove the reconnect converges to that same state.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_viewer_reconnects_after_forced_loopback_loss_without_state_reset() {
+async fn local_viewer_reattaches_without_state_reset() {
+    let root = local_test_root();
     let lifecycle = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let workspace_control = Arc::new(std::sync::Mutex::new(None));
-    let identity = Identity::generate();
-    let mut server = Server::bind(
-        Identity::generate(),
-        &std::collections::BTreeSet::from([identity.endpoint_id()]),
-        fux::FUX_ALPN,
-        NetworkProfile::Local,
-        4,
-        {
-            let lifecycle = Arc::clone(&lifecycle);
-            let workspace_control = Arc::clone(&workspace_control);
-            move || {
-                let (session, control) = WorkspaceHost::shared(vec!["/bin/cat".into()], 32, None)?;
-                control.set_event_sink(Arc::new(LifecycleSink {
-                    events: Arc::clone(&lifecycle),
-                }));
-                *workspace_control
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
-                Ok(session)
-            }
-        },
-    )
-    .await
-    .expect("bind reconnecting application");
-    let connection = connect_to_server(&server, &identity).await;
-    let latest = Arc::new(std::sync::Mutex::new(WorkspaceState::default()));
-    let terminal = SemanticTerminal {
-        latest: Arc::clone(&latest),
-    };
-    let (input_tx, input_rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_resize_tx, resize_rx) = mpsc::channel::<()>(2);
-    let shutdown = CancellationToken::new();
-    let client_shutdown = shutdown.clone();
-    let client = tokio::spawn(async move {
-        connection
-            .run(terminal, input_rx, resize_rx, client_shutdown, None)
-            .await
-    });
-
-    input_tx
-        .send(b"MARK_ONE".to_vec())
-        .await
-        .expect("first input");
-    wait_for_semantic_text(&latest, "MARK_ONE").await;
-    let before = latest
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    server.disconnect_clients();
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let _ = input_tx.send(b"MARK_TWO".to_vec()).await;
-        let current = latest
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if visible_workspace_text(&current).contains("MARK_TWO") {
-            assert!(
-                visible_workspace_text(&current).contains("MARK_ONE"),
-                "reconnect replaced rather than retained the authoritative workspace"
-            );
-            assert_eq!(current.tabs(), before.tabs());
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "reconnect deadline expired"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-
-    let observed = lifecycle
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    assert_eq!(
-        observed,
-        ["client.attached", "client.detached", "client.attached"],
-        "transport loss and reconnect must publish one ordered lifecycle transition apiece"
-    );
-    let canonical = observed
-        .iter()
-        .enumerate()
-        .map(|(sequence, state)| verification_transcript::Entry {
-            sequence: u64::try_from(sequence).expect("bounded lifecycle sequence"),
-            source: "loopback".into(),
-            event: verification_transcript::Event::Lifecycle {
-                resource: "client:viewer".into(),
-                state: (*state).into(),
+    let (session, control) = WorkspaceHost::shared(vec!["/bin/sh".into()], 32, None).expect("host");
+    control.set_event_sink(Arc::new(LifecycleSink {
+        events: Arc::clone(&lifecycle),
+    }));
+    let mut server = LocalEndpoint::bind(&root.join("attach.sock"), session).expect("bind");
+    for round in 0..2 {
+        let connection = Connection::connect(server.path()).await.expect("attach");
+        let latest = Arc::new(std::sync::Mutex::new(WorkspaceState::default()));
+        let (input, input_rx) = mpsc::channel(4);
+        let (_resize, resize_rx) = mpsc::channel(1);
+        let stop = CancellationToken::new();
+        let task = tokio::spawn(connection.run(
+            SemanticTerminal {
+                latest: Arc::clone(&latest),
             },
-        })
-        .collect::<Vec<_>>();
-    let encoded =
-        verification_transcript::encode_jsonl(&canonical).expect("canonical reconnect transcript");
-    verification_transcript::assert_fixture_safe(&encoded)
-        .expect("reconnect transcript secret audit");
-    if std::env::var_os("FUX_RECORD_FIXTURES").is_some() {
-        std::fs::write(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/verify/fixtures/transport_reconnect.jsonl"),
-            &encoded,
-        )
-        .expect("record reconnect golden");
-    } else {
-        assert_eq!(
-            encoded,
-            include_str!("verify/fixtures/transport_reconnect.jsonl"),
-            "loopback reconnect lifecycle diverged from its reviewed golden"
-        );
+            input_rx,
+            resize_rx,
+            stop.clone(),
+        ));
+        if round == 0 {
+            input
+                .send(b"FUX_PERSIST=survived; printf 'FIRST_READY\\n'\n".to_vec())
+                .await
+                .expect("input");
+            wait_for_semantic_text(&latest, "FIRST_READY").await;
+        } else {
+            input
+                .send(b"printf 'SECOND_%s\\n' \"$FUX_PERSIST\"\n".to_vec())
+                .await
+                .expect("input");
+            wait_for_semantic_text(&latest, "SECOND_survived").await;
+        }
+        stop.cancel();
+        assert_eq!(task.await.expect("join").expect("run"), None);
+        wait_for_lifecycle_count(&lifecycle, (round + 1) * 2).await;
+        assert!(!control.is_empty());
     }
-    shutdown.cancel();
-    drop(input_tx);
-    tokio::time::timeout(Duration::from_secs(3), client)
-        .await
-        .expect("client cleanup deadline")
-        .expect("client task")
-        .expect("client loop");
     server.close();
-    wait_for_lifecycle_count(&lifecycle, 4).await;
-    assert_eq!(
-        *lifecycle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-        [
-            "client.attached",
-            "client.detached",
-            "client.attached",
-            "client.detached"
-        ],
-        "client cleanup must publish one final detach"
-    );
-    workspace_control
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-        .expect("workspace control was created")
-        .shutdown();
+    control.shutdown();
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[cfg(unix)]
+fn local_test_root() -> PathBuf {
+    use std::os::unix::fs::DirBuilderExt;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = PathBuf::from("/tmp").join(format!(
+        "fh-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .expect("private fixture");
+    root
 }
 
 #[cfg(unix)]
@@ -1783,26 +1681,11 @@ fn visible_workspace_text(state: &WorkspaceState) -> String {
         .collect()
 }
 
-#[cfg(unix)]
-async fn connect_to_server(server: &Server, identity: &Identity) -> Connection {
-    let config = koh::client::ConnectConfig {
-        server: server.endpoint_id().into(),
-        key_file: None,
-        direct: Some(server.direct_addr().into()),
-        relay_url: None,
-        clipboard: false,
-        bell_command: None,
-    };
-    Connection::connect(&config, fux::FUX_ALPN, identity)
-        .await
-        .expect("connect application")
-}
-
 #[test]
 fn workspace_binding_reload_reaches_viewers_through_replicated_metadata() {
+    use fux::client::ClientTerminal;
     use fux::client::{CaptureBackend, WorkspaceTerminal};
     use fux::commands::BuiltinAction;
-    use koh::client::ClientTerminal;
     let (mut session, control) =
         WorkspaceHost::shared(vec!["/bin/cat".into()], 32, None).expect("workspace");
     let changed = ChangeSignal::default();
@@ -1815,7 +1698,7 @@ fn workspace_binding_reload_reaches_viewers_through_replicated_metadata() {
     terminal
         .render(
             &fux::state::WorkspaceState::default(),
-            &koh::predict::Overlay::empty(),
+            &Overlay::empty(),
             None,
         )
         .expect("pre-snapshot render");
@@ -1824,7 +1707,7 @@ fn workspace_binding_reload_reaches_viewers_through_replicated_metadata() {
         "placeholder state must not authorize local shortcuts"
     );
     terminal
-        .render(&session.snapshot(), &koh::predict::Overlay::empty(), None)
+        .render(&session.snapshot(), &Overlay::empty(), None)
         .expect("initial render");
     assert_eq!(
         policy_rx
@@ -1858,7 +1741,7 @@ fn workspace_binding_reload_reaches_viewers_through_replicated_metadata() {
     control.reconfigure_bindings(&config).expect("reload");
     assert!(changes.has_changed().expect("change channel"));
     terminal
-        .render(&session.snapshot(), &koh::predict::Overlay::empty(), None)
+        .render(&session.snapshot(), &Overlay::empty(), None)
         .expect("reload render");
     let policy = policy_rx
         .borrow_and_update()
@@ -1954,4 +1837,99 @@ fn explicit_pane_kill_does_not_close_an_unrelated_popup() {
             .any(|event| matches!(event, Event::PaneClosed { pane: 1, .. }))
     );
     session.shutdown();
+}
+
+#[test]
+fn stale_viewer_targets_never_refer_to_replacement_panes_or_tabs() {
+    use fux::control::{Reply, Request, TabAction};
+    let (mut session, control) =
+        WorkspaceHost::shared(vec!["/bin/cat".into()], 0, None).expect("workspace");
+    let create = || {
+        let (reply, _) = control.dispatch(Request::Tab {
+            id: 0,
+            action: TabAction::New { name: None },
+        });
+        assert!(matches!(reply, Reply::Completed { .. }), "{reply:?}");
+    };
+    create();
+    let old = session.snapshot();
+    let old_tab = old.tabs().last().expect("new tab");
+    let old_pane = old_tab.focused;
+    let (reply, _) = control.dispatch(Request::Kill {
+        id: 0,
+        pane: old_pane.0,
+    });
+    assert!(matches!(reply, Reply::Completed { .. }));
+    create();
+    let new = session.snapshot();
+    let new_tab = new.tabs().last().expect("replacement tab");
+    assert_ne!(new_tab.id, old_tab.id);
+    assert_ne!(new_tab.focused, old_pane);
+    for request in [
+        Request::Kill {
+            id: 0,
+            pane: old_pane.0,
+        },
+        Request::Tab {
+            id: 0,
+            action: TabAction::Rename {
+                tab: old_tab.id.0,
+                name: "stale".into(),
+            },
+        },
+        Request::Tab {
+            id: 0,
+            action: TabAction::SelectId { tab: old_tab.id.0 },
+        },
+    ] {
+        let (reply, _) = control.dispatch(request);
+        assert!(
+            matches!(reply, Reply::Failed { .. }),
+            "stale target accepted: {reply:?}"
+        );
+    }
+    let after = session.snapshot();
+    assert!(after.pane(new_tab.focused).is_some());
+    assert_eq!(after.tabs(), new.tabs());
+    session.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
+fn viewer_scrollback_reads_are_bounded_and_leave_shared_viewports_untouched() {
+    let mut host = host_for_script("seq 1 30; sleep 10", 32);
+    host.resize(ClientId::next(), 6, 20);
+    wait_until(&mut host, Duration::from_secs(2), |state| {
+        state.pane(PaneId(1)).is_some_and(|pane| {
+            pane.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains("30")
+        })
+    });
+    let before = host.snapshot();
+    let live = host.copy_view(1, 0).expect("live view");
+    let history = host.copy_view(1, 3).expect("history view");
+    assert_eq!(history.viewport_offset, 3);
+    assert_ne!(history.cells, live.cells);
+    assert_eq!(
+        host.copy_view(1, 0),
+        Some(live),
+        "history read changed another viewer's live view"
+    );
+    let oldest = host.copy_view(1, u32::MAX).expect("bounded oldest view");
+    assert!(oldest.viewport_offset <= 32);
+    assert_eq!(
+        oldest.cells.len(),
+        usize::from(oldest.rows) * usize::from(oldest.columns)
+    );
+    assert!(!oldest.copy.active);
+    assert!(host.copy_view(u32::MAX, 0).is_none());
+    assert_eq!(
+        host.snapshot(),
+        before,
+        "private scrollback read mutated shared state"
+    );
+    host.shutdown();
 }

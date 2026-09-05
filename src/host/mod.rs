@@ -1,14 +1,15 @@
 mod router;
+pub mod session;
 
 pub use router::{Action, Command, InputRouter, MouseEvent};
 
+use crate::host::session::{ChangeSignal, ClientId, SessionHost};
 use crate::pty::Pty;
 use crate::state::{
     AgentState, AgentStatus, LayoutTree, MouseMode, PaneId, PaneView, Rect, Tab, TabId,
     WorkspaceState,
 };
-use koh::server::{ChangeSignal, ClientId, SessionHost};
-use koh::terminal::{DEFAULT_COLS, DEFAULT_ROWS, ServerTerminal};
+use crate::terminal::{DEFAULT_COLS, DEFAULT_ROWS, ServerTerminal};
 use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
@@ -48,11 +49,12 @@ pub const DEFAULT_SCROLLBACK: usize = 10_000;
 
 struct PaneRuntime {
     pty: Option<Pty>,
+    observer: Option<crate::observation::process::Observer>,
     terminal: ServerTerminal,
     alive: bool,
     exit_code: Option<u32>,
     close_event_published: bool,
-    last_report: Option<zor::osc::Report>,
+    last_report: Option<crate::observation::Report>,
     history_limit: usize,
     history_reserved_units: usize,
     last_bell_count: u64,
@@ -76,6 +78,10 @@ struct RouterTimerState {
 
 #[derive(Default)]
 struct Shared {
+    // IDs remain unique for the lifetime of the session, including after removal.
+    // A viewer may still hold a confirmation or picker targeting a removed object.
+    last_pane_id: u32,
+    last_tab_id: u32,
     state: WorkspaceState,
     panes: BTreeMap<PaneId, Arc<Mutex<PaneRuntime>>>,
     event_sink: Option<Arc<dyn WorkspaceEventSink>>,
@@ -232,16 +238,17 @@ impl WorkspaceHost {
                 / row_units.max(1),
         );
         let id = {
-            let shared = lock(&self.shared);
-            PaneId(
-                shared
-                    .panes
-                    .keys()
-                    .next_back()
-                    .map_or(1, |id| id.0.saturating_add(1)),
-            )
+            let mut shared = lock(&self.shared);
+            // Reserve identifier capacity before spawning a process. Its tab may
+            // disappear while the PTY is starting, requiring a new initial tab.
+            anyhow::ensure!(shared.last_tab_id < u32::MAX, "tab identifiers exhausted");
+            shared.last_pane_id = shared
+                .last_pane_id
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("pane identifiers exhausted"))?;
+            PaneId(shared.last_pane_id)
         };
-        let argv = wrapped_command(&command, self.zor.as_deref());
+        let argv = command.clone();
         let terminal = ServerTerminal::new(DEFAULT_ROWS, DEFAULT_COLS, history_limit);
         let (pty, receiver) = Pty::spawn(DEFAULT_ROWS, DEFAULT_COLS, &argv, "xterm-256color")?;
         let pane = PaneView::from_vt100(
@@ -253,6 +260,7 @@ impl WorkspaceHost {
         .map_err(|_| anyhow::anyhow!("initial pane exceeds workspace bounds"))?;
         let runtime = Arc::new(Mutex::new(PaneRuntime {
             pty: Some(pty),
+            observer: None,
             terminal,
             alive: true,
             exit_code: None,
@@ -284,16 +292,11 @@ impl WorkspaceHost {
                     let _ = shared.state.replace_tabs(tabs, Some(active));
                 }
             } else {
-                let tab_id = TabId(
-                    shared
-                        .state
-                        .tabs()
-                        .iter()
-                        .map(|tab| tab.id.0)
-                        .max()
-                        .unwrap_or(0)
-                        .saturating_add(1),
-                );
+                shared.last_tab_id = shared
+                    .last_tab_id
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("tab identifiers exhausted"))?;
+                let tab_id = TabId(shared.last_tab_id);
                 let tab = Tab {
                     id: tab_id,
                     name: format!("tab-{}", tab_id.0),
@@ -326,6 +329,7 @@ impl WorkspaceHost {
             anyhow::bail!("configured workspace resource limit reached");
         }
         self.pending.push(PendingDrain { pane: id, receiver });
+        self.start_observer(id);
         if self.changed.is_none() && lock(&self.shared).event_sink.is_none() {
             self.start_pending();
         }
@@ -375,6 +379,34 @@ impl WorkspaceHost {
     #[must_use]
     pub fn capture(&self, pane: PaneId, scrollback: usize) -> Option<String> {
         self.capture_with_attrs(pane, scrollback, false, self.capture_bytes)
+    }
+
+    fn viewer_copy_view(&self, pane: PaneId, offset: u32) -> Option<PaneView> {
+        let (runtime, title, agent, exit_status) = {
+            let shared = lock(&self.shared);
+            let view = shared.state.pane(pane)?;
+            (
+                shared.panes.get(&pane)?.clone(),
+                view.title.clone(),
+                view.agent.clone(),
+                view.exit_status,
+            )
+        };
+        let mut runtime = lock(&runtime);
+        let offset = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(runtime.history_limit);
+        runtime.terminal.with_scrollback_screen(offset, |screen| {
+            let mut view = PaneView::from_vt100(
+                screen,
+                title,
+                agent,
+                u32::try_from(screen.scrollback()).unwrap_or(u32::MAX),
+            )
+            .ok()?;
+            view.exit_status = exit_status;
+            Some(view)
+        })
     }
 
     #[must_use]
@@ -635,7 +667,12 @@ impl WorkspaceHost {
                         pane: change.pane.0,
                     }
                 };
-                Ok((CommandResult::Unit, vec![event]))
+                let events = if change.opened || change.focused {
+                    vec![event]
+                } else {
+                    Vec::new()
+                };
+                Ok((CommandResult::Unit, events))
             }
             Request::Popup {
                 rows,
@@ -801,6 +838,14 @@ impl WorkspaceHost {
                         self.set_transient_status(
                             "picker",
                             "workspace picker requires a named manager attachment",
+                        );
+                    }
+                    Action::Command(
+                        Command::TabPicker | Command::RenameTab | Command::ResizeMode,
+                    ) => {
+                        self.set_transient_status(
+                            "help",
+                            "this interaction requires a matching fux viewer",
                         );
                     }
                     Action::Command(Command::Help) => {
@@ -1252,6 +1297,10 @@ impl WorkspaceHost {
     }
 
     fn route_mouse(&mut self, mouse: MouseEvent) {
+        self.route_mouse_with_policy(mouse, true);
+    }
+
+    fn route_mouse_with_policy(&mut self, mouse: MouseEvent, local_copy: bool) {
         let Some((rows, columns, _)) = self.viewports.values().max_by_key(|value| value.2).copied()
         else {
             return;
@@ -1329,7 +1378,7 @@ impl WorkspaceHost {
         }) else {
             return;
         };
-        if mouse.shift() {
+        if mouse.shift() && local_copy {
             if let Some(pane) = shared.state.pane(target).cloned() {
                 if !self.copy_mode.active() {
                     self.copy_mode.enter(&pane);
@@ -1363,6 +1412,9 @@ impl WorkspaceHost {
                 .pane(target)
                 .is_some_and(|pane| pane.modes.mouse_mode == MouseMode::None)
         {
+            if !local_copy {
+                return;
+            }
             let up = mouse.code & 1 == 0;
             let _ = shared.state.update_pane(target, |pane| {
                 pane.viewport_offset = if up {
@@ -1635,23 +1687,7 @@ impl WorkspaceControl {
         config: &crate::config::Config,
         socket: PathBuf,
     ) -> anyhow::Result<()> {
-        let mut bindings = BTreeMap::new();
-        for (key, binding) in &config.bindings {
-            let byte = crate::commands::key_byte(key)
-                .ok_or_else(|| anyhow::anyhow!("binding `{key}` must encode one byte"))?;
-            let command = match binding {
-                crate::config::Binding::Builtin { builtin } => builtin
-                    .command()
-                    .ok_or_else(|| anyhow::anyhow!("unregistered binding action"))?,
-                crate::config::Binding::External { external } => {
-                    Command::External(external.argv.clone())
-                }
-            };
-            anyhow::ensure!(
-                bindings.insert(byte, command).is_none(),
-                "bindings must not alias the same byte"
-            );
-        }
+        let bindings = crate::commands::configured_bindings(config)?;
         let prefix = crate::commands::key_byte(&config.prefix)
             .ok_or_else(|| anyhow::anyhow!("prefix must encode one byte"))?;
         anyhow::ensure!(
@@ -1689,6 +1725,10 @@ impl WorkspaceControl {
             .map_err(|error| anyhow::anyhow!("updating client bindings: {error:?}"))?;
         *lock(&host.router) = InputRouter::with_bindings(prefix, 40, bindings);
         host.external_socket = Some(socket);
+        let pane_ids: Vec<_> = lock(&host.shared).panes.keys().copied().collect();
+        for pane in pane_ids {
+            host.start_observer(pane);
+        }
         if let Some(changed) = &host.changed {
             changed.pulse();
         }
@@ -1728,6 +1768,10 @@ impl WorkspaceControl {
                             pid: runtime.pty.as_ref().and_then(Pty::process_id),
                             cwd: runtime.cwd.clone(),
                             title: view.title.clone(),
+                            progress: runtime
+                                .terminal
+                                .progress()
+                                .map(|progress| (progress.state, progress.percent)),
                             agent: view.agent.id.clone(),
                             state: control_agent_state(view.agent.state),
                             geometry: crate::control::PaneGeometry {
@@ -1767,6 +1811,10 @@ impl WorkspaceControl {
                         pid: runtime.pty.as_ref().and_then(Pty::process_id),
                         cwd: runtime.cwd.clone(),
                         title: view.title.clone(),
+                        progress: runtime
+                            .terminal
+                            .progress()
+                            .map(|progress| (progress.state, progress.percent)),
                         agent: view.agent.id.clone(),
                         state: control_agent_state(view.agent.state),
                         geometry: crate::control::PaneGeometry {
@@ -1883,6 +1931,7 @@ pub fn platform_tool_from(
 struct TabMutation {
     pane: PaneId,
     opened: bool,
+    focused: bool,
 }
 
 fn tab_action(
@@ -1893,9 +1942,36 @@ fn tab_action(
     let mut tabs = shared.state.tabs().to_vec();
     let active = shared.state.active_tab();
     match action {
+        crate::control::TabAction::Rename { tab, name } => {
+            anyhow::ensure!(
+                name.len() <= 128 && !name.chars().any(char::is_control),
+                "invalid tab name"
+            );
+            let target = tabs
+                .iter_mut()
+                .find(|candidate| candidate.id.0 == tab)
+                .ok_or_else(|| anyhow::anyhow!("tab no longer exists"))?;
+            target.name = name;
+            let pane = target.focused;
+            let mut candidate = shared.state.clone();
+            candidate
+                .replace_tabs(tabs, active)
+                .map_err(|_| anyhow::anyhow!("invalid tab name"))?;
+            commit_resource_candidate(&mut shared, candidate)
+                .map_err(|_| anyhow::anyhow!("tab name exceeds resource limit"))?;
+            if let Some(changed) = &host.changed {
+                changed.pulse();
+            }
+            Ok(TabMutation {
+                pane,
+                opened: false,
+                focused: false,
+            })
+        }
         crate::control::TabAction::Next
         | crate::control::TabAction::Previous
-        | crate::control::TabAction::Select { .. } => {
+        | crate::control::TabAction::Select { .. }
+        | crate::control::TabAction::SelectId { .. } => {
             if tabs.is_empty() {
                 anyhow::bail!("no tabs");
             }
@@ -1907,11 +1983,16 @@ fn tab_action(
                 crate::control::TabAction::Previous => {
                     current.checked_sub(1).unwrap_or(tabs.len() - 1)
                 }
+                crate::control::TabAction::SelectId { tab } => tabs
+                    .iter()
+                    .position(|candidate| candidate.id.0 == tab)
+                    .ok_or_else(|| anyhow::anyhow!("tab no longer exists"))?,
                 crate::control::TabAction::Select { index } => usize::try_from(index)
                     .ok()
                     .filter(|index| *index < tabs.len())
                     .ok_or_else(|| anyhow::anyhow!("tab not found"))?,
-                crate::control::TabAction::New { .. } => {
+                crate::control::TabAction::New { .. }
+                | crate::control::TabAction::Rename { .. } => {
                     return Err(anyhow::anyhow!("invalid tab action"));
                 }
             };
@@ -1938,24 +2019,23 @@ fn tab_action(
             Ok(TabMutation {
                 pane,
                 opened: false,
+                focused: true,
             })
         }
         crate::control::TabAction::New { name } => {
             if tabs.len() >= host.resources.max_tabs {
                 anyhow::bail!("configured tab limit reached");
             }
+            shared.last_tab_id = shared
+                .last_tab_id
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("tab identifiers exhausted"))?;
+            let id = TabId(shared.last_tab_id);
             drop(shared);
             let pane = host.add_pane(host.default_command.clone())?;
             detach_from_active_layout(host, pane)?;
             let mut shared = lock(&host.shared);
             tabs = shared.state.tabs().to_vec();
-            let id = TabId(
-                tabs.iter()
-                    .map(|tab| tab.id.0)
-                    .max()
-                    .unwrap_or(0)
-                    .saturating_add(1),
-            );
             tabs.push(Tab {
                 id,
                 name: name.unwrap_or_else(|| format!("tab-{}", id.0)),
@@ -1974,7 +2054,11 @@ fn tab_action(
             if let Some(changed) = &host.changed {
                 changed.pulse();
             }
-            Ok(TabMutation { pane, opened: true })
+            Ok(TabMutation {
+                pane,
+                opened: true,
+                focused: true,
+            })
         }
     }
 }
@@ -2133,20 +2217,30 @@ fn encode_mouse(
 
 impl SessionHost for WorkspaceSession {
     type State = WorkspaceState;
+    fn pane_input(&mut self, bytes: &[u8]) {
+        lock(&self.inner).pane_input(bytes);
+    }
+    fn application_mouse(&mut self, event: MouseEvent) {
+        lock(&self.inner).application_mouse(event);
+    }
+    fn external_binding(&mut self, key: u8) -> bool {
+        lock(&self.inner).external_binding(key)
+    }
+
     fn snapshot(&mut self) -> Self::State {
         lock(&self.inner).snapshot()
     }
     fn input(&mut self, bytes: &[u8]) {
         lock(&self.inner).input(bytes);
     }
+    fn control(&mut self, request: crate::control::Request) -> Option<crate::control::Reply> {
+        lock(&self.inner).control(request)
+    }
+    fn copy_view(&mut self, pane: u32, offset: u32) -> Option<PaneView> {
+        lock(&self.inner).copy_view(pane, offset)
+    }
     fn resize(&mut self, client: ClientId, rows: u16, cols: u16) {
         lock(&self.inner).resize(client, rows, cols);
-    }
-    fn stamp_echo_ack(state: &mut Self::State, echo_ack: u64) {
-        WorkspaceHost::stamp_echo_ack(state, echo_ack);
-    }
-    fn application_cursor(&self) -> bool {
-        lock(&self.inner).application_cursor()
     }
     fn alive(&self) -> bool {
         lock(&self.inner).alive()
@@ -2167,6 +2261,25 @@ impl SessionHost for WorkspaceSession {
 
 impl SessionHost for WorkspaceHost {
     type State = WorkspaceState;
+    fn pane_input(&mut self, bytes: &[u8]) {
+        self.write_focused(bytes);
+    }
+    fn application_mouse(&mut self, event: MouseEvent) {
+        self.route_mouse_with_policy(event, false);
+    }
+    fn external_binding(&mut self, key: u8) -> bool {
+        let command = lock(&self.router).binding(key);
+        if let Some(Command::External(argv)) = command {
+            self.run_external_binding(argv);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn copy_view(&mut self, pane: u32, offset: u32) -> Option<PaneView> {
+        self.viewer_copy_view(PaneId(pane), offset)
+    }
     fn snapshot(&mut self) -> Self::State {
         self.flush_router_timeout();
         self.reap_exited_panes();
@@ -2177,6 +2290,18 @@ impl SessionHost for WorkspaceHost {
     }
     fn input(&mut self, bytes: &[u8]) {
         self.route_input(bytes);
+    }
+    fn control(&mut self, request: crate::control::Request) -> Option<crate::control::Reply> {
+        if let Err(error) = request.validate() {
+            return Some(crate::control::error_reply(&error));
+        }
+        let (reply, events) = self.execute_request(request, false);
+        for event in events {
+            if !matches!(event, crate::control::Event::PaneOpened { .. }) {
+                self.publish_local_event(event);
+            }
+        }
+        Some(reply)
     }
     fn resize(&mut self, client: ClientId, rows: u16, cols: u16) {
         let attached = !self.viewports.contains_key(&client);
@@ -2193,15 +2318,6 @@ impl SessionHost for WorkspaceHost {
             }
             sink.publish(crate::control::Event::WorkspaceResized { id: 0, rows, cols });
         }
-    }
-    fn stamp_echo_ack(state: &mut Self::State, echo_ack: u64) {
-        let _ = state.update_metadata(|metadata| {
-            metadata.echo_ack = echo_ack;
-        });
-    }
-    fn application_cursor(&self) -> bool {
-        self.focused_runtime()
-            .is_some_and(|runtime| lock(&runtime).terminal.application_cursor())
     }
     fn alive(&self) -> bool {
         if self.killed {
@@ -2245,6 +2361,7 @@ impl SessionHost for WorkspaceHost {
         let panes: Vec<_> = lock(&self.shared).panes.values().cloned().collect();
         for pane in &panes {
             let mut pane = lock(pane);
+            pane.observer.take();
             if let Some(pty) = pane.pty.as_mut() {
                 let _ = pty.terminate_process_group(false);
             }
@@ -2303,7 +2420,7 @@ fn process_chunk(shared: &Arc<Mutex<Shared>>, pane_id: PaneId, bytes: &[u8]) {
             .terminal
             .take_unhandled_oscs()
             .into_iter()
-            .filter_map(|payload| zor::osc::parse(&payload).ok())
+            .filter_map(|payload| crate::observation::parse(&payload).ok())
             .collect();
         let exit_code = pane
             .pty
@@ -2368,32 +2485,7 @@ fn process_chunk(shared: &Arc<Mutex<Shared>>, pane_id: PaneId, bytes: &[u8]) {
             shared.state = candidate;
         }
     }
-    let mut agent_transitions = Vec::new();
-    if let Some(runtime) = shared.panes.get(&pane_id).cloned() {
-        for report in reports {
-            let changed_report = lock(&runtime).last_report.as_ref() != Some(&report);
-            if changed_report {
-                let status = AgentStatus::from(&report);
-                let previous = shared
-                    .state
-                    .pane(pane_id)
-                    .map(|pane| pane.agent.clone())
-                    .unwrap_or_default();
-                let mut candidate = shared.state.clone();
-                let accepted = candidate
-                    .update_pane(pane_id, |pane| pane.agent = status.clone())
-                    .is_ok()
-                    && total_resource_units(&shared, &candidate) <= shared.resources.max_units;
-                if accepted {
-                    shared.state = candidate;
-                    lock(&runtime).last_report = Some(report);
-                }
-                if accepted && status != previous {
-                    agent_transitions.push((previous, status));
-                }
-            }
-        }
-    }
+    let agent_transitions = apply_observer_reports(&mut shared, pane_id, reports);
     let selected = shared
         .state
         .active_tab()
@@ -2627,21 +2719,6 @@ fn control_agent_state(state: AgentState) -> crate::control::AgentStatus {
     }
 }
 
-fn wrapped_command(command: &[String], zor: Option<&Path>) -> Vec<String> {
-    if let Some(zor) = zor {
-        let mut output = vec![
-            zor.to_string_lossy().into_owned(),
-            "--title".into(),
-            "never".into(),
-            "--".into(),
-        ];
-        output.extend_from_slice(command);
-        output
-    } else {
-        command.to_vec()
-    }
-}
-
 pub fn resolve_zor_path(
     path: &Path,
     path_environment: Option<&std::ffi::OsStr>,
@@ -2686,6 +2763,109 @@ fn monotonic_ms() -> u64 {
     u64::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+fn apply_observer_reports(
+    shared: &mut Shared,
+    pane_id: PaneId,
+    reports: Vec<crate::observation::Report>,
+) -> Vec<(AgentStatus, AgentStatus)> {
+    let mut agent_transitions = Vec::new();
+    if let Some(runtime) = shared.panes.get(&pane_id).cloned() {
+        for report in reports {
+            let changed_report = lock(&runtime).last_report.as_ref() != Some(&report);
+            if changed_report {
+                let status = AgentStatus::from(&report);
+                let previous = shared
+                    .state
+                    .pane(pane_id)
+                    .map(|pane| pane.agent.clone())
+                    .unwrap_or_default();
+                let mut candidate = shared.state.clone();
+                let accepted = candidate
+                    .update_pane(pane_id, |pane| pane.agent = status.clone())
+                    .is_ok()
+                    && total_resource_units(shared, &candidate) <= shared.resources.max_units;
+                if accepted {
+                    shared.state = candidate;
+                    lock(&runtime).last_report = Some(report);
+                }
+                if accepted && status != previous {
+                    agent_transitions.push((previous, status));
+                }
+            }
+        }
+    }
+    agent_transitions
+}
+
+fn process_observer_report(
+    shared: &Arc<Mutex<Shared>>,
+    pane: PaneId,
+    generation: &std::sync::Weak<Mutex<PaneRuntime>>,
+    report: crate::observation::Report,
+) {
+    let mut shared = lock(shared);
+    let Some(owner) = generation.upgrade() else {
+        return;
+    };
+    if !shared
+        .panes
+        .get(&pane)
+        .is_some_and(|current| Arc::ptr_eq(current, &owner))
+    {
+        return;
+    }
+    let transitions = apply_observer_reports(&mut shared, pane, vec![report]);
+    if let Some(sink) = &shared.event_sink {
+        for (previous, current) in transitions {
+            sink.publish(crate::control::Event::AgentState {
+                id: 0,
+                pane: pane.0,
+                agent: current.id,
+                old_state: control_agent_state(previous.state),
+                new_state: control_agent_state(current.state),
+                timestamp_ms: monotonic_ms(),
+            });
+        }
+    }
+    if let Some(changed) = &shared.changed {
+        changed.pulse();
+    }
+}
+
+impl WorkspaceHost {
+    fn start_observer(&mut self, pane: PaneId) {
+        let (Some(executable), Some(socket)) = (&self.zor, &self.external_socket) else {
+            return;
+        };
+        let runtime = lock(&self.shared).panes.get(&pane).cloned();
+        let Some(runtime) = runtime else { return };
+        let generation = Arc::downgrade(&runtime);
+        let mut runtime = lock(&runtime);
+        if runtime.observer.is_some() {
+            return;
+        }
+        let Some(pid) = runtime.pty.as_ref().and_then(Pty::process_id) else {
+            return;
+        };
+        let shared = Arc::clone(&self.shared);
+        match crate::observation::process::Observer::spawn(
+            executable,
+            socket,
+            pane.0,
+            pid,
+            move |report| process_observer_report(&shared, pane, &generation, report),
+        ) {
+            Ok((observer, worker)) => {
+                runtime.observer = Some(observer);
+                self.workers.push(worker);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "observer unavailable; pane continues without observation")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod host_unit_tests {
@@ -2693,8 +2873,60 @@ mod host_unit_tests {
         MouseEvent, Shared, WorkspaceHost, commit_resource_candidate, encode_mouse,
         output_event_due, process_chunk, total_resource_units,
     };
+    use crate::host::session::{ChangeSignal, SessionHost as _};
     use crate::state::{MouseEncoding, MouseMode, PaneModes};
-    use koh::server::{ChangeSignal, SessionHost as _};
+
+    #[test]
+    fn obsolete_observer_cannot_update_a_replacement_pane() {
+        let command = vec!["/bin/cat".to_owned()];
+        let mut host = WorkspaceHost::spawn(command.clone(), 0, None).expect("host");
+        let old = host.add_pane(command.clone()).expect("old pane");
+        let old_runtime = super::lock(&host.shared)
+            .panes
+            .get(&old)
+            .cloned()
+            .expect("old runtime");
+        let old_generation = std::sync::Arc::downgrade(&old_runtime);
+        assert_eq!(
+            host.close_tiled_focused(true).map(|(pane, _)| pane),
+            Some(old)
+        );
+        let replacement = host.add_pane(command).expect("replacement pane");
+        assert_ne!(replacement, old, "pane identifiers must remain unique");
+        let report =
+            crate::observation::parse(b"7877;v=1;state=working;agent=test;seq=1").expect("report");
+        super::process_observer_report(&host.shared, old, &old_generation, report.clone());
+        // Keep the generation check covered independently of monotonic IDs.
+        super::process_observer_report(&host.shared, replacement, &old_generation, report.clone());
+        assert_eq!(
+            host.snapshot()
+                .pane(replacement)
+                .expect("replacement state")
+                .agent
+                .state,
+            crate::state::AgentState::None
+        );
+        let current = super::lock(&host.shared)
+            .panes
+            .get(&replacement)
+            .cloned()
+            .expect("current runtime");
+        super::process_observer_report(
+            &host.shared,
+            replacement,
+            &std::sync::Arc::downgrade(&current),
+            report,
+        );
+        assert_eq!(
+            host.snapshot()
+                .pane(replacement)
+                .expect("current observation")
+                .agent
+                .state,
+            crate::state::AgentState::Working
+        );
+        host.shutdown_all();
+    }
 
     #[test]
     fn pane_output_clock_is_independently_rate_limited() {

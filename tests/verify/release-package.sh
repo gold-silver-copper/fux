@@ -9,21 +9,13 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 cd "$repository"
-cargo package --manifest-path zor/Cargo.toml --locked
-cargo package --locked
-
-zor_package="$repository/zor/target/package/zor-0.1.2"
-fux_package="$repository/target/package/fux-0.2.1"
-test -f "$zor_package/Cargo.toml"
+# Extra package flags (for example --allow-dirty for a local worktree) are explicit.
+cargo package --locked "$@"
+version=$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "fux"))')
+fux_package="$repository/target/package/fux-$version"
 test -f "$fux_package/Cargo.toml"
 
-export CARGO_HOME="$scratch/cargo-home"
-export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
-cargo install --path "$zor_package" --root "$scratch/install" --locked
 cargo install --path "$fux_package" --root "$scratch/install" --locked
-
-"$scratch/install/bin/zor" --version
 "$scratch/install/bin/fux" --version
 FUX_BIN="$scratch/install/bin/fux" \
-ZOR_BIN="$scratch/install/bin/zor" \
 cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked --test binary

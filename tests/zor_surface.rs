@@ -1,6 +1,6 @@
 #[test]
-fn downstream_build_exposes_only_the_osc_parser_contract() {
-    // Phase 0 seam: fux can consume zor's no-default-features OSC API.
+fn standalone_build_parses_optional_observer_metadata() {
+    // Fux owns only the consumer adapter; this build has no zor dependency.
     let report = fux::parse_agent_report(b"7877;v=1;state=none;seq=1");
     assert!(report.is_ok());
 }

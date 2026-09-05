@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Record and reconstruct dependency worktrees without commits or unpublished releases.
+"""Reconstruct optional integration sources without commits or unpublished releases.
+
+Standalone fux builds, tests, and packages never require this tool.
 
 export: refresh reviewed patches from the owning repositories, including new source files.
 apply: clone missing checkouts at pinned bases and apply patches; refuse divergent worktrees.
@@ -85,12 +87,22 @@ def verify_combined_build():
         environment["CARGO_TARGET_DIR"] = str(target)
         environment["ZOR_BIN"] = str(target / "debug" / "zor")
         environment["FUX_REQUIRE_ZOR_BIN"] = "1"
+        environment["FUX_BIN"] = str(target / "debug" / "fux")
+        environment["KOH_REQUIRE_FUX_BIN"] = "1"
+        # Each reconstruction has a new absolute source path. Reused owner artifacts can retain
+        # env!("CARGO_MANIFEST_DIR") pointing at an already deleted reconstruction. Keep third-party
+        # dependency caches, but rebuild all three owner packages for this exact source snapshot.
         commands = [
+            ["cargo", "clean", "-p", "fux"],
+            ["cargo", "clean", "--manifest-path", "zor/Cargo.toml", "-p", "zor"],
+            ["cargo", "clean", "--manifest-path", "references/koh/Cargo.toml", "-p", "koh"],
             ["cargo", "check", "--all-targets", "--locked"],
             ["cargo", "build", "--locked", "--bin", "fux"],
             ["cargo", "build", "--manifest-path", "zor/Cargo.toml", "--locked", "--bin", "zor"],
             ["cargo", "test", "--locked", "--test", "host", "--test", "client",
              "--test", "zor_integration", "--", "--test-threads=1"],
+            ["cargo", "test", "--manifest-path", "references/koh/Cargo.toml", "--locked", "--lib", "gateway::"],
+            ["cargo", "test", "--manifest-path", "references/koh/Cargo.toml", "--locked", "--test", "gateway"],
         ]
         for command in commands:
             print("combined: " + " ".join(command), flush=True)

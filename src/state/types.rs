@@ -327,13 +327,13 @@ impl PaneView {
     }
 }
 
-impl From<&zor::osc::Report> for AgentStatus {
-    fn from(report: &zor::osc::Report) -> Self {
+impl From<&crate::observation::Report> for AgentStatus {
+    fn from(report: &crate::observation::Report) -> Self {
         let state = match report.state() {
-            zor::osc::State::Working => AgentState::Working,
-            zor::osc::State::Blocked => AgentState::Blocked,
-            zor::osc::State::Idle => AgentState::Idle,
-            zor::osc::State::None => AgentState::None,
+            crate::observation::State::Working => AgentState::Working,
+            crate::observation::State::Blocked => AgentState::Blocked,
+            crate::observation::State::Idle => AgentState::Idle,
+            crate::observation::State::None => AgentState::None,
         };
         let flags = report.visible();
         Self {
@@ -366,8 +366,6 @@ pub struct WorkspaceMetadata {
     pub window_title: String,
     pub clipboard_base64: String,
     pub bell_count: u64,
-    /// Per-connection acknowledgement stamped onto a cloned outbound snapshot.
-    pub echo_ack: u64,
     pub exit_code: Option<u32>,
     pub generation: u64,
 }

@@ -10,7 +10,6 @@ use fux::state::{
     Axis, Cell, CellKind, LayoutTree, PaneId, PaneView, RATIO_SCALE, Rect, Tab, TabId,
     WorkspaceState,
 };
-use koh::ssp::SyncState as _;
 use std::num::NonZeroU16;
 
 struct Rng(u64);

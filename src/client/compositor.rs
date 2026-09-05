@@ -1,6 +1,6 @@
+use crate::client::view::Overlay;
 use crate::client::{active_tab, rat_color};
 use crate::state::{CellKind, PaneId, Rect as LayoutRect, WorkspaceState};
-use koh::predict::Overlay;
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
 use ratatui_core::style::{Color, Modifier, Style};
@@ -73,30 +73,12 @@ impl Compositor {
                     paint_pane(&mut buffer, content, pane);
                     if id == tab.focused && !has_popup {
                         paint_overlay(&mut buffer, content, overlay);
-                        let relative = if pane.copy.active {
-                            let start = pane
-                                .copy
-                                .anchor
-                                .unwrap_or((pane.copy.cursor_row, pane.copy.cursor_column));
-                            paint_selection(
-                                &mut buffer,
-                                Selection {
-                                    start: (
-                                        content.y.saturating_add(start.0),
-                                        content.x.saturating_add(start.1),
-                                    ),
-                                    end: (
-                                        content.y.saturating_add(pane.copy.cursor_row),
-                                        content.x.saturating_add(pane.copy.cursor_column),
-                                    ),
-                                },
-                            );
-                            (pane.copy.cursor_row, pane.copy.cursor_column)
-                        } else {
-                            overlay
-                                .cursor()
-                                .unwrap_or((pane.cursor.row, pane.cursor.column))
-                        };
+                        let relative =
+                            paint_copy(&mut buffer, content, pane).unwrap_or_else(|| {
+                                overlay
+                                    .cursor()
+                                    .unwrap_or((pane.cursor.row, pane.cursor.column))
+                            });
                         if (pane.copy.active || !pane.cursor.hidden)
                             && relative.0 < content.height
                             && relative.1 < content.width
@@ -122,6 +104,7 @@ impl Compositor {
                 width,
                 height,
             );
+            pane_rects.insert(popup.pane, rect);
             let blocked = state
                 .pane(popup.pane)
                 .is_some_and(|pane| pane.agent.state == crate::state::AgentState::Blocked);
@@ -132,13 +115,20 @@ impl Compositor {
                 if index == top {
                     paint_overlay(&mut buffer, content, overlay);
                 }
-                if !pane.cursor.hidden
-                    && pane.cursor.row < content.height
-                    && pane.cursor.column < content.width
+                let relative = if index == top {
+                    paint_copy(&mut buffer, content, pane)
+                } else {
+                    None
+                }
+                .unwrap_or((pane.cursor.row, pane.cursor.column));
+                if index == top
+                    && (pane.copy.active || !pane.cursor.hidden)
+                    && relative.0 < content.height
+                    && relative.1 < content.width
                 {
                     cursor = Some((
-                        content.y.saturating_add(pane.cursor.row),
-                        content.x.saturating_add(pane.cursor.column),
+                        content.y.saturating_add(relative.0),
+                        content.x.saturating_add(relative.1),
                     ));
                 }
             }
@@ -390,4 +380,41 @@ const fn vt_to_rat(color: vt100::Color) -> Color {
         vt100::Color::Idx(value) => Color::Indexed(value),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
+}
+
+fn paint_copy(
+    buffer: &mut Buffer,
+    content: Rect,
+    pane: &crate::state::PaneView,
+) -> Option<(u16, u16)> {
+    if !pane.copy.active || content.is_empty() {
+        return None;
+    }
+    let clamp = |point: (u16, u16)| {
+        (
+            point.0.min(content.height - 1),
+            point.1.min(content.width - 1),
+        )
+    };
+    let cursor = clamp((pane.copy.cursor_row, pane.copy.cursor_column));
+    let anchor = clamp(pane.copy.anchor.unwrap_or(cursor));
+    let (start, end) = if anchor <= cursor {
+        (anchor, cursor)
+    } else {
+        (cursor, anchor)
+    };
+    for row in start.0..=end.0 {
+        let first = if row == start.0 { start.1 } else { 0 };
+        let last = if row == end.0 {
+            end.1
+        } else {
+            content.width - 1
+        };
+        for column in first..=last {
+            if let Some(cell) = buffer.cell_mut((content.x + column, content.y + row)) {
+                cell.modifier.insert(Modifier::REVERSED);
+            }
+        }
+    }
+    Some(cursor)
 }

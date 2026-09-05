@@ -75,8 +75,8 @@
               "mouse_encoding": "default"
             },
             "status": {},
-            "selection": { "cursor": [0, 0], "anchor": null },
-            "prediction_target": null
+            "selection": null,
+            "prediction_target": 1
           },
           {
             "rows": 27,

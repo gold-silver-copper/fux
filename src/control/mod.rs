@@ -1,6 +1,10 @@
 //! Host-independent control protocol and local Unix transport.
 
+#[cfg(unix)]
+mod handshake;
 mod protocol;
+#[cfg(unix)]
+pub use handshake::{CONTROL_PREFACE, CONTROL_VERSION, negotiate_client, negotiate_server};
 mod queue;
 #[cfg(unix)]
 mod socket;
@@ -14,7 +18,10 @@ pub use protocol::{
 };
 pub use queue::{EventQueue, EventReceiver, PublishOutcome};
 #[cfg(unix)]
-pub use socket::{BoundControlSocket, PeerAuthorization, bind_control_socket, control_socket_path};
+pub use socket::{
+    BoundControlSocket, PeerAuthorization, authorize_peer, bind_control_socket, bind_local_socket,
+    control_socket_path,
+};
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_ARGV_ENTRIES: usize = 128;

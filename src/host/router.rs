@@ -6,7 +6,8 @@ const MAX_PENDING: usize = 64;
 
 pub use crate::commands::Command;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MouseEvent {
     pub code: u16,
     pub column: u16,
@@ -15,6 +16,9 @@ pub struct MouseEvent {
 }
 
 impl MouseEvent {
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        parse_mouse(bytes)
+    }
     #[must_use]
     pub const fn shift(self) -> bool {
         self.code & 4 != 0
@@ -56,6 +60,9 @@ pub struct InputRouter {
 }
 
 impl InputRouter {
+    pub fn binding(&self, key: u8) -> Option<Command> {
+        self.bindings.get(&key).cloned()
+    }
     #[must_use]
     pub fn new(prefix: u8, ambiguity_timeout_ms: u64) -> Self {
         Self::with_bindings(prefix, ambiguity_timeout_ms, default_bindings())

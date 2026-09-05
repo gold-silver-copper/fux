@@ -1,9 +1,9 @@
 use super::Compositor;
+use super::backend::{CellStyle as BackendStyle, TerminalBackend};
+use super::{ClientState as _, ClientTerminal, InputModes};
+use crate::client::view::Overlay;
 use crate::state::{MAX_CLIPBOARD_BYTES, WorkspaceState};
 use base64::Engine as _;
-use koh::client::backend::{CellStyle as BackendStyle, KohBackend};
-use koh::client::{ClientState as _, ClientTerminal, InputModes};
-use koh::predict::Overlay;
 use ratatui_core::buffer::Buffer;
 use ratatui_core::style::{Color, Modifier};
 use std::collections::BTreeMap;
@@ -14,9 +14,13 @@ use std::time::{Duration, Instant};
 
 const MAX_TERMINAL_TITLE_BYTES: usize = 4096;
 
-pub struct WorkspaceTerminal<B: KohBackend> {
+pub struct WorkspaceTerminal<B: TerminalBackend> {
     backend: B,
     input_policy: Option<tokio::sync::watch::Sender<Option<crate::commands::ClientBindings>>>,
+    hints: Option<tokio::sync::watch::Receiver<Option<super::hints::HintPanel>>>,
+    copy_ui: Option<tokio::sync::watch::Receiver<super::copy::CopyUi>>,
+    last_local_copy: u64,
+    mouse_layout: Option<tokio::sync::watch::Sender<super::copy::MouseLayout>>,
     compositor: Compositor,
     previous: Option<Buffer>,
     clipboard_enabled: bool,
@@ -29,7 +33,7 @@ pub struct WorkspaceTerminal<B: KohBackend> {
     notification_children: Vec<(Child, Instant)>,
 }
 
-impl<B: KohBackend> WorkspaceTerminal<B> {
+impl<B: TerminalBackend> WorkspaceTerminal<B> {
     pub fn enter(mut backend: B, clipboard_enabled: bool) -> io::Result<Self> {
         backend.enter_raw_mode()?;
         if let Err(error) = backend.enter_alt_screen() {
@@ -42,6 +46,10 @@ impl<B: KohBackend> WorkspaceTerminal<B> {
         Ok(Self {
             backend,
             input_policy: None,
+            hints: None,
+            copy_ui: None,
+            last_local_copy: 0,
+            mouse_layout: None,
             compositor: Compositor::default(),
             previous: None,
             clipboard_enabled,
@@ -60,6 +68,29 @@ impl<B: KohBackend> WorkspaceTerminal<B> {
         sender: tokio::sync::watch::Sender<Option<crate::commands::ClientBindings>>,
     ) -> Self {
         self.input_policy = Some(sender);
+        self
+    }
+
+    pub fn with_hints(
+        mut self,
+        hints: tokio::sync::watch::Receiver<Option<super::hints::HintPanel>>,
+    ) -> Self {
+        self.hints = Some(hints);
+        self
+    }
+
+    pub fn with_mouse_layout(
+        mut self,
+        sender: tokio::sync::watch::Sender<super::copy::MouseLayout>,
+    ) -> Self {
+        self.mouse_layout = Some(sender);
+        self
+    }
+    pub fn with_copy_ui(
+        mut self,
+        receiver: tokio::sync::watch::Receiver<super::copy::CopyUi>,
+    ) -> Self {
+        self.copy_ui = Some(receiver);
         self
     }
 
@@ -132,7 +163,16 @@ impl<B: KohBackend> WorkspaceTerminal<B> {
         self.backend.begin_frame()?;
         let painted: io::Result<()> = (|| {
             let empty = Buffer::empty(next.area);
-            let previous = self.previous.as_ref().unwrap_or(&empty);
+            let previous = self
+                .previous
+                .as_ref()
+                .filter(|previous| previous.area == next.area);
+            if previous.is_none() {
+                // A terminal may reflow existing content on resize. Clear it before
+                // comparing against a blank frame with the new dimensions.
+                self.backend.write_bytes(b"\x1b[2J")?;
+            }
+            let previous = previous.unwrap_or(&empty);
             for (col, row, cell) in previous.diff(next) {
                 self.backend.move_to(row, col)?;
                 self.backend.set_style(backend_style(cell))?;
@@ -178,12 +218,12 @@ fn track_notification(children: &mut Vec<(Child, Instant)>, child: Child) {
     children.push((child, Instant::now()));
 }
 
-impl WorkspaceTerminal<koh::client::DefaultBackend> {
+impl WorkspaceTerminal<super::backend::DefaultBackend> {
     pub fn enter_default(
         clipboard_enabled: bool,
         notifications: Option<crate::config::NotificationPolicy>,
     ) -> io::Result<Self> {
-        let mut terminal = Self::enter(koh::client::DefaultBackend::new()?, clipboard_enabled)?;
+        let mut terminal = Self::enter(super::backend::DefaultBackend::new()?, clipboard_enabled)?;
         terminal.notifications = notifications.map(ClientNotificationGate::new);
         Ok(terminal)
     }
@@ -344,7 +384,7 @@ fn executable_on_path(program: &str) -> bool {
     })
 }
 
-impl<B: KohBackend> ClientTerminal<WorkspaceState> for WorkspaceTerminal<B> {
+impl<B: TerminalBackend> ClientTerminal<WorkspaceState> for WorkspaceTerminal<B> {
     fn render(
         &mut self,
         state: &WorkspaceState,
@@ -363,8 +403,49 @@ impl<B: KohBackend> ClientTerminal<WorkspaceState> for WorkspaceTerminal<B> {
             });
         }
         self.emit_out_of_band(state)?;
+        let copy_ui = self
+            .copy_ui
+            .as_ref()
+            .map(|receiver| receiver.borrow().clone());
+        if let Some((sequence, text)) = copy_ui.as_ref().and_then(|copy| copy.clipboard.as_ref())
+            && *sequence != self.last_local_copy
+        {
+            self.last_local_copy = *sequence;
+            if self.clipboard_enabled && valid_clipboard(text) {
+                self.backend.set_clipboard(text)?;
+            }
+        }
+        let local = copy_ui.as_ref().and_then(|copy| copy.apply(state));
+        let state = local.as_ref().unwrap_or(state);
         let (rows, cols) = self.backend.size()?;
-        let frame = self.compositor.compose(state, overlay, status, rows, cols);
+        let mut frame = self.compositor.compose(state, overlay, status, rows, cols);
+        if let Some(sender) = &self.mouse_layout {
+            let top = state
+                .popups()
+                .iter()
+                .max_by_key(|popup| popup.z_index)
+                .map(|popup| popup.pane);
+            let layout = frame
+                .pane_rects
+                .iter()
+                .filter(|(pane, _)| top.is_none_or(|top| **pane == top))
+                .map(|(pane, rect)| (*pane, *rect))
+                .collect();
+            sender.send_if_modified(|current| {
+                if *current == layout {
+                    false
+                } else {
+                    *current = layout;
+                    true
+                }
+            });
+        }
+        if let Some(receiver) = &self.hints
+            && let Some(panel) = receiver.borrow().as_ref()
+        {
+            panel.paint(&mut frame.buffer);
+            frame.cursor = None;
+        }
         self.paint(&frame.buffer, frame.cursor)
     }
 
@@ -383,7 +464,7 @@ impl<B: KohBackend> ClientTerminal<WorkspaceState> for WorkspaceTerminal<B> {
     }
 }
 
-impl<B: KohBackend> Drop for WorkspaceTerminal<B> {
+impl<B: TerminalBackend> Drop for WorkspaceTerminal<B> {
     fn drop(&mut self) {
         reap_notifications(&mut self.notification_children, true);
         let _ = self.backend.end_frame();
@@ -415,7 +496,7 @@ impl CaptureBackend {
     }
 }
 
-impl KohBackend for CaptureBackend {
+impl TerminalBackend for CaptureBackend {
     fn write_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.bytes.extend_from_slice(bytes);
         Ok(())

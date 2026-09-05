@@ -2,13 +2,13 @@
   "koh": {
     "path": "references/koh",
     "repository": "https://github.com/gold-silver-copper/koh",
-    "base": "d6ded15bca6fb807b4896f49c8a43dfcdf43ee27",
+    "base": "50a8270f48175c4a23e84c0ece008ff9ae49d918",
     "patch": "koh.patch"
   },
   "zor": {
     "path": "zor",
     "repository": "https://github.com/gold-silver-copper/zor",
-    "base": "25cbc462ee3cf91034fa6763279662f0e2eaabc7",
+    "base": "fb6a1ef18c043ecf9dc94a10a18719e820bee685",
     "patch": "zor.patch"
   }
 }

@@ -1,8 +1,8 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use fux::host::WorkspaceHost;
+use fux::host::session::{ChangeSignal, ClientId, SessionHost as _};
 use fux::state::PaneId;
-use koh::server::{ChangeSignal, ClientId, SessionHost as _};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};

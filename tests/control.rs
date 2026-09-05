@@ -245,7 +245,7 @@ fn replies_and_every_event_are_newline_delimited_and_keep_subscription_ids() {
         },
         Event::ClientDetached {
             id: 77,
-            client: ClientIdentity::Endpoint("peer".into()),
+            client: ClientIdentity::Viewer(2),
         },
     ];
     assert_eq!(
@@ -331,7 +331,7 @@ fn unix_socket_enforces_private_paths_and_conservative_stale_replacement() {
     let bound = bind_control_socket(&root, "work").expect("bind");
     assert_eq!(
         bound.peer_authorization(),
-        PeerAuthorization::FilesystemPermissions
+        PeerAuthorization::OperatingSystemCredentials
     );
     assert_eq!(
         fs::metadata(root.join("fux"))

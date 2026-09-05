@@ -1,3 +1,5 @@
+> Historical design/evidence for the earlier ownership refactor. Fux now starts pane commands directly and uses an optional zor sidecar. Current behavior is documented in [design.md](design.md); current verification is tracked in [standalone-plan.md](standalone-plan.md).
+
 # Ownership refactor completion
 
 Objective: execute [project-boundaries-refactor-prompt.md](project-boundaries-refactor-prompt.md).
@@ -40,8 +42,8 @@ reproduction commands, and the native-platform/release limitations.
 
 ## Source delivery
 
-The owner changes are committed in koh at `d6ded15bca6fb807b4896f49c8a43dfcdf43ee27` and zor at
-`25cbc462ee3cf91034fa6763279662f0e2eaabc7`. The dependency manifest and CI checkouts pin those
+The owner changes are committed in koh at `50a8270f48175c4a23e84c0ece008ff9ae49d918` and zor at
+`fb6a1ef18c043ecf9dc94a10a18719e820bee685`. The dependency manifest and CI checkouts pin those
 commits; dependency patches are empty because the changes now live in their owning repositories.
 The user subsequently authorized committing and pushing all three repositories.
 No packages were published and no personal keys or sessions were modified.

@@ -17,8 +17,6 @@ pub const MAX_COMMAND_ARGS: usize = 128;
 pub const MAX_COMMAND_ARG_BYTES: usize = 4096;
 pub const MAX_COMMAND_BYTES: usize = 16 * 1024;
 pub const MAX_HOOKS: usize = 32;
-pub const MAX_REMOTE_ALLOW_IDS: usize = 256;
-pub const MAX_REMOTE_ALLOW_ID_BYTES: usize = 512;
 pub const MAX_SCROLLBACK_LINES: u32 = 100_000;
 /// Matches the control protocol's pre-encoding capture ceiling.
 pub const MAX_CAPTURE_BYTES: usize = 128 * 1024;
@@ -33,16 +31,14 @@ pub const MAX_TOTAL_CELLS: usize = 262_144;
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
     pub prefix: String,
+    pub hints: HintPreferences,
     pub bindings: BTreeMap<String, Binding>,
     pub default_command: Command,
-    pub zor_path: PathBuf,
+    pub zor_path: Option<PathBuf>,
     pub clipboard: ClipboardPolicy,
     pub notifications: NotificationPolicy,
     pub history: HistoryLimits,
     pub resources: ResourceLimits,
-    pub remote_allow_ids: Vec<String>,
-    /// Bind workspace transport to loopback/direct sockets without relay discovery.
-    pub local_network: bool,
     pub hooks: Vec<Hook>,
 }
 
@@ -50,15 +46,14 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             prefix: crate::commands::key_name(crate::commands::DEFAULT_PREFIX),
+            hints: HintPreferences::default(),
             bindings: default_bindings(),
             default_command: default_shell(),
-            zor_path: PathBuf::from("zor"),
+            zor_path: None,
             clipboard: ClipboardPolicy::Disabled,
             notifications: NotificationPolicy::default(),
             history: HistoryLimits::default(),
             resources: ResourceLimits::default(),
-            remote_allow_ids: Vec::new(),
-            local_network: false,
             hooks: Vec::new(),
         }
     }
@@ -121,6 +116,9 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         let prefix = validate_key_notation("prefix", &self.prefix)?;
+        if self.hints.delay_ms > 5000 {
+            return invalid("hints.delay-ms", "must be between 0 and 5000");
+        }
         if self.bindings.len() > MAX_BINDINGS {
             return invalid(
                 "bindings",
@@ -141,30 +139,11 @@ impl Config {
             }
         }
         self.default_command.validate("default-command")?;
-        validate_path("zor-path", &self.zor_path)?;
+        if let Some(path) = &self.zor_path {
+            validate_path("zor-path", path)?;
+        }
         self.history.validate()?;
         self.resources.validate()?;
-        if self.remote_allow_ids.len() > MAX_REMOTE_ALLOW_IDS {
-            return invalid(
-                "remote-allow-ids",
-                format!("at most {MAX_REMOTE_ALLOW_IDS} endpoint ids are allowed"),
-            );
-        }
-        let mut ids = BTreeSet::new();
-        for id in &self.remote_allow_ids {
-            if id.is_empty()
-                || id.len() > MAX_REMOTE_ALLOW_ID_BYTES
-                || id.chars().any(char::is_whitespace)
-            {
-                return invalid(
-                    "remote-allow-ids",
-                    "ids must be non-empty, bounded, and contain no whitespace",
-                );
-            }
-            if !ids.insert(id) {
-                return invalid("remote-allow-ids", format!("duplicate endpoint id `{id}`"));
-            }
-        }
         if self.hooks.len() > MAX_HOOKS {
             return invalid("hooks", format!("at most {MAX_HOOKS} hooks are allowed"));
         }
@@ -277,7 +256,7 @@ pub struct NotificationPolicy {
     pub enabled: bool,
     pub notify_blocked: bool,
     pub notify_idle: bool,
-    pub remote_clients: bool,
+    pub viewer_notifications: bool,
 }
 
 impl Default for NotificationPolicy {
@@ -286,7 +265,23 @@ impl Default for NotificationPolicy {
             enabled: true,
             notify_blocked: true,
             notify_idle: true,
-            remote_clients: true,
+            viewer_notifications: true,
+        }
+    }
+}
+
+/// Local viewer preference; does not change key execution or explicit help.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
+pub struct HintPreferences {
+    pub automatic: bool,
+    pub delay_ms: u64,
+}
+impl Default for HintPreferences {
+    fn default() -> Self {
+        Self {
+            automatic: true,
+            delay_ms: 200,
         }
     }
 }
@@ -379,6 +374,7 @@ pub struct Hook {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct ConfigPatch {
     prefix: Option<String>,
+    hints: Option<HintPreferences>,
     bindings: Option<BTreeMap<String, Binding>>,
     default_command: Option<Command>,
     zor_path: Option<PathBuf>,
@@ -386,13 +382,14 @@ struct ConfigPatch {
     notifications: Option<NotificationPolicy>,
     history: Option<HistoryLimits>,
     resources: Option<ResourceLimits>,
-    remote_allow_ids: Option<Vec<String>>,
-    local_network: Option<bool>,
     hooks: Option<Vec<Hook>>,
 }
 
 impl ConfigPatch {
     fn apply_to(self, mut config: Config) -> Config {
+        if let Some(value) = self.hints {
+            config.hints = value;
+        }
         if let Some(value) = self.prefix {
             config.prefix = value;
         }
@@ -403,7 +400,7 @@ impl ConfigPatch {
             config.default_command = value;
         }
         if let Some(value) = self.zor_path {
-            config.zor_path = value;
+            config.zor_path = Some(value);
         }
         if let Some(value) = self.clipboard {
             config.clipboard = value;
@@ -416,12 +413,6 @@ impl ConfigPatch {
         }
         if let Some(value) = self.resources {
             config.resources = value;
-        }
-        if let Some(value) = self.remote_allow_ids {
-            config.remote_allow_ids = value;
-        }
-        if let Some(value) = self.local_network {
-            config.local_network = value;
         }
         if let Some(value) = self.hooks {
             config.hooks = value;

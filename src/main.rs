@@ -1,13 +1,10 @@
 #![forbid(unsafe_code)]
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
-use koh::client::ConnectConfig;
-use koh::keycmd::{KeyConfig, KeyOp};
 
 #[allow(dead_code)]
 mod runtime;
@@ -23,9 +20,11 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Serve(ServeArgs),
-    Connect(ConnectArgs),
-    Id(KeyFileArgs),
-    Key(KeyArgs),
+    /// Attach to an explicit local socket, including an optional gateway socket.
+    Attach {
+        #[arg(long)]
+        socket: PathBuf,
+    },
     /// Show configured multiplexer keybindings.
     Bindings,
     Ctl(PassthroughArgs),
@@ -46,60 +45,7 @@ enum Command {
 }
 
 #[derive(Debug, Args)]
-struct KeyFileArgs {
-    #[arg(long)]
-    key_file: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
-struct ConnectArgs {
-    server: String,
-    #[arg(long)]
-    key_file: Option<PathBuf>,
-    #[arg(long, conflicts_with = "relay_url")]
-    direct: Option<SocketAddr>,
-    #[arg(long)]
-    relay_url: Option<String>,
-    #[arg(long)]
-    clipboard: bool,
-    #[arg(long, value_name = "CMD")]
-    on_bell: Option<String>,
-}
-
-#[derive(Debug, Args)]
-struct KeyArgs {
-    #[command(subcommand)]
-    operation: KeyOperation,
-    #[arg(long, global = true, conflicts_with_all = ["client", "workspace"])]
-    key_file: Option<PathBuf>,
-    /// Select the shared koh client identity explicitly.
-    #[arg(long, global = true, conflicts_with = "workspace")]
-    client: bool,
-    /// Select a named fux workspace identity.
-    #[arg(long, global = true)]
-    workspace: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Subcommand)]
-enum KeyOperation {
-    /// Change encryption passphrase without changing the endpoint ID.
-    Passwd,
-    /// Unlock and show the selected identity's endpoint ID and encryption status.
-    Info,
-    /// Show the selected identity path without unlocking or creating it.
-    Path,
-    /// Delete one selected identity; the next use generates a new endpoint ID.
-    Reset {
-        /// Acknowledge permanent identity loss and remote allowlist updates.
-        #[arg(long)]
-        yes: bool,
-    },
-}
-
-#[derive(Debug, Args)]
 struct ServeArgs {
-    #[arg(long = "allow")]
-    allow: Vec<String>,
     #[arg(long, default_value = "default")]
     name: String,
     #[arg(long, hide = true)]
@@ -202,41 +148,52 @@ impl std::io::Write for CappedLog {
 
 async fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
-        Some(Command::Id(args)) => {
-            let secret = koh::identity::load_client(args.key_file.as_deref())?;
-            println!("{}", secret.endpoint_id());
-            Ok(ExitCode::SUCCESS)
+        Some(Command::Attach { socket }) => {
+            let config = fux::config::Config::load()?;
+            let outcome = fux::client::connect_local_workspace(
+                &socket,
+                matches!(
+                    config.clipboard,
+                    fux::config::ClipboardPolicy::WriteOnly
+                        | fux::config::ClipboardPolicy::ReadWrite
+                ),
+                config
+                    .notifications
+                    .viewer_notifications
+                    .then_some(config.notifications.clone()),
+                false,
+            )
+            .await?;
+            match outcome {
+                fux::client::ConnectOutcome::Exited(code) => {
+                    Ok(code.map_or(ExitCode::SUCCESS, exit_code))
+                }
+                fux::client::ConnectOutcome::Workspace { .. } => {
+                    bail!("explicit socket attachment has no workspace picker")
+                }
+            }
         }
-        Some(Command::Key(args)) => run_key(args),
         Some(Command::Bindings) => {
             let config = fux::config::Config::load()?;
             println!("Prefix: {}", config.prefix);
-            for (key, binding) in config.bindings {
-                let description = match binding {
-                    fux::config::Binding::Builtin { builtin } => builtin.description(),
-                    fux::config::Binding::External { .. } => "external command",
-                };
-                println!("{key:8} {description}");
+            let mut bindings: Vec<_> = fux::commands::configured_bindings(&config)?
+                .into_iter()
+                .collect();
+            bindings.sort_by_key(|(key, command)| (command.group(), *key));
+            let mut previous = None;
+            for (key, command) in bindings {
+                let group = command.group();
+                if previous != Some(group) {
+                    println!("\n{}", group.label());
+                    previous = Some(group);
+                }
+                println!(
+                    "{:8} {}",
+                    fux::commands::key_name(key),
+                    command.description()
+                );
             }
             Ok(ExitCode::SUCCESS)
-        }
-        Some(Command::Connect(args)) => {
-            let config = fux::config::Config::load()?;
-            let exit = fux::client::connect_workspace(
-                ConnectConfig {
-                    server: args.server,
-                    key_file: args.key_file,
-                    direct: args.direct,
-                    relay_url: args.relay_url,
-                    clipboard: args.clipboard,
-                    bell_command: args.on_bell,
-                },
-                (config.notifications.remote_clients
-                    || std::env::var_os("TERMUX_VERSION").is_some())
-                .then_some(config.notifications.clone()),
-            )
-            .await?;
-            Ok(exit.map_or(ExitCode::SUCCESS, exit_code))
         }
         Some(Command::Serve(args)) => serve(args).await,
         Some(Command::Ctl(args)) => ctl_json(cli.name.as_deref(), args.arguments),
@@ -543,68 +500,10 @@ fn parse_popup_options(args: &[String]) -> Result<(Option<u16>, Option<u16>, Vec
     Ok((rows, cols, Vec::new()))
 }
 
-fn run_key(args: KeyArgs) -> Result<ExitCode> {
-    use anyhow::Context as _;
-    let path = if let Some(path) = &args.key_file {
-        path.clone()
-    } else if let Some(name) = &args.workspace {
-        fux::daemon::DaemonPaths::discover()?.key(name)?
-    } else {
-        koh::identity::default_path("client")?
-    };
-    match args.operation {
-        KeyOperation::Path => println!("{}", path.display()),
-        KeyOperation::Reset { yes } => {
-            anyhow::ensure!(
-                args.key_file.is_none() && (args.client || args.workspace.is_some()),
-                "reset requires --client or --workspace NAME; arbitrary --key-file reset is not supported"
-            );
-            anyhow::ensure!(
-                yes,
-                "reset permanently deletes {}; the next use creates a new endpoint ID and requires remote allowlist updates. The client key is shared with koh. Stop fux workspaces and any koh processes using this key, then repeat with --yes",
-                path.display()
-            );
-            let paths = fux::daemon::DaemonPaths::discover()?;
-            fux::keys::reset(&paths, &path)?;
-            println!(
-                "Removed {}. The next use creates a new identity; update remote allowlists. Existing passphrases cannot recover the deleted identity.",
-                path.display()
-            );
-        }
-        operation => {
-            // When no local runtime can be located, reset cannot operate either. Keep custom
-            // key inspection/passphrase changes usable on remote-only clients in that case.
-            let paths = fux::daemon::DaemonPaths::discover().ok();
-            let _startup = paths
-                .as_ref()
-                .map(|paths| -> Result<_> {
-                    paths.prepare()?;
-                    Ok(fux::daemon::StartupLock::acquire(&paths.runtime_dir)?)
-                })
-                .transpose()?;
-            anyhow::ensure!(
-                path.try_exists()?,
-                "no identity at {}; start fux to create it",
-                path.display()
-            );
-            koh::keycmd::run(KeyConfig {
-                op: match operation {
-                    KeyOperation::Passwd => KeyOp::Passwd,
-                    _ => KeyOp::Info,
-                },
-                key_file: Some(path.clone()),
-            })
-            .with_context(|| format!("managing identity at {}", path.display()))?;
-        }
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
 async fn serve(args: ServeArgs) -> Result<ExitCode> {
     use std::sync::Arc;
 
-    // Potentially blocking user-controlled preflight (configuration files, passphrase prompts and
-    // key derivation) happens before signal interception and before daemon resources are acquired.
+    // Potentially blocking user-controlled preflight (configuration files) happens before signal interception and before daemon resources are acquired.
     // A signal therefore retains its default immediate behavior if one of those operations stalls.
     let config_path = fux::config::default_path()?;
     let live = Arc::new(runtime::LiveConfig::load(config_path)?);
@@ -615,19 +514,9 @@ async fn serve(args: ServeArgs) -> Result<ExitCode> {
     } else {
         None
     };
-    let preloaded_keys = if args.startup_channel.is_none() {
-        let client_key = koh::identity::default_path("client")?;
-        let mut identities = koh::identity::IdentityStore::default();
-        Some((
-            identities.load(&client_key)?,
-            identities.load(&paths.key(&args.name)?)?,
-        ))
-    } else {
-        None
-    };
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let runtime = serve_runtime(args, live, paths, preloaded_keys, startup_lock);
+    let runtime = serve_runtime(args, live, paths, startup_lock);
     tokio::pin!(runtime);
     tokio::select! {
         result = &mut runtime => result,
@@ -646,39 +535,21 @@ async fn serve_runtime(
     args: ServeArgs,
     live: std::sync::Arc<runtime::LiveConfig>,
     paths: fux::daemon::DaemonPaths,
-    preloaded_keys: Option<(koh::identity::Identity, koh::identity::Identity)>,
     startup_lock: Option<fux::daemon::StartupLock>,
 ) -> Result<ExitCode> {
-    use std::collections::BTreeSet;
     use std::sync::Arc;
     let config = live.snapshot();
     let _manager = fux::daemon::ManagerLock::bind(&paths)?;
     drop(startup_lock);
-    let transferred = match &args.startup_channel {
-        Some(channel) => {
-            let mut bytes = fux::daemon::receive_startup_secret_async(channel).await?;
-            Some(koh::identity::receive_pair(&mut bytes)?)
-        }
-        None => None,
-    };
-    let (client_secret, server_secret) = transferred
-        .or(preloaded_keys)
-        .ok_or_else(|| anyhow::anyhow!("startup keys were not prepared"))?;
-    let local_id = client_secret.endpoint_id();
-    let explicit_allow = args
-        .allow
-        .into_iter()
-        .chain(config.remote_allow_ids.clone())
-        .collect::<BTreeSet<_>>();
-    let mut daemon = fux::daemon::Daemon::new(
-        paths.clone(),
-        std::process::id(),
-        explicit_allow,
-        local_id,
-        monotonic_ms(),
-    )?;
-    let initial =
-        create_served_workspace(&mut daemon, &paths, &config, &args.name, server_secret).await;
+    if let Some(channel) = &args.startup_channel {
+        let payload = fux::daemon::receive_startup_async(channel).await?;
+        anyhow::ensure!(
+            payload == b"LOCAL/1",
+            "local startup does not accept identity material"
+        );
+    }
+    let mut daemon = fux::daemon::Daemon::new(paths.clone(), std::process::id(), monotonic_ms())?;
+    let initial = create_served_workspace(&mut daemon, &paths, &config, &args.name).await;
     let initial = match initial {
         Ok(value) => value,
         Err(error) => {
@@ -708,7 +579,8 @@ async fn serve_runtime(
     if !args.daemon {
         eprintln!(
             "fux: serving {} at {}",
-            descriptor.name, descriptor.endpoint_id
+            descriptor.name,
+            descriptor.socket_path.display()
         );
     }
     loop {
@@ -743,6 +615,7 @@ async fn serve_runtime(
                 }
                 if workspaces.is_empty() { break; }
                 if let Ok((mut stream, _)) = _manager.listener().accept() {
+                    if fux::control::authorize_peer(&stream).is_err() { continue; }
                     stream.set_nonblocking(false)?;
                     stream.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
                     let reply = match runtime::read_manager_request(&mut stream) {
@@ -760,16 +633,12 @@ async fn serve_runtime(
                                 runtime::ManagerReply::Pick { names: daemon.names() }
                             } else { runtime::ManagerReply::Failed { message: "workspace not found".into() } }
                         }
-                        Ok(runtime::ManagerRequest::Resolve { name, mut server_key }) => {
+                        Ok(runtime::ManagerRequest::Resolve { name }) => {
                             let result = match daemon.resolve(name.as_deref()) {
                                 Ok(fux::daemon::Resolution::Attach(descriptor)) => Ok(descriptor),
                                 Ok(fux::daemon::Resolution::Pick(names)) => { let _ = runtime::write_manager_reply(&mut stream, &runtime::ManagerReply::Pick { names }); continue; }
                                 Ok(fux::daemon::Resolution::Create(name)) => {
-                                    let bytes = server_key.as_mut().ok_or_else(|| anyhow::anyhow!("new workspace requires a provisioned identity"));
-                                    match bytes.and_then(|bytes| koh::identity::Identity::receive(bytes)) {
-                                        Ok(secret) => create_served_workspace(&mut daemon, &paths, &live.snapshot(), &name, secret).await.map(|workspace| { let descriptor = workspace.descriptor.clone(); hook_registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Arc::clone(&workspace.hooks)); event_registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(workspace.events.clone()); control_registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(workspace.control.clone()); workspaces.push(workspace); descriptor }),
-                                        Err(error) => Err(error),
-                                    }
+                                    create_served_workspace(&mut daemon, &paths, &live.snapshot(), &name).await.map(|workspace| { let descriptor = workspace.descriptor.clone(); hook_registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(Arc::clone(&workspace.hooks)); event_registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(workspace.events.clone()); control_registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(workspace.control.clone()); workspaces.push(workspace); descriptor })
                                 }
                                 Err(error) => Err(error.into()),
                             };
@@ -855,41 +724,17 @@ async fn create_served_workspace(
     paths: &fux::daemon::DaemonPaths,
     config: &fux::config::Config,
     name: &str,
-    server_secret: koh::identity::Identity,
 ) -> Result<ServedWorkspace> {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     let (session, control) = fux::host::WorkspaceHost::shared(
         config.default_command.argv.clone(),
         config.history.scrollback_lines as usize,
-        Some(config.zor_path.clone()),
+        config.zor_path.clone(),
     )?;
     let mut startup_guard = WorkspaceStartupGuard::new(control.clone());
-    let session = Arc::new(Mutex::new(Some(session)));
-    let local_network = config.local_network;
     let descriptor = daemon
-        .create_or_find_async(name, |_key, allow| {
-            let session = Arc::clone(&session);
-            async move {
-                let profile = if local_network {
-                    fux::daemon::NetworkProfile::Local
-                } else {
-                    fux::daemon::NetworkProfile::Default
-                };
-                fux::daemon::bind_workspace_endpoint_with_secret(
-                    server_secret,
-                    &allow,
-                    fux::FUX_ALPN,
-                    profile,
-                    move || {
-                        session
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take()
-                            .ok_or_else(|| anyhow::anyhow!("workspace session already initialized"))
-                    },
-                )
-                .await
-            }
+        .create_or_find_async(name, |socket| async move {
+            fux::daemon::bind_workspace_endpoint(&socket, session).await
         })
         .await?;
     let finish = (|| {
@@ -951,136 +796,75 @@ async fn attach(name: Option<&str>) -> Result<ExitCode> {
     let paths = fux::daemon::DaemonPaths::discover()?;
     paths.prepare()?;
     let startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
-    let client = koh::identity::load_client(None)?;
     let descriptor = match resolve_through_manager(&paths, name)? {
-        Some(descriptor) => descriptor,
-        None => start_workspace(&paths, name.unwrap_or("default"), &client)?,
+        Some(fux::daemon::Resolution::Attach(descriptor)) => descriptor,
+        Some(fux::daemon::Resolution::Pick(names)) => {
+            drop(startup);
+            let Some((selected, pending)) = fux::client::pick_workspace(names).await? else {
+                return Ok(ExitCode::SUCCESS);
+            };
+            let descriptor = resolve_existing_workspace(&paths, &selected)?;
+            return connect_descriptor(descriptor, config, pending).await;
+        }
+        Some(fux::daemon::Resolution::Create(_)) => bail!("unexpected manager creation response"),
+        None => start_workspace(&paths, name.unwrap_or("default"))?,
     };
     drop(startup);
-    connect_descriptor(descriptor, client, config).await
+    connect_descriptor(descriptor, config, Vec::new()).await
 }
 
 async fn connect_descriptor(
     descriptor: fux::daemon::Descriptor,
-    client: koh::identity::Identity,
     config: fux::config::Config,
+    mut pending: Vec<u8>,
 ) -> Result<ExitCode> {
     let paths = fux::daemon::DaemonPaths::discover()?;
     let mut descriptor = descriptor;
     loop {
-        let outcome = fux::client::connect_workspace_with_secret(
-            koh::client::ConnectConfig {
-                server: descriptor.endpoint_id.clone(),
-                key_file: None,
-                direct: Some(descriptor.direct_addr.into()),
-                relay_url: None,
-                clipboard: matches!(
-                    config.clipboard,
-                    fux::config::ClipboardPolicy::WriteOnly
-                        | fux::config::ClipboardPolicy::ReadWrite
-                ),
-                bell_command: None,
-            },
+        let outcome = fux::client::connect_local_workspace_with_pending(
+            &descriptor.socket_path,
+            matches!(
+                config.clipboard,
+                fux::config::ClipboardPolicy::WriteOnly | fux::config::ClipboardPolicy::ReadWrite
+            ),
             std::env::var_os("TERMUX_VERSION")
                 .is_some()
                 .then_some(config.notifications.clone()),
             true,
-            client.clone(),
+            std::mem::take(&mut pending),
         )
         .await?;
         match outcome {
             fux::client::ConnectOutcome::Exited(exit) => {
                 return Ok(exit.map_or(ExitCode::SUCCESS, exit_code));
             }
-            fux::client::ConnectOutcome::WorkspacePicker => {
-                let name = choose_workspace(&paths, &descriptor.name)?;
+            fux::client::ConnectOutcome::Workspace {
+                name,
+                pending: input,
+            } => {
                 descriptor = resolve_existing_workspace(&paths, &name)?;
+                pending = input;
             }
         }
     }
-}
-
-fn choose_workspace(paths: &fux::daemon::DaemonPaths, current: &str) -> Result<String> {
-    let runtime::ManagerReply::Pick { names } =
-        runtime::manager_request(&paths.manager_socket, &runtime::ManagerRequest::List)?
-    else {
-        bail!("workspace manager did not return a workspace list")
-    };
-    if names.is_empty() {
-        bail!("no workspaces are available")
-    }
-    choose_from_names(&names, current)
-}
-
-fn choose_from_names(names: &[String], current: &str) -> Result<String> {
-    let _terminal = koh::identity::PromptTerminal::protect()?;
-    use std::io::{BufRead as _, Write as _};
-    let mut tty = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")?;
-    writeln!(tty, "\nworkspaces:")?;
-    for (index, name) in names.iter().enumerate() {
-        writeln!(
-            tty,
-            "  {}. {}{}",
-            index + 1,
-            name,
-            if name == current { " (current)" } else { "" }
-        )?;
-    }
-    write!(tty, "select workspace [1-{}]: ", names.len())?;
-    tty.flush()?;
-    let mut selection = String::new();
-    std::io::BufReader::new(tty.try_clone()?).read_line(&mut selection)?;
-    runtime::select_workspace(names, &selection)
 }
 
 fn resolve_through_manager(
     paths: &fux::daemon::DaemonPaths,
     name: Option<&str>,
-) -> Result<Option<fux::daemon::Descriptor>> {
+) -> Result<Option<fux::daemon::Resolution>> {
     let first = runtime::manager_request(
         &paths.manager_socket,
         &runtime::ManagerRequest::Resolve {
             name: name.map(str::to_owned),
-            server_key: None,
         },
     );
     match first {
-        Ok(runtime::ManagerReply::Attach { descriptor }) => Ok(Some(descriptor)),
-        Ok(runtime::ManagerReply::Pick { names }) => {
-            let selected = choose_from_names(&names, "")?;
-            resolve_existing_workspace(paths, &selected).map(Some)
-        }
-        Ok(runtime::ManagerReply::Failed { .. }) => {
-            let workspace = name.unwrap_or("default");
-            let secret = koh::identity::load(&paths.key(workspace)?)?;
-            let mut request = runtime::ManagerRequest::Resolve {
-                name: Some(workspace.to_owned()),
-                server_key: Some(secret.transfer().to_vec()),
-            };
-            let reply = runtime::manager_request(&paths.manager_socket, &request);
-            let runtime::ManagerRequest::Resolve {
-                server_key: Some(raw),
-                ..
-            } = &mut request
-            else {
-                bail!("missing server key")
-            };
-            raw.fill(0);
-            match reply? {
-                runtime::ManagerReply::Attach { descriptor } => Ok(Some(descriptor)),
-                runtime::ManagerReply::Pick { names } => {
-                    let selected = choose_from_names(&names, "")?;
-                    resolve_existing_workspace(paths, &selected).map(Some)
-                }
-                runtime::ManagerReply::Failed { message } => {
-                    bail!("manager request failed: {message}")
-                }
-            }
-        }
-        Err(_) => Ok(None),
+        Ok(runtime::ManagerReply::Attach { descriptor }) => Ok(Some(fux::daemon::Resolution::Attach(descriptor))),
+        Ok(runtime::ManagerReply::Pick { names }) => Ok(Some(fux::daemon::Resolution::Pick(names))),
+        Ok(runtime::ManagerReply::Failed { message }) => bail!("manager request failed: {message}"),
+        Err(error) if error.downcast_ref::<std::io::Error>().is_some_and(|error| matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused)) => Ok(None),
+        Err(error) => Err(error.context("cannot use existing session server; it may use an incompatible protocol; save your work before restarting it")),
     }
 }
 
@@ -1092,7 +876,6 @@ fn resolve_existing_workspace(
         &paths.manager_socket,
         &runtime::ManagerRequest::Resolve {
             name: Some(name.to_owned()),
-            server_key: None,
         },
     )? {
         runtime::ManagerReply::Attach { descriptor } => Ok(descriptor),
@@ -1112,21 +895,12 @@ fn workspace_alias(arguments: Vec<String>) -> Result<ExitCode> {
             let name = arguments
                 .get(1)
                 .ok_or_else(|| anyhow::anyhow!("workspace new requires a name"))?;
-            let secret = koh::identity::load(&paths.key(name)?)?;
-            let mut request = runtime::ManagerRequest::Resolve {
-                name: Some(name.clone()),
-                server_key: Some(secret.transfer().to_vec()),
-            };
-            let reply = runtime::manager_request(&paths.manager_socket, &request);
-            let runtime::ManagerRequest::Resolve {
-                server_key: Some(raw),
-                ..
-            } = &mut request
-            else {
-                bail!("missing server key")
-            };
-            raw.fill(0);
-            reply?
+            runtime::manager_request(
+                &paths.manager_socket,
+                &runtime::ManagerRequest::Resolve {
+                    name: Some(name.clone()),
+                },
+            )?
         }
         "kill" => runtime::manager_request(
             &paths.manager_socket,
@@ -1153,23 +927,10 @@ fn workspace_control_action(id: u64, action: fux::control::WorkspaceAction) -> R
         fux::control::WorkspaceAction::List => {
             runtime::manager_request(&paths.manager_socket, &runtime::ManagerRequest::List)
         }
-        fux::control::WorkspaceAction::New { name } => {
-            let secret = koh::identity::load(&paths.key(&name)?)?;
-            let mut request = runtime::ManagerRequest::Resolve {
-                name: Some(name),
-                server_key: Some(secret.transfer().to_vec()),
-            };
-            let result = runtime::manager_request(&paths.manager_socket, &request);
-            let runtime::ManagerRequest::Resolve {
-                server_key: Some(bytes),
-                ..
-            } = &mut request
-            else {
-                bail!("missing server key")
-            };
-            bytes.fill(0);
-            result
-        }
+        fux::control::WorkspaceAction::New { name } => runtime::manager_request(
+            &paths.manager_socket,
+            &runtime::ManagerRequest::Resolve { name: Some(name) },
+        ),
         fux::control::WorkspaceAction::Kill { name } => runtime::manager_request(
             &paths.manager_socket,
             &runtime::ManagerRequest::Kill { name },
@@ -1227,14 +988,13 @@ fn workspace_control_action(id: u64, action: fux::control::WorkspaceAction) -> R
 fn start_workspace(
     paths: &fux::daemon::DaemonPaths,
     name: &str,
-    client: &koh::identity::Identity,
 ) -> Result<fux::daemon::Descriptor> {
     use fux::daemon::{DaemonSpawner as _, SpawnTicket as _};
-    if let Some(descriptor) = resolve_through_manager(paths, Some(name))? {
+    if let Some(fux::daemon::Resolution::Attach(descriptor)) =
+        resolve_through_manager(paths, Some(name))?
+    {
         return Ok(descriptor);
     }
-    // Do not spawn a child until all interactive credential work has succeeded.
-    let server = koh::identity::load(&paths.key(name)?)?;
     let executable = std::env::current_exe()?;
     let mut spawner = fux::daemon::ProcessDaemonSpawner::new(paths.runtime_dir.clone());
     let mut ticket = spawner.spawn(fux::daemon::SpawnRequest {
@@ -1251,9 +1011,7 @@ fn start_workspace(
         stderr: fux::daemon::StdioPolicy::Null,
         error_channel: true,
     })?;
-    let mut bundle = koh::identity::transfer_pair(client, &server);
-    let transfer = ticket.send_secret(&bundle);
-    bundle.fill(0);
+    let transfer = ticket.send_startup(b"LOCAL/1");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut startup_error = transfer.err().map(|error| error.to_string());
     loop {

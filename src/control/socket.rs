@@ -14,9 +14,8 @@ pub struct BoundControlSocket {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerAuthorization {
-    /// Stable `std` does not expose peer credentials on all supported Unix platforms. A socket
-    /// inside the same-user 0700 runtime directory, with mode 0600, is the portable boundary.
-    FilesystemPermissions,
+    /// Kernel peer credentials and private filesystem paths must both authorize access.
+    OperatingSystemCredentials,
 }
 
 impl BoundControlSocket {
@@ -27,10 +26,12 @@ impl BoundControlSocket {
         &self.path
     }
     pub fn peer_authorization(&self) -> PeerAuthorization {
-        PeerAuthorization::FilesystemPermissions
+        PeerAuthorization::OperatingSystemCredentials
     }
     pub fn accept(&self) -> io::Result<UnixStream> {
-        self.listener.accept().map(|(stream, _)| stream)
+        let (stream, _) = self.listener.accept()?;
+        authorize_peer(&stream)?;
+        Ok(stream)
     }
 }
 
@@ -70,24 +71,28 @@ pub fn control_socket_path(runtime_root: &Path, workspace: &str) -> io::Result<P
 }
 
 pub fn bind_control_socket(runtime_root: &Path, workspace: &str) -> io::Result<BoundControlSocket> {
-    let path = control_socket_path(runtime_root, workspace)?;
+    bind_local_socket(&control_socket_path(runtime_root, workspace)?)
+}
+
+/// Bind an owned local service socket. The caller serializes startup using its server lock.
+pub fn bind_local_socket(path: &Path) -> io::Result<BoundControlSocket> {
+    let path = path.to_owned();
     let directory = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket has no parent"))?;
     ensure_private_directory(directory)?;
     remove_stale_socket(&path)?;
     let listener = UnixListener::bind(&path)?;
-    if let Err(error) = fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
-        let _ = fs::remove_file(&path);
-        return Err(error);
-    }
     let metadata = fs::symlink_metadata(&path)?;
-    Ok(BoundControlSocket {
+    let bound = BoundControlSocket {
         listener,
         path,
         device: metadata.dev(),
         inode: metadata.ino(),
-    })
+    };
+    // Establish inode-aware cleanup before setting socket permissions.
+    fs::set_permissions(&bound.path, fs::Permissions::from_mode(0o600))?;
+    Ok(bound)
 }
 
 fn ensure_private_directory(directory: &Path) -> io::Result<()> {
@@ -96,6 +101,7 @@ fn ensure_private_directory(directory: &Path) -> io::Result<()> {
             if !metadata.is_dir()
                 || metadata.file_type().is_symlink()
                 || metadata.permissions().mode() & 0o077 != 0
+                || metadata.uid() != nix::unistd::geteuid().as_raw()
             {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -104,8 +110,8 @@ fn ensure_private_directory(directory: &Path) -> io::Result<()> {
             }
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir(directory)?;
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+            use std::os::unix::fs::DirBuilderExt as _;
+            fs::DirBuilder::new().mode(0o700).create(directory)?;
         }
         Err(error) => return Err(error),
     }
@@ -124,11 +130,19 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
             "refusing to replace a non-socket control path",
         ));
     }
-    if UnixStream::connect(path).is_ok() {
-        return Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            "control socket is already accepting connections",
-        ));
+    match UnixStream::connect(path) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "control socket is already accepting connections",
+            ));
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            ) => {}
+        Err(error) => return Err(error),
     }
     let parent = path
         .parent()
@@ -151,4 +165,62 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
         ));
     }
     fs::remove_file(path)
+}
+
+/// Authenticate a connected socket using credentials supplied by the kernel.
+pub fn authorize_peer(stream: &UnixStream) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let uid =
+        nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)?.uid();
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    let uid = nix::unistd::getpeereid(stream)?.0.as_raw();
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )))]
+    let uid = {
+        let _ = stream;
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "OS peer credentials unavailable",
+        ));
+    };
+    authorize_uid(uid, nix::unistd::geteuid().as_raw())
+}
+
+fn authorize_uid(peer: u32, owner: u32) -> io::Result<()> {
+    if peer != owner {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "local peer belongs to another user",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn foreign_uid_is_rejected_and_current_kernel_peer_is_accepted() -> io::Result<()> {
+        assert!(authorize_uid(501, 502).is_err());
+        assert!(authorize_uid(0, 502).is_err());
+        let (first, second) = UnixStream::pair()?;
+        authorize_peer(&first)?;
+        authorize_peer(&second)?;
+        Ok(())
+    }
 }

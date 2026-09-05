@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 fn production_spawns_exist_only_in_reviewed_owner_modules() {
     let approved = [
         "src/client/mod.rs",
+        "src/client/io.rs", // Unit tests exercise cancellation while idle and while queues are full.
+        "src/local/client.rs", // Host reattach and real TTY detach tests cover reader cancellation.
+        "src/local/server.rs", // Daemon endpoint close test requires task and socket cleanup.
+        "src/observation/process.rs", // Observer harness checks child-group reaping and pane survival.
         "src/client/terminal.rs",
         "src/daemon/spawn.rs",
         "src/host/mod.rs",
@@ -142,16 +146,10 @@ fn wire_events_have_the_documented_dotted_spellings_exactly_twice() {
 #[test]
 fn dependency_and_ci_surfaces_keep_the_verification_layers_enabled() {
     let manifest = read(Path::new("Cargo.toml"));
-    for dependency in [
-        "koh = { version = \"=0.12.1\"",
-        "zor = { version = \"=0.1.2\"",
-        "loom = \"0.7\"",
-    ] {
-        assert!(
-            manifest.contains(dependency),
-            "dependency-direction invariant: missing `{dependency}`"
-        );
-    }
+    assert!(
+        manifest.contains("loom = \"0.7\""),
+        "concurrency verification requires loom"
+    );
     let workflow = read(Path::new(".github/workflows/ci.yml"));
     for command in [
         "fmt --all --check",
@@ -168,6 +166,46 @@ fn dependency_and_ci_surfaces_keep_the_verification_layers_enabled() {
             "CI-surface invariant: workflow does not execute `{command}`"
         );
     }
+}
+
+#[test]
+fn default_ci_and_release_verification_require_only_fux() {
+    for path in [
+        ".github/workflows/ci.yml",
+        ".github/workflows/nightly.yml",
+        ".github/workflows/release-verify.yml",
+    ] {
+        let source = read(Path::new(path));
+        let mut optional_job = false;
+        for line in source.lines() {
+            if line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':') {
+                optional_job = line == "  cross-repository:";
+            }
+            if !optional_job {
+                for forbidden in [
+                    "references/koh",
+                    "zor/Cargo.toml",
+                    "gold-silver-copper/koh",
+                    "gold-silver-copper/zor",
+                    "tools/dependencies.py",
+                ] {
+                    assert!(
+                        !line.contains(forbidden),
+                        "standalone CI invariant: {path}: {line}"
+                    );
+                }
+            }
+        }
+    }
+    let workflow = read(Path::new(".github/workflows/ci.yml"));
+    assert!(
+        workflow.contains("if: github.event_name == 'workflow_dispatch' && inputs.integrations")
+    );
+    let release = read(Path::new("tests/verify/release-package.sh"));
+    assert!(!release.contains("zor") && !release.contains("koh"));
+    let fixture = "tests/verify/fixture-child/Cargo.toml";
+    let document = toml::from_str(&read(Path::new(fixture))).expect("fixture manifest");
+    check_dependency_tables(&document, &["koh", "zor"], fixture);
 }
 
 fn rust_files(root: &str) -> Vec<PathBuf> {
@@ -212,11 +250,22 @@ fn project_dependencies_and_application_imports_respect_ownership() {
     for (manifest, forbidden) in [
         (
             "Cargo.toml",
-            &["iroh", "iroh-base", "iroh-net", "ed25519-dalek"][..],
+            &[
+                "koh",
+                "zor",
+                "iroh",
+                "iroh-base",
+                "iroh-net",
+                "ed25519-dalek",
+            ][..],
         ),
         ("references/koh/Cargo.toml", &["fux", "zor"][..]),
         ("zor/Cargo.toml", &["fux", "koh"][..]),
     ] {
+        // Optional source checkouts are checked when present; standalone tests require only fux.
+        if manifest != "Cargo.toml" && !Path::new(manifest).exists() {
+            continue;
+        }
         let source = read(Path::new(manifest));
         let document: toml::Value = toml::from_str(&source).expect("dependency manifest");
         check_dependency_tables(&document, forbidden, manifest);
@@ -226,8 +275,8 @@ fn project_dependencies_and_application_imports_respect_ownership() {
         for forbidden in [
             "iroh::",
             "transport_iroh",
-            "koh::pty::",
-            "koh::key_passphrase::",
+            "koh::",
+            "zor::",
             "SecretKey",
             "load_or_create_secret_key",
             "zor::detect",

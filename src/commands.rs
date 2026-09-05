@@ -23,6 +23,9 @@ pub enum BuiltinAction {
     Detach,
     WorkspacePicker,
     Help,
+    TabPicker,
+    RenameTab,
+    ResizeMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +43,9 @@ pub enum Command {
     Detach,
     WorkspacePicker,
     Help,
+    TabPicker,
+    RenameTab,
+    ResizeMode,
     External(Vec<String>),
 }
 
@@ -147,9 +153,109 @@ pub const DEFAULT_BINDINGS: &[BindingSpec] = &[
         command: Command::Help,
         description: "show bindings",
     },
+    BindingSpec {
+        key: b'w',
+        action: BuiltinAction::TabPicker,
+        command: Command::TabPicker,
+        description: "choose tab",
+    },
+    BindingSpec {
+        key: b',',
+        action: BuiltinAction::RenameTab,
+        command: Command::RenameTab,
+        description: "rename tab",
+    },
+    BindingSpec {
+        key: b'r',
+        action: BuiltinAction::ResizeMode,
+        command: Command::ResizeMode,
+        description: "resize mode",
+    },
 ];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum CommandGroup {
+    Panes,
+    Focus,
+    Tabs,
+    Session,
+    Custom,
+}
+impl CommandGroup {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Panes => "Panes",
+            Self::Focus => "Focus",
+            Self::Tabs => "Tabs",
+            Self::Session => "Session",
+            Self::Custom => "Custom",
+        }
+    }
+}
+
 impl BuiltinAction {
+    pub const fn group(self) -> CommandGroup {
+        match self {
+            Self::FocusLeft | Self::FocusRight | Self::FocusUp | Self::FocusDown => {
+                CommandGroup::Focus
+            }
+            Self::NewTab
+            | Self::NextTab
+            | Self::PreviousTab
+            | Self::TabPicker
+            | Self::RenameTab => CommandGroup::Tabs,
+            Self::Detach | Self::WorkspacePicker | Self::Help => CommandGroup::Session,
+            Self::SplitHorizontal
+            | Self::SplitVertical
+            | Self::ClosePane
+            | Self::NewPane
+            | Self::Zoom
+            | Self::CopyMode
+            | Self::ResizeMode => CommandGroup::Panes,
+        }
+    }
+    /// Obvious context restrictions shared by hints and viewer dispatch. The host
+    /// remains authoritative for resources and changes made by other viewers.
+    pub fn unavailable(
+        self,
+        state: &crate::state::WorkspaceState,
+        manager: bool,
+    ) -> Option<&'static str> {
+        let tab = state
+            .tabs()
+            .iter()
+            .find(|tab| Some(tab.id) == state.active_tab());
+        let popup = state.popups().iter().max_by_key(|popup| popup.z_index);
+        let pane = popup
+            .map(|popup| popup.pane)
+            .or_else(|| tab.map(|tab| tab.focused))
+            .and_then(|pane| state.pane(pane));
+        match self {
+            Self::Help | Self::Detach => None,
+            Self::WorkspacePicker => {
+                (!manager).then_some("No workspace manager for this attachment")
+            }
+            Self::ClosePane | Self::CopyMode => pane
+                .filter(|pane| pane.exit_status.is_none())
+                .is_none()
+                .then_some("No live pane"),
+            _ if popup.is_some() => Some("Close the popup first"),
+            Self::NewTab => None,
+            Self::NextTab | Self::PreviousTab => (state.tabs().len() < 2).then_some("Only one tab"),
+            Self::TabPicker | Self::RenameTab => tab.is_none().then_some("No active tab"),
+            Self::FocusLeft
+            | Self::FocusRight
+            | Self::FocusUp
+            | Self::FocusDown
+            | Self::ResizeMode => tab
+                .is_none_or(|tab| tab.layout.leaves().len() < 2)
+                .then_some("No split to adjust"),
+            Self::SplitHorizontal | Self::SplitVertical | Self::NewPane | Self::Zoom => {
+                pane.is_none().then_some("No active pane")
+            }
+        }
+    }
+
     pub fn command(self) -> Option<Command> {
         DEFAULT_BINDINGS
             .iter()
@@ -165,6 +271,12 @@ impl BuiltinAction {
 }
 
 impl Command {
+    pub fn group(&self) -> CommandGroup {
+        DEFAULT_BINDINGS
+            .iter()
+            .find(|spec| spec.command == *self)
+            .map_or(CommandGroup::Custom, |spec| spec.action.group())
+    }
     pub fn description(&self) -> &'static str {
         DEFAULT_BINDINGS
             .iter()
@@ -185,6 +297,37 @@ pub fn key_name(key: u8) -> String {
     }
 }
 
+/// Resolve the configured registry once for both execution and command discovery.
+/// External command arguments remain local execution data; help uses the command's safe label.
+pub fn configured_bindings(
+    config: &crate::config::Config,
+) -> anyhow::Result<std::collections::BTreeMap<u8, Command>> {
+    let mut bindings = std::collections::BTreeMap::new();
+    for (key, binding) in &config.bindings {
+        let byte =
+            key_byte(key).ok_or_else(|| anyhow::anyhow!("binding `{key}` must encode one byte"))?;
+        let command = match binding {
+            crate::config::Binding::Builtin { builtin } => builtin
+                .command()
+                .ok_or_else(|| anyhow::anyhow!("unregistered binding action"))?,
+            crate::config::Binding::External { external } => {
+                Command::External(external.argv.clone())
+            }
+        };
+        anyhow::ensure!(
+            bindings.insert(byte, command).is_none(),
+            "bindings must not alias the same byte"
+        );
+    }
+    let prefix =
+        key_byte(&config.prefix).ok_or_else(|| anyhow::anyhow!("prefix must encode one byte"))?;
+    anyhow::ensure!(
+        !bindings.contains_key(&prefix),
+        "a binding cannot equal the prefix byte"
+    );
+    Ok(bindings)
+}
+
 /// Fixed-size viewer shortcuts published by the workspace alongside its state.
 /// Bitsets cover every possible single-byte binding without peer-controlled allocation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -192,6 +335,8 @@ pub struct ClientBindings {
     prefix: u8,
     detach: [u8; 32],
     workspace_picker: [u8; 32],
+    #[serde(default)]
+    commands: [u64; 32],
 }
 
 impl ClientBindings {
@@ -200,8 +345,17 @@ impl ClientBindings {
             prefix,
             detach: [0; 32],
             workspace_picker: [0; 32],
+            commands: [0; 32],
         };
         for (key, command) in bindings {
+            let code = DEFAULT_BINDINGS
+                .iter()
+                .position(|spec| spec.command == *command)
+                .and_then(|index| u8::try_from(index + 1).ok())
+                .unwrap_or(255);
+            if let Some(slot) = policy.commands.get_mut(usize::from(key / 8)) {
+                *slot |= u64::from(code) << (u32::from(key % 8) * 8);
+            }
             let bits = match command {
                 Command::Detach => &mut policy.detach,
                 Command::WorkspacePicker => &mut policy.workspace_picker,
@@ -218,7 +372,35 @@ impl ClientBindings {
         self.prefix
     }
 
+    pub fn is_bound(&self, key: u8) -> bool {
+        self.code(key) != 0 || self.action(key).is_some()
+    }
+
+    pub fn description(&self, key: u8) -> &'static str {
+        self.action(key)
+            .map_or("external command", BuiltinAction::description)
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = (u8, &'static str)> + '_ {
+        (0..=u8::MAX)
+            .filter(|key| self.is_bound(*key))
+            .map(|key| (key, self.description(key)))
+    }
+
+    fn code(&self, key: u8) -> u8 {
+        self.commands
+            .get(usize::from(key / 8))
+            .map_or(0, |slot| ((slot >> (u32::from(key % 8) * 8)) & 255) as u8)
+    }
+
     pub fn action(&self, key: u8) -> Option<BuiltinAction> {
+        if let Some(spec) = self
+            .code(key)
+            .checked_sub(1)
+            .and_then(|index| DEFAULT_BINDINGS.get(usize::from(index)))
+        {
+            return Some(spec.action);
+        }
         let contains = |bits: &[u8; 32]| {
             bits.get(usize::from(key / 8))
                 .is_some_and(|slot| slot & (1 << (key % 8)) != 0)
@@ -292,7 +474,10 @@ impl Command {
                 id: 0,
                 action: TabAction::Previous,
             },
-            Self::CopyMode
+            Self::TabPicker
+            | Self::RenameTab
+            | Self::ResizeMode
+            | Self::CopyMode
             | Self::Detach
             | Self::WorkspacePicker
             | Self::Help

@@ -76,6 +76,9 @@ fn command(byte: u8) -> Option<&'static str> {
         b'd' => "detach",
         b's' => "workspace_picker",
         b'?' => "help",
+        b'w' => "tab-picker",
+        b',' => "rename-tab",
+        b'r' => "resize-mode",
         _ => return None,
     })
 }

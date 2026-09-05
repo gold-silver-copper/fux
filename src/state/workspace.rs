@@ -3,7 +3,6 @@ use super::{
     MAX_STATUS_SEGMENTS, MAX_TABS, MAX_TITLE_BYTES, MAX_TOTAL_CELLS, PaneId, PaneView, Popup, Tab,
     TabId, WorkspaceDiff, WorkspaceMetadata,
 };
-use koh::ssp::SyncState;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -385,17 +384,16 @@ impl WorkspaceState {
     }
 }
 
-impl SyncState for WorkspaceState {
-    type Diff = WorkspaceDiff;
-    const RECV_DECODE_LIMIT: usize = RECV_DECODE_LIMIT;
-    const RECEIVE_BUDGET_UNITS: usize = RECEIVE_BUDGET_UNITS;
-    fn resource_units(&self) -> usize {
+impl WorkspaceState {
+    pub const RECV_DECODE_LIMIT: usize = RECV_DECODE_LIMIT;
+    pub const RECEIVE_BUDGET_UNITS: usize = RECEIVE_BUDGET_UNITS;
+    pub fn resource_units(&self) -> usize {
         self.resource_units
     }
-    fn diff_from(&self, base: &Self) -> Self::Diff {
+    pub fn diff_from(&self, base: &Self) -> WorkspaceDiff {
         WorkspaceDiff::between(base, self)
     }
-    fn apply(&mut self, diff: &Self::Diff) {
+    pub fn apply(&mut self, diff: &WorkspaceDiff) {
         diff.apply_to(self);
     }
 }

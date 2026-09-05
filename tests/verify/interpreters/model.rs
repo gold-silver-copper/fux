@@ -1,7 +1,7 @@
 use super::super::oracle::input::{Outcome, PrefixOracle};
 use super::super::schema::{
     ExpectedControlEvent, ExpectedControlReply, ExpectedResize, ExpectedSignal,
-    ExpectedSubscription, ExpectedTerminalFrame, Scenario, Signal, Step, TransportFault,
+    ExpectedSubscription, ExpectedTerminalFrame, Scenario, Signal, Step,
 };
 use super::super::transcript::{Entry, Event, hex};
 use super::Interpreter;
@@ -32,14 +32,12 @@ impl Interpreter for ModelInterpreter {
         let mut known_clients = std::collections::BTreeSet::new();
         let mut client_workspaces = std::collections::BTreeMap::new();
         let mut copy_mode = false;
-        let mut copy_cursor = (0_u16, 0_u16);
         let mut focused_pane = 1_u32;
         let mut next_pane = 2_u32;
         let mut terminal_modes = super::super::transcript::TerminalModes::default();
         let mut terminal_status = std::collections::BTreeMap::new();
         let mut daemon_running = false;
         let mut workspaces = std::collections::BTreeSet::new();
-        let mut transport_lost = false;
         for step in &scenario.steps {
             match step {
                 Step::StartDaemon => {
@@ -199,13 +197,9 @@ impl Interpreter for ModelInterpreter {
                         synchronized: None,
                         modes: terminal_modes.clone(),
                         status: terminal_status.clone(),
-                        selection: copy_mode.then_some(
-                            super::super::transcript::TerminalSelection {
-                                cursor: copy_cursor,
-                                anchor: None,
-                            },
-                        ),
-                        prediction_target: (focused_pane == *pane && !copy_mode).then_some(*pane),
+                        // These frames describe the shared pane, not a viewer's private copy overlay.
+                        selection: None,
+                        prediction_target: (focused_pane == *pane).then_some(*pane),
                     };
                     terminal_frames.push(frame.clone());
                     push(
@@ -372,13 +366,6 @@ impl Interpreter for ModelInterpreter {
                                 );
                                 if name == "copy_mode" {
                                     copy_mode = true;
-                                    let column = child_output
-                                        .get(&1)
-                                        .map(|bytes| String::from_utf8_lossy(bytes).chars().count())
-                                        .and_then(|count| u16::try_from(count).ok())
-                                        .unwrap_or(0)
-                                        .min(terminal_size.1);
-                                    copy_cursor = (0, column);
                                 }
                                 if matches!(name, "split_horizontal" | "split_vertical") {
                                     focused_pane = next_pane;
@@ -581,22 +568,6 @@ impl Interpreter for ModelInterpreter {
                         }
                     }
                 }
-                Step::Transport { fault } => {
-                    match fault {
-                        TransportFault::Lose if !transport_lost => transport_lost = true,
-                        TransportFault::Reconnect if transport_lost => transport_lost = false,
-                        TransportFault::Duplicate | TransportFault::Reorder if !transport_lost => {}
-                        _ => return Err("model transport fault violates link lifecycle".into()),
-                    }
-                    push(
-                        &mut transcript,
-                        "model",
-                        Event::Lifecycle {
-                            resource: "transport".into(),
-                            state: transport_fault_name(*fault).into(),
-                        },
-                    );
-                }
                 Step::Expect { expected } => {
                     if forwarded != expected.forwarded
                         || commands != expected.commands
@@ -632,15 +603,6 @@ fn signal_name(signal: Signal) -> &'static str {
         Signal::Int => "int",
         Signal::Term => "term",
         Signal::Kill => "kill",
-    }
-}
-
-fn transport_fault_name(fault: TransportFault) -> &'static str {
-    match fault {
-        TransportFault::Lose => "lost",
-        TransportFault::Duplicate => "duplicated",
-        TransportFault::Reorder => "reordered",
-        TransportFault::Reconnect => "reconnected",
     }
 }
 

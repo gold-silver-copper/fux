@@ -1,3 +1,5 @@
+> Historical design/evidence for the earlier ownership refactor. Fux now starts pane commands directly and uses an optional zor sidecar. Current behavior is documented in [design.md](design.md); current verification is tracked in [standalone-plan.md](standalone-plan.md).
+
 # Ownership refactor: implementation and verification
 
 Scope: the complete local fux worktree against its original HEAD, koh against

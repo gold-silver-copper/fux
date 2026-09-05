@@ -102,6 +102,7 @@ fn control_server_echoes_ids_and_streams_filtered_events_in_order() {
     assert_eq!(reply.id(), 41);
 
     let mut stream = UnixStream::connect(&path).expect("subscribe");
+    fux::control::negotiate_client(&mut stream).expect("control version");
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .expect("timeout");
@@ -144,18 +145,18 @@ fn reload_is_transactional_and_environment_scrubs_secrets() {
     assert_eq!(live.snapshot().prefix, "C-b");
     fs::write(
         &path,
-        "prefix = 'C-b'\n[notifications]\nenabled = false\nnotify-blocked = true\nnotify-idle = true\nremote-clients = true\n",
+        "prefix = 'C-b'\n[notifications]\nenabled = false\nnotify-blocked = true\nnotify-idle = true\nviewer-notifications = true\n",
     )
     .expect("mutable config");
     assert!(!live.reload().expect("mutable reload").notifications.enabled);
     fs::write(&path, "prefix = 'C-b'\nlocal-network = true\n").expect("network policy config");
     assert!(
         live.reload()
-            .expect_err("network policy requires restart")
+            .expect_err("network policy is not a fux setting")
             .to_string()
-            .contains("restart")
+            .contains("local-network")
     );
-    assert!(!live.snapshot().local_network);
+    assert_eq!(live.snapshot().prefix, "C-b");
     fs::write(
         &path,
         "prefix = 'C-b'\ndefault-command = { argv = ['/bin/false'] }\n",
@@ -186,6 +187,7 @@ fn top_level_cli_alias_uses_the_control_socket_without_a_tty() {
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("listener");
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept");
+        fux::control::negotiate_server(&mut stream).expect("control version");
         let request = fux::control::read_request(&mut stream)
             .expect("request")
             .expect("frame");
@@ -289,6 +291,7 @@ fn cli_aliases_forward_optional_control_arguments_and_empty_default_command() {
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("listener");
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
+            fux::control::negotiate_server(&mut stream).expect("control version");
             let request = fux::control::read_request(&mut stream)
                 .expect("request")
                 .expect("frame");
@@ -353,7 +356,9 @@ fn raw_ctl_workspace_request_routes_to_the_manager_socket() {
         .expect("run ctl");
     assert!(
         output.status.success(),
-        "{}",
+        "status: {}; stdout: {}; stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     server.join().expect("join");
@@ -602,4 +607,68 @@ fn read_frame(stream: &mut UnixStream) -> serde_json::Value {
 fn temp_root(label: &str) -> std::path::PathBuf {
     let unique = format!("fr-{label}-{}", std::process::id());
     std::path::Path::new("/tmp").join(unique)
+}
+
+#[test]
+fn control_negotiation_rejects_wrong_or_missing_versions_before_dispatch() {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Count(Arc<AtomicUsize>);
+    impl ControlHandler for Count {
+        fn handle(&self, request: Request) -> Reply {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            Reply::Completed {
+                id: request.id(),
+                result: CommandResult::Unit,
+            }
+        }
+    }
+    let root = temp_root("control-version");
+    fs::create_dir(&root).expect("root");
+    let socket = fux::control::bind_control_socket(&root, "work").expect("socket");
+    let path = socket.path().to_owned();
+    let count = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let task = runtime::serve_control(
+        socket,
+        Arc::new(Count(Arc::clone(&count))),
+        EventHub::default(),
+        Arc::clone(&stop),
+    )
+    .expect("server");
+    for input in [
+        b"FUXCTL9\n{\"command\":\"list\",\"id\":1}\n".as_slice(),
+        b"{\"command\":\"list\",\"id\":1}\n",
+    ] {
+        let mut peer = UnixStream::connect(&path).expect("peer");
+        peer.set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("deadline");
+        peer.write_all(input).expect("incompatible request");
+        let mut preface = [0; 8];
+        peer.read_exact(&mut preface)
+            .expect("supported version reply");
+        assert_eq!(&preface, fux::control::CONTROL_PREFACE);
+        let mut byte = [0; 1];
+        assert!(
+            !matches!(peer.read(&mut byte), Ok(1)),
+            "command reply after invalid version"
+        );
+    }
+    assert_eq!(count.load(Ordering::Acquire), 0);
+    let mut stalled = UnixStream::connect(&path).expect("stalled peer");
+    stalled
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("deadline");
+    stalled.write_all(b"F").expect("partial version");
+    let mut byte = [0; 1];
+    assert_eq!(stalled.read(&mut byte).expect("stalled peer closes"), 0);
+    assert_eq!(count.load(Ordering::Acquire), 0);
+    assert!(matches!(
+        runtime::request(&path, &Request::List { id: 7 }).expect("valid peer after failures"),
+        Reply::Completed { id: 7, .. }
+    ));
+    assert_eq!(count.load(Ordering::Acquire), 1);
+    stop.store(true, Ordering::Release);
+    task.join().expect("server shutdown");
+    fs::remove_dir_all(root).expect("cleanup");
 }

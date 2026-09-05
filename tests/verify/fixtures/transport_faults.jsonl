@@ -1,7 +1,0 @@
-{"sequence":0,"source":"model","event":{"kind":"lifecycle","resource":"daemon","state":"running"}}
-{"sequence":1,"source":"model","event":{"kind":"lifecycle","resource":"transport","state":"duplicated"}}
-{"sequence":2,"source":"model","event":{"kind":"lifecycle","resource":"transport","state":"reordered"}}
-{"sequence":3,"source":"model","event":{"kind":"lifecycle","resource":"transport","state":"lost"}}
-{"sequence":4,"source":"model","event":{"kind":"lifecycle","resource":"transport","state":"reconnected"}}
-{"sequence":5,"source":"model","event":{"kind":"lifecycle","resource":"daemon","state":"stopped"}}
-{"sequence":6,"source":"model","event":{"kind":"cleanup","owned_resources":0}}

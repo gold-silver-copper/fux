@@ -3,19 +3,17 @@ use super::{
     MAX_CONNECTIONS_PER_WORKSPACE, MAX_WORKSPACES, ManagerIdentity, PathError,
     recover_stale_descriptors, write_descriptor,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::future::Future;
 use std::io::{self, Read};
-use std::net::SocketAddrV4;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
 pub trait EndpointHandle: Send {
-    fn endpoint_id(&self) -> &str;
-    fn direct_addr(&self) -> SocketAddrV4;
+    fn socket_path(&self) -> &Path;
     fn close(&mut self);
     fn reap_terminal_sessions(&mut self, now_ms: u64, ttl_ms: u64);
     fn active_tasks(&self) -> usize {
@@ -27,24 +25,18 @@ pub trait EndpointFactory {
     fn create(
         &mut self,
         name: &str,
-        key_path: &Path,
-        allow: &BTreeSet<String>,
+        socket_path: &Path,
     ) -> Result<Box<dyn EndpointHandle>, ManagerError>;
 }
 
 pub struct WorkspaceEndpoint {
     pub descriptor: Descriptor,
     endpoint: Box<dyn EndpointHandle>,
-    allow: BTreeSet<String>,
-    local_client_id: String,
     viewers: usize,
 }
 
 impl WorkspaceEndpoint {
-    pub fn authorize_and_attach(&mut self, peer: &str) -> Result<(), ManagerError> {
-        if peer != self.local_client_id && !self.allow.contains(peer) {
-            return Err(ManagerError::Unauthorized);
-        }
+    pub fn attach(&mut self) -> Result<(), ManagerError> {
         if self.viewers >= MAX_CONNECTIONS_PER_WORKSPACE {
             return Err(ManagerError::ConnectionLimit);
         }
@@ -63,8 +55,6 @@ pub struct Daemon {
     paths: DaemonPaths,
     identity: ManagerIdentity,
     workspaces: BTreeMap<String, WorkspaceEndpoint>,
-    explicit_allow: BTreeSet<String>,
-    local_client_id: String,
     started_ms: u64,
     received_initial_request: bool,
 }
@@ -83,15 +73,9 @@ pub enum DaemonAction {
 }
 
 impl Daemon {
-    pub fn new(
-        paths: DaemonPaths,
-        pid: u32,
-        explicit_allow: BTreeSet<String>,
-        local_client_id: String,
-        started_ms: u64,
-    ) -> Result<Self, ManagerError> {
+    pub fn new(paths: DaemonPaths, pid: u32, started_ms: u64) -> Result<Self, ManagerError> {
         paths.prepare()?;
-        if pid == 0 || local_client_id.is_empty() {
+        if pid == 0 {
             return Err(ManagerError::Invalid);
         }
         let identity = ManagerIdentity {
@@ -103,8 +87,6 @@ impl Daemon {
             paths,
             identity,
             workspaces: BTreeMap::new(),
-            explicit_allow,
-            local_client_id,
             started_ms,
             received_initial_request: false,
         })
@@ -136,10 +118,8 @@ impl Daemon {
         if self.workspaces.len() >= MAX_WORKSPACES {
             return Err(ManagerError::WorkspaceLimit);
         }
-        let key = self.paths.key(name)?;
-        let mut allow = self.explicit_allow.clone();
-        allow.insert(self.local_client_id.clone());
-        let endpoint = factory.create(name, &key, &allow)?;
+        let socket = self.paths.runtime_dir.join(format!("{name}.attach.sock"));
+        let endpoint = factory.create(name, &socket)?;
         self.insert_created(name, endpoint)
     }
 
@@ -149,7 +129,7 @@ impl Daemon {
         factory: F,
     ) -> Result<Descriptor, ManagerError>
     where
-        F: FnOnce(PathBuf, BTreeSet<String>) -> Fut,
+        F: FnOnce(PathBuf) -> Fut,
         Fut: Future<Output = Result<Box<dyn EndpointHandle>, ManagerError>>,
     {
         super::validate_workspace_name(name)?;
@@ -160,10 +140,8 @@ impl Daemon {
         if self.workspaces.len() >= MAX_WORKSPACES {
             return Err(ManagerError::WorkspaceLimit);
         }
-        let key = self.paths.key(name)?;
-        let mut allow = self.explicit_allow.clone();
-        allow.insert(self.local_client_id.clone());
-        let endpoint = factory(key, allow).await?;
+        let socket = self.paths.runtime_dir.join(format!("{name}.attach.sock"));
+        let endpoint = factory(socket).await?;
         self.insert_created(name, endpoint)
     }
 
@@ -175,7 +153,7 @@ impl Daemon {
         if self
             .workspaces
             .values()
-            .any(|workspace| workspace.endpoint.endpoint_id() == endpoint.endpoint_id())
+            .any(|workspace| workspace.endpoint.socket_path() == endpoint.socket_path())
         {
             return Err(ManagerError::DuplicateEndpoint);
         }
@@ -183,8 +161,8 @@ impl Daemon {
             name: name.to_owned(),
             pid: self.identity.pid,
             instance_nonce: self.identity.instance_nonce.clone(),
-            endpoint_id: endpoint.endpoint_id().to_owned(),
-            direct_addr: endpoint.direct_addr(),
+            socket_path: endpoint.socket_path().to_owned(),
+            protocol: crate::local::VERSION,
         };
         write_descriptor(&self.paths, &descriptor)?;
         self.workspaces.insert(
@@ -192,8 +170,6 @@ impl Daemon {
             WorkspaceEndpoint {
                 descriptor: descriptor.clone(),
                 endpoint,
-                allow: self.explicit_allow.clone(),
-                local_client_id: self.local_client_id.clone(),
                 viewers: 0,
             },
         );
@@ -296,15 +272,16 @@ impl ManagerLock {
         let _bind_lock = acquire_manager_bind_lock(&paths.runtime_dir)?;
         remove_stale_socket(&paths.manager_socket, &paths.runtime_dir)?;
         let listener = UnixListener::bind(&paths.manager_socket).map_err(ManagerError::Io)?;
-        fs::set_permissions(&paths.manager_socket, fs::Permissions::from_mode(0o600))
-            .map_err(ManagerError::Io)?;
-        let metadata = fs::metadata(&paths.manager_socket).map_err(ManagerError::Io)?;
-        Ok(Self {
+        let metadata = fs::symlink_metadata(&paths.manager_socket).map_err(ManagerError::Io)?;
+        let bound = Self {
             listener,
             path: paths.manager_socket.clone(),
             device: metadata.dev(),
             inode: metadata.ino(),
-        })
+        };
+        fs::set_permissions(&bound.path, fs::Permissions::from_mode(0o600))
+            .map_err(ManagerError::Io)?;
+        Ok(bound)
     }
     pub fn listener(&self) -> &UnixListener {
         &self.listener

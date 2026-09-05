@@ -7,14 +7,10 @@
     clippy::unwrap_used
 )]
 
-#[path = "../src/daemon/mod.rs"]
-mod daemon;
-
-use daemon::*;
+use fux::daemon::*;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
-use std::net::{Ipv4Addr, SocketAddrV4};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -29,17 +25,13 @@ struct EndpointLog {
 }
 
 struct FakeEndpoint {
-    id: String,
-    port: u16,
+    socket: PathBuf,
     log: Arc<Mutex<EndpointLog>>,
 }
 
 impl EndpointHandle for FakeEndpoint {
-    fn endpoint_id(&self) -> &str {
-        &self.id
-    }
-    fn direct_addr(&self) -> SocketAddrV4 {
-        SocketAddrV4::new(Ipv4Addr::LOCALHOST, self.port)
+    fn socket_path(&self) -> &Path {
+        &self.socket
     }
     fn close(&mut self) {
         self.log.lock().expect("log").closed = true;
@@ -51,26 +43,20 @@ impl EndpointHandle for FakeEndpoint {
 
 #[derive(Default)]
 struct FakeFactory {
-    next: u16,
     logs: BTreeMap<String, Arc<Mutex<EndpointLog>>>,
-    observed_allow: Vec<BTreeSet<String>>,
 }
 
 impl EndpointFactory for FakeFactory {
     fn create(
         &mut self,
         name: &str,
-        key: &Path,
-        allow: &BTreeSet<String>,
+        socket: &Path,
     ) -> Result<Box<dyn EndpointHandle>, ManagerError> {
-        assert!(key.ends_with(format!("{name}.key")));
-        self.next = self.next.saturating_add(1);
+        assert!(socket.ends_with(format!("{name}.attach.sock")));
         let log = Arc::new(Mutex::new(EndpointLog::default()));
         self.logs.insert(name.to_owned(), Arc::clone(&log));
-        self.observed_allow.push(allow.clone());
         Ok(Box::new(FakeEndpoint {
-            id: format!("endpoint-{name}"),
-            port: 10_000 + self.next,
+            socket: socket.to_owned(),
             log,
         }))
     }
@@ -91,12 +77,7 @@ fn xdg_paths_are_private_absolute_and_workspace_names_cannot_escape() {
     )
     .expect("paths");
     paths.prepare().expect("prepare");
-    for directory in [
-        &paths.runtime_dir,
-        &paths.state_dir,
-        &paths.descriptors_dir,
-        &paths.keys_dir,
-    ] {
+    for directory in [&paths.runtime_dir, &paths.state_dir, &paths.descriptors_dir] {
         assert_eq!(
             fs::metadata(directory)
                 .expect("metadata")
@@ -148,8 +129,8 @@ fn descriptors_are_atomic_private_bounded_and_tied_to_pid_plus_instance_nonce() 
         name: "one".into(),
         pid: 11,
         instance_nonce: "nonce-a".into(),
-        endpoint_id: "endpoint".into(),
-        direct_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1234),
+        socket_path: paths.runtime_dir.join("one.attach.sock"),
+        protocol: fux::local::VERSION,
     };
     let path = write_descriptor(&paths, &descriptor).expect("write");
     assert_eq!(
@@ -195,12 +176,11 @@ fn elected_manager_recovers_descriptors_from_previous_instance() {
         name: "stale".into(),
         pid: 19,
         instance_nonce: "old-instance".into(),
-        endpoint_id: "old-endpoint".into(),
-        direct_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9191),
+        socket_path: paths.runtime_dir.join("one.attach.sock"),
+        protocol: fux::local::VERSION,
     };
     let path = write_descriptor(&paths, &stale).expect("stale descriptor");
-    let _daemon =
-        Daemon::new(paths, 20, BTreeSet::new(), "local".into(), 0).expect("new elected manager");
+    let _daemon = Daemon::new(paths, 20, 0).expect("new elected manager");
     assert!(!path.exists());
     fs::remove_dir_all(root).expect("cleanup");
 }
@@ -296,12 +276,7 @@ fn simultaneous_first_clients_create_private_directories_without_a_mode_window()
             .expect("prepare thread")
             .expect("private paths");
     }
-    for directory in [
-        &paths.runtime_dir,
-        &paths.state_dir,
-        &paths.descriptors_dir,
-        &paths.keys_dir,
-    ] {
+    for directory in [&paths.runtime_dir, &paths.state_dir, &paths.descriptors_dir] {
         assert_eq!(
             fs::metadata(directory)
                 .expect("directory metadata")
@@ -357,28 +332,31 @@ fn startup_lock_serializes_contenders_and_refuses_symlinks() {
 fn two_named_workspaces_have_distinct_endpoints_isolated_lifetimes_and_multiple_viewers() {
     // Phase F4 lifecycle: one endpoint/state owner per name; detach never destroys workspace state.
     let (root, paths) = prepared_paths("lifecycle");
-    let mut allow = BTreeSet::new();
-    allow.insert("remote".into());
-    let mut daemon = Daemon::new(paths, 7, allow, "local".into(), 0).expect("daemon");
+    let mut daemon = Daemon::new(paths, 7, 0).expect("daemon");
     let mut factory = FakeFactory::default();
     let one = daemon.create_or_find("one", &mut factory).expect("one");
     let two = daemon.create_or_find("two", &mut factory).expect("two");
-    assert_ne!(one.endpoint_id, two.endpoint_id);
+    assert_ne!(one.socket_path, two.socket_path);
     assert_eq!(
         daemon.resolve(None).expect("resolve"),
         Resolution::Pick(vec!["one".into(), "two".into()])
     );
     let workspace = daemon.workspace_mut("one").expect("workspace");
-    workspace
-        .authorize_and_attach("local")
-        .expect("local attach");
-    workspace
-        .authorize_and_attach("remote")
-        .expect("remote attach");
-    assert!(workspace.authorize_and_attach("denied").is_err());
+    workspace.attach().expect("local attach");
+    workspace.attach().expect("remote attach");
     workspace.detach();
     assert_eq!(workspace.viewers(), 1);
-    workspace.authorize_and_attach("local").expect("reattach");
+    for _ in 1..MAX_CONNECTIONS_PER_WORKSPACE {
+        workspace.attach().expect("viewer within limit");
+    }
+    assert!(matches!(
+        workspace.attach(),
+        Err(ManagerError::ConnectionLimit)
+    ));
+    for _ in 1..MAX_CONNECTIONS_PER_WORKSPACE {
+        workspace.detach();
+    }
+    workspace.attach().expect("reattach");
     assert_eq!(
         daemon.kill("one").expect("kill one"),
         DaemonAction::Continue
@@ -397,7 +375,7 @@ fn two_named_workspaces_have_distinct_endpoints_isolated_lifetimes_and_multiple_
 fn no_name_resolution_and_initial_grace_have_deterministic_actions() {
     // Phase F4 attach/create/picker: zero creates default, one attaches, many picks.
     let (root, paths) = prepared_paths("resolution");
-    let mut daemon = Daemon::new(paths, 8, BTreeSet::new(), "local".into(), 100).expect("daemon");
+    let mut daemon = Daemon::new(paths, 8, 100).expect("daemon");
     assert_eq!(
         daemon.resolve(None).expect("empty"),
         Resolution::Create("default".into())
@@ -572,8 +550,8 @@ fn production_spawner_reports_early_exit_and_removes_its_private_channel() {
 }
 
 #[test]
-fn secret_transfer_early_exit_disarms_before_drop() {
-    let (root, paths) = prepared_paths("secret-early-exit");
+fn startup_transfer_early_exit_disarms_before_drop() {
+    let (root, paths) = prepared_paths("startup-early-exit");
     let mut spawner = ProcessDaemonSpawner::new(paths.runtime_dir.clone());
     let mut ticket = spawner
         .spawn(SpawnRequest {
@@ -587,7 +565,7 @@ fn secret_transfer_early_exit_disarms_before_drop() {
         })
         .expect("spawn false");
     assert!(matches!(
-        ticket.send_secret(b"secret"),
+        ticket.send_startup(b"LOCAL/1"),
         Err(SpawnError::Child(_))
     ));
     assert!(!ticket.is_armed());
@@ -630,88 +608,109 @@ fn production_startup_channel_is_private_tokenless_and_drop_reaps_child() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn production_factory_binds_and_retains_one_real_local_iroh_endpoint() {
-    // Phase F4 endpoint: a named workspace owns a distinct retained real iroh endpoint.
-    let (root, paths) = prepared_paths("real-endpoint");
-    let local_id = koh::identity::Identity::generate().endpoint_id();
-    let mut daemon = Daemon::new(paths.clone(), 19, BTreeSet::new(), local_id, 0).expect("daemon");
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        daemon.create_or_find_async("real", |_key, allow| async move {
-            bind_workspace_endpoint_with_secret(
-                koh::identity::Identity::generate(),
-                &allow,
-                fux::FUX_ALPN,
-                NetworkProfile::Local,
-                || fux::host::WorkspaceHost::spawn(vec!["/bin/sh".into()], 100, None),
-            )
+async fn production_factory_retains_one_local_socket_per_workspace() {
+    let (root, paths) = prepared_paths("endpoint");
+    let mut daemon = Daemon::new(paths.clone(), 19, 0).expect("daemon");
+    let descriptor = daemon
+        .create_or_find_async("real", |socket| async move {
+            let host =
+                fux::host::WorkspaceHost::spawn(vec!["/bin/sh".into()], 100, None).expect("host");
+            bind_workspace_endpoint(&socket, host).await
+        })
+        .await
+        .expect("endpoint");
+    assert_eq!(descriptor.protocol, fux::local::VERSION);
+    assert_eq!(
+        descriptor.socket_path,
+        paths.runtime_dir.join("real.attach.sock")
+    );
+    assert!(
+        tokio::net::UnixStream::connect(&descriptor.socket_path)
             .await
-        }),
-    )
-    .await
-    .expect("bind deadline");
-    let descriptor = match result {
-        Ok(descriptor) => descriptor,
-        Err(ManagerError::Io(error)) if error.to_string().contains("netmon monitor") => {
-            // Some sandboxed macOS runners prohibit iroh's interface monitor. The bounded real
-            // bind was still attempted; lifecycle behavior remains covered by injected handles.
-            drop(daemon);
-            fs::remove_dir_all(root).expect("cleanup");
-            return;
-        }
-        Err(error) => panic!("bind endpoint: {error}"),
-    };
-    assert!(descriptor.direct_addr.ip().is_loopback());
-    assert!(!descriptor.endpoint_id.is_empty());
+            .is_ok()
+    );
+    daemon.kill("real").expect("kill workspace");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while descriptor.socket_path.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "socket survived workspace removal"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     drop(daemon);
     fs::remove_dir_all(root).expect("cleanup");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn production_endpoint_close_joins_every_accepted_connection_task() {
-    let client = koh::identity::Identity::generate();
-    let client_id = client.endpoint_id();
-    let mut endpoint = match bind_workspace_endpoint_with_secret(
-        koh::identity::Identity::generate(),
-        &BTreeSet::from([client_id]),
-        fux::FUX_ALPN,
-        NetworkProfile::Local,
-        || fux::host::WorkspaceHost::spawn(vec!["/bin/cat".into()], 0, None),
+async fn production_endpoint_close_reaps_accepted_connection_tasks() {
+    use fux::local::{ClientMessage, MAX_SERVER_FRAME, ServerMessage, read_frame, write_frame};
+    let (root, paths) = prepared_paths("close");
+    let socket = paths.runtime_dir.join("test.attach.sock");
+    let host = fux::host::WorkspaceHost::spawn(vec!["/bin/cat".into()], 0, None).expect("host");
+    let mut endpoint = bind_workspace_endpoint(&socket, host)
+        .await
+        .expect("endpoint");
+    let mut old = tokio::net::UnixStream::connect(&socket)
+        .await
+        .expect("connect");
+    write_frame(
+        &mut old,
+        &ClientMessage::Hello {
+            version: 0,
+            rows: 24,
+            columns: 80,
+        },
+        fux::local::MAX_CLIENT_FRAME,
     )
     .await
-    {
-        Ok(endpoint) => endpoint,
-        Err(ManagerError::Io(error)) if error.to_string().contains("netmon monitor") => return,
-        Err(error) => panic!("bind server: {error}"),
-    };
-    let config = koh::client::ConnectConfig {
-        server: endpoint.endpoint_id().into(),
-        key_file: None,
-        direct: Some(endpoint.direct_addr().into()),
-        relay_url: None,
-        clipboard: false,
-        bell_command: None,
-    };
-    let old_protocol = tokio::time::timeout(
+    .expect("old hello");
+    let reply: ServerMessage = tokio::time::timeout(
         Duration::from_secs(3),
-        koh::embed::Connection::connect(&config, b"fux/1", &client),
+        read_frame(&mut old, MAX_SERVER_FRAME),
     )
-    .await;
-    assert!(
-        matches!(old_protocol, Ok(Err(_))),
-        "incompatible workspace schema was not rejected"
-    );
-    let channel = koh::embed::Connection::connect(&config, fux::FUX_ALPN, &client)
+    .await
+    .expect("reply deadline")
+    .expect("reply");
+    assert!(matches!(reply, ServerMessage::Error { .. }));
+    drop(old);
+    let mut channel = tokio::net::UnixStream::connect(&socket)
         .await
-        .expect("admitted connection");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while endpoint.active_tasks() != 1 && tokio::time::Instant::now() < deadline {
+        .expect("connect");
+    write_frame(
+        &mut channel,
+        &ClientMessage::Hello {
+            version: fux::local::VERSION,
+            rows: 24,
+            columns: 80,
+        },
+        fux::local::MAX_CLIENT_FRAME,
+    )
+    .await
+    .expect("hello");
+    let reply: ServerMessage = read_frame(&mut channel, MAX_SERVER_FRAME)
+        .await
+        .expect("reply");
+    assert!(matches!(reply, ServerMessage::Hello { .. }));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while endpoint.active_tasks() != 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "accepted task count"
+        );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert_eq!(endpoint.active_tasks(), 1);
     endpoint.close();
-    assert_eq!(endpoint.active_tasks(), 0, "connection task survived close");
+    while endpoint.active_tasks() != 0 || socket.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "connection or socket survived close"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     drop(channel);
+    drop(endpoint);
+    fs::remove_dir_all(root).expect("cleanup");
 }
 
 fn prepared_paths(label: &str) -> (PathBuf, DaemonPaths) {
@@ -731,7 +730,7 @@ fn prepared_paths(label: &str) -> (PathBuf, DaemonPaths) {
 }
 
 fn test_root(label: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("fux-daemon-{label}-{}", std::process::id()));
+    let root = PathBuf::from("/tmp").join(format!("fd-{label}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     root
 }
@@ -745,4 +744,30 @@ fn wait_until_socket_refuses(path: &Path) {
         );
         std::thread::sleep(Duration::from_millis(2));
     }
+}
+
+#[tokio::test]
+async fn startup_channel_without_a_payload_expires_without_a_signal() {
+    use tokio::io::AsyncReadExt;
+    let (root, paths) = prepared_paths("startup-expiry");
+    let path = paths.runtime_dir.join("startup.sock");
+    let listener = tokio::net::UnixListener::bind(&path).expect("startup socket");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("private socket");
+    let address = path.to_string_lossy().into_owned();
+    let receive = tokio::spawn(async move { receive_startup_async(&address).await });
+    let (mut stream, _) = listener.accept().await.expect("startup peer");
+    let mut hello = [0; 6];
+    stream.read_exact(&mut hello).await.expect("startup hello");
+    assert_eq!(&hello, b"LOCAL1");
+    let error = tokio::time::timeout(Duration::from_millis(STARTUP_TIMEOUT_MS + 2_000), receive)
+        .await
+        .expect("startup deadline")
+        .expect("startup task")
+        .expect_err("missing payload must expire");
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    let mut byte = [0];
+    assert_eq!(stream.read(&mut byte).await.expect("receiver closed"), 0);
+    drop(stream);
+    drop(listener);
+    fs::remove_dir_all(root).expect("cleanup");
 }

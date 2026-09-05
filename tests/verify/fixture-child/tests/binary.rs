@@ -92,23 +92,16 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
     );
 
     let fux = binary("FUX_BIN", "target/debug/fux");
-    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture_program = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
     let environment = PrivateEnvironment::new(environment_name);
     let fixture_listener =
         UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
-    environment.write_config(&fixture_program, &zor);
+    environment.write_config_bare(&fixture_program);
     let config_path = environment.root.join("config/fux/config.toml");
     let config = fs::read_to_string(&config_path).expect("read private config");
     fs::write(&config_path, format!("prefix = 'C-b'\n{config}")).expect("set scenario prefix");
-    let id = run(&fux, ["id"], &environment);
-    let allow = String::from_utf8(id.stdout)
-        .expect("endpoint id")
-        .trim()
-        .to_owned();
     let driver = PrefixBinaryDriver {
         fux: fux.clone(),
-        allow,
         client: None,
         client_workspace: None,
         primary: None,
@@ -129,13 +122,12 @@ fn assert_binary_scenario(scenario: &verification::schema::Scenario, environment
     };
     let binary = BinaryInterpreter::new(driver)
         .run(scenario)
-        .expect("binary transcript");
+        .unwrap_or_else(|error| panic!("binary transcript for {environment_name}: {error}"));
     assert_eq!(binary, model);
 }
 
 struct PrefixBinaryDriver<'a> {
     fux: PathBuf,
-    allow: String,
     client: Option<TerminalChild>,
     client_workspace: Option<String>,
     primary: Option<Jsonl>,
@@ -175,7 +167,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         }
         self.server = Some(OwnedChild::spawn(
             Command::new(&self.fux)
-                .args(["serve", "--allow", &self.allow, "--name", "binary"])
+                .args(["serve", "--name", "binary"])
                 .env_clear()
                 .envs(self.environment.variables())
                 .stdin(Stdio::null())
@@ -284,7 +276,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             .client_workspace
             .as_deref()
             .ok_or_else(|| format!("client {client:?} workspace is unknown"))?;
-        let stream = UnixStream::connect(self.environment.workspace_control_socket(workspace))
+        let stream = control_stream(self.environment.workspace_control_socket(workspace))
             .map_err(|error| error.to_string())?;
         let mut subscriber = Jsonl::new(stream);
         subscriber.send(json!({
@@ -422,7 +414,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             .clone()
             .ok_or_else(|| "binary client workspace is unknown".to_owned())?;
         let mut detached = Jsonl::new(
-            UnixStream::connect(self.environment.workspace_control_socket(&current))
+            control_stream(self.environment.workspace_control_socket(&current))
                 .map_err(|error| error.to_string())?,
         );
         detached.send(json!({
@@ -437,7 +429,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             ));
         }
         let mut attached = Jsonl::new(
-            UnixStream::connect(self.environment.workspace_control_socket(workspace))
+            control_stream(self.environment.workspace_control_socket(workspace))
                 .map_err(|error| error.to_string())?,
         );
         attached.send(json!({
@@ -459,12 +451,12 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         let selection = names
             .iter()
             .position(|name| name.as_str() == Some(workspace))
-            .map(|index| format!("{}\n", index + 1))
+            .map(|index| format!("{}\r", "j".repeat(index)))
             .ok_or_else(|| format!("manager did not list workspace {workspace:?}: {listing}"))?;
 
         let terminal = self.client.as_mut().ok_or("client is detached")?;
         terminal.write(&[2, b's']);
-        terminal.wait_for_text("workspaces:");
+        terminal.wait_for_text("Choose workspace");
         terminal.write(selection.as_bytes());
         expect_viewer_event(&mut detached, 97, "client.detached")?;
         expect_viewer_event(&mut attached, 98, "client.attached")?;
@@ -551,7 +543,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if pane != 1 || self.primary_exited {
             return Err(format!("binary cannot exit pane {pane}"));
         }
-        let stream = UnixStream::connect(self.environment.control_socket())
+        let stream = control_stream(self.environment.control_socket())
             .map_err(|error| error.to_string())?;
         let mut subscriber = Jsonl::new(stream);
         subscriber.send(json!({
@@ -587,7 +579,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         if pane != 1 || self.primary_exited {
             return Err(format!("binary cannot signal pane {pane}"));
         }
-        let stream = UnixStream::connect(self.environment.control_socket())
+        let stream = control_stream(self.environment.control_socket())
             .map_err(|error| error.to_string())?;
         let mut subscriber = Jsonl::new(stream);
         subscriber.send(json!({
@@ -633,7 +625,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             return Err(format!("binary cannot kill pane {pane}"));
         }
         let mut subscriber = Jsonl::new(
-            UnixStream::connect(self.environment.control_socket())
+            control_stream(self.environment.control_socket())
                 .map_err(|error| error.to_string())?,
         );
         subscriber.send(json!({
@@ -648,7 +640,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             ));
         }
         let mut control = Jsonl::new(
-            UnixStream::connect(self.environment.control_socket())
+            control_stream(self.environment.control_socket())
                 .map_err(|error| error.to_string())?,
         );
         control.send(json!({"command": "kill", "id": 96, "pane": pane}));
@@ -679,17 +671,12 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
                 .as_mut()
                 .ok_or("client is detached")?
                 .write(bytes);
+            let client = self.client.as_ref().ok_or("client is detached")?;
+            client.wait_for_text("Copy ·");
+            client.wait_for_inverse(1, 1);
             let workspace = self.client_workspace.as_deref().unwrap_or("binary");
-            let deadline = Instant::now() + DEADLINE;
-            loop {
-                let semantics = terminal_semantics(&self.fux, self.environment, workspace, 1)?;
-                if semantics.selection.is_some() {
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    return Err("copy mode did not become observable".into());
-                }
-                std::thread::sleep(Duration::from_millis(10));
+            if terminal_semantics(&self.fux, self.environment, workspace, 1)?.selection.is_some() {
+                return Err("viewer copy selection leaked into shared pane state".into());
             }
             return Ok(vec![ObservedAction::Command("copy_mode".into())]);
         }
@@ -826,7 +813,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         request_id: u64,
         events: &[String],
     ) -> Result<verification::schema::ExpectedSubscription, String> {
-        let stream = UnixStream::connect(self.environment.control_socket())
+        let stream = control_stream(self.environment.control_socket())
             .map_err(|error| error.to_string())?;
         let mut subscriber = Jsonl::new(stream);
         subscriber.send(json!({
@@ -849,7 +836,7 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
         &mut self,
         request: &Value,
     ) -> Result<verification::schema::ExpectedControlReply, String> {
-        let stream = UnixStream::connect(self.environment.control_socket())
+        let stream = control_stream(self.environment.control_socket())
             .map_err(|error| error.to_string())?;
         let mut connection = Jsonl::new(stream);
         connection.send(request.clone());
@@ -1247,33 +1234,20 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-// Binary boundary: real fux manager/control sockets, daemon process, Zor wrapper, and PTY child.
+// Binary boundary: real fux manager/control sockets, daemon process, local attachment socket, and PTY child.
 #[test]
 fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact() {
     let _guard = binary_test_guard();
     let fux = binary("FUX_BIN", "target/debug/fux");
-    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
     let environment = PrivateEnvironment::new("binary");
     let fixture_listener =
         UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
 
-    let id = run(&fux, ["id"], &environment);
-    assert!(
-        id.status.success(),
-        "id failed: {}",
-        String::from_utf8_lossy(&id.stderr)
-    );
-    let allow = String::from_utf8(id.stdout)
-        .expect("endpoint id")
-        .trim()
-        .to_owned();
-    assert_eq!(allow.len(), 64);
-
-    environment.write_config(&fixture, &zor);
+    environment.write_config_bare(&fixture);
     let mut server = OwnedChild::spawn(
         Command::new(&fux)
-            .args(["serve", "--allow", &allow, "--name", "binary"])
+            .args(["serve", "--name", "binary"])
             .env_clear()
             .envs(environment.variables())
             .stdin(Stdio::null())
@@ -1284,7 +1258,7 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     wait_for_path(&environment.control_socket());
 
     let mut events = Jsonl::new(
-        UnixStream::connect(environment.control_socket()).expect("subscribe to binary events"),
+        control_stream(environment.control_socket()).expect("subscribe to binary events"),
     );
     events.send(json!({"command":"subscribe", "id":77, "events":["agent.state"]}));
     assert_eq!(events.receive()["id"], 77);
@@ -1309,8 +1283,6 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     assert_eq!(second_fixture.receive()["event"], "ready");
     let mut client = TerminalChild::spawn(&fux, &environment, 40, 120);
     wait_for_list(&fux, &environment, "\"width\":60");
-    // Zor samples an outer resize on its bounded 50 ms coordinator cadence.
-    std::thread::sleep(Duration::from_millis(150));
     assert_eq!(fixture_size(&mut fixture), (37, 58));
     assert_eq!(fixture_size(&mut second_fixture), (37, 58));
 
@@ -1411,26 +1383,15 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
 fn natural_last_pane_exit_is_observable_before_binary_workspace_retirement() {
     let _guard = binary_test_guard();
     let fux = binary("FUX_BIN", "target/debug/fux");
-    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
     let environment = PrivateEnvironment::new("nat");
     let fixture_listener =
         UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
 
-    let id = run(&fux, ["id"], &environment);
-    assert!(
-        id.status.success(),
-        "id failed: {}",
-        String::from_utf8_lossy(&id.stderr)
-    );
-    let allow = String::from_utf8(id.stdout)
-        .expect("endpoint id")
-        .trim()
-        .to_owned();
-    environment.write_config(&fixture, &zor);
+    environment.write_config_bare(&fixture);
     let mut server = OwnedChild::spawn(
         Command::new(&fux)
-            .args(["serve", "--allow", &allow, "--name", "binary"])
+            .args(["serve", "--name", "binary"])
             .env_clear()
             .envs(environment.variables())
             .stdin(Stdio::null())
@@ -1478,29 +1439,18 @@ fn natural_last_pane_exit_is_observable_before_binary_workspace_retirement() {
 }
 
 #[test]
-fn zor_wrapper_death_reaps_the_wrapped_child_and_retires_the_workspace() {
+fn direct_pane_death_retires_the_workspace() {
     let _guard = binary_test_guard();
     let fux = binary("FUX_BIN", "target/debug/fux");
-    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
-    let environment = PrivateEnvironment::new("wrapper-death");
+    let environment = PrivateEnvironment::new("pane-death");
     let fixture_listener =
         UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
 
-    let id = run(&fux, ["id"], &environment);
-    assert!(
-        id.status.success(),
-        "id failed: {}",
-        String::from_utf8_lossy(&id.stderr)
-    );
-    let allow = String::from_utf8(id.stdout)
-        .expect("endpoint id")
-        .trim()
-        .to_owned();
-    environment.write_config(&fixture, &zor);
+    environment.write_config_bare(&fixture);
     let mut server = OwnedChild::spawn(
         Command::new(&fux)
-            .args(["serve", "--allow", &allow, "--name", "binary"])
+            .args(["serve", "--name", "binary"])
             .env_clear()
             .envs(environment.variables())
             .stdin(Stdio::null())
@@ -1524,18 +1474,14 @@ fn zor_wrapper_death_reaps_the_wrapped_child_and_retires_the_workspace() {
         String::from_utf8_lossy(&listing.stderr)
     );
     let listing: Value = serde_json::from_slice(&listing.stdout).expect("listing JSON");
-    let wrapper_pid = listing
+    let listed_pid = listing
         .pointer("/result/value/workspaces/0/tabs/0/panes/0/pid")
         .and_then(Value::as_u64)
         .and_then(|pid| i32::try_from(pid).ok())
-        .expect("wrapper pid");
-    assert_ne!(
-        wrapper_pid, child_pid,
-        "Zor wrapper was not a distinct process"
-    );
+        .expect("pane pid");
+    assert_eq!(listed_pid, child_pid, "pane must be the command itself");
 
-    kill(Pid::from_raw(wrapper_pid), Signal::SIGKILL).expect("kill Zor wrapper");
-    wait_for_process_absent(wrapper_pid);
+    kill(Pid::from_raw(listed_pid), Signal::SIGKILL).expect("kill pane");
     wait_for_process_absent(child_pid);
     client.wait_status(137);
     server.wait();
@@ -1558,20 +1504,10 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
     let fixture_listener =
         UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
 
-    let id = run(&fux, ["id"], &environment);
-    assert!(
-        id.status.success(),
-        "id failed: {}",
-        String::from_utf8_lossy(&id.stderr)
-    );
-    let allow = String::from_utf8(id.stdout)
-        .expect("endpoint id")
-        .trim()
-        .to_owned();
     environment.write_config_bare(&fixture);
     let mut server = OwnedChild::spawn(
         Command::new(&fux)
-            .args(["serve", "--allow", &allow, "--name", "binary"])
+            .args(["serve", "--name", "binary"])
             .env_clear()
             .envs(environment.variables())
             .stdin(Stdio::null())
@@ -1583,7 +1519,7 @@ fn binary_control_kill_reaps_an_ignore_hup_descendant_and_reports_status() {
     let mut fixture = Jsonl::new(accept_with_deadline(&fixture_listener));
     assert_eq!(fixture.receive()["event"], "ready");
     let mut events = Jsonl::new(
-        UnixStream::connect(environment.control_socket()).expect("subscribe to lifecycle events"),
+        control_stream(environment.control_socket()).expect("subscribe to lifecycle events"),
     );
     events.send(json!({
         "command":"subscribe",
@@ -1723,21 +1659,14 @@ fn sigterm_at_each_binary_startup_phase_rolls_back_all_owned_resources() {
     let _guard = binary_test_guard();
     for phase in ["manager", "pane", "descriptor", "control"] {
         let fux = binary("FUX_BIN", "target/debug/fux");
-        let zor = binary("ZOR_BIN", "zor/target/debug/zor");
         let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
         let environment = PrivateEnvironment::new(&format!("p{}", &phase[..1]));
         let fixture_listener =
             UnixListener::bind(environment.fixture_socket()).expect("fixture socket");
-        let id = run(&fux, ["id"], &environment);
-        assert!(id.status.success(), "id failed in {phase}");
-        let allow = String::from_utf8(id.stdout)
-            .expect("endpoint id")
-            .trim()
-            .to_owned();
-        environment.write_config(&fixture, &zor);
+        environment.write_config_bare(&fixture);
         let mut server = OwnedChild::spawn(
             Command::new(&fux)
-                .args(["serve", "--allow", &allow, "--name", "binary"])
+                .args(["serve", "--name", "binary"])
                 .env_clear()
                 .envs(environment.variables())
                 .stdin(Stdio::null())
@@ -1783,15 +1712,14 @@ fn sigterm_at_each_binary_startup_phase_rolls_back_all_owned_resources() {
 }
 
 #[test]
-fn sigterm_cancels_a_stalled_startup_secret_transfer() {
+fn sigterm_cancels_a_stalled_startup_exchange() {
     let _guard = binary_test_guard();
     use std::io::Read as _;
 
     let fux = binary("FUX_BIN", "target/debug/fux");
-    let zor = binary("ZOR_BIN", "zor/target/debug/zor");
     let fixture = PathBuf::from(env!("CARGO_BIN_EXE_fux-fixture-child"));
-    let environment = PrivateEnvironment::new("stalled-secret");
-    environment.write_config(&fixture, &zor);
+    let environment = PrivateEnvironment::new("stalled-startup");
+    environment.write_config_bare(&fixture);
     let startup_path = environment.root.join("startup.sock");
     let listener = UnixListener::bind(&startup_path).expect("startup listener");
     std::fs::set_permissions(
@@ -1842,7 +1770,7 @@ fn sigterm_cancels_a_stalled_startup_secret_transfer() {
         .expect("bound startup read");
     let mut request = [0_u8; 6];
     startup.read_exact(&mut request).expect("startup request");
-    assert_eq!(&request, b"SECRET");
+    assert_eq!(&request, b"LOCAL1");
 
     server.terminate(Signal::SIGTERM);
     server.wait();
@@ -1909,15 +1837,7 @@ impl PrivateEnvironment {
         ]
     }
 
-    fn write_config(&self, fixture: &Path, zor: &Path) {
-        self.write_config_document(fixture, Some(zor));
-    }
-
     fn write_config_bare(&self, fixture: &Path) {
-        self.write_config_document(fixture, None);
-    }
-
-    fn write_config_document(&self, fixture: &Path, zor: Option<&Path>) {
         fs::create_dir_all(self.root.join("bin")).expect("fixture bin directory");
         for name in ["terminal-notifier", "notify-send"] {
             let target = self.root.join("bin").join(name);
@@ -1925,14 +1845,10 @@ impl PrivateEnvironment {
                 fs::hard_link(fixture, target).expect("install fixture notifier");
             }
         }
-        let zor = zor
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.root.join("bin/missing-zor"));
         let document = format!(
-            "default-command = {{ argv = [{:?}, {:?}, \"--deadline-ms=30000\"] }}\nzor-path = {:?}\nclipboard = \"write-only\"\nlocal-network = true\n[notifications]\nenabled = true\nnotify-blocked = true\nnotify-idle = true\n",
+            "default-command = {{ argv = [{:?}, {:?}, \"--deadline-ms=30000\"] }}\nclipboard = \"write-only\"\n[notifications]\nenabled = true\nnotify-blocked = true\nnotify-idle = true\n",
             fixture.display().to_string(),
             format!("--control={}", self.fixture_socket().display()),
-            zor.display().to_string(),
         );
         fs::write(self.root.join("config/fux/config.toml"), document).expect("private config");
     }
@@ -2145,14 +2061,15 @@ impl TerminalChild {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            let mut terminal = vt100::Parser::new(24, 80, 0);
+            let size = self.master.get_size().expect("client dimensions");
+            let mut terminal = vt100::Parser::new(size.rows, size.cols, 0);
             terminal.process(&bytes);
             if terminal.screen().contents().contains(needle) {
                 return;
             }
             assert!(
                 Instant::now() < deadline,
-                "client never painted final output; bytes={}",
+                "client never painted {needle:?}; bytes={}",
                 String::from_utf8_lossy(&bytes)
             );
             std::thread::sleep(Duration::from_millis(5));
@@ -2167,7 +2084,8 @@ impl TerminalChild {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            let mut terminal = vt100::Parser::new(24, 80, 0);
+            let size = self.master.get_size().expect("client dimensions");
+            let mut terminal = vt100::Parser::new(size.rows, size.cols, 0);
             terminal.process(&bytes);
             if terminal
                 .screen()
@@ -2549,4 +2467,10 @@ fn binary(variable: &str, relative: &str) -> PathBuf {
         path.display()
     );
     path
+}
+
+fn control_stream(path: impl AsRef<std::path::Path>) -> std::io::Result<UnixStream> {
+    let mut stream = UnixStream::connect(path)?;
+    fux::control::negotiate_client(&mut stream)?;
+    Ok(stream)
 }

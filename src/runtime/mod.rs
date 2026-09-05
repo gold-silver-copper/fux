@@ -29,32 +29,9 @@ pub fn terminal_workspace_retirement_due(
     elapsed >= FINAL_STATE_MIN_GRACE && (attached_clients == 0 || elapsed >= FINAL_STATE_MAX_GRACE)
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "request", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum ManagerRequest {
-    Resolve {
-        name: Option<String>,
-        server_key: Option<Vec<u8>>,
-    },
-    List,
-    Kill {
-        name: String,
-    },
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "reply", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum ManagerReply {
-    Attach { descriptor: fux::daemon::Descriptor },
-    Pick { names: Vec<String> },
-    Failed { message: String },
-}
-
+pub use fux::daemon::{ManagerReply, ManagerRequest};
 pub fn manager_request(path: &Path, request: &ManagerRequest) -> Result<ManagerReply> {
-    let mut stream = UnixStream::connect(path)?;
-    set_rpc_deadlines(&stream)?;
-    write_frame(&mut stream, request)?;
-    serde_json::from_slice(&read_json_frame(&mut stream)?).context("decoding manager reply")
+    fux::daemon::manager_request(path, request)
 }
 
 pub fn select_workspace(names: &[String], selection: &str) -> Result<String> {
@@ -66,6 +43,7 @@ pub fn select_workspace(names: &[String], selection: &str) -> Result<String> {
 }
 
 pub fn read_manager_request(stream: &mut UnixStream) -> Result<ManagerRequest> {
+    fux::control::negotiate_server(stream)?;
     serde_json::from_slice(&read_json_frame(stream)?).context("decoding manager request")
 }
 
@@ -353,6 +331,9 @@ fn serve_connection(
     events: EventHub,
     shutdown: &AtomicBool,
 ) {
+    if fux::control::negotiate_server(&mut stream).is_err() {
+        return;
+    }
     loop {
         if shutdown.load(Ordering::Acquire) {
             return;
@@ -434,6 +415,7 @@ pub fn request(socket: &Path, request: &Request) -> Result<Reply> {
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("connecting to {}", socket.display()))?;
     set_rpc_deadlines(&stream)?;
+    fux::control::negotiate_client(&mut stream)?;
     write_frame(&mut stream, request)?;
     let frame = read_json_frame(&mut stream)?;
     serde_json::from_slice(&frame).context("decoding control reply")
@@ -443,6 +425,7 @@ pub fn subscribe(socket: &Path, request: &Request, mut output: impl Write) -> Re
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("connecting to {}", socket.display()))?;
     set_rpc_deadlines(&stream)?;
+    fux::control::negotiate_client(&mut stream)?;
     write_frame(&mut stream, request)?;
     let accepted = read_json_frame(&mut stream)?;
     output.write_all(&accepted)?;
@@ -511,13 +494,11 @@ impl LiveConfig {
             bail!("prefix and binding keys must encode exactly one byte at runtime");
         }
         let current = read_lock(&self.current);
-        if candidate.local_network != current.local_network
-            || candidate.default_command != current.default_command
+        if candidate.default_command != current.default_command
             || candidate.zor_path != current.zor_path
             || candidate.clipboard != current.clipboard
             || candidate.history != current.history
             || candidate.resources != current.resources
-            || candidate.remote_allow_ids != current.remote_allow_ids
         {
             bail!("configuration change requires a workspace restart");
         }

@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddrV4};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -13,8 +12,8 @@ pub struct Descriptor {
     pub name: String,
     pub pid: u32,
     pub instance_nonce: String,
-    pub endpoint_id: String,
-    pub direct_addr: SocketAddrV4,
+    pub socket_path: PathBuf,
+    pub protocol: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,8 +27,8 @@ impl Descriptor {
         validate_workspace_name(&self.name).map_err(DescriptorError::Path)?;
         if self.pid == 0
             || !safe_token(&self.instance_nonce, 128)
-            || !safe_token(&self.endpoint_id, 512)
-            || *self.direct_addr.ip() != Ipv4Addr::LOCALHOST
+            || !self.socket_path.is_absolute()
+            || self.protocol != crate::local::VERSION
         {
             return Err(DescriptorError::Invalid);
         }

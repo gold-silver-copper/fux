@@ -1,163 +1,158 @@
 # fux
 
-fux is an agent-oriented terminal workspace: one named workspace can contain multiple PTY panes,
-tabs, popups, synchronized viewers, a local JSON control socket, and optional `zor` agent-state
-observation. koh owns networking, remote sessions, endpoint identities, and credential handling.
-fux owns pane PTYs, workspace state, commands, and presentation; zor owns observation.
+fux is a standalone local terminal multiplexer with persistent workspaces, PTY panes, tabs,
+popups, scrollback, multiple viewers, and a local JSON control interface. It builds and runs
+without koh or zor. Local operation requires no cryptographic keys and opens no network listeners.
 
-This is an early 0.1 implementation. The state/layout, host, compositor, control protocol, daemon
-descriptor and endpoint-management layers are present, but release verification is still in
-progress.
-
-## Basic model
-
-- `fux` attaches to or creates the default local workspace.
-- `fux serve --allow <endpoint-id>` serves an explicitly authorized remote viewer.
-- `fux connect <endpoint-id>` connects to a remote workspace.
-- Named workspaces have distinct endpoint identities. Runtime descriptors advertise their endpoint
-  ids; secret keys are stored separately with private permissions.
-- The prefix key opens workspace command mode. The default detach sequence is prefix then `d`;
-  prefix followed by itself sends the literal prefix.
-
-Run `fux bindings` to list bindings from local configuration. Prefix then `?` shows the running
-workspace's configured bindings. Viewer detach and workspace-picker shortcuts follow the
-workspace's published configuration, including reloads and remote connections. A remote-only
-attachment does not provide the local manager's workspace picker.
-
-Run `fux --help` for the current command surface. Configuration is loaded from
-`$XDG_CONFIG_HOME/fux/config.toml` or the platform config directory. Runtime descriptors and Unix
-sockets live below `$XDG_RUNTIME_DIR/fux` when available, with a private per-user fallback.
-Set `local-network = true` to create new workspace endpoints with Iroh's local-only network
-profile, disabling relay and discovery use. Changing this endpoint policy requires restarting the
-workspace; a live configuration reload rejects the change transactionally.
-
-## Identity keys and passphrases
-
-fux uses a client identity shared with koh and a separate identity for each named workspace.
-Starting a stopped workspace unlocks the client and workspace keys once each. Attaching to a running
-workspace unlocks only the client key. Reconnects and the workspace picker reuse that unlocked
-client identity for the lifetime of the invocation. All credential prompts finish before terminal
-input readers start; daemon startup waits until both identities are unlocked.
-
-Different keys may have different passphrases, so a cold start can still require two prompts.
-New keys also ask for passphrase confirmation. Keys remain encrypted at rest; there is no
-plaintext or empty-passphrase mode and no persistent passphrase cache.
-
-Inspect paths without unlocking or creating keys:
+## Local use
 
 ```sh
-fux key path --client
-fux key path --workspace default
+cargo build --release --locked
+./target/release/fux
 ```
 
-Inspect an endpoint ID or change its passphrase without changing the identity:
+`fux` starts the local session server on demand and attaches to a workspace. Detaching or closing
+the terminal leaves the server and pane processes running. The server owns live PTYs; saved
+terminal output cannot replace those processes after the server or machine stops.
+
+- `fux NAME` opens a named workspace.
+- `fux workspace list` lists workspaces.
+- `fux workspace kill NAME` terminates that workspace and its panes.
+- `fux bindings` lists configured bindings; prefix then `?` shows them in the workspace.
+- The default prefix is Ctrl-A. Prefix then `d` detaches; prefix twice sends literal Ctrl-A.
+- `fux serve --name NAME` runs the local server in the foreground.
+
+Run `fux --help` for commands. Configuration lives at `$XDG_CONFIG_HOME/fux/config.toml` or the
+platform configuration directory. Private sockets live below `$XDG_RUNTIME_DIR/fux`, with a
+per-user fallback when that variable is absent. Descriptors identify local sockets and protocol
+versions, not network identities.
+
+## Contextual command hints
+
+Press the configured prefix (Ctrl-A by default) and pause to see available bindings. Commands
+execute immediately; fast prefix-command sequences do not flash a panel. Unknown command keys
+reveal hints without reaching the pane. Prefix then `?` opens help explicitly. Esc cancels,
+up/down or Page Up/Page Down pages the list, and prefix twice sends the literal prefix.
+
+These interactions require attachment protocol version 2. Older session servers are rejected
+before terminal setup. Save your work before explicitly restarting an old server; fux does not
+terminate sessions automatically to upgrade them.
+
+Preferences are read from the viewer's configuration when attaching:
+
+```toml
+[hints]
+automatic = true
+delay-ms = 200
+```
+
+Set `delay-ms = 0` for immediate hints, or `automatic = false` to hide delayed automatic hints.
+Explicit help and unknown-command hints remain available. The delay is bounded to 0–5000 ms.
+Prefix panels and the new interaction modes are viewer-local:
+
+Command help and `fux bindings` group actions into Panes, Focus, Tabs, Session, and Custom.
+Use the arrow keys to page through command help. Dim actions are unavailable in the current
+context; pressing one explains why. For example, resize requires a split, and pane/tab layout
+commands wait until a popup is closed. The host still checks changing state and resource limits.
+
+- Prefix then `s`: choose a workspace with arrows or j/k; Enter switches to it.
+- Prefix then `w`: choose a tab with arrows or j/k; Enter selects it.
+- Prefix then `,`: rename the current tab; Ctrl-U clears, Backspace deletes, Enter saves.
+- Prefix then `x`: confirm closing the focused pane with `y`; `n` cancels.
+- Prefix then `r`: repeat resize adjustments with arrows or h/j/k/l; Enter finishes.
+- Prefix then `[`: enter viewer-local copy mode. Arrows or h/j/k/l move, Space starts a
+  selection, and `y` or Enter copies it and returns to the pane. `u`/`d` scroll three rows.
+  Scrolling or resizing clears the selection; Esc clears it first, then returns to commands.
+  `q` leaves copy mode. Clipboard output follows your configured clipboard policy.
+  Selections exceeding the 1 MiB encoded clipboard limit remain selected and show an error;
+  clear the selection with Esc and choose a smaller region to retry.
+
+Shift-drag selects text locally in tiled or popup panes; `y` or Enter copies the selection.
+The mouse wheel opens local scrollback when the pane application has not requested mouse input.
+Popup footers show the configured command prefix and close binding while keeping application input
+available. Copy selections and scrollback do not move another viewer's viewport.
+
+Esc returns from these modes to command help; a second Esc returns to pane input. Resize changes
+are applied immediately and are kept when leaving. Other modes change their target only on submit.
+Starting fux with multiple workspaces opens the same picker; Esc exits without attaching.
+Explicit socket attachments have no workspace picker. Pending close or rename actions fail if
+their original target disappears, even if another pane or tab is created afterward.
+These keys follow your configured bindings. The broader contextual mode refactor is in progress; see
+[the implementation plan](docs/contextual-help-plan.md).
+
+## Optional integrations
+
+Koh owns remote networking, identities, encryption, authentication, authorization, discovery,
+relays, and reconnect policy. Its optional gateway exposes an authenticated remote service as a
+private local socket. Fux attaches with:
 
 ```sh
-fux key info --client
-fux key passwd --client
-fux key info --workspace default
-fux key passwd --workspace default
+fux attach --socket /absolute/private/path/remote.sock
 ```
 
-`path`, `info`, and `passwd` also accept `--key-file PATH`. Without a selector they use the client
-identity. Client keys default to `$XDG_CONFIG_HOME/koh/client.key` or `~/.config/koh/client.key`;
-workspace keys use `$XDG_STATE_HOME/fux/keys/NAME.key` or `~/.local/state/fux/keys/NAME.key`.
+The koh commands are `koh gateway serve --socket LOCAL_SOCKET --allow CLIENT_ID` on the host and
+`koh gateway connect SERVER_ID --socket PRIVATE_SOCKET` on the viewer machine. Use each command's
+help for key files, direct addresses, and relay options. Parent directories must already be
+private. Keys are loaded by koh, never by fux. Stopping either gateway leaves local pane processes
+running. Koh retries detected connection loss for up to 30 seconds while retaining the local attachment.
+An expired session or restarted gateway requires a new attachment; local panes remain alive.
 
-If a passphrase is lost, reset explicitly selected identities. First list workspaces with
-`fux workspace list`, then stop each with `fux workspace kill NAME`. **Stopping a workspace ends
-its panes.** Reset refuses while a manager is running in the current runtime directory. Also stop
-any remote `fux connect` clients or koh processes using the shared client identity, and any fux
-instances using the same keys with a different `XDG_RUNTIME_DIR`; their lifetimes cannot be checked
-by the local manager.
+Zor owns agent detection and observation. Enable its sidecar explicitly in fux configuration:
 
-```sh
-fux key reset --workspace default --yes
-fux key reset --client --yes
-fux
+```toml
+zor-path = "/absolute/path/to/zor"
 ```
 
-Each reset deletes only the selected key; the next use generates a new identity and requests a
-new passphrase. Reset needs no old passphrase. **Endpoint IDs change**, so update remote client
-allowlists and saved workspace endpoint IDs. Resetting the client affects koh too. Omit `--yes`
-to see the consequences without deleting anything. A stale manager socket also blocks reset; start
-and stop fux to let normal startup recover that state. Reset does not accept arbitrary `--key-file`
-paths. Resetting keys does not disable future passphrase prompts.
+This requires a zor build supporting `zor observe`. Fux always starts pane commands directly;
+an optional observer samples the local control interface and sends bounded metadata. Missing,
+crashed, stalled, or malformed observers leave panes usable. Fux clears stale observer status
+when that observer exits. Observation is disabled by default.
 
-A wrong-passphrase error can also mean authenticated ciphertext was modified; those cases cannot
-be distinguished cryptographically. Errors include the identity path and preserve the underlying
-format, permissions, or I/O diagnostic. Check the path and passphrase before choosing reset.
+## Local security and migration
 
-## Pane execution and history
+The OS user account is the local security boundary. Fux checks private directory/socket ownership,
+permissions, and kernel peer credentials, and bounds attachment frames and control requests.
+Other processes running as the same user can control sessions. Pane processes can emit titles,
+bells, clipboard requests, and agent reports; displayed agent state is untrusted metadata.
+Clipboard output is subject to client configuration.
 
-When an executable `zor` is configured, panes are spawned through `zor --title never -- …` so fux
-can consume OSC 7877 state reports. If the probe fails, fux starts a bare pane and logs the fallback
-once. Scrollback and capture requests are bounded; fux uses koh's temporary scrollback callback
-for viewport extraction rather than retaining an unbounded output log.
+Local fux no longer has `key`, `id`, or `connect` commands, remote allowlists, or a `local-network`
+setting. Remove obsolete settings from fux configuration. The notification setting `remote-clients` is now `viewer-notifications`; it controls notifications
+in an explicit socket viewer. Existing koh and workspace key files
+are left untouched and are not needed for local use; manage koh identities through koh.
 
-Copy/scroll viewport is shared between viewers in version 1. koh identifies viewers for resize and
-detach, but pane input does not carry a client id. Clipboard state is synchronized as bounded
-base64 and emitted as OSC 52 only by an opted-in client backend.
+An older running server may use an incompatible protocol. Fux reports that mismatch and does not
+silently kill it. Save work and deliberately stop the old server using its matching binary before
+starting the new one. Stopping that server terminates its panes. Closing a viewer alone does not
+upgrade a persistent server.
 
-## Security boundaries
+## Development and verification
 
-Remote access is allowlist-based. Endpoint ids authenticate transport peers; knowing a workspace
-name or finding a runtime descriptor does not grant admission. The local control socket relies on
-an owner-only runtime directory and socket permissions (portable Unix peer credentials are not
-available everywhere), and rejects unsafe names, oversized frames, path traversal, and unbounded
-command/environment payloads.
-
-The process inside a pane is trusted to control that pane's terminal. It can emit titles, bells,
-clipboard OSC, and OSC 7877 itself. Agent status is therefore presentation metadata, not an
-authenticated claim: sequence numbers deduplicate adjacent reports but do not establish reporter
-identity. OSC 21337 is observed only; its provenance and schema remain unverified.
-
-See [docs/security.md](docs/security.md) for the threat model and operational guidance.
-
-## Platforms and limitations
-
-Linux and macOS are the primary host platforms. Android is compile-checked as a client target; that
-does not constitute Android runtime coverage. Windows hosting is not supported in 0.2. Remote relay,
-terminal-emulator OSC collision behavior, and genuine Claude Code rules still need human evidence.
-
-The development checkout uses local path dependencies for koh and zor while published packages
-resolve the matching koh 0.12.1 and zor 0.1.2 releases from the registry once published. Both
-uploads are currently blocked by the crates.io owner-account lock recorded in
-`docs/release-readiness.md`.
-
-## Development
-
-The combined development tree uses exact base revisions plus reviewed source patches for the
-independent koh and zor repositories. On a fresh fux checkout, assemble them before building:
-
-```sh
-python3 tools/dependencies.py apply
-python3 tools/dependencies.py verify --build
-```
-
-`dependency-patches/manifest.json` records upstream repositories, immutable bases, and patch paths.
-The tool refuses unexpected bases or divergent local edits. Make dependency changes in their
-owning checkouts (`references/koh` and `zor`), then run `python3 tools/dependencies.py export` and
-`verify` to include them in fux's reproducible development inputs. Verification reconstructs each
-checkout from its base and checks all source bytes, including new files. `--build` also reconstructs the complete fux source tree, builds both binaries, and runs
-host/client/real-zor integration tests against those sources. CI assembles the same sources before
-its Rust checks.
-
-These development APIs are not represented by new registry releases. Release koh and zor from
-their owning repositories before updating fux to published versions; packaging against the current
-registry versions does not reproduce this refactor. No package publication is part of this work.
+A clean fux checkout needs no sibling source trees or dependency patches:
 
 ```sh
 cargo fmt --all --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --all-features --locked -- --test-threads=1
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --all-targets --locked
+cargo build --locked --bin fux
+cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
 cargo doc --no-deps --locked
+cargo package --locked
 ```
 
-The identity CLI regression test requires Python 3 and uses a PTY with disposable HOME/XDG
-directories. It verifies prompting, terminal restoration, and reset behavior without accessing
-personal keys.
+Real-binary tests use disposable HOME/XDG directories and require Python 3; the network-socket
+assertion also uses `lsof`. They do not access personal keys or sessions. Default CI and package
+verification use only this repository. Linux and macOS are CI host targets; Android has a cross-check
+job, which is not runtime coverage. Current refactor runtime verification was performed on macOS.
 
-Set `ZOR_BIN` to an explicitly built zor executable for cross-repository integration tests. Do not
-rely on a sibling repository's target-directory layout.
+For optional integration development, `python3 tools/dependencies.py apply` reconstructs koh and
+zor from pinned owner-repository bases plus local patches. Edit their owning checkouts, then use
+`export` and `verify` to refresh and check those inputs. These patches are integration-only and
+are excluded from the fux package. CI's manual `integrations` switch enables the cross-repository
+job. Set `ZOR_BIN` to a built sidecar to run the real observer integration locally.
 
-Licensed under MIT.
+See [the completion audit](docs/standalone-audit.md) for requirement evidence and platform limits. The [local attachment protocol](docs/local-attachment-protocol.md)
+describes the current wire interface.
+
+Licensed under MIT; incorporated terminal and observation-schema code retains attribution in
+[LICENSES](LICENSES).

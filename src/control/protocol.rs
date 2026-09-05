@@ -166,7 +166,7 @@ impl Request {
                 ));
             }
             Self::Tab {
-                action: TabAction::New { name: Some(name) },
+                action: TabAction::New { name: Some(name) } | TabAction::Rename { name, .. },
                 ..
             } if name.len() > 128 || name.contains('\0') => {
                 return Err(ControlError::invalid(
@@ -220,6 +220,8 @@ pub enum FocusTarget {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TabAction {
+    SelectId { tab: u32 },
+    Rename { tab: u32, name: String },
     New { name: Option<String> },
     Next,
     Previous,
@@ -308,6 +310,8 @@ pub struct PaneSummary {
     pub pid: Option<u32>,
     pub cwd: PathBuf,
     pub title: String,
+    #[serde(default)]
+    pub progress: Option<(u8, u8)>,
     pub agent: Option<String>,
     pub state: AgentStatus,
     pub geometry: PaneGeometry,
@@ -489,7 +493,6 @@ pub enum AgentStatus {
 #[serde(rename_all = "kebab-case")]
 pub enum ClientIdentity {
     Local,
-    Endpoint(String),
     Viewer(u64),
 }
 

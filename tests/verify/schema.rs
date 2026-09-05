@@ -122,9 +122,6 @@ pub enum Step {
     AdvanceClock {
         milliseconds: u64,
     },
-    Transport {
-        fault: TransportFault,
-    },
     Expect {
         expected: Expected,
     },
@@ -137,15 +134,6 @@ pub enum Signal {
     Int,
     Term,
     Kill,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TransportFault {
-    Lose,
-    Duplicate,
-    Reorder,
-    Reconnect,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -262,7 +250,6 @@ impl Scenario {
         let mut attached_clients = std::collections::BTreeSet::<String>::new();
         let mut client_workspaces = std::collections::BTreeMap::<String, String>::new();
         let mut workspaces = std::collections::BTreeSet::<String>::new();
-        let mut transport_lost = false;
         let mut mouse_tracking = false;
         let mut child_exited = false;
         #[derive(Clone, Copy, Eq, PartialEq)]
@@ -339,18 +326,6 @@ impl Scenario {
                     return Err(
                         "serialized switch requires an attached client and workspace".into(),
                     );
-                }
-                Step::Transport {
-                    fault: TransportFault::Lose,
-                } if !transport_lost => transport_lost = true,
-                Step::Transport {
-                    fault: TransportFault::Reconnect,
-                } if transport_lost => transport_lost = false,
-                Step::Transport {
-                    fault: TransportFault::Duplicate | TransportFault::Reorder,
-                } if !transport_lost => {}
-                Step::Transport { .. } => {
-                    return Err("serialized transport fault violates link lifecycle".into());
                 }
                 Step::EnableMouseTracking { pane: 1 } if !mouse_tracking => {
                     mouse_tracking = true;

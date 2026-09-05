@@ -2,13 +2,14 @@
 name = "fux"
 version = "0.2.1"
 edition = "2024"
-description = "Agent-native terminal workspace"
+description = "Standalone local terminal multiplexer"
 license = "MIT"
 rust-version = "1.91"
 repository = "https://github.com/gold-silver-copper/fux"
 homepage = "https://github.com/gold-silver-copper/fux"
 documentation = "https://docs.rs/fux"
 readme = "README.md"
+exclude = ["dependency-patches/**", "tools/dependencies.py"]
 
 [dependencies]
 # Application error context and top-level error propagation.
@@ -17,12 +18,12 @@ anyhow = "1.0"
 base64 = "0.22"
 # Derive-based parsing for fux's independent command surface.
 clap = { version = "4.5", features = ["derive"] }
-# Session synchronization and bounded terminal transport.
-koh = { version = "=0.12.1", path = "references/koh", default-features = false, features = ["backend-termina"] }
 # Safe Unix signal and process-group operations.
-nix = { version = "0.30", features = ["fs", "signal", "socket", "term"] }
+nix = { version = "0.30", features = ["fs", "poll", "signal", "socket", "term", "user"] }
 # Pane PTYs and application-owned process lifecycle.
 portable-pty = "=0.9.0"
+# Local terminal mode control and output.
+termina = "0.3.3"
 thiserror = "2"
 # Terminal rendering primitives without ratatui's umbrella crate.
 ratatui-core = "=0.1.0"
@@ -45,8 +46,6 @@ vt100 = "=0.16.2"
 # Validate synchronized terminal cells before rendering untrusted peer state.
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.0"
-# Minimal OSC 7877 model/parser shared with the wrapper.
-zor = { version = "=0.1.2", path = "zor", default-features = false }
 
 [dev-dependencies]
 # Exhaustive compact ownership and ordering models for verification.

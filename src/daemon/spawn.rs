@@ -268,10 +268,10 @@ impl ProcessTicket {
         true
     }
 
-    /// Sends bounded secret material only after the child connects over the same-user channel.
-    pub fn send_secret(&mut self, secret: &[u8]) -> Result<(), SpawnError> {
-        if secret.is_empty() || secret.len() > 4096 {
-            return Err(SpawnError::Spawn("invalid startup secret size".into()));
+    /// Sends a bounded startup payload after the child connects over the same-user channel.
+    pub fn send_startup(&mut self, payload: &[u8]) -> Result<(), SpawnError> {
+        if payload.is_empty() || payload.len() > 4096 {
+            return Err(SpawnError::Spawn("invalid startup payload size".into()));
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -293,14 +293,14 @@ impl ProcessTicket {
                     if stream.read_exact(&mut hello).is_err() {
                         continue;
                     }
-                    if &hello != b"SECRET" {
+                    if &hello != b"LOCAL1" {
                         continue;
                     }
-                    let length = u32::try_from(secret.len())
-                        .map_err(|_| SpawnError::Spawn("startup secret too large".into()))?;
+                    let length = u32::try_from(payload.len())
+                        .map_err(|_| SpawnError::Spawn("startup payload too large".into()))?;
                     stream
                         .write_all(&length.to_be_bytes())
-                        .and_then(|()| stream.write_all(secret))
+                        .and_then(|()| stream.write_all(payload))
                         .map_err(|error| SpawnError::Spawn(error.to_string()))?;
                     return Ok(());
                 }
@@ -310,7 +310,7 @@ impl ProcessTicket {
                         self.complete = true;
                         self.armed = false;
                         return Err(SpawnError::Child(format!(
-                            "daemon exited before secret transfer: {status}"
+                            "daemon exited before startup exchange: {status}"
                         )));
                     }
                     if std::time::Instant::now() >= deadline {
@@ -324,43 +324,37 @@ impl ProcessTicket {
     }
 }
 
-pub fn receive_startup_secret(address: &str) -> std::io::Result<Vec<u8>> {
-    validate_channel(address)?;
-    let mut stream = UnixStream::connect(address)?;
-    stream.write_all(b"SECRET")?;
-    let mut length = [0_u8; 4];
-    stream.read_exact(&mut length)?;
-    let length = usize::try_from(u32::from_be_bytes(length)).map_err(std::io::Error::other)?;
-    if length == 0 || length > 4096 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid startup secret size",
-        ));
-    }
-    let mut secret = vec![0_u8; length];
-    stream.read_exact(&mut secret)?;
-    Ok(secret)
-}
-
-/// Cancellation-safe async variant used while the daemon is still starting.
-pub async fn receive_startup_secret_async(address: &str) -> std::io::Result<Vec<u8>> {
+/// Bounded, cancellation-safe startup exchange. Timeout releases the caller's manager guard.
+pub async fn receive_startup_async(address: &str) -> std::io::Result<Vec<u8>> {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-    validate_channel(address)?;
-    let mut stream = tokio::net::UnixStream::connect(address).await?;
-    stream.write_all(b"SECRET").await?;
-    let mut length = [0_u8; 4];
-    stream.read_exact(&mut length).await?;
-    let length = usize::try_from(u32::from_be_bytes(length)).map_err(std::io::Error::other)?;
-    if length == 0 || length > 4096 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid startup secret size",
-        ));
-    }
-    let mut secret = vec![0_u8; length];
-    stream.read_exact(&mut secret).await?;
-    Ok(secret)
+    tokio::time::timeout(
+        std::time::Duration::from_millis(super::STARTUP_TIMEOUT_MS),
+        async {
+            validate_channel(address)?;
+            let mut stream = tokio::net::UnixStream::connect(address).await?;
+            stream.write_all(b"LOCAL1").await?;
+            let mut length = [0_u8; 4];
+            stream.read_exact(&mut length).await?;
+            let length =
+                usize::try_from(u32::from_be_bytes(length)).map_err(std::io::Error::other)?;
+            if length == 0 || length > 4096 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid startup payload size",
+                ));
+            }
+            let mut payload = vec![0_u8; length];
+            stream.read_exact(&mut payload).await?;
+            Ok(payload)
+        },
+    )
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "local startup exchange timed out",
+        )
+    })?
 }
 
 /// Child-side half of the private startup channel. Call once after manager bind succeeds or fails.

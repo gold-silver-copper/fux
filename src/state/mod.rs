@@ -19,9 +19,6 @@ pub use workspace::{RECEIVE_BUDGET_UNITS, RECV_DECODE_LIMIT, StateError, Workspa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koh::input::UserInput;
-    use koh::ssp::SyncState as _;
-    use koh::ssp::testkit::{LinkParams, SimHarness};
     use proptest::prelude::any;
     use std::num::NonZeroU16;
 
@@ -351,14 +348,8 @@ mod tests {
     }
 
     #[test]
-    fn workspace_transport_converges_under_loss() {
-        let params = LinkParams {
-            loss: 0.30,
-            min_delay_ms: 20,
-            max_delay_ms: 120,
-            dup: 0.05,
-        };
-        let mut harness = SimHarness::<UserInput, WorkspaceState>::new(params, 0xF1, 1200);
+    fn workspace_repaint_converges_after_skipped_snapshots() {
+        let mut replica = workspace();
         let mut target = workspace();
         assert!(
             target
@@ -377,13 +368,8 @@ mod tests {
                 })
                 .is_ok()
         );
-        *harness.b_mut() = target.clone();
-        harness.a_mut().push_bytes(b"input-over-loss");
-        harness.run_until(60_000, |current| {
-            current.a.remote_state() == &target
-                && current.b.remote_state().events().len() >= b"input-over-loss".len()
-        });
-        assert_eq!(harness.a.remote_state(), &target);
+        replica.apply(&target.diff_from(&replica));
+        assert_eq!(replica, target);
     }
 
     fn pane_with_pattern(rows: u16, columns: u16) -> PaneView {

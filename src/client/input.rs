@@ -35,6 +35,11 @@ impl CopyMode {
         self.pending.clear();
     }
 
+    pub fn clear_selection(&mut self) {
+        self.anchor = None;
+        self.dragging = false;
+    }
+
     pub fn reset(&mut self) {
         *self = Self::default();
     }
@@ -158,8 +163,12 @@ impl CopyMode {
                 b'y' | b'\r' if self.anchor.is_some() => {
                     let text = self.selected_text(&pane);
                     let encoded = base64::engine::general_purpose::STANDARD.encode(text);
-                    let _ = state.update_metadata(|metadata| metadata.clipboard_base64 = encoded);
-                    self.active = false;
+                    if state
+                        .update_metadata(|metadata| metadata.clipboard_base64 = encoded)
+                        .is_ok()
+                    {
+                        self.active = false;
+                    }
                 }
                 _ => {}
             }
@@ -241,6 +250,13 @@ pub struct DetachFilter {
     bindings: crate::commands::ClientBindings,
     matched: Vec<u8>,
     command_pending: bool,
+    contextual: bool,
+    reveal_hints: bool,
+    prefix_epoch: u64,
+    hint_page: usize,
+    viewer_action: Option<crate::commands::BuiltinAction>,
+    mouse: Option<(crate::host::MouseEvent, Vec<u8>)>,
+    external_binding: Option<u8>,
     paste: bool,
     paste_marker: Vec<u8>,
     detach: bool,
@@ -255,12 +271,87 @@ impl DetachFilter {
             bindings: crate::commands::ClientBindings::default(),
             matched: Vec::new(),
             command_pending: false,
+            contextual: false,
+            reveal_hints: false,
+            prefix_epoch: 0,
+            hint_page: 0,
+            viewer_action: None,
+            mouse: None,
+            external_binding: None,
             paste: false,
             paste_marker: Vec::new(),
             detach: false,
             workspace_picker: false,
             workspace_picker_enabled: false,
         })
+    }
+
+    pub fn enable_contextual_help(&mut self) {
+        self.contextual = true;
+    }
+
+    pub fn take_external_binding(&mut self) -> Option<u8> {
+        self.external_binding.take()
+    }
+
+    pub fn take_mouse(&mut self) -> Option<(crate::host::MouseEvent, Vec<u8>)> {
+        self.mouse.take()
+    }
+    pub fn take_viewer_action(&mut self) -> Option<crate::commands::BuiltinAction> {
+        self.viewer_action.take()
+    }
+    pub fn show_commands(&mut self) {
+        self.command_pending = true;
+        self.reveal_hints = true;
+        self.prefix_epoch = self.prefix_epoch.wrapping_add(1);
+    }
+
+    pub fn command_pending(&self) -> bool {
+        self.command_pending
+    }
+
+    pub fn prefix_epoch(&self) -> u64 {
+        self.prefix_epoch
+    }
+
+    pub fn hint_page(&self) -> usize {
+        self.hint_page
+    }
+
+    pub fn hints_requested(&self) -> bool {
+        self.reveal_hints && self.command_pending
+    }
+
+    pub fn bindings(&self) -> &crate::commands::ClientBindings {
+        &self.bindings
+    }
+
+    pub fn escape_pending(&self) -> bool {
+        self.paste_marker.first() == Some(&0x1b) && !self.paste
+            // Once CSI/SS3 is identified, keep its bounded sequence together.
+            // A pause in a terminal report must not reinterpret its parameters
+            // (or a bracketed-paste delimiter) as configurable command keys.
+            && !(self.contextual && self.paste_marker.last() != Some(&0x1b)
+                && (self.paste_marker.starts_with(b"\x1b[")
+                    || self.paste_marker.starts_with(b"\x1bO")))
+    }
+
+    pub fn resolve_escape(&mut self) -> Vec<u8> {
+        if !self.escape_pending() {
+            return Vec::new();
+        }
+        let pending = std::mem::take(&mut self.paste_marker);
+        if self.contextual && self.command_pending && pending.len() > 1 {
+            if pending.last() == Some(&0x1b) {
+                self.command_pending = false;
+                self.reveal_hints = false;
+            } else {
+                self.reveal_hints = true;
+            }
+            Vec::new()
+        } else {
+            self.process(&pending, false)
+        }
     }
 
     /// Recognizes bracketed-paste boundaries across chunks and applies detach mapping only to
@@ -271,12 +362,72 @@ impl DetachFilter {
         let mut output = Vec::with_capacity(input.len());
         for &byte in input {
             self.paste_marker.push(byte);
+            if self.contextual
+                && !self.command_pending
+                && !self.paste
+                && self.paste_marker.starts_with(b"\x1b[<")
+            {
+                let complete = self.paste_marker.len() > 3 && (0x40..=0x7e).contains(&byte);
+                if complete || self.paste_marker.len() >= 64 {
+                    let bytes = std::mem::take(&mut self.paste_marker);
+                    if let Some(mouse) = crate::host::MouseEvent::parse(&bytes) {
+                        self.mouse = Some((mouse, bytes));
+                    } else {
+                        output.extend(bytes);
+                    }
+                }
+                continue;
+            }
+            if self.contextual
+                && !self.command_pending
+                && !self.paste
+                && (self.paste_marker.starts_with(b"\x1b[")
+                    || self.paste_marker.starts_with(b"\x1bO"))
+                && !BEGIN.starts_with(&self.paste_marker)
+            {
+                if (self.paste_marker.len() > 2 && (0x40..=0x7e).contains(&byte))
+                    || self.paste_marker.len() >= 64
+                {
+                    output.extend(std::mem::take(&mut self.paste_marker));
+                }
+                continue;
+            }
+            if self.contextual
+                && self.command_pending
+                && !self.paste
+                && self.paste_marker.first() == Some(&0x1b)
+                && !BEGIN.starts_with(&self.paste_marker)
+            {
+                // Consume a complete escape sequence as one unknown command, never leak its tail.
+                let complete = match self.paste_marker.get(1) {
+                    Some(b'[' | b'O') => {
+                        self.paste_marker.len() >= 3 && (0x40..=0x7e).contains(&byte)
+                    }
+                    Some(_) => true,
+                    None => false,
+                };
+                if complete || self.paste_marker.len() >= 64 {
+                    match self.paste_marker.as_slice() {
+                        b"\x1b[6~" | b"\x1b[B" => self.hint_page = self.hint_page.saturating_add(1),
+                        b"\x1b[5~" | b"\x1b[A" => self.hint_page = self.hint_page.saturating_sub(1),
+                        _ => {}
+                    }
+                    self.paste_marker.clear();
+                    self.reveal_hints = true;
+                }
+                continue;
+            }
             loop {
                 let marker = if self.paste { END } else { BEGIN };
                 if marker.starts_with(&self.paste_marker) {
                     if self.paste_marker == marker {
+                        if self.contextual && self.command_pending {
+                            self.command_pending = false;
+                            self.reveal_hints = false;
+                        }
                         let complete = std::mem::take(&mut self.paste_marker);
-                        output.extend(self.process(&complete, self.paste));
+                        self.flush_pending_into(&mut output);
+                        output.extend(complete);
                         self.paste = !self.paste;
                     }
                     break;
@@ -305,14 +456,60 @@ impl DetachFilter {
         }
         for &byte in input {
             if self.command_pending {
+                if self.contextual {
+                    if byte == 0x1b {
+                        self.command_pending = false;
+                        self.reveal_hints = false;
+                        continue;
+                    }
+                    let literal = self.prefix == [byte];
+                    if !literal
+                        && (!self.bindings.is_bound(byte)
+                            || self.bindings.action(byte)
+                                == Some(crate::commands::BuiltinAction::Help))
+                    {
+                        self.reveal_hints = true;
+                        continue;
+                    }
+                }
+                self.reveal_hints = false;
                 self.command_pending = false;
-                if self.bindings.action(byte) == Some(crate::commands::BuiltinAction::Detach) {
+                if self.contextual
+                    && ((!self.workspace_picker_enabled
+                        && self.bindings.action(byte)
+                            == Some(crate::commands::BuiltinAction::WorkspacePicker))
+                        || self
+                            .bindings
+                            .action(byte)
+                            .and_then(|action| action.command())
+                            .and_then(|command| command.request(None))
+                            .is_some()
+                        || matches!(
+                            self.bindings.action(byte),
+                            Some(
+                                crate::commands::BuiltinAction::ClosePane
+                                    | crate::commands::BuiltinAction::CopyMode
+                                    | crate::commands::BuiltinAction::TabPicker
+                                    | crate::commands::BuiltinAction::RenameTab
+                                    | crate::commands::BuiltinAction::ResizeMode
+                            )
+                        ))
+                {
+                    self.viewer_action = self.bindings.action(byte);
+                } else if self.bindings.action(byte) == Some(crate::commands::BuiltinAction::Detach)
+                {
                     self.detach = true;
                 } else if self.bindings.action(byte)
                     == Some(crate::commands::BuiltinAction::WorkspacePicker)
                     && self.workspace_picker_enabled
                 {
                     self.workspace_picker = true;
+                } else if self.contextual {
+                    if self.prefix == [byte] {
+                        output.push(byte);
+                    } else {
+                        self.external_binding = Some(byte);
+                    }
                 } else {
                     output.extend_from_slice(&self.prefix);
                     output.push(byte);
@@ -331,6 +528,8 @@ impl DetachFilter {
             if self.matched == self.prefix {
                 self.matched.clear();
                 self.command_pending = true;
+                self.prefix_epoch = self.prefix_epoch.wrapping_add(1);
+                self.hint_page = 0;
             }
         }
         output
@@ -339,7 +538,11 @@ impl DetachFilter {
     pub fn flush(&mut self) -> Vec<u8> {
         let mut output = Vec::new();
         let marker = std::mem::take(&mut self.paste_marker);
-        output.extend(self.process(&marker, self.paste));
+        if self.contextual && !self.command_pending {
+            output.extend(marker);
+        } else {
+            output.extend(self.process(&marker, self.paste));
+        }
         self.flush_pending_into(&mut output);
         output
     }
@@ -350,6 +553,11 @@ impl DetachFilter {
             return Vec::new();
         }
         let mut pending = Vec::new();
+        if self.contextual && self.command_pending {
+            self.command_pending = false;
+            self.reveal_hints = false;
+            self.paste_marker.clear();
+        }
         self.flush_pending_into(&mut pending);
         self.prefix = vec![bindings.prefix()];
         self.bindings = bindings;
@@ -370,8 +578,11 @@ impl DetachFilter {
 
     fn flush_pending_into(&mut self, output: &mut Vec<u8>) {
         if self.command_pending {
-            output.extend_from_slice(&self.prefix);
+            if !self.contextual {
+                output.extend_from_slice(&self.prefix);
+            }
             self.command_pending = false;
+            self.reveal_hints = false;
         }
         output.append(&mut self.matched);
     }

@@ -54,7 +54,6 @@ fn sparse_documents_merge_defaults_bindings_and_replace_lists() {
     // Phase F5 configuration: sparse files merge over defaults without retaining configured lists.
     let base = Config::from_toml(
         r#"
-remote-allow-ids = ["old"]
 hooks = [{ name = "old", command = { argv = ["old-hook"] } }]
 [bindings.q]
 builtin = "help"
@@ -66,7 +65,6 @@ builtin = "help"
             r#"
 prefix = "C-b"
 clipboard = "read-write"
-remote-allow-ids = ["new"]
 hooks = []
 [bindings."|"]
 builtin = "zoom"
@@ -77,7 +75,6 @@ external = { argv = ["fux-helper", "--pick"] }
         .expect("merged config");
     assert_eq!(merged.prefix, "C-b");
     assert_eq!(merged.clipboard, ClipboardPolicy::ReadWrite);
-    assert_eq!(merged.remote_allow_ids, ["new"]);
     assert!(merged.hooks.is_empty());
     assert_eq!(
         merged.bindings.get("|"),
@@ -173,11 +170,9 @@ fn complete_example_round_trips_without_losing_policy_or_limits() {
     // Phase F5 configuration: the frozen schema has a stable human-readable TOML round trip.
     let source = r#"
 prefix = "C-b"
-local-network = true
 default-command = { argv = ["/bin/zsh", "-l"] }
 zor-path = "/opt/bin/zor"
 clipboard = "read-only"
-remote-allow-ids = ["endpoint-one"]
 hooks = [{ name = "status", command = { argv = ["status-helper", "--watch"] } }]
 
 [bindings."C-p"]
@@ -190,7 +185,7 @@ external = { argv = ["external-helper"] }
 enabled = true
 notify-blocked = true
 notify-idle = false
-remote-clients = false
+viewer-notifications = false
 
 [history]
 scrollback-lines = 20000
@@ -205,7 +200,7 @@ max-status-segments = 16
 max-total-cells = 200000
 "#;
     let parsed = Config::from_toml(source).expect("complete example");
-    assert!(parsed.local_network);
+    assert!(Config::default().zor_path.is_none());
     let encoded = parsed.to_toml_pretty().expect("serialize complete config");
     let reparsed = Config::from_toml(&encoded).expect("reparse complete config");
     assert_eq!(reparsed, parsed);
@@ -262,4 +257,17 @@ fn key_aliases_cannot_override_each_other_or_the_prefix_byte() {
         config.validate().is_ok(),
         "one unambiguous binding should work"
     );
+}
+
+#[test]
+fn contextual_hint_preferences_allow_zero_delay_and_reject_unbounded_delays() {
+    let defaults = Config::default();
+    assert!(defaults.hints.automatic);
+    assert_eq!(defaults.hints.delay_ms, 200);
+    let configured =
+        Config::from_toml("[hints]\nautomatic = false\ndelay-ms = 0\n").expect("hint preferences");
+    assert!(!configured.hints.automatic);
+    assert_eq!(configured.hints.delay_ms, 0);
+    assert!(Config::from_toml("[hints]\ndelay-ms = 5001\n").is_err());
+    assert!(Config::from_toml("[hints]\ndelay-ms = -1\n").is_err());
 }

@@ -11,7 +11,6 @@ pub struct DaemonPaths {
     pub state_dir: PathBuf,
     pub manager_socket: PathBuf,
     pub descriptors_dir: PathBuf,
-    pub keys_dir: PathBuf,
 }
 
 impl DaemonPaths {
@@ -39,7 +38,6 @@ impl DaemonPaths {
         Ok(Self {
             manager_socket: runtime_dir.join("manager.sock"),
             descriptors_dir: runtime_dir.join("workspaces"),
-            keys_dir: state_dir.join("keys"),
             runtime_dir,
             state_dir,
         })
@@ -48,18 +46,12 @@ impl DaemonPaths {
     pub fn prepare(&self) -> Result<(), PathError> {
         private_dir(&self.runtime_dir)?;
         private_dir(&self.state_dir)?;
-        private_dir(&self.descriptors_dir)?;
-        private_dir(&self.keys_dir)
+        private_dir(&self.descriptors_dir)
     }
 
     pub fn descriptor(&self, name: &str) -> Result<PathBuf, PathError> {
         validate_workspace_name(name)?;
         Ok(self.descriptors_dir.join(format!("{name}.json")))
-    }
-
-    pub fn key(&self, name: &str) -> Result<PathBuf, PathError> {
-        validate_workspace_name(name)?;
-        Ok(self.keys_dir.join(format!("{name}.key")))
     }
 }
 

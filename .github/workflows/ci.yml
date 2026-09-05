@@ -3,6 +3,12 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      integrations:
+        description: Verify optional koh and zor source integrations
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,20 +33,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          submodules: recursive
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/koh
-          path: references/koh
-          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/zor
-          path: zor
-          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
-      - name: Assemble reviewed dependency sources
-        run: python3 tools/dependencies.py apply
       - name: Install Rust
         run: rustup toolchain install "${{ matrix.rust }}" --profile minimal --component rustfmt,clippy
       - run: cargo +${{ matrix.rust }} fmt --all --check
@@ -50,7 +42,6 @@ jobs:
       - name: Build exact binaries for the binary verification corpus
         run: |
           cargo +${{ matrix.rust }} build --locked --bin fux
-          cargo +${{ matrix.rust }} build --manifest-path zor/Cargo.toml --locked --bin zor
       - run: cargo +${{ matrix.rust }} clippy --manifest-path tests/verify/fixture-child/Cargo.toml --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
 
@@ -63,43 +54,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/koh
-          path: references/koh
-          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/zor
-          path: zor
-          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
-      - name: Assemble reviewed dependency sources
-        run: python3 tools/dependencies.py apply
       - run: cargo test --test verification_corpus --test verification_structure --test verification_loom --locked
       - run: cargo build --locked --bin fux
-      - run: cargo build --manifest-path zor/Cargo.toml --locked --bin zor
       - run: cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
-      - run: cargo check --manifest-path zor/Cargo.toml --no-default-features --all-targets --locked
 
   android-cross-check:
     name: Android aarch64 cross-check (not runtime coverage)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          submodules: recursive
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/koh
-          path: references/koh
-          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/zor
-          path: zor
-          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
-      - name: Assemble reviewed dependency sources
-        run: python3 tools/dependencies.py apply
       - run: rustup target add aarch64-linux-android
       - name: Select Android NDK compiler
         run: |
@@ -109,7 +72,8 @@ jobs:
       - run: cargo check --target aarch64-linux-android --locked
 
   cross-repository:
-    name: zor integration
+    name: Optional koh and zor integrations
+    if: github.event_name == 'workflow_dispatch' && inputs.integrations
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -119,12 +83,12 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
+          ref: 50a8270f48175c4a23e84c0ece008ff9ae49d918
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
+          ref: fb6a1ef18c043ecf9dc94a10a18719e820bee685
       - name: Assemble reviewed dependency sources
         run: python3 tools/dependencies.py apply
       - name: Build zor and expose its exact path to tests
@@ -132,25 +96,25 @@ jobs:
           cargo build --manifest-path zor/Cargo.toml --locked
           echo "ZOR_BIN=$GITHUB_WORKSPACE/zor/target/debug/zor" >> "$GITHUB_ENV"
           echo "FUX_REQUIRE_ZOR_BIN=1" >> "$GITHUB_ENV"
-      - run: cargo test --all-features --locked -- --test-threads=1
+      - run: cargo build --locked --bin fux
+      - run: cargo test --test zor_integration --locked
+      - name: Verify koh gateway against the exact fux binary
+        env:
+          FUX_BIN: ${{ github.workspace }}/target/debug/fux
+          KOH_REQUIRE_FUX_BIN: "1"
+        run: cargo test --manifest-path references/koh/Cargo.toml --test gateway --locked
+      - name: Verify gateway reconnect with the exact fux binary
+        env:
+          FUX_BIN: ${{ github.workspace }}/target/debug/fux
+          KOH_REQUIRE_FUX_BIN: "1"
+        run: |
+          cargo test --manifest-path references/koh/Cargo.toml --lib gateway:: --locked
+      - run: cargo test --manifest-path zor/Cargo.toml --all-features --locked
+      - run: cargo check --manifest-path zor/Cargo.toml --no-default-features --all-targets --locked
 
   package:
-    name: Package (requires koh 0.12.1 and zor 0.1.2 on crates.io)
+    name: Standalone package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          submodules: recursive
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/koh
-          path: references/koh
-          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/zor
-          path: zor
-          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
-      - name: Assemble reviewed dependency sources
-        run: python3 tools/dependencies.py apply
       - run: cargo package --locked
