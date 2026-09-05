@@ -2,11 +2,11 @@ mod router;
 
 pub use router::{Action, Command, InputRouter, MouseEvent};
 
+use crate::pty::Pty;
 use crate::state::{
     AgentState, AgentStatus, LayoutTree, MouseMode, PaneId, PaneView, Rect, Tab, TabId,
     WorkspaceState,
 };
-use koh::pty::Pty;
 use koh::server::{ChangeSignal, ClientId, SessionHost};
 use koh::terminal::{DEFAULT_COLS, DEFAULT_ROWS, ServerTerminal};
 use std::collections::BTreeMap;
@@ -138,12 +138,22 @@ impl WorkspaceHost {
                 None
             }
         });
+        let mut shared = Shared::default();
+        shared
+            .state
+            .update_metadata(|metadata| {
+                metadata.client_bindings = Some(crate::commands::ClientBindings::default());
+            })
+            .map_err(|error| anyhow::anyhow!("initializing workspace bindings: {error:?}"))?;
         let mut host = Self {
-            shared: Arc::new(Mutex::new(Shared::default())),
+            shared: Arc::new(Mutex::new(shared)),
             pending: Vec::new(),
             workers: Vec::new(),
             changed: None,
-            router: Arc::new(Mutex::new(InputRouter::new(0x01, 40))),
+            router: Arc::new(Mutex::new(InputRouter::new(
+                crate::commands::DEFAULT_PREFIX,
+                40,
+            ))),
             router_timer: Arc::new((Mutex::new(RouterTimerState::default()), Condvar::new())),
             router_timer_started: false,
             copy_mode: crate::client::CopyMode::default(),
@@ -411,6 +421,305 @@ impl WorkspaceHost {
         shared.panes.get(&focused).cloned()
     }
 
+    fn execute_request(
+        &mut self,
+        request: crate::control::Request,
+        wait_for_exit: bool,
+    ) -> (crate::control::Reply, Vec<crate::control::Event>) {
+        use crate::control::{CommandResult, ErrorCode, Event, FocusTarget, Reply, Request};
+        let id = request.id();
+        let host = self;
+        if host.killed {
+            return (
+                Reply::Failed {
+                    id,
+                    error: crate::control::ReplyError {
+                        code: ErrorCode::Conflict,
+                        message: "workspace is shutting down".to_owned(),
+                    },
+                },
+                Vec::new(),
+            );
+        }
+        let result: anyhow::Result<(CommandResult, Vec<Event>)> = (|| match request {
+            Request::New { cwd, argv, env, .. } => {
+                let original = if argv.is_empty() {
+                    host.default_command.clone()
+                } else {
+                    argv.clone()
+                };
+                let command = contextual_command(argv, cwd.as_deref(), env, &host.default_command);
+                let pane = host.add_pane(command.clone())?;
+                host.set_spawn_metadata(pane, original, cwd);
+                Ok((
+                    CommandResult::Pane { pane: pane.0 },
+                    vec![Event::PaneOpened {
+                        id,
+                        pane: pane.0,
+                        command,
+                    }],
+                ))
+            }
+            Request::Split {
+                axis,
+                target,
+                argv,
+                env,
+                ..
+            } => {
+                let original = if argv.is_empty() {
+                    host.default_command.clone()
+                } else {
+                    argv.clone()
+                };
+                let previous_focus = {
+                    let shared = lock(&host.shared);
+                    shared.state.active_tab().and_then(|active| {
+                        shared
+                            .state
+                            .tabs()
+                            .iter()
+                            .find(|tab| tab.id == active)
+                            .map(|tab| tab.focused)
+                    })
+                };
+                if let Some(target) = target {
+                    focus_pane(host, PaneId(target))
+                        .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
+                }
+                let axis = match axis {
+                    crate::control::Axis::Horizontal => crate::state::Axis::Horizontal,
+                    crate::control::Axis::Vertical => crate::state::Axis::Vertical,
+                };
+                let command = contextual_command(argv, None, env, &host.default_command);
+                let pane = match host.add_pane_with_axis(command.clone(), axis) {
+                    Ok(pane) => pane,
+                    Err(error) => {
+                        if let Some(previous) = previous_focus {
+                            let _ = focus_pane(host, previous);
+                        }
+                        return Err(error);
+                    }
+                };
+                host.set_spawn_metadata(pane, original, None);
+                Ok((
+                    CommandResult::Pane { pane: pane.0 },
+                    vec![Event::PaneOpened {
+                        id,
+                        pane: pane.0,
+                        command,
+                    }],
+                ))
+            }
+            Request::Focus { target, .. } => {
+                let target = match target {
+                    FocusTarget::Pane(pane) => focus_pane(host, PaneId(pane)),
+                    FocusTarget::Left => focus_direction(host, crate::state::Direction::Left),
+                    FocusTarget::Right => focus_direction(host, crate::state::Direction::Right),
+                    FocusTarget::Up => focus_direction(host, crate::state::Direction::Up),
+                    FocusTarget::Down => focus_direction(host, crate::state::Direction::Down),
+                }
+                .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
+                Ok((
+                    CommandResult::Unit,
+                    vec![Event::PaneFocused { id, pane: target.0 }],
+                ))
+            }
+            Request::Zoom { pane, .. } => {
+                if let Some(pane) = pane {
+                    focus_pane(host, PaneId(pane))
+                        .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
+                }
+                host.toggle_zoom();
+                Ok((CommandResult::Unit, Vec::new()))
+            }
+            Request::Kill { pane, .. } => {
+                let pane_id = PaneId(pane);
+                let popup = lock(&host.shared)
+                    .state
+                    .popups()
+                    .iter()
+                    .any(|popup| popup.pane == pane_id);
+                let (_, exit_status) = if popup {
+                    host.close_popup(pane_id, wait_for_exit)
+                } else {
+                    focus_pane(host, pane_id).ok_or_else(|| anyhow::anyhow!("pane not found"))?;
+                    host.close_tiled_focused(wait_for_exit)
+                }
+                .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
+                Ok((
+                    CommandResult::Unit,
+                    vec![Event::PaneClosed {
+                        id,
+                        pane,
+                        exit_status,
+                    }],
+                ))
+            }
+            Request::SendKeys { pane, keys, .. } => {
+                let bytes = crate::control::decode_key_bytes(&keys)?;
+                write_pane(host, PaneId(pane), &bytes)?;
+                Ok((CommandResult::Unit, Vec::new()))
+            }
+            Request::Capture {
+                pane,
+                scrollback,
+                max_bytes,
+                attrs,
+                ..
+            } => {
+                let limit = max_bytes.min(host.capture_bytes);
+                let text = host
+                    .capture_with_attrs(PaneId(pane), scrollback as usize, attrs, limit)
+                    .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
+                Ok((CommandResult::Capture { text }, Vec::new()))
+            }
+            Request::SetStatus { segment, text, .. } => {
+                let mut shared = lock(&host.shared);
+                let adding =
+                    !text.is_empty() && !shared.state.metadata().status.contains_key(&segment);
+                if adding
+                    && shared.state.metadata().status.len() >= host.resources.max_status_segments
+                {
+                    anyhow::bail!("configured status segment limit reached");
+                }
+                let mut candidate = shared.state.clone();
+                candidate
+                    .update_metadata(|metadata| {
+                        if text.is_empty() {
+                            metadata.status.remove(&segment);
+                        } else {
+                            metadata.status.insert(segment, text);
+                        }
+                    })
+                    .map_err(|_| anyhow::anyhow!("status limit reached"))?;
+                if total_resource_units(&shared, &candidate) > host.resources.max_units {
+                    anyhow::bail!("configured workspace resource limit reached");
+                }
+                shared.state = candidate;
+                Ok((CommandResult::Unit, Vec::new()))
+            }
+            Request::Resize { pane, delta, .. } => {
+                let mut shared = lock(&host.shared);
+                let active = shared
+                    .state
+                    .active_tab()
+                    .ok_or_else(|| anyhow::anyhow!("no active tab"))?;
+                let mut tabs = shared.state.tabs().to_vec();
+                let tab = tabs
+                    .iter_mut()
+                    .find(|tab| tab.id == active)
+                    .ok_or_else(|| anyhow::anyhow!("no active tab"))?;
+                tab.layout
+                    .resize(PaneId(pane), delta)
+                    .map_err(|_| anyhow::anyhow!("pane cannot be resized"))?;
+                let mut candidate = shared.state.clone();
+                candidate
+                    .replace_tabs(tabs, Some(active))
+                    .map_err(|_| anyhow::anyhow!("invalid resize"))?;
+                commit_resource_candidate(&mut shared, candidate)
+                    .map_err(|_| anyhow::anyhow!("configured workspace resource limit reached"))?;
+                Ok((CommandResult::Unit, Vec::new()))
+            }
+            Request::Tab { action, .. } => {
+                let change = tab_action(host, action)?;
+                let event = if change.opened {
+                    Event::PaneOpened {
+                        id,
+                        pane: change.pane.0,
+                        command: host.default_command.clone(),
+                    }
+                } else {
+                    Event::PaneFocused {
+                        id,
+                        pane: change.pane.0,
+                    }
+                };
+                Ok((CommandResult::Unit, vec![event]))
+            }
+            Request::Popup {
+                rows,
+                cols,
+                argv,
+                env,
+                ..
+            } => {
+                if lock(&host.shared).state.popups().len() >= host.resources.max_popups {
+                    anyhow::bail!("configured popup limit reached");
+                }
+                let original = if argv.is_empty() {
+                    host.default_command.clone()
+                } else {
+                    argv.clone()
+                };
+                let command = contextual_command(argv, None, env, &host.default_command);
+                let pane = host.add_pane(command.clone())?;
+                host.set_spawn_metadata(pane, original, None);
+                detach_from_active_layout(host, pane)?;
+                let replace = {
+                    let mut shared = lock(&host.shared);
+                    let mut popups = shared.state.popups().to_vec();
+                    let z_index = popups
+                        .iter()
+                        .map(|popup| popup.z_index)
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_add(1);
+                    popups.push(crate::state::Popup {
+                        pane,
+                        width: cols.unwrap_or(80),
+                        height: rows.unwrap_or(24),
+                        z_index,
+                    });
+                    let mut candidate = shared.state.clone();
+                    if candidate.replace_popups(popups).is_err() {
+                        Err(())
+                    } else {
+                        commit_resource_candidate(&mut shared, candidate)
+                    }
+                };
+                if replace.is_err() {
+                    host.discard_unreferenced_pane(pane);
+                    anyhow::bail!("popup limit reached");
+                }
+                Ok((
+                    CommandResult::Pane { pane: pane.0 },
+                    vec![Event::PaneOpened {
+                        id,
+                        pane: pane.0,
+                        command,
+                    }],
+                ))
+            }
+            Request::List { .. } | Request::Workspace { .. } | Request::Subscribe { .. } => {
+                anyhow::bail!("operation is not supported by the workspace host")
+            }
+        })();
+        match result {
+            Ok((result, events)) => {
+                for event in &events {
+                    if matches!(event, Event::PaneOpened { .. }) {
+                        host.publish_local_event(event.clone());
+                    }
+                }
+                host.start_pending();
+                host.apply_geometry();
+                if let Some(changed) = &host.changed {
+                    changed.pulse();
+                }
+                (Reply::Completed { id, result }, events)
+            }
+            Err(error) => (
+                crate::control::error_reply(&crate::control::ControlError {
+                    id: Some(id),
+                    code: ErrorCode::InvalidRequest,
+                    message: error.to_string(),
+                }),
+                Vec::new(),
+            ),
+        }
+    }
+
     fn route_input(&mut self, bytes: &[u8]) {
         if self.killed {
             return;
@@ -445,81 +754,22 @@ impl WorkspaceHost {
                         Some(_) => {}
                         None => forwarded.extend(bytes),
                     },
-                    Action::Command(Command::Focus(direction)) => {
-                        if let Some(pane) = self.focus(direction) {
-                            self.publish_local_event(crate::control::Event::PaneFocused {
-                                id: 0,
-                                pane: pane.0,
-                            });
+                    Action::Command(
+                        command @ (Command::Focus(_)
+                        | Command::Close
+                        | Command::SplitHorizontal
+                        | Command::SplitVertical
+                        | Command::NewPane
+                        | Command::NewTab
+                        | Command::NextTab
+                        | Command::PreviousTab
+                        | Command::Zoom),
+                    ) => {
+                        let focused = focused_pane_id(&lock(&self.shared)).map(|pane| pane.0);
+                        if let Some(request) = command.request(focused) {
+                            self.execute_local_request(request);
                         }
                     }
-                    Action::Command(Command::Close) => {
-                        if let Some((pane, status)) = self.close_focused(false) {
-                            self.publish_local_event(crate::control::Event::PaneClosed {
-                                id: 0,
-                                pane: pane.0,
-                                exit_status: status,
-                            });
-                        }
-                    }
-                    Action::Command(Command::SplitHorizontal) => {
-                        if let Ok(pane) = self.add_pane_with_axis(
-                            self.default_command.clone(),
-                            crate::state::Axis::Horizontal,
-                        ) {
-                            self.publish_local_event(crate::control::Event::PaneOpened {
-                                id: 0,
-                                pane: pane.0,
-                                command: self.default_command.clone(),
-                            });
-                            self.start_pending();
-                        }
-                    }
-                    Action::Command(Command::SplitVertical) => {
-                        if let Ok(pane) = self.add_pane_with_axis(
-                            self.default_command.clone(),
-                            crate::state::Axis::Vertical,
-                        ) {
-                            self.publish_local_event(crate::control::Event::PaneOpened {
-                                id: 0,
-                                pane: pane.0,
-                                command: self.default_command.clone(),
-                            });
-                            self.start_pending();
-                        }
-                    }
-                    Action::Command(Command::NewPane) => {
-                        if let Ok(pane) = self.add_pane(self.default_command.clone()) {
-                            self.publish_local_event(crate::control::Event::PaneOpened {
-                                id: 0,
-                                pane: pane.0,
-                                command: self.default_command.clone(),
-                            });
-                            self.start_pending();
-                        }
-                    }
-                    Action::Command(Command::NewTab) => {
-                        if let Ok(change) =
-                            tab_action(self, crate::control::TabAction::New { name: None })
-                        {
-                            self.publish_tab_change(change, 0);
-                            self.start_pending();
-                        }
-                        self.apply_geometry();
-                    }
-                    Action::Command(Command::NextTab) => {
-                        if let Ok(change) = tab_action(self, crate::control::TabAction::Next) {
-                            self.publish_tab_change(change, 0);
-                        }
-                        self.apply_geometry();
-                    }
-                    Action::Command(Command::PreviousTab) => {
-                        if let Ok(change) = tab_action(self, crate::control::TabAction::Previous) {
-                            self.publish_tab_change(change, 0);
-                        }
-                        self.apply_geometry();
-                    }
-                    Action::Command(Command::Zoom) => self.toggle_zoom(),
                     Action::Command(Command::CopyMode) => {
                         let mut shared = lock(&self.shared);
                         if let Some((focused, pane)) = shared
@@ -553,10 +803,10 @@ impl WorkspaceHost {
                             "workspace picker requires a named manager attachment",
                         );
                     }
-                    Action::Command(Command::Help) => self.set_transient_status(
-                        "help",
-                        "prefix: |/- split, hjkl focus, t/n/p tabs, x close, z zoom, [ copy",
-                    ),
+                    Action::Command(Command::Help) => {
+                        let help = lock(&self.router).help();
+                        self.set_transient_status("help", &help);
+                    }
                     Action::Command(Command::Detach) => self.set_transient_status(
                         "error",
                         "detach is handled by the client escape sequence",
@@ -636,19 +886,17 @@ impl WorkspaceHost {
         }
     }
 
-    fn publish_tab_change(&self, change: TabMutation, id: u64) {
-        self.publish_local_event(if change.opened {
-            crate::control::Event::PaneOpened {
-                id,
-                pane: change.pane.0,
-                command: self.default_command.clone(),
+    fn execute_local_request(&mut self, request: crate::control::Request) {
+        let (reply, events) = self.execute_request(request, false);
+        for event in events {
+            // Creation is published before drain workers start by execute_request.
+            if !matches!(event, crate::control::Event::PaneOpened { .. }) {
+                self.publish_local_event(event);
             }
-        } else {
-            crate::control::Event::PaneFocused {
-                id,
-                pane: change.pane.0,
-            }
-        });
+        }
+        if let crate::control::Reply::Failed { error, .. } = reply {
+            self.set_transient_status("error", &error.message);
+        }
     }
 
     fn flush_router_timeout(&mut self) {
@@ -844,18 +1092,7 @@ impl WorkspaceHost {
         None
     }
 
-    fn close_focused(&mut self, wait_for_exit: bool) -> Option<(PaneId, Option<i32>)> {
-        let popup = {
-            lock(&self.shared)
-                .state
-                .popups()
-                .iter()
-                .max_by_key(|popup| popup.z_index)
-                .map(|popup| popup.pane)
-        };
-        if let Some(popup) = popup {
-            return self.close_popup(popup, wait_for_exit);
-        }
+    fn close_tiled_focused(&mut self, wait_for_exit: bool) -> Option<(PaneId, Option<i32>)> {
         let mut shared = lock(&self.shared);
         let active = shared.state.active_tab()?;
         let mut tabs = shared.state.tabs().to_vec();
@@ -1112,19 +1349,13 @@ impl WorkspaceHost {
             }
             return;
         }
-        if mouse.code & 3 == 0 {
-            let focus_changed = tab.focused != target;
-            tab.focused = target;
-            let _ = shared.state.replace_tabs(tabs, Some(active));
-            if let Some(changed) = &self.changed {
-                changed.pulse();
-            }
-            if focus_changed && let Some(sink) = shared.event_sink.clone() {
-                sink.publish(crate::control::Event::PaneFocused {
-                    id: 0,
-                    pane: target.0,
-                });
-            }
+        if mouse.code & 3 == 0 && tab.focused != target {
+            drop(shared);
+            self.execute_local_request(crate::control::Request::Focus {
+                id: 0,
+                target: crate::control::FocusTarget::Pane(target.0),
+            });
+            shared = lock(&self.shared);
         }
         if mouse.wheel()
             && shared
@@ -1406,18 +1637,27 @@ impl WorkspaceControl {
     ) -> anyhow::Result<()> {
         let mut bindings = BTreeMap::new();
         for (key, binding) in &config.bindings {
-            let byte = binding_byte(key)
+            let byte = crate::commands::key_byte(key)
                 .ok_or_else(|| anyhow::anyhow!("binding `{key}` must encode one byte"))?;
             let command = match binding {
-                crate::config::Binding::Builtin { builtin } => builtin_command(*builtin),
+                crate::config::Binding::Builtin { builtin } => builtin
+                    .command()
+                    .ok_or_else(|| anyhow::anyhow!("unregistered binding action"))?,
                 crate::config::Binding::External { external } => {
                     Command::External(external.argv.clone())
                 }
             };
-            bindings.insert(byte, command);
+            anyhow::ensure!(
+                bindings.insert(byte, command).is_none(),
+                "bindings must not alias the same byte"
+            );
         }
-        let prefix = binding_byte(&config.prefix)
+        let prefix = crate::commands::key_byte(&config.prefix)
             .ok_or_else(|| anyhow::anyhow!("prefix must encode one byte"))?;
+        anyhow::ensure!(
+            !bindings.contains_key(&prefix),
+            "a binding cannot equal the prefix byte"
+        );
         let mut host = lock(&self.inner);
         let reserved_history = lock(&host.shared)
             .panes
@@ -1437,8 +1677,21 @@ impl WorkspaceControl {
         host.resources = config.resources.clone();
         lock(&host.shared).resources = config.resources.clone();
         host.default_command = config.default_command.argv.clone();
+        let client_bindings = crate::commands::ClientBindings::new(
+            prefix,
+            bindings.iter().map(|(key, command)| (*key, command)),
+        );
+        lock(&host.shared)
+            .state
+            .update_metadata(|metadata| {
+                metadata.client_bindings = Some(client_bindings);
+            })
+            .map_err(|error| anyhow::anyhow!("updating client bindings: {error:?}"))?;
         *lock(&host.router) = InputRouter::with_bindings(prefix, 40, bindings);
         host.external_socket = Some(socket);
+        if let Some(changed) = &host.changed {
+            changed.pulse();
+        }
         Ok(())
     }
 
@@ -1556,316 +1809,8 @@ impl WorkspaceControl {
         &self,
         request: crate::control::Request,
     ) -> (crate::control::Reply, Vec<crate::control::Event>) {
-        use crate::control::{CommandResult, ErrorCode, Event, FocusTarget, Reply, Request};
-        let id = request.id();
-        let mut host = lock(&self.inner);
-        if host.killed {
-            return (
-                Reply::Failed {
-                    id,
-                    error: crate::control::ReplyError {
-                        code: ErrorCode::Conflict,
-                        message: "workspace is shutting down".to_owned(),
-                    },
-                },
-                Vec::new(),
-            );
-        }
-        let result: anyhow::Result<(CommandResult, Vec<Event>)> = (|| match request {
-            Request::New { cwd, argv, env, .. } => {
-                let original = if argv.is_empty() {
-                    host.default_command.clone()
-                } else {
-                    argv.clone()
-                };
-                let command = contextual_command(argv, cwd.as_deref(), env, &host.default_command);
-                let pane = host.add_pane(command.clone())?;
-                host.set_spawn_metadata(pane, original, cwd);
-                Ok((
-                    CommandResult::Pane { pane: pane.0 },
-                    vec![Event::PaneOpened {
-                        id,
-                        pane: pane.0,
-                        command,
-                    }],
-                ))
-            }
-            Request::Split {
-                axis,
-                target,
-                argv,
-                env,
-                ..
-            } => {
-                let original = if argv.is_empty() {
-                    host.default_command.clone()
-                } else {
-                    argv.clone()
-                };
-                let previous_focus = {
-                    let shared = lock(&host.shared);
-                    shared.state.active_tab().and_then(|active| {
-                        shared
-                            .state
-                            .tabs()
-                            .iter()
-                            .find(|tab| tab.id == active)
-                            .map(|tab| tab.focused)
-                    })
-                };
-                if let Some(target) = target {
-                    focus_pane(&mut host, PaneId(target))
-                        .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
-                }
-                let axis = match axis {
-                    crate::control::Axis::Horizontal => crate::state::Axis::Horizontal,
-                    crate::control::Axis::Vertical => crate::state::Axis::Vertical,
-                };
-                let command = contextual_command(argv, None, env, &host.default_command);
-                let pane = match host.add_pane_with_axis(command.clone(), axis) {
-                    Ok(pane) => pane,
-                    Err(error) => {
-                        if let Some(previous) = previous_focus {
-                            let _ = focus_pane(&mut host, previous);
-                        }
-                        return Err(error);
-                    }
-                };
-                host.set_spawn_metadata(pane, original, None);
-                Ok((
-                    CommandResult::Pane { pane: pane.0 },
-                    vec![Event::PaneOpened {
-                        id,
-                        pane: pane.0,
-                        command,
-                    }],
-                ))
-            }
-            Request::Focus { target, .. } => {
-                let target = match target {
-                    FocusTarget::Pane(pane) => focus_pane(&mut host, PaneId(pane)),
-                    FocusTarget::Left => focus_direction(&mut host, crate::state::Direction::Left),
-                    FocusTarget::Right => {
-                        focus_direction(&mut host, crate::state::Direction::Right)
-                    }
-                    FocusTarget::Up => focus_direction(&mut host, crate::state::Direction::Up),
-                    FocusTarget::Down => focus_direction(&mut host, crate::state::Direction::Down),
-                }
-                .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
-                Ok((
-                    CommandResult::Unit,
-                    vec![Event::PaneFocused { id, pane: target.0 }],
-                ))
-            }
-            Request::Zoom { pane, .. } => {
-                if let Some(pane) = pane {
-                    focus_pane(&mut host, PaneId(pane))
-                        .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
-                }
-                host.toggle_zoom();
-                Ok((CommandResult::Unit, Vec::new()))
-            }
-            Request::Kill { pane, .. } => {
-                let pane_id = PaneId(pane);
-                let popup = lock(&host.shared)
-                    .state
-                    .popups()
-                    .iter()
-                    .any(|popup| popup.pane == pane_id);
-                let (_, exit_status) = if popup {
-                    host.close_popup(pane_id, true)
-                } else {
-                    focus_pane(&mut host, pane_id)
-                        .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
-                    host.close_focused(true)
-                }
-                .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
-                Ok((
-                    CommandResult::Unit,
-                    vec![Event::PaneClosed {
-                        id,
-                        pane,
-                        exit_status,
-                    }],
-                ))
-            }
-            Request::SendKeys { pane, keys, .. } => {
-                let bytes = crate::control::decode_key_bytes(&keys)?;
-                write_pane(&host, PaneId(pane), &bytes)?;
-                Ok((CommandResult::Unit, Vec::new()))
-            }
-            Request::Capture {
-                pane,
-                scrollback,
-                max_bytes,
-                attrs,
-                ..
-            } => {
-                let limit = max_bytes.min(host.capture_bytes);
-                let text = host
-                    .capture_with_attrs(PaneId(pane), scrollback as usize, attrs, limit)
-                    .ok_or_else(|| anyhow::anyhow!("pane not found"))?;
-                Ok((CommandResult::Capture { text }, Vec::new()))
-            }
-            Request::SetStatus { segment, text, .. } => {
-                let mut shared = lock(&host.shared);
-                let adding =
-                    !text.is_empty() && !shared.state.metadata().status.contains_key(&segment);
-                if adding
-                    && shared.state.metadata().status.len() >= host.resources.max_status_segments
-                {
-                    anyhow::bail!("configured status segment limit reached");
-                }
-                let mut candidate = shared.state.clone();
-                candidate
-                    .update_metadata(|metadata| {
-                        if text.is_empty() {
-                            metadata.status.remove(&segment);
-                        } else {
-                            metadata.status.insert(segment, text);
-                        }
-                    })
-                    .map_err(|_| anyhow::anyhow!("status limit reached"))?;
-                if total_resource_units(&shared, &candidate) > host.resources.max_units {
-                    anyhow::bail!("configured workspace resource limit reached");
-                }
-                shared.state = candidate;
-                Ok((CommandResult::Unit, Vec::new()))
-            }
-            Request::Resize { pane, delta, .. } => {
-                let mut shared = lock(&host.shared);
-                let active = shared
-                    .state
-                    .active_tab()
-                    .ok_or_else(|| anyhow::anyhow!("no active tab"))?;
-                let mut tabs = shared.state.tabs().to_vec();
-                let tab = tabs
-                    .iter_mut()
-                    .find(|tab| tab.id == active)
-                    .ok_or_else(|| anyhow::anyhow!("no active tab"))?;
-                tab.layout
-                    .resize(PaneId(pane), delta)
-                    .map_err(|_| anyhow::anyhow!("pane cannot be resized"))?;
-                let mut candidate = shared.state.clone();
-                candidate
-                    .replace_tabs(tabs, Some(active))
-                    .map_err(|_| anyhow::anyhow!("invalid resize"))?;
-                commit_resource_candidate(&mut shared, candidate)
-                    .map_err(|_| anyhow::anyhow!("configured workspace resource limit reached"))?;
-                Ok((CommandResult::Unit, Vec::new()))
-            }
-            Request::Tab { action, .. } => {
-                let change = tab_action(&mut host, action)?;
-                let event = if change.opened {
-                    Event::PaneOpened {
-                        id,
-                        pane: change.pane.0,
-                        command: host.default_command.clone(),
-                    }
-                } else {
-                    Event::PaneFocused {
-                        id,
-                        pane: change.pane.0,
-                    }
-                };
-                Ok((CommandResult::Unit, vec![event]))
-            }
-            Request::Popup {
-                rows,
-                cols,
-                argv,
-                env,
-                ..
-            } => {
-                if lock(&host.shared).state.popups().len() >= host.resources.max_popups {
-                    anyhow::bail!("configured popup limit reached");
-                }
-                let original = if argv.is_empty() {
-                    host.default_command.clone()
-                } else {
-                    argv.clone()
-                };
-                let command = contextual_command(argv, None, env, &host.default_command);
-                let pane = host.add_pane(command.clone())?;
-                host.set_spawn_metadata(pane, original, None);
-                detach_from_active_layout(&mut host, pane)?;
-                let replace = {
-                    let mut shared = lock(&host.shared);
-                    let mut popups = shared.state.popups().to_vec();
-                    let z_index = popups
-                        .iter()
-                        .map(|popup| popup.z_index)
-                        .max()
-                        .unwrap_or(0)
-                        .saturating_add(1);
-                    popups.push(crate::state::Popup {
-                        pane,
-                        width: cols.unwrap_or(80),
-                        height: rows.unwrap_or(24),
-                        z_index,
-                    });
-                    let mut candidate = shared.state.clone();
-                    if candidate.replace_popups(popups).is_err() {
-                        Err(())
-                    } else {
-                        commit_resource_candidate(&mut shared, candidate)
-                    }
-                };
-                if replace.is_err() {
-                    host.discard_unreferenced_pane(pane);
-                    anyhow::bail!("popup limit reached");
-                }
-                Ok((
-                    CommandResult::Pane { pane: pane.0 },
-                    vec![Event::PaneOpened {
-                        id,
-                        pane: pane.0,
-                        command,
-                    }],
-                ))
-            }
-            Request::List { .. } | Request::Workspace { .. } | Request::Subscribe { .. } => {
-                anyhow::bail!("operation is not supported by the workspace host")
-            }
-        })();
-        match result {
-            Ok((result, events)) => {
-                for event in &events {
-                    if matches!(event, Event::PaneOpened { .. }) {
-                        host.publish_local_event(event.clone());
-                    }
-                }
-                host.start_pending();
-                host.apply_geometry();
-                if let Some(changed) = &host.changed {
-                    changed.pulse();
-                }
-                (Reply::Completed { id, result }, events)
-            }
-            Err(error) => (
-                crate::control::error_reply(&crate::control::ControlError {
-                    id: Some(id),
-                    code: ErrorCode::InvalidRequest,
-                    message: error.to_string(),
-                }),
-                Vec::new(),
-            ),
-        }
+        lock(&self.inner).execute_request(request, true)
     }
-}
-
-fn binding_byte(value: &str) -> Option<u8> {
-    if let Some(value) = value.strip_prefix("C-")
-        && value.len() == 1
-    {
-        return value
-            .bytes()
-            .next()
-            .map(|byte| byte.to_ascii_uppercase() & 0x1f);
-    }
-    (value.len() == 1)
-        .then(|| value.as_bytes().first().copied())
-        .flatten()
 }
 
 fn contextual_command(
@@ -1931,28 +1876,6 @@ pub fn platform_tool_from(
         format!("/system/bin/{name}")
     } else {
         format!("/bin/{name}")
-    }
-}
-
-fn builtin_command(value: crate::config::BuiltinAction) -> Command {
-    use crate::config::BuiltinAction as B;
-    match value {
-        B::SplitHorizontal => Command::SplitHorizontal,
-        B::SplitVertical => Command::SplitVertical,
-        B::FocusLeft => Command::Focus(crate::state::Direction::Left),
-        B::FocusRight => Command::Focus(crate::state::Direction::Right),
-        B::FocusUp => Command::Focus(crate::state::Direction::Up),
-        B::FocusDown => Command::Focus(crate::state::Direction::Down),
-        B::ClosePane => Command::Close,
-        B::NewPane => Command::NewPane,
-        B::NewTab => Command::NewTab,
-        B::NextTab => Command::NextTab,
-        B::PreviousTab => Command::PreviousTab,
-        B::Zoom => Command::Zoom,
-        B::CopyMode => Command::CopyMode,
-        B::Detach => Command::Detach,
-        B::WorkspacePicker => Command::WorkspacePicker,
-        B::Help => Command::Help,
     }
 }
 
@@ -2583,9 +2506,9 @@ fn finish_pane(shared: &Arc<Mutex<Shared>>, pane_id: PaneId) {
     let Some(runtime) = runtime else {
         return;
     };
-    // EOF on the PTY can become visible just before the child status is waitable. Preserve the
-    // terminal status rather than publishing a terminal snapshot with an indeterminate exit.
-    let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    // EOF only says that slave descriptors closed. A process can intentionally close terminal
+    // I/O and keep running. Wait for its real status while it remains owned; explicit close or
+    // workspace shutdown removes the runtime and cancels this wait before joining workers.
     loop {
         let ready = {
             let mut runtime = lock(&runtime);
@@ -2599,10 +2522,17 @@ fn finish_pane(shared: &Arc<Mutex<Shared>>, pane_id: PaneId) {
                     })
                     .is_some()
         };
-        if ready || std::time::Instant::now() >= wait_deadline {
+        if ready {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        if !lock(shared)
+            .panes
+            .get(&pane_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &runtime))
+        {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let mut shared = lock(shared);
     if !shared
@@ -2847,7 +2777,8 @@ mod host_unit_tests {
             .keys()
             .next()
             .expect("pane");
-        let report = b"\x1b]7877;state=blocked;agent=retry;seq=1;visible=blocker;exited=0\x1b\\";
+        let report =
+            b"\x1b]7877;v=1;state=blocked;agent=retry;seq=1;visible=blocker;exited=0\x1b\\";
         super::lock(&host.shared).resource_reservation = usize::MAX;
         process_chunk(&host.shared, pane, report);
         assert_eq!(

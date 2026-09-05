@@ -633,14 +633,13 @@ fn production_startup_channel_is_private_tokenless_and_drop_reaps_child() {
 async fn production_factory_binds_and_retains_one_real_local_iroh_endpoint() {
     // Phase F4 endpoint: a named workspace owns a distinct retained real iroh endpoint.
     let (root, paths) = prepared_paths("real-endpoint");
-    let local_id =
-        koh::transport_iroh::format_endpoint_id(&iroh::SecretKey::from_bytes(&[9_u8; 32]).public());
+    let local_id = koh::identity::Identity::generate().endpoint_id();
     let mut daemon = Daemon::new(paths.clone(), 19, BTreeSet::new(), local_id, 0).expect("daemon");
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         daemon.create_or_find_async("real", |_key, allow| async move {
             bind_workspace_endpoint_with_secret(
-                iroh::SecretKey::from_bytes(&[8_u8; 32]),
+                koh::identity::Identity::generate(),
                 &allow,
                 fux::FUX_ALPN,
                 NetworkProfile::Local,
@@ -670,18 +669,10 @@ async fn production_factory_binds_and_retains_one_real_local_iroh_endpoint() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn production_endpoint_close_joins_every_accepted_connection_task() {
-    use koh::client::IrohConnector;
-    use koh::transport_iroh::{
-        bind_endpoint_local, direct_addr, generate_secret_key, parse_endpoint_id,
-    };
-    let client = match bind_endpoint_local(generate_secret_key(), false).await {
-        Ok(endpoint) => endpoint,
-        Err(error) if format!("{error:#}").contains("Operation not permitted") => return,
-        Err(error) => panic!("bind client: {error:#}"),
-    };
-    let client_id = koh::transport_iroh::format_endpoint_id(&client.id());
+    let client = koh::identity::Identity::generate();
+    let client_id = client.endpoint_id();
     let mut endpoint = match bind_workspace_endpoint_with_secret(
-        iroh::SecretKey::from_bytes(&[7_u8; 32]),
+        koh::identity::Identity::generate(),
         &BTreeSet::from([client_id]),
         fux::FUX_ALPN,
         NetworkProfile::Local,
@@ -693,16 +684,28 @@ async fn production_endpoint_close_joins_every_accepted_connection_task() {
         Err(ManagerError::Io(error)) if error.to_string().contains("netmon monitor") => return,
         Err(error) => panic!("bind server: {error}"),
     };
-    let target = direct_addr(
-        parse_endpoint_id(endpoint.endpoint_id()).expect("server id"),
-        endpoint.direct_addr().into(),
+    let config = koh::client::ConnectConfig {
+        server: endpoint.endpoint_id().into(),
+        key_file: None,
+        direct: Some(endpoint.direct_addr().into()),
+        relay_url: None,
+        clipboard: false,
+        bell_command: None,
+    };
+    let old_protocol = tokio::time::timeout(
+        Duration::from_secs(3),
+        koh::embed::Connection::connect(&config, b"fux/1", &client),
+    )
+    .await;
+    assert!(
+        matches!(old_protocol, Ok(Err(_))),
+        "incompatible workspace schema was not rejected"
     );
-    let channel = IrohConnector::with_alpn(client, target, fux::FUX_ALPN)
-        .connect()
+    let channel = koh::embed::Connection::connect(&config, fux::FUX_ALPN, &client)
         .await
         .expect("admitted connection");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while endpoint.active_tasks() == 0 && tokio::time::Instant::now() < deadline {
+    while endpoint.active_tasks() != 1 && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert_eq!(endpoint.active_tasks(), 1);

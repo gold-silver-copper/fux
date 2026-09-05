@@ -1,27 +1,10 @@
-use crate::state::Direction;
 use std::collections::BTreeMap;
 
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 const MAX_PENDING: usize = 64;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Command {
-    SplitHorizontal,
-    SplitVertical,
-    Focus(Direction),
-    Close,
-    NewPane,
-    NewTab,
-    NextTab,
-    PreviousTab,
-    Zoom,
-    CopyMode,
-    Detach,
-    WorkspacePicker,
-    Help,
-    External(Vec<String>),
-}
+pub use crate::commands::Command;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MouseEvent {
@@ -92,6 +75,20 @@ impl InputRouter {
             ambiguity_timeout_ms,
             bindings,
         }
+    }
+
+    pub fn help(&self) -> String {
+        self.bindings
+            .iter()
+            .map(|(key, command)| {
+                format!(
+                    "{}: {}",
+                    crate::commands::key_name(*key),
+                    command.description()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     pub fn feed(&mut self, bytes: &[u8], now_ms: u64) -> Vec<Action> {
@@ -190,31 +187,10 @@ impl InputRouter {
     }
 }
 
-fn command(byte: u8) -> Option<Command> {
-    Some(match byte {
-        b'|' => Command::SplitHorizontal,
-        b'-' => Command::SplitVertical,
-        b'h' => Command::Focus(Direction::Left),
-        b'j' => Command::Focus(Direction::Down),
-        b'k' => Command::Focus(Direction::Up),
-        b'l' => Command::Focus(Direction::Right),
-        b'x' => Command::Close,
-        b'c' => Command::NewPane,
-        b't' => Command::NewTab,
-        b'n' => Command::NextTab,
-        b'p' => Command::PreviousTab,
-        b'z' => Command::Zoom,
-        b'[' => Command::CopyMode,
-        b'd' => Command::Detach,
-        b's' => Command::WorkspacePicker,
-        b'?' => Command::Help,
-        _ => return None,
-    })
-}
-
 fn default_bindings() -> BTreeMap<u8, Command> {
-    (0_u8..=u8::MAX)
-        .filter_map(|byte| command(byte).map(|command| (byte, command)))
+    crate::commands::DEFAULT_BINDINGS
+        .iter()
+        .map(|spec| (spec.key, spec.command.clone()))
         .collect()
 }
 

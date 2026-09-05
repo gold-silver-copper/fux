@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn exact_byte_codec_is_bounded_and_round_trips() {
-        let bytes = b"\0\x1b]7877;state=idle\x1b\\\xff";
+        let bytes = b"\0\x1b]7877;v=1;state=idle\x1b\\\xff";
         assert_eq!(decode_hex(&hex(bytes)).expect("valid hex"), bytes);
         assert!(decode_hex("0").is_err());
         assert!(decode_hex(&"00".repeat(MAX_PAYLOAD_BYTES + 1)).is_err());

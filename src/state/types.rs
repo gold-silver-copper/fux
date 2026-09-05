@@ -361,6 +361,7 @@ pub struct Popup {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceMetadata {
+    pub client_bindings: Option<crate::commands::ClientBindings>,
     pub status: BTreeMap<String, String>,
     pub window_title: String,
     pub clipboard_base64: String,

@@ -1,5 +1,7 @@
 # The Shape of fux
 
+Current project boundaries and development assembly are documented in [the ownership refactor](project-boundaries-refactor-prompt.md) and [README](../README.md). The implementation uses koh `embed::Connection`/`embed::Server`; references below to the earlier `connect_with` API describe the original implementation history.
+
 An agent workspace: a small native terminal multiplexer built directly on koh's per-pty emulator and
 mosh-grade peer-to-peer attach path, with agent-state detection delegated to zor, a separate wrapper
 program around each pane (see `wrapper-design.md`). One `cargo install`-able binary, one process, no sandbox.

@@ -212,7 +212,8 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             self.client_size.rows,
             self.client_size.columns,
         );
-        process.wait_for_output_bytes(b"connected.");
+        // Wait for a workspace frame; transport logging is not an application readiness contract.
+        process.wait_for_text("─");
         self.client = Some(process);
         self.client_workspace = Some("binary".into());
         Ok(())
@@ -250,7 +251,8 @@ impl verification::interpreters::BinaryDriver for PrefixBinaryDriver<'_> {
             self.client_size.columns,
             workspace,
         );
-        process.wait_for_output_bytes(b"connected.");
+        // Wait for a workspace frame; transport logging is not an application readiness contract.
+        process.wait_for_text("─");
         if let Some(subscriber) = self.lifecycle_subscriber.as_mut() {
             let attached = expect_viewer_event(subscriber, 91, "client.attached")?;
             if self.disconnected_viewer == Some(attached) {
@@ -1342,7 +1344,7 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     for (sequence, state) in [(1, "working"), (2, "blocked"), (3, "idle")] {
         fixture.send(json!({
             "command":"agent",
-            "payload":format!("state={state};agent=fixture;seq={sequence}")
+            "payload":format!("v=1;state={state};agent=fixture;seq={sequence}")
         }));
         wait_for_list(&fux, &environment, state);
         let event = events.receive();
@@ -1359,7 +1361,7 @@ fn real_binaries_publish_agent_state_and_remove_every_private_runtime_artifact()
     }
     fixture.send(json!({
         "command":"agent",
-        "payload":"state=idle;agent=fixture;seq=3"
+        "payload":"v=1;state=idle;agent=fixture;seq=3"
     }));
     events.expect_no_frame(Duration::from_millis(150));
     wait_for_notification_count(&environment.notification_log(), 2);
@@ -1457,7 +1459,7 @@ fn natural_last_pane_exit_is_observable_before_binary_workspace_retirement() {
     assert_eq!(fixture.receive()["bytes"], 12);
     fixture.send(json!({
         "command":"agent",
-        "payload":"state=blocked;agent=final-child;seq=41"
+        "payload":"v=1;state=blocked;agent=final-child;seq=41"
     }));
     wait_for_list(&fux, &environment, "blocked");
     fixture.send(json!({"command":"exit", "status":29}));

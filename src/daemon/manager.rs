@@ -272,6 +272,22 @@ pub struct ManagerLock {
     inode: u64,
 }
 impl ManagerLock {
+    /// Exclude manager election for a key reset without connecting to or replacing its socket.
+    /// A stale socket is deliberately refused too: normal startup owns stale-state recovery.
+    pub fn exclude_for_key_reset(
+        paths: &DaemonPaths,
+    ) -> Result<nix::fcntl::Flock<fs::File>, ManagerError> {
+        let lock = acquire_manager_bind_lock(&paths.runtime_dir)?;
+        match fs::symlink_metadata(&paths.manager_socket) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(lock),
+            Err(error) => Err(ManagerError::Io(error)),
+            Ok(_) => Err(ManagerError::Io(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "manager socket exists; stop the manager, or start and stop fux to recover a stale socket",
+            ))),
+        }
+    }
+
     pub fn bind(paths: &DaemonPaths) -> Result<Self, ManagerError> {
         paths.prepare()?;
         // Stale-socket inspection and replacement must be one election transaction. Without the

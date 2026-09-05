@@ -73,13 +73,13 @@ fn peer_state_bounds_reject_oversized_cells_and_clipboards() {
 #[test]
 fn pane_osc_reports_are_spoofable_but_strictly_parsed() {
     // Phase I threat model: the pane process is the OSC trust boundary, not an authenticated reporter.
-    let valid = b"7877;state=blocked;agent=claude;seq=4;visible=blocker";
+    let valid = b"7877;v=1;state=blocked;agent=claude;seq=4;visible=blocker";
     let report = fux::parse_agent_report(valid).expect("valid self-report");
     assert_eq!(report.state(), zor::osc::State::Blocked);
     for invalid in [
-        b"7877;state=blocked;seq=4".as_slice(),
-        b"7877;state=admin;agent=x;seq=1",
-        b"7877;state=idle;agent=x;seq=1;seq=2",
+        b"7877;v=1;state=blocked;seq=4".as_slice(),
+        b"7877;v=1;state=admin;agent=x;seq=1",
+        b"7877;v=1;state=idle;agent=x;seq=1;seq=2",
     ] {
         assert!(fux::parse_agent_report(invalid).is_err());
     }

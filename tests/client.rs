@@ -342,25 +342,27 @@ fn terminal_entry_failure_restores_screen_cursor_and_raw_mode() {
 fn detach_mapping_is_stable_at_every_chunk_boundary_and_paste_is_verbatim() {
     // Phase F3 detach: prefix-d maps client-side to koh's escape across arbitrary chunks.
     let input = b"aa\x01dbb\x01xcc";
-    let expected = b"aa\x1e.bb\x01xcc";
+    let expected = b"aabb\x01xcc";
     for split in 0..=input.len() {
         let mut filter = DetachFilter::new(vec![1]).expect("filter");
         let mut output = filter.process(&input[..split], false);
         output.extend(filter.process(&input[split..], false));
         output.extend(filter.flush());
         assert_eq!(output, expected, "split {split}");
+        assert!(filter.take_detach());
     }
     let mut filter = DetachFilter::new(vec![1]).expect("filter");
     assert_eq!(filter.process(b"\x01d", true), b"\x01d");
 
     let bracketed = b"before\x1b[200~paste\x01d\x1b[201~after\x01d";
-    let expected = b"before\x1b[200~paste\x01d\x1b[201~after\x1e.";
+    let expected = b"before\x1b[200~paste\x01d\x1b[201~after";
     for split in 0..=bracketed.len() {
         let mut filter = DetachFilter::new(vec![1]).expect("filter");
         let mut output = filter.process_terminal_input(&bracketed[..split]);
         output.extend(filter.process_terminal_input(&bracketed[split..]));
         output.extend(filter.flush());
         assert_eq!(output, expected, "paste split {split}");
+        assert!(filter.take_detach());
     }
 }
 
@@ -747,4 +749,37 @@ fn row_text(buffer: &ratatui_core::buffer::Buffer, row: u16) -> String {
         .filter_map(|column| buffer.cell((column, row)))
         .map(|cell| cell.symbol())
         .collect()
+}
+
+#[test]
+fn viewer_shortcuts_follow_workspace_bindings_and_reload_preserves_partial_input() {
+    use fux::commands::{ClientBindings, Command};
+    let bindings = [(b'q', Command::Detach), (b'w', Command::WorkspacePicker)];
+    let policy = ClientBindings::new(2, bindings.iter().map(|(key, command)| (*key, command)));
+    let mut filter = DetachFilter::new(vec![1]).expect("filter");
+    filter.set_workspace_picker_enabled(true);
+    assert!(filter.process(b"\x01", false).is_empty());
+    assert_eq!(filter.configure(policy.clone()), b"\x01");
+    // Old shortcuts and new-prefix ordinary keys reach the workspace unchanged.
+    assert_eq!(
+        filter.process(b"\x01d\x02d\x02s", false),
+        b"\x01d\x02d\x02s"
+    );
+    assert!(filter.process(b"\x02q", false).is_empty());
+    assert!(filter.take_detach());
+    assert!(filter.process(b"\x02w", false).is_empty());
+    assert!(filter.take_workspace_picker());
+    assert_eq!(filter.process(b"\x02q\x02w", true), b"\x02q\x02w");
+    assert!(!filter.take_workspace_picker());
+    assert!(filter.process(b"\x02", false).is_empty());
+    assert!(filter.configure(policy).is_empty());
+    assert!(filter.process(b"q", false).is_empty());
+    assert!(filter.take_detach());
+    // Removing every binding also removes client-side interception.
+    assert!(
+        filter
+            .configure(ClientBindings::new(2, std::iter::empty()))
+            .is_empty()
+    );
+    assert_eq!(filter.process(b"\x02q\x02w", false), b"\x02q\x02w");
 }

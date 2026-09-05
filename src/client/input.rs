@@ -234,14 +234,16 @@ impl CopyMode {
     }
 }
 
-/// Stateful client-side mapping from the configured fux prefix + `d` to koh's detach escape.
+/// Stateful mapping from workspace-configured viewer shortcuts to client actions.
 #[derive(Clone, Debug)]
 pub struct DetachFilter {
     prefix: Vec<u8>,
+    bindings: crate::commands::ClientBindings,
     matched: Vec<u8>,
     command_pending: bool,
     paste: bool,
     paste_marker: Vec<u8>,
+    detach: bool,
     workspace_picker: bool,
     workspace_picker_enabled: bool,
 }
@@ -250,10 +252,12 @@ impl DetachFilter {
     pub fn new(prefix: Vec<u8>) -> Option<Self> {
         (!prefix.is_empty() && prefix.len() <= 16).then_some(Self {
             prefix,
+            bindings: crate::commands::ClientBindings::default(),
             matched: Vec::new(),
             command_pending: false,
             paste: false,
             paste_marker: Vec::new(),
+            detach: false,
             workspace_picker: false,
             workspace_picker_enabled: false,
         })
@@ -302,9 +306,12 @@ impl DetachFilter {
         for &byte in input {
             if self.command_pending {
                 self.command_pending = false;
-                if byte == b'd' {
-                    output.extend_from_slice(b"\x1e.");
-                } else if byte == b's' && self.workspace_picker_enabled {
+                if self.bindings.action(byte) == Some(crate::commands::BuiltinAction::Detach) {
+                    self.detach = true;
+                } else if self.bindings.action(byte)
+                    == Some(crate::commands::BuiltinAction::WorkspacePicker)
+                    && self.workspace_picker_enabled
+                {
                     self.workspace_picker = true;
                 } else {
                     output.extend_from_slice(&self.prefix);
@@ -335,6 +342,22 @@ impl DetachFilter {
         output.extend(self.process(&marker, self.paste));
         self.flush_pending_into(&mut output);
         output
+    }
+
+    /// Flush a partial prefix under its old meaning when live bindings change.
+    pub fn configure(&mut self, bindings: crate::commands::ClientBindings) -> Vec<u8> {
+        if self.bindings == bindings && self.prefix == [bindings.prefix()] {
+            return Vec::new();
+        }
+        let mut pending = Vec::new();
+        self.flush_pending_into(&mut pending);
+        self.prefix = vec![bindings.prefix()];
+        self.bindings = bindings;
+        pending
+    }
+
+    pub fn take_detach(&mut self) -> bool {
+        std::mem::take(&mut self.detach)
     }
 
     pub fn take_workspace_picker(&mut self) -> bool {

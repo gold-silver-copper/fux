@@ -425,7 +425,7 @@ impl Interpreter for InProcessInterpreter {
                     );
                     let command = vec![shell, "-c".into(), format!("exit {status}")];
                     let (mut pty, receiver) =
-                        koh::pty::Pty::spawn(2, 2, &command, "xterm-256color")
+                        fux::pty::Pty::spawn(2, 2, &command, "xterm-256color")
                             .map_err(|error| error.to_string())?;
                     drop(receiver);
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

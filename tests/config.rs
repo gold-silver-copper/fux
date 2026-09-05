@@ -1,7 +1,6 @@
 #![allow(dead_code, clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
-#[path = "../src/config.rs"]
-mod config;
+use fux::config;
 
 use config::{
     Binding, BuiltinAction, ClipboardPolicy, Config, ConfigError, default_path_from,
@@ -229,4 +228,38 @@ fn missing_file_uses_defaults_and_existing_file_is_loaded() {
         "C-z"
     );
     fs::remove_dir_all(&directory).expect("remove test directory");
+}
+
+#[test]
+fn key_aliases_cannot_override_each_other_or_the_prefix_byte() {
+    let mut config = Config::default();
+    config.bindings.insert(
+        "C-A".into(),
+        Binding::Builtin {
+            builtin: BuiltinAction::Detach,
+        },
+    );
+    assert!(
+        config.validate().is_err(),
+        "prefix alias accepted as a binding"
+    );
+    config.bindings.remove("C-A");
+    config.bindings.insert(
+        "C-b".into(),
+        Binding::Builtin {
+            builtin: BuiltinAction::Detach,
+        },
+    );
+    config.bindings.insert(
+        "C-B".into(),
+        Binding::Builtin {
+            builtin: BuiltinAction::Help,
+        },
+    );
+    assert!(config.validate().is_err(), "ambiguous key aliases accepted");
+    config.bindings.remove("C-B");
+    assert!(
+        config.validate().is_ok(),
+        "one unambiguous binding should work"
+    );
 }

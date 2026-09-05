@@ -17,10 +17,9 @@ use koh::predict::{CellView, ScreenView};
 /// Connects the fux workspace state over its static ALPN with owned terminal I/O producers.
 pub async fn connect_workspace(
     config: koh::client::ConnectConfig,
-    prefix: Vec<u8>,
     notifications: Option<crate::config::NotificationPolicy>,
 ) -> anyhow::Result<Option<u32>> {
-    match connect_workspace_with_picker(config, prefix, notifications, false).await? {
+    match connect_workspace_with_picker(config, notifications, false).await? {
         ConnectOutcome::Exited(exit) => Ok(exit),
         ConnectOutcome::WorkspacePicker => Ok(None),
     }
@@ -34,23 +33,58 @@ pub enum ConnectOutcome {
 
 pub async fn connect_workspace_with_picker(
     config: koh::client::ConnectConfig,
-    prefix: Vec<u8>,
     notifications: Option<crate::config::NotificationPolicy>,
     enable_picker: bool,
 ) -> anyhow::Result<ConnectOutcome> {
-    let mut filter = DetachFilter::new(prefix)
+    let secret = koh::identity::load_client(config.key_file.as_deref())?;
+    connect_workspace_with_secret(config, notifications, enable_picker, secret).await
+}
+
+/// Connect using an identity already unlocked before terminal input producers start.
+pub async fn connect_workspace_with_secret(
+    config: koh::client::ConnectConfig,
+    notifications: Option<crate::config::NotificationPolicy>,
+    enable_picker: bool,
+    secret: koh::identity::Identity,
+) -> anyhow::Result<ConnectOutcome> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut hangup = signal(SignalKind::hangup())?;
+    let mut filter = DetachFilter::new(vec![crate::commands::ClientBindings::default().prefix()])
         .ok_or_else(|| anyhow::anyhow!("detach prefix must contain 1-16 bytes"))?;
     filter.set_workspace_picker_enabled(enable_picker);
     let clipboard = config.clipboard;
+    let prepared = tokio::select! {
+        result = koh::embed::Connection::connect(&config, crate::FUX_ALPN, &secret) => result?,
+        _ = interrupt.recv() => return Ok(ConnectOutcome::Exited(None)),
+        _ = terminate.recv() => return Ok(ConnectOutcome::Exited(None)),
+        _ = hangup.recv() => return Ok(ConnectOutcome::Exited(None)),
+    };
     let (channels, tasks) = koh::client::spawn_client_io()?;
     let (input_tx, input_rx) = tokio::sync::mpsc::channel(64);
-    let (picker_tx, mut picker_rx) = tokio::sync::mpsc::channel(1);
+    let (action_tx, mut action_rx) = tokio::sync::mpsc::channel(1);
     let mut source = channels.input_rx;
+    let (policy_tx, mut policy_rx) = tokio::sync::watch::channel(None);
     let bridge = tokio::spawn(async move {
+        // Wait for the workspace's first authoritative policy before interpreting input.
+        if policy_rx.wait_for(|policy| policy.is_some()).await.is_err() {
+            return;
+        }
         while let Some(chunk) = source.recv().await {
-            let filtered = filter.process_terminal_input(&chunk);
-            if enable_picker && filter.take_workspace_picker() {
-                let _ = picker_tx.try_send(());
+            let mut filtered = policy_rx
+                .borrow_and_update()
+                .clone()
+                .map_or_else(Vec::new, |policy| filter.configure(policy));
+            filtered.extend(filter.process_terminal_input(&chunk));
+            let detach = filter.take_detach();
+            let picker = enable_picker && filter.take_workspace_picker();
+            if detach || picker {
+                let _ = action_tx.try_send(picker && !detach);
+                // Keep input_tx alive until the picker branch cancels this bridge. Otherwise
+                // run_client may observe EOF and finish while the select is polling it, racing
+                // the picker notification even with a biased select.
+                std::future::pending::<()>().await;
                 break;
             }
             if !filtered.is_empty() && input_tx.send(filtered).await.is_err() {
@@ -62,30 +96,45 @@ pub async fn connect_workspace_with_picker(
             let _ = input_tx.send(tail).await;
         }
     });
-    let connection = koh::client::connect_with(
-        config,
-        crate::FUX_ALPN,
-        move || {
-            WorkspaceTerminal::enter_default(clipboard, notifications.clone())
-                .map_err(|error| anyhow::anyhow!("entering fux terminal: {error}"))
-        },
-        input_rx,
-        channels.resize_rx,
-    );
-    tokio::pin!(connection);
-    let (result, picker) = tokio::select! {
-        result = &mut connection => (Some(result), false),
-        value = picker_rx.recv(), if enable_picker => (None, value.is_some()),
+    // Scope the connection future so its terminal is restored before input producers are joined
+    // and before the caller opens the workspace picker.
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (result, picker) = {
+        let connection = async {
+            let term = WorkspaceTerminal::enter_default(clipboard, notifications)
+                .map_err(|error| anyhow::anyhow!("entering fux terminal: {error}"))?
+                .with_input_policy(policy_tx);
+            prepared
+                .run(
+                    term,
+                    input_rx,
+                    channels.resize_rx,
+                    cancel.clone(),
+                    config.bell_command.map(koh::client::BellHook::new),
+                )
+                .await
+        };
+        tokio::pin!(connection);
+        tokio::select! {
+            biased;
+            Some(picker) = action_rx.recv() => {
+                cancel.cancel();
+                (connection.await, picker)
+            },
+            result = &mut connection => (result, false),
+            _ = interrupt.recv() => { cancel.cancel(); (connection.await, false) },
+            _ = terminate.recv() => { cancel.cancel(); (connection.await, false) },
+            _ = hangup.recv() => { cancel.cancel(); (connection.await, false) },
+        }
     };
     bridge.abort();
     let _ = bridge.await;
     let shutdown = tasks.shutdown().await;
     match (result, shutdown, picker) {
-        (Some(Err(error)), _, _) => Err(error),
+        (Err(error), _, _) => Err(error),
         (_, Err(error), _) => Err(error.context("stopping terminal input producers")),
-        (Some(Ok(exit)), Ok(()), false) => Ok(ConnectOutcome::Exited(exit)),
-        (None, Ok(()), true) => Ok(ConnectOutcome::WorkspacePicker),
-        _ => Err(anyhow::anyhow!("workspace connection ended unexpectedly")),
+        (Ok(exit), Ok(()), false) => Ok(ConnectOutcome::Exited(exit)),
+        (Ok(_), Ok(()), true) => Ok(ConnectOutcome::WorkspacePicker),
     }
 }
 

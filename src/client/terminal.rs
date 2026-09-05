@@ -16,6 +16,7 @@ const MAX_TERMINAL_TITLE_BYTES: usize = 4096;
 
 pub struct WorkspaceTerminal<B: KohBackend> {
     backend: B,
+    input_policy: Option<tokio::sync::watch::Sender<Option<crate::commands::ClientBindings>>>,
     compositor: Compositor,
     previous: Option<Buffer>,
     clipboard_enabled: bool,
@@ -40,6 +41,7 @@ impl<B: KohBackend> WorkspaceTerminal<B> {
         }
         Ok(Self {
             backend,
+            input_policy: None,
             compositor: Compositor::default(),
             previous: None,
             clipboard_enabled,
@@ -51,6 +53,14 @@ impl<B: KohBackend> WorkspaceTerminal<B> {
             notifications: None,
             notification_children: Vec::new(),
         })
+    }
+
+    pub fn with_input_policy(
+        mut self,
+        sender: tokio::sync::watch::Sender<Option<crate::commands::ClientBindings>>,
+    ) -> Self {
+        self.input_policy = Some(sender);
+        self
     }
 
     pub fn compositor_mut(&mut self) -> &mut Compositor {
@@ -341,6 +351,17 @@ impl<B: KohBackend> ClientTerminal<WorkspaceState> for WorkspaceTerminal<B> {
         overlay: &Overlay,
         status: Option<&str>,
     ) -> io::Result<()> {
+        if let Some(sender) = &self.input_policy {
+            sender.send_if_modified(|policy| {
+                let next = &state.metadata().client_bindings;
+                if next.is_none() || policy == next {
+                    false
+                } else {
+                    *policy = next.clone();
+                    true
+                }
+            });
+        }
         self.emit_out_of_band(state)?;
         let (rows, cols) = self.backend.size()?;
         let frame = self.compositor.compose(state, overlay, status, rows, cols);

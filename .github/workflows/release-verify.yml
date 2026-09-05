@@ -17,10 +17,12 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
+          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.2
+          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
+      - name: Assemble reviewed dependency sources
+        run: python3 tools/dependencies.py apply
       - run: tests/verify/release-package.sh

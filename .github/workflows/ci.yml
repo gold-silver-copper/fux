@@ -33,12 +33,14 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
+          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.2
+          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
+      - name: Assemble reviewed dependency sources
+        run: python3 tools/dependencies.py apply
       - name: Install Rust
         run: rustup toolchain install "${{ matrix.rust }}" --profile minimal --component rustfmt,clippy
       - run: cargo +${{ matrix.rust }} fmt --all --check
@@ -65,12 +67,14 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
+          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.2
+          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
+      - name: Assemble reviewed dependency sources
+        run: python3 tools/dependencies.py apply
       - run: cargo test --test verification_corpus --test verification_structure --test verification_loom --locked
       - run: cargo build --locked --bin fux
       - run: cargo build --manifest-path zor/Cargo.toml --locked --bin zor
@@ -88,12 +92,14 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
+          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.2
+          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
+      - name: Assemble reviewed dependency sources
+        run: python3 tools/dependencies.py apply
       - run: rustup target add aarch64-linux-android
       - name: Select Android NDK compiler
         run: |
@@ -113,12 +119,14 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
+          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.2
+          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
+      - name: Assemble reviewed dependency sources
+        run: python3 tools/dependencies.py apply
       - name: Build zor and expose its exact path to tests
         run: |
           cargo build --manifest-path zor/Cargo.toml --locked
@@ -137,10 +145,12 @@ jobs:
         with:
           repository: gold-silver-copper/koh
           path: references/koh
-          ref: cfb6f3e5b623b8656171278be2a5a235928142d7
+          ref: d6ded15bca6fb807b4896f49c8a43dfcdf43ee27
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/zor
           path: zor
-          ref: v0.1.2
+          ref: 25cbc462ee3cf91034fa6763279662f0e2eaabc7
+      - name: Assemble reviewed dependency sources
+        run: python3 tools/dependencies.py apply
       - run: cargo package --locked

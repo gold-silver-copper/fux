@@ -49,7 +49,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            prefix: "C-a".to_owned(),
+            prefix: crate::commands::key_name(crate::commands::DEFAULT_PREFIX),
             bindings: default_bindings(),
             default_command: default_shell(),
             zor_path: PathBuf::from("zor"),
@@ -120,16 +120,20 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        validate_key_notation("prefix", &self.prefix)?;
+        let prefix = validate_key_notation("prefix", &self.prefix)?;
         if self.bindings.len() > MAX_BINDINGS {
             return invalid(
                 "bindings",
                 format!("at most {MAX_BINDINGS} entries are allowed"),
             );
         }
+        let mut seen = std::collections::BTreeSet::new();
         for (key, binding) in &self.bindings {
-            validate_key_notation("bindings key", key)?;
-            if key == &self.prefix {
+            let byte = validate_key_notation("bindings key", key)?;
+            if !seen.insert(byte) {
+                return invalid("bindings", "two key names encode the same byte");
+            }
+            if byte == prefix {
                 return invalid("bindings", "a binding cannot equal the prefix key");
             }
             if let Binding::External { external } = binding {
@@ -255,26 +259,7 @@ pub enum Binding {
     External { external: Command },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum BuiltinAction {
-    SplitHorizontal,
-    SplitVertical,
-    FocusLeft,
-    FocusRight,
-    FocusUp,
-    FocusDown,
-    ClosePane,
-    NewPane,
-    NewTab,
-    NextTab,
-    PreviousTab,
-    Zoom,
-    CopyMode,
-    Detach,
-    WorkspacePicker,
-    Help,
-}
+pub use crate::commands::BuiltinAction;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -524,45 +509,28 @@ pub fn default_shell_from(
 }
 
 fn default_bindings() -> BTreeMap<String, Binding> {
-    use BuiltinAction::{
-        ClosePane, CopyMode, Detach, FocusDown, FocusLeft, FocusRight, FocusUp, Help, NewPane,
-        NewTab, NextTab, PreviousTab, SplitHorizontal, SplitVertical, WorkspacePicker, Zoom,
-    };
-    [
-        ("|", SplitHorizontal),
-        ("-", SplitVertical),
-        ("h", FocusLeft),
-        ("j", FocusDown),
-        ("k", FocusUp),
-        ("l", FocusRight),
-        ("x", ClosePane),
-        ("c", NewPane),
-        ("t", NewTab),
-        ("n", NextTab),
-        ("p", PreviousTab),
-        ("z", Zoom),
-        ("[", CopyMode),
-        ("d", Detach),
-        ("s", WorkspacePicker),
-        ("?", Help),
-    ]
-    .into_iter()
-    .map(|(key, builtin)| (key.to_owned(), Binding::Builtin { builtin }))
-    .collect()
+    crate::commands::DEFAULT_BINDINGS
+        .iter()
+        .map(|spec| {
+            (
+                char::from(spec.key).to_string(),
+                Binding::Builtin {
+                    builtin: spec.action,
+                },
+            )
+        })
+        .collect()
 }
 
-fn validate_key_notation(field: &'static str, value: &str) -> Result<(), ConfigError> {
-    let valid = value.len() == 1
-        || value
-            .strip_prefix("C-")
-            .is_some_and(|suffix| suffix.len() == 1);
-    if !valid {
-        return invalid(
+fn validate_key_notation(field: &'static str, value: &str) -> Result<u8, ConfigError> {
+    if let Some(byte) = crate::commands::key_byte(value) {
+        Ok(byte)
+    } else {
+        invalid(
             field,
             "must encode exactly one byte as a literal byte or `C-x`",
-        );
+        )
     }
-    Ok(())
 }
 
 fn validate_path(field: &'static str, path: &Path) -> Result<(), ConfigError> {

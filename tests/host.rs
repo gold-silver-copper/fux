@@ -9,18 +9,14 @@ use fux::host::{
 };
 use fux::state::{AgentState, Direction, PaneId, WorkspaceState};
 #[cfg(unix)]
-use koh::client::{ClientTerminal, IrohConnector, run_client};
+use koh::client::ClientTerminal;
 #[cfg(unix)]
-use koh::predict::{DisplayPreference, Overlay};
+use koh::embed::{Connection, NetworkProfile, Server};
 #[cfg(unix)]
-use koh::server::session::SessionHandle;
+use koh::identity::Identity;
+#[cfg(unix)]
+use koh::predict::Overlay;
 use koh::server::{ChangeSignal, ClientId, SessionHost};
-#[cfg(unix)]
-use koh::server::{Hosts, SharedHost};
-#[cfg(unix)]
-use koh::transport_iroh::{
-    IrohChannel, bind_endpoint_local, bind_endpoint_local_alpns, generate_secret_key, loopback_addr,
-};
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::sync::Arc;
@@ -781,7 +777,7 @@ fn shared_control_exports_async_pty_output_agent_title_and_close_events() {
                 .push(event);
         }
     }
-    let command = vec!["/bin/sh".into(), "-c".into(), "sleep 0.1; printf '\\033]2;agent-title\\007\\033]7877;state=blocked;agent=codex;seq=1;visible=blocker;exited=0\\033\\\\\\033]7877;state=blocked;agent=codex;seq=1;visible=blocker;exited=0\\033\\\\\\033]7877;state=idle;agent=codex;seq=2;visible=idle;exited=0\\033\\\\'; exit 0".into()];
+    let command = vec!["/bin/sh".into(), "-c".into(), "sleep 0.1; printf '\\033]2;agent-title\\007\\033]7877;v=1;state=blocked;agent=codex;seq=1;visible=blocker;exited=0\\033\\\\\\033]7877;v=1;state=blocked;agent=codex;seq=1;visible=blocker;exited=0\\033\\\\\\033]7877;v=1;state=idle;agent=codex;seq=2;visible=idle;exited=0\\033\\\\'; exit 0".into()];
     let (mut session, control) = WorkspaceHost::shared(command, 32, None).expect("workspace");
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     control.set_event_sink(std::sync::Arc::new(Sink(std::sync::Arc::clone(&events))));
@@ -895,7 +891,7 @@ fn fast_control_child_events_are_opened_then_output_agent_then_closed_once() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     control.set_event_sink(Arc::new(Sink(Arc::clone(&events))));
     session.attach_notify(ChangeSignal::default());
-    let report = "\\033]7877;state=blocked;agent=fast;seq=1;visible=blocker;exited=0\\033\\\\";
+    let report = "\\033]7877;v=1;state=blocked;agent=fast;seq=1;visible=blocker;exited=0\\033\\\\";
     let script = format!("printf 'OUT{report}{report}X'; exit 4");
     let (reply, _) = control.dispatch(fux::control::Request::New {
         id: 700,
@@ -1287,8 +1283,8 @@ fn real_child_receives_da_and_dsr_replies() {
 #[cfg(unix)]
 #[test]
 fn real_child_osc_updates_agent_and_duplicate_is_idempotent() {
-    let report = "\\033]7877;state=blocked;agent=test;seq=7;visible=blocker;exited=0\\033\\\\";
-    let changed = "\\033]7877;state=idle;agent=test;seq=7;visible=idle;exited=0\\033\\\\";
+    let report = "\\033]7877;v=1;state=blocked;agent=test;seq=7;visible=blocker;exited=0\\033\\\\";
+    let changed = "\\033]7877;v=1;state=idle;agent=test;seq=7;visible=idle;exited=0\\033\\\\";
     let script = format!("printf '{report}{report}{changed}'; sleep 0.2");
     let mut host = host_for_script(&script, 32);
     wait_until(&mut host, Duration::from_secs(3), |state| {
@@ -1500,42 +1496,28 @@ fn resize_and_detach_keep_safe_pty_geometry() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_host_round_trips_through_hosts_and_run_client() {
-    let provider = SharedHost::new(|| {
-        WorkspaceHost::spawn(
-            vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                "printf LOOPBACK_FUX; sleep 0.2; exit 7".into(),
-            ],
-            32,
-            None,
-        )
-    });
-    let hosts = Arc::new(Hosts::new().with(fux::FUX_ALPN, provider));
-    let server = match bind_endpoint_local_alpns(generate_secret_key(), hosts.alpns()).await {
-        Ok(server) => server,
-        Err(error) if format!("{error:#}").contains("Operation not permitted") => return,
-        Err(error) => panic!("bind server: {error:#}"),
-    };
-    let address = loopback_addr(&server);
-    let accept = {
-        let hosts = hosts.clone();
-        tokio::spawn(async move {
-            while let Some(incoming) = server.accept().await {
-                let hosts = hosts.clone();
-                tokio::spawn(async move {
-                    if let Ok(connection) = incoming.await {
-                        hosts.serve_connection(connection).await;
-                    }
-                });
-            }
-        })
-    };
-    let endpoint = bind_endpoint_local(generate_secret_key(), false)
-        .await
-        .expect("bind client");
-    let connector = IrohConnector::with_alpn(endpoint, address, fux::FUX_ALPN);
-    let channel = connector.connect().await.expect("connect workspace");
+    let identity = Identity::generate();
+    let mut server = Server::bind(
+        Identity::generate(),
+        &std::collections::BTreeSet::from([identity.endpoint_id()]),
+        fux::FUX_ALPN,
+        NetworkProfile::Local,
+        4,
+        || {
+            WorkspaceHost::spawn(
+                vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "printf LOOPBACK_FUX; sleep 0.2; exit 7".into(),
+                ],
+                32,
+                None,
+            )
+        },
+    )
+    .await
+    .expect("bind hosted application");
+    let connection = connect_to_server(&server, &identity).await;
     let (_input_tx, input_rx) = mpsc::channel::<Vec<u8>>(4);
     let (_resize_tx, resize_rx) = mpsc::channel::<()>(1);
     let terminal =
@@ -1543,22 +1525,19 @@ async fn workspace_host_round_trips_through_hosts_and_run_client() {
             .expect("terminal");
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        run_client(
-            channel,
-            connector,
-            DisplayPreference::Never,
-            (30, 100),
+        connection.run(
+            terminal,
             input_rx,
             resize_rx,
-            terminal,
             CancellationToken::new(),
+            None,
         ),
     )
     .await
     .expect("client timeout")
     .expect("run client");
     assert_eq!(result, Some(7));
-    accept.abort();
+    server.close();
 }
 
 #[cfg(unix)]
@@ -1615,90 +1594,31 @@ impl ClientTerminal<WorkspaceState> for SemanticTerminal {
 async fn remote_viewer_reconnects_after_forced_loopback_loss_without_state_reset() {
     let lifecycle = Arc::new(std::sync::Mutex::new(Vec::new()));
     let workspace_control = Arc::new(std::sync::Mutex::new(None));
-    let provider = SharedHost::new_with_handles({
-        let lifecycle = Arc::clone(&lifecycle);
-        let workspace_control = Arc::clone(&workspace_control);
-        move || {
-            let (session, control) = WorkspaceHost::shared(vec!["/bin/cat".into()], 32, None)?;
-            control.set_event_sink(Arc::new(LifecycleSink {
-                events: Arc::clone(&lifecycle),
-            }));
-            *workspace_control
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
-            Ok(SessionHandle::new(session))
-        }
-    });
-    let hosts = Arc::new(Hosts::new().with(fux::FUX_ALPN, provider));
-    let server = bind_endpoint_local_alpns(generate_secret_key(), hosts.alpns())
-        .await
-        .expect("bind loopback verification server");
-    let address = loopback_addr(&server);
-    let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
-    let (server_stop_tx, server_stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_shutdown = CancellationToken::new();
-    let accept = {
-        let hosts = Arc::clone(&hosts);
-        let server_shutdown = server_shutdown.clone();
-        tokio::spawn(async move {
-            let mut first_drop = Some(drop_rx);
-            let mut connections = tokio::task::JoinSet::new();
-            let mut server_stop_rx = server_stop_rx;
-            loop {
-                let incoming = tokio::select! {
-                    _ = &mut server_stop_rx => break,
-                    incoming = server.accept() => incoming,
-                };
-                let Some(incoming) = incoming else { break };
-                let hosts = Arc::clone(&hosts);
-                let connection_shutdown = server_shutdown.clone();
-                let drop = first_drop.take();
-                connections.spawn(async move {
-                    if let Ok(connection) = incoming.await {
-                        if let Some(drop) = drop {
-                            let victim = connection.clone();
-                            let serve = hosts.serve_connection(connection);
-                            tokio::pin!(serve);
-                            tokio::select! {
-                                () = &mut serve => {}
-                                result = drop => {
-                                    if result.is_ok() {
-                                        IrohChannel::new(victim).close(0, b"deterministic loss");
-                                    }
-                                    serve.await;
-                                }
-                                () = connection_shutdown.cancelled() => {
-                                    IrohChannel::new(victim).close(0, b"verification shutdown");
-                                    serve.await;
-                                }
-                            }
-                        } else {
-                            let victim = connection.clone();
-                            let serve = hosts.serve_connection(connection);
-                            tokio::pin!(serve);
-                            tokio::select! {
-                                () = &mut serve => {}
-                                () = connection_shutdown.cancelled() => {
-                                    IrohChannel::new(victim).close(0, b"verification shutdown");
-                                    serve.await;
-                                }
-                            }
-                        }
-                    }
-                });
+    let identity = Identity::generate();
+    let mut server = Server::bind(
+        Identity::generate(),
+        &std::collections::BTreeSet::from([identity.endpoint_id()]),
+        fux::FUX_ALPN,
+        NetworkProfile::Local,
+        4,
+        {
+            let lifecycle = Arc::clone(&lifecycle);
+            let workspace_control = Arc::clone(&workspace_control);
+            move || {
+                let (session, control) = WorkspaceHost::shared(vec!["/bin/cat".into()], 32, None)?;
+                control.set_event_sink(Arc::new(LifecycleSink {
+                    events: Arc::clone(&lifecycle),
+                }));
+                *workspace_control
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(control);
+                Ok(session)
             }
-            server_shutdown.cancel();
-            while let Some(result) = connections.join_next().await {
-                result.expect("loopback connection task");
-            }
-        })
-    };
-
-    let endpoint = bind_endpoint_local(generate_secret_key(), false)
-        .await
-        .expect("bind reconnecting client");
-    let connector = IrohConnector::with_alpn(endpoint, address, fux::FUX_ALPN);
-    let channel = connector.connect().await.expect("initial connection");
+        },
+    )
+    .await
+    .expect("bind reconnecting application");
+    let connection = connect_to_server(&server, &identity).await;
     let latest = Arc::new(std::sync::Mutex::new(WorkspaceState::default()));
     let terminal = SemanticTerminal {
         latest: Arc::clone(&latest),
@@ -1708,17 +1628,9 @@ async fn remote_viewer_reconnects_after_forced_loopback_loss_without_state_reset
     let shutdown = CancellationToken::new();
     let client_shutdown = shutdown.clone();
     let client = tokio::spawn(async move {
-        run_client(
-            channel,
-            connector,
-            DisplayPreference::Never,
-            (24, 80),
-            input_rx,
-            resize_rx,
-            terminal,
-            client_shutdown,
-        )
-        .await
+        connection
+            .run(terminal, input_rx, resize_rx, client_shutdown, None)
+            .await
     });
 
     input_tx
@@ -1730,7 +1642,7 @@ async fn remote_viewer_reconnects_after_forced_loopback_loss_without_state_reset
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    drop_tx.send(()).expect("drop first connection");
+    server.disconnect_clients();
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -1800,11 +1712,7 @@ async fn remote_viewer_reconnects_after_forced_loopback_loss_without_state_reset
         .expect("client cleanup deadline")
         .expect("client task")
         .expect("client loop");
-    server_stop_tx.send(()).expect("stop loopback server");
-    tokio::time::timeout(Duration::from_secs(3), accept)
-        .await
-        .expect("server cleanup deadline")
-        .expect("server task");
+    server.close();
     wait_for_lifecycle_count(&lifecycle, 4).await;
     assert_eq!(
         *lifecycle
@@ -1873,4 +1781,177 @@ fn visible_workspace_text(state: &WorkspaceState) -> String {
         .flat_map(|pane| pane.cells.iter())
         .map(|cell| cell.text.as_str())
         .collect()
+}
+
+#[cfg(unix)]
+async fn connect_to_server(server: &Server, identity: &Identity) -> Connection {
+    let config = koh::client::ConnectConfig {
+        server: server.endpoint_id().into(),
+        key_file: None,
+        direct: Some(server.direct_addr().into()),
+        relay_url: None,
+        clipboard: false,
+        bell_command: None,
+    };
+    Connection::connect(&config, fux::FUX_ALPN, identity)
+        .await
+        .expect("connect application")
+}
+
+#[test]
+fn workspace_binding_reload_reaches_viewers_through_replicated_metadata() {
+    use fux::client::{CaptureBackend, WorkspaceTerminal};
+    use fux::commands::BuiltinAction;
+    use koh::client::ClientTerminal;
+    let (mut session, control) =
+        WorkspaceHost::shared(vec!["/bin/cat".into()], 32, None).expect("workspace");
+    let changed = ChangeSignal::default();
+    let mut changes = changed.subscribe();
+    session.attach_notify(changed);
+    let (policy_tx, mut policy_rx) = tokio::sync::watch::channel(None);
+    let mut terminal = WorkspaceTerminal::enter(CaptureBackend::new(8, 20), false)
+        .expect("terminal")
+        .with_input_policy(policy_tx);
+    terminal
+        .render(
+            &fux::state::WorkspaceState::default(),
+            &koh::predict::Overlay::empty(),
+            None,
+        )
+        .expect("pre-snapshot render");
+    assert!(
+        policy_rx.borrow().is_none(),
+        "placeholder state must not authorize local shortcuts"
+    );
+    terminal
+        .render(&session.snapshot(), &koh::predict::Overlay::empty(), None)
+        .expect("initial render");
+    assert_eq!(
+        policy_rx
+            .borrow_and_update()
+            .as_ref()
+            .expect("policy")
+            .action(b'd'),
+        Some(BuiltinAction::Detach)
+    );
+    let mut config = fux::config::Config::default();
+    config.prefix = "C-b".into();
+    config.bindings = std::collections::BTreeMap::from([
+        (
+            "q".into(),
+            fux::config::Binding::Builtin {
+                builtin: BuiltinAction::Detach,
+            },
+        ),
+        (
+            "w".into(),
+            fux::config::Binding::Builtin {
+                builtin: BuiltinAction::WorkspacePicker,
+            },
+        ),
+    ]);
+    control
+        .configure_bindings(&config, "/tmp/fux-policy.sock".into())
+        .expect("configure");
+    changes.borrow_and_update();
+    config.prefix = "C-c".into();
+    control.reconfigure_bindings(&config).expect("reload");
+    assert!(changes.has_changed().expect("change channel"));
+    terminal
+        .render(&session.snapshot(), &koh::predict::Overlay::empty(), None)
+        .expect("reload render");
+    let policy = policy_rx
+        .borrow_and_update()
+        .clone()
+        .expect("updated policy");
+    assert_eq!(policy.prefix(), 3);
+    assert_eq!(policy.action(b'd'), None);
+    assert_eq!(policy.action(b's'), None);
+    assert_eq!(policy.action(b'q'), Some(BuiltinAction::Detach));
+    assert_eq!(policy.action(b'w'), Some(BuiltinAction::WorkspacePicker));
+    session.shutdown();
+}
+
+#[test]
+fn terminal_eof_does_not_end_a_live_process_and_shutdown_cancels_the_exit_wait() {
+    let (mut session, control) = WorkspaceHost::shared(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "exec </dev/null >/dev/null 2>&1; sleep 2; exit 9".into(),
+        ],
+        0,
+        None,
+    )
+    .expect("workspace");
+    session.attach_notify(ChangeSignal::default());
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(
+        !control.is_empty(),
+        "terminal EOF must not retire a still-running process"
+    );
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while session.snapshot().metadata().exit_code != Some(9) {
+        assert!(
+            Instant::now() < deadline,
+            "real exit status was not retained"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    session.shutdown();
+
+    let (mut waiting, _) = WorkspaceHost::shared(
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "exec </dev/null >/dev/null 2>&1; exec sleep 60".into(),
+        ],
+        0,
+        None,
+    )
+    .expect("waiting workspace");
+    waiting.attach_notify(ChangeSignal::default());
+    std::thread::sleep(Duration::from_millis(50));
+    let started = Instant::now();
+    waiting.shutdown();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "shutdown did not cancel EOF waiter"
+    );
+}
+
+#[test]
+fn explicit_pane_kill_does_not_close_an_unrelated_popup() {
+    use fux::control::{CommandResult, Event, Reply, Request};
+    let (mut session, control) =
+        WorkspaceHost::shared(vec!["/bin/cat".into()], 0, None).expect("workspace");
+    session.attach_notify(ChangeSignal::default());
+    let (reply, _) = control.dispatch(Request::Popup {
+        id: 1,
+        rows: Some(8),
+        cols: Some(30),
+        argv: vec!["/bin/cat".into()],
+        env: Default::default(),
+    });
+    let Reply::Completed {
+        result: CommandResult::Pane { pane: popup },
+        ..
+    } = reply
+    else {
+        panic!("popup failed: {reply:?}");
+    };
+    let (reply, events) = control.dispatch(Request::Kill { id: 2, pane: 1 });
+    assert!(matches!(reply, Reply::Completed { .. }));
+    let state = session.snapshot();
+    assert!(state.pane(PaneId(1)).is_none(), "requested pane survived");
+    assert!(
+        state.pane(PaneId(popup)).is_some(),
+        "unrelated popup was killed"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::PaneClosed { pane: 1, .. }))
+    );
+    session.shutdown();
 }

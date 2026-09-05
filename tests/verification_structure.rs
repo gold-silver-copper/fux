@@ -11,6 +11,7 @@ fn production_spawns_exist_only_in_reviewed_owner_modules() {
         "src/daemon/spawn.rs",
         "src/host/mod.rs",
         "src/main.rs",
+        "src/pty.rs", // Owns pane processes and bounded pumps; teardown is covered by host lifecycle tests.
         "src/runtime/mod.rs",
     ];
     for file in rust_files("src") {
@@ -204,4 +205,67 @@ fn relative(path: &Path) -> String {
 
 fn strip_test_modules(source: &str) -> &str {
     source.split("#[cfg(test)]").next().unwrap_or(source)
+}
+
+#[test]
+fn project_dependencies_and_application_imports_respect_ownership() {
+    for (manifest, forbidden) in [
+        (
+            "Cargo.toml",
+            &["iroh", "iroh-base", "iroh-net", "ed25519-dalek"][..],
+        ),
+        ("references/koh/Cargo.toml", &["fux", "zor"][..]),
+        ("zor/Cargo.toml", &["fux", "koh"][..]),
+    ] {
+        let source = read(Path::new(manifest));
+        let document: toml::Value = toml::from_str(&source).expect("dependency manifest");
+        check_dependency_tables(&document, forbidden, manifest);
+    }
+    for file in rust_files("src") {
+        let source = read(&file);
+        for forbidden in [
+            "iroh::",
+            "transport_iroh",
+            "koh::pty::",
+            "koh::key_passphrase::",
+            "SecretKey",
+            "load_or_create_secret_key",
+            "zor::detect",
+            "zor::machine",
+            "zor::pty",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "project ownership invariant: {} imports/implements {forbidden}",
+                relative(&file)
+            );
+        }
+    }
+}
+
+fn check_dependency_tables(document: &toml::Value, forbidden: &[&str], manifest: &str) {
+    let Some(table) = document.as_table() else {
+        return;
+    };
+    for (name, value) in table {
+        if matches!(
+            name.as_str(),
+            "dependencies" | "dev-dependencies" | "build-dependencies"
+        ) {
+            if let Some(dependencies) = value.as_table() {
+                for (alias, spec) in dependencies {
+                    let package = spec
+                        .get("package")
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or(alias);
+                    assert!(
+                        !forbidden.contains(&package),
+                        "project ownership invariant: {manifest} depends on {package} ({alias})"
+                    );
+                }
+            }
+        } else {
+            check_dependency_tables(value, forbidden, manifest);
+        }
+    }
 }
