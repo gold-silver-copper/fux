@@ -2,7 +2,6 @@
 
 use super::{DaemonPaths, PathError};
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -54,29 +53,42 @@ impl Descriptor {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DescriptorError {
-    Path(PathError),
+    #[error(transparent)]
+    Path(#[from] PathError),
+    #[error("{}: {error}", path.display())]
     Io {
         path: PathBuf,
+        #[source]
         error: std::io::Error,
     },
+    #[error("invalid workspace descriptor")]
     Invalid,
-    Json(serde_json::Error),
+    #[error("descriptor JSON: {0}")]
+    Json(#[source] serde_json::Error),
+    #[error("descriptor exceeds size limit")]
     TooLarge,
 }
-impl fmt::Display for DescriptorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Path(error) => write!(f, "{error}"),
-            Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
-            Self::Invalid => f.write_str("invalid workspace descriptor"),
-            Self::Json(error) => write!(f, "descriptor JSON: {error}"),
-            Self::TooLarge => f.write_str("descriptor exceeds size limit"),
-        }
+
+fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> DescriptorError + '_ {
+    move |error| DescriptorError::Io {
+        path: path.to_owned(),
+        error,
     }
 }
-impl std::error::Error for DescriptorError {}
+
+/// Opens `path` without following symlinks and reads at most one byte past the size limit.
+fn read_bounded(path: &Path) -> std::io::Result<(fs::Metadata, Vec<u8>)> {
+    let mut options = OpenOptions::new();
+    options.read(true).custom_flags(nix::libc::O_NOFOLLOW);
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_DESCRIPTOR_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((metadata, bytes))
+}
 
 pub fn read_descriptor(
     path: &Path,
@@ -84,23 +96,10 @@ pub fn read_descriptor(
     manager: &ManagerIdentity,
 ) -> Result<Descriptor, DescriptorError> {
     let parent = path.parent().ok_or(DescriptorError::Invalid)?;
-    let parent_metadata = fs::metadata(parent).map_err(|error| DescriptorError::Io {
-        path: parent.to_owned(),
-        error,
-    })?;
+    let parent_metadata = fs::metadata(parent).map_err(io_at(parent))?;
     crate::ids::validate_workspace_name(expected_name)
         .map_err(|_| DescriptorError::Path(PathError::UnsafeName))?;
-    let mut bytes = Vec::new();
-    let mut options = OpenOptions::new();
-    options.read(true).custom_flags(nix::libc::O_NOFOLLOW);
-    let file = options.open(path).map_err(|error| DescriptorError::Io {
-        path: path.to_owned(),
-        error,
-    })?;
-    let opened = file.metadata().map_err(|error| DescriptorError::Io {
-        path: path.to_owned(),
-        error,
-    })?;
+    let (opened, bytes) = read_bounded(path).map_err(io_at(path))?;
     if !opened.is_file()
         || opened.permissions().mode() & 0o077 != 0
         || opened.len() > MAX_DESCRIPTOR_BYTES
@@ -108,12 +107,6 @@ pub fn read_descriptor(
     {
         return Err(DescriptorError::Invalid);
     }
-    file.take(MAX_DESCRIPTOR_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| DescriptorError::Io {
-            path: path.to_owned(),
-            error,
-        })?;
     if bytes.len() as u64 > MAX_DESCRIPTOR_BYTES {
         return Err(DescriptorError::TooLarge);
     }
@@ -144,12 +137,7 @@ pub fn write_descriptor(
     }
     let mut options = OpenOptions::new();
     options.write(true).create_new(true).mode(0o600);
-    let mut file = options
-        .open(&temporary)
-        .map_err(|error| DescriptorError::Io {
-            path: temporary.clone(),
-            error,
-        })?;
+    let mut file = options.open(&temporary).map_err(io_at(&temporary))?;
     let result = (|| {
         file.write_all(&bytes)?;
         file.sync_all()?;
@@ -174,10 +162,7 @@ pub fn write_descriptor(
 pub fn remove_descriptor(paths: &DaemonPaths, name: &str) -> Result<(), DescriptorError> {
     let path = paths.descriptor(name).map_err(DescriptorError::Path)?;
     let owner = fs::metadata(&paths.descriptors_dir)
-        .map_err(|error| DescriptorError::Io {
-            path: paths.descriptors_dir.clone(),
-            error,
-        })?
+        .map_err(io_at(&paths.descriptors_dir))?
         .uid();
     match fs::symlink_metadata(&path) {
         Ok(metadata)
@@ -200,27 +185,15 @@ pub fn recover_stale_descriptors(
     manager: &ManagerIdentity,
 ) -> Result<usize, DescriptorError> {
     paths.prepare().map_err(DescriptorError::Path)?;
-    let owner = fs::metadata(&paths.descriptors_dir).map_err(|error| DescriptorError::Io {
-        path: paths.descriptors_dir.clone(),
-        error,
-    })?;
+    let dir = &paths.descriptors_dir;
+    let owner = fs::metadata(dir).map_err(io_at(dir))?;
     let mut removed = 0usize;
-    for entry in fs::read_dir(&paths.descriptors_dir).map_err(|error| DescriptorError::Io {
-        path: paths.descriptors_dir.clone(),
-        error,
-    })? {
-        let entry = entry.map_err(|error| DescriptorError::Io {
-            path: paths.descriptors_dir.clone(),
-            error,
-        })?;
-        let path = entry.path();
+    for entry in fs::read_dir(dir).map_err(io_at(dir))? {
+        let path = entry.map_err(io_at(dir))?.path();
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        let metadata = fs::symlink_metadata(&path).map_err(|error| DescriptorError::Io {
-            path: path.clone(),
-            error,
-        })?;
+        let metadata = fs::symlink_metadata(&path).map_err(io_at(&path))?;
         if !metadata.file_type().is_file()
             || metadata.file_type().is_symlink()
             || metadata.uid() != owner.uid()
@@ -265,18 +238,10 @@ pub fn recorded_servers(paths: &DaemonPaths) -> Vec<(String, u32)> {
         if path.extension().is_none_or(|extension| extension != "json") {
             continue;
         }
-        let mut options = OpenOptions::new();
-        options.read(true).custom_flags(nix::libc::O_NOFOLLOW);
-        let Ok(file) = options.open(&path) else {
+        let Ok((_, bytes)) = read_bounded(&path) else {
             continue;
         };
-        let mut bytes = Vec::new();
-        if file
-            .take(MAX_DESCRIPTOR_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .is_err()
-            || bytes.len() as u64 > MAX_DESCRIPTOR_BYTES
-        {
+        if bytes.len() as u64 > MAX_DESCRIPTOR_BYTES {
             continue;
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {

@@ -1,17 +1,78 @@
 //! Helpers shared by the ordered systems: id lookups, effect/event emission, reply routing,
 //! layout membership edits and explicit ownership cascades.
 
-use super::components::{Creation, Pane, PaneState, Selection, Tab, Viewer, Workspace};
+use super::components::{
+    Creation, Pane, PaneState, Retiring, Selection, Tab, TabOf, Tabs, Viewer, Workspace,
+};
 use super::messages::{Effect, Requester};
-use super::resources::{Ids, Registry};
+use super::resources::{Clock, Ids, Limits, Registry};
 use crate::ids::{PaneId, TabId, ViewerId};
 use crate::layout::Rect;
 use crate::proto::attach::ServerMessage;
 use crate::proto::control::{self, ErrorCode, Reply, RequestId};
 use bevy_ecs::prelude::*;
+use bevy_ecs::system::SystemParam;
 
 pub fn effect(world: &mut World, effect: Effect) {
     world.resource_mut::<Messages<Effect>>().write(effect);
+}
+
+/// The step's read-only context: clock, limits and the identity registry.
+#[derive(SystemParam)]
+pub struct Step<'w> {
+    pub clock: Res<'w, Clock>,
+    pub limits: Res<'w, Limits>,
+    pub ids: Res<'w, Ids>,
+}
+
+/// Deferred viewer removal for typed systems: the entity goes at the next sync point, its id is
+/// released now, and the outbox is closed after the messages already queued for it.
+#[derive(SystemParam)]
+pub struct ViewerExit<'w, 's> {
+    commands: Commands<'w, 's>,
+}
+
+impl ViewerExit<'_, '_> {
+    pub fn despawn(
+        &mut self,
+        ids: &mut Ids,
+        viewer: Entity,
+        id: ViewerId,
+        workspace: &str,
+        effects: &mut Effects,
+    ) {
+        ids.viewers.remove(&id);
+        self.commands.entity(viewer).despawn();
+        effects.emit(Effect::CloseViewer { viewer: id });
+        effects.event(
+            workspace,
+            control::Event::ClientDetached {
+                id: 0,
+                client: id.0,
+            },
+        );
+    }
+}
+
+/// The effect outlet of a typed system: effects and control events, the latter named by the
+/// workspace they concern.
+#[derive(SystemParam)]
+pub struct Effects<'w> {
+    writer: MessageWriter<'w, Effect>,
+}
+
+impl Effects<'_> {
+    pub fn emit(&mut self, effect: Effect) {
+        self.writer.write(effect);
+    }
+
+    /// Publishes a control event for the workspace called `workspace`.
+    pub fn event(&mut self, workspace: &str, event: control::Event) {
+        self.writer.write(Effect::Event {
+            workspace: workspace.to_owned(),
+            event,
+        });
+    }
 }
 
 pub fn event(world: &mut World, workspace: Entity, event: control::Event) {
@@ -71,12 +132,19 @@ pub fn failed(id: RequestId, code: ErrorCode, message: impl Into<String>) -> Rep
     Reply::failed(id, code, message)
 }
 
+/// Answers every waiting requester with the reply `make` builds for its request id.
+pub fn reply_all(
+    world: &mut World,
+    requesters: impl IntoIterator<Item = (Requester, RequestId)>,
+    make: impl Fn(RequestId) -> Reply,
+) {
+    for (requester, id) in requesters {
+        reply(world, requester, make(id));
+    }
+}
+
 pub fn sanitize_notice(message: &str) -> String {
-    message
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(crate::view::MAX_MESSAGE_BYTES / 4)
-        .collect()
+    crate::view::printable(message, crate::view::MAX_MESSAGE_BYTES / 4)
 }
 
 pub fn viewer_entity(world: &World, id: ViewerId) -> Option<Entity> {
@@ -111,6 +179,21 @@ pub fn tab_workspace(world: &World, tab: Entity) -> Option<Entity> {
     world.get::<Tab>(tab).map(|tab| tab.workspace)
 }
 
+/// A workspace's member tabs in order (empty when it has none).
+pub fn member_tabs(world: &World, workspace: Entity) -> Vec<Entity> {
+    world
+        .get::<Tabs>(workspace)
+        .map(|tabs| tabs.to_vec())
+        .unwrap_or_default()
+}
+
+/// Whether `tab` is a member of `workspace` (reservations are not until they complete).
+pub fn is_member(world: &World, workspace: Entity, tab: Entity) -> bool {
+    world
+        .get::<TabOf>(tab)
+        .is_some_and(|member| member.0 == workspace)
+}
+
 /// The workspace a pane belongs to, through its tab.
 pub fn pane_workspace(world: &World, pane: Entity) -> Option<Entity> {
     tab_workspace(world, pane_tab(world, pane)?)
@@ -123,86 +206,138 @@ pub fn pane_in_layout(world: &World, pane: Entity) -> bool {
         .is_some_and(|tab| tab.layout.contains(pane))
 }
 
-pub fn live_panes_in_workspace(world: &mut World, workspace: Entity) -> usize {
+/// Every pane whose tab belongs to `workspace`, reservations included.
+pub fn panes_in_workspace(world: &mut World, workspace: Entity) -> Vec<Entity> {
     world
-        .query::<&Pane>()
+        .query::<(Entity, &Pane)>()
         .iter(world)
-        .filter(|pane| {
+        .filter(|(_, pane)| {
             world
                 .get::<Tab>(pane.tab)
                 .is_some_and(|tab| tab.workspace == workspace)
         })
-        .count()
+        .map(|(entity, _)| entity)
+        .collect()
+}
+
+/// The viewers `keep` selects, in entity order.
+pub fn viewers_where(world: &mut World, keep: impl Fn(&Viewer) -> bool) -> Vec<Entity> {
+    world
+        .query::<(Entity, &Viewer)>()
+        .iter(world)
+        .filter(|(_, viewer)| keep(viewer))
+        .map(|(entity, _)| entity)
+        .collect()
+}
+
+/// Applies `apply` to every viewer `keep` selects, in one pass.
+pub fn each_viewer(
+    world: &mut World,
+    keep: impl Fn(&Viewer) -> bool,
+    mut apply: impl FnMut(&mut Viewer),
+) {
+    for mut viewer in world.query::<&mut Viewer>().iter_mut(world) {
+        if keep(&viewer) {
+            apply(&mut viewer);
+        }
+    }
 }
 
 pub fn viewers_of_workspace(world: &mut World, workspace: Entity) -> Vec<Entity> {
-    world
-        .query::<(Entity, &Viewer)>()
-        .iter(world)
-        .filter(|(_, viewer)| viewer.workspace == workspace && !viewer.detaching)
-        .map(|(entity, _)| entity)
-        .collect()
-}
-
-pub fn viewers_on_tab(world: &mut World, tab: Entity) -> Vec<Entity> {
-    world
-        .query::<(Entity, &Viewer)>()
-        .iter(world)
-        .filter(|(_, viewer)| viewer.selection.tab == Some(tab) && !viewer.detaching)
-        .map(|(entity, _)| entity)
-        .collect()
+    viewers_where(world, |viewer| {
+        viewer.workspace == workspace && !viewer.detaching
+    })
 }
 
 pub fn mark_workspace_dirty(world: &mut World, workspace: Entity) {
-    let viewers = viewers_of_workspace(world, workspace);
-    for viewer in viewers {
-        if let Some(mut viewer) = world.get_mut::<Viewer>(viewer) {
-            viewer.dirty = true;
-        }
-    }
+    each_viewer(
+        world,
+        |viewer| viewer.workspace == workspace && !viewer.detaching,
+        |viewer| viewer.dirty = true,
+    );
 }
 
 pub fn mark_tab_dirty(world: &mut World, tab: Entity) {
-    let viewers = viewers_on_tab(world, tab);
-    for viewer in viewers {
-        if let Some(mut viewer) = world.get_mut::<Viewer>(viewer) {
-            viewer.dirty = true;
-        }
-    }
+    each_viewer(
+        world,
+        |viewer| viewer.selection.tab == Some(tab) && !viewer.detaching,
+        |viewer| viewer.dirty = true,
+    );
+}
+
+/// Viewers waiting on `pane`'s creation may proceed.
+pub fn clear_barriers(world: &mut World, pane: Entity) {
+    each_viewer(
+        world,
+        |viewer| viewer.barrier == Some(pane),
+        |viewer| viewer.barrier = None,
+    );
 }
 
 /// Every viewer looking at `tab` whose focus is `old` now focuses `next`; the workspace default
 /// follows too. Focus entries for a removed pane are dropped when there is no successor.
 pub fn retarget_focus(world: &mut World, tab: Entity, old: Entity, next: Option<Entity>) {
-    let workspace = tab_workspace(world, tab);
-    let viewers: Vec<Entity> = world
-        .query::<(Entity, &Viewer)>()
-        .iter(world)
-        .filter(|(_, viewer)| viewer.selection.focus.get(&tab) == Some(&old))
-        .map(|(entity, _)| entity)
-        .collect();
-    for viewer in viewers {
-        if let Some(mut viewer) = world.get_mut::<Viewer>(viewer) {
-            match next {
-                Some(next) => viewer.selection.set_focus(tab, next),
-                None => {
-                    viewer.selection.focus.remove(&tab);
-                }
-            }
+    each_viewer(
+        world,
+        |viewer| viewer.selection.focus.get(&tab) == Some(&old),
+        |viewer| {
+            viewer.selection.retarget(tab, next);
             viewer.dirty = true;
-        }
-    }
-    if let Some(workspace) = workspace
+        },
+    );
+    if let Some(workspace) = tab_workspace(world, tab)
         && let Some(mut workspace) = world.get_mut::<Workspace>(workspace)
         && workspace.selection.focus.get(&tab) == Some(&old)
     {
-        match next {
-            Some(next) => workspace.selection.set_focus(tab, next),
-            None => {
-                workspace.selection.focus.remove(&tab);
-            }
-        }
+        workspace.selection.retarget(tab, next);
     }
+}
+
+/// Starts a workspace's retirement with `exit_code`; false when one is already under way.
+pub fn retire(world: &mut World, workspace: Entity, now_ms: u64, exit_code: Option<u32>) -> bool {
+    match world.get_mut::<Workspace>(workspace) {
+        Some(mut component) if component.retiring.is_none() => {
+            component.retiring = Some(Retiring {
+                since_ms: now_ms,
+                exit_code,
+            });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Publishes `pane.closed` for `workspace`.
+pub fn pane_closed(world: &mut World, workspace: Entity, pane: PaneId, code: Option<u32>) {
+    let exit_status = code.map(|code| i32::try_from(code).unwrap_or(i32::MAX));
+    event(
+        world,
+        workspace,
+        control::Event::PaneClosed {
+            id: 0,
+            pane,
+            exit_status,
+        },
+    );
+}
+
+/// Removes a tab entity and its id; its panes must already be gone or re-homed.
+pub fn despawn_tab(world: &mut World, tab: Entity) {
+    if let Some(id) = tab_id(world, tab) {
+        world.resource_mut::<Ids>().tabs.remove(&id);
+    }
+    world.despawn(tab);
+}
+
+/// Removes a workspace entity and its name; its tabs and panes must already be gone.
+pub fn despawn_workspace(world: &mut World, workspace: Entity) {
+    if let Some(name) = world
+        .get::<Workspace>(workspace)
+        .map(|workspace| workspace.name.clone())
+    {
+        world.resource_mut::<Ids>().workspaces.remove(&name);
+    }
+    world.despawn(workspace);
 }
 
 /// The pane a selection focuses in `tab`, falling back to the tab's first leaf.
@@ -240,17 +375,7 @@ pub fn despawn_pane(world: &mut World, pane: Entity) {
         return;
     };
     world.resource_mut::<Ids>().panes.remove(&id);
-    let viewers: Vec<Entity> = world
-        .query::<(Entity, &Viewer)>()
-        .iter(world)
-        .filter(|(_, viewer)| viewer.barrier == Some(pane))
-        .map(|(entity, _)| entity)
-        .collect();
-    for viewer in viewers {
-        if let Some(mut viewer) = world.get_mut::<Viewer>(viewer) {
-            viewer.barrier = None;
-        }
-    }
+    clear_barriers(world, pane);
     world.despawn(pane);
     effect(world, Effect::ReleasePane { pane: id });
 }
@@ -285,16 +410,16 @@ pub fn close_tab(world: &mut World, tab: Entity, now_ms: u64, grace_ms: u64) {
     else {
         return;
     };
+    if world.get::<Workspace>(workspace).is_none() {
+        return;
+    }
     let (index, neighbour) = {
-        let Some(component) = world.get::<Workspace>(workspace) else {
-            return;
-        };
-        let index = component.tabs.iter().position(|entry| *entry == tab);
+        let members = member_tabs(world, workspace);
+        let index = members.iter().position(|entry| *entry == tab);
         let neighbour = index.and_then(|index| {
-            component
-                .tabs
+            members
                 .get(index.wrapping_sub(1))
-                .or_else(|| component.tabs.get(index + 1))
+                .or_else(|| members.get(index + 1))
                 .copied()
         });
         (index, neighbour)
@@ -309,32 +434,28 @@ pub fn close_tab(world: &mut World, tab: Entity, now_ms: u64, grace_ms: u64) {
         }
         terminate_pane(world, *pane, now_ms, grace_ms);
     }
+    if index.is_some() {
+        world.entity_mut(tab).remove::<TabOf>();
+    }
+    let first = member_tabs(world, workspace).first().copied();
     if let Some(mut component) = world.get_mut::<Workspace>(workspace) {
-        if index.is_some() {
-            component.tabs.retain(|entry| *entry != tab);
-        }
         component.selection.forget_tab(tab);
         if component.selection.tab.is_none() {
-            component.selection.tab = neighbour.or_else(|| component.tabs.first().copied());
+            component.selection.tab = neighbour.or(first);
         }
     }
-    let viewers: Vec<Entity> = world
-        .query::<(Entity, &Viewer)>()
-        .iter(world)
-        .filter(|(_, viewer)| viewer.workspace == workspace)
-        .map(|(entity, _)| entity)
-        .collect();
-    for viewer in viewers {
-        if let Some(mut viewer) = world.get_mut::<Viewer>(viewer) {
+    each_viewer(
+        world,
+        |viewer| viewer.workspace == workspace,
+        |viewer| {
             let was_showing = viewer.selection.tab == Some(tab);
             viewer.selection.forget_tab(tab);
             if was_showing {
                 viewer.selection.tab = neighbour;
             }
             viewer.dirty = true;
-        }
-    }
-    world.resource_mut::<Ids>().tabs.remove(&id);
+        },
+    );
     for pane in panes {
         // Panes that already exited leave immediately; running ones wait for their exit report
         // and are despawned by the lifecycle system when it arrives.
@@ -345,8 +466,14 @@ pub fn close_tab(world: &mut World, tab: Entity, now_ms: u64, grace_ms: u64) {
             despawn_pane(world, pane);
         }
     }
-    fail_pending_creations_in_tab(world, tab, "tab closed before the pane started");
-    world.despawn(tab);
+    let pending: Vec<Entity> = world
+        .query_filtered::<(Entity, &Pane), With<Creation>>()
+        .iter(world)
+        .filter(|(_, pane)| pane.tab == tab)
+        .map(|(entity, _)| entity)
+        .collect();
+    fail_creations(world, &pending, "tab closed before the pane started", true);
+    despawn_tab(world, tab);
     if index.is_some() {
         event(
             world,
@@ -357,28 +484,21 @@ pub fn close_tab(world: &mut World, tab: Entity, now_ms: u64, grace_ms: u64) {
     mark_workspace_dirty(world, workspace);
 }
 
-/// Reservations still starting in `tab` are released before the tab goes: their requesters get
-/// a failure now and the late completion (if the spawn succeeds) is stopped by the completion
-/// phase because the pane id is no longer registered.
-pub fn fail_pending_creations_in_tab(world: &mut World, tab: Entity, reason: &str) {
-    let pending: Vec<Entity> = world
-        .query_filtered::<(Entity, &Pane), With<Creation>>()
-        .iter(world)
-        .filter(|(_, pane)| pane.tab == tab)
-        .map(|(entity, _)| entity)
-        .collect();
-    for entity in pending {
+/// Releases the reservations among `panes` that are still starting: their requesters get a
+/// failure now and a late spawn report is stopped by the completion phase (with `despawn`, the
+/// pane id is no longer registered; otherwise the caller despawns the panes itself).
+pub fn fail_creations(world: &mut World, panes: &[Entity], reason: &str, despawn: bool) {
+    for &entity in panes {
         let Some(creation) = world.entity_mut(entity).take::<Creation>() else {
             continue;
         };
-        for (requester, request_id) in creation.requesters {
-            reply(
-                world,
-                requester,
-                failed(request_id, control::ErrorCode::Conflict, reason),
-            );
+        clear_barriers(world, entity);
+        reply_all(world, creation.requesters, |id| {
+            failed(id, control::ErrorCode::Conflict, reason)
+        });
+        if despawn {
+            despawn_pane(world, entity);
         }
-        despawn_pane(world, entity);
     }
 }
 

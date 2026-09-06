@@ -5,11 +5,9 @@
 use crate::ids::{PaneId, TabId};
 use crate::layout::Rect;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::PathBuf;
 
-pub const CONTROL_VERSION: u32 = 2;
 pub const CONTROL_PREFACE: &[u8; 8] = b"FUXCTL2\n";
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_ARGV_ENTRIES: usize = 128;
@@ -436,7 +434,8 @@ pub enum EventKind {
     ClientDetached,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
 pub struct ControlError {
     pub id: Option<RequestId>,
     pub code: ErrorCode,
@@ -452,14 +451,6 @@ impl ControlError {
         }
     }
 }
-
-impl fmt::Display for ControlError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.message)
-    }
-}
-
-impl std::error::Error for ControlError {}
 
 pub fn decode_request_frame(frame: &[u8]) -> Result<Request, ControlError> {
     if frame.len() > MAX_FRAME_BYTES {
@@ -488,55 +479,6 @@ pub fn decode_request_frame(frame: &[u8]) -> Result<Request, ControlError> {
     })?;
     request.validate()?;
     Ok(request)
-}
-
-/// Reads one newline-terminated frame. Oversized frames are drained and rejected without
-/// desynchronizing the following frame.
-pub fn read_request<R: Read>(reader: &mut R) -> Result<Option<Request>, ControlError> {
-    let mut frame = Vec::new();
-    loop {
-        let mut slot = [0_u8; 1];
-        let count = reader.read(&mut slot).map_err(|error| ControlError {
-            id: None,
-            code: ErrorCode::Internal,
-            message: error.to_string(),
-        })?;
-        if count == 0 {
-            return if frame.is_empty() {
-                Ok(None)
-            } else {
-                decode_request_frame(&frame).map(Some)
-            };
-        }
-        let [byte] = slot;
-        if byte == b'\n' {
-            return decode_request_frame(&frame).map(Some);
-        }
-        if frame.len() == MAX_FRAME_BYTES {
-            drain_line(reader)?;
-            return Err(ControlError {
-                id: extract_id(&frame),
-                code: ErrorCode::FrameTooLarge,
-                message: format!("control frame exceeds {MAX_FRAME_BYTES} bytes"),
-            });
-        }
-        frame.push(byte);
-    }
-}
-
-fn drain_line<R: Read>(reader: &mut R) -> Result<(), ControlError> {
-    loop {
-        let mut slot = [0_u8; 1];
-        let count = reader.read(&mut slot).map_err(|error| ControlError {
-            id: None,
-            code: ErrorCode::Internal,
-            message: error.to_string(),
-        })?;
-        let [byte] = slot;
-        if count == 0 || byte == b'\n' {
-            return Ok(());
-        }
-    }
 }
 
 pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Result<()> {
@@ -635,24 +577,20 @@ fn extract_id(frame: &[u8]) -> Option<RequestId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     #[test]
-    fn hostile_frames_are_bounded_and_the_stream_recovers() {
-        let mut bytes = vec![b'x'; MAX_FRAME_BYTES + 1];
-        bytes.extend_from_slice(b"\n{\"command\":\"list\",\"id\":7}\n");
-        let mut input = Cursor::new(bytes);
+    fn hostile_frames_are_bounded_and_rejected() {
+        let oversized = vec![b'x'; MAX_FRAME_BYTES + 1];
         assert!(matches!(
-            read_request(&mut input),
+            decode_request_frame(&oversized),
             Err(ControlError {
                 code: ErrorCode::FrameTooLarge,
                 ..
             })
         ));
         assert_eq!(
-            read_request(&mut input)
+            decode_request_frame(b"{\"command\":\"list\",\"id\":7}")
                 .ok()
-                .flatten()
                 .map(|request| request.id()),
             Some(7)
         );

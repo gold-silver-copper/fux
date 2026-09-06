@@ -853,6 +853,79 @@ fn limits_and_queue_overflow_are_enforced() {
     );
 }
 
+#[test]
+fn a_viewer_leaving_in_its_arrival_step_is_released_and_the_limit_counts_the_batch() {
+    let mut harness = Harness::new();
+    harness.create_workspace("default");
+    // The connection task sends the arrival and the departure back to back when the peer's
+    // first read fails; both may land in one step while the spawn is still deferred.
+    let ghost = ViewerId(500);
+    let effects = harness.step(vec![
+        Inbound::ViewerAttached {
+            viewer: ghost,
+            workspace: "default".into(),
+            rows: 10,
+            cols: 40,
+        },
+        Inbound::ViewerGone { viewer: ghost },
+    ]);
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::CloseViewer { viewer } if *viewer == ghost))
+    );
+    assert_eq!(harness.session.entity_counts().viewers, 0);
+    let viewer = harness.attach("default", 40, 160);
+    let rect = harness.last_frame(viewer).layout[0].rect;
+    assert_eq!(
+        (rect.height, rect.width),
+        (39, 160),
+        "no ghost clamps the layout"
+    );
+    // One step with more arrivals than the limit admits only up to the limit.
+    let batch: Vec<Inbound> = (0..66)
+        .map(|index| Inbound::ViewerAttached {
+            viewer: ViewerId(1_000 + index),
+            workspace: "default".into(),
+            rows: 24,
+            cols: 80,
+        })
+        .collect();
+    let effects = harness.step(batch);
+    let refused = effects
+        .iter()
+        .filter(|effect| {
+            matches!(
+                effect,
+                Effect::ToViewer {
+                    message: ServerMessage::Error { .. },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(refused, 3, "one viewer was already attached");
+    assert_eq!(harness.session.entity_counts().viewers, 64);
+    // A departure in the same step frees its place at once.
+    let effects = harness.step(vec![
+        Inbound::ViewerGone { viewer },
+        Inbound::ViewerAttached {
+            viewer: ViewerId(2_000),
+            workspace: "default".into(),
+            rows: 24,
+            cols: 80,
+        },
+    ]);
+    assert!(!effects.iter().any(|effect| matches!(
+        effect,
+        Effect::ToViewer {
+            viewer: ViewerId(2_000),
+            message: ServerMessage::Error { .. },
+        }
+    )));
+    assert_eq!(harness.session.entity_counts().viewers, 64);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Randomized command sequences: every reachable interleaving of creations, stale ids, delayed or
 // failed completions, viewer churn, process reports and time must keep the World consistent and

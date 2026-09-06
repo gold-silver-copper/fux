@@ -7,27 +7,60 @@ use std::collections::BTreeMap;
 
 pub const DEFAULT_PREFIX: u8 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Action {
-    SplitSide,
-    SplitStack,
-    FocusLeft,
-    FocusRight,
-    FocusUp,
-    FocusDown,
-    ClosePane,
-    ResizeMode,
-    CopyMode,
-    NewTab,
-    NextTab,
-    PreviousTab,
-    ChooseTab,
-    RenameTab,
-    CloseTab,
-    ChooseWorkspace,
-    NewWorkspace,
-    Detach,
+/// The one command table: every action with its group, label and default key. The enum, the
+/// registry order, the labels, the grouping and the default bindings all come from this list.
+macro_rules! actions {
+    ($($variant:ident => $group:ident, $label:literal, $key:literal;)+) => {
+        #[derive(
+            Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+        )]
+        #[serde(rename_all = "kebab-case")]
+        pub enum Action {
+            $($variant,)+
+        }
+
+        impl Action {
+            /// Registry order: the order of the popup and of `fux bindings` within a group.
+            pub const ALL: &'static [Self] = &[$(Self::$variant,)+];
+
+            pub const fn group(self) -> Group {
+                match self {
+                    $(Self::$variant => Group::$group,)+
+                }
+            }
+
+            pub const fn label(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $label,)+
+                }
+            }
+        }
+
+        pub const DEFAULT_BINDINGS: &[BindingSpec] = &[
+            $(BindingSpec { key: $key, action: Action::$variant },)+
+        ];
+    };
+}
+
+actions! {
+    SplitSide => Panes, "split side by side", b'|';
+    SplitStack => Panes, "split stacked", b'-';
+    FocusLeft => Focus, "focus left", b'h';
+    FocusRight => Focus, "focus right", b'l';
+    FocusUp => Focus, "focus up", b'k';
+    FocusDown => Focus, "focus down", b'j';
+    ClosePane => Panes, "close pane", b'x';
+    ResizeMode => Panes, "resize split", b'r';
+    CopyMode => Panes, "history and copy", b'[';
+    NewTab => Tabs, "new tab", b't';
+    NextTab => Tabs, "next tab", b'n';
+    PreviousTab => Tabs, "previous tab", b'p';
+    ChooseTab => Tabs, "choose tab", b'w';
+    RenameTab => Tabs, "rename tab", b',';
+    CloseTab => Tabs, "close tab", b'c';
+    ChooseWorkspace => Workspaces, "choose workspace", b's';
+    NewWorkspace => Workspaces, "new workspace", b'a';
+    Detach => Session, "detach", b'd';
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -56,145 +89,7 @@ pub struct BindingSpec {
     pub action: Action,
 }
 
-pub const DEFAULT_BINDINGS: &[BindingSpec] = &[
-    BindingSpec {
-        key: b'|',
-        action: Action::SplitSide,
-    },
-    BindingSpec {
-        key: b'-',
-        action: Action::SplitStack,
-    },
-    BindingSpec {
-        key: b'x',
-        action: Action::ClosePane,
-    },
-    BindingSpec {
-        key: b'r',
-        action: Action::ResizeMode,
-    },
-    BindingSpec {
-        key: b'[',
-        action: Action::CopyMode,
-    },
-    BindingSpec {
-        key: b'h',
-        action: Action::FocusLeft,
-    },
-    BindingSpec {
-        key: b'j',
-        action: Action::FocusDown,
-    },
-    BindingSpec {
-        key: b'k',
-        action: Action::FocusUp,
-    },
-    BindingSpec {
-        key: b'l',
-        action: Action::FocusRight,
-    },
-    BindingSpec {
-        key: b't',
-        action: Action::NewTab,
-    },
-    BindingSpec {
-        key: b'n',
-        action: Action::NextTab,
-    },
-    BindingSpec {
-        key: b'p',
-        action: Action::PreviousTab,
-    },
-    BindingSpec {
-        key: b'w',
-        action: Action::ChooseTab,
-    },
-    BindingSpec {
-        key: b',',
-        action: Action::RenameTab,
-    },
-    BindingSpec {
-        key: b'c',
-        action: Action::CloseTab,
-    },
-    BindingSpec {
-        key: b's',
-        action: Action::ChooseWorkspace,
-    },
-    BindingSpec {
-        key: b'a',
-        action: Action::NewWorkspace,
-    },
-    BindingSpec {
-        key: b'd',
-        action: Action::Detach,
-    },
-];
-
 impl Action {
-    pub const ALL: &'static [Self] = &[
-        Self::SplitSide,
-        Self::SplitStack,
-        Self::FocusLeft,
-        Self::FocusRight,
-        Self::FocusUp,
-        Self::FocusDown,
-        Self::ClosePane,
-        Self::ResizeMode,
-        Self::CopyMode,
-        Self::NewTab,
-        Self::NextTab,
-        Self::PreviousTab,
-        Self::ChooseTab,
-        Self::RenameTab,
-        Self::CloseTab,
-        Self::ChooseWorkspace,
-        Self::NewWorkspace,
-        Self::Detach,
-    ];
-
-    pub const fn group(self) -> Group {
-        match self {
-            Self::SplitSide
-            | Self::SplitStack
-            | Self::ClosePane
-            | Self::ResizeMode
-            | Self::CopyMode => Group::Panes,
-            Self::FocusLeft | Self::FocusRight | Self::FocusUp | Self::FocusDown => Group::Focus,
-            Self::NewTab
-            | Self::NextTab
-            | Self::PreviousTab
-            | Self::ChooseTab
-            | Self::RenameTab
-            | Self::CloseTab => Group::Tabs,
-            Self::ChooseWorkspace | Self::NewWorkspace => Group::Workspaces,
-            Self::Detach => Group::Session,
-        }
-    }
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::SplitSide => "split side by side",
-            Self::SplitStack => "split stacked",
-            Self::FocusLeft => "focus left",
-            Self::FocusRight => "focus right",
-            Self::FocusUp => "focus up",
-            Self::FocusDown => "focus down",
-            Self::ClosePane => "close pane",
-            Self::ResizeMode => "resize split",
-            Self::CopyMode => "history and copy",
-            Self::NewTab => "new tab",
-            Self::NextTab => "next tab",
-            Self::PreviousTab => "previous tab",
-            Self::ChooseTab => "choose tab",
-            Self::RenameTab => "rename tab",
-            Self::CloseTab => "close tab",
-            Self::ChooseWorkspace => "choose workspace",
-            Self::NewWorkspace => "new workspace",
-            Self::Detach => "detach",
-        }
-    }
-
     /// The obvious contextual restrictions shared by the popup and viewer dispatch. The server
     /// remains authoritative for limits and for changes made by other viewers.
     pub fn unavailable(self, frame: &Frame, workspaces: bool) -> Option<&'static str> {
@@ -357,14 +252,6 @@ impl ClientBindings {
             .map(|(_, action)| *action)
     }
 
-    #[must_use]
-    pub fn key_for(&self, action: Action) -> Option<u8> {
-        self.bindings
-            .iter()
-            .find(|(_, bound)| **bound == action)
-            .map(|(key, _)| *key)
-    }
-
     /// Bindings ordered by group, then by the registry's action order (`| - x r [` rather than
     /// byte order), then key.
     pub fn entries(&self) -> Vec<(u8, Action)> {
@@ -393,26 +280,18 @@ impl Default for ClientBindings {
     }
 }
 
-/// Resolve the configured registry once for execution, the popup and `fux bindings`.
+/// Resolve the configured registry once for execution, the popup and `fux bindings`. The
+/// configuration's own validation rejects unknown notation, prefix clashes and Shift twins.
 pub fn configured_bindings(config: &crate::config::Config) -> anyhow::Result<ClientBindings> {
-    let prefix =
-        key_byte(&config.prefix).ok_or_else(|| anyhow::anyhow!("prefix must encode one byte"))?;
-    let mut bindings = BTreeMap::new();
-    for (key, action) in &config.bindings {
-        let byte =
-            key_byte(key).ok_or_else(|| anyhow::anyhow!("binding `{key}` must encode one byte"))?;
-        anyhow::ensure!(
-            canonical_key(byte) != canonical_key(prefix),
-            "a binding cannot be the prefix key (with or without Shift)"
-        );
-        anyhow::ensure!(
-            bindings
-                .keys()
-                .all(|bound| canonical_key(*bound) != canonical_key(byte)),
-            "two bindings use the same key with and without Shift (`{key}`)"
-        );
-        bindings.insert(byte, *action);
-    }
+    config.validate()?;
+    let byte =
+        |key: &str| key_byte(key).ok_or_else(|| anyhow::anyhow!("`{key}` must encode one byte"));
+    let prefix = byte(&config.prefix)?;
+    let bindings = config
+        .bindings
+        .iter()
+        .map(|(key, action)| Ok((byte(key)?, *action)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(ClientBindings::new(prefix, bindings))
 }
 
@@ -424,7 +303,10 @@ mod tests {
     fn every_action_is_bound_once_by_default_and_labelled() {
         let bindings = ClientBindings::default();
         for action in Action::ALL {
-            assert!(bindings.key_for(*action).is_some(), "{action:?} unbound");
+            assert!(
+                bindings.entries().iter().any(|(_, bound)| bound == action),
+                "{action:?} unbound"
+            );
             assert!(!action.label().is_empty());
         }
         assert_eq!(bindings.entries().len(), Action::ALL.len());

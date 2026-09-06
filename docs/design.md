@@ -1,6 +1,6 @@
 # Architecture
 
-fux 0.3.0 is a minimal persistent terminal multiplexer. One session server per user owns the
+fux 0.4 is a minimal persistent terminal multiplexer. One session server per user owns the
 authoritative model in a standalone `bevy_ecs` 0.19.1 World; viewers are separate processes that
 paint per-viewer frames with a small ratatui-core compositor. Koh (remote access) and zor
 (observation) are independent programs that speak fux's versioned local protocols.
@@ -39,8 +39,8 @@ configuration are plain data inside components and resources.
 
 | Entity | Components | Owning edges |
 |---|---|---|
-| Workspace | `Workspace { name, tabs: Vec<Entity>, selection (default tab/focus for control clients and new attachments), retiring, open }` | owns its tabs; retirement despawns tabs and panes and detaches viewers with `exited` |
-| Tab | `Tab { id: TabId, workspace, label, layout: LayoutTree<Entity>, area, layout_changed }` | owns its panes; closing terminates them |
+| Workspace | `Workspace { name, selection (default tab/focus for control clients and new attachments), retiring, open }`, `Tabs` (relationship target: member tabs in order, kept by bevy from each tab's `TabOf`) | owns its tabs; retirement despawns tabs and panes and detaches viewers with `exited` (explicit, no `linked_spawn` cascade) |
+| Tab | `Tab { id: TabId, workspace, label, layout: LayoutTree<Entity>, area, layout_changed }`, `TabOf(workspace)` once its first pane is live (a reserved tab has none) | owns its panes; closing terminates them |
 | Pane | `Pane { id: PaneId, tab, state, terminal: ServerTerminal, geometry, dirty }`, `Creation { kind, requester }` while reserved | none |
 | Viewer | `Viewer { id: ViewerId, workspace, rows, cols, selection (own tab + focus per tab), queue, barrier, layout generation and rects, dirty, detaching }`, `Selection` for pending viewer history reads | non-owning reference to its workspace; despawning a viewer never touches panes |
 
@@ -93,6 +93,23 @@ Phases are chained system sets; deferred mutations become visible at the sync po
 8. **Publish**: control events, deadlines, message clearing, `clear_trackers`.
 
 No observers or component hooks drive core commands; process cleanup is explicit.
+
+### Systems
+
+Ingest (`apply_attachments`), output (`apply_pane_output`), layout (`resolve_layout`), snapshot
+(`publish_frames`) and publish (`finish_step`) are typed systems over `Query`, `Res`,
+`MessageReader` and `Commands`, with `SystemParam` bundles for what they share: `Step` (clock,
+limits, ids), `Effects` (effect and event writer), `ViewerExit` (deferred viewer despawn),
+`Arrivals`, `Scene`. Viewer queues are drained by `drain_viewer_queues` scheduled after the request
+phase and again after completions, not by tail calls. Four systems keep `&mut World` because each
+mutates entities it must observe again within the same phase: `apply_requests` (a request may
+spawn reservations, edit layouts or despawn tabs that the next request in the batch addresses),
+`drain_viewer_queues` (a request may despawn the viewer whose queue is being drained),
+`apply_spawn_completions` (a completion inserts the `TabOf` membership and places a pane that a
+later completion in the batch splits) and `resolve_lifecycle` (closing a tab may retire the
+workspace, which finalizes in the same pass). Shared mutations live in `ecs::support` (viewer
+scans, cascades, retirement, replies); dirty flags stay explicit because change ticks would fire
+on `get_mut` reads such as history views and captures.
 
 ## Ordering guarantees
 
@@ -149,5 +166,17 @@ processes) and checks World invariants after every step, including a randomized 
 test with stale ids, delayed and failed completions, viewer churn and time skips.
 `tests/structure.rs` pins architectural invariants (spawn owners, bounded channels, ECS as the
 only authority, CI surfaces). Real adapters are exercised by `tests/local_cli.rs` and the
-fixture-child binary suite. See [ecs-acceptance.md](ecs-acceptance.md) for evidence and
-[ecs-plan.md](ecs-plan.md) for the plan written before implementation.
+fixture-child binary suite. See [ecs-acceptance.md](ecs-acceptance.md) for evidence.
+
+## History
+
+- 0.1 (2026-09-03): a wrapper around koh-hosted sessions with a zor sidecar per pane; networking,
+  identities and agent detection lived inside fux.
+- 0.2 (2026-09-04): the standalone host and router with local sockets, popup panes, contextual
+  help panels and sidecar supervision; koh and zor became independent programs.
+- 0.3 (2026-09-05): this design, a complete rewrite on `bevy_ecs` with the model, order and
+  lifecycle described above; 0.3.1–0.3.3 replaced the pane boxes with the bar, separators and the
+  command column.
+- 0.4 (2026-09-06): the same design made idiomatic: typed systems, the tab membership
+  relationship, shared helpers, dead code and the historical prompts and audits removed (they
+  remain in git history).

@@ -164,26 +164,12 @@ impl Controller {
     /// A transient confirmation shown in the bar until the next key or [`NOTICE_TTL`].
     pub fn report_info(&mut self, message: impl Into<String>) {
         self.notice_since = Some(std::time::Instant::now());
-        self.info = Some(
-            message
-                .into()
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(256)
-                .collect(),
-        );
+        self.info = Some(crate::view::printable(&message.into(), 256));
     }
 
     pub fn report_error(&mut self, error: impl Into<String>) {
         self.notice_since = Some(std::time::Instant::now());
-        self.error = Some(
-            error
-                .into()
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(256)
-                .collect(),
-        );
+        self.error = Some(crate::view::printable(&error.into(), 256));
     }
 
     pub fn error(&self) -> Option<&str> {
@@ -256,9 +242,13 @@ impl Controller {
     pub fn loading_workspaces(&mut self) {
         self.loading_input.clear();
         self.mode = Mode::LoadingWorkspaces;
-        self.error = None;
+        self.reset_input();
+    }
+
+    fn reset_input(&mut self) {
         self.escape.clear();
         self.utf8.clear();
+        self.error = None;
     }
 
     pub fn workspaces_loaded(&mut self, result: anyhow::Result<Vec<String>>, current: &str) {
@@ -292,9 +282,7 @@ impl Controller {
 
     /// Enters a mode for a modal action; returns false for actions that need no mode.
     pub fn enter(&mut self, action: Action, frame: &Frame) -> bool {
-        self.escape.clear();
-        self.utf8.clear();
-        self.error = None;
+        self.reset_input();
         let tab = frame.active_tab;
         let pane = frame.focused;
         self.mode = match action {
@@ -555,55 +543,33 @@ impl Controller {
             }
             Mode::Pane | Mode::LoadingWorkspaces => None,
             Mode::Workspaces { names, selected } => {
-                if self.paste {
+                if self.paste || step(selected, names.len(), key) || !is_enter(key) {
                     return None;
                 }
-                match key {
-                    'j' => {
-                        *selected = selected
-                            .saturating_add(1)
-                            .min(names.len().saturating_sub(1))
-                    }
-                    'k' => *selected = selected.saturating_sub(1),
-                    '\r' | '\n' => {
-                        let name = names.get(*selected).cloned()?;
-                        self.mode = Mode::Pane;
-                        if name == frame.workspace {
-                            return None;
-                        }
-                        return Some(Request::Workspace {
-                            id: 0,
-                            action: WorkspaceAction::Select { name },
-                        });
-                    }
-                    _ => {}
+                let name = names.get(*selected).cloned()?;
+                self.mode = Mode::Pane;
+                if name == frame.workspace {
+                    return None;
                 }
-                None
+                Some(Request::Workspace {
+                    id: 0,
+                    action: WorkspaceAction::Select { name },
+                })
             }
             Mode::Tabs { choices, selected } => {
-                match key {
-                    'j' => {
-                        *selected = selected
-                            .saturating_add(1)
-                            .min(choices.len().saturating_sub(1))
-                    }
-                    'k' => *selected = selected.saturating_sub(1),
-                    '\r' | '\n' => {
-                        let target = choices.get(*selected)?.0;
-                        if !frame.tabs.iter().any(|entry| entry.id == target) {
-                            self.error =
-                                Some("That tab no longer exists; Esc returns to commands.".into());
-                            return None;
-                        }
-                        self.mode = Mode::Pane;
-                        return Some(Request::Tab {
-                            id: 0,
-                            action: TabAction::SelectId { tab: target },
-                        });
-                    }
-                    _ => {}
+                if step(selected, choices.len(), key) || !is_enter(key) {
+                    return None;
                 }
-                None
+                let target = choices.get(*selected)?.0;
+                if !frame.tabs.iter().any(|entry| entry.id == target) {
+                    self.error = Some("That tab no longer exists; Esc returns to commands.".into());
+                    return None;
+                }
+                self.mode = Mode::Pane;
+                Some(Request::Tab {
+                    id: 0,
+                    action: TabAction::SelectId { tab: target },
+                })
             }
             Mode::Rename { tab, text } => match key {
                 '\r' | '\n' => {
@@ -639,35 +605,22 @@ impl Controller {
                     None
                 }
             },
-            Mode::ClosePane { pane } => {
+            Mode::ClosePane { .. } | Mode::CloseTab { .. } => {
                 if self.paste {
                     return None;
                 }
                 match key {
                     'y' | 'Y' => {
-                        let pane = *pane;
+                        let request = match &self.mode {
+                            Mode::ClosePane { pane } => Request::Kill { id: 0, pane: *pane },
+                            Mode::CloseTab { tab, .. } => Request::Tab {
+                                id: 0,
+                                action: TabAction::Close { tab: *tab },
+                            },
+                            _ => return None,
+                        };
                         self.mode = Mode::Pane;
-                        Some(Request::Kill { id: 0, pane })
-                    }
-                    'n' | 'N' => {
-                        self.cancel();
-                        None
-                    }
-                    _ => None,
-                }
-            }
-            Mode::CloseTab { tab, .. } => {
-                if self.paste {
-                    return None;
-                }
-                match key {
-                    'y' | 'Y' => {
-                        let tab = *tab;
-                        self.mode = Mode::Pane;
-                        Some(Request::Tab {
-                            id: 0,
-                            action: TabAction::Close { tab },
-                        })
+                        Some(request)
                     }
                     'n' | 'N' => {
                         self.cancel();
@@ -777,6 +730,20 @@ impl Controller {
     pub fn workspaces_enabled(&self) -> bool {
         self.workspaces_enabled
     }
+}
+
+fn is_enter(key: char) -> bool {
+    matches!(key, '\r' | '\n')
+}
+
+/// Moves a chooser's selection with j/k; true when `key` was consumed as movement.
+fn step(selected: &mut usize, len: usize, key: char) -> bool {
+    match key {
+        'j' => *selected = selected.saturating_add(1).min(len.saturating_sub(1)),
+        'k' => *selected = selected.saturating_sub(1),
+        _ => return false,
+    }
+    true
 }
 
 fn edit_text(text: &mut String, key: char) {

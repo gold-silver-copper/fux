@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::task::JoinSet;
 
 /// Shared by every accept loop: how to reach the owner and how to hand it reply channels.
 #[derive(Clone)]
@@ -41,6 +42,40 @@ fn authenticate(stream: UnixStream) -> std::io::Result<UnixStream> {
     UnixStream::from_std(stream)
 }
 
+/// Accepts authenticated connections until `stop` fires or the listener fails; each admitted
+/// stream is served on its own task. Returns the tasks still running.
+async fn accept_loop<F>(
+    listener: UnixListener,
+    stop: &Notify,
+    admit: impl Fn(&JoinSet<()>) -> bool,
+    mut serve: impl FnMut(UnixStream) -> F,
+) -> JoinSet<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let mut tasks = JoinSet::new();
+    loop {
+        tokio::select! {
+            () = stop.notified() => break,
+            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
+            accepted = listener.accept() => {
+                let Ok((stream, _)) = accepted else { break };
+                let Ok(stream) = authenticate(stream) else { continue };
+                if !admit(&tasks) {
+                    continue;
+                }
+                tasks.spawn(serve(stream));
+            }
+        }
+    }
+    tasks
+}
+
+async fn drain(mut tasks: JoinSet<()>) {
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+}
+
 /// Accepts attachment connections for one workspace until `stop` fires.
 pub async fn serve_attachments(
     listener: UnixListener,
@@ -49,30 +84,24 @@ pub async fn serve_attachments(
     stop: Arc<Notify>,
 ) {
     let active = Arc::new(AtomicUsize::new(0));
-    let mut tasks = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            () = stop.notified() => break,
-            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { break };
-                let Ok(stream) = authenticate(stream) else { continue };
-                if active.load(Ordering::Acquire) >= crate::proto::attach::MAX_VIEWERS_PER_WORKSPACE {
-                    continue;
+    let mut tasks = accept_loop(
+        listener,
+        &stop,
+        |_| active.load(Ordering::Acquire) < crate::proto::attach::MAX_VIEWERS_PER_WORKSPACE,
+        |stream| {
+            active.fetch_add(1, Ordering::AcqRel);
+            let active = Arc::clone(&active);
+            let owner = owner.clone();
+            let workspace = workspace.clone();
+            async move {
+                if let Err(error) = serve_viewer(stream, workspace, owner).await {
+                    tracing::debug!(%error, "viewer connection ended");
                 }
-                active.fetch_add(1, Ordering::AcqRel);
-                let active = Arc::clone(&active);
-                let owner = owner.clone();
-                let workspace = workspace.clone();
-                tasks.spawn(async move {
-                    if let Err(error) = serve_viewer(stream, workspace, owner).await {
-                        tracing::debug!(%error, "viewer connection ended");
-                    }
-                    active.fetch_sub(1, Ordering::AcqRel);
-                });
+                active.fetch_sub(1, Ordering::AcqRel);
             }
-        }
-    }
+        },
+    )
+    .await;
     // Viewers were told to exit; let their final frames flush before cutting the connections.
     let grace = tokio::time::sleep(Duration::from_secs(2));
     tokio::pin!(grace);
@@ -82,8 +111,7 @@ pub async fn serve_attachments(
             () = &mut grace => break,
         }
     }
-    tasks.abort_all();
-    while tasks.join_next().await.is_some() {}
+    drain(tasks).await;
 }
 
 async fn serve_viewer(
@@ -217,30 +245,25 @@ pub async fn serve_control(
     stop: Arc<Notify>,
 ) {
     const MAX_CONNECTIONS: usize = 64;
-    let mut tasks = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            () = stop.notified() => break,
-            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { break };
-                let Ok(stream) = authenticate(stream) else { continue };
-                if tasks.len() >= MAX_CONNECTIONS {
-                    continue;
+    let tasks = accept_loop(
+        listener,
+        &stop,
+        |tasks| tasks.len() < MAX_CONNECTIONS,
+        |stream| {
+            let owner = owner.clone();
+            let workspace = workspace.clone();
+            let subscribers = Arc::clone(&subscribers);
+            async move {
+                if let Err(error) =
+                    serve_control_connection(stream, workspace, owner, subscribers).await
+                {
+                    tracing::debug!(%error, "control connection ended");
                 }
-                let owner = owner.clone();
-                let workspace = workspace.clone();
-                let subscribers = Arc::clone(&subscribers);
-                tasks.spawn(async move {
-                    if let Err(error) = serve_control_connection(stream, workspace, owner, subscribers).await {
-                        tracing::debug!(%error, "control connection ended");
-                    }
-                });
             }
-        }
-    }
-    tasks.abort_all();
-    while tasks.join_next().await.is_some() {}
+        },
+    )
+    .await;
+    drain(tasks).await;
 }
 
 /// Preface exchange with a two-second absolute deadline including idle time.
@@ -293,7 +316,7 @@ async fn serve_control_connection(
         let request = match control::decode_request_frame(&line) {
             Ok(request) => request,
             Err(error) => {
-                write_reply(&mut writer, &control::error_reply(&error)).await?;
+                write_line(&mut writer, &control::error_reply(&error)).await?;
                 continue;
             }
         };
@@ -307,17 +330,13 @@ async fn serve_control_connection(
                     filters: events,
                     sender,
                 });
-            write_reply(&mut writer, &Reply::Accepted { id }).await?;
+            write_line(&mut writer, &Reply::Accepted { id }).await?;
             let mut probe = [0_u8; 1];
             loop {
                 tokio::select! {
                     event = receiver.recv() => {
                         let Some(event) = event else { break };
-                        let bytes = serde_json::to_vec(&event)?;
-                        tokio::time::timeout(FRAME_TIMEOUT, async {
-                            writer.write_all(&bytes).await?;
-                            writer.write_all(b"\n").await
-                        }).await??;
+                        write_line(&mut writer, &event).await?;
                     }
                     read = reader.read(&mut probe) => {
                         // Any further byte or EOF ends the subscription.
@@ -348,7 +367,7 @@ async fn serve_control_connection(
                 "control request was not answered",
             ),
         };
-        write_reply(&mut writer, &bounded(reply)).await?;
+        write_line(&mut writer, &bounded(reply)).await?;
     }
     Ok(())
 }
@@ -365,11 +384,12 @@ fn bounded(reply: Reply) -> Reply {
     }
 }
 
-async fn write_reply(
+/// Writes one newline-delimited JSON frame within the frame timeout.
+async fn write_line<T: serde::Serialize>(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
-    reply: &Reply,
+    value: &T,
 ) -> anyhow::Result<()> {
-    let mut bytes = serde_json::to_vec(reply)?;
+    let mut bytes = serde_json::to_vec(value)?;
     bytes.push(b'\n');
     tokio::time::timeout(FRAME_TIMEOUT, writer.write_all(&bytes)).await??;
     Ok(())
@@ -377,28 +397,21 @@ async fn write_reply(
 
 /// Serves the manager socket: one negotiated request per connection.
 pub async fn serve_manager(listener: UnixListener, owner: Owner, stop: Arc<Notify>) {
-    let mut tasks = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            () = stop.notified() => break,
-            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { break };
-                let Ok(stream) = authenticate(stream) else { continue };
-                if tasks.len() >= 64 {
-                    continue;
+    let tasks = accept_loop(
+        listener,
+        &stop,
+        |tasks| tasks.len() < 64,
+        |stream| {
+            let owner = owner.clone();
+            async move {
+                if let Err(error) = serve_manager_connection(stream, owner).await {
+                    tracing::debug!(%error, "manager connection ended");
                 }
-                let owner = owner.clone();
-                tasks.spawn(async move {
-                    if let Err(error) = serve_manager_connection(stream, owner).await {
-                        tracing::debug!(%error, "manager connection ended");
-                    }
-                });
             }
-        }
-    }
-    tasks.abort_all();
-    while tasks.join_next().await.is_some() {}
+        },
+    )
+    .await;
+    drain(tasks).await;
 }
 
 /// Answers one manager request. The descriptor for an attach reply is built by the caller-side
@@ -418,10 +431,7 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
             let reply = crate::daemon::ManagerReply::Failed {
                 message: format!("invalid manager request: {error}"),
             };
-            let mut bytes = serde_json::to_vec(&reply)?;
-            bytes.push(b'\n');
-            writer.write_all(&bytes).await?;
-            return Ok(());
+            return write_line(&mut writer, &reply).await;
         }
     };
     let action = match request {
@@ -435,10 +445,7 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
         let reply = crate::daemon::ManagerReply::Failed {
             message: error.to_string(),
         };
-        let mut bytes = serde_json::to_vec(&reply)?;
-        bytes.push(b'\n');
-        writer.write_all(&bytes).await?;
-        return Ok(());
+        return write_line(&mut writer, &reply).await;
     }
     let token = owner.token();
     let (sender, receiver) = oneshot::channel();
@@ -461,10 +468,7 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
             },
         },
     };
-    let mut bytes = serde_json::to_vec(&reply)?;
-    bytes.push(b'\n');
-    tokio::time::timeout(FRAME_TIMEOUT, writer.write_all(&bytes)).await??;
-    Ok(())
+    write_line(&mut writer, &reply).await
 }
 
 /// Process-wide descriptor lookup installed by the server before serving the manager socket.

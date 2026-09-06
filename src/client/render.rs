@@ -7,6 +7,7 @@
 
 use super::backend::{CellStyle as BackendStyle, TerminalBackend};
 use super::hints::HintPanel;
+use super::text;
 use crate::config::StyleColor;
 use crate::ids::PaneId;
 use crate::view::{CellKind, Frame, PaneView};
@@ -14,7 +15,6 @@ use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
 use ratatui_core::style::{Color, Modifier, Style};
 use std::io;
-use unicode_width::UnicodeWidthStr;
 
 /// A viewer-local replacement for one pane's content: a history viewport and its selection.
 pub struct LocalView<'a> {
@@ -42,9 +42,8 @@ pub struct Palette {
     pub notice: Option<Color>,
 }
 
-impl Palette {
-    #[must_use]
-    pub fn from_style(style: &crate::config::Style) -> Self {
+impl From<&crate::config::Style> for Palette {
+    fn from(style: &crate::config::Style) -> Self {
         Self {
             bar: color(style.bar),
             bar_background: color(style.bar_background),
@@ -58,7 +57,7 @@ impl Palette {
 
 impl Default for Palette {
     fn default() -> Self {
-        Self::from_style(&crate::config::Style::default())
+        Self::from(&crate::config::Style::default())
     }
 }
 
@@ -83,15 +82,6 @@ const fn color(value: StyleColor) -> Option<Color> {
         StyleColor::BrightCyan => Color::LightCyan,
         StyleColor::BrightWhite => Color::White,
     })
-}
-
-/// Writes `text` at (`x`, `y`) clipped to the buffer; a start outside the buffer paints nothing
-/// (ratatui's `set_stringn` indexes the start cell unconditionally).
-fn put_str(buffer: &mut Buffer, x: u16, y: u16, text: &str, max_width: u16, style: Style) {
-    if x >= buffer.area.right() || y >= buffer.area.bottom() {
-        return;
-    }
-    buffer.set_stringn(x, y, text, usize::from(max_width), style);
 }
 
 fn styled(fg: Option<Color>) -> Style {
@@ -180,7 +170,7 @@ fn paint_exit_marker(buffer: &mut Buffer, content: Rect, code: u32, palette: &Pa
         return;
     }
     let label = format!(" exit {code} ");
-    let label_width = width_of(&label);
+    let label_width = text::width(&label);
     if label_width > content.width {
         return;
     }
@@ -189,7 +179,7 @@ fn paint_exit_marker(buffer: &mut Buffer, content: Rect, code: u32, palette: &Pa
         .saturating_add(content.width)
         .saturating_sub(label_width);
     let y = content.y.saturating_add(content.height).saturating_sub(1);
-    put_str(
+    text::put(
         buffer,
         x,
         y,
@@ -199,58 +189,6 @@ fn paint_exit_marker(buffer: &mut Buffer, content: Rect, code: u32, palette: &Pa
             .add_modifier(Modifier::DIM)
             .add_modifier(Modifier::REVERSED),
     );
-}
-
-fn width_of(text: &str) -> u16 {
-    u16::try_from(text.width()).unwrap_or(u16::MAX)
-}
-
-/// Keeps the head of `text` within `width` cells, ending with `…` when something was cut.
-fn truncate_tail(text: &str, width: u16) -> String {
-    if width_of(text) <= width {
-        return text.to_owned();
-    }
-    let Some(keep) = width.checked_sub(1) else {
-        return String::new();
-    };
-    let mut out = String::new();
-    let mut used = 0_u16;
-    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
-        let w = width_of(grapheme);
-        if used.saturating_add(w) > keep {
-            break;
-        }
-        out.push_str(grapheme);
-        used = used.saturating_add(w);
-    }
-    out.push('…');
-    out
-}
-
-/// Keeps the tail of `text` within `width` cells, starting with `…` when something was cut.
-fn truncate_head(text: &str, width: u16) -> String {
-    if width_of(text) <= width {
-        return text.to_owned();
-    }
-    let Some(keep) = width.checked_sub(1) else {
-        return String::new();
-    };
-    let graphemes: Vec<&str> =
-        unicode_segmentation::UnicodeSegmentation::graphemes(text, true).collect();
-    let mut kept: Vec<&str> = Vec::new();
-    let mut used = 0_u16;
-    for grapheme in graphemes.iter().rev() {
-        let w = width_of(grapheme);
-        if used.saturating_add(w) > keep {
-            break;
-        }
-        kept.push(grapheme);
-        used = used.saturating_add(w);
-    }
-    kept.reverse();
-    let mut out = String::from("…");
-    out.extend(kept);
-    out
 }
 
 fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palette: &Palette) {
@@ -270,9 +208,9 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
         .tabs
         .iter()
         .find(|tab| Some(tab.id) == frame.active_tab)
-        .map_or(0, |tab| width_of(&tab.label).saturating_add(2));
+        .map_or(0, |tab| text::width(&tab.label).saturating_add(2));
     let mut left = format!(" {} │", frame.workspace);
-    if width_of(&left).saturating_add(active_width) > width {
+    if text::width(&left).saturating_add(active_width) > width {
         // The name never disappears entirely: it keeps at least a quarter of the bar.
         let allowed = width
             .saturating_sub(active_width)
@@ -280,7 +218,7 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
             .clamp(3, width.max(3));
         left = format!(
             " {} │",
-            truncate_tail(&frame.workspace, allowed.saturating_sub(3))
+            text::head(&frame.workspace, allowed.saturating_sub(3))
         );
     }
     let (right_text, right_style) = match notice {
@@ -294,32 +232,32 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
         ),
         None => (focused_label(frame), base),
     };
-    // Layout: left, then tabs, then the right zone flush right. The right zone yields first.
-    let left_width = width_of(&left).min(width);
-    let mut right = if right_text.is_empty() {
-        String::new()
-    } else {
-        format!("│ {right_text} ")
-    };
+    // Layout: left, then tabs, then the right zone (`│ text `) flush right. The right zone yields
+    // first.
+    let left_width = text::width(&left).min(width);
     let mut room = width.saturating_sub(left_width);
     let allowance = room.saturating_sub(active_width.min(room));
-    if width_of(&right) > allowance {
-        right = if allowance >= 4 {
+    let mut right_text = right_text;
+    if !right_text.is_empty() && text::width(&right_text).saturating_add(3) > allowance {
+        right_text = if allowance >= 4 {
             // Titles are paths: keep their tail. Notices are sentences: keep their head.
-            let text = if notice.is_some() {
-                truncate_tail(&right_text, allowance.saturating_sub(3))
+            if notice.is_some() {
+                text::head(&right_text, allowance.saturating_sub(3))
             } else {
-                truncate_head(&right_text, allowance.saturating_sub(3))
-            };
-            format!("│ {text} ")
+                text::tail(&right_text, allowance.saturating_sub(3))
+            }
         } else {
             String::new()
         };
     }
-    let right_width = width_of(&right);
+    let right_width = if right_text.is_empty() {
+        0
+    } else {
+        text::width(&right_text).saturating_add(3)
+    };
     room = room.saturating_sub(right_width);
     let mut x = 0_u16;
-    put_str(buffer, x, row, &left, left_width, base);
+    text::put(buffer, x, row, &left, left_width, base);
     x = x.saturating_add(left_width);
     for (label, active) in fit_tabs(frame, room) {
         let style = if active {
@@ -330,26 +268,22 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
         } else {
             base
         };
-        let w = width_of(&label);
-        put_str(buffer, x, row, &label, w, style);
+        let w = text::width(&label);
+        text::put(buffer, x, row, &label, w, style);
         x = x.saturating_add(w);
     }
     if right_width > 0 && right_width <= width {
         let start = width - right_width;
-        put_str(buffer, start, row, "│ ", 2, base);
-        put_str(
+        text::put(buffer, start, row, "│ ", 2, base);
+        text::put(
             buffer,
             start.saturating_add(2),
             row,
-            &right_text_only(&right),
+            &right_text,
             right_width.saturating_sub(2),
             right_style,
         );
     }
-}
-
-fn right_text_only(right: &str) -> String {
-    right.strip_prefix("│ ").unwrap_or(right).to_owned()
 }
 
 fn focused_label(frame: &Frame) -> String {
@@ -359,7 +293,7 @@ fn focused_label(frame: &Frame) -> String {
     let Some(pane) = frame.pane(id) else {
         return id.to_string();
     };
-    let title: String = pane.title.chars().filter(|c| !c.is_control()).collect();
+    let title = crate::view::printable(&pane.title, usize::MAX);
     let mut label = if title.is_empty() {
         id.to_string()
     } else {
@@ -397,7 +331,7 @@ fn fit_tabs(frame: &Frame, room: u16) -> Vec<(String, bool)> {
             continue;
         };
         let label = format!(" {} ", tab.label);
-        let w = width_of(&label);
+        let w = text::width(&label);
         let remaining = room.saturating_sub(used);
         if w <= remaining {
             used = used.saturating_add(w);
@@ -406,7 +340,7 @@ fn fit_tabs(frame: &Frame, room: u16) -> Vec<(String, bool)> {
             }
         } else {
             if remaining >= 4 {
-                let cut = truncate_tail(&tab.label, remaining.saturating_sub(2));
+                let cut = text::head(&tab.label, remaining.saturating_sub(2));
                 if let Some(slot) = chosen.get_mut(index) {
                     *slot = Some(format!(" {cut} "));
                 }
@@ -582,22 +516,17 @@ fn paint_selection(buffer: &mut Buffer, content: Rect, local: &LocalView<'_>) {
 }
 
 fn cell_style(style: crate::view::CellStyle) -> Style {
-    let mut modifiers = Modifier::empty();
-    if style.bold {
-        modifiers.insert(Modifier::BOLD);
-    }
-    if style.dim {
-        modifiers.insert(Modifier::DIM);
-    }
-    if style.italic {
-        modifiers.insert(Modifier::ITALIC);
-    }
-    if style.underline {
-        modifiers.insert(Modifier::UNDERLINED);
-    }
-    if style.inverse {
-        modifiers.insert(Modifier::REVERSED);
-    }
+    let flags = [
+        (style.bold, Modifier::BOLD),
+        (style.dim, Modifier::DIM),
+        (style.italic, Modifier::ITALIC),
+        (style.underline, Modifier::UNDERLINED),
+        (style.inverse, Modifier::REVERSED),
+    ];
+    let modifiers = flags
+        .into_iter()
+        .filter(|(set, _)| *set)
+        .fold(Modifier::empty(), |all, (_, flag)| all | flag);
     Style::default()
         .fg(rat_color(style.foreground))
         .bg(rat_color(style.background))

@@ -7,6 +7,7 @@ use crate::daemon::{
 };
 use crate::ecs::{Effect, Inbound, ManagerOutcome};
 use crate::ids::{PaneId, ViewerId};
+use crate::os::lock;
 use crate::os::pty::PaneProcess;
 use crate::proto::attach::ServerMessage;
 use crate::proto::control::{Event, EventKind, Reply};
@@ -81,12 +82,6 @@ impl ViewerOutbox {
     }
 }
 
-fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    value
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// A control-event subscriber: bounded queue, drops `pane.output` first, disconnects when full.
 pub struct Subscriber {
     pub id: u64,
@@ -139,10 +134,6 @@ impl Adapter {
             opened: Vec::new(),
             closed: Vec::new(),
         }
-    }
-
-    pub fn pane_count(&self) -> usize {
-        self.panes.len()
     }
 
     /// Applies one step's effects in order. Socket binding is left to the caller through
@@ -246,13 +237,7 @@ impl Adapter {
     }
 
     pub fn descriptor_for(&self, name: &str) -> Result<Descriptor, crate::daemon::PathError> {
-        Ok(Descriptor {
-            name: name.to_owned(),
-            pid: self.identity.pid,
-            instance_nonce: self.identity.instance_nonce.clone(),
-            socket_path: self.paths.attach_socket(name)?,
-            protocol: crate::proto::attach::VERSION,
-        })
+        descriptor(&self.paths, &self.identity, name)
     }
 
     pub fn register_workspace(&mut self, open: OpenWorkspace) -> anyhow::Result<()> {
@@ -279,24 +264,36 @@ impl Adapter {
         for name in names {
             self.unregister_workspace(&name);
         }
+        let reap = |process: PaneProcess| {
+            let mut group = process.group();
+            group.terminate(Duration::from_millis(200));
+            process.join();
+        };
         for (_, process) in self.panes.drain() {
-            self.blocking.spawn_blocking(move || {
-                let mut group = process.group();
-                group.terminate(Duration::from_millis(200));
-                process.join();
-            });
+            self.blocking.spawn_blocking(move || reap(process));
         }
         while let Some(result) = self.spawns.join_next().await {
             if let Ok((_, Ok(process))) = result {
-                self.blocking.spawn_blocking(move || {
-                    let mut group = process.group();
-                    group.terminate(Duration::from_millis(200));
-                    process.join();
-                });
+                self.blocking.spawn_blocking(move || reap(process));
             }
         }
         while self.blocking.join_next().await.is_some() {}
     }
+}
+
+/// The descriptor viewers use to reach workspace `name` on this server.
+pub fn descriptor(
+    paths: &DaemonPaths,
+    identity: &ManagerIdentity,
+    name: &str,
+) -> Result<Descriptor, crate::daemon::PathError> {
+    Ok(Descriptor {
+        name: name.to_owned(),
+        pid: identity.pid,
+        instance_nonce: identity.instance_nonce.clone(),
+        socket_path: paths.attach_socket(name)?,
+        protocol: crate::proto::attach::VERSION,
+    })
 }
 
 fn publish(subscribers: &Mutex<Vec<Subscriber>>, event: &Event) {

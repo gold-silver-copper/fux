@@ -47,11 +47,7 @@ fn parse_progress(params: &[&[u8]]) -> Option<Progress> {
 }
 
 fn title_from(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(MAX_TITLE_CHARS)
-        .collect()
+    crate::view::printable(&String::from_utf8_lossy(bytes), MAX_TITLE_CHARS)
 }
 
 #[derive(Default)]

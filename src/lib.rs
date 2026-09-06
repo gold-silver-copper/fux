@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! fux: a minimal persistent terminal multiplexer whose authoritative model lives in a
-//! `bevy_ecs` World. See docs/ecs-plan.md for the architecture.
+//! `bevy_ecs` World. See docs/design.md for the architecture.
 
 pub mod client;
 pub mod commands;

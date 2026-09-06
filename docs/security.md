@@ -7,7 +7,7 @@ started the session server, and that OS account is the authorization boundary.
 
 | Boundary | Enforcement | Limits |
 |---|---|---|
-| Attachment and control sockets | Private (0700) owner-checked directories, 0600 sockets, kernel peer-UID checks on both sides, version prefaces before any command, bounded frames and deadlines | Any process running as the same user can control sessions. Root and a compromised account are outside the boundary |
+| Attachment and control sockets | Private (0700) directories owned by the effective user, 0600 sockets, kernel peer-UID checks on both sides, version prefaces before any command, bounded frames and deadlines | Any process running as the same user can control sessions. Root and a compromised account are outside the boundary |
 | Server election and startup | `flock`-serialized manager election, inode-aware stale-socket recovery, a private nonce-named readiness channel, sanitized daemon environment | The daemon inherits the first viewer's environment minus credential-like keys |
 | Pane output | vt100 emulation with bounded dimensions and history; control strings are filtered and truncated; titles and OSC 52 payloads are bounded | Programs can emit misleading text, titles, bells and clipboard writes |
 | Remote access | Not part of fux. A koh gateway authenticates and authorizes peers before opening the local attachment socket and conveys the local user's authority | fux cannot distinguish a gateway from a local viewer |

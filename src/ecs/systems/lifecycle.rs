@@ -1,15 +1,16 @@
 //! Lifecycle phase: natural exits, confirmed closes, tab and workspace retirement, shutdown.
 //! Ownership cascades are explicit despawns; the adapter releases OS handles per `ReleasePane`.
 
-use crate::ecs::components::{Pane, PaneState, Tab, Viewer, Workspace};
+use crate::ecs::components::{Creation, Pane, PaneState, Tab, Tabs, Viewer, Workspace};
 use crate::ecs::messages::Effect;
 use crate::ecs::resources::{Clock, Deadlines, Ids, Limits, ShuttingDown};
 use crate::ecs::support::{
-    close_tab, despawn_pane, effect, event, mark_workspace_dirty, pane_in_layout,
-    remove_from_layout, terminate_pane, viewers_of_workspace,
+    close_tab, despawn_pane, despawn_tab, despawn_workspace, effect, fail_creations,
+    mark_workspace_dirty, member_tabs, pane_closed, pane_id, pane_in_layout, pane_workspace,
+    panes_in_workspace, remove_from_layout, retire, tab_workspace, terminate_pane,
+    viewers_of_workspace, viewers_where,
 };
-use crate::ecs::systems::requests::kill_workspace;
-use crate::proto::control::Event;
+use crate::ecs::systems::requests::{despawn_viewer, kill_workspace};
 use bevy_ecs::prelude::*;
 
 /// SIGHUP is followed by SIGKILL after this many milliseconds.
@@ -45,10 +46,7 @@ fn handle_exited_panes(world: &mut World, now: u64) {
         })
         .collect();
     for (pane, code) in exited {
-        if world
-            .get::<crate::ecs::components::Creation>(pane)
-            .is_some()
-        {
+        if world.get::<Creation>(pane).is_some() {
             // Exited before its completion was applied; the completion phase places it and the
             // next pass closes it with this status.
             continue;
@@ -56,7 +54,7 @@ fn handle_exited_panes(world: &mut World, now: u64) {
         let Some((id, tab)) = world.get::<Pane>(pane).map(|pane| (pane.id, pane.tab)) else {
             continue;
         };
-        let Some(workspace) = crate::ecs::support::tab_workspace(world, tab) else {
+        let Some(workspace) = tab_workspace(world, tab) else {
             // The tab is already gone (closed or rolled back); just release the pane.
             despawn_pane(world, pane);
             continue;
@@ -65,45 +63,17 @@ fn handle_exited_panes(world: &mut World, now: u64) {
             let sole_pane = world
                 .get::<Tab>(tab)
                 .is_some_and(|tab| tab.layout.len() == 1);
-            let sole_tab = world
-                .get::<Workspace>(workspace)
-                .is_some_and(|workspace| workspace.tabs.len() == 1);
-            if sole_pane && sole_tab {
+            if sole_pane && member_tabs(world, workspace).len() == 1 {
                 // Natural exit of the last pane: keep its final screen visible and retire the
                 // workspace with the process status once viewers have seen it.
-                let already = world
-                    .get::<Workspace>(workspace)
-                    .is_some_and(|workspace| workspace.retiring.is_some());
-                if !already {
-                    if let Some(mut component) = world.get_mut::<Workspace>(workspace) {
-                        component.retiring = Some(crate::ecs::components::Retiring {
-                            since_ms: now,
-                            exit_code: Some(code),
-                        });
-                    }
-                    event(
-                        world,
-                        workspace,
-                        Event::PaneClosed {
-                            id: 0,
-                            pane: id,
-                            exit_status: Some(i32::try_from(code).unwrap_or(i32::MAX)),
-                        },
-                    );
+                if retire(world, workspace, now, Some(code)) {
+                    pane_closed(world, workspace, id, Some(code));
                     mark_workspace_dirty(world, workspace);
                 }
                 continue;
             }
             remove_from_layout(world, pane);
-            event(
-                world,
-                workspace,
-                Event::PaneClosed {
-                    id: 0,
-                    pane: id,
-                    exit_status: Some(i32::try_from(code).unwrap_or(i32::MAX)),
-                },
-            );
+            pane_closed(world, workspace, id, Some(code));
             despawn_pane(world, pane);
             if world
                 .get::<Tab>(tab)
@@ -113,15 +83,7 @@ fn handle_exited_panes(world: &mut World, now: u64) {
             }
         } else {
             // Killed, or its tab closed: the exit report finishes the cleanup.
-            event(
-                world,
-                workspace,
-                Event::PaneClosed {
-                    id: 0,
-                    pane: id,
-                    exit_status: Some(i32::try_from(code).unwrap_or(i32::MAX)),
-                },
-            );
+            pane_closed(world, workspace, id, Some(code));
             despawn_pane(world, pane);
         }
     }
@@ -147,40 +109,29 @@ fn drop_overdue_terminations(world: &mut World, now: u64, deadline_ms: u64) {
         if pane_in_layout(world, pane) {
             remove_from_layout(world, pane);
         }
-        if let Some(workspace) = crate::ecs::support::pane_workspace(world, pane)
-            && let Some(id) = crate::ecs::support::pane_id(world, pane)
+        if let Some(workspace) = pane_workspace(world, pane)
+            && let Some(id) = pane_id(world, pane)
         {
-            event(
-                world,
-                workspace,
-                Event::PaneClosed {
-                    id: 0,
-                    pane: id,
-                    exit_status: None,
-                },
-            );
+            pane_closed(world, workspace, id, None);
         }
         despawn_pane(world, pane);
     }
 }
 
-/// A workspace whose last tab closed retires with code 0; viewers exit cleanly.
+/// A workspace whose last tab closed retires with code 0; viewers exit cleanly. `Tabs` is absent
+/// once empty because `TabOf` is only ever removed through `EntityWorldMut`, which flushes the
+/// relationship hook's removal at once; a `Commands`-based removal would leave an empty target.
 fn retire_empty_workspaces(world: &mut World, now: u64) {
     let empty: Vec<Entity> = world
         .query::<(Entity, &Workspace)>()
         .iter(world)
-        .filter(|(_, workspace)| {
-            workspace.open && workspace.retiring.is_none() && workspace.tabs.is_empty()
+        .filter(|(entity, workspace)| {
+            workspace.open && workspace.retiring.is_none() && world.get::<Tabs>(*entity).is_none()
         })
         .map(|(entity, _)| entity)
         .collect();
     for workspace in empty {
-        if let Some(mut component) = world.get_mut::<Workspace>(workspace) {
-            component.retiring = Some(crate::ecs::components::Retiring {
-                since_ms: now,
-                exit_code: Some(0),
-            });
-        }
+        retire(world, workspace, now, Some(0));
         mark_workspace_dirty(world, workspace);
     }
 }
@@ -218,40 +169,26 @@ fn finalize_retirements(world: &mut World, now: u64, grace_ms: u64) {
 }
 
 fn finalize(world: &mut World, workspace: Entity, now: u64) {
-    let Some((name, tabs)) = world
+    let Some(name) = world
         .get::<Workspace>(workspace)
-        .map(|workspace| (workspace.name.clone(), workspace.tabs.clone()))
+        .map(|workspace| workspace.name.clone())
     else {
         return;
     };
-    let viewers: Vec<Entity> = world
-        .query::<(Entity, &Viewer)>()
-        .iter(world)
-        .filter(|(_, viewer)| viewer.workspace == workspace)
-        .map(|(entity, _)| entity)
-        .collect();
-    for viewer in viewers {
-        crate::ecs::systems::requests::despawn_viewer(world, viewer);
+    for viewer in viewers_where(world, |viewer| viewer.workspace == workspace) {
+        despawn_viewer(world, viewer);
     }
     // Creations still in flight answer their requesters; the late process is stopped by the
-    // completion phase when it reports in.
-    crate::ecs::systems::creation::fail_pending_creations(
+    // completion phase when it reports in. Panes reserved for tabs that never joined the
+    // workspace, or still terminating, are released too: the adapter kills and reaps anything
+    // still running.
+    let panes = panes_in_workspace(world, workspace);
+    fail_creations(
         world,
-        workspace,
+        &panes,
         "workspace closed before the pane started",
+        false,
     );
-    // Panes reserved for tabs that never joined the workspace, or still terminating, are
-    // released too: the adapter kills and reaps anything still running.
-    let panes: Vec<Entity> = world
-        .query::<(Entity, &Pane)>()
-        .iter(world)
-        .filter(|(_, pane)| {
-            world
-                .get::<Tab>(pane.tab)
-                .is_some_and(|tab| tab.workspace == workspace)
-        })
-        .map(|(entity, _)| entity)
-        .collect();
     for pane in panes {
         terminate_pane(world, pane, now, TERMINATE_GRACE_MS);
         despawn_pane(world, pane);
@@ -262,13 +199,9 @@ fn finalize(world: &mut World, workspace: Entity, now: u64) {
         .filter(|(_, tab)| tab.workspace == workspace)
         .map(|(entity, _)| entity)
         .collect();
-    for tab in all_tabs.into_iter().chain(tabs) {
-        if let Some(id) = world.get::<Tab>(tab).map(|tab| tab.id) {
-            world.resource_mut::<Ids>().tabs.remove(&id);
-            world.despawn(tab);
-        }
+    for tab in all_tabs {
+        despawn_tab(world, tab);
     }
-    world.resource_mut::<Ids>().workspaces.remove(&name);
-    world.despawn(workspace);
+    despawn_workspace(world, workspace);
     effect(world, Effect::WorkspaceClosed { name });
 }

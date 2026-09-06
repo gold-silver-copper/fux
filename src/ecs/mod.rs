@@ -20,7 +20,7 @@ use bevy_ecs::schedule::{ScheduleLabel, SingleThreadedExecutor};
 #[derive(ScheduleLabel, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Step;
 
-/// Chained phases; see docs/ecs-plan.md for what each one owns.
+/// Chained phases; see docs/design.md for what each one owns.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Phase {
     Ingest,
@@ -69,11 +69,24 @@ impl Session {
             )
                 .chain(),
         );
+        // Queued viewer requests are drained after the requests phase and again after
+        // completions release creation barriers, so input that followed a split in the same read
+        // reaches the newly focused pane before this step publishes frames.
         schedule.add_systems((
             systems::requests::apply_attachments.in_set(Phase::Ingest),
             systems::output::apply_pane_output.in_set(Phase::Output),
-            systems::requests::apply_requests.in_set(Phase::Requests),
-            systems::creation::apply_spawn_completions.in_set(Phase::Completions),
+            (
+                systems::requests::apply_requests,
+                systems::requests::drain_viewer_queues,
+            )
+                .chain()
+                .in_set(Phase::Requests),
+            (
+                systems::creation::apply_spawn_completions,
+                systems::requests::drain_viewer_queues,
+            )
+                .chain()
+                .in_set(Phase::Completions),
             systems::lifecycle::resolve_lifecycle.in_set(Phase::Lifecycle),
             systems::layout::resolve_layout.in_set(Phase::Layout),
             systems::snapshot::publish_frames.in_set(Phase::Snapshot),
@@ -114,10 +127,6 @@ impl Session {
 
     pub fn world(&self) -> &World {
         &self.world
-    }
-
-    pub fn world_mut(&mut self) -> &mut World {
-        &mut self.world
     }
 
     /// Names of open workspaces, sorted.
@@ -177,7 +186,10 @@ impl Session {
             if ids.tab(tab.id) != Some(entity) {
                 return Err(format!("tab {} is not registered", tab.id));
             }
-            let member = workspace.tabs.contains(&entity);
+            let member = self
+                .world
+                .get::<components::TabOf>(entity)
+                .is_some_and(|member| member.0 == tab.workspace);
             for pane in tab.layout.leaves() {
                 if pane == Entity::PLACEHOLDER {
                     if member {
@@ -227,17 +239,18 @@ impl Session {
             if ids.workspace(&workspace.name) != Some(entity) {
                 return Err(format!("workspace {} is not registered", workspace.name));
             }
-            let mut seen = std::collections::HashSet::new();
-            for tab in &workspace.tabs {
-                if !seen.insert(*tab) {
-                    return Err(format!("workspace {} lists a tab twice", workspace.name));
-                }
-                if self.world.get::<components::Tab>(*tab).is_none() {
-                    return Err(format!("workspace {} lists a missing tab", workspace.name));
+            let members = support::member_tabs(&self.world, entity);
+            for tab in &members {
+                if self
+                    .world
+                    .get::<components::Tab>(*tab)
+                    .is_none_or(|tab| tab.workspace != entity)
+                {
+                    return Err(format!("workspace {} lists a foreign tab", workspace.name));
                 }
             }
             if let Some(tab) = workspace.selection.tab
-                && !workspace.tabs.contains(&tab)
+                && !members.contains(&tab)
                 && workspace.retiring.is_none()
                 && workspace.open
             {
@@ -260,7 +273,7 @@ impl Session {
                 .get::<components::Workspace>(viewer.workspace)
                 .ok_or_else(|| format!("viewer {} has no workspace", viewer.id))?;
             if let Some(tab) = viewer.selection.tab
-                && !workspace.tabs.contains(&tab)
+                && !support::is_member(&self.world, viewer.workspace, tab)
                 && workspace.retiring.is_none()
             {
                 return Err(format!("viewer {} shows a foreign tab", viewer.id));

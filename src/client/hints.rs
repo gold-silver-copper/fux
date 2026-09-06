@@ -3,13 +3,13 @@
 //! as its content (or the space available). Long lists scroll row by row with `▲ n more` /
 //! `▼ n more` indicators; the thin one-line hints stay full-width rows above the bar.
 
-use crate::commands::{Action, ClientBindings, Group, key_name};
+use super::text;
+use crate::commands::{ClientBindings, Group, key_name};
 use crate::view::Frame;
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
 use ratatui_core::style::{Color, Modifier, Style};
 use std::collections::BTreeSet;
-use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
 /// One cell of padding on each side of the column's text.
@@ -93,8 +93,7 @@ impl HintPanel {
         footer: &str,
         focus: Option<usize>,
     ) -> Self {
-        let clean =
-            |value: String| -> String { value.chars().filter(|c| !c.is_control()).collect() };
+        let clean = |value: String| crate::view::printable(&value, usize::MAX);
         let title = clean(title);
         Self {
             title: (!title.is_empty()).then_some(title),
@@ -226,8 +225,8 @@ impl HintPanel {
         let style = Style::reset().fg(Color::White).bg(Color::DarkGray);
         if self.thin {
             let row = area.bottom().saturating_sub(1);
-            fill(buffer, area.x, area.right(), row, style);
-            put(
+            text::fill(buffer, area.x, area.right(), row, style);
+            text::put(
                 buffer,
                 area.x,
                 row,
@@ -285,7 +284,7 @@ impl HintPanel {
             .min(area.height);
         let widest = lines
             .iter()
-            .map(|(text, _)| u16::try_from(text.width()).unwrap_or(u16::MAX))
+            .map(|(line, _)| text::width(line))
             .max()
             .unwrap_or(0);
         let width = widest
@@ -296,13 +295,13 @@ impl HintPanel {
         let top = area.bottom().saturating_sub(height);
         for (row, (text, line_style)) in lines.iter().take(usize::from(height)).enumerate() {
             let y = top.saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
-            fill(buffer, x, area.right(), y, style);
+            text::fill(buffer, x, area.right(), y, style);
             let shown = if self.input {
-                keep_tail(text, inner)
+                text::tail_raw(text, inner)
             } else {
-                keep_head(text, inner)
+                text::head(text, inner)
             };
-            put(
+            text::put(
                 buffer,
                 x.saturating_add(PADDING),
                 y,
@@ -312,65 +311,6 @@ impl HintPanel {
             );
         }
     }
-}
-
-/// Paints background cells over `[from, to)` on `row`.
-fn fill(buffer: &mut Buffer, from: u16, to: u16, row: u16, style: Style) {
-    for x in from..to {
-        if let Some(cell) = buffer.cell_mut((x, row)) {
-            cell.set_symbol(" ").set_style(style);
-        }
-    }
-}
-
-/// Writes `text` clipped to `max_width`, skipping starts outside the buffer (ratatui indexes the
-/// start cell unconditionally).
-fn put(buffer: &mut Buffer, x: u16, y: u16, text: &str, max_width: u16, style: Style) {
-    if max_width == 0 || x >= buffer.area.right() || y >= buffer.area.bottom() {
-        return;
-    }
-    buffer.set_stringn(x, y, text, usize::from(max_width), style);
-}
-
-/// The head of `text` within `width` cells, ending with `…` when cut.
-fn keep_head(text: &str, width: u16) -> String {
-    if u16::try_from(text.width()).unwrap_or(u16::MAX) <= width {
-        return text.to_owned();
-    }
-    let Some(keep) = width.checked_sub(1) else {
-        return String::new();
-    };
-    let mut out = String::new();
-    let mut used = 0_u16;
-    for grapheme in text.graphemes(true) {
-        let w = u16::try_from(grapheme.width()).unwrap_or(u16::MAX);
-        if used.saturating_add(w) > keep {
-            break;
-        }
-        out.push_str(grapheme);
-        used = used.saturating_add(w);
-    }
-    out.push('…');
-    out
-}
-
-/// The tail of `text` within `width` cells: keeps the insertion point of a text input visible.
-fn keep_tail(text: &str, width: u16) -> String {
-    let mut used = 0_u16;
-    let mut cut = text.len();
-    for (offset, grapheme) in text.grapheme_indices(true).rev() {
-        used = used.saturating_add(u16::try_from(grapheme.width()).unwrap_or(u16::MAX));
-        if used > width {
-            break;
-        }
-        cut = offset;
-    }
-    text.get(cut..).unwrap_or_default().to_owned()
-}
-
-/// A convenience for the controller: the label of an action as painted.
-pub fn action_label(action: Action) -> &'static str {
-    action.label()
 }
 
 #[cfg(test)]

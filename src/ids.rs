@@ -23,23 +23,16 @@ pub struct TabId(pub u32);
 #[serde(transparent)]
 pub struct ViewerId(pub u64);
 
-impl std::fmt::Display for PaneId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
+macro_rules! display_inner {
+    ($($id:ident),+) => {$(
+        impl std::fmt::Display for $id {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.0)
+            }
+        }
+    )+};
 }
-
-impl std::fmt::Display for TabId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::fmt::Display for ViewerId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+display_inner!(PaneId, TabId, ViewerId);
 
 /// Validates a workspace name that also names socket and descriptor files.
 pub fn validate_workspace_name(name: &str) -> Result<(), InvalidName> {
@@ -56,16 +49,9 @@ pub fn validate_workspace_name(name: &str) -> Result<(), InvalidName> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("workspace names use 1-64 ASCII letters, digits, `.`, `_` or `-`")]
 pub struct InvalidName;
-
-impl std::fmt::Display for InvalidName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("workspace names use 1-64 ASCII letters, digits, `.`, `_` or `-`")
-    }
-}
-
-impl std::error::Error for InvalidName {}
 
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
-use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -20,10 +19,13 @@ pub const MAX_PANES: usize = crate::view::MAX_PANES;
 pub const MAX_TABS: usize = crate::view::MAX_TABS;
 pub const MAX_WORKSPACES: usize = 64;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+/// A sparse TOML document deserializes over the defaults: every key is optional, unknown keys
+/// are errors, and `[bindings]` merges with the default bindings instead of replacing them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Config {
     pub prefix: String,
+    #[serde(deserialize_with = "merged_bindings")]
     pub bindings: BTreeMap<String, Action>,
     pub default_command: Command,
     pub clipboard: ClipboardPolicy,
@@ -49,8 +51,7 @@ impl Default for Config {
 impl Config {
     /// Parses a sparse TOML document over the built-in defaults.
     pub fn from_toml(input: &str) -> Result<Self, ConfigError> {
-        let patch: ConfigPatch = toml::from_str(input).map_err(ConfigError::Toml)?;
-        let candidate = patch.apply_to(Self::default());
+        let candidate: Self = toml::from_str(input).map_err(ConfigError::Toml)?;
         candidate.validate()?;
         Ok(candidate)
     }
@@ -89,10 +90,6 @@ impl Config {
     /// Loads the configuration from [`default_path`].
     pub fn load() -> Result<Self, ConfigError> {
         Self::load_from_path(&default_path()?)
-    }
-
-    pub fn to_toml_pretty(&self) -> Result<String, ConfigError> {
-        toml::to_string_pretty(self).map_err(ConfigError::Serialize)
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -311,85 +308,20 @@ impl Limits {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct ConfigPatch {
-    prefix: Option<String>,
-    bindings: Option<BTreeMap<String, Action>>,
-    default_command: Option<Command>,
-    clipboard: Option<ClipboardPolicy>,
-    history: Option<HistoryLimits>,
-    limits: Option<Limits>,
-    style: Option<Style>,
-}
-
-impl ConfigPatch {
-    fn apply_to(self, mut config: Config) -> Config {
-        if let Some(value) = self.prefix {
-            config.prefix = value;
-        }
-        if let Some(value) = self.bindings {
-            config.bindings.extend(value);
-        }
-        if let Some(value) = self.default_command {
-            config.default_command = value;
-        }
-        if let Some(value) = self.clipboard {
-            config.clipboard = value;
-        }
-        if let Some(value) = self.history {
-            config.history = value;
-        }
-        if let Some(value) = self.limits {
-            config.limits = value;
-        }
-        if let Some(value) = self.style {
-            config.style = value;
-        }
-        config
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("neither XDG_CONFIG_HOME nor HOME is set")]
     NoConfigHome,
+    #[error("failed to read {}: {error}", path.display())]
     Io {
         path: PathBuf,
+        #[source]
         error: std::io::Error,
     },
-    Toml(toml::de::Error),
-    Serialize(toml::ser::Error),
-    Invalid {
-        field: &'static str,
-        reason: String,
-    },
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoConfigHome => write!(formatter, "neither XDG_CONFIG_HOME nor HOME is set"),
-            Self::Io { path, error } => {
-                write!(formatter, "failed to read {}: {error}", path.display())
-            }
-            Self::Toml(error) => write!(formatter, "invalid configuration TOML: {error}"),
-            Self::Serialize(error) => {
-                write!(formatter, "failed to serialize configuration: {error}")
-            }
-            Self::Invalid { field, reason } => write!(formatter, "invalid `{field}`: {reason}"),
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io { error, .. } => Some(error),
-            Self::Toml(error) => Some(error),
-            Self::Serialize(error) => Some(error),
-            Self::NoConfigHome | Self::Invalid { .. } => None,
-        }
-    }
+    #[error("invalid configuration TOML: {0}")]
+    Toml(#[source] toml::de::Error),
+    #[error("invalid `{field}`: {reason}")]
+    Invalid { field: &'static str, reason: String },
 }
 
 fn default_shell() -> Command {
@@ -426,6 +358,15 @@ pub fn default_shell_from(
                 "/bin/sh".to_owned()
             }
         })
+}
+
+fn merged_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, Action>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut bindings = default_bindings();
+    bindings.extend(BTreeMap::<String, Action>::deserialize(deserializer)?);
+    Ok(bindings)
 }
 
 fn default_bindings() -> BTreeMap<String, Action> {
@@ -488,7 +429,7 @@ mod tests {
     fn defaults_round_trip_and_sparse_documents_merge() {
         let config = Config::default();
         assert!(config.validate().is_ok());
-        let text = config.to_toml_pretty().unwrap_or_default();
+        let text = toml::to_string_pretty(&config).unwrap_or_default();
         let parsed = Config::from_toml(&text).unwrap_or_default();
         assert_eq!(parsed, config);
         let sparse = Config::from_toml("prefix = 'C-b'\n[history]\nscrollback-lines = 5\n")

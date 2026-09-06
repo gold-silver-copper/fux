@@ -193,38 +193,24 @@ impl PrefixFilter {
 
     /// A complete escape sequence while the popup is open never reaches the pane.
     fn command_sequence(&mut self, sequence: &[u8], events: &mut Vec<InputEvent>) {
-        match sequence {
-            [0x1b, 0x1b] => {
-                // Prefix twice when the prefix is Escape forwards one Escape.
-                if self.bindings.prefix() == 0x1b {
-                    self.cancel();
-                    events.push(InputEvent::Bytes(vec![0x1b]));
-                } else {
-                    self.cancel();
-                    events.push(InputEvent::Cancel);
-                }
-            }
-            b"\x1b[B" | b"\x1bOB" => {
-                self.reveal = true;
-                events.push(InputEvent::Scroll(ScrollBy::Rows(1)));
-            }
-            b"\x1b[A" | b"\x1bOA" => {
-                self.reveal = true;
-                events.push(InputEvent::Scroll(ScrollBy::Rows(-1)));
-            }
-            b"\x1b[6~" => {
-                self.reveal = true;
-                events.push(InputEvent::Scroll(ScrollBy::Screens(1)));
-            }
-            b"\x1b[5~" => {
-                self.reveal = true;
-                events.push(InputEvent::Scroll(ScrollBy::Screens(-1)));
-            }
-            _ => {
-                self.reveal = true;
-                events.push(InputEvent::Unknown);
-            }
+        if sequence == [0x1b, 0x1b] {
+            // Prefix twice when the prefix is Escape forwards one Escape.
+            self.cancel();
+            events.push(if self.bindings.prefix() == 0x1b {
+                InputEvent::Bytes(vec![0x1b])
+            } else {
+                InputEvent::Cancel
+            });
+            return;
         }
+        self.reveal = true;
+        events.push(match sequence {
+            b"\x1b[B" | b"\x1bOB" => InputEvent::Scroll(ScrollBy::Rows(1)),
+            b"\x1b[A" | b"\x1bOA" => InputEvent::Scroll(ScrollBy::Rows(-1)),
+            b"\x1b[6~" => InputEvent::Scroll(ScrollBy::Screens(1)),
+            b"\x1b[5~" => InputEvent::Scroll(ScrollBy::Screens(-1)),
+            _ => InputEvent::Unknown,
+        });
     }
 
     fn plain(&mut self, byte: u8, events: &mut Vec<InputEvent>, resolved_escape: bool) {

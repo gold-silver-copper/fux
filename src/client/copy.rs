@@ -90,10 +90,6 @@ impl CopySession {
     pub fn notice(&self) -> Option<&'static str> {
         self.notice
     }
-    pub fn clear_notice(&mut self) {
-        self.notice = None;
-    }
-
     /// The next history read to send, at most one outstanding.
     pub fn take_read(&mut self) -> Option<(u64, PaneId, u32)> {
         if self.pending_read.is_some() {
@@ -133,11 +129,15 @@ impl CopySession {
             self.wanted_offset = view.offset;
         }
         self.view = *view;
+        self.clamp_cursor();
+        true
+    }
+
+    fn clamp_cursor(&mut self) {
         self.cursor = (
             self.cursor.0.min(self.view.rows.saturating_sub(1)),
             self.cursor.1.min(self.view.columns.saturating_sub(1)),
         );
-        true
     }
 
     /// A newer live frame for the pane while browsing at offset zero: adopt it, keeping the
@@ -146,15 +146,10 @@ impl CopySession {
         if self.view.offset != 0 || self.pending_read.is_some() {
             return;
         }
-        if (live.rows, live.columns) != (self.view.rows, self.view.columns) {
-            if self.anchor.is_some() {
-                self.anchor = None;
-                self.notice = Some("Selection cleared: the pane was resized");
-            }
-            self.cursor = (
-                self.cursor.0.min(live.rows.saturating_sub(1)),
-                self.cursor.1.min(live.columns.saturating_sub(1)),
-            );
+        if (live.rows, live.columns) != (self.view.rows, self.view.columns) && self.anchor.is_some()
+        {
+            self.anchor = None;
+            self.notice = Some("Selection cleared: the pane was resized");
         }
         if self.anchor.is_some() && live.cells != self.view.cells {
             // New output replaced the selected cells; never copy text the user did not see.
@@ -162,6 +157,7 @@ impl CopySession {
             self.notice = Some("Selection cleared: new output arrived");
         }
         self.view = live.clone();
+        self.clamp_cursor();
     }
 
     pub fn key(&mut self, key: CopyKey) -> CopyOutcome {

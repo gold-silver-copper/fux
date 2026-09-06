@@ -32,14 +32,29 @@ impl Selection {
             self.tab = None;
         }
     }
+    /// Shows `tab`, focusing `pane` in it when one is given.
+    pub fn select(&mut self, tab: Entity, pane: Option<Entity>) {
+        self.tab = Some(tab);
+        if let Some(pane) = pane {
+            self.set_focus(tab, pane);
+        }
+    }
+    /// Points the focus of `tab` at `next`, or forgets it when there is no successor.
+    pub fn retarget(&mut self, tab: Entity, next: Option<Entity>) {
+        match next {
+            Some(next) => self.set_focus(tab, next),
+            None => {
+                self.focus.remove(&tab);
+            }
+        }
+    }
 }
 
-/// A workspace groups tabs and is the unit koh gateways and zor observers address by name.
+/// A workspace groups tabs and is the unit koh gateways and zor observers address by name. Its
+/// member tabs are the [`Tabs`] relationship target, kept by the ECS from each tab's [`TabOf`].
 #[derive(Component, Debug)]
 pub struct Workspace {
     pub name: String,
-    /// Ordered tab membership; the owning edge (despawning the workspace despawns its tabs).
-    pub tabs: Vec<Entity>,
     /// Default selection for new attachments and control-socket clients.
     pub selection: Selection,
     /// Step counter of the most recent attachment; the deterministic no-name attach rule.
@@ -49,6 +64,25 @@ pub struct Workspace {
     pub retiring: Option<Retiring>,
     /// Consecutive automatic tab labels.
     pub tab_counter: u32,
+}
+
+/// Membership of a tab in a workspace. Reserved tabs (a new tab or workspace whose first pane is
+/// still starting) carry no `TabOf` until their completion; the ECS keeps [`Tabs`] in sync.
+#[derive(Component, Debug)]
+#[relationship(relationship_target = Tabs)]
+pub struct TabOf(pub Entity);
+
+/// A workspace's member tabs in order. Absent while a workspace has none. Despawning a workspace
+/// does not cascade: panes are released through explicit effects first, then tabs are despawned.
+#[derive(Component, Debug, Default)]
+#[relationship_target(relationship = TabOf)]
+pub struct Tabs(Vec<Entity>);
+
+impl std::ops::Deref for Tabs {
+    type Target = [Entity];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

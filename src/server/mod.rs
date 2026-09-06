@@ -11,6 +11,7 @@ use crate::ecs::{Effect, Inbound, ManagerAction, ManagerOutcome, Session};
 use crate::proto::socket::bind_local_socket;
 use adapter::{Adapter, OpenWorkspace};
 use connections::Owner;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
@@ -113,15 +114,7 @@ async fn start(
     let descriptors: connections::DescriptorHook = {
         let paths = paths.clone();
         let identity = adapter.identity.clone();
-        Arc::new(move |name: &str| {
-            Some(crate::daemon::Descriptor {
-                name: name.to_owned(),
-                pid: identity.pid,
-                instance_nonce: identity.instance_nonce.clone(),
-                socket_path: paths.attach_socket(name).ok()?,
-                protocol: crate::proto::attach::VERSION,
-            })
-        })
+        Arc::new(move |name: &str| adapter::descriptor(&paths, &identity, name).ok())
     };
     connections::DESCRIPTOR_HOOK.install(descriptors);
     manager_lock.listener().set_nonblocking(true)?;
@@ -176,7 +169,9 @@ async fn start(
             Instant::now() < deadline,
             "initial pane did not start in time"
         );
-        state.wait_for_activity(Some(deadline), &mut pending).await;
+        state
+            .wait_for_activity(Some(deadline), &mut pending, std::future::pending())
+            .await;
     }
     Ok(state)
 }
@@ -288,9 +283,14 @@ impl ServerState {
         }
     }
 
-    /// Sleeps until an event, a spawn completion, a viewer registration or the deadline. Whatever
-    /// woke the loop is kept in `into` for the next step.
-    async fn wait_for_activity(&mut self, deadline: Option<Instant>, into: &mut Vec<Inbound>) {
+    /// Sleeps until `shutdown` resolves (returns true), an event, a spawn completion, a viewer
+    /// registration or the deadline. Whatever woke the loop is kept in `into` for the next step.
+    async fn wait_for_activity(
+        &mut self,
+        deadline: Option<Instant>,
+        into: &mut Vec<Inbound>,
+        shutdown: impl Future<Output = ()>,
+    ) -> bool {
         let sleep = async {
             match deadline {
                 Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
@@ -298,6 +298,8 @@ impl ServerState {
             }
         };
         tokio::select! {
+            biased;
+            () = shutdown => return true,
             event = self.ingress_rx.recv() => { if let Some(event) = event { into.push(event); } }
             event = self.pane_rx.recv() => { if let Some(event) = event { into.push(event); } }
             Some((viewer, outbox)) = self.outbox_rx.recv() => { self.adapter.viewers.insert(viewer, outbox); }
@@ -308,6 +310,7 @@ impl ServerState {
             }
             () = sleep => {}
         }
+        false
     }
 }
 
@@ -344,24 +347,17 @@ async fn run_loop(mut state: ServerState) -> anyhow::Result<()> {
             .into_iter()
             .chain(shutting_down.map(|since| since + SHUTDOWN_DEADLINE))
             .min();
-        tokio::select! {
-            biased;
-            _ = interrupt.recv() => { request_shutdown(&mut inbound, &mut shutting_down); }
-            _ = terminate.recv() => { request_shutdown(&mut inbound, &mut shutting_down); }
-            event = state.ingress_rx.recv() => { if let Some(event) = event { inbound.push(event); } }
-            event = state.pane_rx.recv() => { if let Some(event) = event { inbound.push(event); } }
-            Some((viewer, outbox)) = state.outbox_rx.recv() => { state.adapter.viewers.insert(viewer, outbox); }
-            Some((token, sender)) = state.control_reply_rx.recv() => { state.adapter.control_replies.insert(token, sender); }
-            Some((token, sender)) = state.manager_reply_rx.recv() => { state.adapter.manager_replies.insert(token, sender); }
-            Some(result) = state.adapter.spawns.join_next(), if !state.adapter.spawns.is_empty() => {
-                if let Ok((pane, result)) = result { inbound.push(state.adapter.record_spawn(pane, result)); }
+        let signalled = async {
+            tokio::select! {
+                _ = interrupt.recv() => {}
+                _ = terminate.recv() => {}
             }
-            () = async {
-                match deadline {
-                    Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
-                    None => std::future::pending::<()>().await,
-                }
-            } => {}
+        };
+        if state
+            .wait_for_activity(deadline, &mut inbound, signalled)
+            .await
+        {
+            request_shutdown(&mut inbound, &mut shutting_down);
         }
     }
     state.manager_stop.notify_one();

@@ -1,16 +1,15 @@
 //! The viewer's terminal: raw mode and alternate screen lifecycle, frame painting, window title,
 //! clipboard writes under policy, and forwarded input modes. Everything is restored on drop.
 
-use super::backend::{CaptureBackend, TerminaBackend, TerminalBackend};
+use super::backend::{TerminaBackend, TerminalBackend};
 use super::hints::HintPanel;
 use super::render::{LocalView, Notice, Palette, compose, paint};
-use crate::view::{Frame, MouseEncoding, MouseMode, PaneModes};
+use crate::view::{Frame, PaneModes};
 use base64::Engine as _;
 use ratatui_core::buffer::Buffer;
 use std::io;
 
 pub const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
-const MAX_TITLE_BYTES: usize = 4096;
 
 pub struct Screen<B: TerminalBackend> {
     backend: B,
@@ -27,10 +26,11 @@ impl Screen<TerminaBackend> {
     }
 }
 
-impl Screen<CaptureBackend> {
+#[cfg(test)]
+impl Screen<super::backend::CaptureBackend> {
     pub fn capture(rows: u16, cols: u16, clipboard_enabled: bool) -> io::Result<Self> {
         Self::enter(
-            CaptureBackend::new(rows, cols),
+            super::backend::CaptureBackend::new(rows, cols),
             clipboard_enabled,
             Palette::default(),
         )
@@ -96,7 +96,7 @@ impl<B: TerminalBackend> Screen<B> {
     fn emit_out_of_band(&mut self, frame: &Frame) -> io::Result<()> {
         let title = frame
             .focused_pane()
-            .map(|pane| sanitize_title(&pane.title))
+            .map(|pane| crate::view::printable(&pane.title, usize::MAX))
             .unwrap_or_default();
         if self.last_title.as_deref() != Some(title.as_str()) {
             self.backend.set_window_title(&title)?;
@@ -132,20 +132,6 @@ impl<B: TerminalBackend> Screen<B> {
     pub fn clipboard_enabled(&self) -> bool {
         self.clipboard_enabled
     }
-
-    pub fn leave_for_suspend(&mut self) -> io::Result<()> {
-        self.backend.end_frame()?;
-        self.backend.leave_alt_screen()?;
-        self.backend.leave_raw_mode()
-    }
-
-    pub fn reenter_after_resume(&mut self) -> io::Result<()> {
-        self.backend.enter_raw_mode()?;
-        self.backend.enter_alt_screen()?;
-        self.backend.write_input_modes(b"\x1b[?1003h\x1b[?1006h")?;
-        self.invalidate();
-        Ok(())
-    }
 }
 
 impl<B: TerminalBackend> Drop for Screen<B> {
@@ -154,17 +140,6 @@ impl<B: TerminalBackend> Drop for Screen<B> {
         let _ = self.backend.leave_alt_screen();
         let _ = self.backend.leave_raw_mode();
     }
-}
-
-fn sanitize_title(title: &str) -> String {
-    let mut output = String::new();
-    for character in title.chars().filter(|value| !value.is_control()) {
-        if output.len().saturating_add(character.len_utf8()) > MAX_TITLE_BYTES {
-            break;
-        }
-        output.push(character);
-    }
-    output
 }
 
 /// Escape sequences moving the terminal from `previous` to `next` application modes. Mouse
@@ -194,13 +169,13 @@ pub fn input_mode_bytes(previous: Option<PaneModes>, next: PaneModes) -> Vec<u8>
             b"\x1b[?2004l"
         });
     }
-    let _ = (MouseMode::None, MouseEncoding::Default);
     bytes
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::backend::CaptureBackend;
 
     #[test]
     fn input_modes_emit_only_changes() {
