@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 - 2026-09-06
+
+Internal architecture only: no protocol, configuration, key or CLI change (attachment v5,
+control `FUXCTL2`, the same default bindings and behaviour).
+
+- ECS systems are typed: output, layout, snapshot and viewer arrival/departure run as ordinary
+  systems over `Query`/`Res`/`MessageReader` with `SystemParam` bundles (`Step`, `Scene`,
+  `Arrivals`, `Effects`, `ViewerExit`); only request execution, spawn completion and the lifecycle
+  cascade keep `&mut World`. Viewer queues drain through the schedule instead of tail calls.
+- Workspace → tab membership is a bevy relationship (`TabOf`/`Tabs`) instead of a hand-kept
+  `Vec<Entity>`.
+- One set of helpers replaces repeated code: viewer scans and cascades in `ecs::support`, the
+  viewer's text layout in `client::text`, the `actions!` table that generates the command enum,
+  labels, groups and default bindings, `serde(default)` config merging, `thiserror` error types,
+  one accept loop and one framed write for the sockets, one private-directory check.
+- Removed with no caller: the historical design and prompt documents (git history keeps them),
+  `CONTROL_VERSION`, the synchronous control reader, the server half of the client negotiation,
+  test-only public helpers and unread capture-backend fields.
+- The runtime, state and descriptor directories are now checked by the same rule as socket
+  directories: a real directory, mode 0700, owned by the effective user (before, ownership was
+  compared with the parent directory's owner).
+- `src/` shrinks by about 660 lines (4 %); documentation by about 5,700 lines.
+
 ## 0.3.3 - 2026-09-06
 
 - The command popup becomes a bottom-right column above the bar: one row per binding under its

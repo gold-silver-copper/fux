@@ -14,7 +14,7 @@ independent pass verified the fixes; findings and resolutions are in the Review 
 
 | Requirement | Source | Evidence |
 |---|---|---|
-| workspace → tabs → recursive-split panes; no nesting of workspaces/tabs | `ecs/components.rs` (`Workspace.tabs`, `Tab.layout: LayoutTree<Entity>`), `layout.rs` | `ecs::check_invariants` rejects a tab in two workspaces or a pane in two layouts; `layout.rs` tests (6) and randomized ECS test |
+| workspace → tabs → recursive-split panes; no nesting of workspaces/tabs | `ecs/components.rs` (`TabOf`/`Tabs` relationship, `Tab.layout: LayoutTree<Entity>`), `layout.rs` | `ecs::check_invariants` rejects a tab in two workspaces or a pane in two layouts; `layout.rs` tests (6) and randomized ECS test |
 | create/switch workspaces | `systems/requests.rs` `workspace_action`, `reserve_workspace`; viewer `s`/`a` | ecs `workspace_switch_sends_the_suffix_to_the_destination`; fixture `concurrent_first_clients_elect_exactly_one_server_and_workspace`; `viewer.py` |
 | create/switch/name/close tabs | `tab_action`, `close_tab` (`ecs/support.rs`); viewer `t n p w , c` | ecs `natural_exit_of_one_pane_closes_it_and_of_a_tab_moves_viewers`, randomized test (found and fixed the orphaned-pane invariant, see Review); `viewer.py`; fixture `control_protocol_lists_captures_and_streams_events_without_touching_viewers` |
 | splits, directional focus, repeated resize, confirmed close | `layout.rs` (`split/close/resize/neighbour`), `requests.rs`; controller modes `Resize`, `ClosePane`, `CloseTab` | ecs `split_focus_and_following_input_reach_the_new_pane_only_after_creation`; `viewer.py` split/resize/close scenarios; `local_tty.py` |
@@ -211,7 +211,7 @@ code fix was resolved; the two remaining P2 items were documentation corrections
 | # | Severity | Finding (reviewer, confirmed) | Resolution |
 |---|---|---|---|
 | 1 | P1 | An exit report arriving with or before the spawn completion was dropped because the pane was still `Starting`; the pane stayed `Live` with a dead pid and a last-pane exit never retired the workspace. | `systems/output.rs` records the exit on a `Starting` pane; the lifecycle pass leaves exited reservations to the completion phase, which places the already-exited pane so the same step closes it. Tests `exit_arriving_with_or_before_the_spawn_completion_is_not_lost`, `a_workspace_whose_first_pane_exits_at_once_retires_with_its_status`. |
-| 2 | P1 | Releasing a `Starting` reservation (workspace kill, finalize) emitted `ReleasePane` before the process existed and the later completion was ignored, leaking the shell until server exit. | `apply_spawn_completions` emits `Terminate` + `ReleasePane` for a completion whose reservation is gone; `finalize` fails pending creations' requesters (`fail_pending_creations`); the workspace completion path abandons a workspace killed before it opened. Test `killing_a_workspace_with_a_pending_spawn_stops_the_late_process`. |
+| 2 | P1 | Releasing a `Starting` reservation (workspace kill, finalize) emitted `ReleasePane` before the process existed and the later completion was ignored, leaking the shell until server exit. | `apply_spawn_completions` emits `Terminate` + `ReleasePane` for a completion whose reservation is gone; `finalize` fails pending creations' requesters (`support::fail_creations`); the workspace completion path abandons a workspace killed before it opened. Test `killing_a_workspace_with_a_pending_spawn_stops_the_late_process`. |
 | 3 | P1 | `view` history reads resolved pane ids globally, so a gateway-scoped viewer of one workspace could read another workspace's screen. | `history_view` is scoped to the viewer's workspace; `workspace kill` over a workspace connection is limited to that workspace (`Unauthorized` otherwise); `workspace select` enforces the viewer limit. Test `viewer_requests_never_reach_other_workspaces`; protocol docs updated. |
 | 4 | P1 | The viewer's Escape disambiguation deadline was recomputed on every loop turn, so a lone Esc never resolved while any pane streamed frames faster than 35 ms. | `client::EscapeTimer` fixes the deadline when the pending Escape begins; unit test `escape_deadline_is_fixed_when_the_escape_arrives`. |
 | 5 | P2 | Viewer outboxes leaked on hard disconnect (`ViewerGone` path emitted no `CloseViewer`). | `despawn_viewer` emits `CloseViewer`; the duplicate explicit effects were removed. |
@@ -261,7 +261,7 @@ workspace, and a later failed workspace spawn rolled the workspace back and orph
 Control requests now resolve only open, non-retiring workspaces (`requests.rs`). A further 2048-case
 run then found that killing the only pane of a tab while a split into that tab was still starting
 closed the tab and left the reservation without one; `close_tab` now fails such pending creations
-(`fail_pending_creations_in_tab`) and releases them, the late completion being stopped by the
+(`support::fail_creations`) and releases them, the late completion being stopped by the
 completion phase. All shrunk cases are recorded in `tests/ecs.proptest-regressions`; the suite
 passes with 2048 and 8192 cases (see the final gate below).
 
@@ -357,6 +357,96 @@ and two broken README sentences, all corrected; the two-cell indent of bindings 
 headings is deliberate. Sound per the reviewer: bounds-checked painting, grapheme-aware
 truncation, scroll clamping shared between painter and viewer loop, no collision among the
 re-keyed defaults or with the prefix, and the unchanged prefix-twice and Esc paths.
+
+## Idiomatic refactor (0.4.0, 2026-09-06)
+
+The refactor specification (`idiomatic-ecs-refactor-prompt.md` in git history) asked for proper
+bevy_ecs use, idiomatic Rust, deletion of cruft and a smaller tree with every contract intact.
+Baseline: `main` at `5449616` (0.3.3). Counts are `wc -l` over `git ls-files` for each class
+(`src/*.rs src/**/*.rs`; `tests/*.rs tests/**/*.rs`; `*.py **/*.py`; `docs/*.md`; `*.md`;
+`.github/** Cargo.toml tests/verify/*.sh tests/verify/fixture-child/Cargo.toml`).
+
+| Class | Baseline | 0.4.0 | Change |
+|---|---|---|---|
+| production Rust (`src/`) | 15,978 | 15,320 | −658 (−4.1 %) |
+| test Rust (`tests/`, fixture-child) | 3,496 | 3,551 | +55 (one regression test from the review) |
+| Python harnesses and tools | 1,424 | 1,424 | 0 |
+| `docs/*.md` | 5,037 | 885 | historical audits and plans removed |
+| root `*.md` | 1,423 | 569 | prompts removed, HANDOFF rewritten |
+| CI, Cargo.toml, scripts | 260 | 260 | 0 |
+
+The reduction of hand-maintained Rust is 4 %, not the fifth the specification aimed for. The
+limiting evidence: the 0.3.0 tree had already been written from scratch against the ECS, so the
+remaining repetition was local (viewer scans, error literals, accept loops, socket writes) rather
+than structural, and every larger candidate would have deleted a contract, an assertion or a
+guard (per-mode viewer impls, narrower components, newtype dimensions and a table-driven CLI were
+inventoried and rejected as adding lines; see the pull request for the full ledgers). Nothing was
+moved between files and counted as removed; `client/text.rs`, `daemon/migration.rs` and the
+`ecs::support` helpers are counted at their new size.
+
+By area (production Rust): `ecs/` 3,781 → 3,627, `client/` 4,544 → 4,404, `server/` 1,243 →
+1,240, `main.rs` 839 → 665, `daemon/` 1,029 → 1,135 (the incompatible-server dialog moved here
+from `main.rs`), `proto/` 1,313 → 1,238, the rest (`layout`, `terminal`, `view`, `commands`,
+`config`, `ids`, `os`) 3,229 → 3,011. The duplicated implementations that were removed are listed
+one by one in the pull request's deletion ledger.
+
+ECS usage after the refactor: typed systems with `Query`/`Res`/`MessageReader`/`Commands` and
+`SystemParam` bundles for ingest, output, layout, snapshot and publish; `TabOf`/`Tabs` relationship
+for workspace membership (no `linked_spawn`: retirement stays an explicit cascade so panes are
+released through effects first); queue draining scheduled after the
+request and completion phases. Four exclusive systems remain, each justified in
+[design.md](design.md) "Systems". Change detection was not adopted for repaint decisions because
+`get_mut` on panes for history views and captures would mark them changed.
+
+Contract evidence: every test of 0.3.3 passes unchanged except two unit tests whose subject was
+deleted and whose assertion moved: `proto::control` asserts the frame bound on
+`decode_request_frame` (the synchronous `read_request` reader had no production caller; the socket
+path's `read_line` bounds frames by construction and every CLI and zor harness drives it), and
+`proto::socket` asserts client negotiation against a thread that echoes `FUXCTL2` or answers
+`FUXCTL1` (the server half is `connections::negotiate`, exercised by `observer.py`, which sends
+`FUXCTL1` to a real server and expects the `FUXCTL2` answer or a closed connection). The commands and config unit tests use `entries()` and
+`toml::to_string_pretty` in place of the deleted test-only `key_for` and `to_toml_pretty`.
+
+Performance, release builds, `python3 tools/measure.py BIN --version 5`, three alternating runs
+per binary on the same machine:
+
+| Measure | 0.3.3 baseline (`5449616`) | 0.4.0 branch |
+|---|---|---|
+| startup to attach socket | 24–41 ms | 18–43 ms |
+| idle CPU per 10 s with one viewer | 0.00 s | 0.00 s |
+| RSS at start / after 20 000-line burst | 6.1 / 34.0–35.2 MiB | 6.4 / 35.4–35.9 MiB |
+| 20 000-line burst to quiescence | 0.13–0.16 s | 0.13–0.16 s |
+| input→frame latency median / p95 (20 samples) | 3.2–8.6 / 3.6–11.2 ms | 3.4–6.9 / 14.0–47.6 ms |
+| input→frame latency median / p95 (100 samples, two runs each) | 4.9–5.7 / 7.7–10.1 ms | 3.3–8.5 / 8.6–10.8 ms |
+| release binary (macOS arm64) | 6,453,008 bytes | 6,598,752 bytes |
+
+Idle CPU, burst time and latency are within run-to-run noise: the 20-sample p95 spikes on the
+branch did not reproduce with 100 samples, where both binaries sit at 8–11 ms. Two differences are
+consistent and explained: the binary is 146 KB (2 %) larger and resident memory at start about
+0.3 MiB higher, from the generic `accept_loop`/`each_viewer` monomorphizations and the
+relationship component registrations; nothing per frame changed (output feeding now clones the
+workspace name only when it emits an event and no longer clones the inbound batch; layout,
+snapshot and the separator pass are unchanged).
+
+Gate on the final tree (macOS, 2026-09-06):
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | clean |
+| `cargo clippy --all-targets --locked -- -D warnings` | clean |
+| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 PROPTEST_CASES=2048 cargo test --locked -- --test-threads=1` | lib 78, main 2, `ecs` 19 (randomized at 2048 cases), `local_cli` 6 (all Python harnesses), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
+| `cargo doc --no-deps --locked` | generated, no warnings |
+| `cargo +1.95.0 check --all-targets --locked` | passed (MSRV) |
+| `cargo test --locked --manifest-path tests/verify/fixture-child/Cargo.toml` | 3 + 8 + 2 passed |
+| `FUX_BIN=$PWD/target/debug/fux KOH_REQUIRE_FUX_BIN=1 cargo test --manifest-path references/koh/Cargo.toml --test gateway --locked` | 2 passed |
+| same with `--lib gateway:: --locked` | 10 passed (219 filtered) |
+| `tests/verify/release-package.sh --allow-dirty` | 8 passed |
+| `python3 tools/dependencies.py verify` | koh and zor patches verified |
+| `git diff --check` | clean |
+
+### Independent review of the refactor
+
+REVIEW_RECORD
 
 ## Platform and CI limits
 
