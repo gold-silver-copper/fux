@@ -152,14 +152,22 @@ impl Adapter {
                     pane,
                     argv,
                     cwd,
+                    env,
                     rows,
                     cols,
                 } => {
                     let events = self.events.clone();
                     self.spawns.spawn_blocking(move || {
-                        let result =
-                            PaneProcess::spawn(pane, &argv, cwd.as_deref(), rows, cols, events)
-                                .map_err(|error| error.to_string());
+                        let result = PaneProcess::spawn(
+                            pane,
+                            &argv,
+                            cwd.as_deref(),
+                            &env,
+                            rows,
+                            cols,
+                            events,
+                        )
+                        .map_err(|error| error.to_string());
                         (pane, result)
                     });
                 }

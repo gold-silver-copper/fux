@@ -591,17 +591,43 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             target,
             cwd,
             argv,
+            env,
+            rows,
+            columns,
             ..
-        } => split(world, &context, id, axis, target, cwd, argv),
-        Request::New { cwd, argv, .. } => {
-            split(world, &context, id, Axis::Horizontal, None, cwd, argv)
-        }
+        } => split(
+            world, &context, id, axis, target, cwd, argv, env, rows, columns,
+        ),
+        Request::New {
+            cwd,
+            argv,
+            env,
+            rows,
+            columns,
+            ..
+        } => split(
+            world,
+            &context,
+            id,
+            Axis::Horizontal,
+            None,
+            cwd,
+            argv,
+            env,
+            rows,
+            columns,
+        ),
         Request::Focus { target, .. } => focus(world, &context, id, target),
         Request::Kill { pane, .. } => kill(world, &context, id, pane),
         Request::Resize { pane, delta, .. } => resize(world, &context, id, pane, delta),
-        Request::SendKeys { pane, keys, .. } => {
+        Request::SendKeys {
+            pane,
+            keys,
+            notation,
+            ..
+        } => {
             let bytes =
-                control::decode_key_bytes(&keys).map_err(|error| control::error_reply(&error));
+                control::decode_keys(&keys, notation).map_err(|error| control::error_reply(&error));
             bytes.and_then(|bytes| {
                 let entity = pane_in_workspace(world, &context, pane)
                     .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
@@ -851,6 +877,7 @@ fn tab_in_workspace(world: &World, context: &Context, tab: crate::ids::TabId) ->
     is_member(world, context.workspace, entity).then_some(entity)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn split(
     world: &mut World,
     context: &Context,
@@ -859,6 +886,9 @@ fn split(
     target: Option<PaneId>,
     cwd: Option<std::path::PathBuf>,
     argv: Vec<String>,
+    env: Vec<(String, String)>,
+    rows: Option<u16>,
+    columns: Option<u16>,
 ) -> Result<CommandResult, Reply> {
     let selection = context.selection(world);
     let target = match target {
@@ -871,21 +901,24 @@ fn split(
     };
     let tab =
         pane_tab(world, target).ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-    let size = world
+    let base = world
         .get::<Pane>(target)
         .map(|pane| pane.terminal.size())
         .unwrap_or((24, 80));
     // Give the new pane roughly half of the split pane's area from the start.
-    let size = match axis {
-        Axis::Horizontal => (size.0, size.1.saturating_sub(1) / 2),
-        Axis::Vertical => (size.0.saturating_sub(1) / 2, size.1),
+    let halved = match axis {
+        Axis::Horizontal => (base.0, base.1.saturating_sub(1) / 2),
+        Axis::Vertical => (base.0.saturating_sub(1) / 2, base.1),
     };
+    // A requested size wins where no viewer resizes the tab (a headless workspace).
+    let size = (rows.unwrap_or(halved.0), columns.unwrap_or(halved.1));
     reserve_pane(
         world,
         context.workspace,
         NewPane {
             argv,
             cwd,
+            env,
             requester: context.requester,
             request_id: id,
         },
@@ -1030,6 +1063,7 @@ fn tab_action(
                 NewPane {
                     argv: Vec::new(),
                     cwd: None,
+                    env: Vec::new(),
                     requester: context.requester,
                     request_id: id,
                 },

@@ -515,6 +515,9 @@ fn dispatch(
             target: frame.focused,
             cwd: None,
             argv: Vec::new(),
+            env: Vec::new(),
+            rows: None,
+            columns: None,
         }),
         Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
             Dispatch::Send(Request::Focus {

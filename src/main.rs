@@ -447,8 +447,15 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
     let number = |index: usize, name: &str| -> Result<u32> { Ok(get(index, name)?.parse()?) };
     let request = match command {
         "new" => {
-            let (cwd, argv) = parse_cwd_and_argv(args)?;
-            Request::New { id, cwd, argv }
+            let (cwd, env, rows, columns, argv) = parse_pane_options(args)?;
+            Request::New {
+                id,
+                cwd,
+                argv,
+                env,
+                rows,
+                columns,
+            }
         }
         "split" => {
             let (axis, rest) = match args.first().map(String::as_str) {
@@ -457,13 +464,16 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 _ => bail!("split requires horizontal|vertical followed by options and a command"),
             };
             let (target, rest) = parse_target(rest)?;
-            let (cwd, argv) = parse_cwd_and_argv(rest)?;
+            let (cwd, env, rows, columns, argv) = parse_pane_options(rest)?;
             Request::Split {
                 id,
                 axis,
                 target: target.map(PaneId),
                 cwd,
                 argv,
+                env,
+                rows,
+                columns,
             }
         }
         "focus" => {
@@ -485,11 +495,30 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
             pane: PaneId(number(0, "a pane id")?),
             delta: get(1, "a delta")?.parse()?,
         },
-        "send-keys" => Request::SendKeys {
-            id,
-            pane: PaneId(number(0, "a pane id")?),
-            keys: get(1, "keys")?.to_owned(),
-        },
+        "send-keys" => {
+            let pane = PaneId(number(0, "a pane id")?);
+            let rest = args.get(1..).unwrap_or_default();
+            let (notation, payload) = if rest.first().map(String::as_str) == Some("--keys") {
+                (
+                    fux::proto::control::KeyNotation::Keys,
+                    rest.get(1..).unwrap_or_default().join(" "),
+                )
+            } else {
+                (
+                    fux::proto::control::KeyNotation::Escapes,
+                    rest.first().cloned().unwrap_or_default(),
+                )
+            };
+            if payload.is_empty() {
+                bail!("send-keys requires keys");
+            }
+            Request::SendKeys {
+                id,
+                pane,
+                keys: payload,
+                notation,
+            }
+        }
         "capture" => {
             let pane = PaneId(number(0, "a pane id")?);
             let options = parse_capture_options(args.get(1..).unwrap_or_default())?;
@@ -600,12 +629,31 @@ fn parse_target(args: &[String]) -> Result<(Option<u32>, &[String])> {
     Ok((None, args))
 }
 
-fn parse_cwd_and_argv(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>)> {
+type PaneOptions = (
+    Option<PathBuf>,
+    Vec<(String, String)>,
+    Option<u16>,
+    Option<u16>,
+    Vec<String>,
+);
+
+fn parse_pane_options(args: &[String]) -> Result<PaneOptions> {
     let mut cwd = None;
+    let mut env = Vec::new();
+    let mut rows = None;
+    let mut columns = None;
     let mut index = 0;
     while let Some(argument) = args.get(index) {
         match argument.as_str() {
-            "--" => return Ok((cwd, args.get(index + 1..).unwrap_or_default().to_vec())),
+            "--" => {
+                return Ok((
+                    cwd,
+                    env,
+                    rows,
+                    columns,
+                    args.get(index + 1..).unwrap_or_default().to_vec(),
+                ));
+            }
             "--cwd" => {
                 let directory = args
                     .get(index + 1)
@@ -613,10 +661,44 @@ fn parse_cwd_and_argv(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>)>
                 cwd = Some(std::path::absolute(directory)?);
                 index += 2;
             }
-            _ => return Ok((cwd, args.get(index..).unwrap_or_default().to_vec())),
+            "--env" => {
+                let pair = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--env requires NAME=VALUE"))?;
+                let (name, value) = pair
+                    .split_once('=')
+                    .ok_or_else(|| anyhow::anyhow!("--env requires NAME=VALUE"))?;
+                env.push((name.to_owned(), value.to_owned()));
+                index += 2;
+            }
+            "--rows" => {
+                rows = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--rows requires a count"))?
+                        .parse()?,
+                );
+                index += 2;
+            }
+            "--columns" => {
+                columns = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--columns requires a count"))?
+                        .parse()?,
+                );
+                index += 2;
+            }
+            _ => {
+                return Ok((
+                    cwd,
+                    env,
+                    rows,
+                    columns,
+                    args.get(index..).unwrap_or_default().to_vec(),
+                ));
+            }
         }
     }
-    Ok((cwd, Vec::new()))
+    Ok((cwd, env, rows, columns, Vec::new()))
 }
 
 #[derive(Default)]

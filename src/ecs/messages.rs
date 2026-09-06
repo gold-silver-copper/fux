@@ -98,6 +98,7 @@ pub enum Effect {
         pane: PaneId,
         argv: Vec<String>,
         cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
         rows: u16,
         cols: u16,
     },

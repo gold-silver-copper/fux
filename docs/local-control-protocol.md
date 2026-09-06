@@ -36,12 +36,12 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 
 | Command | Fields | Result |
 |---|---|---|
-| `new` | `cwd?`, `argv?` | `pane` |
-| `split` | `axis` (`horizontal`/`vertical`), `target?`, `cwd?`, `argv?` | `pane` |
+| `new` | `cwd?`, `argv?`, `env?`, `rows?`, `columns?` | `pane` |
+| `split` | `axis` (`horizontal`/`vertical`), `target?`, `cwd?`, `argv?`, `env?`, `rows?`, `columns?` | `pane` |
 | `focus` | `target`: `left`/`right`/`up`/`down` or `{"pane":ID}` | unit |
 | `kill` | `pane` | unit (the pane leaves the layout now; `pane.closed` follows the exit report) |
 | `resize` | `pane`, `delta` (non-zero) | unit |
-| `send-keys` | `pane`, `keys` (escapes `\n \r \t \e \\ \0 \xHH`, at most 64 KiB) | unit |
+| `send-keys` | `pane`, `keys` (at most 64 KiB), `notation?` (`escapes` default, or `keys`) | unit |
 | `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows), `max_bytes` (1–131072), `format?` (`text` default, `rows`), `since?` (an output sequence; `rows` only, no scrollback) | `text` + `seq`, or `rows` (below) |
 | `list` | | `workspaces[]` |
 | `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{…}` |
@@ -64,6 +64,20 @@ selection or a viewport.
 Ordering: requests on one connection execute in order and are applied in the same ordered step as
 viewer input. A creation reply is sent only after the pane process was started (or failed).
 Events are published after the step that produced them, in step order.
+
+## Creating panes and sending keys
+
+`new` and `split` accept `env` (an array of `[name, value]` pairs, at most 64 entries and 16 KiB
+total, applied on top of the sanitized inherited environment) and `rows`/`columns` for the pane's
+initial size. The size is honored only where no viewer sizes the tab (a headless workspace); an
+attached viewer's terminal always wins. The first pane of a workspace is 24x80 until a viewer
+attaches or a later `split` sets a size.
+
+`send-keys` reads its payload in one of two notations. `escapes` (the default) is byte-exact with
+`\n \r \t \e \\ \0 \xHH`. `keys` reads space-separated key names: `Enter`, `Tab`, `Escape`,
+`Space`, `Backspace`, `Up`/`Down`/`Left`/`Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`,
+`Delete`, `F1`-`F12`, `C-<key>` (control), `M-<key>` (meta, an `Escape` prefix), or a single
+literal character; arrow and navigation keys send their normal-cursor-mode sequences.
 
 ## Output sequence
 

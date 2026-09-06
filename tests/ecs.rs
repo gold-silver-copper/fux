@@ -211,6 +211,9 @@ fn split(id: u64, axis: Axis) -> Request {
         target: None,
         cwd: None,
         argv: Vec::new(),
+        env: Vec::new(),
+        rows: None,
+        columns: None,
     }
 }
 
@@ -724,6 +727,44 @@ fn send_wait(
             timeout_ms,
         },
     );
+}
+
+#[test]
+fn split_carries_env_and_a_requested_headless_size_to_the_spawn() {
+    let mut harness = Harness::new();
+    harness.create_workspace("default");
+    // No viewer: a headless workspace. Split with an explicit size and environment.
+    harness.step(vec![Inbound::ControlRequest {
+        workspace: "default".into(),
+        request: Request::Split {
+            id: 5,
+            axis: Axis::Horizontal,
+            target: Some(PaneId(1)),
+            cwd: None,
+            argv: vec!["/bin/sh".into()],
+            env: vec![("AGENT".into(), "1".into())],
+            rows: Some(30),
+            columns: Some(100),
+        },
+        token: 5,
+    }]);
+    let spawn = harness
+        .effects
+        .iter()
+        .rev()
+        .find_map(|effect| match effect {
+            Effect::SpawnPane {
+                pane,
+                env,
+                rows,
+                cols,
+                ..
+            } if *pane == PaneId(2) => Some((env.clone(), *rows, *cols)),
+            _ => None,
+        })
+        .expect("a spawn for the new pane");
+    assert_eq!(spawn.0, vec![("AGENT".to_owned(), "1".to_owned())]);
+    assert_eq!((spawn.1, spawn.2), (30, 100), "the requested headless size");
 }
 
 #[test]
@@ -1410,6 +1451,7 @@ mod randomized {
                 id: 1,
                 pane,
                 keys: "x\\n".into(),
+                notation: fux::proto::control::KeyNotation::Escapes,
             }),
             (pane(), any::<bool>(), proptest::option::of(0..4u64)).prop_map(
                 |(pane, rows, since)| Request::Capture {

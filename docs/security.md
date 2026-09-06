@@ -32,7 +32,8 @@ an instance nonce and socket paths only; the protocols carry no version numbers.
   64 KiB from a 256-deep channel and 256 ingress requests per collection, two collections per
   step when an output stream waits its 1 ms for more chunks) and signal polling between busy steps so a hot pane cannot starve input, timers,
   exit handling or shutdown.
-- Configuration: 1 MiB file, 128 argv entries of at most 4 KiB, 16 KiB total per command.
+- Configuration: 1 MiB file, 128 argv entries of at most 4 KiB, 16 KiB total per command; a
+  `new`/`split` `env` holds at most 64 entries and 16 KiB total.
 - Names: workspace names and labels reject path separators, `.`/`..`, control characters and
   empty strings.
 

@@ -23,6 +23,7 @@ use std::path::PathBuf;
 pub struct NewPane {
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
+    pub env: Vec<(String, String)>,
     pub requester: Requester,
     pub request_id: RequestId,
 }
@@ -31,7 +32,7 @@ pub struct NewPane {
 pub fn reserve_pane(
     world: &mut World,
     workspace: Entity,
-    new: NewPane,
+    mut new: NewPane,
     kind: CreationKind,
     size: (u16, u16),
 ) -> Result<Entity, Reply> {
@@ -43,10 +44,11 @@ pub fn reserve_pane(
             "configured pane limit reached",
         ));
     }
+    let env = std::mem::take(&mut new.env);
     let argv = if new.argv.is_empty() {
         default_command(world)
     } else {
-        new.argv
+        std::mem::take(&mut new.argv)
     };
     let id = world.resource_mut::<Ids>().next_pane().ok_or_else(|| {
         failed(
@@ -104,6 +106,7 @@ pub fn reserve_pane(
             pane: id,
             argv,
             cwd: new.cwd,
+            env,
             rows,
             cols,
         },
@@ -200,6 +203,7 @@ pub fn reserve_workspace(
         NewPane {
             argv: Vec::new(),
             cwd: None,
+            env: Vec::new(),
             requester,
             request_id,
         },

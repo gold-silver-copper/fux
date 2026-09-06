@@ -16,6 +16,8 @@ pub const MAX_ARGV_BYTES: usize = 16 * 1024;
 /// Maximum captured text before JSON encoding; worst-case escaping stays under the frame limit.
 pub const MAX_CAPTURE_BYTES: usize = 128 * 1024;
 pub const MAX_KEY_BYTES: usize = 64 * 1024;
+pub const MAX_ENV_ENTRIES: usize = 64;
+pub const MAX_ENV_BYTES: usize = 16 * 1024;
 pub const MAX_SCROLLBACK_LINES: u32 = 100_000;
 pub const MAX_EVENT_FILTERS: usize = 32;
 pub const MAX_SUBSCRIBER_QUEUE: usize = 1024;
@@ -43,6 +45,14 @@ pub enum Request {
         cwd: Option<PathBuf>,
         #[serde(default)]
         argv: Vec<String>,
+        /// Extra environment for the pane command, on top of the sanitized inherited set.
+        #[serde(default)]
+        env: Vec<(String, String)>,
+        /// Initial pane size when no viewer sizes the tab (a headless workspace).
+        #[serde(default)]
+        rows: Option<u16>,
+        #[serde(default)]
+        columns: Option<u16>,
     },
     /// Alias for a side-by-side split of the focused pane.
     New {
@@ -51,6 +61,12 @@ pub enum Request {
         cwd: Option<PathBuf>,
         #[serde(default)]
         argv: Vec<String>,
+        #[serde(default)]
+        env: Vec<(String, String)>,
+        #[serde(default)]
+        rows: Option<u16>,
+        #[serde(default)]
+        columns: Option<u16>,
     },
     Focus {
         id: RequestId,
@@ -69,6 +85,10 @@ pub enum Request {
         id: RequestId,
         pane: PaneId,
         keys: String,
+        /// `escapes` (default) reads `\n \e \xHH`; `keys` reads space-separated key names
+        /// (`Enter`, `Up`, `C-c`, `M-x`, literal characters).
+        #[serde(default)]
+        notation: KeyNotation,
     },
     /// The pane's text. `format: "rows"` returns the visible rows one by one with the cursor and
     /// the output sequence; with `since` only the rows changed after that sequence.
@@ -136,7 +156,7 @@ impl Request {
     pub fn validate(&self) -> Result<(), ControlError> {
         let id = Some(self.id());
         match self {
-            Self::Split { argv, cwd, .. } | Self::New { argv, cwd, .. } => {
+            Self::Split { argv, cwd, env, .. } | Self::New { argv, cwd, env, .. } => {
                 validate_argv(argv).map_err(|mut error| {
                     error.id = id;
                     error
@@ -148,18 +168,19 @@ impl Request {
                 {
                     return Err(ControlError::invalid(id, "cwd must be an absolute path"));
                 }
+                validate_env(id, env)?;
             }
             Self::Resize { delta: 0, .. } => {
                 return Err(ControlError::invalid(id, "resize delta must not be zero"));
             }
-            Self::SendKeys { keys, .. } => {
+            Self::SendKeys { keys, notation, .. } => {
                 if keys.len() > MAX_KEY_BYTES {
                     return Err(ControlError::invalid(
                         id,
                         format!("send-keys payload must be at most {MAX_KEY_BYTES} bytes"),
                     ));
                 }
-                decode_key_bytes(keys).map_err(|mut error| {
+                decode_keys(keys, *notation).map_err(|mut error| {
                     error.id = id;
                     error
                 })?;
@@ -734,6 +755,127 @@ pub fn decode_key_bytes(input: &str) -> Result<Vec<u8>, ControlError> {
     Ok(output)
 }
 
+/// How `send-keys` reads its payload.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyNotation {
+    /// Byte escapes: `\n \r \t \e \\ \0 \xHH`, everything else literal UTF-8.
+    #[default]
+    Escapes,
+    /// Space-separated key names: `Enter`, `Tab`, `Escape`, `Space`, `Up`/`Down`/`Left`/`Right`,
+    /// `Home`, `End`, `PageUp`, `PageDown`, `F1`-`F12`, `C-<key>`, `M-<key>`, or a literal char.
+    Keys,
+}
+
+/// Decodes `send-keys` input in the requested notation into the exact bytes for the pane.
+pub fn decode_keys(input: &str, notation: KeyNotation) -> Result<Vec<u8>, ControlError> {
+    match notation {
+        KeyNotation::Escapes => decode_key_bytes(input),
+        KeyNotation::Keys => decode_key_notation(input),
+    }
+}
+
+/// The xterm byte sequence for one named key (normal cursor mode).
+fn named_key(name: &str) -> Option<&'static [u8]> {
+    Some(match name {
+        "Enter" | "Return" => b"\r",
+        "Tab" => b"\t",
+        "Escape" | "Esc" => b"\x1b",
+        "Space" => b" ",
+        "Backspace" | "BSpace" => b"\x7f",
+        "Up" => b"\x1b[A",
+        "Down" => b"\x1b[B",
+        "Right" => b"\x1b[C",
+        "Left" => b"\x1b[D",
+        "Home" => b"\x1b[H",
+        "End" => b"\x1b[F",
+        "Insert" | "IC" => b"\x1b[2~",
+        "Delete" | "DC" => b"\x1b[3~",
+        "PageUp" | "PgUp" => b"\x1b[5~",
+        "PageDown" | "PgDn" => b"\x1b[6~",
+        "F1" => b"\x1bOP",
+        "F2" => b"\x1bOQ",
+        "F3" => b"\x1bOR",
+        "F4" => b"\x1bOS",
+        "F5" => b"\x1b[15~",
+        "F6" => b"\x1b[17~",
+        "F7" => b"\x1b[18~",
+        "F8" => b"\x1b[19~",
+        "F9" => b"\x1b[20~",
+        "F10" => b"\x1b[21~",
+        "F11" => b"\x1b[23~",
+        "F12" => b"\x1b[24~",
+        _ => return None,
+    })
+}
+
+/// Decodes one token (a named key, `C-<x>`, `M-<x>`, or a literal character) into bytes.
+fn decode_token(token: &str) -> Result<Vec<u8>, ControlError> {
+    if let Some(rest) = token.strip_prefix("C-") {
+        let inner = decode_token(rest)?;
+        // Control applies to a single ASCII letter or `@`-`_`; otherwise it is undefined.
+        let [byte] = inner.as_slice() else {
+            return Err(ControlError::invalid(
+                None,
+                format!("C- needs one key: {token}"),
+            ));
+        };
+        return Ok(vec![byte.to_ascii_uppercase().wrapping_sub(0x40) & 0x7f]);
+    }
+    if let Some(rest) = token.strip_prefix("M-") {
+        let mut bytes = vec![0x1b];
+        bytes.extend(decode_token(rest)?);
+        return Ok(bytes);
+    }
+    if let Some(bytes) = named_key(token) {
+        return Ok(bytes.to_vec());
+    }
+    let mut chars = token.chars();
+    if let (Some(character), None) = (chars.next(), chars.clone().next()) {
+        let mut encoded = [0_u8; 4];
+        return Ok(character.encode_utf8(&mut encoded).as_bytes().to_vec());
+    }
+    Err(ControlError::invalid(
+        None,
+        format!("unknown key `{token}`"),
+    ))
+}
+
+/// Decodes space-separated key tokens into the bytes a pane receives.
+pub fn decode_key_notation(input: &str) -> Result<Vec<u8>, ControlError> {
+    let mut output = Vec::with_capacity(input.len());
+    for token in input.split_whitespace() {
+        output.extend(decode_token(token)?);
+    }
+    Ok(output)
+}
+
+fn validate_env(id: Option<RequestId>, env: &[(String, String)]) -> Result<(), ControlError> {
+    if env.len() > MAX_ENV_ENTRIES {
+        return Err(ControlError::invalid(
+            id,
+            format!("at most {MAX_ENV_ENTRIES} environment entries"),
+        ));
+    }
+    let mut total = 0usize;
+    for (name, value) in env {
+        if name.is_empty() || name.contains(['=', '\0']) || value.contains('\0') {
+            return Err(ControlError::invalid(
+                id,
+                "environment names are non-empty without `=` or NUL; values carry no NUL",
+            ));
+        }
+        total = total.saturating_add(name.len()).saturating_add(value.len());
+    }
+    if total > MAX_ENV_BYTES {
+        return Err(ControlError::invalid(
+            id,
+            format!("environment exceeds {MAX_ENV_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_argv(argv: &[String]) -> Result<(), ControlError> {
     if argv.len() > MAX_ARGV_ENTRIES {
         return Err(ControlError::invalid(
@@ -769,6 +911,7 @@ fn extract_id(frame: &[u8]) -> Option<RequestId> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
     use super::*;
 
     #[test]
@@ -821,6 +964,52 @@ mod tests {
             serde_json::from_str::<EventKind>("\"pane.output\"").ok(),
             Some(EventKind::PaneOutput)
         );
+    }
+
+    #[test]
+    fn key_notation_decodes_named_keys_modifiers_and_literals() {
+        assert_eq!(decode_key_notation("Enter").unwrap(), b"\r");
+        assert_eq!(decode_key_notation("Up Down").unwrap(), b"\x1b[A\x1b[B");
+        assert_eq!(decode_key_notation("C-c").unwrap(), vec![3]);
+        assert_eq!(decode_key_notation("C-a b C-c").unwrap(), vec![1, b'b', 3]);
+        assert_eq!(decode_key_notation("M-x").unwrap(), vec![0x1b, b'x']);
+        assert_eq!(decode_key_notation("F5").unwrap(), b"\x1b[15~");
+        assert_eq!(decode_key_notation("h i").unwrap(), b"hi");
+        assert!(decode_key_notation("Nope").is_err());
+        assert!(decode_key_notation("C-ab").is_err());
+        // The default escapes notation is unchanged.
+        assert_eq!(decode_keys("a\\n", KeyNotation::Escapes).unwrap(), b"a\n");
+    }
+
+    #[test]
+    fn env_and_send_keys_notation_are_validated() {
+        let ok = decode_request_frame(
+            br#"{"command":"new","id":1,"env":[["FOO","bar"]],"rows":40,"columns":100}"#,
+        );
+        assert!(matches!(
+            ok,
+            Ok(Request::New {
+                rows: Some(40),
+                columns: Some(100),
+                ..
+            })
+        ));
+        assert!(ok.unwrap().validate().is_ok());
+        let bad_name = decode_request_frame(br#"{"command":"new","id":1,"env":[["A=B","c"]]}"#)
+            .ok()
+            .filter(|request| request.validate().is_ok());
+        assert!(bad_name.is_none(), "an `=` in an env name is rejected");
+        let keys = decode_request_frame(
+            br#"{"command":"send-keys","id":2,"pane":1,"keys":"C-c Enter","notation":"keys"}"#,
+        );
+        assert!(matches!(
+            keys,
+            Ok(Request::SendKeys {
+                notation: KeyNotation::Keys,
+                ..
+            })
+        ));
+        assert!(keys.unwrap().validate().is_ok());
     }
 
     #[test]
