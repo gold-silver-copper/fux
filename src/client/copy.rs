@@ -90,10 +90,6 @@ impl CopySession {
     pub fn notice(&self) -> Option<&'static str> {
         self.notice
     }
-    pub fn clear_notice(&mut self) {
-        self.notice = None;
-    }
-
     /// The next history read to send, at most one outstanding.
     pub fn take_read(&mut self) -> Option<(u64, PaneId, u32)> {
         if self.pending_read.is_some() {

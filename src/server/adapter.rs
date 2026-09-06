@@ -141,10 +141,6 @@ impl Adapter {
         }
     }
 
-    pub fn pane_count(&self) -> usize {
-        self.panes.len()
-    }
-
     /// Applies one step's effects in order. Socket binding is left to the caller through
     /// `opened`/`closed`, which need the async runtime.
     pub fn apply(&mut self, effects: Vec<Effect>) {

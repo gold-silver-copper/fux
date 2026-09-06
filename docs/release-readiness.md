@@ -26,7 +26,3 @@ requested, so configured jobs are not executed evidence.
 - Attachment protocol v5 and control protocol `FUXCTL2` are incompatible with 0.2.x, 0.3.0 and 0.3.1 servers. An
   interactive `fux` offers to stop the old server after an explicit typed confirmation (terminating
   its panes), or shows how to run alongside it; it never stops one without that confirmation.
-
-Earlier readiness records ([release-readiness-before-standalone.md](release-readiness-before-standalone.md),
-[standalone-audit.md](standalone-audit.md), [contextual-help-acceptance.md](contextual-help-acceptance.md))
-are historical and describe architectures that no longer exist.

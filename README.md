@@ -187,14 +187,13 @@ explicit binary paths; set `ZOR_BIN` and `FUX_REQUIRE_ZOR_BIN=1`, or `FUX_BIN` a
 ## Documents
 
 - [docs/design.md](docs/design.md): architecture, entity model, system order, lifecycle.
-- [docs/ecs-plan.md](docs/ecs-plan.md): the plan written before the rewrite.
 - [docs/ecs-acceptance.md](docs/ecs-acceptance.md): requirement-by-requirement acceptance audit.
 - [docs/local-attachment-protocol.md](docs/local-attachment-protocol.md) (v5) and
   [docs/local-control-protocol.md](docs/local-control-protocol.md) (`FUXCTL2`).
 - [docs/security.md](docs/security.md), [docs/release-readiness.md](docs/release-readiness.md),
   [CHANGELOG.md](CHANGELOG.md), [HANDOFF.md](HANDOFF.md).
-- Everything else under `docs/` and the `*-prompt.md` files are historical records of earlier
-  architectures and are labelled as such.
+- Earlier architectures (the koh-hosted wrapper, the standalone host) and the prompts that drove
+  each rewrite live in git history; docs/design.md keeps a short history.
 
 Licensed under MIT. Terminal handling reused from earlier fux releases and the koh/zor projects
 retains attribution in [LICENSES](LICENSES).

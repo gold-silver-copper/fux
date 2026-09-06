@@ -3,7 +3,7 @@
 //! as its content (or the space available). Long lists scroll row by row with `▲ n more` /
 //! `▼ n more` indicators; the thin one-line hints stay full-width rows above the bar.
 
-use crate::commands::{Action, ClientBindings, Group, key_name};
+use crate::commands::{ClientBindings, Group, key_name};
 use crate::view::Frame;
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
@@ -366,11 +366,6 @@ fn keep_tail(text: &str, width: u16) -> String {
         cut = offset;
     }
     text.get(cut..).unwrap_or_default().to_owned()
-}
-
-/// A convenience for the controller: the label of an action as painted.
-pub fn action_label(action: Action) -> &'static str {
-    action.label()
 }
 
 #[cfg(test)]

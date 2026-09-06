@@ -132,20 +132,6 @@ impl<B: TerminalBackend> Screen<B> {
     pub fn clipboard_enabled(&self) -> bool {
         self.clipboard_enabled
     }
-
-    pub fn leave_for_suspend(&mut self) -> io::Result<()> {
-        self.backend.end_frame()?;
-        self.backend.leave_alt_screen()?;
-        self.backend.leave_raw_mode()
-    }
-
-    pub fn reenter_after_resume(&mut self) -> io::Result<()> {
-        self.backend.enter_raw_mode()?;
-        self.backend.enter_alt_screen()?;
-        self.backend.write_input_modes(b"\x1b[?1003h\x1b[?1006h")?;
-        self.invalidate();
-        Ok(())
-    }
 }
 
 impl<B: TerminalBackend> Drop for Screen<B> {

@@ -116,10 +116,6 @@ impl Session {
         &self.world
     }
 
-    pub fn world_mut(&mut self) -> &mut World {
-        &mut self.world
-    }
-
     /// Names of open workspaces, sorted.
     pub fn workspace_names(&mut self) -> Vec<String> {
         let mut names: Vec<String> = self

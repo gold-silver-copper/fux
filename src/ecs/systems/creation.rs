@@ -10,7 +10,7 @@ use crate::ecs::support::{
     effect, event, failed, focus_in_tab, mark_workspace_dirty, pane_entity, reply, viewer_entity,
 };
 use crate::ids::{PaneId, TabId};
-use crate::layout::{Axis, LayoutTree, Rect, half};
+use crate::layout::{LayoutTree, Rect, half};
 use crate::proto::control::{CommandResult, ErrorCode, Event, Reply, RequestId};
 use crate::terminal::ServerTerminal;
 use bevy_ecs::prelude::*;
@@ -679,8 +679,4 @@ pub fn workspace_pending(world: &World, workspace: Entity) -> bool {
     world
         .get::<Workspace>(workspace)
         .is_some_and(|workspace| !workspace.open && workspace.retiring.is_none())
-}
-
-pub const fn split_axis(axis: Axis) -> Axis {
-    axis
 }

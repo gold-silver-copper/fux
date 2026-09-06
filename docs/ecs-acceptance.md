@@ -1,8 +1,7 @@
 # ECS rewrite acceptance audit
 
-Audit date: 2026-09-05. Scope: every requirement in
-[bevy-ecs-multiplexer-prompt.md](../bevy-ecs-multiplexer-prompt.md), mapped to current source and
-observed evidence. The plan written before implementation is [ecs-plan.md](ecs-plan.md); the
+Audit date: 2026-09-05. Scope: every requirement of the bevy_ecs rewrite specification (in git
+history as `bevy-ecs-multiplexer-prompt.md`), mapped to current source and observed evidence. The
 architecture as built is [design.md](design.md). All evidence below was produced locally on macOS
 (Darwin 25.5.0, Apple Silicon) with disposable HOME/XDG directories and owned processes only.
 Nothing was committed, pushed, released or commented on GitHub; no personal session, key or user
@@ -44,7 +43,7 @@ ordinary pane remains (`new`/`split` with `argv`, `cwd`).
 | standalone `bevy_ecs`, pinned, minimal features, APIs checked for that release | `Cargo.toml`: `bevy_ecs = "=0.19.1", default-features = false, features = ["std"]`; plan links the 0.19.1 docs; `tests/structure.rs` forbids `bevy`, `bevy_app`, `bevy_render`, `bevy_reflect` |
 | authoritative model in components/resources/systems, no legacy host in a Resource | `ecs/components.rs` holds all mutable session facts; resources are `Limits`, `Ids`, `Clock`, `Deadlines`, `Registry`, `ShuttingDown`, `WorkspaceCounter`, step messages; `structure.rs::ecs_is_the_only_authoritative_model` forbids World mutation outside `ecs/` and any non-ECS session store |
 | entities for workspaces/tabs/panes/viewers; no per-cell entities | `components.rs`; `Session::entity_counts` used by tests |
-| model written before implementation | `docs/ecs-plan.md` (dated 2026-09-05, before `src/ecs`) |
+| model written before implementation | `docs/ecs-plan.md` at the 0.3.0 commit (dated 2026-09-05, before `src/ecs`; removed from the tree in 0.4, see git history) |
 | server ECS authoritative, viewer state private, no World replication | viewers receive `view::Frame` per viewer (`systems/snapshot.rs`); client state in `client/controller.rs` |
 | public ids distinct from `Entity`, instance boundary | `ids.rs` newtypes; `Ids` maps; descriptors carry instance nonce; `structure.rs` forbids `Entity` in `proto/` and `view.rs` |
 | validate kind/ownership/liveness; confirmations carry target ids | `requests.rs` (`pane_in_workspace`, `tab_in_workspace`), controller `ClosePane{pane}`/`CloseTab{tab}` | ecs `stale_targets_fail_without_hitting_replacements` |
@@ -122,7 +121,7 @@ Composition commands: see README "Working with koh and zor".
 
 ## Workflow, configuration and documentation
 
-- Plan before implementation: `docs/ecs-plan.md`. Deviations from the plan: the `Subscribers`
+- Plan before implementation: `docs/ecs-plan.md` (0.3.0 commit). Deviations from the plan: the `Subscribers`
   resource lives in the adapter (`server/adapter.rs`) because subscriptions are connection state,
   not session state; no `workspace.resized` event is emitted (geometry is in `list`); the control
   protocol gained `workspace select` for viewers so a switch keeps one connection.
@@ -275,7 +274,7 @@ exactly that state and rejects any other orphan. The shrunk case is recorded in
 
 ## Bar and shared separators (0.3.1 top bar, 0.3.2 bottom bar, 2026-09-06)
 
-[top-bar-design-prompt.md](../top-bar-design-prompt.md) replaced the per-pane boxes with an
+The top-bar specification (`top-bar-design-prompt.md` in git history) replaced the per-pane boxes with an
 always-visible one-row bar and shared one-cell separators; 0.3.2 then moved the bar to the last
 row with its own background (`[style] bar-background`), painted after panes and separators so a
 stale taller frame can never cover it, with popups confined to the rows above it. Requirement
@@ -338,7 +337,7 @@ patches verified, `git diff --check`; all passed on 2026-09-06.
 
 ## Command column (0.3.3, 2026-09-06)
 
-[command-column-prompt.md](../command-column-prompt.md) replaced the full-width bottom popup band
+The command-column specification (`command-column-prompt.md` in git history) replaced the full-width bottom popup band
 with a bottom-right column above the bar.
 
 | Requirement | Source | Evidence |

@@ -149,5 +149,15 @@ processes) and checks World invariants after every step, including a randomized 
 test with stale ids, delayed and failed completions, viewer churn and time skips.
 `tests/structure.rs` pins architectural invariants (spawn owners, bounded channels, ECS as the
 only authority, CI surfaces). Real adapters are exercised by `tests/local_cli.rs` and the
-fixture-child binary suite. See [ecs-acceptance.md](ecs-acceptance.md) for evidence and
-[ecs-plan.md](ecs-plan.md) for the plan written before implementation.
+fixture-child binary suite. See [ecs-acceptance.md](ecs-acceptance.md) for evidence.
+
+## History
+
+- 0.1 (2026-09-03): a wrapper around koh-hosted sessions with a zor sidecar per pane; networking,
+  identities and agent detection lived inside fux.
+- 0.2 (2026-09-04): the standalone host and router with local sockets, popup panes, contextual
+  help panels and sidecar supervision; koh and zor became independent programs.
+- 0.3 (2026-09-05): this design, a complete rewrite on `bevy_ecs` with the model, order and
+  lifecycle described above; 0.3.1–0.3.3 replaced the pane boxes with the bar, separators and the
+  command column. The prompts and audits of the earlier architectures were removed from the tree
+  in 0.4 and remain in git history.
