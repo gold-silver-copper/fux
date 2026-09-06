@@ -45,10 +45,17 @@ enum Command {
     Resize(PassthroughArgs),
     /// Send input bytes to a pane: PANE KEYS (escapes: \n \r \t \e \\ \0 \xHH)
     SendKeys(PassthroughArgs),
-    /// Capture a pane's text: PANE [--attrs] [--scrollback LINES]
+    /// Capture a pane's text: PANE [--attrs] [--scrollback LINES] [--rows] [--since SEQ]
     Capture(PassthroughArgs),
     /// List the workspace's tabs and panes as JSON.
     List(PassthroughArgs),
+    /// Show the session server's pid, version, runtime directory and limits as JSON.
+    Info(PassthroughArgs),
+    /// Wait on a pane: PANE quiet MS | pattern REGEX | exit | seq N [--timeout MS]
+    Wait(PassthroughArgs),
+    /// Run a command in a pane, wait for it to exit, print its final screen, exit with its status:
+    /// [--workspace NAME] [--cwd DIR] [--env K=V] [--rows R] [--columns C] [--timeout MS] -- CMD...
+    Run(PassthroughArgs),
     /// Tab commands: new [NAME] | next | previous | select INDEX | select-id TAB | rename TAB NAME | close TAB
     Tab(PassthroughArgs),
     /// Stream lifecycle events as JSON lines: [EVENT...]
@@ -229,6 +236,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Some(Command::Capture(args)) => ctl_alias(cli.name.as_deref(), "capture", args.arguments),
         Some(Command::List(args)) => ctl_alias(cli.name.as_deref(), "list", args.arguments),
+        Some(Command::Info(args)) => ctl_alias(cli.name.as_deref(), "info", args.arguments),
+        Some(Command::Wait(args)) => ctl_alias(cli.name.as_deref(), "wait", args.arguments),
+        Some(Command::Run(args)) => run_command(cli.name.as_deref(), args.arguments),
         Some(Command::Tab(args)) => ctl_alias(cli.name.as_deref(), "tab", args.arguments),
         Some(Command::Subscribe(args)) => {
             ctl_alias(cli.name.as_deref(), "subscribe", args.arguments)
@@ -249,47 +259,22 @@ async fn attach(name: Option<&str>) -> Result<ExitCode> {
     let config = fux::config::Config::load()?;
     let paths = fux::daemon::DaemonPaths::discover()?;
     paths.prepare()?;
-    let mut offered = false;
-    loop {
-        let attempt = {
-            let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
-            match resolve(&paths, name) {
-                Ok(Some(descriptor)) => Ok(descriptor),
-                Ok(None) => start_server(&paths, name.unwrap_or("default")),
-                Err(error) => Err(error),
-            }
-        };
-        // Either step can meet an older server: the manager (control preface) or the workspace
-        // attachment (frame contract). Both get the same one-time offer.
-        let attempt = match attempt {
-            Ok(descriptor) => {
-                fux::client::attach(
-                    &descriptor.socket_path,
-                    &config,
-                    fux::client::AttachOptions {
-                        manager_socket: Some(paths.manager_socket.clone()),
-                    },
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
-        match attempt {
-            Ok(code) => return Ok(code.map_or(ExitCode::SUCCESS, exit_code)),
-            Err(error) if !offered && fux::daemon::incompatible_server(&error) => {
-                offered = true;
-                match fux::daemon::migration_dialog(&paths)? {
-                    fux::daemon::MigrationChoice::Stop => fux::daemon::stop_old_server(&paths)?,
-                    fux::daemon::MigrationChoice::Alongside => {
-                        fux::daemon::print_alongside_instructions(&paths);
-                        return Ok(ExitCode::FAILURE);
-                    }
-                    fux::daemon::MigrationChoice::Quit => return Err(error),
-                }
-            }
-            Err(error) => return Err(error),
+    let descriptor = {
+        let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
+        match resolve(&paths, name)? {
+            Some(descriptor) => descriptor,
+            None => start_server(&paths, name.unwrap_or("default"))?,
         }
-    }
+    };
+    let code = fux::client::attach(
+        &descriptor.socket_path,
+        &config,
+        fux::client::AttachOptions {
+            manager_socket: Some(paths.manager_socket.clone()),
+        },
+    )
+    .await?;
+    Ok(code.map_or(ExitCode::SUCCESS, exit_code))
 }
 
 fn resolve(
@@ -304,10 +289,12 @@ fn resolve(
     ) {
         Ok(fux::daemon::ManagerReply::Attach { descriptor }) => Ok(Some(descriptor)),
         Ok(fux::daemon::ManagerReply::Failed { message }) => bail!("session server: {message}"),
-        Ok(fux::daemon::ManagerReply::Names { .. }) => bail!("unexpected manager reply"),
+        Ok(fux::daemon::ManagerReply::Names { .. } | fux::daemon::ManagerReply::Info { .. }) => {
+            bail!("unexpected manager reply")
+        }
         Err(error) if no_server(&error) => Ok(None),
         Err(error) => Err(error.context(
-            "cannot use the existing session server; it may speak an incompatible protocol. Save your work in it before stopping it",
+            "cannot use the existing session server; if it is older than this fux, save your work in it and restart it",
         )),
     }
 }
@@ -356,6 +343,9 @@ fn workspace_command(arguments: Vec<String>) -> Result<ExitCode> {
         "list" => {
             fux::daemon::manager_request(&paths.manager_socket, &fux::daemon::ManagerRequest::List)?
         }
+        "info" => {
+            fux::daemon::manager_request(&paths.manager_socket, &fux::daemon::ManagerRequest::Info)?
+        }
         "new" => {
             paths.prepare()?;
             let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
@@ -384,7 +374,7 @@ fn workspace_command(arguments: Vec<String>) -> Result<ExitCode> {
                     .clone(),
             },
         )?,
-        _ => bail!("workspace requires list, new [NAME], or kill NAME"),
+        _ => bail!("workspace requires list, new [NAME], kill NAME, or info"),
     };
     println!("{}", serde_json::to_string(&reply)?);
     Ok(status(matches!(
@@ -421,10 +411,18 @@ fn send_control(
 ) -> Result<ExitCode> {
     use std::io::Write as _;
     use std::os::unix::net::UnixStream;
+    // A `wait` reply arrives only when its condition or timeout fires, so its read window must
+    // outlast the requested timeout; everything else keeps the 30 s answer window.
+    let answer_window = match &request {
+        fux::proto::control::Request::Wait { timeout_ms, .. } => {
+            std::time::Duration::from_millis(*timeout_ms) + std::time::Duration::from_secs(5)
+        }
+        _ => std::time::Duration::from_secs(30),
+    };
     let socket = control_path(workspace)?;
     let mut stream = UnixStream::connect(&socket)
         .map_err(|error| anyhow::anyhow!("connecting to {}: {error}", socket.display()))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    stream.set_read_timeout(Some(answer_window))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(2)))?;
     fux::proto::socket::negotiate_client(&mut stream)?;
     fux::proto::control::write_frame(&mut stream, &request)?;
@@ -445,13 +443,239 @@ fn send_control(
             print_line(&frame)?;
         }
     }
-    let frame = fux::daemon::read_json_frame(&mut stream, std::time::Duration::from_secs(30))?;
+    let frame = fux::daemon::read_json_frame(&mut stream, answer_window)?;
     let reply: fux::proto::control::Reply = serde_json::from_slice(&frame)?;
     print_line(&frame)?;
     Ok(status(matches!(
         reply,
         fux::proto::control::Reply::Failed { .. }
     )))
+}
+
+/// Sends one control request on `stream` and reads its reply, honoring a long read window for
+/// `wait`. The connection must already be negotiated.
+fn request_reply(
+    stream: &mut std::os::unix::net::UnixStream,
+    request: &fux::proto::control::Request,
+    read: std::time::Duration,
+) -> Result<fux::proto::control::Reply> {
+    stream.set_read_timeout(Some(read))?;
+    fux::proto::control::write_frame(stream, request)?;
+    let frame = fux::daemon::read_json_frame(stream, read)?;
+    Ok(serde_json::from_slice(&frame)?)
+}
+
+fn run_open_control(socket: &std::path::Path) -> Result<std::os::unix::net::UnixStream> {
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+    fux::proto::socket::negotiate_client(&mut stream)?;
+    Ok(stream)
+}
+
+fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
+    let mut timeout_ms: u64 = 300_000;
+    let mut rest = arguments;
+    if let Some(position) = rest.iter().position(|a| a == "--timeout") {
+        timeout_ms = rest
+            .get(position + 1)
+            .ok_or_else(|| anyhow::anyhow!("--timeout requires milliseconds"))?
+            .parse()?;
+        rest.drain(position..=position + 1);
+    }
+    let mut named = name.map(str::to_owned);
+    if let Some(position) = rest.iter().position(|a| a == "--workspace") {
+        named = Some(
+            rest.get(position + 1)
+                .ok_or_else(|| anyhow::anyhow!("--workspace requires a name"))?
+                .clone(),
+        );
+        rest.drain(position..=position + 1);
+    }
+    let (cwd, env, rows, columns, argv) = parse_pane_options(&rest)?;
+    if argv.is_empty() {
+        bail!("run requires a command after `--`");
+    }
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or(0);
+    let workspace = named.unwrap_or_else(|| format!("run-{}-{elapsed}", std::process::id()));
+    fux::ids::validate_workspace_name(&workspace)?;
+    let paths = fux::daemon::DaemonPaths::discover()?;
+    paths.prepare()?;
+    // `run` owns an ephemeral workspace it kills at the end, so it must create it: a name that
+    // already exists is refused rather than borrowed and then destroyed.
+    {
+        let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
+        match resolve(&paths, Some(&workspace))? {
+            Some(_) => bail!(
+                "workspace {workspace:?} already exists; `run` needs a fresh name (it removes the workspace when the command exits)"
+            ),
+            None => {
+                start_server(&paths, &workspace)?;
+            }
+        }
+    }
+    let socket = paths.control_socket(&workspace)?;
+    // Everything past here runs against the workspace `run` just created; on any exit path the
+    // ephemeral workspace is killed so a failed run leaves no stray server behind.
+    let result = run_in_workspace(&socket, cwd, env, rows, columns, argv, timeout_ms);
+    let _ = fux::daemon::manager_request(
+        &paths.manager_socket,
+        &fux::daemon::ManagerRequest::Kill {
+            name: workspace.clone(),
+        },
+    );
+    Ok(result?.map_or(ExitCode::SUCCESS, exit_code))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_in_workspace(
+    socket: &std::path::Path,
+    cwd: Option<PathBuf>,
+    env: Vec<(String, String)>,
+    rows: Option<u16>,
+    columns: Option<u16>,
+    argv: Vec<String>,
+    timeout_ms: u64,
+) -> Result<Option<u32>> {
+    use fux::proto::control::{CaptureFormat, CommandResult, Reply, Request};
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let short = std::time::Duration::from_secs(30);
+    // Subscribe to pane.closed before the command exists, so the exit status is caught even for a
+    // command that exits immediately (a pane is removed on exit and cannot be waited on afterward).
+    let mut events = run_open_control(socket)?;
+    events.set_read_timeout(Some(
+        std::time::Duration::from_millis(timeout_ms) + std::time::Duration::from_secs(5),
+    ))?;
+    fux::proto::control::write_frame(
+        &mut events,
+        &Request::Subscribe {
+            id: 1,
+            events: vec![fux::proto::control::EventKind::PaneClosed],
+        },
+    )?;
+    let accepted = fux::daemon::read_json_frame(&mut events, short)?;
+    anyhow::ensure!(
+        matches!(
+            serde_json::from_slice::<Reply>(&accepted),
+            Ok(Reply::Accepted { .. })
+        ),
+        "run could not subscribe to pane events"
+    );
+    let mut control = run_open_control(socket)?;
+    let split = request_reply(
+        &mut control,
+        &Request::Split {
+            id: 2,
+            axis: fux::layout::Axis::Horizontal,
+            target: None,
+            cwd,
+            argv,
+            env,
+            rows,
+            columns,
+        },
+        short,
+    )?;
+    let pane = match split {
+        Reply::Completed {
+            result: CommandResult::Pane { pane },
+            ..
+        } => pane,
+        Reply::Failed { error, .. } => bail!("run could not start the command: {}", error.message),
+        other => bail!("unexpected split reply: {other:?}"),
+    };
+    // A background reader accumulates the pane's rows while it is alive.
+    let model: Arc<Mutex<BTreeMap<u16, String>>> = Arc::new(Mutex::new(BTreeMap::new()));
+    let done = Arc::new(AtomicBool::new(false));
+    let reader = {
+        let (model, done, socket) = (Arc::clone(&model), Arc::clone(&done), socket.to_path_buf());
+        std::thread::spawn(move || {
+            let Ok(mut stream) = run_open_control(&socket) else {
+                return;
+            };
+            let mut since = None;
+            while !done.load(Ordering::Relaxed) {
+                let reply = request_reply(
+                    &mut stream,
+                    &Request::Capture {
+                        id: 9,
+                        pane,
+                        attrs: false,
+                        scrollback: 0,
+                        max_bytes: fux::proto::control::MAX_CAPTURE_BYTES,
+                        format: CaptureFormat::Rows,
+                        since,
+                    },
+                    std::time::Duration::from_secs(5),
+                );
+                if let Ok(Reply::Completed {
+                    result: CommandResult::Rows { rows, seq, .. },
+                    ..
+                }) = reply
+                {
+                    if let Ok(mut model) = model.lock() {
+                        for row in rows {
+                            model.insert(row.row, row.text);
+                        }
+                    }
+                    since = Some(seq);
+                } else {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+    };
+    // Read pane.closed events until ours arrives (or the window elapses).
+    let mut exit_status = None;
+    loop {
+        let frame = match fux::daemon::read_json_frame(
+            &mut events,
+            std::time::Duration::from_millis(timeout_ms) + std::time::Duration::from_secs(5),
+        ) {
+            Ok(frame) => frame,
+            Err(_) => {
+                eprintln!("fux run: the command did not exit within the timeout");
+                break;
+            }
+        };
+        if let Ok(fux::proto::control::Event::PaneClosed {
+            pane: closed,
+            exit_status: code,
+            ..
+        }) = serde_json::from_slice(&frame)
+            && closed == pane
+        {
+            exit_status = code.and_then(|code| u32::try_from(code).ok());
+            break;
+        }
+    }
+    done.store(true, Ordering::Relaxed);
+    let _ = reader.join();
+    {
+        use std::io::Write as _;
+        let mut stdout = std::io::stdout().lock();
+        if let Ok(model) = model.lock() {
+            let mut trailing_blanks = 0;
+            for text in model.values() {
+                if text.is_empty() {
+                    trailing_blanks += 1;
+                    continue;
+                }
+                for _ in 0..trailing_blanks {
+                    writeln!(stdout)?;
+                }
+                trailing_blanks = 0;
+                writeln!(stdout, "{text}")?;
+            }
+        }
+        stdout.flush()?;
+    }
+    Ok(exit_status)
 }
 
 fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::Request> {
@@ -466,8 +690,18 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
     let number = |index: usize, name: &str| -> Result<u32> { Ok(get(index, name)?.parse()?) };
     let request = match command {
         "new" => {
-            let (cwd, argv) = parse_cwd_and_argv(args)?;
-            Request::New { id, cwd, argv }
+            // `new` is sugar for a side-by-side split of the focused pane.
+            let (cwd, env, rows, columns, argv) = parse_pane_options(args)?;
+            Request::Split {
+                id,
+                axis: Axis::Horizontal,
+                target: None,
+                cwd,
+                argv,
+                env,
+                rows,
+                columns,
+            }
         }
         "split" => {
             let (axis, rest) = match args.first().map(String::as_str) {
@@ -476,13 +710,16 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 _ => bail!("split requires horizontal|vertical followed by options and a command"),
             };
             let (target, rest) = parse_target(rest)?;
-            let (cwd, argv) = parse_cwd_and_argv(rest)?;
+            let (cwd, env, rows, columns, argv) = parse_pane_options(rest)?;
             Request::Split {
                 id,
                 axis,
                 target: target.map(PaneId),
                 cwd,
                 argv,
+                env,
+                rows,
+                columns,
             }
         }
         "focus" => {
@@ -504,23 +741,90 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
             pane: PaneId(number(0, "a pane id")?),
             delta: get(1, "a delta")?.parse()?,
         },
-        "send-keys" => Request::SendKeys {
-            id,
-            pane: PaneId(number(0, "a pane id")?),
-            keys: get(1, "keys")?.to_owned(),
-        },
+        "send-keys" => {
+            let pane = PaneId(number(0, "a pane id")?);
+            let rest = args.get(1..).unwrap_or_default();
+            let (notation, payload) = if rest.first().map(String::as_str) == Some("--keys") {
+                (
+                    fux::proto::control::KeyNotation::Keys,
+                    rest.get(1..).unwrap_or_default().join(" "),
+                )
+            } else {
+                (
+                    fux::proto::control::KeyNotation::Escapes,
+                    rest.first().cloned().unwrap_or_default(),
+                )
+            };
+            if payload.is_empty() {
+                bail!("send-keys requires keys");
+            }
+            Request::SendKeys {
+                id,
+                pane,
+                keys: payload,
+                notation,
+            }
+        }
         "capture" => {
             let pane = PaneId(number(0, "a pane id")?);
-            let (attrs, scrollback) = parse_capture_options(args.get(1..).unwrap_or_default())?;
+            let options = parse_capture_options(args.get(1..).unwrap_or_default())?;
             Request::Capture {
                 id,
                 pane,
-                attrs,
-                scrollback,
+                attrs: options.attrs,
+                scrollback: options.scrollback,
                 max_bytes: fux::proto::control::MAX_CAPTURE_BYTES,
+                format: if options.rows {
+                    fux::proto::control::CaptureFormat::Rows
+                } else {
+                    fux::proto::control::CaptureFormat::Text
+                },
+                since: options.since,
             }
         }
         "list" => Request::List { id },
+        "info" => Request::Info { id },
+        "wait" => {
+            use fux::proto::control::WaitUntil;
+            let pane = PaneId(number(0, "a pane id")?);
+            let mut timeout_ms = 30_000;
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            if let Some(position) = rest.iter().position(|a| a == "--timeout") {
+                timeout_ms = rest
+                    .get(position + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--timeout requires milliseconds"))?
+                    .parse()?;
+                rest.drain(position..=position + 1);
+            }
+            let until = match rest.first().map(String::as_str) {
+                Some("quiet") => WaitUntil::Quiet {
+                    ms: rest
+                        .get(1)
+                        .ok_or_else(|| anyhow::anyhow!("quiet requires ms"))?
+                        .parse()?,
+                },
+                Some("pattern") => WaitUntil::Pattern {
+                    regex: rest
+                        .get(1)
+                        .ok_or_else(|| anyhow::anyhow!("pattern requires a regex"))?
+                        .clone(),
+                },
+                Some("exit") => WaitUntil::Exit,
+                Some("seq") => WaitUntil::Seq {
+                    value: rest
+                        .get(1)
+                        .ok_or_else(|| anyhow::anyhow!("seq requires a value"))?
+                        .parse()?,
+                },
+                _ => bail!("wait requires quiet MS | pattern REGEX | exit | seq N"),
+            };
+            Request::Wait {
+                id,
+                pane,
+                until,
+                timeout_ms,
+            }
+        }
         "tab" => {
             let action = match get(0, "an action")?.as_str() {
                 "new" => TabAction::New {
@@ -529,10 +833,10 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 "next" => TabAction::Next,
                 "previous" | "prev" => TabAction::Previous,
                 "select" => TabAction::Select {
-                    index: number(1, "an index")?,
+                    target: fux::proto::control::TabTarget::Index(number(1, "an index")?),
                 },
-                "select-id" => TabAction::SelectId {
-                    tab: TabId(number(1, "a tab id")?),
+                "select-id" => TabAction::Select {
+                    target: fux::proto::control::TabTarget::Id(TabId(number(1, "a tab id")?)),
                 },
                 "rename" => TabAction::Rename {
                     tab: TabId(number(1, "a tab id")?),
@@ -571,12 +875,31 @@ fn parse_target(args: &[String]) -> Result<(Option<u32>, &[String])> {
     Ok((None, args))
 }
 
-fn parse_cwd_and_argv(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>)> {
+type PaneOptions = (
+    Option<PathBuf>,
+    Vec<(String, String)>,
+    Option<u16>,
+    Option<u16>,
+    Vec<String>,
+);
+
+fn parse_pane_options(args: &[String]) -> Result<PaneOptions> {
     let mut cwd = None;
+    let mut env = Vec::new();
+    let mut rows = None;
+    let mut columns = None;
     let mut index = 0;
     while let Some(argument) = args.get(index) {
         match argument.as_str() {
-            "--" => return Ok((cwd, args.get(index + 1..).unwrap_or_default().to_vec())),
+            "--" => {
+                return Ok((
+                    cwd,
+                    env,
+                    rows,
+                    columns,
+                    args.get(index + 1..).unwrap_or_default().to_vec(),
+                ));
+            }
             "--cwd" => {
                 let directory = args
                     .get(index + 1)
@@ -584,33 +907,88 @@ fn parse_cwd_and_argv(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>)>
                 cwd = Some(std::path::absolute(directory)?);
                 index += 2;
             }
-            _ => return Ok((cwd, args.get(index..).unwrap_or_default().to_vec())),
+            "--env" => {
+                let pair = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--env requires NAME=VALUE"))?;
+                let (name, value) = pair
+                    .split_once('=')
+                    .ok_or_else(|| anyhow::anyhow!("--env requires NAME=VALUE"))?;
+                env.push((name.to_owned(), value.to_owned()));
+                index += 2;
+            }
+            "--rows" => {
+                rows = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--rows requires a count"))?
+                        .parse()?,
+                );
+                index += 2;
+            }
+            "--columns" => {
+                columns = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--columns requires a count"))?
+                        .parse()?,
+                );
+                index += 2;
+            }
+            _ => {
+                return Ok((
+                    cwd,
+                    env,
+                    rows,
+                    columns,
+                    args.get(index..).unwrap_or_default().to_vec(),
+                ));
+            }
         }
     }
-    Ok((cwd, Vec::new()))
+    Ok((cwd, env, rows, columns, Vec::new()))
 }
 
-fn parse_capture_options(args: &[String]) -> Result<(bool, u32)> {
-    let mut attrs = false;
-    let mut scrollback = 0;
+#[derive(Default)]
+struct CaptureOptions {
+    attrs: bool,
+    scrollback: u32,
+    rows: bool,
+    since: Option<u64>,
+}
+
+fn parse_capture_options(args: &[String]) -> Result<CaptureOptions> {
+    let mut options = CaptureOptions::default();
     let mut index = 0;
     while let Some(argument) = args.get(index) {
         match argument.as_str() {
             "--attrs" => {
-                attrs = true;
+                options.attrs = true;
+                index += 1;
+            }
+            "--rows" => {
+                options.rows = true;
                 index += 1;
             }
             "--scrollback" => {
-                scrollback = args
+                options.scrollback = args
                     .get(index + 1)
                     .ok_or_else(|| anyhow::anyhow!("--scrollback requires a line count"))?
                     .parse()?;
                 index += 2;
             }
+            "--since" => {
+                options.since = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--since requires a sequence"))?
+                        .parse()?,
+                );
+                // `since` only means anything for row captures.
+                options.rows = true;
+                index += 2;
+            }
             value => bail!("unknown capture option {value}"),
         }
     }
-    Ok((attrs, scrollback))
+    Ok(options)
 }
 
 #[cfg(test)]

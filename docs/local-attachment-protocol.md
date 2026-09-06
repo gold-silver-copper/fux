@@ -1,4 +1,4 @@
-# Local attachment protocol v6
+# Local attachment protocol
 
 A workspace attachment socket is `RUNTIME/fux/NAME.attach.sock` in the private fux runtime
 directory. The server owns the path and removes only the inode it bound. Both peers check the
@@ -13,14 +13,16 @@ Idle time before a frame's first byte is unlimited; once a frame starts it must 
 seconds, and writes have a five-second deadline. A partial frame may only be abandoned together
 with its connection. At most 64 attachments (including handshakes) may occupy one workspace.
 
-The client sends `hello` first and must receive the server `hello` before it enters raw mode; a
-version mismatch is reported and the old server is never terminated to upgrade it.
+The client sends `hello` first and must receive the server `hello` before it enters raw mode. The
+protocol carries no version number: the hello is the terminal size, and a server that answers it
+with anything but a hello is reported as an error naming the session server and left running
+(see the control protocol's "Compatibility" section).
 
 ## Client messages (`type` tag)
 
 | Message | Meaning |
 |---|---|
-| `{"type":"hello","version":6,"rows":24,"columns":80}` | negotiate and declare the terminal size |
+| `{"type":"hello","rows":24,"columns":80}` | declare the terminal size; must be the first frame |
 | `{"type":"input","bytes":[108,115,10]}` | byte-exact input for the viewer's focused pane |
 | `{"type":"mouse","event":{"code":64,"column":12,"row":3,"release":false},"generation":7}` | an SGR mouse report for the application under the pointer; `generation` names the frame that was hit-tested. Stale generations are ignored |
 | `{"type":"control","request":CONTROL_REQUEST}` | a control-protocol request executed in order with this viewer's input |
@@ -32,7 +34,7 @@ version mismatch is reported and the old server is never terminated to upgrade i
 
 | Message | Meaning |
 |---|---|
-| `{"hello":{"version":6}}` | negotiation complete |
+| `{"hello":{}}` | the hello was accepted; the bindings and the first frame follow |
 | `{"bindings":{"bindings":{"prefix":1,"bindings":{"124":"split-side",…}}}}` | the prefix and bindings, once after the hello (they do not change while a server runs) |
 | `{"state":{"state":UPDATE}}` | this viewer's frame update (below) |
 | `{"reply":{"reply":CONTROL_REPLY}}` | reply to one of this viewer's `control` requests |
@@ -95,7 +97,3 @@ carried rows, which is where an echoed input lands.
   panes of the attachment's current workspace (a foreign pane reads as `view: null`).
 
 Workspace and manager commands use the separate [control protocol](local-control-protocol.md).
-Versions 2 (with `pane-input`, `binding` and `copy-view` messages), 3 (box-rectangle layouts),
-4 (bar on row 0) and 5 (every frame carried every cell of every pane as `{text, kind, style}`
-objects plus the bindings) are no longer served; a viewer meeting one reports the mismatch and,
-when interactive, offers to stop the old server or run alongside it.

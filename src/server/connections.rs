@@ -6,7 +6,7 @@ use crate::ecs::{Inbound, ManagerAction, ManagerOutcome, ViewerRequest};
 use crate::ids::ViewerId;
 use crate::proto::attach::{
     ClientMessage, FRAME_TIMEOUT, MAX_CLIENT_FRAME, MAX_INPUT_CHUNK, MAX_SERVER_FRAME,
-    ServerMessage, VERSION, read_frame, write_frame,
+    ServerMessage, read_frame, write_frame,
 };
 use crate::proto::control::{
     self, CONTROL_PREFACE, ErrorCode, MAX_FRAME_BYTES, MAX_SUBSCRIBER_QUEUE, Reply, Request,
@@ -122,29 +122,20 @@ async fn serve_viewer(
     let hello: ClientMessage =
         tokio::time::timeout(FRAME_TIMEOUT, read_frame(&mut stream, MAX_CLIENT_FRAME)).await??;
     let (rows, cols) = match hello {
-        ClientMessage::Hello {
-            version: VERSION,
-            rows,
-            columns,
-        } => (rows, columns),
+        ClientMessage::Hello { rows, columns } => (rows, columns),
         _ => {
             write_frame(
                 &mut stream,
                 &ServerMessage::Error {
-                    message: "incompatible local attachment protocol; use matching fux versions or restart the session server after saving your work".into(),
+                    message: "the first attachment frame must be a hello".into(),
                 },
                 MAX_SERVER_FRAME,
             )
             .await?;
-            anyhow::bail!("incompatible attachment handshake");
+            anyhow::bail!("attachment did not start with a hello");
         }
     };
-    write_frame(
-        &mut stream,
-        &ServerMessage::Hello { version: VERSION },
-        MAX_SERVER_FRAME,
-    )
-    .await?;
+    write_frame(&mut stream, &ServerMessage::Hello {}, MAX_SERVER_FRAME).await?;
     let viewer = ViewerId(owner.viewer_ids.fetch_add(1, Ordering::Relaxed));
     let outbox = ViewerOutbox::default();
     owner.viewer_outboxes.send((viewer, outbox.clone())).await?;
@@ -244,11 +235,10 @@ pub async fn serve_control(
     subscribers: Arc<Mutex<Vec<Subscriber>>>,
     stop: Arc<Notify>,
 ) {
-    const MAX_CONNECTIONS: usize = 64;
     let tasks = accept_loop(
         listener,
         &stop,
-        |tasks| tasks.len() < MAX_CONNECTIONS,
+        |tasks| tasks.len() < control::MAX_CONTROL_CONNECTIONS,
         |stream| {
             let owner = owner.clone();
             let workspace = workspace.clone();
@@ -269,10 +259,10 @@ pub async fn serve_control(
 /// Preface exchange with a two-second absolute deadline including idle time.
 pub async fn negotiate(stream: &mut UnixStream) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(2), async {
-        let mut preface = [0_u8; 8];
+        let mut preface = [0_u8; CONTROL_PREFACE.len()];
         stream.read_exact(&mut preface).await?;
         stream.write_all(CONTROL_PREFACE).await?;
-        anyhow::ensure!(&preface == CONTROL_PREFACE, "incompatible control preface");
+        anyhow::ensure!(&preface == CONTROL_PREFACE, "not a fux control preface");
         Ok(())
     })
     .await
@@ -348,6 +338,14 @@ async fn serve_control_connection(
             return Ok(());
         }
         let request_id = request.id();
+        // A `wait` replies only when its condition or its own timeout fires, so the reply window
+        // must outlast the requested timeout; every other request keeps the fixed 30 s answer cap.
+        let answer_window = match &request {
+            Request::Wait { timeout_ms, .. } => {
+                Duration::from_millis(*timeout_ms).saturating_add(Duration::from_secs(5))
+            }
+            _ => Duration::from_secs(30),
+        };
         let token = owner.token();
         let (sender, receiver) = oneshot::channel();
         owner.control_replies.send((token, sender)).await?;
@@ -359,7 +357,7 @@ async fn serve_control_connection(
                 token,
             })
             .await?;
-        let reply = match tokio::time::timeout(Duration::from_secs(30), receiver).await {
+        let reply = match tokio::time::timeout(answer_window, receiver).await {
             Ok(Ok(reply)) => reply,
             _ => Reply::failed(
                 request_id,
@@ -436,6 +434,7 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
     };
     let action = match request {
         crate::daemon::ManagerRequest::List => ManagerAction::List,
+        crate::daemon::ManagerRequest::Info => ManagerAction::Info,
         crate::daemon::ManagerRequest::Resolve { name } => ManagerAction::Resolve { name },
         crate::daemon::ManagerRequest::Kill { name } => ManagerAction::Kill { name },
     };
@@ -460,6 +459,7 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
     };
     let reply = match outcome {
         ManagerOutcome::Names(names) => crate::daemon::ManagerReply::Names { names },
+        ManagerOutcome::Info(info) => crate::daemon::ManagerReply::Info { info },
         ManagerOutcome::Failed(message) => crate::daemon::ManagerReply::Failed { message },
         ManagerOutcome::Attach { name, .. } => match (DESCRIPTOR_HOOK.get())(&name) {
             Some(descriptor) => crate::daemon::ManagerReply::Attach { descriptor },

@@ -6,7 +6,9 @@ use crate::ecs::components::{CreationKind, Pane, PaneState, Selection, Tab, View
 use crate::ecs::messages::{
     Effect, Inbound, ManagerAction, ManagerOutcome, Requester, ViewerRequest,
 };
-use crate::ecs::resources::{Clock, Ids, Limits, Registry, ShuttingDown, WorkspaceCounter};
+use crate::ecs::resources::{
+    Clock, Deadlines, Ids, Limits, Registry, ServerIdentity, ShuttingDown, WorkspaceCounter,
+};
 use crate::ecs::support::{
     Effects, ViewerExit, close_tab, despawn_tab, effect, event, failed, focus_in_tab, is_member,
     mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity, pane_id, pane_in_layout,
@@ -589,17 +591,24 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             target,
             cwd,
             argv,
+            env,
+            rows,
+            columns,
             ..
-        } => split(world, &context, id, axis, target, cwd, argv),
-        Request::New { cwd, argv, .. } => {
-            split(world, &context, id, Axis::Horizontal, None, cwd, argv)
-        }
+        } => split(
+            world, &context, id, axis, target, cwd, argv, env, rows, columns,
+        ),
         Request::Focus { target, .. } => focus(world, &context, id, target),
         Request::Kill { pane, .. } => kill(world, &context, id, pane),
         Request::Resize { pane, delta, .. } => resize(world, &context, id, pane, delta),
-        Request::SendKeys { pane, keys, .. } => {
+        Request::SendKeys {
+            pane,
+            keys,
+            notation,
+            ..
+        } => {
             let bytes =
-                control::decode_key_bytes(&keys).map_err(|error| control::error_reply(&error));
+                control::decode_keys(&keys, notation).map_err(|error| control::error_reply(&error));
             bytes.and_then(|bytes| {
                 let entity = pane_in_workspace(world, &context, pane)
                     .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
@@ -619,17 +628,42 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             attrs,
             scrollback,
             max_bytes,
+            format,
+            since,
             ..
         } => {
             let entity = pane_in_workspace(world, &context, pane);
             match entity.and_then(|entity| world.get_mut::<Pane>(entity)) {
                 Some(mut component) if !matches!(component.state, PaneState::Starting) => {
-                    let text = component.terminal.capture(
-                        usize::try_from(scrollback).unwrap_or(usize::MAX),
-                        attrs,
-                        max_bytes.min(control::MAX_CAPTURE_BYTES),
-                    );
-                    Ok(CommandResult::Capture { text })
+                    component.refresh();
+                    let max_bytes = max_bytes.min(control::MAX_CAPTURE_BYTES);
+                    let seq = component.terminal.grid().seq();
+                    match format {
+                        control::CaptureFormat::Text => {
+                            let text = component.terminal.capture(
+                                usize::try_from(scrollback).unwrap_or(usize::MAX),
+                                attrs,
+                                max_bytes,
+                            );
+                            Ok(CommandResult::Capture { text, seq })
+                        }
+                        control::CaptureFormat::Rows => {
+                            let grid = component.terminal.grid();
+                            let mut rows = grid.rows_since(since);
+                            // The byte bound counts row text; rows past it are dropped whole.
+                            let mut bytes = 0_usize;
+                            rows.retain(|row| {
+                                bytes = bytes.saturating_add(row.text.len());
+                                bytes <= max_bytes
+                            });
+                            Ok(CommandResult::Rows {
+                                seq,
+                                cursor: grid.cursor(),
+                                rows,
+                                since_applied: since.is_some(),
+                            })
+                        }
+                    }
                 }
                 _ => Err(failed(id, ErrorCode::NotFound, "pane not found")),
             }
@@ -637,6 +671,15 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         Request::List { .. } => Ok(CommandResult::Listing {
             workspaces: vec![summarize(world, &context)],
         }),
+        Request::Info { .. } => Ok(CommandResult::Info {
+            info: Box::new(server_info(world, Some(context.workspace))),
+        }),
+        Request::Wait {
+            pane,
+            until,
+            timeout_ms,
+            ..
+        } => register_wait(world, &context, requester, id, pane, until, timeout_ms),
         Request::Tab { action, .. } => tab_action(world, &context, id, action),
         Request::Workspace { action, .. } => workspace_action(world, &context, id, action),
         Request::Subscribe { .. } => Err(failed(
@@ -646,10 +689,162 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         )),
     };
     match result {
+        // A started creation (barrier) and a registered wait both reply later, not now.
         Ok(CommandResult::Pane { pane: PaneId(0) }) => {}
         Ok(result) => reply(world, requester, Reply::Completed { id, result }),
         Err(reply_value) => reply(world, requester, reply_value),
     }
+}
+
+/// Registers a `wait`; the reply comes from `resolve_waits` when the condition or the timeout
+/// fires. Returns the barrier sentinel so `apply_control` sends no immediate reply.
+fn register_wait(
+    world: &mut World,
+    context: &Context,
+    requester: Requester,
+    id: u64,
+    pane: PaneId,
+    until: control::WaitUntil,
+    timeout_ms: u64,
+) -> Result<CommandResult, Reply> {
+    let entity = pane_in_workspace(world, context, pane)
+        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
+    let waits = world.resource::<crate::ecs::resources::Waits>();
+    if waits.pending.len() >= control::MAX_PENDING_WAITS {
+        return Err(failed(id, ErrorCode::Limit, "too many pending waits"));
+    }
+    if waits
+        .pending
+        .iter()
+        .filter(|wait| wait.pane == pane)
+        .count()
+        >= control::MAX_WAITS_PER_PANE
+    {
+        return Err(failed(
+            id,
+            ErrorCode::Limit,
+            "too many pending waits on this pane",
+        ));
+    }
+    let now = world.resource::<Clock>().now_ms;
+    let seq = world
+        .get::<Pane>(entity)
+        .map(|component| component.terminal.grid().seq())
+        .unwrap_or(0);
+    world
+        .resource_mut::<crate::ecs::resources::Waits>()
+        .pending
+        .push(crate::ecs::resources::PendingWait {
+            requester,
+            id,
+            pane,
+            workspace: context.workspace,
+            until,
+            timeout_at_ms: now.saturating_add(timeout_ms),
+            last_seq: seq,
+            last_change_ms: now,
+        });
+    Ok(CommandResult::Pane { pane: PaneId(0) })
+}
+
+/// Evaluates every pending wait against the current pane state and the clock, replying to those
+/// that fired or timed out and proposing a deadline for the rest. A wait whose viewer is gone or
+/// whose pane left the workspace is dropped; a pane that no longer exists fails the wait.
+pub fn resolve_waits(world: &mut World) {
+    let pending = std::mem::take(&mut world.resource_mut::<crate::ecs::resources::Waits>().pending);
+    let now = world.resource::<Clock>().now_ms;
+    let mut keep = Vec::with_capacity(pending.len());
+    for mut wait in pending {
+        // Drop a wait whose viewer connection is gone.
+        if let Requester::Viewer(id) = wait.requester
+            && viewer_entity(world, id).is_none()
+        {
+            continue;
+        }
+        let entity = pane_in_workspace_ids(world, wait.workspace, wait.pane);
+        let Some(entity) = entity else {
+            reply(
+                world,
+                wait.requester,
+                failed(wait.id, ErrorCode::NotFound, "pane not found"),
+            );
+            continue;
+        };
+        if let Some(mut pane) = world.get_mut::<Pane>(entity) {
+            pane.refresh();
+        }
+        let Some(pane) = world.get::<Pane>(entity) else {
+            reply(
+                world,
+                wait.requester,
+                failed(wait.id, ErrorCode::NotFound, "pane not found"),
+            );
+            continue;
+        };
+        let seq = pane.terminal.grid().seq();
+        let exit_status = pane.state.exit_code();
+        if seq != wait.last_seq {
+            wait.last_seq = seq;
+            wait.last_change_ms = now;
+        }
+        let fired = match &wait.until {
+            control::WaitUntil::Exit => exit_status.is_some().then_some(control::WaitFired::Exit),
+            control::WaitUntil::Seq { value } => (seq >= *value).then_some(control::WaitFired::Seq),
+            control::WaitUntil::Quiet { ms } => (now.saturating_sub(wait.last_change_ms) >= *ms)
+                .then_some(control::WaitFired::Quiet),
+            control::WaitUntil::Pattern { regex } => {
+                let text = pane
+                    .terminal
+                    .grid()
+                    .rows_since(None)
+                    .iter()
+                    .map(|row| row.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                regex_lite::Regex::new(regex)
+                    .ok()
+                    .filter(|re| re.is_match(&text))
+                    .map(|_| control::WaitFired::Pattern)
+            }
+        };
+        if let Some(fired) = fired {
+            reply(
+                world,
+                wait.requester,
+                Reply::Completed {
+                    id: wait.id,
+                    result: CommandResult::Waited {
+                        fired,
+                        seq,
+                        exit_status,
+                    },
+                },
+            );
+            continue;
+        }
+        if now >= wait.timeout_at_ms {
+            reply(
+                world,
+                wait.requester,
+                failed(wait.id, ErrorCode::Timeout, "wait timed out"),
+            );
+            continue;
+        }
+        // Propose the next time this wait might fire: its timeout, and for quiet its window end.
+        let mut next = wait.timeout_at_ms;
+        if let control::WaitUntil::Quiet { ms } = &wait.until {
+            next = next.min(wait.last_change_ms.saturating_add(*ms));
+        }
+        world.resource_mut::<Deadlines>().propose(next);
+        keep.push(wait);
+    }
+    world.resource_mut::<crate::ecs::resources::Waits>().pending = keep;
+}
+
+/// Resolves a public pane id to its entity within `workspace` without a `Context`.
+fn pane_in_workspace_ids(world: &World, workspace: Entity, pane: PaneId) -> Option<Entity> {
+    let entity = pane_entity(world, pane)?;
+    (pane_workspace(world, entity)? == workspace).then_some(entity)
 }
 
 /// A pane id that belongs to the requester's workspace.
@@ -663,6 +858,7 @@ fn tab_in_workspace(world: &World, context: &Context, tab: crate::ids::TabId) ->
     is_member(world, context.workspace, entity).then_some(entity)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn split(
     world: &mut World,
     context: &Context,
@@ -671,6 +867,9 @@ fn split(
     target: Option<PaneId>,
     cwd: Option<std::path::PathBuf>,
     argv: Vec<String>,
+    env: Vec<(String, String)>,
+    rows: Option<u16>,
+    columns: Option<u16>,
 ) -> Result<CommandResult, Reply> {
     let selection = context.selection(world);
     let target = match target {
@@ -683,21 +882,24 @@ fn split(
     };
     let tab =
         pane_tab(world, target).ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-    let size = world
+    let base = world
         .get::<Pane>(target)
         .map(|pane| pane.terminal.size())
         .unwrap_or((24, 80));
     // Give the new pane roughly half of the split pane's area from the start.
-    let size = match axis {
-        Axis::Horizontal => (size.0, size.1.saturating_sub(1) / 2),
-        Axis::Vertical => (size.0.saturating_sub(1) / 2, size.1),
+    let halved = match axis {
+        Axis::Horizontal => (base.0, base.1.saturating_sub(1) / 2),
+        Axis::Vertical => (base.0.saturating_sub(1) / 2, base.1),
     };
+    // A requested size wins where no viewer resizes the tab (a headless workspace).
+    let size = (rows.unwrap_or(halved.0), columns.unwrap_or(halved.1));
     reserve_pane(
         world,
         context.workspace,
         NewPane {
             argv,
             cwd,
+            env,
             requester: context.requester,
             request_id: id,
         },
@@ -842,6 +1044,7 @@ fn tab_action(
                 NewPane {
                     argv: Vec::new(),
                     cwd: None,
+                    env: Vec::new(),
                     requester: context.requester,
                     request_id: id,
                 },
@@ -874,21 +1077,19 @@ fn tab_action(
                 tab: tab_id(world, tab).unwrap_or_default(),
             })
         }
-        TabAction::Select { index } => {
-            let tab = *usize::try_from(index)
-                .ok()
-                .and_then(|index| tabs.get(index))
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
-            context.select_tab(world, tab);
-            Ok(CommandResult::Tab {
-                tab: tab_id(world, tab).unwrap_or_default(),
-            })
-        }
-        TabAction::SelectId { tab } => {
-            let entity = tab_in_workspace(world, context, tab)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab no longer exists"))?;
+        TabAction::Select { target } => {
+            let entity = match target {
+                control::TabTarget::Index(index) => *usize::try_from(index)
+                    .ok()
+                    .and_then(|index| tabs.get(index))
+                    .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?,
+                control::TabTarget::Id(tab) => tab_in_workspace(world, context, tab)
+                    .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab no longer exists"))?,
+            };
             context.select_tab(world, entity);
-            Ok(CommandResult::Tab { tab })
+            Ok(CommandResult::Tab {
+                tab: tab_id(world, entity).unwrap_or_default(),
+            })
         }
         TabAction::Rename { tab, name } => {
             let entity = tab_in_workspace(world, context, tab)
@@ -1078,6 +1279,10 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
                 ManagerOutcome::Failed("workspace not found".into()),
             ),
         },
+        ManagerAction::Info => {
+            let info = server_info(world, None);
+            manager(world, token, ManagerOutcome::Info(Box::new(info)));
+        }
         ManagerAction::Resolve { name } => {
             if world.resource::<ShuttingDown>().0 {
                 return manager(
@@ -1167,6 +1372,39 @@ fn list_workspaces(world: &mut World) -> Vec<WorkspaceSummary> {
         .collect()
 }
 
+/// What `info` answers: the installed identity, the crate version and every limit.
+pub fn server_info(world: &World, workspace: Option<Entity>) -> control::ServerInfo {
+    let identity = world.resource::<ServerIdentity>();
+    let limits = world.resource::<Limits>();
+    control::ServerInfo {
+        pid: identity.pid,
+        instance_nonce: identity.instance_nonce.clone(),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        runtime_dir: identity.runtime_dir.clone(),
+        workspace: workspace
+            .and_then(|entity| world.get::<Workspace>(entity))
+            .map(|workspace| workspace.name.clone()),
+        limits: control::InfoLimits {
+            workspaces: limits.max_workspaces,
+            tabs: limits.max_tabs,
+            panes: limits.max_panes,
+            viewers: limits.max_viewers,
+            scrollback_lines: limits.scrollback_lines,
+            control_connections: control::MAX_CONTROL_CONNECTIONS,
+            frame_bytes: control::MAX_FRAME_BYTES,
+            capture_bytes: control::MAX_CAPTURE_BYTES,
+            key_bytes: control::MAX_KEY_BYTES,
+            event_filters: control::MAX_EVENT_FILTERS,
+            subscriber_queue: control::MAX_SUBSCRIBER_QUEUE,
+            viewer_queue: limits.viewer_queue,
+            retire_grace_ms: limits.retire_grace_ms,
+            terminate_deadline_ms: limits.terminate_deadline_ms,
+            output_event_interval_ms: limits.output_event_interval_ms,
+            frame_interval_ms: limits.frame_interval_ms,
+        },
+    }
+}
+
 fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
     let selection = context.selection(world);
     let name = world
@@ -1174,6 +1412,17 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
         .map(|workspace| workspace.name.clone())
         .unwrap_or_default();
     let tabs = member_tabs(world, context.workspace);
+    // A listing reports current sequences: bring every dirty pane's grid up to date first.
+    let shown: Vec<Entity> = tabs
+        .iter()
+        .filter_map(|tab| world.get::<Tab>(*tab))
+        .flat_map(|tab| tab.layout.leaves())
+        .collect();
+    for pane in shown {
+        if let Some(mut component) = world.get_mut::<Pane>(pane) {
+            component.refresh();
+        }
+    }
     let viewers =
         u32::try_from(viewers_of_workspace(world, context.workspace).len()).unwrap_or(u32::MAX);
     let tabs = tabs
@@ -1191,6 +1440,7 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
                     let screen = component.terminal.screen();
                     let (row, column) = screen.cursor_position();
                     Some(PaneSummary {
+                        seq: component.terminal.grid().seq(),
                         id: component.id,
                         command: component.argv.clone(),
                         pid: component.state.pid(),
@@ -1200,6 +1450,7 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
                             .terminal
                             .progress()
                             .map(|progress| (progress.state, progress.percent)),
+                        agent: component.terminal.agent().cloned(),
                         geometry: component.rect,
                         focused: focused_pane == Some(pane),
                         cursor: crate::view::Cursor {

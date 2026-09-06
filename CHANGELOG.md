@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.0 - 2026-09-06
+
+Protocol and agent-surface pass. fux is now a first-class headless target and the local protocols
+carry no version numbers.
+
+- No protocol versioning. The control and manager sockets exchange a fixed `FUX\n` preface; the
+  attachment `hello` carries only the terminal size. Descriptors drop the protocol field. The
+  migration module, the interactive "stop the older server" offer and every `--version` flag of
+  the measurement scripts are gone. A server older than its client shows up as a decode error
+  reported as "restart the session server"; nothing is stopped automatically.
+- Agent primitives on the control protocol. Each pane has a monotonic output sequence that
+  advances for every observable change (rows, cursor, modes, title, exit) and is reported by
+  `list`, `capture` and `pane.output` events. `capture` gains `format:"rows"` ({row,text,wrapped}
+  plus the cursor and sequence) and `since` (only the rows changed after a sequence); the text and
+  attrs forms are byte-identical to before. A new `info` request (both sockets) reports the server
+  pid, nonce, crate version, runtime directory and every limit. A new `wait` request blocks
+  server-side until a pane goes quiet, matches a pattern, exits or reaches a sequence, or times
+  out; it is an ECS deadline, never a thread.
+- `new`/`split` accept `env` and an initial `rows`/`columns` for headless workspaces; `send-keys`
+  accepts `notation:"keys"` (named keys, `C-`/`M-`, literals) beside the default byte escapes.
+- Schema minimised: the pane `new` request folds into `split` (kept as CLI sugar) and `tab
+  select-id` folds into `tab select {target}`; the manager socket gains `info`. The manager stays
+  a small bootstrap RPC because its attach reply carries a descriptor the shared schema omits.
+- Agent state: fux reads OSC 7877 reports (zor's schema) from pane output and surfaces the state
+  in `list` and a `pane.agent` event, so `zor -- COMMAND` or a self-reporting agent lights up fux
+  with no observer socket. It is unverified presentation only; carrying it in the attachment frame
+  and the viewer bar is deferred.
+- `fux run -- COMMAND` runs a command headlessly in a sized pane with an environment, streams its
+  screen, waits for exit, prints the final screen and exits with the command's status.
+- Shared protocol fixtures under `tests/verify/fixtures/`, round-tripped by `tests/fixtures.rs`.
+  `zor observe` re-captures only when a pane's output sequence advances (idle CPU 0.26 s / 20 s).
+- Added `regex-lite` (linear-time, no transitive deps) for `wait` patterns; MSRV 1.95 and the
+  forbidden-`unsafe` lint are unchanged.
+
 ## 0.5.0 - 2026-09-06
 
 Performance pass. Attachment protocol v6; control `FUXCTL2`, keys, configuration and CLI are

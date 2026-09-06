@@ -2,7 +2,7 @@
 """Memory per history row of a fux binary: server RSS before and after a pane fills its history
 with plain lines and with styled wide lines, per configured scrollback limit.
 
-Usage: tools/measure_memory.py PATH/TO/fux [--version N] [--scrollback 10000] [--rows 24] [--columns 80]
+Usage: tools/measure_memory.py PATH/TO/fux [--scrollback 10000] [--rows 24] [--columns 80]
 
 Reports RSS at start, after `scrollback` plain lines, and after `scrollback` styled lines of
 wide characters in a second pane, with bytes per retained row for each. Nothing here touches
@@ -24,7 +24,6 @@ from measure_frames import Viewer, drain_all, rss_kib, send, wait_text  # noqa: 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binary")
-    parser.add_argument("--version", type=int, default=6)
     parser.add_argument("--scrollback", type=int, default=10000)
     parser.add_argument("--rows", type=int, default=24)
     parser.add_argument("--columns", type=int, default=80)
@@ -47,7 +46,7 @@ def main():
             while time.monotonic() < deadline and viewer is None:
                 if sock_path.exists():
                     try:
-                        viewer = Viewer(sock_path, args.version, args.rows, args.columns)
+                        viewer = Viewer(sock_path, args.rows, args.columns)
                     except (ConnectionRefusedError, FileNotFoundError):
                         time.sleep(0.005)
                 else:

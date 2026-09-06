@@ -1,0 +1,28 @@
+{
+  "status": "completed",
+  "id": 2,
+  "result": {
+    "kind": "rows",
+    "value": {
+      "seq": 12,
+      "cursor": {
+        "row": 1,
+        "column": 0,
+        "hidden": false
+      },
+      "rows": [
+        {
+          "row": 0,
+          "text": "$ echo hi",
+          "wrapped": false
+        },
+        {
+          "row": 1,
+          "text": "hi",
+          "wrapped": false
+        }
+      ],
+      "since_applied": true
+    }
+  }
+}

@@ -3,8 +3,10 @@
 //!
 //! Adapted from koh (MIT); the upstream notice is retained in LICENSES/koh.txt.
 
+use crate::proto::control::CaptureRow;
 use crate::view::{
-    CellKind, CellStyle, Line, MAX_CELL_TEXT_BYTES, PaneUpdate, classify, push_wire,
+    AgentReport, AgentState, CellKind, CellStyle, Cursor, Line, MAX_AGENT_MESSAGE_BYTES,
+    MAX_CELL_TEXT_BYTES, PaneModes, PaneUpdate, classify, push_wire,
 };
 use vt100::Screen;
 
@@ -49,6 +51,87 @@ fn parse_progress(params: &[&[u8]]) -> Option<Progress> {
     (percent <= 100).then_some(Progress { state, percent })
 }
 
+/// Decodes a percent-encoded OSC 7877 value (zor's encoding of optional messages).
+fn percent_decode(bytes: &[u8]) -> Option<String> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while let Some(&byte) = bytes.get(index) {
+        if byte == b'%' {
+            let hi = bytes
+                .get(index + 1)
+                .and_then(|b| (*b as char).to_digit(16))?;
+            let lo = bytes
+                .get(index + 2)
+                .and_then(|b| (*b as char).to_digit(16))?;
+            out.push(u8::try_from((hi << 4) | lo).ok()?);
+            index += 3;
+        } else {
+            out.push(byte);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Parses an OSC 7877 agent report (zor's v1 schema). Returns `Some(None)` for `state=none`
+/// (clear the report), `Some(Some(report))` for a valid one, and `None` when the sequence is not
+/// a well-formed 7877 report (which leaves the current report untouched).
+fn parse_agent(params: &[&[u8]]) -> Option<Option<AgentReport>> {
+    // The whole payload is bounded like zor's producer contract (1 KiB).
+    let total: usize = params.iter().map(|part| part.len() + 1).sum();
+    if params.first().copied() != Some(b"7877".as_slice()) || total > 1024 {
+        return None;
+    }
+    let mut version = None;
+    let mut state = None;
+    let mut agent = None;
+    let mut message = None;
+    for part in params.iter().skip(1) {
+        let at = part.iter().position(|byte| *byte == b'=')?;
+        let (key, rest) = part.split_at(at);
+        let value = rest.get(1..)?;
+        match key {
+            b"v" if version.is_none() => version = Some(value.to_vec()),
+            b"state" if state.is_none() => {
+                state = Some(match value {
+                    b"working" => Some(AgentState::Working),
+                    b"blocked" => Some(AgentState::Blocked),
+                    b"idle" => Some(AgentState::Idle),
+                    b"none" => None,
+                    _ => return None,
+                });
+            }
+            b"agent" if agent.is_none() => {
+                agent = Some(std::str::from_utf8(value).ok()?.to_owned());
+            }
+            b"msg" | b"message" if message.is_none() => {
+                let decoded = percent_decode(value)?;
+                if decoded.len() > MAX_AGENT_MESSAGE_BYTES {
+                    return None;
+                }
+                message = Some(decoded);
+            }
+            // Unknown extension fields within v1 are ignored; duplicates of known fields fail.
+            b"v" | b"state" | b"agent" | b"msg" | b"message" => return None,
+            _ => {}
+        }
+    }
+    if version.as_deref() != Some(b"1") {
+        return None;
+    }
+    match state? {
+        None => Some(None),
+        Some(state) => {
+            let report = AgentReport {
+                state,
+                agent: agent?,
+                message,
+            };
+            report.within_bounds().then_some(Some(report))
+        }
+    }
+}
+
 fn title_from(bytes: &[u8]) -> String {
     crate::view::printable(&String::from_utf8_lossy(bytes), MAX_TITLE_CHARS)
 }
@@ -61,6 +144,7 @@ struct Callbacks {
     /// Query answers the application expects back on its input.
     host_replies: Vec<u8>,
     progress: Option<Progress>,
+    agent: Option<AgentReport>,
 }
 
 impl vt100::Callbacks for Callbacks {
@@ -81,6 +165,9 @@ impl vt100::Callbacks for Callbacks {
             Some(progress) if progress.state == 0 => self.progress = None,
             Some(progress) => self.progress = Some(progress),
             None => {}
+        }
+        if let Some(update) = parse_agent(params) {
+            self.agent = update;
         }
     }
     fn unhandled_csi(
@@ -277,8 +364,10 @@ impl GridCell {
     }
 }
 
-/// A copy of the visible screen kept between steps with the step each row last changed in, so a
-/// frame carries only the rows a viewer has not seen and the emulator is read once per step.
+/// A copy of what an observer last saw of the pane: the visible screen with the sequence each
+/// row last changed at, plus cursor, modes, title and exit status. The sequence advances once per
+/// refresh that changed anything, so a frame carries only the rows a viewer has not seen, a
+/// `capture` can return the rows changed since a sequence, and `list` reports the sequence.
 #[derive(Default)]
 pub struct Grid {
     rows: u16,
@@ -286,6 +375,11 @@ pub struct Grid {
     cells: Vec<GridCell>,
     wrapped: Vec<bool>,
     changed: Vec<u64>,
+    seq: u64,
+    cursor: Cursor,
+    modes: PaneModes,
+    title: String,
+    exit: Option<u32>,
 }
 
 impl Grid {
@@ -294,37 +388,107 @@ impl Grid {
         (self.rows, self.columns)
     }
 
-    /// Brings the grid up to date with `screen` at `step`; rows that differ are stamped.
-    fn refresh(&mut self, screen: &vt100::Screen, step: u64) {
+    /// The output sequence: advances when a refresh found anything an observer can see changed.
+    #[must_use]
+    pub fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    #[must_use]
+    pub fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+
+    /// Brings the grid up to date with `screen`, `title` and `exit`; when anything changed the
+    /// sequence advances, the rows that differ are stamped with it, and `true` is returned.
+    fn refresh(&mut self, screen: &vt100::Screen, title: &str, exit: Option<u32>) -> bool {
+        let next = self.seq.saturating_add(1);
         let (rows, columns) = screen.size();
         let width = usize::from(columns);
+        let mut changed = false;
         if (rows, columns) != (self.rows, self.columns) {
             self.rows = rows;
             self.columns = columns;
             self.cells = vec![GridCell::default(); usize::from(rows) * width];
             self.wrapped = vec![false; usize::from(rows)];
-            self.changed = vec![step; usize::from(rows)];
+            self.changed = vec![next; usize::from(rows)];
             for row in 0..rows {
                 self.copy_row(screen, row, width);
             }
-            return;
-        }
-        for row in 0..rows {
-            let wrapped = screen.row_wrapped(row);
-            let start = usize::from(row) * width;
-            let differs = self.wrapped.get(usize::from(row)) != Some(&wrapped)
-                || (0..columns).any(|column| {
-                    let current = self.cells.get(start + usize::from(column));
-                    let fresh = screen.cell(row, column).map(GridCell::from_vt100);
-                    current.copied() != fresh
-                });
-            if differs {
-                self.copy_row(screen, row, width);
-                if let Some(stamp) = self.changed.get_mut(usize::from(row)) {
-                    *stamp = step;
+            changed = true;
+        } else {
+            for row in 0..rows {
+                let wrapped = screen.row_wrapped(row);
+                let start = usize::from(row) * width;
+                let differs = self.wrapped.get(usize::from(row)) != Some(&wrapped)
+                    || (0..columns).any(|column| {
+                        let current = self.cells.get(start + usize::from(column));
+                        let fresh = screen.cell(row, column).map(GridCell::from_vt100);
+                        current.copied() != fresh
+                    });
+                if differs {
+                    self.copy_row(screen, row, width);
+                    if let Some(stamp) = self.changed.get_mut(usize::from(row)) {
+                        *stamp = next;
+                    }
+                    changed = true;
                 }
             }
         }
+        let (row, column) = screen.cursor_position();
+        let cursor = Cursor {
+            row,
+            column,
+            hidden: screen.hide_cursor(),
+        };
+        let modes = PaneModes::from_vt100(screen);
+        if cursor != self.cursor || modes != self.modes || title != self.title || exit != self.exit
+        {
+            self.cursor = cursor;
+            self.modes = modes;
+            if title != self.title {
+                self.title.clear();
+                self.title.push_str(title);
+            }
+            self.exit = exit;
+            changed = true;
+        }
+        if changed {
+            self.seq = next;
+        }
+        changed
+    }
+
+    /// The rows changed after `since` (every row when `since` is `None`) as plain text with the
+    /// row's wrap flag: wide continuations are skipped and trailing blanks trimmed.
+    #[must_use]
+    pub fn rows_since(&self, since: Option<u64>) -> Vec<CaptureRow> {
+        let width = usize::from(self.columns);
+        let mut rows = Vec::new();
+        for row in 0..self.rows {
+            let index = usize::from(row);
+            if since
+                .is_some_and(|since| self.changed.get(index).is_none_or(|stamp| *stamp <= since))
+            {
+                continue;
+            }
+            let mut text = String::with_capacity(width);
+            for cell in self.cells.iter().skip(index * width).take(width) {
+                match cell.kind {
+                    CellKind::WideContinuation => {}
+                    CellKind::Blank => text.push(' '),
+                    CellKind::Text | CellKind::WideLeading => text.push_str(cell.text()),
+                }
+            }
+            let trimmed = text.trim_end_matches(' ').len();
+            text.truncate(trimmed);
+            rows.push(CaptureRow {
+                row,
+                text,
+                wrapped: self.wrapped.get(index).copied().unwrap_or(false),
+            });
+        }
+        rows
     }
 
     fn copy_row(&mut self, screen: &vt100::Screen, row: u16, width: usize) {
@@ -342,14 +506,18 @@ impl Grid {
         }
     }
 
-    /// The rows changed after `since` (every row when `since` is `None`) as a pane update; the
-    /// caller fills in cursor, modes, title and exit.
+    /// The rows changed after `since` (every row when `since` is `None`) as a pane update carrying
+    /// the retained cursor, modes, title and exit status.
     #[must_use]
     pub fn update(&self, since: Option<u64>) -> PaneUpdate {
         let mut update = PaneUpdate {
             rows: self.rows,
             columns: self.columns,
             full: since.is_none(),
+            cursor: self.cursor,
+            modes: self.modes,
+            title: self.title.clone(),
+            exit: self.exit,
             ..PaneUpdate::default()
         };
         let width = usize::from(self.columns);
@@ -402,9 +570,10 @@ impl ServerTerminal {
         }
     }
 
-    /// Brings the retained grid up to date with the live screen at `step`.
-    pub fn refresh_grid(&mut self, step: u64) {
-        self.grid.refresh(self.parser.screen(), step);
+    /// Brings the retained grid up to date with the live screen, `title` and `exit`; returns
+    /// whether the output sequence advanced.
+    pub fn refresh_grid(&mut self, title: &str, exit: Option<u32>) -> bool {
+        self.grid.refresh(self.parser.screen(), title, exit)
     }
 
     #[must_use]
@@ -462,6 +631,11 @@ impl ServerTerminal {
     #[must_use]
     pub fn progress(&self) -> Option<Progress> {
         self.parser.callbacks().progress
+    }
+
+    #[must_use]
+    pub fn agent(&self) -> Option<&AgentReport> {
+        self.parser.callbacks().agent.as_ref()
     }
 
     #[must_use]
@@ -554,14 +728,13 @@ mod tests {
             let mut terminal = ServerTerminal::new(4, 10, 0);
             // `held` is what a viewer applied; `pending` is the update queued for it (merged).
             let mut held: Option<PaneView> = None;
-            let mut held_step: Option<u64> = None;
+            let mut held_seq: Option<u64> = None;
             let mut pending: Option<PaneUpdate> = None;
-            for (index, (op, byte, deliver)) in ops.into_iter().enumerate() {
-                let step = u64::try_from(index).unwrap_or(u64::MAX) + 1;
+            for (op, byte, deliver) in ops {
                 edit(&mut terminal, op, byte);
-                terminal.refresh_grid(step);
-                let update = terminal.grid().update(held_step);
-                held_step = Some(step);
+                terminal.refresh_grid("", None);
+                let update = terminal.grid().update(held_seq);
+                held_seq = Some(terminal.grid().seq());
                 match &mut pending {
                     Some(queued) => queued.merge(update),
                     None => pending = Some(update),
@@ -576,6 +749,128 @@ mod tests {
                     held = Some(view);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn osc_7877_agent_reports_are_parsed_and_bounded() {
+        let mut terminal = ServerTerminal::new(4, 10, 0);
+        terminal.process(b"\x1b]7877;v=1;state=working;agent=claude;seq=3\x1b\\");
+        let report = terminal.agent().cloned();
+        assert_eq!(
+            report,
+            Some(AgentReport {
+                state: AgentState::Working,
+                agent: "claude".into(),
+                message: None,
+            })
+        );
+        // A message is percent-decoded and kept.
+        terminal.process(b"\x1b]7877;v=1;state=blocked;agent=claude;msg=needs%20input;seq=4\x1b\\");
+        assert_eq!(
+            terminal
+                .agent()
+                .and_then(|report| report.message.clone())
+                .as_deref(),
+            Some("needs input")
+        );
+        // state=none clears the report.
+        terminal.process(b"\x1b]7877;v=1;state=none;seq=5\x1b\\");
+        assert_eq!(terminal.agent(), None);
+        // A hostile id is rejected and leaves the (empty) state unchanged.
+        terminal.process(b"\x1b]7877;v=1;state=working;agent=has space;seq=6\x1b\\");
+        assert_eq!(terminal.agent(), None);
+        // An unknown version is ignored.
+        terminal.process(b"\x1b]7877;v=2;state=working;agent=x;seq=7\x1b\\");
+        assert_eq!(terminal.agent(), None);
+        // A non-7877 OSC (progress) does not disturb the agent state.
+        terminal.process(b"\x1b]7877;v=1;state=idle;agent=x;seq=8\x1b\\\x1b]9;4;1;50\x1b\\");
+        assert_eq!(
+            terminal.agent().map(|report| report.state),
+            Some(AgentState::Idle)
+        );
+        assert!(terminal.progress().is_some());
+    }
+
+    #[test]
+    fn the_sequence_advances_only_for_observable_changes() {
+        let mut terminal = ServerTerminal::new(4, 10, 0);
+        assert!(
+            terminal.refresh_grid("", None),
+            "first refresh sizes the grid"
+        );
+        let first = terminal.grid().seq();
+        assert!(!terminal.refresh_grid("", None), "nothing changed");
+        assert_eq!(terminal.grid().seq(), first);
+        terminal.process(b"\x07");
+        assert!(!terminal.refresh_grid("", None), "a bell is not visible");
+        terminal.process(b"hi");
+        assert!(terminal.refresh_grid("", None));
+        assert_eq!(terminal.grid().seq(), first + 1);
+        assert_eq!(
+            terminal.grid().rows_since(Some(first)),
+            vec![CaptureRow {
+                row: 0,
+                text: "hi".into(),
+                wrapped: false
+            }]
+        );
+        assert!(terminal.grid().rows_since(Some(first + 1)).is_empty());
+        // Cursor moves, titles and the exit status are observable too.
+        terminal.process(b"\x1b[3;1H");
+        assert!(terminal.refresh_grid("", None));
+        assert_eq!(terminal.grid().cursor().row, 2);
+        assert!(terminal.grid().rows_since(Some(first + 1)).is_empty());
+        assert!(terminal.refresh_grid("title", None));
+        assert!(terminal.refresh_grid("title", Some(3)));
+        assert!(!terminal.refresh_grid("title", Some(3)));
+        assert_eq!(terminal.grid().seq(), first + 4);
+        // A resize stamps every row.
+        terminal.resize(5, 10);
+        assert!(terminal.refresh_grid("title", Some(3)));
+        assert_eq!(terminal.grid().rows_since(Some(first + 4)).len(), 5);
+        // Wide characters take one entry in the row text and blanks are trimmed.
+        terminal.process("\x1b[H\u{65e5}x  ".as_bytes());
+        terminal.refresh_grid("title", Some(3));
+        assert_eq!(
+            terminal
+                .grid()
+                .rows_since(None)
+                .first()
+                .map(|row| row.text.as_str()),
+            Some("\u{65e5}x")
+        );
+    }
+
+    proptest! {
+        /// Folding `capture {since}` over any split of an output stream reproduces the rows a
+        /// full capture returns.
+        #[test]
+        fn row_captures_since_fold_to_the_full_capture(
+            ops in proptest::collection::vec((0_u8..6, any::<u8>(), any::<bool>()), 1..60)
+        ) {
+            let mut terminal = ServerTerminal::new(4, 10, 0);
+            let mut folded: std::collections::BTreeMap<u16, CaptureRow> =
+                std::collections::BTreeMap::new();
+            let mut seen: Option<u64> = None;
+            for (op, byte, read) in ops {
+                edit(&mut terminal, op, byte);
+                if !read {
+                    continue;
+                }
+                terminal.refresh_grid("", None);
+                for row in terminal.grid().rows_since(seen) {
+                    folded.insert(row.row, row);
+                }
+                seen = Some(terminal.grid().seq());
+            }
+            terminal.refresh_grid("", None);
+            for row in terminal.grid().rows_since(seen) {
+                folded.insert(row.row, row);
+            }
+            let full: Vec<CaptureRow> = terminal.grid().rows_since(None);
+            let folded: Vec<CaptureRow> = folded.into_values().collect();
+            prop_assert_eq!(folded, full);
         }
     }
 

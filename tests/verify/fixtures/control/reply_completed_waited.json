@@ -1,0 +1,12 @@
+{
+  "status": "completed",
+  "id": 5,
+  "result": {
+    "kind": "waited",
+    "value": {
+      "fired": "exit",
+      "seq": 30,
+      "exit_status": 0
+    }
+  }
+}

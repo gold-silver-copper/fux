@@ -1,11 +1,19 @@
 # fux handoff
 
-Updated 2026-09-06 for 0.5.0. fux is a persistent terminal multiplexer whose authoritative model
+Updated 2026-09-06 for 0.6.0. fux is a persistent terminal multiplexer whose authoritative model
 is a standalone `bevy_ecs` World; the architecture is in [docs/design.md](docs/design.md), the
 requirement audit and review record in [docs/ecs-acceptance.md](docs/ecs-acceptance.md),
 protocols in `docs/local-*.md`.
 
 ## State
+
+- 0.6.0 is the protocol and agent-surface pass over 0.5.0: the local protocols carry no version
+  numbers (fixed `FUX\n` preface, unversioned `hello`); the control protocol gained a per-pane
+  output sequence, `capture {since, rows}`, `info`, `wait`, `env`/size on `new`/`split` and key
+  notation on `send-keys`; the pane `new` and `tab select-id` aliases folded away; fux reads OSC
+  7877 agent state into `list` and `pane.agent`; `fux run` and `tests/verify/agent_headless.py`
+  drive a full session with no pty; `tests/verify/fixtures/` pins every schema. Agent state in the
+  attachment frame and the viewer bar is the next pass.
 
 - 0.5.0 is the performance pass over the 0.4.0 refactor: attachment protocol v6 carries only
   the rows that changed (retained grid per pane on the server, retained frame on the viewer,
@@ -25,6 +33,6 @@ protocols in `docs/local-*.md`.
 ## Limits
 
 Runtime evidence is macOS only; Linux and Android are configured CI targets without an executed
-run. Emulator-specific clipboard and mouse behaviour and koh relay/NAT scenarios remain manual. A
-running 0.3.x server older than the viewer is rejected by the handshake and the viewer offers to
-stop it or run alongside it; nothing is ever stopped without a typed confirmation.
+run. Emulator-specific clipboard and mouse behaviour and koh relay/NAT scenarios remain manual. The
+protocols carry no version numbers; a server older than its client is reported as an error and
+restarted by the operator, never stopped by fux.

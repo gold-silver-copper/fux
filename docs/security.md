@@ -7,14 +7,14 @@ started the session server, and that OS account is the authorization boundary.
 
 | Boundary | Enforcement | Limits |
 |---|---|---|
-| Attachment and control sockets | Private (0700) directories owned by the effective user, 0600 sockets, kernel peer-UID checks on both sides, version prefaces before any command, bounded frames and deadlines | Any process running as the same user can control sessions. Root and a compromised account are outside the boundary |
+| Attachment and control sockets | Private (0700) directories owned by the effective user, 0600 sockets, kernel peer-UID checks on both sides, a fixed preface before any command, bounded frames and deadlines | Any process running as the same user can control sessions. Root and a compromised account are outside the boundary |
 | Server election and startup | `flock`-serialized manager election, inode-aware stale-socket recovery, a private nonce-named readiness channel, sanitized daemon environment | The daemon inherits the first viewer's environment minus credential-like keys |
 | Pane output | vt100 emulation with bounded dimensions and history; control strings are filtered and truncated; titles and OSC 52 payloads are bounded | Programs can emit misleading text, titles, bells and clipboard writes |
 | Remote access | Not part of fux. A koh gateway authenticates and authorizes peers before opening the local attachment socket and conveys the local user's authority | fux cannot distinguish a gateway from a local viewer |
 | Observation | Not part of fux. zor reads `list`/`capture` over the control socket like any local client | Agent state is zor's presentation, never an authenticated claim |
 
 There are no cryptographic identities, key files or network listeners. Descriptors contain a pid,
-an instance nonce, socket paths and protocol versions only.
+an instance nonce and socket paths only; the protocols carry no version numbers.
 
 ## Bounds
 
@@ -22,16 +22,23 @@ an instance nonce, socket paths and protocol versions only.
   and write deadlines, 64 attachments per workspace, 64-message viewer outbox (slow viewers are
   disconnected, panes unaffected).
 - Control: 1 MiB frames, two-second preface deadline, 64 connections per workspace, 128 KiB
-  captures, 100 000 scrollback rows, 64 KiB `send-keys`, 128-byte labels, 32 event filters,
-  1024-event subscriber queues.
+  captures (text, or the total row text of a `rows` capture), 100 000 scrollback rows, 64 KiB
+  `send-keys`, 128-byte labels, 32 event filters, 1024-event subscriber queues, 1024 pending
+  `wait`s per server and 64 per pane, `wait` timeout and quiet windows 1–300000 ms, 512-byte
+  `wait` regex patterns (matched in linear time), at most 8 stacked `send-keys` key modifiers. `info` reports these and the configured session
+  limits.
 - Session: 64 workspaces, 32 tabs and 128 panes per workspace, 512×512 pane cells, 256 queued
   viewer requests during a creation barrier, per-step ingest budgets (64 pane chunks of at most
   64 KiB from a 256-deep channel and 256 ingress requests per collection, two collections per
   step when an output stream waits its 1 ms for more chunks) and signal polling between busy steps so a hot pane cannot starve input, timers,
   exit handling or shutdown.
-- Configuration: 1 MiB file, 128 argv entries of at most 4 KiB, 16 KiB total per command.
+- Configuration: 1 MiB file, 128 argv entries of at most 4 KiB, 16 KiB total per command; a
+  `new`/`split` `env` holds at most 64 entries and 16 KiB total.
 - Names: workspace names and labels reject path separators, `.`/`..`, control characters and
   empty strings.
+- Agent reports: OSC 7877 payloads are bounded to 1 KiB, agent ids to 64 ASCII `[A-Za-z0-9._-]`
+  bytes, messages to 128 bytes; a malformed report is dropped and leaves the current state. The
+  state is unverified self-report, never an authorization signal.
 
 ## Lifecycle safety
 
@@ -41,9 +48,9 @@ counted reap gate keeps the leader un-reaped (reaping is polled under the gate) 
 signalled, so a descendant ignoring SIGHUP cannot survive and a recycled group id is never hit.
 A viewer attachment only sees and acts on its own workspace's panes; `workspace kill` over a
 workspace connection is limited to that workspace. The server exits only after its adapters have joined every reader, writer and
-spawn task. fux never kills an unrelated or older server on its own: a protocol mismatch is reported,
-and only an interactive, explicitly confirmed choice sends SIGTERM to the pids recorded in the
-private descriptor directory (never SIGKILL; an unresponsive server keeps its panes).
+spawn task. fux never kills an unrelated or older server on its own: a server that answers with an
+unexpected frame or reply is reported as an error, and stopping it is the operator's explicit act
+(`fux workspace kill`, or a signal to the pid in its descriptor).
 
 ## Terminal output and clipboard
 

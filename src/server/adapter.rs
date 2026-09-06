@@ -152,14 +152,22 @@ impl Adapter {
                     pane,
                     argv,
                     cwd,
+                    env,
                     rows,
                     cols,
                 } => {
                     let events = self.events.clone();
                     self.spawns.spawn_blocking(move || {
-                        let result =
-                            PaneProcess::spawn(pane, &argv, cwd.as_deref(), rows, cols, events)
-                                .map_err(|error| error.to_string());
+                        let result = PaneProcess::spawn(
+                            pane,
+                            &argv,
+                            cwd.as_deref(),
+                            &env,
+                            rows,
+                            cols,
+                            events,
+                        )
+                        .map_err(|error| error.to_string());
                         (pane, result)
                     });
                 }
@@ -299,7 +307,6 @@ pub fn descriptor(
         pid: identity.pid,
         instance_nonce: identity.instance_nonce.clone(),
         socket_path: paths.attach_socket(name)?,
-        protocol: crate::proto::attach::VERSION,
     })
 }
 
@@ -315,9 +322,12 @@ fn publish(subscribers: &Mutex<Vec<Subscriber>>, event: &Event) {
         {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
-                // Output notifications are advisory and may be dropped; anything else means the
-                // subscriber is too slow and is disconnected.
-                kind == EventKind::PaneOutput
+                // High-frequency notifications are advisory and may be dropped; a full queue of
+                // structural events means the subscriber is too slow and is disconnected.
+                matches!(
+                    kind,
+                    EventKind::PaneOutput | EventKind::PaneTitle | EventKind::PaneAgent
+                )
             }
             Err(mpsc::error::TrySendError::Closed(_)) => false,
         }

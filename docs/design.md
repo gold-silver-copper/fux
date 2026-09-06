@@ -3,13 +3,15 @@
 fux 0.4 is a minimal persistent terminal multiplexer. One session server per user owns the
 authoritative model in a standalone `bevy_ecs` 0.19.1 World; viewers are separate processes that
 paint per-viewer frames with a small ratatui-core compositor. Koh (remote access) and zor
-(observation) are independent programs that speak fux's versioned local protocols.
+(observation) are independent programs that speak fux's local protocols, which carry no version
+numbers: every peer is built from the same tree or a pinned base plus a patch, and the fixtures
+under `tests/verify/fixtures/` pin the schemas.
 
 ## Ownership
 
 | Project | Responsibility | Boundary |
 |---|---|---|
-| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment protocol v6 and control protocol `FUXCTL2` over private Unix sockets |
+| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment and control protocols over private Unix sockets |
 | koh | identities, authorization, encryption, discovery, relays, reconnect | authenticated gateway carrying the opaque attachment stream to a private local socket |
 | zor | agent detection, rules, state machine, presentation | `zor observe` consuming `list`/`capture` over the control socket |
 
@@ -22,10 +24,10 @@ lock is released as soon as the manager is elected.
 
 | Path | Purpose |
 |---|---|
-| `RUNTIME/fux/manager.sock` | list/resolve/kill workspaces (preface `FUXCTL2`) |
-| `RUNTIME/fux/NAME.attach.sock` | attachment protocol v6: viewers and koh gateways |
+| `RUNTIME/fux/manager.sock` | list/resolve/kill workspaces (preface `FUX\n`) |
+| `RUNTIME/fux/NAME.attach.sock` | attachment protocol: viewers and koh gateways |
 | `RUNTIME/fux/NAME.sock` | control protocol: CLI, scripts, zor |
-| `RUNTIME/fux/workspaces/NAME.json` | descriptor: pid, instance nonce, socket path, protocol version |
+| `RUNTIME/fux/workspaces/NAME.json` | descriptor: pid, instance nonce, socket path |
 
 Source layout: `ecs/` (model and systems), `server/` (owner loop, adapters, connections),
 `os/pty.rs` (PTY and process-group ownership), `daemon/` (paths, descriptors, election, manager

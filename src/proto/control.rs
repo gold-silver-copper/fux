@@ -1,4 +1,4 @@
-//! Control protocol `FUXCTL2`: newline-delimited JSON commands, replies, subscriptions and
+//! Control protocol: newline-delimited JSON commands, replies, subscriptions and
 //! lifecycle events over a per-workspace Unix socket. Zor's observer and the fux CLI are wire
 //! consumers; nothing here references ECS types.
 
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-pub const CONTROL_PREFACE: &[u8; 8] = b"FUXCTL2\n";
+pub const CONTROL_PREFACE: &[u8; 4] = b"FUX\n";
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_ARGV_ENTRIES: usize = 128;
 pub const MAX_ARG_BYTES: usize = 4096;
@@ -16,10 +16,19 @@ pub const MAX_ARGV_BYTES: usize = 16 * 1024;
 /// Maximum captured text before JSON encoding; worst-case escaping stays under the frame limit.
 pub const MAX_CAPTURE_BYTES: usize = 128 * 1024;
 pub const MAX_KEY_BYTES: usize = 64 * 1024;
+pub const MAX_ENV_ENTRIES: usize = 64;
+pub const MAX_ENV_BYTES: usize = 16 * 1024;
 pub const MAX_SCROLLBACK_LINES: u32 = 100_000;
 pub const MAX_EVENT_FILTERS: usize = 32;
 pub const MAX_SUBSCRIBER_QUEUE: usize = 1024;
 pub const MAX_NAME_BYTES: usize = 128;
+pub const MAX_CONTROL_CONNECTIONS: usize = 64;
+pub const MAX_WAIT_MS: u64 = 300_000;
+pub const MAX_WAIT_PATTERN_BYTES: usize = 512;
+/// A server holds at most this many pending waits across every connection.
+pub const MAX_PENDING_WAITS: usize = 1024;
+/// And at most this many on one pane, so one client cannot fill the table against a pane.
+pub const MAX_WAITS_PER_PANE: usize = 64;
 
 pub type RequestId = u64;
 
@@ -36,14 +45,14 @@ pub enum Request {
         cwd: Option<PathBuf>,
         #[serde(default)]
         argv: Vec<String>,
-    },
-    /// Alias for a side-by-side split of the focused pane.
-    New {
-        id: RequestId,
+        /// Extra environment for the pane command, on top of the sanitized inherited set.
         #[serde(default)]
-        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+        /// Initial pane size when no viewer sizes the tab (a headless workspace).
         #[serde(default)]
-        argv: Vec<String>,
+        rows: Option<u16>,
+        #[serde(default)]
+        columns: Option<u16>,
     },
     Focus {
         id: RequestId,
@@ -62,7 +71,13 @@ pub enum Request {
         id: RequestId,
         pane: PaneId,
         keys: String,
+        /// `escapes` (default) reads `\n \e \xHH`; `keys` reads space-separated key names
+        /// (`Enter`, `Up`, `C-c`, `M-x`, literal characters).
+        #[serde(default)]
+        notation: KeyNotation,
     },
+    /// The pane's text. `format: "rows"` returns the visible rows one by one with the cursor and
+    /// the output sequence; with `since` only the rows changed after that sequence.
     Capture {
         id: RequestId,
         pane: PaneId,
@@ -71,9 +86,24 @@ pub enum Request {
         #[serde(default)]
         scrollback: u32,
         max_bytes: usize,
+        #[serde(default)]
+        format: CaptureFormat,
+        #[serde(default)]
+        since: Option<u64>,
     },
     List {
         id: RequestId,
+    },
+    /// The server's identity, version, runtime directory and limits.
+    Info {
+        id: RequestId,
+    },
+    /// Block until `pane` meets `until` or `timeout_ms` elapses; the reply says which fired.
+    Wait {
+        id: RequestId,
+        pane: PaneId,
+        until: WaitUntil,
+        timeout_ms: u64,
     },
     Tab {
         id: RequestId,
@@ -94,13 +124,14 @@ impl Request {
     pub fn id(&self) -> RequestId {
         match self {
             Self::Split { id, .. }
-            | Self::New { id, .. }
             | Self::Focus { id, .. }
             | Self::Kill { id, .. }
             | Self::Resize { id, .. }
             | Self::SendKeys { id, .. }
             | Self::Capture { id, .. }
             | Self::List { id }
+            | Self::Info { id }
+            | Self::Wait { id, .. }
             | Self::Tab { id, .. }
             | Self::Workspace { id, .. }
             | Self::Subscribe { id, .. } => *id,
@@ -110,7 +141,7 @@ impl Request {
     pub fn validate(&self) -> Result<(), ControlError> {
         let id = Some(self.id());
         match self {
-            Self::Split { argv, cwd, .. } | Self::New { argv, cwd, .. } => {
+            Self::Split { argv, cwd, env, .. } => {
                 validate_argv(argv).map_err(|mut error| {
                     error.id = id;
                     error
@@ -122,18 +153,19 @@ impl Request {
                 {
                     return Err(ControlError::invalid(id, "cwd must be an absolute path"));
                 }
+                validate_env(id, env)?;
             }
             Self::Resize { delta: 0, .. } => {
                 return Err(ControlError::invalid(id, "resize delta must not be zero"));
             }
-            Self::SendKeys { keys, .. } => {
+            Self::SendKeys { keys, notation, .. } => {
                 if keys.len() > MAX_KEY_BYTES {
                     return Err(ControlError::invalid(
                         id,
                         format!("send-keys payload must be at most {MAX_KEY_BYTES} bytes"),
                     ));
                 }
-                decode_key_bytes(keys).map_err(|mut error| {
+                decode_keys(keys, *notation).map_err(|mut error| {
                     error.id = id;
                     error
                 })?;
@@ -141,6 +173,9 @@ impl Request {
             Self::Capture {
                 max_bytes,
                 scrollback,
+                format,
+                since,
+                attrs,
                 ..
             } => {
                 if *max_bytes == 0 || *max_bytes > MAX_CAPTURE_BYTES {
@@ -153,6 +188,18 @@ impl Request {
                     return Err(ControlError::invalid(
                         id,
                         format!("scrollback must be at most {MAX_SCROLLBACK_LINES} lines"),
+                    ));
+                }
+                if since.is_some() && (*format != CaptureFormat::Rows || *scrollback > 0) {
+                    return Err(ControlError::invalid(
+                        id,
+                        "capture since needs format rows and no scrollback (history rows carry no sequence)",
+                    ));
+                }
+                if *format == CaptureFormat::Rows && *attrs {
+                    return Err(ControlError::invalid(
+                        id,
+                        "capture format rows carries plain text; attrs applies to the text format",
                     ));
                 }
             }
@@ -169,6 +216,41 @@ impl Request {
             } => {
                 crate::ids::validate_workspace_name(name)
                     .map_err(|error| ControlError::invalid(id, error.to_string()))?;
+            }
+            Self::Wait {
+                until, timeout_ms, ..
+            } => {
+                if *timeout_ms == 0 || *timeout_ms > MAX_WAIT_MS {
+                    return Err(ControlError::invalid(
+                        id,
+                        format!("wait timeout must be 1-{MAX_WAIT_MS} ms"),
+                    ));
+                }
+                match until {
+                    WaitUntil::Quiet { ms } if *ms == 0 || *ms > MAX_WAIT_MS => {
+                        return Err(ControlError::invalid(
+                            id,
+                            format!("wait quiet must be 1-{MAX_WAIT_MS} ms"),
+                        ));
+                    }
+                    WaitUntil::Pattern { regex } => {
+                        if regex.len() > MAX_WAIT_PATTERN_BYTES {
+                            return Err(ControlError::invalid(
+                                id,
+                                format!(
+                                    "wait pattern must be at most {MAX_WAIT_PATTERN_BYTES} bytes"
+                                ),
+                            ));
+                        }
+                        if regex_lite::Regex::new(regex).is_err() {
+                            return Err(ControlError::invalid(
+                                id,
+                                "wait pattern is not a valid regex",
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
             }
             Self::Subscribe { events, .. } if events.len() > MAX_EVENT_FILTERS => {
                 return Err(ControlError::invalid(
@@ -192,6 +274,85 @@ fn validate_label(id: Option<RequestId>, name: &str) -> Result<(), ControlError>
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureFormat {
+    /// The screen (and requested history) as one text, plain or with attributes.
+    #[default]
+    Text,
+    /// Visible rows as `{row, text, wrapped}` entries with the cursor and the output sequence.
+    Rows,
+}
+
+/// One visible row of a `rows` capture: plain text without trailing blanks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureRow {
+    pub row: u16,
+    pub text: String,
+    pub wrapped: bool,
+}
+
+/// What `info` reports about the server answering the socket.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerInfo {
+    pub pid: u32,
+    pub instance_nonce: String,
+    /// The fux crate version the server was built from.
+    pub version: String,
+    pub runtime_dir: PathBuf,
+    /// The workspace the socket serves; `null` on the manager socket.
+    pub workspace: Option<String>,
+    pub limits: InfoLimits,
+}
+
+/// The configured and fixed limits a client may plan against.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InfoLimits {
+    pub workspaces: usize,
+    pub tabs: usize,
+    pub panes: usize,
+    pub viewers: usize,
+    pub scrollback_lines: usize,
+    pub control_connections: usize,
+    pub frame_bytes: usize,
+    pub capture_bytes: usize,
+    pub key_bytes: usize,
+    pub event_filters: usize,
+    pub subscriber_queue: usize,
+    pub viewer_queue: usize,
+    pub retire_grace_ms: u64,
+    pub terminate_deadline_ms: u64,
+    pub output_event_interval_ms: u64,
+    pub frame_interval_ms: u64,
+}
+
+/// What a `wait` blocks for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum WaitUntil {
+    /// No observable change for `ms`.
+    Quiet { ms: u64 },
+    /// The visible screen's plain text matches `regex`.
+    Pattern { regex: String },
+    /// The pane's process exits.
+    Exit,
+    /// The pane's output sequence reaches `value`.
+    Seq { value: u64 },
+}
+
+/// Which `wait` condition fired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaitFired {
+    Quiet,
+    Pattern,
+    Exit,
+    Seq,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum FocusTarget {
@@ -211,11 +372,9 @@ pub enum TabAction {
     },
     Next,
     Previous,
+    /// Show a tab by its position or its stable id.
     Select {
-        index: u32,
-    },
-    SelectId {
-        tab: TabId,
+        target: TabTarget,
     },
     Rename {
         tab: TabId,
@@ -224,6 +383,14 @@ pub enum TabAction {
     Close {
         tab: TabId,
     },
+}
+
+/// Which tab `tab select` shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TabTarget {
+    Index(u32),
+    Id(TabId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,11 +448,40 @@ impl Reply {
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
 pub enum CommandResult {
     Unit,
-    Pane { pane: PaneId },
-    Tab { tab: TabId },
-    Workspace { name: String },
-    Capture { text: String },
-    Listing { workspaces: Vec<WorkspaceSummary> },
+    Pane {
+        pane: PaneId,
+    },
+    Tab {
+        tab: TabId,
+    },
+    Workspace {
+        name: String,
+    },
+    /// `text` plus the output sequence the text reflects.
+    Capture {
+        text: String,
+        seq: u64,
+    },
+    /// The visible rows (only the changed ones when `since_applied`), the cursor and the output
+    /// sequence they reflect.
+    Rows {
+        seq: u64,
+        cursor: crate::view::Cursor,
+        rows: Vec<CaptureRow>,
+        since_applied: bool,
+    },
+    Listing {
+        workspaces: Vec<WorkspaceSummary>,
+    },
+    Info {
+        info: Box<ServerInfo>,
+    },
+    /// A `wait` fired: which condition, the pane's current sequence and its exit status.
+    Waited {
+        fired: WaitFired,
+        seq: u64,
+        exit_status: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -317,6 +513,12 @@ pub struct PaneSummary {
     pub title: String,
     #[serde(default)]
     pub progress: Option<(u8, u8)>,
+    /// The pane's self-reported agent state (OSC 7877), or `null` when none. Unverified.
+    #[serde(default)]
+    pub agent: Option<crate::view::AgentReport>,
+    /// The output sequence: advances whenever the visible screen, cursor, modes, title or exit
+    /// status changed; `capture` and `pane.output` report the same counter.
+    pub seq: u64,
     pub geometry: Rect,
     pub focused: bool,
     pub cursor: crate::view::Cursor,
@@ -342,6 +544,7 @@ pub enum ErrorCode {
     NotFound,
     Conflict,
     Limit,
+    Timeout,
     Internal,
 }
 
@@ -367,8 +570,20 @@ pub enum Event {
         pane: PaneId,
         title: String,
     },
+    #[serde(rename = "pane.agent")]
+    PaneAgent {
+        id: RequestId,
+        pane: PaneId,
+        /// The new agent state, or `null` when the pane no longer reports one.
+        agent: Option<crate::view::AgentReport>,
+    },
     #[serde(rename = "pane.output")]
-    PaneOutput { id: RequestId, pane: PaneId },
+    PaneOutput {
+        id: RequestId,
+        pane: PaneId,
+        /// The output sequence after the change that produced the event.
+        seq: u64,
+    },
     #[serde(rename = "tab.opened")]
     TabOpened {
         id: RequestId,
@@ -389,6 +604,7 @@ impl Event {
             Self::PaneOpened { .. } => EventKind::PaneOpened,
             Self::PaneClosed { .. } => EventKind::PaneClosed,
             Self::PaneTitle { .. } => EventKind::PaneTitle,
+            Self::PaneAgent { .. } => EventKind::PaneAgent,
             Self::PaneOutput { .. } => EventKind::PaneOutput,
             Self::TabOpened { .. } => EventKind::TabOpened,
             Self::TabClosed { .. } => EventKind::TabClosed,
@@ -403,6 +619,7 @@ impl Event {
             Self::PaneOpened { id, .. }
             | Self::PaneClosed { id, .. }
             | Self::PaneTitle { id, .. }
+            | Self::PaneAgent { id, .. }
             | Self::PaneOutput { id, .. }
             | Self::TabOpened { id, .. }
             | Self::TabClosed { id, .. }
@@ -422,6 +639,8 @@ pub enum EventKind {
     PaneClosed,
     #[serde(rename = "pane.title")]
     PaneTitle,
+    #[serde(rename = "pane.agent")]
+    PaneAgent,
     #[serde(rename = "pane.output")]
     PaneOutput,
     #[serde(rename = "tab.opened")]
@@ -541,6 +760,133 @@ pub fn decode_key_bytes(input: &str) -> Result<Vec<u8>, ControlError> {
     Ok(output)
 }
 
+/// How `send-keys` reads its payload.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyNotation {
+    /// Byte escapes: `\n \r \t \e \\ \0 \xHH`, everything else literal UTF-8.
+    #[default]
+    Escapes,
+    /// Space-separated key names: `Enter`, `Tab`, `Escape`, `Space`, `Up`/`Down`/`Left`/`Right`,
+    /// `Home`, `End`, `PageUp`, `PageDown`, `F1`-`F12`, `C-<key>`, `M-<key>`, or a literal char.
+    Keys,
+}
+
+/// Decodes `send-keys` input in the requested notation into the exact bytes for the pane.
+pub fn decode_keys(input: &str, notation: KeyNotation) -> Result<Vec<u8>, ControlError> {
+    match notation {
+        KeyNotation::Escapes => decode_key_bytes(input),
+        KeyNotation::Keys => decode_key_notation(input),
+    }
+}
+
+/// The xterm byte sequence for one named key (normal cursor mode).
+fn named_key(name: &str) -> Option<&'static [u8]> {
+    Some(match name {
+        "Enter" | "Return" => b"\r",
+        "Tab" => b"\t",
+        "Escape" | "Esc" => b"\x1b",
+        "Space" => b" ",
+        "Backspace" | "BSpace" => b"\x7f",
+        "Up" => b"\x1b[A",
+        "Down" => b"\x1b[B",
+        "Right" => b"\x1b[C",
+        "Left" => b"\x1b[D",
+        "Home" => b"\x1b[H",
+        "End" => b"\x1b[F",
+        "Insert" | "IC" => b"\x1b[2~",
+        "Delete" | "DC" => b"\x1b[3~",
+        "PageUp" | "PgUp" => b"\x1b[5~",
+        "PageDown" | "PgDn" => b"\x1b[6~",
+        "F1" => b"\x1bOP",
+        "F2" => b"\x1bOQ",
+        "F3" => b"\x1bOR",
+        "F4" => b"\x1bOS",
+        "F5" => b"\x1b[15~",
+        "F6" => b"\x1b[17~",
+        "F7" => b"\x1b[18~",
+        "F8" => b"\x1b[19~",
+        "F9" => b"\x1b[20~",
+        "F10" => b"\x1b[21~",
+        "F11" => b"\x1b[23~",
+        "F12" => b"\x1b[24~",
+        _ => return None,
+    })
+}
+
+/// The most `C-`/`M-` modifiers one key token may stack, bounding recursion.
+const MAX_KEY_MODIFIERS: usize = 8;
+
+/// Decodes one token (a named key, `C-<x>`, `M-<x>`, or a literal character) into bytes.
+fn decode_token(token: &str, depth: usize) -> Result<Vec<u8>, ControlError> {
+    if depth > MAX_KEY_MODIFIERS {
+        return Err(ControlError::invalid(None, "too many key modifiers"));
+    }
+    if let Some(rest) = token.strip_prefix("C-") {
+        let inner = decode_token(rest, depth + 1)?;
+        // Control applies to a single ASCII letter or `@`-`_`; otherwise it is undefined.
+        let [byte] = inner.as_slice() else {
+            return Err(ControlError::invalid(
+                None,
+                format!("C- needs one key: {token}"),
+            ));
+        };
+        return Ok(vec![byte.to_ascii_uppercase().wrapping_sub(0x40) & 0x7f]);
+    }
+    if let Some(rest) = token.strip_prefix("M-") {
+        let mut bytes = vec![0x1b];
+        bytes.extend(decode_token(rest, depth + 1)?);
+        return Ok(bytes);
+    }
+    if let Some(bytes) = named_key(token) {
+        return Ok(bytes.to_vec());
+    }
+    let mut chars = token.chars();
+    if let (Some(character), None) = (chars.next(), chars.clone().next()) {
+        let mut encoded = [0_u8; 4];
+        return Ok(character.encode_utf8(&mut encoded).as_bytes().to_vec());
+    }
+    Err(ControlError::invalid(
+        None,
+        format!("unknown key `{token}`"),
+    ))
+}
+
+/// Decodes space-separated key tokens into the bytes a pane receives.
+pub fn decode_key_notation(input: &str) -> Result<Vec<u8>, ControlError> {
+    let mut output = Vec::with_capacity(input.len());
+    for token in input.split_whitespace() {
+        output.extend(decode_token(token, 0)?);
+    }
+    Ok(output)
+}
+
+fn validate_env(id: Option<RequestId>, env: &[(String, String)]) -> Result<(), ControlError> {
+    if env.len() > MAX_ENV_ENTRIES {
+        return Err(ControlError::invalid(
+            id,
+            format!("at most {MAX_ENV_ENTRIES} environment entries"),
+        ));
+    }
+    let mut total = 0usize;
+    for (name, value) in env {
+        if name.is_empty() || name.contains(['=', '\0']) || value.contains('\0') {
+            return Err(ControlError::invalid(
+                id,
+                "environment names are non-empty without `=` or NUL; values carry no NUL",
+            ));
+        }
+        total = total.saturating_add(name.len()).saturating_add(value.len());
+    }
+    if total > MAX_ENV_BYTES {
+        return Err(ControlError::invalid(
+            id,
+            format!("environment exceeds {MAX_ENV_BYTES} bytes"),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_argv(argv: &[String]) -> Result<(), ControlError> {
     if argv.len() > MAX_ARGV_ENTRIES {
         return Err(ControlError::invalid(
@@ -576,6 +922,7 @@ fn extract_id(frame: &[u8]) -> Option<RequestId> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
     use super::*;
 
     #[test]
@@ -628,6 +975,146 @@ mod tests {
             serde_json::from_str::<EventKind>("\"pane.output\"").ok(),
             Some(EventKind::PaneOutput)
         );
+    }
+
+    #[test]
+    fn key_notation_decodes_named_keys_modifiers_and_literals() {
+        assert_eq!(decode_key_notation("Enter").unwrap(), b"\r");
+        assert_eq!(decode_key_notation("Up Down").unwrap(), b"\x1b[A\x1b[B");
+        assert_eq!(decode_key_notation("C-c").unwrap(), vec![3]);
+        assert_eq!(decode_key_notation("C-a b C-c").unwrap(), vec![1, b'b', 3]);
+        assert_eq!(decode_key_notation("M-x").unwrap(), vec![0x1b, b'x']);
+        assert_eq!(decode_key_notation("F5").unwrap(), b"\x1b[15~");
+        assert_eq!(decode_key_notation("h i").unwrap(), b"hi");
+        assert!(decode_key_notation("Nope").is_err());
+        assert!(decode_key_notation("C-ab").is_err());
+        // Deeply stacked modifiers are rejected rather than recursing without bound.
+        assert!(decode_key_notation(&"M-".repeat(64)).is_err());
+        // The default escapes notation is unchanged.
+        assert_eq!(decode_keys("a\\n", KeyNotation::Escapes).unwrap(), b"a\n");
+    }
+
+    #[test]
+    fn env_and_send_keys_notation_are_validated() {
+        let ok = decode_request_frame(
+            br#"{"command":"split","id":1,"axis":"horizontal","env":[["FOO","bar"]],"rows":40,"columns":100}"#,
+        );
+        assert!(matches!(
+            ok,
+            Ok(Request::Split {
+                rows: Some(40),
+                columns: Some(100),
+                ..
+            })
+        ));
+        assert!(ok.unwrap().validate().is_ok());
+        let bad_name = decode_request_frame(
+            br#"{"command":"split","id":1,"axis":"horizontal","env":[["A=B","c"]]}"#,
+        )
+        .ok()
+        .filter(|request| request.validate().is_ok());
+        assert!(bad_name.is_none(), "an `=` in an env name is rejected");
+        let keys = decode_request_frame(
+            br#"{"command":"send-keys","id":2,"pane":1,"keys":"C-c Enter","notation":"keys"}"#,
+        );
+        assert!(matches!(
+            keys,
+            Ok(Request::SendKeys {
+                notation: KeyNotation::Keys,
+                ..
+            })
+        ));
+        assert!(keys.unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn capture_since_needs_rows_without_history_and_rows_carry_no_attrs() {
+        let base = Request::Capture {
+            id: 1,
+            pane: PaneId(1),
+            attrs: false,
+            scrollback: 0,
+            max_bytes: 100,
+            format: CaptureFormat::Rows,
+            since: Some(3),
+        };
+        assert!(base.validate().is_ok());
+        let text_since = match base.clone() {
+            Request::Capture {
+                id,
+                pane,
+                attrs,
+                scrollback,
+                max_bytes,
+                since,
+                ..
+            } => Request::Capture {
+                id,
+                pane,
+                attrs,
+                scrollback,
+                max_bytes,
+                since,
+                format: CaptureFormat::Text,
+            },
+            other => other,
+        };
+        assert!(text_since.validate().is_err());
+        let history_since = match base.clone() {
+            Request::Capture {
+                id,
+                pane,
+                attrs,
+                max_bytes,
+                format,
+                since,
+                ..
+            } => Request::Capture {
+                id,
+                pane,
+                attrs,
+                max_bytes,
+                format,
+                since,
+                scrollback: 5,
+            },
+            other => other,
+        };
+        assert!(history_since.validate().is_err());
+        let rows_attrs = match base {
+            Request::Capture {
+                id,
+                pane,
+                scrollback,
+                max_bytes,
+                format,
+                since,
+                ..
+            } => Request::Capture {
+                id,
+                pane,
+                scrollback,
+                max_bytes,
+                format,
+                since,
+                attrs: true,
+            },
+            other => other,
+        };
+        assert!(rows_attrs.validate().is_err());
+        // The defaults keep yesterday's request shape valid.
+        assert!(matches!(
+            decode_request_frame(br#"{"command":"capture","id":2,"pane":1,"max_bytes":10}"#),
+            Ok(Request::Capture {
+                format: CaptureFormat::Text,
+                since: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            decode_request_frame(br#"{"command":"info","id":3}"#),
+            Ok(Request::Info { id: 3 })
+        ));
     }
 
     #[test]

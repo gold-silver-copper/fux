@@ -15,7 +15,7 @@ use crate::commands::Action;
 use crate::config::Config;
 use crate::proto::attach::{
     ClientMessage, FRAME_TIMEOUT, MAX_CLIENT_FRAME, MAX_INPUT_CHUNK, MAX_SERVER_FRAME,
-    ServerMessage, VERSION, read_frame, write_frame,
+    ServerMessage, read_frame, write_frame,
 };
 use crate::proto::control::{FocusTarget, Reply, Request, TabAction};
 use crate::view::Frame;
@@ -71,30 +71,23 @@ impl Connection {
         let mut stream = UnixStream::from_std(stream)?;
         write_frame(
             &mut stream,
-            &ClientMessage::Hello {
-                version: VERSION,
-                rows,
-                columns,
-            },
+            &ClientMessage::Hello { rows, columns },
             MAX_CLIENT_FRAME,
         )
         .await?;
-        match tokio::time::timeout(FRAME_TIMEOUT, read_frame(&mut stream, MAX_SERVER_FRAME))
-            .await??
-        {
-            ServerMessage::Hello { version: VERSION } => Ok(Self { stream }),
-            // A server that rejects the hello names the mismatch; `Unsupported` lets the launcher
-            // offer the operator a way past an older server (0.3.0 answers this way).
-            ServerMessage::Error { message } if message.starts_with("incompatible") => {
-                Err(std::io::Error::new(std::io::ErrorKind::Unsupported, message).into())
-            }
-            ServerMessage::Error { message } => anyhow::bail!("{message}"),
-            // `Unsupported` lets the launcher offer the operator a way past an older server.
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "incompatible fux session server (attachment protocol); use matching versions or restart it after saving your work",
-            )
-            .into()),
+        let answer = tokio::time::timeout(FRAME_TIMEOUT, read_frame(&mut stream, MAX_SERVER_FRAME))
+            .await?
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "session server answered the hello with an unreadable frame ({error}); restart it if it is older than this fux"
+                )
+            })?;
+        match answer {
+            ServerMessage::Hello {} => Ok(Self { stream }),
+            ServerMessage::Error { message } => anyhow::bail!("session server: {message}"),
+            _ => anyhow::bail!(
+                "the session server did not answer the hello; restart it if it is older than this fux"
+            ),
         }
     }
 }
@@ -522,6 +515,9 @@ fn dispatch(
             target: frame.focused,
             cwd: None,
             argv: Vec::new(),
+            env: Vec::new(),
+            rows: None,
+            columns: None,
         }),
         Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
             Dispatch::Send(Request::Focus {

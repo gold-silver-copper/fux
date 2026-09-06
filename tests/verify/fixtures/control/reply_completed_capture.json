@@ -1,0 +1,11 @@
+{
+  "status": "completed",
+  "id": 3,
+  "result": {
+    "kind": "capture",
+    "value": {
+      "text": "$ echo hi\nhi\n",
+      "seq": 12
+    }
+  }
+}

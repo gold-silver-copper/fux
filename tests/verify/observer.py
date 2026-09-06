@@ -1,7 +1,7 @@
 """Independent zor observation of a real fux pane, plus failure isolation of control clients.
 
 Run as: observer.py FUX_BIN ZOR_BIN. Zor is started explicitly by this harness (as a user would),
-consumes fux's documented control surface (`FUXCTL2` preface, `list`, `capture`) and emits OSC
+consumes fux's documented control surface (the `FUX` preface, `list`, `capture`) and emits OSC
 7877 reports on its stdout. Fux never spawns, supervises or parses observers.
 """
 import json
@@ -19,18 +19,18 @@ FUX = str(Path(sys.argv[1]).resolve())
 ZOR = str(Path(sys.argv[2]).resolve())
 
 
-def rpc(path, value, preface=b'FUXCTL2\n'):
+def rpc(path, value, preface=b'FUX\n'):
     with socket.socket(socket.AF_UNIX) as stream:
         stream.settimeout(3)
         stream.connect(str(path))
         stream.sendall(preface)
         received = b''
-        while len(received) < 8:
-            chunk = stream.recv(8 - len(received))
+        while len(received) < 4:
+            chunk = stream.recv(4 - len(received))
             if not chunk:
                 raise EOFError(received)
             received += chunk
-        assert received == b'FUXCTL2\n', received
+        assert received == b'FUX\n', received
         stream.sendall(json.dumps(value).encode() + b'\n')
         output = b''
         while b'\n' not in output:
@@ -89,17 +89,17 @@ with tempfile.TemporaryDirectory(prefix='fo-', dir='/tmp') as directory:
         with socket.socket(socket.AF_UNIX) as bad:
             bad.settimeout(3)
             bad.connect(str(control))
-            bad.sendall(b'FUXCTL1\n')
+            bad.sendall(b'FUZ\n')
             try:
-                reply = bad.recv(8)
+                reply = bad.recv(4)
             except (ConnectionResetError, BrokenPipeError):
                 reply = b''
-            assert reply in (b'FUXCTL2\n', b''), reply
+            assert reply in (b'FUX\n', b''), reply
         with socket.socket(socket.AF_UNIX) as stream:
             stream.settimeout(3)
             stream.connect(str(control))
-            stream.sendall(b'FUXCTL2\n')
-            stream.recv(8)
+            stream.sendall(b'FUX\n')
+            stream.recv(4)
             stream.sendall(b'{"command":"popup","id":5,"argv":["x"]}\n')
             reply = json.loads(stream.recv(65536).split(b'\n')[0])
             assert reply['status'] == 'failed' and reply['error']['code'] == 'unknown-command', reply

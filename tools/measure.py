@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reproducible local measurements for a fux binary: startup, idle CPU, memory, latency.
 
-Usage: tools/measure.py PATH/TO/fux [--version 2|3] [--samples N]
+Usage: tools/measure.py PATH/TO/fux [--samples N]
 
 Runs an isolated session server under a disposable HOME/XDG root, attaches one raw
 attachment-protocol client and reports:
@@ -12,8 +12,7 @@ attachment-protocol client and reports:
 - rss: server resident memory after startup and after a 20000-line output burst
 - latency: median/p95 wall time from sending `printf MARK` input until a state frame shows it
 
-The attachment protocol version defaults to the one the binary speaks (3 for the ECS rewrite,
-2 for the pre-rewrite baseline). Nothing here touches personal sessions.
+Nothing here touches personal sessions.
 """
 import argparse
 import json
@@ -82,7 +81,6 @@ def voluntary_switches(pid):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binary")
-    parser.add_argument("--version", type=int, default=3)
     parser.add_argument("--samples", type=int, default=20)
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
@@ -106,9 +104,9 @@ def main():
                         candidate = socket.socket(socket.AF_UNIX)
                         candidate.settimeout(5)
                         candidate.connect(str(sock_path))
-                        send(candidate, dict(type="hello", version=args.version, rows=24, columns=80))
+                        send(candidate, dict(type="hello", rows=24, columns=80))
                         hello = receive(candidate)
-                        assert hello == {"hello": {"version": args.version}}, hello
+                        assert hello == {"hello": {}}, hello
                         peer = candidate
                     except (ConnectionRefusedError, FileNotFoundError):
                         time.sleep(0.005)

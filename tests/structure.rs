@@ -15,6 +15,7 @@ fn production_spawns_exist_only_in_reviewed_owner_modules() {
         "src/client/mod.rs",     // frame reader task and workspace lookups, aborted on exit
         "src/client/io.rs",      // stdin/SIGWINCH producers, cancelled and joined
         "src/daemon/startup.rs", // background server child, killed when readiness fails
+        "src/main.rs",           // `fux run` capture-reader thread, joined before the CLI exits
     ];
     for file in rust_files("src") {
         let source = strip_test_modules(&read(&file)).to_owned();

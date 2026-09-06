@@ -88,6 +88,7 @@ impl PaneProcess {
         pane: PaneId,
         argv: &[String],
         cwd: Option<&Path>,
+        env: &[(String, String)],
         rows: u16,
         cols: u16,
         events: mpsc::Sender<Inbound>,
@@ -110,6 +111,10 @@ impl PaneProcess {
             command.cwd(cwd);
         }
         scrub_parent_env(&mut command, std::env::vars_os().map(|(key, _)| key));
+        // Caller-supplied environment is applied last, so a pane can override TERM if it must.
+        for (name, value) in env {
+            command.env(name, value);
+        }
         let mut child = pair
             .slave
             .spawn_command(command)
