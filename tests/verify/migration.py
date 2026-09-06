@@ -103,7 +103,23 @@ class Terminal:
     def send(self, data):
         os.write(self.fd, data)
 
+    def drain(self):
+        """Reads whatever fux has written so far: a pty buffer left full blocks the viewer in its
+        frame write, and a blocked viewer cannot see the keys sent afterwards."""
+        while True:
+            ready, _, _ = select.select([self.fd], [], [], 0)
+            if not ready:
+                return
+            try:
+                data = os.read(self.fd, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            self.raw += data
+
     def exited(self):
+        self.drain()
         if self.status is None:
             child, status = os.waitpid(self.pid, os.WNOHANG)
             if child:

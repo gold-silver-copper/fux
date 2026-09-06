@@ -198,7 +198,10 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         # Fresh launch: one workspace, one tab, one pane, no tab strip, no status widgets.
         first = Viewer(env)
         viewers.append(first)
-        wait(lambda: 'COPY_TARGET' in first.screen.text(), 'first viewer did not render the pane')
+        # The bar is the last row painted; wait for the whole first frame, not just the pane.
+        wait(lambda: 'COPY_TARGET' in first.screen.text()
+             and first.screen.text().splitlines()[-1].rstrip().endswith('│ 1'),
+             'first viewer did not render the pane and the focused pane id in the bar')
         rows = first.screen.text().splitlines()
         assert rows[-1].startswith(' default │ main '), f'bar missing: {rows[-1]!r}'
         assert rows[-1].rstrip().endswith('│ 1'), f'focused pane id missing from the bar: {rows[-1]!r}'
