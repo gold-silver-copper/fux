@@ -3,7 +3,7 @@
 
 use crate::ecs::components::{Pane, PaneState, Tab, Viewer, Workspace};
 use crate::ecs::messages::{Effect, Inbound};
-use crate::ecs::resources::{Deadlines, Registry};
+use crate::ecs::resources::Registry;
 use crate::ecs::support::effect;
 use crate::proto::attach::ServerMessage;
 use crate::view::{Frame, PaneRect, PaneView, TabEntry};
@@ -211,20 +211,12 @@ fn build_frame(
     }
 }
 
-/// End of step: clear dirty flags and consumed messages, publish the next deadline.
-pub fn finish_step(world: &mut World) {
-    let panes: Vec<Entity> = world
-        .query::<(Entity, &Pane)>()
-        .iter(world)
-        .filter(|(_, pane)| pane.dirty)
-        .map(|(entity, _)| entity)
-        .collect();
-    for pane in panes {
-        if let Some(mut pane) = world.get_mut::<Pane>(pane) {
+/// End of step: clear pane dirty flags and the consumed inbound messages.
+pub fn finish_step(mut panes: Query<&mut Pane>, mut inbound: ResMut<Messages<Inbound>>) {
+    for mut pane in &mut panes {
+        if pane.dirty {
             pane.dirty = false;
         }
     }
-    world.resource_mut::<Messages<Inbound>>().clear();
-    let deadline = world.resource::<Deadlines>().next_ms;
-    world.resource_mut::<Deadlines>().next_ms = deadline;
+    inbound.clear();
 }

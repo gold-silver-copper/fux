@@ -1,36 +1,32 @@
 //! Output phase: pane bytes into emulators, host query replies back out, EOF/exit records.
 
-use crate::ecs::components::{Pane, PaneState};
+use crate::ecs::components::{Pane, PaneState, Tab};
 use crate::ecs::messages::{Effect, Inbound};
-use crate::ecs::resources::{Clock, Limits};
-use crate::ecs::support::{effect, event, pane_entity, pane_workspace};
+use crate::ecs::resources::{Clock, Ids, Limits};
+use crate::ecs::support::Effects;
 use crate::proto::control::Event;
 use bevy_ecs::prelude::*;
 
-pub fn apply_pane_output(world: &mut World) {
-    let now = world.resource::<Clock>().now_ms;
-    let interval = world.resource::<Limits>().output_event_interval_ms;
-    let inbound: Vec<Inbound> = world
-        .resource::<Messages<Inbound>>()
-        .iter_current_update_messages()
-        .filter(|message| {
-            matches!(
-                message,
-                Inbound::PaneOutput { .. } | Inbound::PaneEof { .. } | Inbound::PaneExited { .. }
-            )
-        })
-        .cloned()
-        .collect();
-    for message in inbound {
+/// Applies this step's pane events in arrival order: bytes, then EOF, then the exit status.
+pub fn apply_pane_output(
+    mut inbound: MessageReader<Inbound>,
+    clock: Res<Clock>,
+    limits: Res<Limits>,
+    ids: Res<Ids>,
+    mut panes: Query<&mut Pane>,
+    tabs: Query<&Tab>,
+    mut effects: Effects,
+) {
+    let now = clock.now_ms;
+    let interval = limits.output_event_interval_ms;
+    for message in inbound.read() {
         match message {
             Inbound::PaneOutput { pane, bytes } => {
-                let Some(entity) = pane_entity(world, pane) else {
+                let Some(mut component) = ids.pane(*pane).and_then(|e| panes.get_mut(e).ok())
+                else {
                     continue;
                 };
-                let Some(mut component) = world.get_mut::<Pane>(entity) else {
-                    continue;
-                };
-                component.terminal.process(&bytes);
+                component.terminal.process(bytes);
                 component.dirty = true;
                 let replies = component.terminal.take_host_replies();
                 let title = component.terminal.title().to_owned();
@@ -44,28 +40,31 @@ pub fn apply_pane_output(world: &mut World) {
                 if publish_output {
                     component.last_output_event_ms = Some(now);
                 }
-                let accepts = component.state.accepts_input();
-                if !replies.is_empty() && accepts {
-                    effect(
-                        world,
-                        Effect::WriteInput {
-                            pane,
-                            bytes: replies,
-                        },
-                    );
+                if !replies.is_empty() && component.state.accepts_input() {
+                    effects.emit(Effect::WriteInput {
+                        pane: *pane,
+                        bytes: replies,
+                    });
                 }
-                if let Some(workspace) = pane_workspace(world, entity) {
+                let workspace = tabs.get(component.tab).map(|tab| tab.workspace);
+                if let Ok(workspace) = workspace {
                     if publish_output {
-                        event(world, workspace, Event::PaneOutput { id: 0, pane });
+                        effects.event(workspace, Event::PaneOutput { id: 0, pane: *pane });
                     }
                     if title_changed {
-                        event(world, workspace, Event::PaneTitle { id: 0, pane, title });
+                        effects.event(
+                            workspace,
+                            Event::PaneTitle {
+                                id: 0,
+                                pane: *pane,
+                                title,
+                            },
+                        );
                     }
                 }
             }
             Inbound::PaneEof { pane } => {
-                if let Some(entity) = pane_entity(world, pane)
-                    && let Some(mut component) = world.get_mut::<Pane>(entity)
+                if let Some(mut component) = ids.pane(*pane).and_then(|e| panes.get_mut(e).ok())
                     && let PaneState::Live { pid } = component.state
                 {
                     component.state = PaneState::Eof { pid };
@@ -75,10 +74,8 @@ pub fn apply_pane_output(world: &mut World) {
                 // A short-lived process can exit before its spawn completion is applied (the
                 // reader thread starts with the process); the status is kept and the completion
                 // places an already exited pane, which the lifecycle phase then closes.
-                if let Some(entity) = pane_entity(world, pane)
-                    && let Some(mut component) = world.get_mut::<Pane>(entity)
-                {
-                    component.state = PaneState::Exited { code };
+                if let Some(mut component) = ids.pane(*pane).and_then(|e| panes.get_mut(e).ok()) {
+                    component.state = PaneState::Exited { code: *code };
                     component.dirty = true;
                 }
             }

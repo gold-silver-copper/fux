@@ -9,9 +9,34 @@ use crate::layout::Rect;
 use crate::proto::attach::ServerMessage;
 use crate::proto::control::{self, ErrorCode, Reply, RequestId};
 use bevy_ecs::prelude::*;
+use bevy_ecs::system::SystemParam;
 
 pub fn effect(world: &mut World, effect: Effect) {
     world.resource_mut::<Messages<Effect>>().write(effect);
+}
+
+/// The effect outlet of a typed system: effects and control events, the latter named by the
+/// workspace they concern.
+#[derive(SystemParam)]
+pub struct Effects<'w, 's> {
+    writer: MessageWriter<'w, Effect>,
+    workspaces: Query<'w, 's, &'static Workspace>,
+}
+
+impl Effects<'_, '_> {
+    pub fn emit(&mut self, effect: Effect) {
+        self.writer.write(effect);
+    }
+
+    /// Publishes a control event for `workspace`; a despawned workspace has no subscribers.
+    pub fn event(&mut self, workspace: Entity, event: control::Event) {
+        if let Ok(workspace) = self.workspaces.get(workspace) {
+            self.writer.write(Effect::Event {
+                workspace: workspace.name.clone(),
+                event,
+            });
+        }
+    }
 }
 
 pub fn event(world: &mut World, workspace: Entity, event: control::Event) {

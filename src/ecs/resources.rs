@@ -40,15 +40,49 @@ impl Limits {
     }
 }
 
+/// One public identity space mapped to entities.
+#[derive(Clone, Debug)]
+pub struct IdIndex<K: Ord>(BTreeMap<K, Entity>);
+
+impl<K: Ord> Default for IdIndex<K> {
+    fn default() -> Self {
+        Self(BTreeMap::new())
+    }
+}
+
+impl<K: Ord> IdIndex<K> {
+    #[must_use]
+    pub fn entity<Q>(&self, key: &Q) -> Option<Entity>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.0.get(key).copied()
+    }
+}
+
+impl<K: Ord> std::ops::Deref for IdIndex<K> {
+    type Target = BTreeMap<K, Entity>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<K: Ord> std::ops::DerefMut for IdIndex<K> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Public identities and their entities. Ids never repeat within a server lifetime.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct Ids {
     next_pane: u32,
     next_tab: u32,
-    pub panes: BTreeMap<PaneId, Entity>,
-    pub tabs: BTreeMap<TabId, Entity>,
-    pub viewers: BTreeMap<ViewerId, Entity>,
-    pub workspaces: BTreeMap<String, Entity>,
+    pub panes: IdIndex<PaneId>,
+    pub tabs: IdIndex<TabId>,
+    pub viewers: IdIndex<ViewerId>,
+    pub workspaces: IdIndex<String>,
 }
 
 impl Ids {
@@ -62,19 +96,19 @@ impl Ids {
     }
     #[must_use]
     pub fn pane(&self, id: PaneId) -> Option<Entity> {
-        self.panes.get(&id).copied()
+        self.panes.entity(&id)
     }
     #[must_use]
     pub fn tab(&self, id: TabId) -> Option<Entity> {
-        self.tabs.get(&id).copied()
+        self.tabs.entity(&id)
     }
     #[must_use]
     pub fn viewer(&self, id: ViewerId) -> Option<Entity> {
-        self.viewers.get(&id).copied()
+        self.viewers.entity(&id)
     }
     #[must_use]
     pub fn workspace(&self, name: &str) -> Option<Entity> {
-        self.workspaces.get(name).copied()
+        self.workspaces.entity(name)
     }
 }
 
