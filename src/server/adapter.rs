@@ -340,6 +340,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_updates_merge_so_no_row_is_lost() {
+        use crate::view::{FrameUpdate, Line, PaneUpdate, WireCell};
+        let pane = |row: u16, text: &str| PaneUpdate {
+            rows: 2,
+            columns: 1,
+            lines: vec![Line {
+                row,
+                wrapped: false,
+                len: 1,
+            }],
+            cells: vec![WireCell {
+                text: Some(text.into()),
+                ..WireCell::default()
+            }],
+            ..PaneUpdate::default()
+        };
+        let update = |generation: u64, row: u16, text: &str| {
+            let mut frame = FrameUpdate {
+                generation,
+                ..FrameUpdate::default()
+            };
+            frame.panes.insert(PaneId(1), pane(row, text));
+            ServerMessage::State {
+                state: Box::new(frame),
+            }
+        };
+        let outbox = ViewerOutbox::default();
+        assert!(outbox.push(update(1, 0, "a")));
+        assert!(outbox.push(update(2, 1, "b")));
+        assert!(outbox.push(update(3, 0, "c")));
+        assert_eq!(outbox.queued(), 1);
+        let Some(ServerMessage::State { state }) = outbox.next().await else {
+            panic!("a merged update");
+        };
+        assert_eq!(state.generation, 3);
+        let Some(merged) = state.panes.get(&PaneId(1)) else {
+            panic!("the merged pane");
+        };
+        let rows: Vec<(u16, Option<String>)> = merged
+            .lines
+            .iter()
+            .zip(&merged.cells)
+            .map(|(line, cell)| (line.row, cell.text.clone()))
+            .collect();
+        assert_eq!(rows, vec![(0, Some("c".into())), (1, Some("b".into()))]);
+    }
+
+    #[tokio::test]
     async fn outbox_coalesces_frames_but_keeps_replies_ordered_after_them() {
         let outbox = ViewerOutbox::default();
         assert!(outbox.push(frame(1)));

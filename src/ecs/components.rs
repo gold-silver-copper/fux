@@ -158,7 +158,11 @@ pub struct Pane {
     pub terminal: ServerTerminal,
     /// Outer rectangle within its tab, including the border cells.
     pub rect: Rect,
+    /// The emulator changed since the retained grid was last refreshed.
     pub dirty: bool,
+    /// The step in which the retained grid last changed; a viewer whose copy is older needs an
+    /// update.
+    pub changed_step: u64,
     pub published_title: String,
     pub last_output_event_ms: Option<u64>,
 }
@@ -217,7 +221,14 @@ pub struct Viewer {
     /// What this viewer holds of each visible pane: its size and the step of its last update,
     /// so the next frame carries only the rows changed since.
     pub sent: BTreeMap<PaneId, Sent>,
+    /// Metadata or selection changed: a frame goes out this step.
     pub dirty: bool,
+    /// Output changed under this viewer since its last frame; paced by the frame interval.
+    pub pending: bool,
+    /// Set by the grid refresh when this step's frame may go out.
+    pub publish_now: bool,
+    /// When the last frame went out, for pacing output-driven frames.
+    pub last_frame_ms: u64,
     pub notice: Option<String>,
     /// Ordered messages that must follow the next frame.
     pub after_frame: Vec<ServerMessage>,

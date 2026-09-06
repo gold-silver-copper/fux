@@ -7,3 +7,4 @@
 cc ff42a5a29b1f90f3afaa77dff1df861ef723173b4d1fe67dae69f49a879b1e37 # shrinks to ops = [Control { workspace: 0, request: Tab { id: 1, action: Close { tab: TabId(1) } } }]
 cc 2712080cabaaca5a7edbb1edae35ebf3d051ce440e9063e3a9d267915a16d5ee # shrinks to ops = [Manager(Resolve { name: Some("alpha") }), Control { workspace: 1, request: Tab { id: 1, action: New { name: None } } }, Complete { index: 1, ok: true }, Complete { index: 0, ok: false }]
 cc 4d82e77eab6a94c3270b3f9c5b7e8a8794ed71eb2ea21856cb29415a82b3a28a # shrinks to ops = [Control { workspace: 0, request: Split { id: 1, axis: Horizontal, target: None, cwd: None, argv: [] } }, Control { workspace: 0, request: Kill { id: 1, pane: PaneId(1) } }]
+cc df901ca82dc8f4dbf6dac292a4b2a5df45a99ab084b64e89be6ae24971f044d2 # shrinks to ops = [Output { pane: 1, bytes: [32, 220, 143] }, Attach { workspace: 0, rows: 1, cols: 1 }]

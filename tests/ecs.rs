@@ -928,6 +928,46 @@ fn a_viewer_leaving_in_its_arrival_step_is_released_and_the_limit_counts_the_bat
     assert_eq!(harness.session.entity_counts().viewers, 64);
 }
 
+#[test]
+fn output_frames_are_paced_but_replies_are_not() {
+    let mut harness = Harness::new();
+    harness.create_workspace("default");
+    let viewer = harness.attach("default", 24, 80);
+    let frames = harness.frames[&viewer].len();
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"one".to_vec(),
+    }]);
+    assert_eq!(harness.frames[&viewer].len(), frames + 1);
+    // One millisecond after a frame, more output waits for the frame interval.
+    harness.now -= 9;
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"two".to_vec(),
+    }]);
+    assert_eq!(harness.frames[&viewer].len(), frames + 1, "paced");
+    assert!(
+        harness
+            .session
+            .next_deadline_ms()
+            .is_some_and(|at| at <= harness.now + 8),
+        "a wake-up is proposed for the pending rows"
+    );
+    harness.now += 8;
+    harness.step(Vec::new());
+    assert_eq!(harness.frames[&viewer].len(), frames + 2);
+    let text: String = harness.last_frame(viewer).panes[&PaneId(1)]
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect();
+    assert!(text.contains("onetwo"), "{text}");
+    // A reply never waits: its frame goes out in the same step.
+    harness.now -= 9;
+    harness.control(viewer, Request::List { id: 7 });
+    assert_eq!(harness.frames[&viewer].len(), frames + 3);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Randomized command sequences: every reachable interleaving of creations, stale ids, delayed or
 // failed completions, viewer churn, process reports and time must keep the World consistent and

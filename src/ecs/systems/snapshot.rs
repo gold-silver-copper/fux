@@ -19,12 +19,57 @@ pub struct Scene<'w, 's> {
     clock: Res<'w, Clock>,
 }
 
-/// Reads every changed pane's emulator once per step into its retained grid, stamping the rows
-/// that differ, so frames for any number of viewers derive from the grid instead of the screen.
-pub fn refresh_grids(mut panes: Query<&mut Pane>, clock: Res<Clock>) {
-    for mut pane in &mut panes {
-        if pane.dirty {
+/// Decides which viewers publish this step and reads the changed panes they show once into
+/// their retained grids (rows stamped with the step), so frames for any number of viewers derive
+/// from the grid instead of the screen. Output-driven frames are paced: a viewer whose last frame
+/// went out less than the frame interval ago waits for a deadline; frames that carry a reply, a
+/// selection change or a retirement are never delayed.
+pub fn refresh_grids(
+    mut viewers: Query<&mut Viewer>,
+    mut panes: Query<&mut Pane>,
+    tabs: Query<&Tab>,
+    workspaces: Query<&Workspace>,
+    clock: Res<Clock>,
+    limits: Res<crate::ecs::resources::Limits>,
+    mut deadlines: ResMut<crate::ecs::resources::Deadlines>,
+) {
+    let mut refresh: Vec<Entity> = Vec::new();
+    for mut viewer in &mut viewers {
+        if viewer.detaching {
+            continue;
+        }
+        let shown: Vec<Entity> = viewer
+            .selection
+            .tab
+            .and_then(|tab| tabs.get(tab).ok())
+            .map(|tab| tab.geometry.iter().map(|(pane, _)| *pane).collect())
+            .unwrap_or_default();
+        let output = shown
+            .iter()
+            .any(|pane| panes.get(*pane).is_ok_and(|pane| pane.dirty));
+        viewer.pending |= output;
+        let forced = viewer.dirty
+            || !viewer.after_frame.is_empty()
+            || workspaces
+                .get(viewer.workspace)
+                .is_ok_and(|workspace| workspace.retiring.is_some());
+        let due_at = viewer
+            .last_frame_ms
+            .saturating_add(limits.frame_interval_ms);
+        if forced || clock.now_ms >= due_at {
+            viewer.publish_now = true;
+            refresh.extend(shown);
+        } else if viewer.pending {
+            deadlines.propose(due_at);
+        }
+    }
+    for entity in refresh {
+        if let Ok(mut pane) = panes.get_mut(entity)
+            && pane.dirty
+        {
             pane.terminal.refresh_grid(clock.step);
+            pane.dirty = false;
+            pane.changed_step = clock.step;
         }
     }
 }
@@ -67,16 +112,9 @@ pub fn publish_frames(
             .get(viewer.workspace)
             .ok()
             .and_then(|workspace| workspace.retiring);
-        let tab_dirty = viewer
-            .selection
-            .tab
-            .and_then(|tab| scene.tabs.get(tab).ok())
-            .is_some_and(|tab| {
-                tab.geometry
-                    .iter()
-                    .any(|(pane, _)| scene.panes.get(*pane).is_ok_and(|pane| pane.dirty))
-            });
-        let needs_frame = viewer.dirty || tab_dirty || retiring.is_some();
+        let needs_frame =
+            viewer.publish_now && (viewer.dirty || viewer.pending || retiring.is_some());
+        viewer.publish_now = false;
         if !needs_frame && viewer.after_frame.is_empty() {
             continue;
         }
@@ -90,6 +128,8 @@ pub fn publish_frames(
             });
         }
         viewer.dirty = false;
+        viewer.pending = false;
+        viewer.last_frame_ms = scene.clock.now_ms;
         for message in std::mem::take(&mut viewer.after_frame) {
             effects.emit(Effect::ToViewer {
                 viewer: id,
@@ -159,13 +199,10 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
             .get(&component.id)
             .filter(|sent| (sent.rows, sent.columns) == (rows, columns));
         let since = held.map(|sent| sent.step);
-        if since.is_some() && !component.dirty {
+        if since.is_some_and(|since| component.changed_step <= since) {
             continue;
         }
         let mut update = grid.update(since);
-        if !update.full && update.lines.is_empty() && !component.dirty {
-            continue;
-        }
         let screen = component.terminal.screen();
         let (row, column) = screen.cursor_position();
         update.cursor = Cursor {
@@ -218,12 +255,7 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
     }
 }
 
-/// End of step: clear pane dirty flags and the consumed inbound messages.
-pub fn finish_step(mut panes: Query<&mut Pane>, mut inbound: ResMut<Messages<Inbound>>) {
-    for mut pane in &mut panes {
-        if pane.dirty {
-            pane.dirty = false;
-        }
-    }
+/// End of step: clear the consumed inbound messages.
+pub fn finish_step(mut inbound: ResMut<Messages<Inbound>>) {
     inbound.clear();
 }

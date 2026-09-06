@@ -3,7 +3,9 @@
 //!
 //! Adapted from koh (MIT); the upstream notice is retained in LICENSES/koh.txt.
 
-use crate::view::{CellKind, CellStyle, Line, MAX_CELL_TEXT_BYTES, PaneUpdate, kind_of, push_wire};
+use crate::view::{
+    CellKind, CellStyle, Line, MAX_CELL_TEXT_BYTES, PaneUpdate, classify, push_wire,
+};
 use vt100::Screen;
 
 pub const MIN_DIM: u16 = 2;
@@ -253,7 +255,8 @@ impl Default for GridCell {
 impl GridCell {
     fn from_vt100(cell: &vt100::Cell) -> Self {
         let mut text = [0; MAX_CELL_TEXT_BYTES];
-        let contents = cell.contents().as_bytes();
+        let (contents, kind) = classify(cell);
+        let contents = contents.as_bytes();
         let len = contents.len().min(MAX_CELL_TEXT_BYTES);
         if let (Some(target), Some(source)) = (text.get_mut(..len), contents.get(..len)) {
             target.copy_from_slice(source);
@@ -261,7 +264,7 @@ impl GridCell {
         Self {
             text,
             len: u8::try_from(len).unwrap_or(0),
-            kind: kind_of(cell),
+            kind,
             style: CellStyle::from_vt100(cell),
         }
     }

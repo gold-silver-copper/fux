@@ -101,6 +101,36 @@ pub fn kind_of(cell: &vt100::Cell) -> CellKind {
     }
 }
 
+/// The text and kind a vt100 cell contributes to a frame. Content a cell cannot carry (a
+/// zero-width or multi-grapheme sequence, a control character, a width that disagrees with the
+/// emulator's) shows as a blank of the same style instead of invalidating the frame.
+#[must_use]
+pub fn classify(cell: &vt100::Cell) -> (&str, CellKind) {
+    let text = cell.contents();
+    let kind = kind_of(cell);
+    let carried = match kind {
+        CellKind::Text => one_grapheme_of_width(text, 1),
+        CellKind::WideLeading => one_grapheme_of_width(text, 2),
+        CellKind::Blank | CellKind::WideContinuation => text.is_empty(),
+    };
+    match (carried, kind) {
+        (true, kind) => (text, kind),
+        (false, CellKind::WideContinuation) => ("", CellKind::WideContinuation),
+        (false, _) => ("", CellKind::Blank),
+    }
+}
+
+fn one_grapheme_of_width(text: &str, width: usize) -> bool {
+    if let [byte] = text.as_bytes() {
+        // Printable ASCII: the common case needs no segmentation.
+        return width == 1 && (0x20..0x7f).contains(byte);
+    }
+    text.len() <= MAX_CELL_TEXT_BYTES
+        && !text.chars().any(char::is_control)
+        && text.graphemes(true).count() == 1
+        && text.width() == width
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     pub text: String,
@@ -121,9 +151,10 @@ impl Default for Cell {
 impl Cell {
     #[must_use]
     pub fn from_vt100(cell: &vt100::Cell) -> Self {
+        let (text, kind) = classify(cell);
         Self {
-            text: cell.contents().to_owned(),
-            kind: kind_of(cell),
+            text: text.to_owned(),
+            kind,
             style: CellStyle::from_vt100(cell),
         }
     }
@@ -731,13 +762,16 @@ impl PaneUpdate {
             let start = update.cells.len();
             for column in 0..columns {
                 match screen.cell(row, column) {
-                    Some(cell) => push_wire(
-                        &mut update.cells,
-                        start,
-                        cell.contents(),
-                        kind_of(cell),
-                        CellStyle::from_vt100(cell),
-                    ),
+                    Some(cell) => {
+                        let (text, kind) = classify(cell);
+                        push_wire(
+                            &mut update.cells,
+                            start,
+                            text,
+                            kind,
+                            CellStyle::from_vt100(cell),
+                        );
+                    }
                     None => push_wire(
                         &mut update.cells,
                         start,
