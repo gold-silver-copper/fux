@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -602,6 +602,7 @@ dependencies = [
  "nix 0.30.1",
  "portable-pty",
  "ratatui-core",
+ "regex-lite",
  "serde",
  "serde_json",
  "termina",
@@ -998,6 +999,12 @@ checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags 2.13.1",
 ]
+
+[[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
 
 [[package]]
 name = "rustc_version"

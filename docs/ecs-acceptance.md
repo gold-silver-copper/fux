@@ -731,3 +731,47 @@ cases, `local_cli` 6, `structure` 8, real zor 1, fixture-child 3 + 8 + 2, koh 2 
 - Relay/NAT and mobile suspend/resume belong to koh and were not exercised.
 - Attachment v5 and `FUXCTL2` are incompatible with 0.2.x, 0.3.0 and 0.3.1 servers; the user stops an old server
   deliberately with its own binary.
+
+## Agent surface and protocol pass (0.6.0, 2026-09-06)
+
+The specification (`agent-surface-prompt.md` in git history) asked to make fux a first-class
+headless target, remove protocol versioning, minimise the schema and surface agent state. Baseline:
+`main` at `f542411` (0.5.0). Machine: Apple M2 Max, macOS 26.5.2.
+
+What changed (each with tests):
+
+- **No versioning.** Fixed `FUX\n` preface, an unversioned `hello`, descriptors without a protocol
+  field; the migration module and `--version` flags removed. `tests/verify/protocol_rejection.py`
+  proves a server that answers the hello with anything else is reported and leaves the terminal
+  untouched; `src/proto/socket.rs` and `observer.py` pin the new preface.
+- **Output sequence, `capture` since/rows, `info`** (`src/terminal.rs` grid, `src/proto/control.rs`):
+  `terminal::tests::the_sequence_advances_only_for_observable_changes`,
+  `row_captures_since_fold_to_the_full_capture` (property), and
+  `ecs::output_sequences_are_reported_by_list_capture_and_paced_events`.
+- **`wait`** as an ECS deadline (`src/ecs/systems/requests.rs::resolve_waits`):
+  `ecs::waits_fire_on_output_pattern_exit_and_timeout_and_never_hang`; bounds and the timeout code
+  in `control.rs`. Patterns use `regex-lite` (linear time).
+- **`env`, size, key notation** (`new`/`split`/`send-keys`):
+  `ecs::split_carries_env_and_a_requested_headless_size_to_the_spawn`,
+  `control::key_notation_decodes_named_keys_modifiers_and_literals`.
+- **Schema minimised**: pane `new` folded into `split`, `tab select-id` into `tab select`,
+  manager `info` added; the manager stays a bootstrap RPC (its attach reply carries a descriptor).
+- **OSC 7877 agent state** in `list` and `pane.agent` events:
+  `terminal::osc_7877_agent_reports_are_parsed_and_bounded`,
+  `ecs::osc_7877_agent_state_reaches_list_and_a_pane_agent_event`. Frame/bar display deferred.
+- **`fux run`** and **`tests/verify/agent_headless.py`** (in the `local_cli` gate) prove a full
+  agent session over the control protocol with no pty.
+- **Shared fixtures** under `tests/verify/fixtures/`, round-tripped by `tests/fixtures.rs`.
+- **zor observe** re-captures only when the output sequence advances: idle CPU 0.26 s over 20 s
+  (before: a full attributed capture and vt100 re-emulation on every 100 ms tick).
+
+Deferred, with reasons: agent state in the attachment frame and the viewer bar (keeps the tuned
+0.5.0 delta path untouched; its own pass); a full manager fold into `FUXCTL` (its attach reply
+carries socket paths the shared schema omits); koh and zor unit tests loading the shared fixtures
+(they already validate against the real binary; a follow-up patch in each repo).
+
+### Follow-up PRs for koh and zor
+
+The `dependency-patches/` carry the changes fux needs: koh's gateway sends the unversioned hello;
+zor sends the `FUX\n` preface and re-captures only on a new output sequence. Open these as PRs in
+`gold-silver-copper/koh` and `gold-silver-copper/zor` when this merges.

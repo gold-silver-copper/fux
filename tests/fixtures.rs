@@ -13,8 +13,13 @@ fn fixtures_dir() -> PathBuf {
 
 fn round_trip<T: DeserializeOwned + Serialize + PartialEq + std::fmt::Debug>(path: &Path) {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let value: T = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|e| panic!("decode {} as {}: {e}", path.display(), std::any::type_name::<T>()));
+    let value: T = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+        panic!(
+            "decode {} as {}: {e}",
+            path.display(),
+            std::any::type_name::<T>()
+        )
+    });
     let encoded = serde_json::to_vec(&value).expect("re-encode");
     let again: T = serde_json::from_slice(&encoded)
         .unwrap_or_else(|e| panic!("re-decode {}: {e}", path.display()));
@@ -24,9 +29,14 @@ fn round_trip<T: DeserializeOwned + Serialize + PartialEq + std::fmt::Debug>(pat
 fn each(subdir: &str, prefix: &str, run: impl Fn(&Path)) -> usize {
     let dir = fixtures_dir().join(subdir);
     let mut count = 0;
-    for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display())) {
+    for entry in
+        std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+    {
         let path = entry.expect("entry").path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
         if name.starts_with(prefix) && name.ends_with(".json") {
             run(&path);
             count += 1;
