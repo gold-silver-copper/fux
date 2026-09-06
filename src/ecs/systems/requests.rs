@@ -8,10 +8,10 @@ use crate::ecs::messages::{
 };
 use crate::ecs::resources::{Clock, Ids, Limits, ShuttingDown, WorkspaceCounter};
 use crate::ecs::support::{
-    Effects, ViewerExit, close_tab, effect, event, failed, focus_in_tab, is_member, mark_tab_dirty,
-    mark_workspace_dirty, member_tabs, pane_entity, pane_id, remove_from_layout, reply,
-    sanitize_notice, tab_entity, terminate_pane, viewer_entity, viewers_of_workspace,
-    workspace_entity, write_pane,
+    Effects, ViewerExit, close_tab, despawn_tab, effect, event, failed, focus_in_tab, is_member,
+    mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity, pane_id, pane_in_layout,
+    pane_tab, pane_workspace, remove_from_layout, reply, retire, sanitize_notice, tab_entity,
+    tab_id, terminate_pane, viewer_entity, viewers_of_workspace, workspace_entity, write_pane,
 };
 use crate::ecs::systems::creation::{NewPane, reserve_pane, reserve_tab, reserve_workspace};
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
@@ -331,32 +331,19 @@ fn history_view(
 ) -> ViewReply {
     // Panes of other workspaces are invisible to this attachment, exactly like every other
     // viewer request; a koh gateway authorized for one workspace socket sees only that workspace.
-    let Some(entity) = pane_entity(world, pane)
-        .filter(|entity| crate::ecs::support::pane_workspace(world, *entity) == workspace)
+    let unavailable = ViewReply {
+        request,
+        pane,
+        view: None,
+        history: 0,
+    };
+    let Some(mut component) = pane_entity(world, pane)
+        .filter(|entity| pane_workspace(world, *entity) == workspace)
+        .and_then(|entity| world.get_mut::<Pane>(entity))
+        .filter(|component| !matches!(component.state, PaneState::Starting))
     else {
-        return ViewReply {
-            request,
-            pane,
-            view: None,
-            history: 0,
-        };
+        return unavailable;
     };
-    let Some(mut component) = world.get_mut::<Pane>(entity) else {
-        return ViewReply {
-            request,
-            pane,
-            view: None,
-            history: 0,
-        };
-    };
-    if matches!(component.state, PaneState::Starting) {
-        return ViewReply {
-            request,
-            pane,
-            view: None,
-            history: 0,
-        };
-    }
     let exit = component.state.exit_code();
     let title = component.published_title.clone();
     let wanted = usize::try_from(offset).unwrap_or(usize::MAX);
@@ -499,35 +486,19 @@ impl Context {
 
     fn select_tab(&self, world: &mut World, tab: Entity) {
         let focus = focus_in_tab(world, &self.selection(world), tab);
-        if let Some(viewer) = self.viewer
-            && let Some(mut component) = world.get_mut::<Viewer>(viewer)
-        {
-            component.selection.tab = Some(tab);
-            if let Some(focus) = focus {
-                component.selection.set_focus(tab, focus);
-            }
-            component.dirty = true;
-        }
-        if let Some(mut workspace) = world.get_mut::<Workspace>(self.workspace) {
-            workspace.selection.tab = Some(tab);
-            if let Some(focus) = focus {
-                workspace.selection.set_focus(tab, focus);
-            }
-        }
-        mark_tab_dirty(world, tab);
+        self.select(world, tab, focus);
     }
 
-    fn set_focus(&self, world: &mut World, tab: Entity, pane: Entity) {
+    /// The requester (and the workspace default) shows `tab`, focusing `focus` when given.
+    fn select(&self, world: &mut World, tab: Entity, focus: Option<Entity>) {
         if let Some(viewer) = self.viewer
             && let Some(mut component) = world.get_mut::<Viewer>(viewer)
         {
-            component.selection.tab = Some(tab);
-            component.selection.set_focus(tab, pane);
+            component.selection.select(tab, focus);
             component.dirty = true;
         }
         if let Some(mut workspace) = world.get_mut::<Workspace>(self.workspace) {
-            workspace.selection.tab = Some(tab);
-            workspace.selection.set_focus(tab, pane);
+            workspace.selection.select(tab, focus);
         }
         mark_tab_dirty(world, tab);
     }
@@ -638,7 +609,7 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
 /// A pane id that belongs to the requester's workspace.
 fn pane_in_workspace(world: &World, context: &Context, pane: PaneId) -> Option<Entity> {
     let entity = pane_entity(world, pane)?;
-    (crate::ecs::support::pane_workspace(world, entity)? == context.workspace).then_some(entity)
+    (pane_workspace(world, entity)? == context.workspace).then_some(entity)
 }
 
 fn tab_in_workspace(world: &World, context: &Context, tab: crate::ids::TabId) -> Option<Entity> {
@@ -661,11 +632,11 @@ fn split(
             .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?,
         None => selection
             .focused()
-            .filter(|pane| crate::ecs::support::pane_in_layout(world, *pane))
+            .filter(|pane| pane_in_layout(world, *pane))
             .ok_or_else(|| failed(id, ErrorCode::NotFound, "no focused pane to split"))?,
     };
-    let tab = crate::ecs::support::pane_tab(world, target)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
+    let tab =
+        pane_tab(world, target).ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
     let size = world
         .get::<Pane>(target)
         .map(|pane| pane.terminal.size())
@@ -701,11 +672,11 @@ fn focus(
     match target {
         FocusTarget::Pane(pane) => {
             let entity = pane_in_workspace(world, context, pane)
-                .filter(|pane| crate::ecs::support::pane_in_layout(world, *pane))
+                .filter(|pane| pane_in_layout(world, *pane))
                 .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-            let tab = crate::ecs::support::pane_tab(world, entity)
+            let tab = pane_tab(world, entity)
                 .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-            context.set_focus(world, tab, entity);
+            context.select(world, tab, Some(entity));
             Ok(CommandResult::Pane { pane })
         }
         directional => {
@@ -736,7 +707,7 @@ fn focus(
                     component.layout.neighbour(current, direction, area)
                 })
                 .ok_or_else(|| failed(id, ErrorCode::NotFound, "no pane in that direction"))?;
-            context.set_focus(world, tab, next);
+            context.select(world, tab, Some(next));
             let pane = pane_id(world, next).unwrap_or_default();
             Ok(CommandResult::Pane { pane })
         }
@@ -758,15 +729,11 @@ fn kill(
         return Err(failed(id, ErrorCode::Conflict, "pane is still starting"));
     }
     let now = world.resource::<Clock>().now_ms;
-    let tab = crate::ecs::support::pane_tab(world, entity);
-    let exited = world
-        .get::<Pane>(entity)
-        .is_some_and(|pane| matches!(pane.state, PaneState::Exited { .. }));
+    let tab = pane_tab(world, entity);
     remove_from_layout(world, entity);
+    // An already exited pane has nothing to wait for: the lifecycle phase publishes pane.closed
+    // and despawns it.
     terminate_pane(world, entity, now, TERMINATE_GRACE_MS);
-    if exited {
-        // Nothing left to wait for: the lifecycle phase publishes pane.closed and despawns it.
-    }
     if let Some(tab) = tab
         && world
             .get::<Tab>(tab)
@@ -786,8 +753,8 @@ fn resize(
 ) -> Result<CommandResult, Reply> {
     let entity = pane_in_workspace(world, context, pane)
         .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-    let tab = crate::ecs::support::pane_tab(world, entity)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
+    let tab =
+        pane_tab(world, entity).ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
     let resized = world
         .get_mut::<Tab>(tab)
         .map(|mut component| {
@@ -835,10 +802,7 @@ fn tab_action(
                 CreationKind::NewTab { tab },
                 size,
             ) {
-                if let Some(tab_id) = crate::ecs::support::tab_id(world, tab) {
-                    world.resource_mut::<Ids>().tabs.remove(&tab_id);
-                }
-                world.despawn(tab);
+                despawn_tab(world, tab);
                 return Err(reply);
             }
             Ok(CommandResult::Pane { pane: PaneId(0) })
@@ -861,7 +825,7 @@ fn tab_action(
                 .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
             context.select_tab(world, tab);
             Ok(CommandResult::Tab {
-                tab: crate::ecs::support::tab_id(world, tab).unwrap_or_default(),
+                tab: tab_id(world, tab).unwrap_or_default(),
             })
         }
         TabAction::Select { index } => {
@@ -871,7 +835,7 @@ fn tab_action(
                 .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
             context.select_tab(world, tab);
             Ok(CommandResult::Tab {
-                tab: crate::ecs::support::tab_id(world, tab).unwrap_or_default(),
+                tab: tab_id(world, tab).unwrap_or_default(),
             })
         }
         TabAction::SelectId { tab } => {
@@ -1037,28 +1001,20 @@ pub fn kill_workspace(world: &mut World, workspace: Entity) {
             terminate_pane(world, pane, now, TERMINATE_GRACE_MS);
         }
     }
-    if let Some(mut component) = world.get_mut::<Workspace>(workspace)
-        && component.retiring.is_none()
-    {
-        component.retiring = Some(crate::ecs::components::Retiring {
-            since_ms: now,
-            exit_code: Some(0),
-        });
-    }
+    retire(world, workspace, now, Some(0));
     mark_workspace_dirty(world, workspace);
+}
+
+/// Answers a manager request.
+fn manager(world: &mut World, token: u64, outcome: ManagerOutcome) {
+    effect(world, Effect::Manager { token, outcome });
 }
 
 fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
     match action {
         ManagerAction::List => {
             let names = open_workspace_names(world);
-            effect(
-                world,
-                Effect::Manager {
-                    token,
-                    outcome: ManagerOutcome::Names(names),
-                },
-            );
+            manager(world, token, ManagerOutcome::Names(names));
         }
         ManagerAction::Kill { name } => match workspace_entity(world, &name) {
             Some(entity) => {
@@ -1067,30 +1023,20 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
                     .into_iter()
                     .filter(|entry| *entry != name)
                     .collect();
-                effect(
-                    world,
-                    Effect::Manager {
-                        token,
-                        outcome: ManagerOutcome::Names(names),
-                    },
-                );
+                manager(world, token, ManagerOutcome::Names(names));
             }
-            None => effect(
+            None => manager(
                 world,
-                Effect::Manager {
-                    token,
-                    outcome: ManagerOutcome::Failed("workspace not found".into()),
-                },
+                token,
+                ManagerOutcome::Failed("workspace not found".into()),
             ),
         },
         ManagerAction::Resolve { name } => {
             if world.resource::<ShuttingDown>().0 {
-                return effect(
+                return manager(
                     world,
-                    Effect::Manager {
-                        token,
-                        outcome: ManagerOutcome::Failed("server is shutting down".into()),
-                    },
+                    token,
+                    ManagerOutcome::Failed("server is shutting down".into()),
                 );
             }
             let requester = Requester::Manager(token);
@@ -1107,32 +1053,16 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
                 }
                 let open = world
                     .get::<Workspace>(entity)
-                    .is_some_and(|workspace| workspace.open && workspace.retiring.is_none());
-                if open {
-                    let name = world
-                        .get::<Workspace>(entity)
-                        .map(|workspace| workspace.name.clone())
-                        .unwrap_or_default();
-                    return effect(
-                        world,
-                        Effect::Manager {
-                            token,
-                            outcome: ManagerOutcome::Attach {
-                                name,
-                                created: false,
-                            },
-                        },
-                    );
-                }
-                return effect(
-                    world,
-                    Effect::Manager {
-                        token,
-                        outcome: ManagerOutcome::Failed(
-                            "workspace is closing; retry shortly".into(),
-                        ),
+                    .filter(|workspace| workspace.open && workspace.retiring.is_none())
+                    .map(|workspace| workspace.name.clone());
+                let outcome = match open {
+                    Some(name) => ManagerOutcome::Attach {
+                        name,
+                        created: false,
                     },
-                );
+                    None => ManagerOutcome::Failed("workspace is closing; retry shortly".into()),
+                };
+                return manager(world, token, outcome);
             }
             let name = name.unwrap_or_else(|| next_workspace_name(world));
             if let Err(reply) = reserve_workspace(world, name, requester, 0) {
@@ -1140,13 +1070,7 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
                     Reply::Failed { error, .. } => error.message,
                     _ => "workspace creation failed".into(),
                 };
-                effect(
-                    world,
-                    Effect::Manager {
-                        token,
-                        outcome: ManagerOutcome::Failed(message),
-                    },
-                );
+                manager(world, token, ManagerOutcome::Failed(message));
             }
         }
     }

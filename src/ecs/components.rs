@@ -32,6 +32,22 @@ impl Selection {
             self.tab = None;
         }
     }
+    /// Shows `tab`, focusing `pane` in it when one is given.
+    pub fn select(&mut self, tab: Entity, pane: Option<Entity>) {
+        self.tab = Some(tab);
+        if let Some(pane) = pane {
+            self.set_focus(tab, pane);
+        }
+    }
+    /// Points the focus of `tab` at `next`, or forgets it when there is no successor.
+    pub fn retarget(&mut self, tab: Entity, next: Option<Entity>) {
+        match next {
+            Some(next) => self.set_focus(tab, next),
+            None => {
+                self.focus.remove(&tab);
+            }
+        }
+    }
 }
 
 /// A workspace groups tabs and is the unit koh gateways and zor observers address by name. Its

@@ -4,12 +4,15 @@
 use crate::ecs::components::{
     Creation, CreationKind, Pane, PaneState, Selection, Tab, TabOf, Viewer, Workspace,
 };
-use crate::ecs::messages::{Effect, Inbound, ManagerOutcome, Requester};
+use crate::ecs::messages::{Effect, Inbound, Requester};
 use crate::ecs::resources::{Clock, Ids, Limits};
 use crate::ecs::support::{
-    effect, event, failed, focus_in_tab, mark_workspace_dirty, member_tabs, pane_entity, reply,
-    viewer_entity,
+    clear_barriers, default_command, despawn_pane, despawn_tab, despawn_workspace, effect, event,
+    failed, focus_in_tab, mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity,
+    panes_in_workspace, reply, reply_all, tab_area, tab_workspace, terminate_pane, viewer_entity,
 };
+use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
+use crate::ecs::systems::requests::switch_viewer_workspace;
 use crate::ids::{PaneId, TabId};
 use crate::layout::{LayoutTree, Rect, half};
 use crate::proto::control::{CommandResult, ErrorCode, Event, Reply, RequestId};
@@ -33,8 +36,7 @@ pub fn reserve_pane(
     size: (u16, u16),
 ) -> Result<Entity, Reply> {
     let limits = world.resource::<Limits>().clone();
-    let count = crate::ecs::support::live_panes_in_workspace(world, workspace);
-    if count >= limits.max_panes {
+    if panes_in_workspace(world, workspace).len() >= limits.max_panes {
         return Err(failed(
             new.request_id,
             ErrorCode::Limit,
@@ -42,7 +44,7 @@ pub fn reserve_pane(
         ));
     }
     let argv = if new.argv.is_empty() {
-        crate::ecs::support::default_command(world)
+        default_command(world)
     } else {
         new.argv
     };
@@ -139,7 +141,7 @@ pub fn reserve_tab(
             layout: LayoutTree::new(Entity::PLACEHOLDER),
             geometry: Vec::new(),
             // Until a viewer shows the tab, lay it out for a conventional 80x24 terminal.
-            area: crate::ecs::support::tab_area(24, 80),
+            area: tab_area(24, 80),
             layout_changed: true,
         })
         .id();
@@ -187,8 +189,7 @@ pub fn reserve_workspace(
     let tab = match reserve_tab(world, workspace, None) {
         Ok(tab) => tab,
         Err(reply) => {
-            world.resource_mut::<Ids>().workspaces.remove(&name);
-            world.despawn(workspace);
+            despawn_workspace(world, workspace);
             return Err(reply);
         }
     };
@@ -206,19 +207,11 @@ pub fn reserve_workspace(
     ) {
         Ok(_) => Ok(workspace),
         Err(reply) => {
-            remove_tab_entity(world, tab);
-            world.resource_mut::<Ids>().workspaces.remove(&name);
-            world.despawn(workspace);
+            despawn_tab(world, tab);
+            despawn_workspace(world, workspace);
             Err(reply)
         }
     }
-}
-
-fn remove_tab_entity(world: &mut World, tab: Entity) {
-    if let Some(id) = world.get::<Tab>(tab).map(|tab| tab.id) {
-        world.resource_mut::<Ids>().tabs.remove(&id);
-    }
-    world.despawn(tab);
 }
 
 pub fn apply_spawn_completions(world: &mut World) {
@@ -239,7 +232,7 @@ pub fn apply_spawn_completions(world: &mut World) {
                     world,
                     Effect::Terminate {
                         pane: id,
-                        grace_ms: crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS,
+                        grace_ms: TERMINATE_GRACE_MS,
                     },
                 );
                 effect(world, Effect::ReleasePane { pane: id });
@@ -257,36 +250,18 @@ pub fn apply_spawn_completions(world: &mut World) {
     }
 }
 
-fn clear_barriers(world: &mut World, pane: Entity) {
-    let viewers: Vec<Entity> = world
-        .query::<(Entity, &Viewer)>()
-        .iter(world)
-        .filter(|(_, viewer)| viewer.barrier == Some(pane))
-        .map(|(entity, _)| entity)
-        .collect();
-    for viewer in viewers {
-        if let Some(mut viewer) = world.get_mut::<Viewer>(viewer) {
-            viewer.barrier = None;
-        }
-    }
-}
-
 fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: Creation) {
-    let now = world.resource::<Clock>().now_ms;
-    let grace = crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
-    match creation.kind {
-        CreationKind::Split { tab, target, axis } => {
-            let Some(workspace) = world.get::<Tab>(tab).map(|tab| tab.workspace) else {
-                return abandon(
-                    world,
-                    entity,
-                    pid,
-                    now,
-                    grace,
-                    &creation.requesters,
-                    "tab closed before the pane started",
-                );
-            };
+    let Creation { requesters, kind } = creation;
+    let (tab, missing) = match kind {
+        CreationKind::Split { tab, .. } => (tab, "tab closed before the pane started"),
+        CreationKind::NewTab { tab } => (tab, "tab was discarded"),
+        CreationKind::Workspace { tab } => (tab, "workspace was discarded"),
+    };
+    let Some(workspace) = tab_workspace(world, tab) else {
+        return abandon(world, entity, pid, &requesters, missing);
+    };
+    match kind {
+        CreationKind::Split { target, axis, .. } => {
             let mut target = Some(target).filter(|target| {
                 world
                     .get::<Tab>(tab)
@@ -295,8 +270,7 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
             if target.is_none() {
                 // The original target closed while the process started. Split the requester's
                 // current focus in that tab instead, or its first pane.
-                let selection = creation
-                    .requesters
+                let selection = requesters
                     .first()
                     .and_then(|(requester, _)| match requester {
                         Requester::Viewer(viewer) => viewer_entity(world, *viewer)
@@ -323,57 +297,33 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                     world,
                     entity,
                     pid,
-                    now,
-                    grace,
-                    &creation.requesters,
+                    &requesters,
                     "the pane to split is no longer available",
                 );
             }
             go_live(world, entity, pid);
-            focus_new_pane(world, &creation.requesters, workspace, tab, entity);
+            focus_requesters(world, &requesters, workspace, tab, entity);
             announce_pane(world, workspace, tab, entity, id);
-            for (requester, request_id) in creation.requesters {
-                reply(
-                    world,
-                    requester,
-                    Reply::Completed {
-                        id: request_id,
-                        result: CommandResult::Pane { pane: id },
-                    },
-                );
-            }
+            reply_all(world, requesters, |request| Reply::Completed {
+                id: request,
+                result: CommandResult::Pane { pane: id },
+            });
         }
-        CreationKind::NewTab { tab } => {
-            let Some(workspace) = world.get::<Tab>(tab).map(|tab| tab.workspace) else {
-                return abandon(
-                    world,
-                    entity,
-                    pid,
-                    now,
-                    grace,
-                    &creation.requesters,
-                    "tab was discarded",
-                );
-            };
+        CreationKind::NewTab { .. } => {
             let open = world
                 .get::<Workspace>(workspace)
                 .is_some_and(|workspace| workspace.retiring.is_none());
             let tab_limit = world.resource::<Limits>().max_tabs;
-            let within_limit = member_tabs(world, workspace).len() < tab_limit;
-            if !open || !within_limit {
+            if !open || member_tabs(world, workspace).len() >= tab_limit {
                 let reason = if open {
                     "configured tab limit reached"
                 } else {
                     "workspace is closing"
                 };
-                remove_tab_entity(world, tab);
-                return abandon(world, entity, pid, now, grace, &creation.requesters, reason);
+                despawn_tab(world, tab);
+                return abandon(world, entity, pid, &requesters, reason);
             }
-            if let Some(mut component) = world.get_mut::<Tab>(tab) {
-                component.layout = LayoutTree::new(entity);
-                component.layout_changed = true;
-            }
-            go_live(world, entity, pid);
+            place_first_pane(world, tab, entity, pid);
             let tab_id = world.get::<Tab>(tab).map(|tab| tab.id).unwrap_or_default();
             let label = world
                 .get::<Tab>(tab)
@@ -381,10 +331,9 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                 .unwrap_or_default();
             world.entity_mut(tab).insert(TabOf(workspace));
             if let Some(mut component) = world.get_mut::<Workspace>(workspace) {
-                component.selection.set_focus(tab, entity);
                 component.selection.tab = Some(tab);
             }
-            select_new_tab(world, &creation.requesters, workspace, tab, entity);
+            focus_requesters(world, &requesters, workspace, tab, entity);
             event(
                 world,
                 workspace,
@@ -396,29 +345,12 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
             );
             announce_pane(world, workspace, tab, entity, id);
             mark_workspace_dirty(world, workspace);
-            for (requester, request_id) in creation.requesters {
-                reply(
-                    world,
-                    requester,
-                    Reply::Completed {
-                        id: request_id,
-                        result: CommandResult::Tab { tab: tab_id },
-                    },
-                );
-            }
+            reply_all(world, requesters, |request| Reply::Completed {
+                id: request,
+                result: CommandResult::Tab { tab: tab_id },
+            });
         }
-        CreationKind::Workspace { tab } => {
-            let Some(workspace) = world.get::<Tab>(tab).map(|tab| tab.workspace) else {
-                return abandon(
-                    world,
-                    entity,
-                    pid,
-                    now,
-                    grace,
-                    &creation.requesters,
-                    "workspace was discarded",
-                );
-            };
+        CreationKind::Workspace { .. } => {
             if world
                 .get::<Workspace>(workspace)
                 .is_none_or(|workspace| workspace.retiring.is_some())
@@ -427,68 +359,49 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                     world,
                     entity,
                     pid,
-                    now,
-                    grace,
-                    &creation.requesters,
+                    &requesters,
                     "workspace was killed before it opened",
                 );
             }
-            if let Some(mut component) = world.get_mut::<Tab>(tab) {
-                component.layout = LayoutTree::new(entity);
-                component.layout_changed = true;
-            }
-            go_live(world, entity, pid);
+            place_first_pane(world, tab, entity, pid);
             world.entity_mut(tab).insert(TabOf(workspace));
             let name = world
                 .get_mut::<Workspace>(workspace)
                 .map(|mut component| {
-                    component.selection.tab = Some(tab);
-                    component.selection.set_focus(tab, entity);
+                    component.selection.select(tab, Some(entity));
                     component.open = true;
                     component.name.clone()
                 })
                 .unwrap_or_default();
             effect(world, Effect::WorkspaceOpened { name: name.clone() });
             announce_pane(world, workspace, tab, entity, id);
-            for (requester, request_id) in creation.requesters {
-                match requester {
-                    Requester::Manager(token) => effect(
-                        world,
-                        Effect::Manager {
-                            token,
-                            outcome: ManagerOutcome::Attach {
-                                name: name.clone(),
-                                created: true,
-                            },
-                        },
-                    ),
-                    Requester::Viewer(viewer) => {
-                        if let Some(viewer) = viewer_entity(world, viewer) {
-                            crate::ecs::systems::requests::switch_viewer_workspace(
-                                world, viewer, workspace,
-                            );
-                        }
-                        reply(
-                            world,
-                            requester,
-                            Reply::Completed {
-                                id: request_id,
-                                result: CommandResult::Workspace { name: name.clone() },
-                            },
-                        );
-                    }
-                    Requester::Control(_) => reply(
-                        world,
-                        requester,
-                        Reply::Completed {
-                            id: request_id,
-                            result: CommandResult::Workspace { name: name.clone() },
-                        },
-                    ),
+            // A manager requester receives the attach outcome through the reply routing.
+            for (requester, request_id) in requesters {
+                if let Requester::Viewer(viewer) = requester
+                    && let Some(viewer) = viewer_entity(world, viewer)
+                {
+                    switch_viewer_workspace(world, viewer, workspace);
                 }
+                reply(
+                    world,
+                    requester,
+                    Reply::Completed {
+                        id: request_id,
+                        result: CommandResult::Workspace { name: name.clone() },
+                    },
+                );
             }
         }
     }
+}
+
+/// A new tab's or workspace's first pane becomes its whole layout.
+fn place_first_pane(world: &mut World, tab: Entity, pane: Entity, pid: u32) {
+    if let Some(mut component) = world.get_mut::<Tab>(tab) {
+        component.layout = LayoutTree::new(pane);
+        component.layout_changed = true;
+    }
+    go_live(world, pane, pid);
 }
 
 fn go_live(world: &mut World, entity: Entity, pid: u32) {
@@ -501,7 +414,8 @@ fn go_live(world: &mut World, entity: Entity, pid: u32) {
     }
 }
 
-fn focus_new_pane(
+/// The requesting viewers (and the workspace default) show `tab` with `pane` focused.
+fn focus_requesters(
     world: &mut World,
     requesters: &[(Requester, RequestId)],
     workspace: Entity,
@@ -514,35 +428,14 @@ fn focus_new_pane(
             && let Some(mut viewer) = world.get_mut::<Viewer>(viewer)
             && viewer.workspace == workspace
         {
-            viewer.selection.tab = Some(tab);
-            viewer.selection.set_focus(tab, pane);
+            viewer.selection.select(tab, Some(pane));
             viewer.dirty = true;
         }
     }
     if let Some(mut component) = world.get_mut::<Workspace>(workspace) {
         component.selection.set_focus(tab, pane);
     }
-    crate::ecs::support::mark_tab_dirty(world, tab);
-}
-
-fn select_new_tab(
-    world: &mut World,
-    requesters: &[(Requester, RequestId)],
-    workspace: Entity,
-    tab: Entity,
-    pane: Entity,
-) {
-    for (requester, _) in requesters {
-        if let Requester::Viewer(viewer) = requester
-            && let Some(viewer) = viewer_entity(world, *viewer)
-            && let Some(mut viewer) = world.get_mut::<Viewer>(viewer)
-            && viewer.workspace == workspace
-        {
-            viewer.selection.tab = Some(tab);
-            viewer.selection.set_focus(tab, pane);
-            viewer.dirty = true;
-        }
-    }
+    mark_tab_dirty(world, tab);
 }
 
 fn announce_pane(world: &mut World, workspace: Entity, tab: Entity, pane: Entity, id: PaneId) {
@@ -568,8 +461,6 @@ fn abandon(
     world: &mut World,
     entity: Entity,
     pid: u32,
-    now: u64,
-    grace: u64,
     requesters: &[(Requester, RequestId)],
     reason: &str,
 ) {
@@ -578,44 +469,32 @@ fn abandon(
     {
         pane.state = PaneState::Live { pid };
     }
-    crate::ecs::support::terminate_pane(world, entity, now, grace);
-    for (requester, request_id) in requesters {
-        reply(
-            world,
-            *requester,
-            failed(*request_id, ErrorCode::Conflict, reason),
-        );
-    }
+    let now = world.resource::<Clock>().now_ms;
+    terminate_pane(world, entity, now, TERMINATE_GRACE_MS);
+    reply_all(world, requesters.iter().copied(), |id| {
+        failed(id, ErrorCode::Conflict, reason)
+    });
 }
 
 fn roll_back(world: &mut World, entity: Entity, creation: Creation, message: &str) {
     match creation.kind {
         CreationKind::Split { .. } => {}
-        CreationKind::NewTab { tab } => remove_tab_entity(world, tab),
+        CreationKind::NewTab { tab } => despawn_tab(world, tab),
         CreationKind::Workspace { tab } => {
-            if let Some(workspace) = world.get::<Tab>(tab).map(|tab| tab.workspace) {
-                let name = world
-                    .get::<Workspace>(workspace)
-                    .map(|workspace| workspace.name.clone())
-                    .unwrap_or_default();
-                world.resource_mut::<Ids>().workspaces.remove(&name);
-                world.despawn(workspace);
+            if let Some(workspace) = tab_workspace(world, tab) {
+                despawn_workspace(world, workspace);
             }
-            remove_tab_entity(world, tab);
+            despawn_tab(world, tab);
         }
     }
-    crate::ecs::support::despawn_pane(world, entity);
-    for (requester, request_id) in creation.requesters {
-        reply(
-            world,
-            requester,
-            failed(
-                request_id,
-                ErrorCode::Internal,
-                format!("could not start the pane: {message}"),
-            ),
-        );
-    }
+    despawn_pane(world, entity);
+    reply_all(world, creation.requesters, |id| {
+        failed(
+            id,
+            ErrorCode::Internal,
+            format!("could not start the pane: {message}"),
+        )
+    });
 }
 
 /// Adds another waiting party to a pending workspace creation.
@@ -639,34 +518,6 @@ pub fn join_pending_workspace(
         return true;
     }
     false
-}
-
-/// Fails every creation still pending in `workspace`; the reservations are despawned by the
-/// caller and their late completions are stopped by `apply_spawn_completions`.
-pub fn fail_pending_creations(world: &mut World, workspace: Entity, reason: &str) {
-    let pending: Vec<Entity> = world
-        .query_filtered::<(Entity, &Pane), With<Creation>>()
-        .iter(world)
-        .filter(|(_, pane)| {
-            world
-                .get::<Tab>(pane.tab)
-                .is_some_and(|tab| tab.workspace == workspace)
-        })
-        .map(|(entity, _)| entity)
-        .collect();
-    for entity in pending {
-        let Some(creation) = world.entity_mut(entity).take::<Creation>() else {
-            continue;
-        };
-        clear_barriers(world, entity);
-        for (requester, request_id) in creation.requesters {
-            reply(
-                world,
-                requester,
-                failed(request_id, ErrorCode::Conflict, reason),
-            );
-        }
-    }
 }
 
 /// Whether a workspace is still waiting for its initial pane.
