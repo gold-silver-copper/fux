@@ -4,6 +4,7 @@
 //!
 //! Adapted from koh (MIT); see LICENSES/koh.txt.
 
+use super::lock;
 use crate::ecs::Inbound;
 use crate::ids::PaneId;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -57,16 +58,10 @@ struct ReapGate {
 impl ReapGate {
     /// Blocks while a reap attempt is in progress, then keeps the leader un-reaped.
     fn hold(&self) {
-        *self
-            .holders
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        *lock(&self.holders) += 1;
     }
     fn release(&self) {
-        let mut holders = self
-            .holders
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut holders = lock(&self.holders);
         *holders = holders.saturating_sub(1);
         if *holders == 0 {
             self.released.notify_all();
@@ -75,10 +70,7 @@ impl ReapGate {
     /// Runs one non-blocking reap attempt while no termination holds the gate; a termination
     /// starting meanwhile waits for it, so the two can never interleave.
     fn reap_if_released<T>(&self, reap: impl FnOnce() -> T) -> T {
-        let mut holders = self
-            .holders
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut holders = lock(&self.holders);
         while *holders > 0 {
             holders = self
                 .released
@@ -131,22 +123,20 @@ impl PaneProcess {
         };
         let reaped = Arc::new(AtomicBool::new(false));
         let gate = Arc::new(ReapGate::default());
-        let mut reader = match pair.master.try_clone_reader() {
-            Ok(reader) => reader,
-            Err(error) => {
-                let _ = kill_group(pid, nix::sys::signal::Signal::SIGKILL);
-                let _ = child.wait();
-                return Err(io::Error::other(format!("pty reader: {error}")));
-            }
+        // A pump that cannot start leaves no orphan: the group is killed and the leader reaped.
+        let abort = |child: &mut Box<dyn portable_pty::Child + Send + Sync>, what: &str| {
+            let _ = kill_group(pid, nix::sys::signal::Signal::SIGKILL);
+            let _ = child.wait();
+            io::Error::other(what.to_owned())
         };
-        let mut writer = match pair.master.take_writer() {
-            Ok(writer) => writer,
-            Err(error) => {
-                let _ = kill_group(pid, nix::sys::signal::Signal::SIGKILL);
-                let _ = child.wait();
-                return Err(io::Error::other(format!("pty writer: {error}")));
-            }
-        };
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|error| abort(&mut child, &format!("pty reader: {error}")))?;
+        let mut writer = pair
+            .master
+            .take_writer()
+            .map_err(|error| abort(&mut child, &format!("pty writer: {error}")))?;
         let reader_reaped = Arc::clone(&reaped);
         let reader_gate = Arc::clone(&gate);
         let reader_handle = std::thread::Builder::new()

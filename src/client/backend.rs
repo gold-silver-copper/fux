@@ -49,20 +49,15 @@ pub trait TerminalBackend {
     }
     fn set_style(&mut self, style: CellStyle) -> io::Result<()> {
         self.write_bytes(b"\x1b[m")?;
-        if style.bold {
-            self.write_bytes(b"\x1b[1m")?;
-        }
-        if style.dim {
-            self.write_bytes(b"\x1b[2m")?;
-        }
-        if style.italic {
-            self.write_bytes(b"\x1b[3m")?;
-        }
-        if style.underline {
-            self.write_bytes(b"\x1b[4m")?;
-        }
-        if style.inverse {
-            self.write_bytes(b"\x1b[7m")?;
+        let attributes = [
+            (style.bold, &b"\x1b[1m"[..]),
+            (style.dim, b"\x1b[2m"),
+            (style.italic, b"\x1b[3m"),
+            (style.underline, b"\x1b[4m"),
+            (style.inverse, b"\x1b[7m"),
+        ];
+        for (_, sequence) in attributes.into_iter().filter(|(set, _)| *set) {
+            self.write_bytes(sequence)?;
         }
         write_sgr_color(self, style.fg, true)?;
         write_sgr_color(self, style.bg, false)
@@ -149,9 +144,6 @@ pub struct CaptureBackend {
     pub bytes: Vec<u8>,
     pub rows: u16,
     pub cols: u16,
-    pub raw: bool,
-    pub alternate: bool,
-    pub flushes: usize,
 }
 
 impl CaptureBackend {
@@ -161,9 +153,6 @@ impl CaptureBackend {
             bytes: Vec::new(),
             rows,
             cols,
-            raw: false,
-            alternate: false,
-            flushes: 0,
         }
     }
 }
@@ -174,30 +163,16 @@ impl TerminalBackend for CaptureBackend {
         Ok(())
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.flushes = self.flushes.saturating_add(1);
         Ok(())
     }
     fn enter_raw_mode(&mut self) -> io::Result<()> {
-        self.raw = true;
         Ok(())
     }
     fn leave_raw_mode(&mut self) -> io::Result<()> {
-        self.raw = false;
         Ok(())
     }
     fn size(&self) -> io::Result<(u16, u16)> {
         Ok((self.rows, self.cols))
-    }
-    fn enter_alt_screen(&mut self) -> io::Result<()> {
-        self.alternate = true;
-        self.write_bytes(b"\x1b[?1049h\x1b[?25l")?;
-        self.flush()
-    }
-    fn leave_alt_screen(&mut self) -> io::Result<()> {
-        self.alternate = false;
-        self.write_bytes(RESET_FORWARDED_MODES)?;
-        self.write_bytes(b"\x1b[?25h\x1b[?1049l")?;
-        self.flush()
     }
 }
 

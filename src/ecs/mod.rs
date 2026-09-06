@@ -20,7 +20,7 @@ use bevy_ecs::schedule::{ScheduleLabel, SingleThreadedExecutor};
 #[derive(ScheduleLabel, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Step;
 
-/// Chained phases; see docs/ecs-plan.md for what each one owns.
+/// Chained phases; see docs/design.md for what each one owns.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Phase {
     Ingest,

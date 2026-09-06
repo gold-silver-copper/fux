@@ -2,8 +2,6 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,32 +96,13 @@ fn absolute(value: Option<OsString>) -> Option<PathBuf> {
 }
 
 fn private_dir(path: &Path) -> Result<(), PathError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if !metadata.is_dir()
-                || metadata.file_type().is_symlink()
-                || metadata.permissions().mode() & 0o077 != 0
-            {
-                return Err(PathError::UnsafeDirectory(path.to_owned()));
-            }
-            if let Some(parent) = path.parent()
-                && let Ok(parent_metadata) = fs::metadata(parent)
-                && metadata.uid() != parent_metadata.uid()
-            {
-                return Err(PathError::UnsafeDirectory(path.to_owned()));
-            }
+    crate::proto::socket::ensure_private_directory(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            PathError::UnsafeDirectory(path.to_owned())
+        } else {
+            PathError::Io(error.to_string())
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            use std::os::unix::fs::DirBuilderExt as _;
-            fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(path)
-                .map_err(|error| PathError::Io(error.to_string()))?;
-        }
-        Err(error) => return Err(PathError::Io(error.to_string())),
-    }
-    Ok(())
+    })
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use crate::daemon::{
 };
 use crate::ecs::{Effect, Inbound, ManagerOutcome};
 use crate::ids::{PaneId, ViewerId};
+use crate::os::lock;
 use crate::os::pty::PaneProcess;
 use crate::proto::attach::ServerMessage;
 use crate::proto::control::{Event, EventKind, Reply};
@@ -79,12 +80,6 @@ impl ViewerOutbox {
     pub fn queued(&self) -> usize {
         lock(&self.inner).queue.len()
     }
-}
-
-fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    value
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// A control-event subscriber: bounded queue, drops `pane.output` first, disconnects when full.

@@ -24,15 +24,6 @@ impl BoundSocket {
     pub fn listener(&self) -> &UnixListener {
         &self.listener
     }
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-    /// Accepts and authenticates one peer.
-    pub fn accept(&self) -> io::Result<UnixStream> {
-        let (stream, _) = self.listener.accept()?;
-        authorize_peer(&stream)?;
-        Ok(stream)
-    }
 }
 
 impl Drop for BoundSocket {
@@ -68,6 +59,8 @@ pub fn bind_local_socket(path: &Path) -> io::Result<BoundSocket> {
     Ok(bound)
 }
 
+/// Requires (creating it when absent) a real directory owned by this user with no group or
+/// world access.
 pub fn ensure_private_directory(directory: &Path) -> io::Result<()> {
     match fs::symlink_metadata(directory) {
         Ok(metadata) => {
@@ -215,25 +208,15 @@ pub fn check_private_socket_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Client half of control negotiation: authorize the peer, send the preface, expect it back.
+/// Client half of control negotiation: authorize the peer, send the preface, expect it back
+/// (the server half lives with the async socket tasks).
 pub fn negotiate_client(stream: &mut UnixStream) -> io::Result<()> {
     authorize_peer(stream)?;
-    negotiate(stream, true)
-}
-
-/// Server half of control negotiation: read the preface, answer with ours, compare.
-pub fn negotiate_server(stream: &mut UnixStream) -> io::Result<()> {
-    negotiate(stream, false)
-}
-
-fn negotiate(stream: &mut UnixStream, client: bool) -> io::Result<()> {
     let read_timeout = stream.read_timeout()?;
     let write_timeout = stream.write_timeout()?;
     let result = (|| {
         stream.set_write_timeout(Some(HANDSHAKE_DEADLINE))?;
-        if client {
-            stream.write_all(CONTROL_PREFACE)?;
-        }
+        stream.write_all(CONTROL_PREFACE)?;
         let deadline = Instant::now() + HANDSHAKE_DEADLINE;
         let mut received = [0; 8];
         let mut used = 0;
@@ -255,9 +238,6 @@ fn negotiate(stream: &mut UnixStream, client: bool) -> io::Result<()> {
                 ));
             }
             used += length;
-        }
-        if !client {
-            stream.write_all(CONTROL_PREFACE)?;
         }
         if &received != CONTROL_PREFACE {
             // `Unsupported` lets callers recognise a version mismatch (as opposed to a broken or
@@ -291,16 +271,23 @@ mod tests {
     }
 
     #[test]
-    fn negotiation_requires_the_exact_preface_on_both_sides() -> io::Result<()> {
-        let (mut client, mut server) = UnixStream::pair()?;
-        let handle = std::thread::spawn(move || negotiate_server(&mut server));
-        negotiate_client(&mut client)?;
-        assert!(handle.join().is_ok_and(|result| result.is_ok()));
-
-        let (mut client, mut server) = UnixStream::pair()?;
-        let handle = std::thread::spawn(move || negotiate_server(&mut server));
-        client.write_all(b"FUXCTL1\n")?;
-        assert!(handle.join().is_ok_and(|result| result.is_err()));
+    fn negotiation_requires_the_exact_preface_from_the_server() -> io::Result<()> {
+        for (answer, accepted) in [(&b"FUXCTL2\n"[..], true), (b"FUXCTL1\n", false)] {
+            let (mut client, mut server) = UnixStream::pair()?;
+            let handle = std::thread::spawn(move || {
+                let mut preface = [0; 8];
+                server.read_exact(&mut preface)?;
+                server.write_all(answer)?;
+                Ok::<_, io::Error>(preface)
+            });
+            let result = negotiate_client(&mut client);
+            assert_eq!(result.is_ok(), accepted, "{answer:?}");
+            assert!(
+                handle
+                    .join()
+                    .is_ok_and(|sent| sent.is_ok_and(|preface| &preface == CONTROL_PREFACE))
+            );
+        }
         Ok(())
     }
 }
