@@ -138,7 +138,7 @@ pub fn reserve_tab(
             layout: LayoutTree::new(Entity::PLACEHOLDER),
             geometry: Vec::new(),
             // Until a viewer shows the tab, lay it out for a conventional 80x24 terminal.
-            area: crate::ecs::support::tab_area(24, 80, 1),
+            area: crate::ecs::support::tab_area(24, 80),
             layout_changed: true,
         })
         .id();

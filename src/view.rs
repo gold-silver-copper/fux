@@ -337,7 +337,8 @@ pub struct Frame {
     pub tabs: Vec<TabEntry>,
     pub active_tab: Option<TabId>,
     pub focused: Option<PaneId>,
-    /// Outer rectangles (borders included) of the panes visible in the active tab.
+    /// Content rectangles of the panes visible in the active tab; row 0 is the bar and the
+    /// one-cell gaps between siblings carry the separators.
     pub layout: Vec<PaneRect>,
     pub panes: BTreeMap<PaneId, PaneView>,
     pub bindings: crate::commands::ClientBindings,

@@ -250,7 +250,7 @@ async fn attach(name: Option<&str>) -> Result<ExitCode> {
     let paths = fux::daemon::DaemonPaths::discover()?;
     paths.prepare()?;
     let mut offered = false;
-    let descriptor = loop {
+    loop {
         let attempt = {
             let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
             match resolve(&paths, name) {
@@ -259,8 +259,23 @@ async fn attach(name: Option<&str>) -> Result<ExitCode> {
                 Err(error) => Err(error),
             }
         };
+        // Either step can meet an older server: the manager (control preface) or the workspace
+        // attachment (frame contract). Both get the same one-time offer.
+        let attempt = match attempt {
+            Ok(descriptor) => {
+                fux::client::attach(
+                    &descriptor.socket_path,
+                    &config,
+                    fux::client::AttachOptions {
+                        manager_socket: Some(paths.manager_socket.clone()),
+                    },
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
         match attempt {
-            Ok(descriptor) => break descriptor,
+            Ok(code) => return Ok(code.map_or(ExitCode::SUCCESS, exit_code)),
             Err(error) if !offered && incompatible_server(&error) => {
                 offered = true;
                 match migration_dialog(&paths)? {
@@ -274,16 +289,7 @@ async fn attach(name: Option<&str>) -> Result<ExitCode> {
             }
             Err(error) => return Err(error),
         }
-    };
-    let code = fux::client::attach(
-        &descriptor.socket_path,
-        &config,
-        fux::client::AttachOptions {
-            manager_socket: Some(paths.manager_socket.clone()),
-        },
-    )
-    .await?;
-    Ok(code.map_or(ExitCode::SUCCESS, exit_code))
+    }
 }
 
 fn resolve(
@@ -350,8 +356,9 @@ fn migration_dialog(paths: &fux::daemon::DaemonPaths) -> Result<MigrationChoice>
     let mut err = std::io::stderr().lock();
     writeln!(
         err,
-        "fux: the running session server speaks an older protocol; this fux needs {}.",
-        String::from_utf8_lossy(fux::proto::control::CONTROL_PREFACE).trim_end()
+        "fux: the running session server speaks an older protocol; this fux needs control {} and attachment v{}.",
+        String::from_utf8_lossy(fux::proto::control::CONTROL_PREFACE).trim_end(),
+        fux::proto::attach::VERSION
     )?;
     writeln!(err, "  runtime directory: {}", paths.runtime_dir.display())?;
     if servers.is_empty() {

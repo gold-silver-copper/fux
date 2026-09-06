@@ -133,7 +133,7 @@ impl Pane {
     /// Inner terminal size for an outer rectangle; never below the emulator minimum.
     #[must_use]
     pub fn terminal_size(rect: Rect) -> (u16, u16) {
-        crate::terminal::clamp_dims(rect.height.saturating_sub(2), rect.width.saturating_sub(2))
+        crate::terminal::clamp_dims(rect.height, rect.width)
     }
 }
 

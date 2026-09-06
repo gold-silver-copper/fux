@@ -408,12 +408,12 @@ pub fn default_command(world: &World) -> Vec<String> {
 }
 
 /// Body area available to a tab for a viewer of the given size.
-pub fn tab_area(rows: u16, cols: u16, tab_count: usize) -> Rect {
-    let strip = u16::from(tab_count > 1);
+/// The pane area of a viewer: everything below the always-present one-row bar.
+pub fn tab_area(rows: u16, cols: u16) -> Rect {
     Rect {
         x: 0,
-        y: strip,
+        y: u16::from(rows > 0),
         width: cols,
-        height: rows.saturating_sub(strip),
+        height: rows.saturating_sub(1),
     }
 }

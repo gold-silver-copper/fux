@@ -51,16 +51,6 @@ impl Rect {
             && y >= self.y
             && y < self.y.saturating_add(self.height)
     }
-    /// The area inside a one-cell border.
-    #[must_use]
-    pub fn inner(self) -> Self {
-        Self {
-            x: self.x.saturating_add(1),
-            y: self.y.saturating_add(1),
-            width: self.width.saturating_sub(2),
-            height: self.height.saturating_sub(2),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -260,7 +250,8 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
         self.validate()
     }
 
-    /// Outer rectangles (including borders) for every leaf within `area`.
+    /// Content rectangles for every leaf within `area`. Siblings are separated by exactly one
+    /// cell, which carries the shared separator; there is no frame around the area.
     pub fn geometry(&self, area: Rect) -> Result<Vec<(L, Rect)>, LayoutError> {
         self.validate()?;
         let mut output = Vec::new();
@@ -405,11 +396,15 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
                     Axis::Horizontal => rect.width,
                     Axis::Vertical => rect.height,
                 };
+                // One cell between the siblings carries the separator.
+                let gap = u16::from(extent > 0);
+                let usable = extent.saturating_sub(gap);
                 let first_extent = u16::try_from(
-                    u32::from(extent) * u32::from(ratio.get()) / u32::from(RATIO_SCALE),
+                    u32::from(usable) * u32::from(ratio.get()) / u32::from(RATIO_SCALE),
                 )
-                .unwrap_or(extent);
-                let second_extent = extent.saturating_sub(first_extent);
+                .unwrap_or(usable);
+                let second_extent = usable.saturating_sub(first_extent);
+                let second_start = first_extent.saturating_add(gap);
                 let (a, b) = match axis {
                     Axis::Horizontal => (
                         Rect {
@@ -417,7 +412,7 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
                             ..rect
                         },
                         Rect {
-                            x: rect.x.saturating_add(first_extent),
+                            x: rect.x.saturating_add(second_start),
                             width: second_extent,
                             ..rect
                         },
@@ -428,7 +423,7 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
                             ..rect
                         },
                         Rect {
-                            y: rect.y.saturating_add(first_extent),
+                            y: rect.y.saturating_add(second_start),
                             height: second_extent,
                             ..rect
                         },
@@ -576,7 +571,7 @@ mod tests {
                     Rect {
                         x: 0,
                         y: 0,
-                        width: 40,
+                        width: 39,
                         height: 24
                     }
                 ),
@@ -618,9 +613,9 @@ mod tests {
         assert_eq!(
             geometry,
             vec![
-                (1, rect(0, 0, 30, 40)),
-                (2, rect(30, 0, 70, 24)),
-                (3, rect(30, 24, 28, 16)),
+                (1, rect(0, 0, 29, 40)),
+                (2, rect(30, 0, 70, 23)),
+                (3, rect(30, 24, 27, 16)),
                 (4, rect(58, 24, 42, 16)),
             ]
         );
@@ -646,15 +641,16 @@ mod tests {
         for _ in 0..100 {
             assert!(tree.resize(1, 1_000).is_ok());
         }
+        // 40 rows minus the separator leave 39 to share; the ratio is clamped to 5–95 %.
         let geometry = tree.geometry(area()).unwrap_or_default();
-        assert_eq!(geometry.first().map(|(_, rect)| rect.height), Some(38));
+        assert_eq!(geometry.first().map(|(_, rect)| rect.height), Some(37));
         assert!(tree.resize(2, 30_000).is_ok());
         assert_eq!(
             tree.geometry(area())
                 .unwrap_or_default()
                 .first()
                 .map(|(_, rect)| rect.height),
-            Some(2)
+            Some(1)
         );
     }
 
@@ -704,8 +700,21 @@ mod tests {
                 prop_assert!(tree.validate().is_ok());
                 let geometry = tree.geometry(area()).unwrap_or_default();
                 prop_assert_eq!(geometry.len(), expected.len());
+                // Leaves never overlap; the cells they leave out are the one-cell separators, at
+                // most one full line per split.
+                for (index, (_, a)) in geometry.iter().enumerate() {
+                    for (_, b) in geometry.iter().skip(index + 1) {
+                        let disjoint = a.x.saturating_add(a.width) <= b.x
+                            || b.x.saturating_add(b.width) <= a.x
+                            || a.y.saturating_add(a.height) <= b.y
+                            || b.y.saturating_add(b.height) <= a.y;
+                        prop_assert!(disjoint, "{a:?} overlaps {b:?}");
+                    }
+                }
                 let total: u32 = geometry.iter().map(|(_, rect)| u32::from(rect.width) * u32::from(rect.height)).sum();
-                prop_assert_eq!(total, 100 * 40);
+                let splits = u32::try_from(geometry.len().saturating_sub(1)).unwrap_or(0);
+                prop_assert!(total <= 100 * 40);
+                prop_assert!(total + splits * 100 >= 100 * 40, "total {total} with {splits} splits");
             }
         }
     }

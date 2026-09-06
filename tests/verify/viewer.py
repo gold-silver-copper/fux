@@ -199,9 +199,12 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         first = Viewer(env)
         viewers.append(first)
         wait(lambda: 'COPY_TARGET' in first.screen.text(), 'first viewer did not render the pane')
-        assert '[main]' not in first.screen.text(), 'single tab must not show a tab strip'
+        rows = first.screen.text().splitlines()
+        assert rows[0].startswith(' default │ main '), f'bar missing: {rows[0]!r}'
+        assert rows[0].rstrip().endswith('│ 1'), f'focused pane id missing from the bar: {rows[0]!r}'
         assert 'Commands' not in first.screen.text()
-        assert first.screen.text().splitlines()[0].startswith('┌'), 'thin border expected at the top'
+        assert not any(ch in first.screen.text() for ch in '┌┐└┘'), 'no pane frames'
+        assert all('│' not in row for row in rows[1:]), 'a single pane has no separators'
         listing_state = listing()
         assert listing_state['name'] == 'default'
         assert len(listing_state['tabs']) == 1 and listing_state['tabs'][0]['name'] == 'main'
@@ -217,7 +220,7 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         await_state(lambda state: len(state) == 2, 'new tab was not created')
         pump(.2)
         assert 'Commands' not in first.screen.text(), 'fast command flashed the popup'
-        wait(lambda: '[tab-2]' in first.screen.text() and 'main' in first.screen.text(), 'tab strip missing with two tabs')
+        wait(lambda: 'tab-2' in first.screen.text().splitlines()[0] and 'main' in first.screen.text().splitlines()[0], 'both tabs missing from the bar')
 
         # Unknown key stays in command mode and reveals the popup; literal prefix is one byte.
         first.send(b'\x01!')
@@ -288,10 +291,44 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         expected = base64.b64encode(b'COPY_TARGET').decode()
         wait(lambda: expected in first.screen.clipboards, 'clipboard copy of the selected pane text missing')
         # Shift-drag selects locally and copies with y.
-        first.send(b'\x1b[<4;2;3M\x1b[<36;12;3M\x1b[<4;12;3m')
+        # Row 2 is the first pane row under the bar; columns 1-11 cover COPY_TARGET.
+        first.send(b'\x1b[<4;1;2M\x1b[<36;11;2M\x1b[<4;11;2m')
         wait(lambda: 'Copy selection' in first.screen.text(), 'shift-drag selection missing')
         first.send(b'y')
         wait(lambda: first.screen.clipboards.count(expected) >= 2, 'shift-drag copy failed')
+
+        # Shared separators: one column between side-by-side panes, a row with a junction for a
+        # stacked split, no frame anywhere.
+        first.send(b'\x01|')
+        await_state(lambda state: len(state[0]['panes']) == 2, 'side-by-side split failed')
+        wait(lambda: first.screen.text().splitlines()[2].count('│') == 1, 'exactly one separator column expected')
+        assert not any(ch in first.screen.text() for ch in '┌┐└┘'), 'no pane frames after a split'
+        first.send(b'\x01-')
+        await_state(lambda state: len(state[0]['panes']) == 3, 'stacked split failed')
+        wait(lambda: '├─' in first.screen.text(), 'stacked separator must join the column with ├')
+        # A notice appears in the bar and disappears on its own.
+        first.send(b'\x01[ ' + b'h' * 3 + b'y')
+        wait(lambda: 'Copied' in first.screen.text().splitlines()[0], 'copy notice missing from the bar')
+        wait(lambda: 'Copied' not in first.screen.text().splitlines()[0], 'copy notice did not expire', timeout=5)
+        # A long tab label is truncated in the bar; with three tabs the current one keeps priority.
+        subprocess.run([binary, 'default', 'tab', 'new'], env=env, capture_output=True, timeout=5, check=True)
+        await_state(lambda state: len(state) == 3, 'third tab missing')
+        first.send(b'\x01,\x15' + b'x' * 70 + b'\r')
+        wait(lambda: '…' in first.screen.text().splitlines()[0], 'long label was not truncated')
+        bar = first.screen.text().splitlines()[0]
+        assert bar.startswith(' default │ xxxx'), f'current tab lost priority: {bar!r}'
+        first.send(b'\x01,\x15main\r')
+        await_state(lambda state: state[0]['name'] == 'main', 'rename back failed')
+        extra = [tab['id'] for tab in tabs() if tab['name'] not in ('main', 'second')][0]
+        subprocess.run([binary, 'default', 'tab', 'close', str(extra)], env=env, capture_output=True, timeout=5, check=True)
+        await_state(lambda state: len(state) == 2, 'third tab close failed')
+        # Control clients moved the workspace's own selection; put it back on the first tab so
+        # later attachments and switches start where the scenarios expect.
+        subprocess.run([binary, 'default', 'tab', 'select', '0'], env=env, capture_output=True, timeout=5, check=True)
+        first.send(b'\x01xy')
+        await_state(lambda state: len(state[0]['panes']) == 2, 'close after split failed')
+        first.send(b'\x01xy')
+        await_state(lambda state: len(state[0]['panes']) == 1, 'second close after split failed')
 
         # A second viewer keeps private menus and input while sharing the workspace.
         second = Viewer(env)
@@ -328,6 +365,13 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         first.resize(24, 80)
         wait(lambda: 'Commands' in first.screen.text(), 'resize lost command context')
         first.send(b'\x1b'); pump(.15)
+        # Two rows: the bar and one pane row, nothing else.
+        first.resize(2, 20); pump(.3)
+        assert not first.exited(), 'two-row terminal crashed the viewer'
+        wait(lambda: first.screen.text().splitlines()[0].startswith(' default'), 'bar missing on a two-row terminal')
+        rows = first.screen.text().splitlines()
+        assert len(rows) == 2 and '│' not in rows[1], 'the second row belongs to the pane'
+        first.resize(24, 80); pump(.3)
 
         # Workspace creation and switching; the suffix after the switch reaches the destination.
         first.send(b'\x01S')

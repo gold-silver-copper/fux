@@ -82,10 +82,18 @@ impl Connection {
             .await??
         {
             ServerMessage::Hello { version: VERSION } => Ok(Self { stream }),
+            // A server that rejects the hello names the mismatch; `Unsupported` lets the launcher
+            // offer the operator a way past an older server (0.3.0 answers this way).
+            ServerMessage::Error { message } if message.starts_with("incompatible") => {
+                Err(std::io::Error::new(std::io::ErrorKind::Unsupported, message).into())
+            }
             ServerMessage::Error { message } => anyhow::bail!("{message}"),
-            _ => anyhow::bail!(
-                "incompatible fux session server; use matching versions or restart it after saving your work"
-            ),
+            // `Unsupported` lets the launcher offer the operator a way past an older server.
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "incompatible fux session server (attachment protocol); use matching versions or restart it after saving your work",
+            )
+            .into()),
         }
     }
 }
@@ -117,7 +125,10 @@ pub async fn attach(
         _ = hangup.recv() => return Ok(None),
     };
     // Negotiation succeeded: only now does the terminal enter raw mode.
-    let mut screen = Screen::enter_default(config.clipboard.writes())?;
+    let mut screen = Screen::enter_default(
+        config.clipboard.writes(),
+        render::Palette::from_style(&config.style),
+    )?;
     let mut io = io::ClientIo::spawn()?;
     let result = run(
         connection,
@@ -186,6 +197,9 @@ async fn run(
         let request_deadline = outstanding
             .as_ref()
             .map(|_| tokio::time::Instant::now() + FRAME_TIMEOUT);
+        let notice_deadline = controller
+            .notice_deadline(std::time::Instant::now())
+            .map(tokio::time::Instant::from_std);
         tokio::select! {
             biased;
             _ = interrupt.recv() => break Ok(None),
@@ -259,6 +273,12 @@ async fn run(
                 match request_deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await }
             } => {
                 break Err(anyhow::anyhow!("session server did not answer a request in time"));
+            }
+            () = async {
+                match notice_deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await }
+            } => {
+                // The bar notice timed out; repaint without it.
+                controller.expire_notice(std::time::Instant::now());
             }
         }
         // Apply as much buffered input as the outstanding-request rule allows.
@@ -441,7 +461,8 @@ async fn run(
             })
         });
         let local = controller.local_view();
-        screen.render(current, local.as_ref(), panel.as_ref())?;
+        let notice = controller.notice(std::time::Instant::now());
+        screen.render(current, local.as_ref(), panel.as_ref(), notice.as_ref())?;
     };
     reader_task.abort();
     let _ = reader_task.await;

@@ -3,7 +3,7 @@
 
 use super::backend::{CaptureBackend, TerminaBackend, TerminalBackend};
 use super::hints::HintPanel;
-use super::render::{LocalView, compose, paint};
+use super::render::{LocalView, Notice, Palette, compose, paint};
 use crate::view::{Frame, MouseEncoding, MouseMode, PaneModes};
 use base64::Engine as _;
 use ratatui_core::buffer::Buffer;
@@ -18,17 +18,22 @@ pub struct Screen<B: TerminalBackend> {
     clipboard_enabled: bool,
     last_title: Option<String>,
     previous_modes: Option<PaneModes>,
+    palette: Palette,
 }
 
 impl Screen<TerminaBackend> {
-    pub fn enter_default(clipboard_enabled: bool) -> io::Result<Self> {
-        Self::enter(TerminaBackend::new()?, clipboard_enabled)
+    pub fn enter_default(clipboard_enabled: bool, palette: Palette) -> io::Result<Self> {
+        Self::enter(TerminaBackend::new()?, clipboard_enabled, palette)
     }
 }
 
 impl Screen<CaptureBackend> {
     pub fn capture(rows: u16, cols: u16, clipboard_enabled: bool) -> io::Result<Self> {
-        Self::enter(CaptureBackend::new(rows, cols), clipboard_enabled)
+        Self::enter(
+            CaptureBackend::new(rows, cols),
+            clipboard_enabled,
+            Palette::default(),
+        )
     }
     pub fn bytes(&self) -> &[u8] {
         &self.backend.bytes
@@ -36,7 +41,7 @@ impl Screen<CaptureBackend> {
 }
 
 impl<B: TerminalBackend> Screen<B> {
-    pub fn enter(mut backend: B, clipboard_enabled: bool) -> io::Result<Self> {
+    pub fn enter(mut backend: B, clipboard_enabled: bool, palette: Palette) -> io::Result<Self> {
         backend.enter_raw_mode()?;
         if let Err(error) = backend.enter_alt_screen() {
             let _ = backend.end_frame();
@@ -53,6 +58,7 @@ impl<B: TerminalBackend> Screen<B> {
             clipboard_enabled,
             last_title: None,
             previous_modes: None,
+            palette,
         })
     }
 
@@ -72,10 +78,11 @@ impl<B: TerminalBackend> Screen<B> {
         frame: &Frame,
         local: Option<&LocalView<'_>>,
         panel: Option<&HintPanel>,
+        notice: Option<&Notice>,
     ) -> io::Result<()> {
         self.emit_out_of_band(frame)?;
         let (rows, cols) = self.backend.size()?;
-        let composed = compose(frame, local, panel, rows, cols);
+        let composed = compose(frame, local, panel, notice, &self.palette, rows, cols);
         paint(
             &mut self.backend,
             self.previous.as_ref(),
@@ -212,7 +219,7 @@ mod tests {
     #[test]
     fn screen_restores_terminal_on_drop_and_gates_clipboard() {
         let mut screen = Screen::capture(4, 10, false).unwrap_or_else(|_| unreachable_screen());
-        assert!(screen.render(&Frame::default(), None, None).is_ok());
+        assert!(screen.render(&Frame::default(), None, None, None).is_ok());
         assert!(!screen.copy_to_clipboard("hi").unwrap_or(true));
         let mut allowed = Screen::capture(4, 10, true).unwrap_or_else(|_| unreachable_screen());
         assert!(allowed.copy_to_clipboard("hi").unwrap_or(false));
@@ -231,6 +238,7 @@ mod tests {
             clipboard_enabled: false,
             last_title: None,
             previous_modes: None,
+            palette: Palette::default(),
         }
     }
 }

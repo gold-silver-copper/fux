@@ -206,7 +206,7 @@ fn split(id: u64, axis: Axis) -> Request {
 }
 
 #[test]
-fn fresh_workspace_has_one_tab_and_pane_and_no_strip() {
+fn fresh_workspace_has_one_tab_and_pane_below_the_bar() {
     let mut harness = Harness::new();
     harness.create_workspace("default");
     let viewer = harness.attach("default", 24, 80);
@@ -215,11 +215,11 @@ fn fresh_workspace_has_one_tab_and_pane_and_no_strip() {
     assert_eq!(frame.tabs.len(), 1);
     assert_eq!(frame.tabs[0].label, "main");
     assert_eq!(frame.layout.len(), 1);
-    assert_eq!(frame.layout[0].rect.y, 0, "single tab has no strip");
-    assert_eq!(frame.layout[0].rect.height, 24);
+    assert_eq!(frame.layout[0].rect.y, 1, "the bar always takes row 0");
+    assert_eq!(frame.layout[0].rect.height, 23);
     assert_eq!(frame.focused, Some(PaneId(1)));
-    assert_eq!(frame.panes[&PaneId(1)].rows, 22);
-    assert_eq!(frame.panes[&PaneId(1)].columns, 78);
+    assert_eq!(frame.panes[&PaneId(1)].rows, 23);
+    assert_eq!(frame.panes[&PaneId(1)].columns, 80);
     assert!(harness.events.iter().any(|(_, event)| matches!(
         event,
         Event::PaneOpened {
@@ -264,7 +264,11 @@ fn split_focus_and_following_input_reach_the_new_pane_only_after_creation() {
     assert_eq!(frame.focused, Some(PaneId(2)));
     assert_eq!(frame.layout.len(), 2);
     let widths: Vec<u16> = frame.layout.iter().map(|entry| entry.rect.width).collect();
-    assert_eq!(widths, vec![40, 40]);
+    assert_eq!(
+        widths,
+        vec![39, 40],
+        "one cell between siblings carries the separator"
+    );
     let replies = harness.replies(viewer);
     assert!(matches!(
         replies.as_slice(),
@@ -491,7 +495,7 @@ fn natural_exit_of_one_pane_closes_it_and_of_a_tab_moves_viewers() {
     assert_eq!(frame.tabs.len(), 2);
     assert_eq!(frame.active_tab, Some(TabId(2)));
     assert_eq!(frame.tabs[1].label, "tab-2");
-    assert_eq!(frame.layout[0].rect.y, 1, "tab strip reserves a row");
+    assert_eq!(frame.layout[0].rect.y, 1, "the bar reserves a row");
     assert_eq!(frame.layout[0].rect.height, 23);
     harness.step(vec![Inbound::PaneExited {
         pane: PaneId(3),
@@ -523,7 +527,7 @@ fn viewers_keep_private_tabs_and_focus_while_sharing_layout_edits() {
     assert_eq!(harness.last_frame(bob).focused, Some(PaneId(1)));
     assert_eq!(harness.last_frame(alice).focused, Some(PaneId(2)));
     // Geometry is negotiated over the smallest viewer.
-    assert_eq!(harness.last_frame(bob).layout[0].rect.height, 24);
+    assert_eq!(harness.last_frame(bob).layout[0].rect.height, 23);
     // Alice opens a tab; Bob stays on the first tab.
     harness.control(
         alice,
@@ -751,7 +755,9 @@ fn control_requests_and_mouse_hit_tests_respect_stale_generations() {
             generation,
         },
     );
-    assert_eq!(harness.written, vec![(PaneId(1), b"\x1b[<0;4;3M".to_vec())]);
+    // Pane-relative coordinates start at the leaf rectangle itself (no frame): x 4 → column 5,
+    // y 3 below the bar row → row 3.
+    assert_eq!(harness.written, vec![(PaneId(1), b"\x1b[<0;5;3M".to_vec())]);
     harness.step(vec![Inbound::ControlRequest {
         workspace: "missing".into(),
         request: Request::List { id: 4 },

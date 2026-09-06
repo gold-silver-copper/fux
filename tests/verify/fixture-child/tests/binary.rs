@@ -492,7 +492,7 @@ fn natural_last_pane_exit_is_observable_before_workspace_retirement() {
     let ready = fixture.receive();
     assert_eq!(ready["event"], "ready");
     let mut viewer = TerminalViewer::spawn(&environment, "binary", 24, 80);
-    viewer.wait_for_text("─");
+    viewer.wait_for_text("binary │");
     fixture.send(json!({"command":"write","chunks_hex":[hex(b"FINAL_BINARY")]}));
     assert_eq!(fixture.receive()["bytes"], 12);
     viewer.wait_for_text("FINAL_BINARY");
@@ -514,7 +514,10 @@ fn natural_last_pane_exit_is_observable_before_workspace_retirement() {
         viewer.final_screen().contains("FINAL_BINARY"),
         "final output painted before restore"
     );
-    assert!(viewer.final_screen().contains("exited 29"));
+    assert!(
+        viewer.final_screen().contains("(exit 29)"),
+        "the bar shows the focused pane's exit status"
+    );
     assert!(
         server.wait().success(),
         "server exits once its last workspace retired"
@@ -537,7 +540,7 @@ fn detach_and_reattach_preserve_the_pane_process_and_its_history() {
     let ready = fixture.receive();
     let pid = pid_of(&ready);
     let mut viewer = TerminalViewer::spawn(&environment, "binary", 24, 80);
-    viewer.wait_for_text("─");
+    viewer.wait_for_text("binary │");
     fixture.send(json!({"command":"write","chunks_hex":[hex(b"BEFORE_DETACH\r\n")]}));
     fixture.receive();
     viewer.wait_for_text("BEFORE_DETACH");
@@ -559,8 +562,8 @@ fn detach_and_reattach_preserve_the_pane_process_and_its_history() {
     // The fixture observes the renegotiated PTY size for the new viewer.
     fixture.send(json!({"command":"size"}));
     let size = fixture.receive();
-    assert_eq!(size["rows"], 28);
-    assert_eq!(size["columns"], 98);
+    assert_eq!(size["rows"], 29);
+    assert_eq!(size["columns"], 100);
     // A hard disconnect (no detach) leaves the pane alive too.
     again.disconnect();
     let listing = environment.run(&["binary", "list"]);
@@ -637,7 +640,7 @@ fn server_shutdown_signal_reaps_owned_processes_and_sockets() {
     let mut announced = environment.accept_fixture();
     assert_eq!(announced.receive()["event"], "descendant_ready");
     let mut viewer = TerminalViewer::spawn(&environment, "binary", 24, 80);
-    viewer.wait_for_text("─");
+    viewer.wait_for_text("binary │");
     server.terminate();
     assert!(server.wait().success(), "SIGTERM shutdown exits cleanly");
     assert_eq!(
@@ -667,7 +670,7 @@ fn concurrent_first_clients_elect_exactly_one_server_and_workspace() {
     assert_eq!(fixture.receive()["event"], "ready");
     fixtures.push(fixture);
     for viewer in &viewers {
-        viewer.wait_for_text("─");
+        viewer.wait_for_text("shared │");
     }
     std::thread::sleep(Duration::from_millis(300));
     environment
@@ -705,7 +708,7 @@ fn control_protocol_lists_captures_and_streams_events_without_touching_viewers()
     let mut fixture = environment.accept_fixture();
     fixture.receive();
     let mut viewer = TerminalViewer::spawn(&environment, "binary", 24, 80);
-    viewer.wait_for_text("─");
+    viewer.wait_for_text("binary │");
     let mut subscriber = control(&environment, "binary");
     subscriber.send(
         json!({"command":"subscribe","id":7,"events":["pane.opened","tab.opened","pane.title"]}),
@@ -732,7 +735,7 @@ fn control_protocol_lists_captures_and_streams_events_without_touching_viewers()
     let pane = &value["result"]["value"]["workspaces"][0]["tabs"][0]["panes"][0];
     assert_eq!(pane["title"], "fixture title");
     assert_eq!(pane["geometry"]["width"], 80);
-    assert_eq!(pane["geometry"]["height"], 24);
+    assert_eq!(pane["geometry"]["height"], 23);
     assert!(pane["focused"].as_bool().expect("focused"));
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(
@@ -759,7 +762,7 @@ fn control_protocol_lists_captures_and_streams_events_without_touching_viewers()
     }
     kinds.sort();
     assert_eq!(kinds, vec!["pane.opened", "tab.opened"]);
-    viewer.wait_for_text("[main]");
+    viewer.wait_for_text(" main ");
     viewer.wait_for_text("work");
     // Removed commands fail clearly instead of doing something else.
     let popup = environment.run(&[
@@ -787,20 +790,20 @@ fn tiny_viewer_and_resize_keep_the_pane_size_negotiated_over_the_smallest_viewer
     let mut fixture = environment.accept_fixture();
     fixture.receive();
     let mut large = TerminalViewer::spawn(&environment, "binary", 40, 120);
-    large.wait_for_text("─");
+    large.wait_for_text("binary │");
     fixture.send(json!({"command":"size"}));
     let size = fixture.receive();
     assert_eq!(
         (size["rows"].as_u64(), size["columns"].as_u64()),
-        (Some(38), Some(118))
+        (Some(39), Some(120))
     );
     let mut small = TerminalViewer::spawn(&environment, "binary", 12, 40);
-    small.wait_for_text("─");
+    small.wait_for_text("binary │");
     let deadline = Instant::now() + DEADLINE;
     loop {
         fixture.send(json!({"command":"size"}));
         let size = fixture.receive();
-        if (size["rows"].as_u64(), size["columns"].as_u64()) == (Some(10), Some(38)) {
+        if (size["rows"].as_u64(), size["columns"].as_u64()) == (Some(11), Some(40)) {
             break;
         }
         assert!(
@@ -824,7 +827,7 @@ fn tiny_viewer_and_resize_keep_the_pane_size_negotiated_over_the_smallest_viewer
     loop {
         fixture.send(json!({"command":"size"}));
         let size = fixture.receive();
-        if (size["rows"].as_u64(), size["columns"].as_u64()) == (Some(38), Some(118)) {
+        if (size["rows"].as_u64(), size["columns"].as_u64()) == (Some(39), Some(120)) {
             break;
         }
         assert!(Instant::now() < deadline, "pane did not grow back: {size}");

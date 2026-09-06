@@ -46,6 +46,13 @@ scrollback-lines = 10000                        # per pane, 1-100000
 max-panes = 128                                 # per workspace
 max-tabs = 32
 max-workspaces = 64
+
+[style]                                         # sixteen ANSI names, "default" (terminal foreground) or "none" (keep the cell's colour)
+bar = "bright-black"                            # workspace name, inactive tabs, pane id: title
+tab-active = "default"                          # current tab (drawn reversed)
+separator = "bright-black"                      # separators away from the focused pane
+separator-focused = "default"                   # separators touching the focused pane (bold)
+notice = "yellow"                               # transient notices; errors are always red
 ```
 
 Private sockets live under `$XDG_RUNTIME_DIR/fux` (macOS fallback `~/Library/Caches/fux-runtime`);
@@ -77,10 +84,16 @@ why when pressed. There is no command-mode timeout.
 | Workspaces | `s` `S` | choose a workspace, create one (optionally named) and switch to it |
 | Session | `d` `?` | detach, show bindings |
 
-The tab strip appears only with two or more tabs. Split borders are thin; the focused pane is
-marked. Pane sizes are negotiated over the smallest viewer showing the tab, so two viewers with
-different terminals see the same pane contents; the larger viewer leaves unused margins. On a
-tiny terminal the popup pages and shrinks to what fits.
+The top row is always the bar: the workspace name, the tabs with the current one reversed, and
+the focused pane as `id: title` on the right (or its exit status once it has exited). Transient
+notices such as copy results, errors and workspace switches appear in that right zone for two
+seconds or until the next key. Panes have no frame: adjacent panes share one thin separator, drawn
+bold next to the focused pane, and a single pane fills everything below the bar. Colours are muted
+by default and configurable through `[style]`. Pane sizes are negotiated over the smallest viewer
+showing the tab, so two viewers with different terminals see the same pane contents; the larger
+viewer leaves unused margins. On a tiny terminal the popup pages and shrinks to what fits, and
+on one or two rows it covers the bar while open. A pane that exits while unfocused keeps a dim
+`exit N` marker in its last row; the focused pane's status is in the bar.
 
 Copy mode (`[`) browses the pane's private history: arrows or `h j k l` move, `u`/`d` and
 PgUp/PgDn scroll, Space starts a selection, `y` or Enter copies it and returns to live output, `g`
@@ -168,7 +181,7 @@ explicit binary paths; set `ZOR_BIN` and `FUX_REQUIRE_ZOR_BIN=1`, or `FUX_BIN` a
 - [docs/design.md](docs/design.md): architecture, entity model, system order, lifecycle.
 - [docs/ecs-plan.md](docs/ecs-plan.md): the plan written before the rewrite.
 - [docs/ecs-acceptance.md](docs/ecs-acceptance.md): requirement-by-requirement acceptance audit.
-- [docs/local-attachment-protocol.md](docs/local-attachment-protocol.md) (v3) and
+- [docs/local-attachment-protocol.md](docs/local-attachment-protocol.md) (v4) and
   [docs/local-control-protocol.md](docs/local-control-protocol.md) (`FUXCTL2`).
 - [docs/security.md](docs/security.md), [docs/release-readiness.md](docs/release-readiness.md),
   [CHANGELOG.md](CHANGELOG.md), [HANDOFF.md](HANDOFF.md).

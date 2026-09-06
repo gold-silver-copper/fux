@@ -72,8 +72,8 @@ with tempfile.TemporaryDirectory(prefix='fdrain-', dir='/tmp') as directory:
         with socket.socket(socket.AF_UNIX) as peer:
             peer.settimeout(5)
             peer.connect(str(source))
-            send(peer, dict(type='hello', version=3, rows=12, columns=48))
-            assert receive(peer) == {'hello': {'version': 3}}
+            send(peer, dict(type='hello', version=4, rows=12, columns=48))
+            assert receive(peer) == {'hello': {'version': 4}}
             state = receive(peer)
             assert 'state' in state
         with socket.socket(socket.AF_UNIX) as listener:
@@ -89,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='fdrain-', dir='/tmp') as directory:
             with peer:
                 peer.settimeout(5)
                 assert receive(peer)['type'] == 'hello'
-                send(peer, {'hello': {'version': 3}})
+                send(peer, {'hello': {'version': 4}})
                 assert receive(peer)['type'] == 'resize'
                 send(peer, state)
                 os.write(master, b'PREVIOUS_CHUNK')

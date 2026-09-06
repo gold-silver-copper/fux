@@ -396,7 +396,7 @@ fn apply_mouse(world: &mut World, viewer: Entity, event: MouseEvent, generation:
             workspace.selection.set_focus(tab, target);
         }
     }
-    let content = rect.inner();
+    let content = rect;
     if !content.contains(x, y) {
         return;
     }

@@ -1,4 +1,4 @@
-# Local attachment protocol v3
+# Local attachment protocol v4
 
 A workspace attachment socket is `RUNTIME/fux/NAME.attach.sock` in the private fux runtime
 directory. The server owns the path and removes only the inode it bound. Both peers check the
@@ -20,7 +20,7 @@ version mismatch is reported and the old server is never terminated to upgrade i
 
 | Message | Meaning |
 |---|---|
-| `{"type":"hello","version":3,"rows":24,"columns":80}` | negotiate and declare the terminal size |
+| `{"type":"hello","version":4,"rows":24,"columns":80}` | negotiate and declare the terminal size |
 | `{"type":"input","bytes":[108,115,10]}` | byte-exact input for the viewer's focused pane |
 | `{"type":"mouse","event":{"code":64,"column":12,"row":3,"release":false},"generation":7}` | an SGR mouse report for the application under the pointer; `generation` names the frame that was hit-tested. Stale generations are ignored |
 | `{"type":"control","request":CONTROL_REQUEST}` | a control-protocol request executed in order with this viewer's input |
@@ -32,7 +32,7 @@ version mismatch is reported and the old server is never terminated to upgrade i
 
 | Message | Meaning |
 |---|---|
-| `{"hello":{"version":3}}` | negotiation complete |
+| `{"hello":{"version":4}}` | negotiation complete |
 | `{"state":{"state":FRAME}}` | this viewer's frame (below) |
 | `{"reply":{"reply":CONTROL_REPLY}}` | reply to one of this viewer's `control` requests |
 | `{"view":{"reply":{"request":9,"pane":1,"view":PANE_VIEW,"history":812}}}` | history read; `view` is `null` when the pane is gone, `history` is the retained row count |
@@ -40,7 +40,9 @@ version mismatch is reported and the old server is never terminated to upgrade i
 | `{"exited":{"code":0}}` | the workspace retired; `code` may be `null`. The connection closes after it |
 
 A frame is viewer-specific: `workspace`, `generation`, `active_tab`, `tabs` (id, label, focused
-pane), `layout` (pane id, rect, focused), `panes` keyed by pane id with `rows`, `columns`,
+pane), `layout` (pane id and its content rectangle: row 0 of the viewer is the bar, siblings are
+separated by one cell, and there is no frame around a pane; version 3 sent outer box rectangles,
+which is why the version changed), `panes` keyed by pane id with `rows`, `columns`,
 `cells` (`text`, `kind`, `style`), `cursor`, `modes`, `title`, `exit`, plus `focused`, `bindings`
 and `message`. `state.state.panes.<id>.cells[].text` is the shape koh's gateway tests consume.
 Frames are validated on both sides (dimensions, cell text length, total cell count).
@@ -63,5 +65,6 @@ Frames are validated on both sides (dimensions, cell text length, total cell cou
   panes of the attachment's current workspace (a foreign pane reads as `view: null`).
 
 Workspace and manager commands use the separate [control protocol](local-control-protocol.md).
-Version 2 of this protocol (with `pane-input`, `binding` and `copy-view` messages) is no longer
-served.
+Versions 2 (with `pane-input`, `binding` and `copy-view` messages) and 3 (box-rectangle layouts)
+are no longer served; a viewer meeting one reports the mismatch and, when interactive, offers to
+stop the old server or run alongside it.

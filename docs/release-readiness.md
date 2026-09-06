@@ -23,7 +23,7 @@ requested, so configured jobs are not executed evidence.
 - Terminal-emulator specific behaviour (OSC 52 handling, reserved mouse gestures) needs manual
   checks per emulator.
 - Relay/NAT behaviour and mobile suspend/resume are koh's scope and were not exercised here.
-- Attachment protocol v3 and control protocol `FUXCTL2` are incompatible with 0.2.x servers. An
+- Attachment protocol v4 and control protocol `FUXCTL2` are incompatible with 0.2.x and 0.3.0 servers. An
   interactive `fux` offers to stop the old server after an explicit typed confirmation (terminating
   its panes), or shows how to run alongside it; it never stops one without that confirmation.
 

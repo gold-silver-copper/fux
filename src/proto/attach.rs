@@ -1,4 +1,4 @@
-//! Attachment protocol v3: bounded length-prefixed JSON frames between a viewer (or a koh gateway
+//! Attachment protocol v4: bounded length-prefixed JSON frames between a viewer (or a koh gateway
 //! carrying a viewer) and the session server. A partial frame may only be abandoned with its
 //! connection; reading another frame after a cancelled partial read would lose synchronization.
 
@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const MAX_CLIENT_FRAME: usize = 64 * 1024;
 pub const MAX_INPUT_CHUNK: usize = 4096;
 pub const MAX_SERVER_FRAME: usize = 16 << 20;

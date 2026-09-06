@@ -1,12 +1,26 @@
-# fux 0.3.0 rewrite handoff
+# fux 0.3.1 handoff
 
-Updated 2026-09-05. The bevy_ecs rewrite requested by
+Updated 2026-09-06 (top bar); the 0.3.0 rewrite notes below still apply. The bevy_ecs rewrite requested by
 [bevy-ecs-multiplexer-prompt.md](bevy-ecs-multiplexer-prompt.md) is implemented, verified locally
 and independently reviewed. The requirement-by-requirement audit with exact commands and results
 is [docs/ecs-acceptance.md](docs/ecs-acceptance.md); the architecture is
 [docs/design.md](docs/design.md); the plan written first is [docs/ecs-plan.md](docs/ecs-plan.md).
 
-## What changed
+## Top bar (0.3.1)
+
+[top-bar-design-prompt.md](top-bar-design-prompt.md) is implemented: an always-visible one-row bar
+(workspace, tabs with the current one reversed, focused pane `id: title` or a two-second notice),
+no pane frames, shared one-cell separators bold next to the focused pane, and a `[style]` table
+with muted defaults. Geometry changed (bar row reserved, one-cell sibling gap, leaf rectangle is
+the content area). Evidence and the independent
+review are in the "Top bar" section of docs/ecs-acceptance.md. The attachment protocol is now v4 because the frame's rectangle contract changed (an independent
+reviewer caught the missing bump by attaching a 0.3.1 viewer to a 0.3.0 server); koh's real-fux
+tests follow through `dependency-patches/`. Gate on the final tree (macOS): fmt, strict Clippy, root tests (lib 70, main 3, ecs 19, local_cli 6 incl. the v4 attachment,
+detach-drain and migration harnesses, structure 8, real zor 1), rustdoc, MSRV 1.95 check,
+fixture-child 3 + 8 + 2, koh gateway 2 + 10 against the v4 binary, packaged binary 8, dependency
+patches verified, `git diff --check`; all passed on 2026-09-06.
+
+## What changed in 0.3.0
 
 - `src/` and `tests/` are new trees. The old host, router, state store, control queue, popup
   panes, pickers, hooks, notifications, observation adapter and sidecar supervision are gone; the

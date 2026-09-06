@@ -4,7 +4,6 @@
 use crate::ecs::components::{Pane, PaneState, Tab, Viewer, Workspace};
 use crate::ecs::messages::Effect;
 use crate::ecs::support::{effect, mark_tab_dirty, tab_area};
-use crate::layout::Rect;
 use bevy_ecs::prelude::*;
 
 pub fn resolve_layout(world: &mut World) {
@@ -14,13 +13,12 @@ pub fn resolve_layout(world: &mut World) {
         .map(|(entity, tab)| (entity, tab.workspace))
         .collect();
     for (tab, workspace) in tabs {
-        let Some(tab_count) = world
+        if !world
             .get::<Workspace>(workspace)
-            .filter(|workspace| workspace.tabs.contains(&tab))
-            .map(|workspace| workspace.tabs.len())
-        else {
+            .is_some_and(|workspace| workspace.tabs.contains(&tab))
+        {
             continue;
-        };
+        }
         let smallest = world
             .query::<&Viewer>()
             .iter(world)
@@ -28,9 +26,7 @@ pub fn resolve_layout(world: &mut World) {
             .map(|viewer| (viewer.rows, viewer.cols))
             .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1)));
         let Some((changed, area)) = world.get_mut::<Tab>(tab).map(|mut component| {
-            let area = smallest.map_or(component.area, |(rows, cols)| {
-                tab_area(rows, cols, tab_count)
-            });
+            let area = smallest.map_or(component.area, |(rows, cols)| tab_area(rows, cols));
             let changed = component.layout_changed || area != component.area;
             component.area = area;
             (changed, area)
@@ -74,9 +70,4 @@ pub fn resolve_layout(world: &mut World) {
         }
         mark_tab_dirty(world, tab);
     }
-}
-
-/// Area of a pane's inner terminal given its outer rectangle.
-pub fn inner(rect: Rect) -> Rect {
-    rect.inner()
 }

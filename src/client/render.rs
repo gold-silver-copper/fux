@@ -1,14 +1,20 @@
 //! Frame compositor: paints one server frame plus viewer-local overlays (history view, selection,
-//! tab strip, popup) into a ratatui buffer, then diffs it against the previous paint.
+//! popup) into a ratatui buffer, then diffs it against the previous paint.
+//!
+//! Row 0 is the bar: workspace, tabs (the current one reversed) and the focused pane's
+//! `id: title` or a transient notice. Panes have no frame; the one-cell gaps the layout leaves
+//! between siblings are drawn as shared separators, bold next to the focused pane.
 
 use super::backend::{CellStyle as BackendStyle, TerminalBackend};
 use super::hints::HintPanel;
+use crate::config::StyleColor;
 use crate::ids::PaneId;
 use crate::view::{CellKind, Frame, PaneView};
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
 use ratatui_core::style::{Color, Modifier, Style};
 use std::io;
+use unicode_width::UnicodeWidthStr;
 
 /// A viewer-local replacement for one pane's content: a history viewport and its selection.
 pub struct LocalView<'a> {
@@ -16,6 +22,78 @@ pub struct LocalView<'a> {
     pub view: &'a PaneView,
     pub cursor: (u16, u16),
     pub anchor: Option<(u16, u16)>,
+}
+
+/// A transient message for the bar's right zone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    pub text: String,
+    pub error: bool,
+}
+
+/// Configured colours, resolved for the compositor. `None` means "leave the terminal's colour".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    pub bar: Option<Color>,
+    pub tab_active: Option<Color>,
+    pub separator: Option<Color>,
+    pub separator_focused: Option<Color>,
+    pub notice: Option<Color>,
+}
+
+impl Palette {
+    #[must_use]
+    pub fn from_style(style: &crate::config::Style) -> Self {
+        Self {
+            bar: color(style.bar),
+            tab_active: color(style.tab_active),
+            separator: color(style.separator),
+            separator_focused: color(style.separator_focused),
+            notice: color(style.notice),
+        }
+    }
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self::from_style(&crate::config::Style::default())
+    }
+}
+
+const fn color(value: StyleColor) -> Option<Color> {
+    Some(match value {
+        StyleColor::None => return None,
+        StyleColor::Default => Color::Reset,
+        StyleColor::Black => Color::Black,
+        StyleColor::Red => Color::Red,
+        StyleColor::Green => Color::Green,
+        StyleColor::Yellow => Color::Yellow,
+        StyleColor::Blue => Color::Blue,
+        StyleColor::Magenta => Color::Magenta,
+        StyleColor::Cyan => Color::Cyan,
+        StyleColor::White => Color::Gray,
+        StyleColor::BrightBlack => Color::DarkGray,
+        StyleColor::BrightRed => Color::LightRed,
+        StyleColor::BrightGreen => Color::LightGreen,
+        StyleColor::BrightYellow => Color::LightYellow,
+        StyleColor::BrightBlue => Color::LightBlue,
+        StyleColor::BrightMagenta => Color::LightMagenta,
+        StyleColor::BrightCyan => Color::LightCyan,
+        StyleColor::BrightWhite => Color::White,
+    })
+}
+
+/// Writes `text` at (`x`, `y`) clipped to the buffer; a start outside the buffer paints nothing
+/// (ratatui's `set_stringn` indexes the start cell unconditionally).
+fn put_str(buffer: &mut Buffer, x: u16, y: u16, text: &str, max_width: u16, style: Style) {
+    if x >= buffer.area.right() || y >= buffer.area.bottom() {
+        return;
+    }
+    buffer.set_stringn(x, y, text, usize::from(max_width), style);
+}
+
+fn styled(fg: Option<Color>) -> Style {
+    fg.map_or_else(Style::default, |fg| Style::default().fg(fg))
 }
 
 pub struct Composed {
@@ -28,6 +106,8 @@ pub fn compose(
     frame: &Frame,
     local: Option<&LocalView<'_>>,
     panel: Option<&HintPanel>,
+    notice: Option<&Notice>,
+    palette: &Palette,
     rows: u16,
     cols: u16,
 ) -> Composed {
@@ -36,19 +116,15 @@ pub fn compose(
     if rows == 0 || cols == 0 {
         return Composed { buffer, cursor };
     }
-    if frame.tabs.len() > 1 {
-        paint_tab_strip(&mut buffer, frame);
-    }
+    paint_bar(&mut buffer, frame, notice, palette);
     for entry in &frame.layout {
-        let rect = Rect::new(
+        let content = Rect::new(
             entry.rect.x,
             entry.rect.y,
             entry.rect.width,
             entry.rect.height,
         );
         let focused = frame.focused == Some(entry.pane);
-        draw_border(&mut buffer, rect, focused);
-        let content = inner(rect);
         let Some(pane) = frame.pane(entry.pane) else {
             continue;
         };
@@ -76,21 +152,15 @@ pub fn compose(
                 content.x.saturating_add(pane.cursor.column),
             ));
         }
-        if let Some(code) = pane.exit {
-            let label = format!(" exited {code} ");
-            let x = rect.x.saturating_add(1);
-            let y = rect.y;
-            buffer.set_stringn(
-                x,
-                y,
-                &label,
-                usize::from(rect.width.saturating_sub(2)),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            );
+        if let Some(code) = pane.exit
+            && !focused
+        {
+            // The bar reports the focused pane; other exited panes keep a dim marker in their
+            // last row so they cannot pass for a quiet live pane.
+            paint_exit_marker(&mut buffer, content, code, palette);
         }
     }
+    paint_separators(&mut buffer, frame, palette);
     if let Some(panel) = panel {
         panel.paint(&mut buffer);
         if !panel.is_thin() || local.is_none() {
@@ -100,57 +170,244 @@ pub fn compose(
     Composed { buffer, cursor }
 }
 
-fn paint_tab_strip(buffer: &mut Buffer, frame: &Frame) {
-    let base = Style::default().add_modifier(Modifier::REVERSED);
-    for col in 0..buffer.area.width {
+fn paint_exit_marker(buffer: &mut Buffer, content: Rect, code: u32, palette: &Palette) {
+    if content.height == 0 || content.width == 0 {
+        return;
+    }
+    let label = format!(" exit {code} ");
+    let label_width = width_of(&label);
+    if label_width > content.width {
+        return;
+    }
+    let x = content
+        .x
+        .saturating_add(content.width)
+        .saturating_sub(label_width);
+    let y = content.y.saturating_add(content.height).saturating_sub(1);
+    put_str(
+        buffer,
+        x,
+        y,
+        &label,
+        label_width,
+        styled(palette.bar)
+            .add_modifier(Modifier::DIM)
+            .add_modifier(Modifier::REVERSED),
+    );
+}
+
+fn width_of(text: &str) -> u16 {
+    u16::try_from(text.width()).unwrap_or(u16::MAX)
+}
+
+/// Keeps the head of `text` within `width` cells, ending with `…` when something was cut.
+fn truncate_tail(text: &str, width: u16) -> String {
+    if width_of(text) <= width {
+        return text.to_owned();
+    }
+    let Some(keep) = width.checked_sub(1) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    let mut used = 0_u16;
+    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
+        let w = width_of(grapheme);
+        if used.saturating_add(w) > keep {
+            break;
+        }
+        out.push_str(grapheme);
+        used = used.saturating_add(w);
+    }
+    out.push('…');
+    out
+}
+
+/// Keeps the tail of `text` within `width` cells, starting with `…` when something was cut.
+fn truncate_head(text: &str, width: u16) -> String {
+    if width_of(text) <= width {
+        return text.to_owned();
+    }
+    let Some(keep) = width.checked_sub(1) else {
+        return String::new();
+    };
+    let graphemes: Vec<&str> =
+        unicode_segmentation::UnicodeSegmentation::graphemes(text, true).collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut used = 0_u16;
+    for grapheme in graphemes.iter().rev() {
+        let w = width_of(grapheme);
+        if used.saturating_add(w) > keep {
+            break;
+        }
+        kept.push(grapheme);
+        used = used.saturating_add(w);
+    }
+    kept.reverse();
+    let mut out = String::from("…");
+    out.extend(kept);
+    out
+}
+
+fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palette: &Palette) {
+    let width = buffer.area.width;
+    let base = styled(palette.bar);
+    for col in 0..width {
         if let Some(cell) = buffer.cell_mut((col, 0)) {
             cell.set_symbol(" ").set_style(base);
         }
     }
-    let mut x: u16 = 0;
-    let width = buffer.area.width;
-    for tab in &frame.tabs {
-        let active = frame.active_tab == Some(tab.id);
-        let label = if active {
-            format!("[{}]", tab.label)
+    // Priority: the current tab, the workspace name, the right zone, then neighbouring tabs. The
+    // name is truncated with `…` rather than cut so the current tab always fits when it can.
+    let active_width = frame
+        .tabs
+        .iter()
+        .find(|tab| Some(tab.id) == frame.active_tab)
+        .map_or(0, |tab| width_of(&tab.label).saturating_add(2));
+    let mut left = format!(" {} │", frame.workspace);
+    if width_of(&left).saturating_add(active_width) > width {
+        // The name never disappears entirely: it keeps at least a quarter of the bar.
+        let allowed = width
+            .saturating_sub(active_width)
+            .max(width / 4)
+            .clamp(3, width.max(3));
+        left = format!(
+            " {} │",
+            truncate_tail(&frame.workspace, allowed.saturating_sub(3))
+        );
+    }
+    let (right_text, right_style) = match notice {
+        Some(notice) => (
+            notice.text.clone(),
+            if notice.error {
+                Style::default().fg(Color::Red)
+            } else {
+                styled(palette.notice)
+            },
+        ),
+        None => (focused_label(frame), base),
+    };
+    // Layout: left, then tabs, then the right zone flush right. The right zone yields first.
+    let left_width = width_of(&left).min(width);
+    let mut right = if right_text.is_empty() {
+        String::new()
+    } else {
+        format!("│ {right_text} ")
+    };
+    let mut room = width.saturating_sub(left_width);
+    let allowance = room.saturating_sub(active_width.min(room));
+    if width_of(&right) > allowance {
+        right = if allowance >= 4 {
+            // Titles are paths: keep their tail. Notices are sentences: keep their head.
+            let text = if notice.is_some() {
+                truncate_tail(&right_text, allowance.saturating_sub(3))
+            } else {
+                truncate_head(&right_text, allowance.saturating_sub(3))
+            };
+            format!("│ {text} ")
         } else {
-            format!(" {} ", tab.label)
+            String::new()
         };
+    }
+    let right_width = width_of(&right);
+    room = room.saturating_sub(right_width);
+    let mut x = 0_u16;
+    put_str(buffer, x, 0, &left, left_width, base);
+    x = x.saturating_add(left_width);
+    for (label, active) in fit_tabs(frame, room) {
         let style = if active {
-            base.add_modifier(Modifier::BOLD)
+            styled(palette.tab_active).add_modifier(Modifier::REVERSED)
         } else {
             base
         };
-        if x >= width {
-            break;
-        }
-        buffer.set_stringn(x, 0, &label, usize::from(width - x), style);
-        x = x.saturating_add(
-            u16::try_from(unicode_width::UnicodeWidthStr::width(label.as_str()))
-                .unwrap_or(u16::MAX),
-        );
+        let w = width_of(&label);
+        put_str(buffer, x, 0, &label, w, style);
+        x = x.saturating_add(w);
     }
-    let name = format!(" {} ", frame.workspace);
-    let name_width =
-        u16::try_from(unicode_width::UnicodeWidthStr::width(name.as_str())).unwrap_or(0);
-    if x.saturating_add(name_width) < width {
-        buffer.set_stringn(
-            width - name_width,
+    if right_width > 0 && right_width <= width {
+        let start = width - right_width;
+        put_str(buffer, start, 0, "│ ", 2, base);
+        put_str(
+            buffer,
+            start.saturating_add(2),
             0,
-            &name,
-            usize::from(name_width),
-            base.add_modifier(Modifier::DIM),
+            &right_text_only(&right),
+            right_width.saturating_sub(2),
+            right_style,
         );
     }
 }
 
-fn inner(rect: Rect) -> Rect {
-    Rect::new(
-        rect.x.saturating_add(1),
-        rect.y.saturating_add(1),
-        rect.width.saturating_sub(2),
-        rect.height.saturating_sub(2),
-    )
+fn right_text_only(right: &str) -> String {
+    right.strip_prefix("│ ").unwrap_or(right).to_owned()
+}
+
+fn focused_label(frame: &Frame) -> String {
+    let Some(id) = frame.focused else {
+        return String::new();
+    };
+    let Some(pane) = frame.pane(id) else {
+        return id.to_string();
+    };
+    let title: String = pane.title.chars().filter(|c| !c.is_control()).collect();
+    let mut label = if title.is_empty() {
+        id.to_string()
+    } else {
+        format!("{id}: {title}")
+    };
+    if let Some(code) = pane.exit {
+        label.push_str(&format!(" (exit {code})"));
+    }
+    label
+}
+
+/// Chooses which tab labels fit in `room`, the current tab first, then its neighbours outward;
+/// the first label that does not fit whole is truncated. Returns labels in tab order.
+fn fit_tabs(frame: &Frame, room: u16) -> Vec<(String, bool)> {
+    let active = frame
+        .tabs
+        .iter()
+        .position(|tab| Some(tab.id) == frame.active_tab)
+        .unwrap_or(0);
+    let count = frame.tabs.len();
+    let mut chosen: Vec<Option<String>> = vec![None; count];
+    let mut used = 0_u16;
+    let mut order = Vec::with_capacity(count);
+    order.push(active);
+    for distance in 1..=count {
+        if let Some(index) = active.checked_sub(distance) {
+            order.push(index);
+        }
+        if active + distance < count {
+            order.push(active + distance);
+        }
+    }
+    for index in order {
+        let Some(tab) = frame.tabs.get(index) else {
+            continue;
+        };
+        let label = format!(" {} ", tab.label);
+        let w = width_of(&label);
+        let remaining = room.saturating_sub(used);
+        if w <= remaining {
+            used = used.saturating_add(w);
+            if let Some(slot) = chosen.get_mut(index) {
+                *slot = Some(label);
+            }
+        } else {
+            if remaining >= 4 {
+                let cut = truncate_tail(&tab.label, remaining.saturating_sub(2));
+                if let Some(slot) = chosen.get_mut(index) {
+                    *slot = Some(format!(" {cut} "));
+                }
+            }
+            break;
+        }
+    }
+    chosen
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, label)| label.map(|label| (label, index == active)))
+        .collect()
 }
 
 fn paint_pane(buffer: &mut Buffer, area: Rect, pane: &PaneView) {
@@ -176,6 +433,104 @@ fn paint_pane(buffer: &mut Buffer, area: Rect, pane: &PaneView) {
                 &source.text
             });
             target.set_style(cell_style(source.style));
+        }
+    }
+}
+
+/// Draws the one-cell gaps between panes as shared separators with proper junctions. Gaps exist
+/// only inside the bounding box of the layout, so a viewer larger than the negotiated area keeps
+/// blank margins.
+fn paint_separators(buffer: &mut Buffer, frame: &Frame, palette: &Palette) {
+    if frame.layout.len() < 2 {
+        return;
+    }
+    let (mut left, mut top, mut right, mut bottom) = (u16::MAX, u16::MAX, 0_u16, 0_u16);
+    for entry in &frame.layout {
+        let rect = entry.rect;
+        if rect.width == 0 || rect.height == 0 {
+            continue;
+        }
+        left = left.min(rect.x);
+        top = top.min(rect.y);
+        right = right.max(rect.x.saturating_add(rect.width));
+        bottom = bottom.max(rect.y.saturating_add(rect.height));
+    }
+    if left >= right || top >= bottom {
+        return;
+    }
+    let right = right.min(buffer.area.width);
+    let bottom = bottom.min(buffer.area.height);
+    if left >= right || top >= bottom {
+        return;
+    }
+    // One pass over the leaves marks pane cells; every lookup after that is a table read.
+    let box_width = usize::from(right - left);
+    let box_height = usize::from(bottom - top);
+    let mut pane_cells = vec![false; box_width.saturating_mul(box_height)];
+    for entry in &frame.layout {
+        let rect = entry.rect;
+        for y in rect.y.max(top)..rect.y.saturating_add(rect.height).min(bottom) {
+            for x in rect.x.max(left)..rect.x.saturating_add(rect.width).min(right) {
+                let index = usize::from(y - top)
+                    .saturating_mul(box_width)
+                    .saturating_add(usize::from(x - left));
+                if let Some(cell) = pane_cells.get_mut(index) {
+                    *cell = true;
+                }
+            }
+        }
+    }
+    let is_gap = |x: u16, y: u16| {
+        if x < left || x >= right || y < top || y >= bottom {
+            return false;
+        }
+        let index = usize::from(y - top)
+            .saturating_mul(box_width)
+            .saturating_add(usize::from(x - left));
+        pane_cells.get(index).is_some_and(|cell| !cell)
+    };
+    let focused = frame
+        .focused
+        .and_then(|id| frame.layout.iter().find(|entry| entry.pane == id))
+        .map(|entry| entry.rect);
+    let touches_focus = |x: u16, y: u16| {
+        focused.is_some_and(|rect| {
+            x.saturating_add(1) >= rect.x
+                && x <= rect.x.saturating_add(rect.width)
+                && y.saturating_add(1) >= rect.y
+                && y <= rect.y.saturating_add(rect.height)
+        })
+    };
+    for y in top..bottom {
+        for x in left..right {
+            if !is_gap(x, y) {
+                continue;
+            }
+            let up = y > 0 && is_gap(x, y - 1);
+            let down = is_gap(x, y.saturating_add(1));
+            let l = x > 0 && is_gap(x - 1, y);
+            let r = is_gap(x.saturating_add(1), y);
+            let symbol = match (up, down, l, r) {
+                (true, true, true, true) => "┼",
+                (true, true, true, false) => "┤",
+                (true, true, false, true) => "├",
+                (false, true, true, true) => "┬",
+                (true, false, true, true) => "┴",
+                (true, false, false, true) => "└",
+                (true, false, true, false) => "┘",
+                (false, true, false, true) => "┌",
+                (false, true, true, false) => "┐",
+                (false, false, true, _) | (false, false, _, true) => "─",
+                _ => "│",
+            };
+            let style = if touches_focus(x, y) {
+                styled(palette.separator_focused).add_modifier(Modifier::BOLD)
+            } else {
+                styled(palette.separator)
+            };
+            if let Some(cell) = buffer.cell_mut((x, y)) {
+                cell.set_symbol(symbol).set_style(style);
+            }
         }
     }
 }
@@ -243,66 +598,6 @@ const fn rat_color(color: crate::view::Color) -> Color {
         crate::view::Color::Default => Color::Reset,
         crate::view::Color::Indexed(index) => Color::Indexed(index),
         crate::view::Color::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
-    }
-}
-
-fn draw_border(buffer: &mut Buffer, rect: Rect, focused: bool) {
-    if rect.width == 0 || rect.height == 0 {
-        return;
-    }
-    let style = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    for x in rect.x..rect.x.saturating_add(rect.width) {
-        set(buffer, x, rect.y, "─", style);
-        set(
-            buffer,
-            x,
-            rect.y.saturating_add(rect.height.saturating_sub(1)),
-            "─",
-            style,
-        );
-    }
-    for y in rect.y..rect.y.saturating_add(rect.height) {
-        set(buffer, rect.x, y, "│", style);
-        set(
-            buffer,
-            rect.x.saturating_add(rect.width.saturating_sub(1)),
-            y,
-            "│",
-            style,
-        );
-    }
-    let corners = [
-        (rect.x, rect.y, "┌"),
-        (
-            rect.x.saturating_add(rect.width.saturating_sub(1)),
-            rect.y,
-            "┐",
-        ),
-        (
-            rect.x,
-            rect.y.saturating_add(rect.height.saturating_sub(1)),
-            "└",
-        ),
-        (
-            rect.x.saturating_add(rect.width.saturating_sub(1)),
-            rect.y.saturating_add(rect.height.saturating_sub(1)),
-            "┘",
-        ),
-    ];
-    if rect.width > 1 && rect.height > 1 {
-        for (x, y, symbol) in corners {
-            set(buffer, x, y, symbol, style);
-        }
-    }
-}
-
-fn set(buffer: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
-    if let Some(cell) = buffer.cell_mut((x, y)) {
-        cell.set_symbol(symbol).set_style(style);
     }
 }
 
@@ -383,11 +678,17 @@ mod tests {
     use crate::ids::TabId;
     use crate::view::{PaneRect, TabEntry};
 
+    fn view(text: &[u8], rows: u16, cols: u16) -> PaneView {
+        let mut parser = vt100::Parser::new(rows, cols, 0);
+        parser.process(text);
+        PaneView::from_screen(parser.screen(), "shell", 0, None).unwrap_or_default()
+    }
+
     fn frame(tabs: usize) -> Frame {
-        let mut parser = vt100::Parser::new(3, 8, 0);
-        parser.process(b"hello");
-        let view = PaneView::from_screen(parser.screen(), "", 0, None).unwrap_or_default();
-        let mut frame = Frame::default();
+        let mut frame = Frame {
+            workspace: "default".into(),
+            ..Frame::default()
+        };
         for index in 0..tabs {
             frame.tabs.push(TabEntry {
                 id: TabId(index as u32 + 1),
@@ -396,17 +697,53 @@ mod tests {
         }
         frame.active_tab = Some(TabId(1));
         frame.focused = Some(PaneId(1));
-        let y = u16::from(tabs > 1);
         frame.layout.push(PaneRect {
             pane: PaneId(1),
             rect: crate::layout::Rect {
                 x: 0,
-                y,
+                y: 1,
                 width: 10,
+                height: 4,
+            },
+        });
+        frame.panes.insert(PaneId(1), view(b"hello", 4, 10));
+        frame
+    }
+
+    fn split_frame() -> Frame {
+        let mut frame = frame(1);
+        frame.layout.clear();
+        // Two side-by-side panes with a one-cell gap, each split again vertically on the right.
+        frame.layout.push(PaneRect {
+            pane: PaneId(1),
+            rect: crate::layout::Rect {
+                x: 0,
+                y: 1,
+                width: 4,
                 height: 5,
             },
         });
-        frame.panes.insert(PaneId(1), view);
+        frame.layout.push(PaneRect {
+            pane: PaneId(2),
+            rect: crate::layout::Rect {
+                x: 5,
+                y: 1,
+                width: 5,
+                height: 2,
+            },
+        });
+        frame.layout.push(PaneRect {
+            pane: PaneId(3),
+            rect: crate::layout::Rect {
+                x: 5,
+                y: 4,
+                width: 5,
+                height: 2,
+            },
+        });
+        frame.panes.insert(PaneId(1), view(b"aaaa", 5, 4));
+        frame.panes.insert(PaneId(2), view(b"bb", 2, 5));
+        frame.panes.insert(PaneId(3), view(b"cc", 2, 5));
         frame
     }
 
@@ -421,27 +758,110 @@ mod tests {
     }
 
     #[test]
-    fn single_tab_has_no_strip_and_focused_pane_shows_cursor() {
-        let composed = compose(&frame(1), None, None, 5, 10);
+    fn bar_shows_workspace_tab_and_focused_pane_without_any_frame() {
+        let composed = compose(&frame(1), None, None, None, &Palette::default(), 5, 30);
         let lines = text(&composed.buffer);
-        assert!(lines[0].starts_with("┌"));
-        assert!(lines[1].contains("hello"));
-        assert_eq!(composed.cursor, Some((1, 6)));
+        assert!(lines[0].starts_with(" default │ t0 "), "{:?}", lines[0]);
+        assert!(lines[0].ends_with("│ 1: shell "), "{:?}", lines[0]);
+        assert_eq!(lines[0].chars().count(), 30);
+        assert!(lines[1].starts_with("hello"));
+        assert!(
+            !lines.iter().any(
+                |line| line.contains(['┌', '┐', '└', '┘', '│'].as_slice()) && line != &lines[0]
+            )
+        );
+        assert_eq!(composed.cursor, Some((1, 5)));
+        let active = composed.buffer.cell((11, 0)).map(|cell| cell.modifier);
+        assert_eq!(active, Some(Modifier::REVERSED));
     }
 
     #[test]
-    fn multiple_tabs_show_one_strip_line() {
-        let composed = compose(&frame(2), None, None, 6, 20);
+    fn bar_truncates_from_the_right_zone_first_and_keeps_the_current_tab() {
+        let mut frame = frame(3);
+        frame.active_tab = Some(TabId(2));
+        frame.tabs[1].label = "a-very-long-tab-label".into();
+        let composed = compose(&frame, None, None, None, &Palette::default(), 3, 24);
+        let line = &text(&composed.buffer)[0];
+        // 24 cells: the name shrinks to its quarter share, the current tab takes the rest and
+        // the right zone is dropped rather than squeezing the tab.
+        assert_eq!(line.trim_end(), " de… │ a-very-long-tab…");
+        assert!(
+            !line.contains("t0"),
+            "neighbours yield before the current tab: {line:?}"
+        );
+    }
+
+    #[test]
+    fn notices_replace_the_pane_title_in_the_bar() {
+        let notice = Notice {
+            text: "Copied 5 bytes".into(),
+            error: false,
+        };
+        let composed = compose(
+            &frame(1),
+            None,
+            None,
+            Some(&notice),
+            &Palette::default(),
+            3,
+            40,
+        );
+        let line = &text(&composed.buffer)[0];
+        assert!(line.ends_with("│ Copied 5 bytes "), "{line:?}");
+        assert!(!line.contains("shell"));
+    }
+
+    #[test]
+    fn separators_join_between_panes_and_brighten_next_to_focus() {
+        let frame = split_frame();
+        let composed = compose(&frame, None, None, None, &Palette::default(), 6, 12);
         let lines = text(&composed.buffer);
-        assert!(lines[0].contains("[t0]"));
-        assert!(lines[0].contains(" t1 "));
-        assert!(lines[1].starts_with("┌"));
+        assert!(lines[1].starts_with("aaaa│bb"), "{:?}", lines[1]);
+        assert!(lines[3].starts_with("    ├─────"), "{:?}", lines[3]);
+        assert!(lines[4].starts_with("    │cc"), "{:?}", lines[4]);
+        assert!(lines.iter().all(|line| !line.contains('┌')));
+        let bold = |x: u16, y: u16| {
+            composed
+                .buffer
+                .cell((x, y))
+                .is_some_and(|cell| cell.modifier.contains(Modifier::BOLD))
+        };
+        assert!(bold(4, 1), "separator next to the focused pane is bold");
+        assert!(bold(4, 3), "the junction touches the focused pane too");
+        let mut other = frame;
+        other.focused = Some(PaneId(3));
+        let composed = compose(&other, None, None, None, &Palette::default(), 6, 12);
+        let bold_now = composed
+            .buffer
+            .cell((4, 1))
+            .is_some_and(|cell| cell.modifier.contains(Modifier::BOLD));
+        assert!(!bold_now, "far separator is dim when focus moved");
+        assert!(
+            composed
+                .buffer
+                .cell((6, 3))
+                .is_some_and(|cell| cell.modifier.contains(Modifier::BOLD)),
+            "the row separator above pane 3 is bold"
+        );
     }
 
     #[test]
     fn tiny_and_zero_terminals_never_panic() {
-        for (rows, cols) in [(0, 0), (1, 1), (2, 3), (1, 80), (24, 1)] {
-            let composed = compose(&frame(2), None, Some(&HintPanel::bar("x")), rows, cols);
+        // An unfocused pane that exited sits below the visible rows after a shrink.
+        let mut stale = split_frame();
+        if let Some(view) = stale.panes.get_mut(&PaneId(3)) {
+            view.exit = Some(1);
+        }
+        for (rows, cols) in [(0, 0), (1, 1), (2, 3), (1, 80), (24, 1), (2, 20), (3, 12)] {
+            let composed = compose(
+                &stale,
+                None,
+                Some(&HintPanel::bar("x")),
+                None,
+                &Palette::default(),
+                rows,
+                cols,
+            );
             assert_eq!(composed.buffer.area.height, rows);
             let mut backend = super::super::backend::CaptureBackend::new(rows, cols);
             paint(&mut backend, None, &composed.buffer, composed.cursor).unwrap_or_default();

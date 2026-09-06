@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 - 2026-09-06
+
+- Replace the per-pane boxes with an always-visible top bar (workspace, tabs with the current one
+  reversed, focused pane `id: title`) and shared one-cell separators between panes, bold next to
+  the focused pane. Panes gain the rows and columns the frames took.
+- Transient notices (copy results, errors, workspace switches) show in the bar's right zone for
+  two seconds or until the next key; the bottom notice bar and the "Command failed" popup are gone.
+- New `[style]` configuration table (`bar`, `tab-active`, `separator`, `separator-focused`,
+  `notice`) with muted defaults.
+- Mouse coordinates and history selections use the leaf rectangle directly. Because the meaning
+  of frame rectangles changed, the attachment protocol is now v4; a viewer meeting a 0.3.0
+  server gets the same interactive dialog as for a 0.2.x server.
+
 ## 0.3.0 - 2026-09-05
 
 Complete rewrite as a minimal persistent multiplexer whose authoritative model is a standalone

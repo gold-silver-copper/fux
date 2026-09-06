@@ -45,6 +45,9 @@ enum Mode {
     },
 }
 
+/// How long a bar notice stays without a key press.
+pub const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct Controller {
     mode: Mode,
     escape: Vec<u8>,
@@ -53,6 +56,7 @@ pub struct Controller {
     back: bool,
     error: Option<String>,
     info: Option<String>,
+    notice_since: Option<std::time::Instant>,
     copied: Option<String>,
     workspaces_enabled: bool,
     loading_input: Vec<u8>,
@@ -79,6 +83,7 @@ impl Controller {
             back: false,
             error: None,
             info: None,
+            notice_since: None,
             copied: None,
             workspaces_enabled,
             loading_input: Vec::new(),
@@ -117,10 +122,48 @@ impl Controller {
     pub fn clear_error(&mut self) {
         self.error = None;
         self.info = None;
+        self.notice_since = None;
     }
 
-    /// A transient confirmation shown as a thin bar until the next key.
+    /// The bar notice to show at `now`: an error wins over an info line; both live for
+    /// [`NOTICE_TTL`] or until the next key.
+    pub fn notice(&self, now: std::time::Instant) -> Option<super::render::Notice> {
+        let since = self.notice_since?;
+        if now.duration_since(since) >= NOTICE_TTL {
+            return None;
+        }
+        if let Some(error) = &self.error {
+            return Some(super::render::Notice {
+                text: error.clone(),
+                error: true,
+            });
+        }
+        self.info.as_ref().map(|info| super::render::Notice {
+            text: info.clone(),
+            error: false,
+        })
+    }
+
+    /// When the current notice expires, if one is showing at `now`.
+    pub fn notice_deadline(&self, now: std::time::Instant) -> Option<std::time::Instant> {
+        let since = self.notice_since?;
+        if self.error.is_none() && self.info.is_none() {
+            return None;
+        }
+        let deadline = since + NOTICE_TTL;
+        (deadline > now).then_some(deadline)
+    }
+
+    /// Drops a notice whose time is up.
+    pub fn expire_notice(&mut self, now: std::time::Instant) {
+        if self.notice(now).is_none() {
+            self.clear_error();
+        }
+    }
+
+    /// A transient confirmation shown in the bar until the next key or [`NOTICE_TTL`].
     pub fn report_info(&mut self, message: impl Into<String>) {
+        self.notice_since = Some(std::time::Instant::now());
         self.info = Some(
             message
                 .into()
@@ -132,6 +175,7 @@ impl Controller {
     }
 
     pub fn report_error(&mut self, error: impl Into<String>) {
+        self.notice_since = Some(std::time::Instant::now());
         self.error = Some(
             error
                 .into()
@@ -348,7 +392,7 @@ impl Controller {
                 MouseDisposition::Forward
             };
         };
-        let content = entry.rect.inner();
+        let content = entry.rect;
         let Some(view) = frame.pane(entry.pane) else {
             return MouseDisposition::Ignore;
         };
@@ -664,20 +708,8 @@ impl Controller {
     /// The panel this mode wants painted, if any.
     pub fn panel(&self) -> Option<HintPanel> {
         let (title, entries, footer, focus) = match &self.mode {
-            Mode::Pane => {
-                if let Some(error) = &self.error {
-                    return Some(HintPanel::context(
-                        "Command failed".into(),
-                        vec![error.clone()],
-                        "Esc dismiss · prefix ? for commands",
-                        None,
-                    ));
-                }
-                return self
-                    .info
-                    .as_ref()
-                    .map(|info| HintPanel::bar(&format!("{info} · any key dismisses")));
-            }
+            // Pane-mode notices live in the bar, not in a popup.
+            Mode::Pane => return None,
             Mode::Copy(copy) => return Some(HintPanel::bar(&copy.hint())),
             Mode::LoadingWorkspaces => (
                 "Choose workspace".into(),
@@ -949,8 +981,8 @@ mod tests {
         let mut shift = Controller::new(true);
         let press = MouseEvent {
             code: 4,
-            column: 2,
-            row: 2,
+            column: 1,
+            row: 1,
             release: false,
         };
         assert!(matches!(
@@ -959,15 +991,15 @@ mod tests {
         ));
         let drag = MouseEvent {
             code: 36,
-            column: 6,
-            row: 2,
+            column: 5,
+            row: 1,
             release: false,
         };
         assert!(matches!(shift.mouse(drag, &owned), MouseDisposition::Local));
         let release = MouseEvent {
             code: 4,
-            column: 6,
-            row: 2,
+            column: 5,
+            row: 1,
             release: true,
         };
         assert!(matches!(

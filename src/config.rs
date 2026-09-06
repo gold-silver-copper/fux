@@ -29,6 +29,7 @@ pub struct Config {
     pub clipboard: ClipboardPolicy,
     pub history: HistoryLimits,
     pub limits: Limits,
+    pub style: Style,
 }
 
 impl Default for Config {
@@ -40,6 +41,7 @@ impl Default for Config {
             clipboard: ClipboardPolicy::Disabled,
             history: HistoryLimits::default(),
             limits: Limits::default(),
+            style: Style::default(),
         }
     }
 }
@@ -180,6 +182,59 @@ impl Command {
     }
 }
 
+/// One of the sixteen ANSI colours, the terminal's default foreground, or no colour at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StyleColor {
+    Black,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    White,
+    BrightBlack,
+    BrightRed,
+    BrightGreen,
+    BrightYellow,
+    BrightBlue,
+    BrightMagenta,
+    BrightCyan,
+    BrightWhite,
+    #[default]
+    Default,
+    None,
+}
+
+/// Colours of the bar and separators. Defaults are muted and work on dark and light terminals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
+pub struct Style {
+    /// Workspace name, inactive tabs and the focused pane's `id: title`.
+    pub bar: StyleColor,
+    /// The current tab (drawn reversed).
+    pub tab_active: StyleColor,
+    /// Separators not touching the focused pane.
+    pub separator: StyleColor,
+    /// Separators touching the focused pane (also bold).
+    pub separator_focused: StyleColor,
+    /// Transient notices in the bar; errors always use red.
+    pub notice: StyleColor,
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Self {
+            bar: StyleColor::BrightBlack,
+            tab_active: StyleColor::Default,
+            separator: StyleColor::BrightBlack,
+            separator_focused: StyleColor::Default,
+            notice: StyleColor::Yellow,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClipboardPolicy {
@@ -259,6 +314,7 @@ struct ConfigPatch {
     clipboard: Option<ClipboardPolicy>,
     history: Option<HistoryLimits>,
     limits: Option<Limits>,
+    style: Option<Style>,
 }
 
 impl ConfigPatch {
@@ -280,6 +336,9 @@ impl ConfigPatch {
         }
         if let Some(value) = self.limits {
             config.limits = value;
+        }
+        if let Some(value) = self.style {
+            config.style = value;
         }
         config
     }
@@ -399,6 +458,24 @@ fn invalid<T>(field: &'static str, reason: impl Into<String>) -> Result<T, Confi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn style_table_parses_named_colours_and_rejects_unknown_ones() {
+        let config = Config::from_toml(
+            "[style]\nbar = \"blue\"\ntab-active = \"none\"\nseparator-focused = \"bright-white\"\n",
+        )
+        .unwrap_or_default();
+        assert_eq!(config.style.bar, StyleColor::Blue);
+        assert_eq!(config.style.tab_active, StyleColor::None);
+        assert_eq!(config.style.separator_focused, StyleColor::BrightWhite);
+        assert_eq!(
+            config.style.separator,
+            StyleColor::BrightBlack,
+            "defaults fill the rest"
+        );
+        assert!(Config::from_toml("[style]\nbar = \"teal\"\n").is_err());
+        assert!(Config::from_toml("[style]\naccent = \"red\"\n").is_err());
+    }
 
     #[test]
     fn defaults_round_trip_and_sparse_documents_merge() {
