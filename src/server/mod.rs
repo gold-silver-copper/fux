@@ -18,10 +18,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 /// Per-step budgets: how many queued items each source may contribute before the step runs.
-const PANE_BUDGET: usize = 512;
+const PANE_BUDGET: usize = 64;
 const INGRESS_BUDGET: usize = 256;
 /// Shutdown waits this long for panes to exit before the process ends anyway.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+/// A batch that is only pane output, arriving this soon after the previous output step and
+/// not this soon after any viewer input (an echo), is a stream: the loop waits `STREAM_WAIT` for
+/// more chunks before stepping, so a burst of tiny pty reads costs hundreds of steps instead of
+/// thousands. Input, requests and echoes never wait.
+const STREAM_GAP: Duration = Duration::from_millis(3);
+const STREAM_WAIT: Duration = Duration::from_millis(1);
 
 pub struct ServeOptions {
     pub name: String,
@@ -78,6 +84,10 @@ struct ServerState {
     manager_reply_rx: mpsc::Receiver<(u64, oneshot::Sender<ManagerOutcome>)>,
     outbox_rx: mpsc::Receiver<(crate::ids::ViewerId, adapter::ViewerOutbox)>,
     started: Instant,
+    /// When a step last fed pane output and when one last carried viewer input, for stream
+    /// detection.
+    last_output: Option<Instant>,
+    last_input: Option<Instant>,
     _manager_lock: ManagerLock,
     manager_stop: Arc<Notify>,
     manager_task: tokio::task::JoinHandle<()>,
@@ -96,7 +106,7 @@ async fn start(
     drop(startup_lock);
     let identity = ManagerIdentity::current()?;
     crate::daemon::recover_stale_descriptors(&paths, &identity)?;
-    let (pane_tx, pane_rx) = mpsc::channel(2048);
+    let (pane_tx, pane_rx) = mpsc::channel(256);
     let (ingress_tx, ingress_rx) = mpsc::channel(1024);
     let (control_reply_tx, control_reply_rx) = mpsc::channel(256);
     let (manager_reply_tx, manager_reply_rx) = mpsc::channel(64);
@@ -136,6 +146,8 @@ async fn start(
         manager_reply_rx,
         outbox_rx,
         started: Instant::now(),
+        last_output: None,
+        last_input: None,
         _manager_lock: manager_lock,
         manager_stop,
         manager_task,
@@ -221,7 +233,34 @@ impl ServerState {
         more
     }
 
+    /// Whether `inbound` is the continuation of an output stream worth waiting on.
+    fn streaming(&self, inbound: &[Inbound]) -> bool {
+        !inbound.is_empty()
+            && inbound
+                .iter()
+                .all(|message| matches!(message, Inbound::PaneOutput { .. }))
+            && self
+                .last_output
+                .is_some_and(|last| last.elapsed() < STREAM_GAP)
+            && self
+                .last_input
+                .is_none_or(|last| last.elapsed() >= STREAM_GAP)
+    }
+
     async fn run_step(&mut self, inbound: Vec<Inbound>) -> anyhow::Result<()> {
+        let now = Instant::now();
+        if inbound
+            .iter()
+            .any(|message| matches!(message, Inbound::PaneOutput { .. }))
+        {
+            self.last_output = Some(now);
+        }
+        if inbound
+            .iter()
+            .any(|message| matches!(message, Inbound::ViewerRequest { .. }))
+        {
+            self.last_input = Some(now);
+        }
         let effects: Vec<Effect> = self.session.step(self.now_ms(), inbound);
         self.adapter.apply(effects);
         for name in std::mem::take(&mut self.adapter.opened) {
@@ -322,7 +361,11 @@ async fn run_loop(mut state: ServerState) -> anyhow::Result<()> {
     let mut inbound = Vec::new();
     loop {
         // `wait_for_activity` may have consumed one item from a receiver; keep it.
-        let more = state.collect(&mut inbound);
+        let mut more = state.collect(&mut inbound);
+        if state.streaming(&inbound) {
+            tokio::time::sleep(STREAM_WAIT).await;
+            more = state.collect(&mut inbound);
+        }
         state.run_step(std::mem::take(&mut inbound)).await?;
         if state.adapter.idle {
             break;

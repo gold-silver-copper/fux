@@ -48,7 +48,13 @@ pub fn refresh_grids(
             .iter()
             .any(|pane| panes.get(*pane).is_ok_and(|pane| pane.dirty));
         viewer.pending |= output;
+        // Output within two intervals of the viewer's own input is its echo, shown at once.
+        let echoing = clock.now_ms
+            <= viewer
+                .input_ms
+                .saturating_add(limits.frame_interval_ms.saturating_mul(2));
         let forced = viewer.dirty
+            || echoing
             || !viewer.after_frame.is_empty()
             || workspaces
                 .get(viewer.workspace)

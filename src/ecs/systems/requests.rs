@@ -130,6 +130,7 @@ pub fn apply_attachments(
                         dirty: true,
                         pending: false,
                         publish_now: false,
+                        input_ms: 0,
                         last_frame_ms: 0,
                         notice: None,
                         after_frame: Vec::new(),
@@ -312,6 +313,10 @@ enum Target {
 }
 
 fn apply_viewer_request(world: &mut World, viewer: Entity, id: ViewerId, request: ViewerRequest) {
+    let now = world.resource::<Clock>().now_ms;
+    if let Some(mut component) = world.get_mut::<Viewer>(viewer) {
+        component.input_ms = now;
+    }
     match request {
         ViewerRequest::Input(bytes) => {
             let focused = world

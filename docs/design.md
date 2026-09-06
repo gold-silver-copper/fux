@@ -64,11 +64,15 @@ checks kind, workspace membership and liveness; destructive confirmations carry 
 ## One step
 
 The owner loop (`server::run_loop`) sleeps until a channel has data, a socket event arrives, a
-signal fires or the next deadline expires. It then collects a bounded batch (at most 512 chunks
-from the shared 2048-deep pane channel and 256 requests from the ingress channel per step;
-signals are polled between busy steps), runs the `Step` schedule once with the
+signal fires or the next deadline expires. It then collects a bounded batch (at most 64 chunks
+of up to 64 KiB from the shared 256-deep pane channel and 256 requests from the ingress channel
+per step; signals are polled between busy steps), runs the `Step` schedule once with the
 `SingleThreadedExecutor`, applies the returned effects through the adapters and goes back to sleep.
-There is no periodic tick.
+A pty hands out output in reads of a few bytes, so a batch that is only pane output, arriving
+within 3 ms of the previous output step and not within 3 ms of any viewer input, is treated as a
+stream: the loop waits 1 ms for more chunks before stepping (a 20 000-line burst then costs a few
+hundred steps instead of twelve thousand). Input, requests and echoes never wait. There is no
+periodic tick.
 
 Phases are chained system sets; deferred mutations become visible at the sync points between them:
 
@@ -88,8 +92,18 @@ Phases are chained system sets; deferred mutations become visible at the sync po
    The last row of every viewer is the bar, so the pane area is `rows - 1` starting at row 0; siblings in a split are
    separated by exactly one cell, and leaf rectangles are the panes' content areas. Emulators are
    resized and `ResizePty` emitted.
-7. **Snapshot**: derive a frame for each dirty viewer at its own size and queue it before the
-   replies it promises.
+7. **Snapshot**: `refresh_grids` decides which viewers publish this step and reads the changed
+   panes they show once into the panes' retained grids (a copy of the visible cells with the
+   step each row last changed in); output-driven frames are paced to one per 8 ms per viewer
+   (`Limits.frame_interval_ms`, a deadline wakes the loop for the pending rows), while a frame
+   that follows the viewer's own input (its echo), carries a reply, a selection change or a
+   retirement goes out at once. `publish_frames`
+   then builds one update per publishing viewer from the grids: each visible pane is carried
+   only if it changed since the viewer's previous update, and then only its changed rows (in
+   full when the viewer holds nothing of it or its size changed). Every viewer remembers what it
+   holds of each pane (`Viewer.sent`); updates are queued before the replies they promise. Cells
+   the frame cannot carry (zero-width or multi-grapheme sequences, control characters) are shown
+   as blanks of their style.
 8. **Publish**: control events, deadlines, message clearing, `clear_trackers`.
 
 No observers or component hooks drive core commands; process cleanup is explicit.
@@ -122,8 +136,10 @@ on `get_mut` reads such as history views and captures.
   input meant for the new pane reaches it only after it exists and is focused.
 - A failed creation despawns the reserved pane (never seen in a frame or listing) and replies
   `failed`; its id is not reused.
-- Frames are queued before replies; the outbox coalesces frames but never lets a frame overtake a
-  reply queued after an earlier frame. A viewer 64 messages behind is disconnected.
+- Frame updates are queued before replies; the outbox merges consecutive updates for a viewer
+  (later rows replace earlier rows, later metadata wins, untouched panes stay, so applying the
+  merged update equals applying both) but never lets an update overtake a reply queued after an
+  earlier update. A viewer 64 messages behind is disconnected.
 - `detach` applies preceding input and drops the suffix; `workspace select` retargets the same
   connection so the suffix reaches the destination.
 - Completions and process reports carry public ids; a despawned or replaced target is ignored,
@@ -148,7 +164,9 @@ The viewer holds private state as explicit Rust state machines: a byte-exact pre
 (literal prefix on double press, immediate popup, unknown keys stay in command mode, 35 ms Escape
 disambiguation, paste and fragmented sequences preserved), a controller with modes (copy,
 workspace and tab choosers, rename, new workspace, confirmed close of a specific pane or tab,
-resize), a copy session over private `view` reads, and a compositor that paints the bottom bar on its own background (workspace,
+resize), a copy session over private `view` reads, a retained frame that applies the server's
+updates (a delta replaces the carried rows of the panes it names; a full update replaces
+everything), and a compositor that paints the bottom bar on its own background (workspace,
 tabs with the current one reversed, the focused pane's `id: title` or a two-second notice), the
 panes, the shared separators derived from the one-cell gaps between leaves (bold next to the
 focused pane) and the command column (a bottom-right box above the bar, as wide as its widest

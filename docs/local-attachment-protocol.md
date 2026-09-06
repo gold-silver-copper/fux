@@ -77,6 +77,9 @@ carried rows, which is where an echoed input lands.
   observe their predecessors; input queued behind a split, new tab or new workspace is delivered
   to the newly focused pane only after the creation completed. A failed creation is reported as a
   `failed` reply and following input goes to the previous focus.
+- Output-driven updates are paced to one per 8 ms per viewer; an update that follows the
+  viewer's own input, carries a reply, a selection change or the workspace's retirement is never
+  delayed.
 - After executing a control request the server sends the frame update reflecting the applied
   state before its reply. Updates queued for one viewer with no reply between them are merged
   (later rows replace earlier rows, later metadata wins, untouched panes stay), so a slow viewer

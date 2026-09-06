@@ -227,6 +227,9 @@ pub struct Viewer {
     pub pending: bool,
     /// Set by the grid refresh when this step's frame may go out.
     pub publish_now: bool,
+    /// When this viewer last sent input (keys, mouse, a request): output that follows within
+    /// the frame interval is its echo and is never delayed.
+    pub input_ms: u64,
     /// When the last frame went out, for pacing output-driven frames.
     pub last_frame_ms: u64,
     pub notice: Option<String>,
