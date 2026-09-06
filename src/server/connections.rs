@@ -6,7 +6,7 @@ use crate::ecs::{Inbound, ManagerAction, ManagerOutcome, ViewerRequest};
 use crate::ids::ViewerId;
 use crate::proto::attach::{
     ClientMessage, FRAME_TIMEOUT, MAX_CLIENT_FRAME, MAX_INPUT_CHUNK, MAX_SERVER_FRAME,
-    ServerMessage, VERSION, read_frame, write_frame,
+    ServerMessage, read_frame, write_frame,
 };
 use crate::proto::control::{
     self, CONTROL_PREFACE, ErrorCode, MAX_FRAME_BYTES, MAX_SUBSCRIBER_QUEUE, Reply, Request,
@@ -122,29 +122,20 @@ async fn serve_viewer(
     let hello: ClientMessage =
         tokio::time::timeout(FRAME_TIMEOUT, read_frame(&mut stream, MAX_CLIENT_FRAME)).await??;
     let (rows, cols) = match hello {
-        ClientMessage::Hello {
-            version: VERSION,
-            rows,
-            columns,
-        } => (rows, columns),
+        ClientMessage::Hello { rows, columns } => (rows, columns),
         _ => {
             write_frame(
                 &mut stream,
                 &ServerMessage::Error {
-                    message: "incompatible local attachment protocol; use matching fux versions or restart the session server after saving your work".into(),
+                    message: "the first attachment frame must be a hello".into(),
                 },
                 MAX_SERVER_FRAME,
             )
             .await?;
-            anyhow::bail!("incompatible attachment handshake");
+            anyhow::bail!("attachment did not start with a hello");
         }
     };
-    write_frame(
-        &mut stream,
-        &ServerMessage::Hello { version: VERSION },
-        MAX_SERVER_FRAME,
-    )
-    .await?;
+    write_frame(&mut stream, &ServerMessage::Hello {}, MAX_SERVER_FRAME).await?;
     let viewer = ViewerId(owner.viewer_ids.fetch_add(1, Ordering::Relaxed));
     let outbox = ViewerOutbox::default();
     owner.viewer_outboxes.send((viewer, outbox.clone())).await?;
@@ -269,10 +260,10 @@ pub async fn serve_control(
 /// Preface exchange with a two-second absolute deadline including idle time.
 pub async fn negotiate(stream: &mut UnixStream) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(2), async {
-        let mut preface = [0_u8; 8];
+        let mut preface = [0_u8; CONTROL_PREFACE.len()];
         stream.read_exact(&mut preface).await?;
         stream.write_all(CONTROL_PREFACE).await?;
-        anyhow::ensure!(&preface == CONTROL_PREFACE, "incompatible control preface");
+        anyhow::ensure!(&preface == CONTROL_PREFACE, "not a fux control preface");
         Ok(())
     })
     .await

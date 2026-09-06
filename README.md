@@ -59,10 +59,10 @@ notice = "yellow"                               # transient notices; errors are 
 Private sockets live under `$XDG_RUNTIME_DIR/fux` (macOS fallback `~/Library/Caches/fux-runtime`);
 daemon diagnostics go to `$XDG_STATE_HOME/fux/daemon.log` (default `~/.local/state/fux`).
 
-If an older fux server (0.2.x, control preface `FUXCTL1`) still owns that directory, `fux` explains
-the mismatch, lists the workspaces it recorded, and asks in the terminal: `k` stops the old server
-after you type `stop` (this terminates its panes), `s` shows how to run the new version alongside it
-in a separate runtime directory, `q` leaves it alone. Without a terminal it only reports and exits.
+The protocols are not versioned: every fux, koh and zor build is expected to match the tree it was
+built from. A server older than the viewer shows up as a rejected frame or reply, reported as an
+error that names the session server; save your work in it and restart it (`fux workspace kill`
+per workspace, or SIGTERM to its pid from the descriptor). fux never stops a server on its own.
 
 ## Keys
 
@@ -135,8 +135,8 @@ second, and reap it. Workspace kill and server shutdown do the same for every pa
 
 ## Working with koh and zor
 
-fux composes with the independently built koh and zor programs through versioned process
-protocols; it never links, spawns or supervises them.
+fux composes with the independently built koh and zor programs through process protocols
+pinned by the fixtures in `tests/verify/fixtures/`; it never links, spawns or supervises them.
 
 Remote access is koh's job. On the machine running fux:
 
@@ -188,8 +188,8 @@ explicit binary paths; set `ZOR_BIN` and `FUX_REQUIRE_ZOR_BIN=1`, or `FUX_BIN` a
 
 - [docs/design.md](docs/design.md): architecture, entity model, system order, lifecycle.
 - [docs/ecs-acceptance.md](docs/ecs-acceptance.md): requirement-by-requirement acceptance audit.
-- [docs/local-attachment-protocol.md](docs/local-attachment-protocol.md) (v6) and
-  [docs/local-control-protocol.md](docs/local-control-protocol.md) (`FUXCTL2`).
+- [docs/local-attachment-protocol.md](docs/local-attachment-protocol.md) and
+  [docs/local-control-protocol.md](docs/local-control-protocol.md).
 - [docs/security.md](docs/security.md), [docs/release-readiness.md](docs/release-readiness.md),
   [CHANGELOG.md](CHANGELOG.md), [HANDOFF.md](HANDOFF.md).
 - Earlier architectures (the koh-hosted wrapper, the standalone host) and the prompts that drove

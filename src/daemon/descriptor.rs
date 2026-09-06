@@ -16,7 +16,6 @@ pub struct Descriptor {
     pub pid: u32,
     pub instance_nonce: String,
     pub socket_path: PathBuf,
-    pub protocol: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,7 +40,6 @@ impl Descriptor {
         if self.pid == 0
             || !safe_token(&self.instance_nonce, 128)
             || !self.socket_path.is_absolute()
-            || self.protocol != crate::proto::attach::VERSION
         {
             return Err(DescriptorError::Invalid);
         }
@@ -222,69 +220,4 @@ pub fn random_token() -> std::io::Result<String> {
     let mut bytes = [0_u8; 16];
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-/// Workspace names and server pids recorded in the descriptor directory, read leniently: this is
-/// how a viewer identifies an older, protocol-incompatible server so the operator can decide what
-/// to do with it. Unreadable or malformed files are skipped.
-#[must_use]
-pub fn recorded_servers(paths: &DaemonPaths) -> Vec<(String, u32)> {
-    let Ok(entries) = fs::read_dir(&paths.descriptors_dir) else {
-        return Vec::new();
-    };
-    let mut servers = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|extension| extension != "json") {
-            continue;
-        }
-        let Ok((_, bytes)) = read_bounded(&path) else {
-            continue;
-        };
-        if bytes.len() as u64 > MAX_DESCRIPTOR_BYTES {
-            continue;
-        }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            continue;
-        };
-        let name = value.get("name").and_then(serde_json::Value::as_str);
-        let pid = value
-            .get("pid")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|pid| u32::try_from(pid).ok());
-        if let (Some(name), Some(pid)) = (name, pid)
-            && crate::ids::validate_workspace_name(name).is_ok()
-        {
-            servers.push((name.to_owned(), pid));
-        }
-    }
-    servers.sort();
-    servers
-}
-
-#[cfg(test)]
-mod recorded_tests {
-    use super::*;
-
-    #[test]
-    fn recorded_servers_reads_older_descriptors_leniently() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = std::env::temp_dir().join(format!("fux-desc-{}", std::process::id()));
-        let paths = DaemonPaths::from_env(
-            Some(root.clone().into_os_string()),
-            Some(root.clone().into_os_string()),
-            Some(root.clone().into_os_string()),
-        )?;
-        paths.prepare()?;
-        let dir = &paths.descriptors_dir;
-        fs::write(
-            dir.join("default.json"),
-            br#"{"name":"default","pid":4242,"instance_nonce":"n","socket_path":"/x","protocol":2,"extra":true}"#,
-        )?;
-        fs::write(dir.join("broken.json"), b"{")?;
-        fs::write(dir.join("notes.txt"), br#"{"name":"x","pid":1}"#)?;
-        assert_eq!(recorded_servers(&paths), vec![("default".to_owned(), 4242)]);
-        let _ = fs::remove_dir_all(&root);
-        Ok(())
-    }
 }

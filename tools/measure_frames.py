@@ -2,7 +2,7 @@
 """Frame cost of a fux binary per screen size and viewer count: bytes on the attachment socket
 per keystroke, server CPU per keystroke and per output burst, wall latency, bytes per burst.
 
-Usage: tools/measure_frames.py PATH/TO/fux [--version N] [--keystrokes 100]
+Usage: tools/measure_frames.py PATH/TO/fux [--keystrokes 100]
        [--config ROWSxCOLS[+ROWSxCOLS...] ...]
 
 Each configuration attaches the listed viewers (raw attachment-protocol clients, all on the same
@@ -44,18 +44,18 @@ def send(peer, value):
 class Viewer:
     """One raw attachment client with a non-blocking frame reader."""
 
-    def __init__(self, path, version, rows, cols):
+    def __init__(self, path, rows, cols):
         self.sock = socket.socket(socket.AF_UNIX)
         self.sock.settimeout(5)
         self.sock.connect(str(path))
-        send(self.sock, dict(type="hello", version=version, rows=rows, columns=cols))
+        send(self.sock, dict(type="hello", rows=rows, columns=cols))
         self.buffer = b""
         self.bytes = 0
         self.frames = []
         self.wait_frame(5)
         # The hello may arrive together with the bindings and the first frame.
         hello = self.frames[0]
-        assert hello == {"hello": {"version": version}}, hello
+        assert hello == {"hello": {}}, hello
         self.frames.clear()
         self.bytes = 0
         self.sock.setblocking(False)
@@ -142,7 +142,7 @@ def wait_text(viewers, first, predicate, timeout):
     raise TimeoutError("frame did not arrive")
 
 
-def measure(binary, version, config, keystrokes):
+def measure(binary, config, keystrokes):
     sizes = [tuple(int(part) for part in item.split("x")) for item in config.split("+")]
     with tempfile.TemporaryDirectory(prefix="fux-frames-", dir="/tmp") as directory:
         root = Path(directory)
@@ -160,7 +160,7 @@ def measure(binary, version, config, keystrokes):
             while time.monotonic() < deadline and not viewers:
                 if sock_path.exists():
                     try:
-                        viewers.append(Viewer(sock_path, version, *sizes[0]))
+                        viewers.append(Viewer(sock_path, *sizes[0]))
                     except (ConnectionRefusedError, FileNotFoundError):
                         time.sleep(0.005)
                 else:
@@ -169,7 +169,7 @@ def measure(binary, version, config, keystrokes):
                     raise RuntimeError(server.stderr.read().decode())
             assert viewers, "server did not start"
             for rows, cols in sizes[1:]:
-                viewers.append(Viewer(sock_path, version, rows, cols))
+                viewers.append(Viewer(sock_path, rows, cols))
             first = viewers[0]
             drain_all(viewers, 0.5)
             # Keystrokes: one byte each, echoed by the shell's line editor.
@@ -227,12 +227,11 @@ def measure(binary, version, config, keystrokes):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binary")
-    parser.add_argument("--version", type=int, default=6)
     parser.add_argument("--keystrokes", type=int, default=100)
     parser.add_argument("--config", action="append")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
-    results = [measure(binary, args.version, config, args.keystrokes) for config in args.config or DEFAULT_CONFIGS]
+    results = [measure(binary, config, args.keystrokes) for config in args.config or DEFAULT_CONFIGS]
     print(json.dumps({"binary": binary, "results": results}, indent=2))
 
 

@@ -249,47 +249,22 @@ async fn attach(name: Option<&str>) -> Result<ExitCode> {
     let config = fux::config::Config::load()?;
     let paths = fux::daemon::DaemonPaths::discover()?;
     paths.prepare()?;
-    let mut offered = false;
-    loop {
-        let attempt = {
-            let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
-            match resolve(&paths, name) {
-                Ok(Some(descriptor)) => Ok(descriptor),
-                Ok(None) => start_server(&paths, name.unwrap_or("default")),
-                Err(error) => Err(error),
-            }
-        };
-        // Either step can meet an older server: the manager (control preface) or the workspace
-        // attachment (frame contract). Both get the same one-time offer.
-        let attempt = match attempt {
-            Ok(descriptor) => {
-                fux::client::attach(
-                    &descriptor.socket_path,
-                    &config,
-                    fux::client::AttachOptions {
-                        manager_socket: Some(paths.manager_socket.clone()),
-                    },
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
-        match attempt {
-            Ok(code) => return Ok(code.map_or(ExitCode::SUCCESS, exit_code)),
-            Err(error) if !offered && fux::daemon::incompatible_server(&error) => {
-                offered = true;
-                match fux::daemon::migration_dialog(&paths)? {
-                    fux::daemon::MigrationChoice::Stop => fux::daemon::stop_old_server(&paths)?,
-                    fux::daemon::MigrationChoice::Alongside => {
-                        fux::daemon::print_alongside_instructions(&paths);
-                        return Ok(ExitCode::FAILURE);
-                    }
-                    fux::daemon::MigrationChoice::Quit => return Err(error),
-                }
-            }
-            Err(error) => return Err(error),
+    let descriptor = {
+        let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
+        match resolve(&paths, name)? {
+            Some(descriptor) => descriptor,
+            None => start_server(&paths, name.unwrap_or("default"))?,
         }
-    }
+    };
+    let code = fux::client::attach(
+        &descriptor.socket_path,
+        &config,
+        fux::client::AttachOptions {
+            manager_socket: Some(paths.manager_socket.clone()),
+        },
+    )
+    .await?;
+    Ok(code.map_or(ExitCode::SUCCESS, exit_code))
 }
 
 fn resolve(
@@ -307,7 +282,7 @@ fn resolve(
         Ok(fux::daemon::ManagerReply::Names { .. }) => bail!("unexpected manager reply"),
         Err(error) if no_server(&error) => Ok(None),
         Err(error) => Err(error.context(
-            "cannot use the existing session server; it may speak an incompatible protocol. Save your work in it before stopping it",
+            "cannot use the existing session server; if it is older than this fux, save your work in it and restart it",
         )),
     }
 }

@@ -299,7 +299,6 @@ pub fn descriptor(
         pid: identity.pid,
         instance_nonce: identity.instance_nonce.clone(),
         socket_path: paths.attach_socket(name)?,
-        protocol: crate::proto::attach::VERSION,
     })
 }
 

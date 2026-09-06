@@ -25,6 +25,6 @@ protocols in `docs/local-*.md`.
 ## Limits
 
 Runtime evidence is macOS only; Linux and Android are configured CI targets without an executed
-run. Emulator-specific clipboard and mouse behaviour and koh relay/NAT scenarios remain manual. A
-running 0.3.x server older than the viewer is rejected by the handshake and the viewer offers to
-stop it or run alongside it; nothing is ever stopped without a typed confirmation.
+run. Emulator-specific clipboard and mouse behaviour and koh relay/NAT scenarios remain manual. The
+protocols carry no version numbers; a server older than its client is reported as an error and
+restarted by the operator, never stopped by fux.

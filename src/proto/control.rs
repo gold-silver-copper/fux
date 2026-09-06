@@ -1,4 +1,4 @@
-//! Control protocol `FUXCTL2`: newline-delimited JSON commands, replies, subscriptions and
+//! Control protocol: newline-delimited JSON commands, replies, subscriptions and
 //! lifecycle events over a per-workspace Unix socket. Zor's observer and the fux CLI are wire
 //! consumers; nothing here references ECS types.
 
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-pub const CONTROL_PREFACE: &[u8; 8] = b"FUXCTL2\n";
+pub const CONTROL_PREFACE: &[u8; 4] = b"FUX\n";
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_ARGV_ENTRIES: usize = 128;
 pub const MAX_ARG_BYTES: usize = 4096;

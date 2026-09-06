@@ -1,24 +1,32 @@
-# Local control protocol `FUXCTL2`
+# Local control protocol
 
 fux exposes a workspace control socket at `RUNTIME/fux/NAME.sock` and a manager socket at
 `RUNTIME/fux/manager.sock`, separate from the length-prefixed attachment socket. The OS user is the
 authorization boundary: the server checks the peer's credentials before accepting, and fux's own
 clients check the server's.
 
-## Version negotiation
+## Preface
 
-Every connection begins with the eight-byte client preface `FUXCTL2\n`; the server replies with
-its own preface, currently `FUXCTL2\n`. Both peers verify equality before sending or dispatching
-anything; a missing or different preface executes no command. Preface reads have an absolute
+Every connection begins with the four-byte client preface `FUX\n`; the server replies with the
+same bytes. Both peers verify equality before sending or dispatching anything; a missing or
+different preface executes no command. The preface is a magic that keeps a stray connection from
+something that is not fux away from the handlers; it is not a version, and nothing in the
+protocol is versioned (see "Compatibility" below). Preface reads have an absolute
 two-second deadline including idle time and fragmentation; writes have a two-second timeout.
 There are at most 64 control connections per workspace. A request connection that sends no
 complete request for 30 s is closed; a request the server has not answered within 30 s is failed
 with its own id. The manager handles one request per connection; workspace subscriptions stay
 open until the subscriber sends any byte or closes.
 
-The version covers framing and schemas. `FUXCTL1` (the pre-rewrite schema with popup, hook,
-status and observation commands) is not served; an incompatible client is told to use matching
-versions or to save work before deliberately restarting the server.
+## Compatibility
+
+There is no protocol versioning. The schemas are whatever the current tree defines, pinned by the
+fixtures in `tests/verify/fixtures/`, and every consumer (the CLI, the viewer, koh, zor, the
+harnesses) ships from the same tree or from a pinned base plus a patch in `dependency-patches/`.
+A request the server does not know fails with `unknown-command`; a field it does not know fails
+with `invalid-request`; a reply the client does not understand is reported as an error naming
+the session server. A server older than its client is therefore visible as such an error, and the
+operator restarts it deliberately; nothing is ever stopped automatically.
 
 ## Workspace requests
 
@@ -73,16 +81,14 @@ Same preface, separate strict schema selected by the socket:
 {"request":"kill","name":"default"}
 ```
 
-Replies: `{"reply":"names","names":[…]}`, `{"reply":"attach","descriptor":{…}}` (pid, instance
-nonce, attachment socket, attachment protocol version) and `{"reply":"failed","message":"…"}`.
+Replies: `{"reply":"names","names":[…]}`, `{"reply":"attach","descriptor":{…}}` (name, pid,
+instance nonce, attachment socket path) and `{"reply":"failed","message":"…"}`.
 `resolve` with `null` applies the default rule: create `default` when nothing exists, otherwise the
-most recently attached workspace. `kill` deliberately terminates that workspace's panes; a version
-mismatch never does by itself (the interactive viewer may offer to stop an older server, but only
-after the operator confirms).
+most recently attached workspace. `kill` deliberately terminates that workspace's panes; nothing else does.
 
 ## Consumers
 
-The fux CLI (`fux [NAME] list`, `fux ctl JSON`, …) negotiates itself and takes plain JSON. zor's
-`observe` command negotiates `FUXCTL2` before each sampling request and consumes `list` and
+The fux CLI (`fux [NAME] list`, `fux ctl JSON`, …) sends the preface itself and takes plain JSON.
+zor's `observe` command sends the preface before each sampling request and consumes `list` and
 `capture` directly. The fixture-child suite and `tests/verify/protocol_rejection.py` prove wrong,
 missing and partial prefaces reach no handler while a valid client keeps working.

@@ -218,7 +218,7 @@ pub fn negotiate_client(stream: &mut UnixStream) -> io::Result<()> {
         stream.set_write_timeout(Some(HANDSHAKE_DEADLINE))?;
         stream.write_all(CONTROL_PREFACE)?;
         let deadline = Instant::now() + HANDSHAKE_DEADLINE;
-        let mut received = [0; 8];
+        let mut received = [0; CONTROL_PREFACE.len()];
         let mut used = 0;
         while used < received.len() {
             let remaining = deadline
@@ -234,17 +234,15 @@ pub fn negotiate_client(stream: &mut UnixStream) -> io::Result<()> {
             if length == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
-                    "peer closed during version negotiation",
+                    "peer closed during the control preface",
                 ));
             }
             used += length;
         }
         if &received != CONTROL_PREFACE {
-            // `Unsupported` lets callers recognise a version mismatch (as opposed to a broken or
-            // foreign peer) and offer the operator a way out.
             return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "incompatible fux control protocol; expected FUXCTL2; use matching versions or restart the session server after saving your work",
+                io::ErrorKind::InvalidData,
+                "not a fux control socket; restart the session server if it is older than this fux",
             ));
         }
         Ok(())
@@ -272,10 +270,10 @@ mod tests {
 
     #[test]
     fn negotiation_requires_the_exact_preface_from_the_server() -> io::Result<()> {
-        for (answer, accepted) in [(&b"FUXCTL2\n"[..], true), (b"FUXCTL1\n", false)] {
+        for (answer, accepted) in [(&b"FUX\n"[..], true), (b"FUZ\n", false)] {
             let (mut client, mut server) = UnixStream::pair()?;
             let handle = std::thread::spawn(move || {
-                let mut preface = [0; 8];
+                let mut preface = [0; 4];
                 server.read_exact(&mut preface)?;
                 server.write_all(answer)?;
                 Ok::<_, io::Error>(preface)

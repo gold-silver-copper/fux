@@ -9,7 +9,6 @@ use std::io::{self, Write};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const VERSION: u32 = 6;
 /// Wire cells one history view may carry; frame updates are bounded per pane and in total by
 /// `view::PaneUpdate::within_bounds` and `view::FrameUpdate::within_bounds`.
 pub const MAX_UPDATE_CELLS: usize = crate::view::MAX_TOTAL_CELLS;
@@ -22,8 +21,8 @@ pub const MAX_VIEWERS_PER_WORKSPACE: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ClientMessage {
+    /// The first client frame: the viewer's terminal size.
     Hello {
-        version: u32,
         rows: u16,
         columns: u16,
     },
@@ -56,9 +55,8 @@ pub enum ClientMessage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ServerMessage {
-    Hello {
-        version: u32,
-    },
+    /// The first server frame: the hello was accepted.
+    Hello {},
     /// The registry of prefix and bindings, sent once after the hello.
     Bindings {
         bindings: crate::commands::ClientBindings,

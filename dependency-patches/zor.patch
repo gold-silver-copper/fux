@@ -1,5 +1,5 @@
 diff --git a/OBSERVATION-CONTRACT.md b/OBSERVATION-CONTRACT.md
-index 38fda77..87f6888 100644
+index 38fda77..19b8131 100644
 --- a/OBSERVATION-CONTRACT.md
 +++ b/OBSERVATION-CONTRACT.md
 @@ -57,4 +57,4 @@ The adapter reads bounded newline-delimited JSON `list` and `capture` responses
@@ -7,26 +7,29 @@ index 38fda77..87f6888 100644
  Detection and the existing state machine remain in zor. Reports use the OSC v1 schema above, one report per newline on stdout. A consumer must apply a report-size limit before parsing, reject malformed output, and keep observer backpressure independent of pane input/output. Closing or killing the observer must not terminate the observed command.
  
 -The fux control adapter negotiates control v1 by sending and verifying the eight-byte `FUXCTL1\n` preface before each RPC. A mismatch or stalled preface ends that sampling attempt without sending a command. Preface reads use an absolute two-second deadline. This is an independent wire consumer, not a fux library dependency.
-+The fux control adapter negotiates control v2 by sending and verifying the eight-byte `FUXCTL2\n` preface before each RPC. A mismatch or stalled preface ends that sampling attempt without sending a command. Preface reads use an absolute two-second deadline. This is an independent wire consumer, not a fux library dependency.
++The fux control adapter sends and verifies the four-byte `FUX\n` preface before each RPC. A mismatch or stalled preface ends that sampling attempt without sending a command. Preface reads use an absolute two-second deadline. This is an independent wire consumer, not a fux library dependency.
 diff --git a/src/observe.rs b/src/observe.rs
-index de097b3..5e2f04c 100644
+index de097b3..46570fb 100644
 --- a/src/observe.rs
 +++ b/src/observe.rs
-@@ -20,7 +20,7 @@ fn request(socket: &Path, value: Value) -> anyhow::Result<Value> {
+@@ -20,9 +20,9 @@ fn request(socket: &Path, value: Value) -> anyhow::Result<Value> {
          "control socket belongs to another user"
      );
      stream.set_write_timeout(Some(Duration::from_secs(2)))?;
 -    stream.write_all(b"FUXCTL1\n")?;
-+    stream.write_all(b"FUXCTL2\n")?;
++    stream.write_all(b"FUX\n")?;
      let deadline = Instant::now() + Duration::from_secs(2);
-     let mut preface = [0; 8];
+-    let mut preface = [0; 8];
++    let mut preface = [0; 4];
      let mut used = 0;
+     while used < preface.len() {
+         let remaining = deadline
 @@ -38,7 +38,7 @@ fn request(socket: &Path, value: Value) -> anyhow::Result<Value> {
          used += n;
      }
      anyhow::ensure!(
 -        &preface == b"FUXCTL1\n",
-+        &preface == b"FUXCTL2\n",
++        &preface == b"FUX\n",
          "incompatible fux control protocol"
      );
      serde_json::to_writer(&mut stream, &value)?;

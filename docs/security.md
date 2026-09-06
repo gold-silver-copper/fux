@@ -7,14 +7,14 @@ started the session server, and that OS account is the authorization boundary.
 
 | Boundary | Enforcement | Limits |
 |---|---|---|
-| Attachment and control sockets | Private (0700) directories owned by the effective user, 0600 sockets, kernel peer-UID checks on both sides, version prefaces before any command, bounded frames and deadlines | Any process running as the same user can control sessions. Root and a compromised account are outside the boundary |
+| Attachment and control sockets | Private (0700) directories owned by the effective user, 0600 sockets, kernel peer-UID checks on both sides, a fixed preface before any command, bounded frames and deadlines | Any process running as the same user can control sessions. Root and a compromised account are outside the boundary |
 | Server election and startup | `flock`-serialized manager election, inode-aware stale-socket recovery, a private nonce-named readiness channel, sanitized daemon environment | The daemon inherits the first viewer's environment minus credential-like keys |
 | Pane output | vt100 emulation with bounded dimensions and history; control strings are filtered and truncated; titles and OSC 52 payloads are bounded | Programs can emit misleading text, titles, bells and clipboard writes |
 | Remote access | Not part of fux. A koh gateway authenticates and authorizes peers before opening the local attachment socket and conveys the local user's authority | fux cannot distinguish a gateway from a local viewer |
 | Observation | Not part of fux. zor reads `list`/`capture` over the control socket like any local client | Agent state is zor's presentation, never an authenticated claim |
 
 There are no cryptographic identities, key files or network listeners. Descriptors contain a pid,
-an instance nonce, socket paths and protocol versions only.
+an instance nonce and socket paths only; the protocols carry no version numbers.
 
 ## Bounds
 
@@ -41,9 +41,9 @@ counted reap gate keeps the leader un-reaped (reaping is polled under the gate) 
 signalled, so a descendant ignoring SIGHUP cannot survive and a recycled group id is never hit.
 A viewer attachment only sees and acts on its own workspace's panes; `workspace kill` over a
 workspace connection is limited to that workspace. The server exits only after its adapters have joined every reader, writer and
-spawn task. fux never kills an unrelated or older server on its own: a protocol mismatch is reported,
-and only an interactive, explicitly confirmed choice sends SIGTERM to the pids recorded in the
-private descriptor directory (never SIGKILL; an unresponsive server keeps its panes).
+spawn task. fux never kills an unrelated or older server on its own: a server that answers with an
+unexpected frame or reply is reported as an error, and stopping it is the operator's explicit act
+(`fux workspace kill`, or a signal to the pid in its descriptor).
 
 ## Terminal output and clipboard
 

@@ -1,4 +1,5 @@
-"""A rejected local handshake must leave terminal settings and screen mode untouched."""
+"""A rejected local handshake (a server that answers the hello with something other than a hello)
+must leave terminal settings and screen mode untouched."""
 import errno
 import json
 import os
@@ -24,8 +25,8 @@ with tempfile.TemporaryDirectory(prefix="fpr-", dir="/tmp") as directory:
     env.update(HOME=directory, XDG_CONFIG_HOME=directory + "/config",
                XDG_RUNTIME_DIR=directory, XDG_STATE_HOME=directory + "/state",
                TERM="xterm-256color", SHELL="/bin/sh")
-    for response in ({"hello": {"version": 1}}, {"hello": {"version": 999}},
-                     {"error": {"message": "incompatible local protocol; save work before restart"}}):
+    for response in ({"hello": {"version": 1}}, {"exited": {"code": None}},
+                     {"error": {"message": "the first attachment frame must be a hello"}}):
         master, slave = pty.openpty()
         before = termios.tcgetattr(slave)
         child = subprocess.Popen([binary, "attach", "--socket", str(path)], env=env,
@@ -62,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix="fpr-", dir="/tmp") as directory:
                     if error.errno in (errno.EIO, errno.EAGAIN):
                         break
                     raise
-            assert b"incompatible" in output, output
+            assert b"session server" in output, output
             assert b"\x1b[?1049h" not in output, "alternate screen entered before negotiation"
             assert b"Passphrase" not in output, output
         finally:
@@ -75,4 +76,4 @@ with tempfile.TemporaryDirectory(prefix="fpr-", dir="/tmp") as directory:
             os.close(slave)
     listener.close()
     assert not list(root.rglob("*.key"))
-print("PASS: version/error rejection preserves terminal state and creates no keys")
+print("PASS: handshake rejection preserves terminal state and creates no keys")

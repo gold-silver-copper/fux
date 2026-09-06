@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='fl-',dir='/tmp') as d:
     def recv(s):return json.loads(exact(s,struct.unpack('>I',exact(s,4))[0]))
     def attach():
         s=socket.socket(socket.AF_UNIX);s.settimeout(5);s.connect(str(root/'fux/default.attach.sock'));peers.append(s)
-        send(s,dict(type='hello',version=6,rows=24,columns=80));assert recv(s)=={'hello': {'version': 6}}
+        send(s,dict(type='hello',rows=24,columns=80));assert recv(s)=={'hello': {}}
         assert 'bindings' in recv(s)
         assert 'state' in recv(s)
         return s
@@ -29,8 +29,8 @@ with tempfile.TemporaryDirectory(prefix='fl-',dir='/tmp') as d:
             if child.poll() is not None:raise RuntimeError(child.stderr.read().decode())
             time.sleep(.02)
         wrong=socket.socket(socket.AF_UNIX);wrong.settimeout(5);wrong.connect(str(root/'fux/default.attach.sock'));peers.append(wrong)
-        send(wrong,dict(type='hello',version=0,rows=24,columns=80))
-        assert 'incompatible' in recv(wrong)['error']['message']
+        send(wrong,dict(type='resize',rows=24,columns=80))
+        assert 'hello' in recv(wrong)['error']['message']
         wrong.close()
         one=attach();two=attach()
         send(one,dict(type='input',bytes=list(b'printf "LOCAL_OK_%s\\n" "$$"\n')))
