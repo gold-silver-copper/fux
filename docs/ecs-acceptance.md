@@ -648,7 +648,7 @@ draining, stale generations ignored, bounded ingest).
 |---|---|
 | `cargo fmt --all --check` | clean |
 | `cargo clippy --all-targets --locked -- -D warnings` | clean |
-| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 PROPTEST_CASES=2048 cargo test --locked -- --test-threads=1` | lib 82, main 2, `ecs` 21 (randomized at 2048 cases, pacing test), `local_cli` 6 (all Python harnesses), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
+| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 PROPTEST_CASES=2048 cargo test --locked -- --test-threads=1` | lib 83, main 2, `ecs` 21 (randomized at 2048 cases, pacing test), `local_cli` 6 (all Python harnesses), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
 | `cargo doc --no-deps --locked` | generated, no warnings |
 | `cargo +1.95.0 check --all-targets --locked` | passed (MSRV) |
 | `cargo test --locked --manifest-path tests/verify/fixture-child/Cargo.toml` | 3 + 8 + 2 passed |
@@ -687,7 +687,39 @@ the stream wait never delays input, requests, exits, spawn completions or signal
 refresh, the three cell producers and the property test; the measurement scripts measure what
 the text claims, and the shell floor for the burst (0.21–0.23 s) was confirmed.
 
-FINAL_REVIEW_RECORD
+A second reviewer, independent of the first and of the implementation, reviewed the complete
+branch after the fixes above, ran the suites and harnesses, decoded hostile frames against the
+real viewer, and drove a real viewer through tab switches at large sizes. It verified the first
+review's resolutions (items 1, 4 and 5 fixed; 2 and 3 partial because the changelog still carried
+the earlier figures) and found:
+
+| # | Severity | Finding (confirmed unless noted) | Resolution |
+|---|---|---|---|
+| 1 | P2 | The viewer's cell budget counted panes the same update drops from the layout, so a viewer above about 131,000 cells could not switch tabs (a real 512×300 viewer exited with "frame violates its bounds"), and updates merged while a viewer was not reading kept panes that had left the layout, so a merged run of switches could disconnect any viewer. | `FrameUpdate::merge` prunes panes outside the newer layout; the budget and the apply count only panes the update leaves in its layout; test `a_large_viewer_switches_tabs_within_the_cell_budget` (512×512 attach, switch, three merged switches). |
+| 2 | P2 | CHANGELOG.md still published the single-run and quantised figures the first review replaced. | Aligned with the union ranges and the 1,000-keystroke CPU columns. |
+| 3 | P3 | A hostile 16 MiB frame of `{}` cells decoded into about 212 MiB before it was refused, because the cell bound was per pane. | Panes are bounded in number and wire cells while decoding (`bounded_panes`). |
+| 4 | P3 | The loop documents said 64 chunks per step (128 with the stream wait) and that input never waits (an arrival during the 1 ms wait is delayed by its remainder). | Both statements corrected in design.md, security.md and the protocol document. |
+| 5 | P3 | `measure_viewer.py` counted the previous keystroke's echo in its first block. | The pty buffer is cleared before the loop. |
+| 6 | P3 (plausible) | Small per-step allocations in the snapshot phase (the shown-pane list per viewer, the geometry and label clones per frame, as in 0.4.0). | Accepted: below the profile's noise and not on the per-chunk path. |
+
+Sound per the second reviewer: `Viewer.sent` stays consistent with the viewer's retained frame
+through attach, resize, tab and workspace switches, closure and retirement because `sent` is
+written when a pane is carried and the outbox never drops an update; the merge is order
+preserving and replies still stop it; pacing cannot stall and the stream wait cannot starve
+exits, completions, requests or signals; the wire cells, `classify` and the grid refresh; the
+scripts measure what the text claims (reproduced 832 bytes and 0.29 ms per keystroke, 0.06 s of
+server CPU for the burst); the harness edits are stronger only; the koh patch delta is the
+version literal.
+
+The verification pass (same second reviewer, after the fixes, against its own build of the fix
+commit): items 1–5 FIXED with evidence (a real viewer at 80×24, 512×300 and 512×512 survives a
+tab switch; 200 merged switches stay within the budget; the 16.7 MB hostile frame is refused
+inside its second pane; the changelog matches the record; the loop documents match the code; the
+viewer script clears its buffer), item 6 accepted, no new finding introduced. Verdict: the
+ordering guarantees and the measurement record are unchanged; the branch may leave draft once
+the gate on the fix commit is clean, which it is (lib 83, main 2, `ecs` 21 at 2,048 randomized
+cases, `local_cli` 6, `structure` 8, real zor 1, fixture-child 3 + 8 + 2, koh 2 + 10, packaging
+8, patches verified, fmt, Clippy, rustdoc, MSRV, `git diff --check`).
 
 ## Platform and CI limits
 
