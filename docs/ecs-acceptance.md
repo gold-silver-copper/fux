@@ -536,12 +536,18 @@ median / p95, server CPU per 1,000 keystrokes):
 
 | Configuration | 0.4.0 bytes | 0.5.0 bytes | 0.4.0 latency ms | 0.5.0 latency ms | 0.4.0 CPU s | 0.5.0 CPU s |
 |---|---|---|---|---|---|---|
-| 80×24, one viewer | 289,920 | 852 | 6.1 / 8.1–9.0 | 0.23–0.25 / 0.71–0.85 | 1.3–1.4 | 0.1–0.2 |
-| 200×60, one viewer | 1,853,858 | 855 | 44 / 51–53 | 0.47 / 1.2–1.3 | 8.4–8.8 | 0.3 |
-| 80×24, two viewers | 289,920 | 852 | 9.3–9.6 / 12.7–12.9 | 0.26 / 0.68–0.69 | 2.5 | 0.1 |
-| 80×24, four viewers | 289,920 | 852 | 15.9–16.6 / 23.0–24.4 | 0.24–0.29 / 0.70–1.01 | 4.6–4.7 | 0.1 |
-| 80×24, eight viewers | 289,920 | 852 | 35.5–35.8 / 55.6–57.8 | 0.26–0.27 / 0.80–0.81 | 9.3–9.7 | 0.1 |
-| 200×60 + 80×24 on one tab | 289,920 | 852 | 9.8–10.1 / 14.5–14.8 | 0.24–0.26 / 0.54–0.75 | 2.5–2.6 | 0.1 |
+| 80×24, one viewer | 289,920 | 852 | 2.8–6.2 / 3.6–9.0 | 0.14–0.25 / 0.17–0.85 | 0.9–1.4 | 0.08 |
+| 200×60, one viewer | 1,853,858 | 855 | 21–45 / 27–53 | 0.32–0.47 / 0.39–1.3 | 5.9–8.8 | 0.21 |
+| 80×24, two viewers | 289,920 | 852 | 4.7–9.6 / 6.3–12.9 | 0.14–0.30 / 0.21–0.69 | 1.7–2.5 | 0.08 |
+| 80×24, four viewers | 289,920 | 852 | 8.7–17.0 / 15.1–24.4 | 0.14–0.29 / 0.19–1.01 | 3.6–4.7 | 0.08 |
+| 80×24, eight viewers | 289,920 | 852 | 21.8–35.8 / 36.3–57.8 | 0.16–0.30 / 0.34–0.81 | 7.6–9.7 | 0.09 |
+| 200×60 + 80×24 on one tab | 289,920 | 852 | 6.4–11.0 / 8.6–16.8 | 0.13–0.26 / 0.17–0.75 | 1.8–2.6 | 0.1 |
+
+Ranges are the union of every run of the day (four rounds of `measure_frames.py`, alternating
+baseline and branch, on the same binaries); the branch's rows include the rounds before the
+stream wait, whose keystroke figures did not change. `ps cputime` on this macOS ticks in 10 ms,
+so the CPU columns come from the 1,000-keystroke runs (the 100-keystroke rounds quantise to
+0.1 s per 1,000): baseline 0.94 (one viewer), 1.78 (two), 3.49 (four), 6.99 s (eight); branch 0.08, 0.08, 0.08, 0.09 s, and 0.21 s at 200×60.
 
 Bursts and memory (`measure_frames.py`: 20,000-line burst to quiescence, server CPU for it, RSS
 after it, 80×24 one viewer; `measure.py`; `measure_viewer.py`; `measure_memory.py`):
@@ -551,27 +557,27 @@ after it, 80×24 one viewer; `measure.py`; `measure_viewer.py`; `measure_memory.
 | burst wall time (shell floor 0.23 s alone, 0.28 s through a pty) | 0.25–0.31 s | 0.25–0.27 s |
 | server CPU for the burst | 0.21–0.23 s | 0.06–0.09 s |
 | RSS after the burst, 80×24 / 200×60 | 34.6 / 92.5–93.9 MiB | 33.1 / 78.5 MiB |
-| `measure.py` latency median / p95 (echoed command) | 7.1–7.3 / 9.0–11.0 ms | 0.96–1.03 / 1.7–2.3 ms |
-| `measure.py` startup, idle CPU per 10 s, RSS at start | 29–41 ms, 0.00 s, 6.3–6.5 MiB | 40–48 ms, 0.00 s, 5.8 MiB |
-| real viewer CPU per 1,000 keystrokes, 80×24 / 200×60 | 1.2 / 5.9 s | 0.27 / 0.93 s |
+| `measure.py` latency median / p95 (echoed command) | 3.4–7.3 / 5.3–11.0 ms | 0.56–2.03 / 0.87–2.45 ms |
+| `measure.py` startup, idle CPU per 10 s, RSS at start | 16–71 ms, 0.00 s, 6.3–6.6 MiB | 18–63 ms, 0.00 s, 5.8–6.1 MiB |
+| real viewer CPU per 1,000 keystrokes, 80×24 / 200×60 | 1.05–1.48 / 5.9 s | 0.25–0.33 / 0.87–1.07 s |
 | real viewer terminal bytes per keystroke | 112 | 112 |
 | bytes per retained history row, plain / styled wide | 2,518 / 1,468 | 2,573 / 1,441 |
 | release binary | 6,592,992 bytes | 6,622,560 bytes |
 
-Against the targets: latency median ≤ 2 ms and p95 ≤ 5 ms (met: 0.25 / 0.85 ms at 80×24, 1.0 /
-2.3 ms for the echoed-command loop); ≤ 2 KiB per keystroke (met: 852 bytes); server CPU per
-1,000 keystrokes ≤ ¼ of baseline (met: 0.1–0.2 s from 1.3–1.4 s); burst server CPU ≤ ½ of
+Against the targets: latency median ≤ 2 ms and p95 ≤ 5 ms (met: 0.14–0.25 / 0.17–0.85 ms at
+80×24, 0.56–2.03 / 0.87–2.45 ms for the echoed-command loop); ≤ 2 KiB per keystroke (met: 852
+bytes); server CPU per 1,000 keystrokes ≤ ¼ of baseline (met: 0.08 s from 0.94 s at 80×24, 0.21 s from 5.9–8.8 s at 200×60); burst server CPU ≤ ½ of
 baseline (met: 0.06–0.09 s from 0.21–0.23 s); burst wall time ≤ 0.10 s (not met and not
 reachable: the shell producing the 20,000 lines takes 0.23 s by itself, 0.28 s when read through
 a pty; both binaries sit at the floor, and the 0.4.0 audit's earlier 0.13–0.16 s figures were an
 artefact of the shell's echo of the typed command satisfying the wait, which the scripts no
 longer allow); 200×60 latency ≤ 1.5× the 80×24 figure (0.47 vs 0.24 ms: 2×, not met at that
 ratio, though 90× better than before; the residual is the per-step comparison of a 12,000-cell
-grid); eight viewers ≤ 2× one viewer (met: server CPU and latency are flat in the viewer count);
+grid); eight viewers ≤ 2× one viewer (met: 0.09 s against 0.08 s, latency 0.12 against 0.11 ms, from a baseline that scaled 0.94 to 6.99 s);
 RSS after the burst not worse (met); idle CPU 0.00 s (met); startup not worse than the baseline
-range (overlapping: 18–63 ms for the branch and 16–71 ms for the baseline across the day's runs,
-40–48 vs 29–41 ms in the final alternating set; startup is a fork/exec plus a shell start and
-varies by more than 2× between runs on this machine).
+range (overlapping: 18–63 ms for the branch and 16–71 ms for the baseline across the day's runs;
+startup is a fork/exec plus a shell start and varies by more than 2× between runs on this
+machine).
 
 ### Profiles (macOS `sample`, self samples at the top of the stack)
 
@@ -638,11 +644,50 @@ draining, stale generations ignored, bounded ingest).
 
 ### Gate on the final tree
 
-GATE_SUMMARY
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | clean |
+| `cargo clippy --all-targets --locked -- -D warnings` | clean |
+| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 PROPTEST_CASES=2048 cargo test --locked -- --test-threads=1` | lib 81, main 2, `ecs` 21 (randomized at 2048 cases, pacing test), `local_cli` 6 (all Python harnesses), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
+| `cargo doc --no-deps --locked` | generated, no warnings |
+| `cargo +1.95.0 check --all-targets --locked` | passed (MSRV) |
+| `cargo test --locked --manifest-path tests/verify/fixture-child/Cargo.toml` | 3 + 8 + 2 passed |
+| `FUX_BIN=$PWD/target/debug/fux KOH_REQUIRE_FUX_BIN=1 cargo test --manifest-path references/koh/Cargo.toml --test gateway --locked` | 2 passed against the v6 binary |
+| same with `--lib gateway:: --locked` | 10 passed (219 filtered) |
+| `tests/verify/release-package.sh --allow-dirty` | 8 passed |
+| `python3 tools/dependencies.py verify` | koh (version 6 pin) and zor patches verified |
+| `git diff --check` | clean |
 
 ### Independent review
 
-REVIEW_RECORD
+A reviewer who implemented none of the branch reviewed the complete diff against `fa0c286`, ran
+the unit, ECS, structure and harness suites and Clippy, probed the real viewer with a fake server,
+and traced the delta path against the ordering guarantees. Findings and resolutions:
+
+| # | Severity | Finding (confirmed unless noted) | Resolution |
+|---|---|---|---|
+| 1 | P1 | The viewer allocated a pane's grid from wire-supplied dimensions before checking them, and neither a frame update's total cells nor its wire cell count was bounded: a fake server's 588-byte update naming a 65535×100 pane took the viewer to 264 MB before it was rejected; 128 legal panes of blank runs could allocate 1.3 GB. | Dimensions, carried rows, wire cells and titles are checked before anything is allocated (`PaneUpdate::within_bounds`), a frame update is refused as a whole when its panes would exceed the frame's cell budget (`FrameUpdate::within_bounds`), lines and cells are bounded while decoding (`bounded_seq`), and the history view reply checks the same bounds; test `hostile_updates_are_rejected_before_anything_is_allocated`. |
+| 2 | P2 | The baseline column reported one run set where the day's earlier runs of the same binary were better (for example 2.8–5.6 ms latency against the 6.1 ms shown). | The tables report the union of every run of the day for both binaries. |
+| 3 | P2 | `ps cputime` ticks in 10 ms on this macOS, so the 100-keystroke CPU columns were quantised to 0.1 s per 1,000 and could not support the eight-viewer claim. | The CPU columns come from 1,000-keystroke runs (baseline 0.94 → 6.99 s from one to eight viewers; branch 0.08 → 0.09 s) and the quantum is stated. |
+| 4 | P2 | A Python bytecode file had been committed under `tools/__pycache__`. | Removed and ignored. |
+| 5 | P3 | `MAX_UPDATE_CELLS`'s comment claimed to bound frames while it guarded view replies only. | Comment corrected; frames are bounded by the two `within_bounds` checks. |
+| 6 | P3 | A malformed history view now ends copy mode with "pane no longer available" where 0.4.0 rejected it as a protocol error at decoding. | Accepted: the reply is decoded with the same bounds, and a malformed body only ends the local mode. |
+| 7 | P3 | A reply-only flush bumps `last_frame_ms`, so the next output-driven frame is paced from the reply. | Accepted: at most one interval, and the echo window covers the viewer's own input. |
+| 8 | P3 | `publish_frames` no longer validates a frame before sending; an invariant slip would disconnect the viewer instead of withholding the frame. | Accepted: the ECS harness applies and validates every update under the 2,048-case randomized test. |
+| 9 | P3 | When two merged updates both carry a notice the older is lost (0.4.0 dropped the older frame entirely). | Accepted as an improvement. |
+| 10 | P3 | `GridCell` truncates to 22 bytes, unreachable because `classify` bounds text first. | Accepted; the two share the bound. |
+
+Sound per the reviewer: every traced sequence of attach, tab and workspace switches, resizes,
+pane creation and closure, exits, and merges (full then delta, delta then full, three-way with
+a pane leaving and re-entering) keeps `Viewer.sent` consistent with the viewer's retained frame,
+because `sent` is written exactly when a pane is carried and the outbox never drops an update;
+no update overtakes a reply; the wire encoding bounds every path and blank runs never cross a
+row; pacing cannot stall (the deadline is re-proposed every step while rows are pending) and
+the stream wait never delays input, requests, exits, spawn completions or signals; the grid
+refresh, the three cell producers and the property test; the measurement scripts measure what
+the text claims, and the shell floor for the burst (0.21–0.23 s) was confirmed.
+
+FINAL_REVIEW_RECORD
 
 ## Platform and CI limits
 
