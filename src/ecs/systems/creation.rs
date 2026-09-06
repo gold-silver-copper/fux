@@ -2,12 +2,13 @@
 //! either inserts the new pane where it was requested or rolls the reservation back.
 
 use crate::ecs::components::{
-    Creation, CreationKind, Pane, PaneState, Selection, Tab, Viewer, Workspace,
+    Creation, CreationKind, Pane, PaneState, Selection, Tab, TabOf, Viewer, Workspace,
 };
 use crate::ecs::messages::{Effect, Inbound, ManagerOutcome, Requester};
 use crate::ecs::resources::{Clock, Ids, Limits};
 use crate::ecs::support::{
-    effect, event, failed, focus_in_tab, mark_workspace_dirty, pane_entity, reply, viewer_entity,
+    effect, event, failed, focus_in_tab, mark_workspace_dirty, member_tabs, pane_entity, reply,
+    viewer_entity,
 };
 use crate::ids::{PaneId, TabId};
 use crate::layout::{LayoutTree, Rect, half};
@@ -172,7 +173,6 @@ pub fn reserve_workspace(
     let workspace = world
         .spawn(Workspace {
             name: name.clone(),
-            tabs: Vec::new(),
             selection: Selection::default(),
             last_attached: step,
             open: false,
@@ -359,9 +359,7 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                 .get::<Workspace>(workspace)
                 .is_some_and(|workspace| workspace.retiring.is_none());
             let tab_limit = world.resource::<Limits>().max_tabs;
-            let within_limit = world
-                .get::<Workspace>(workspace)
-                .is_some_and(|workspace| workspace.tabs.len() < tab_limit);
+            let within_limit = member_tabs(world, workspace).len() < tab_limit;
             if !open || !within_limit {
                 let reason = if open {
                     "configured tab limit reached"
@@ -381,8 +379,8 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                 .get::<Tab>(tab)
                 .map(|tab| tab.label.clone())
                 .unwrap_or_default();
+            world.entity_mut(tab).insert(TabOf(workspace));
             if let Some(mut component) = world.get_mut::<Workspace>(workspace) {
-                component.tabs.push(tab);
                 component.selection.set_focus(tab, entity);
                 component.selection.tab = Some(tab);
             }
@@ -440,10 +438,10 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                 component.layout_changed = true;
             }
             go_live(world, entity, pid);
+            world.entity_mut(tab).insert(TabOf(workspace));
             let name = world
                 .get_mut::<Workspace>(workspace)
                 .map(|mut component| {
-                    component.tabs.push(tab);
                     component.selection.tab = Some(tab);
                     component.selection.set_focus(tab, entity);
                     component.open = true;

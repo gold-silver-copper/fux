@@ -1,7 +1,7 @@
 //! Snapshot phase: derive one frame per dirty viewer and publish it before the replies it
 //! promises. Detaching viewers and retiring workspaces end with `exited` and a close.
 
-use crate::ecs::components::{Pane, PaneState, Tab, Viewer, Workspace};
+use crate::ecs::components::{Pane, PaneState, Tab, Tabs, Viewer, Workspace};
 use crate::ecs::messages::{Effect, Inbound};
 use crate::ecs::resources::{Ids, Registry};
 use crate::ecs::support::{Effects, ViewerExit};
@@ -13,6 +13,7 @@ use bevy_ecs::prelude::*;
 #[derive(bevy_ecs::system::SystemParam)]
 pub struct Scene<'w, 's> {
     workspaces: Query<'w, 's, &'static Workspace>,
+    members: Query<'w, 's, &'static Tabs>,
     tabs: Query<'w, 's, &'static Tab>,
     panes: Query<'w, 's, &'static Pane>,
     registry: Res<'w, Registry>,
@@ -106,10 +107,15 @@ pub fn publish_frames(
 }
 
 fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Frame {
-    let (name, tab_entities) = scene
+    let name = scene
         .workspaces
         .get(viewer.workspace)
-        .map(|workspace| (workspace.name.clone(), workspace.tabs.clone()))
+        .map(|workspace| workspace.name.clone())
+        .unwrap_or_default();
+    let tab_entities: Vec<Entity> = scene
+        .members
+        .get(viewer.workspace)
+        .map(|tabs| tabs.to_vec())
         .unwrap_or_default();
     let tabs: Vec<TabEntry> = tab_entities
         .iter()

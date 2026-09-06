@@ -8,9 +8,10 @@ use crate::ecs::messages::{
 };
 use crate::ecs::resources::{Clock, Ids, Limits, ShuttingDown, WorkspaceCounter};
 use crate::ecs::support::{
-    Effects, ViewerExit, close_tab, effect, event, failed, focus_in_tab, mark_tab_dirty,
-    mark_workspace_dirty, pane_entity, pane_id, remove_from_layout, reply, sanitize_notice,
-    tab_entity, terminate_pane, viewer_entity, viewers_of_workspace, workspace_entity, write_pane,
+    Effects, ViewerExit, close_tab, effect, event, failed, focus_in_tab, is_member, mark_tab_dirty,
+    mark_workspace_dirty, member_tabs, pane_entity, pane_id, remove_from_layout, reply,
+    sanitize_notice, tab_entity, terminate_pane, viewer_entity, viewers_of_workspace,
+    workspace_entity, write_pane,
 };
 use crate::ecs::systems::creation::{NewPane, reserve_pane, reserve_tab, reserve_workspace};
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
@@ -642,10 +643,7 @@ fn pane_in_workspace(world: &World, context: &Context, pane: PaneId) -> Option<E
 
 fn tab_in_workspace(world: &World, context: &Context, tab: crate::ids::TabId) -> Option<Entity> {
     let entity = tab_entity(world, tab)?;
-    let member = world
-        .get::<Workspace>(context.workspace)
-        .is_some_and(|workspace| workspace.tabs.contains(&entity));
-    member.then_some(entity)
+    is_member(world, context.workspace, entity).then_some(entity)
 }
 
 fn split(
@@ -811,10 +809,7 @@ fn tab_action(
     id: u64,
     action: TabAction,
 ) -> Result<CommandResult, Reply> {
-    let tabs = world
-        .get::<Workspace>(context.workspace)
-        .map(|workspace| workspace.tabs.clone())
-        .unwrap_or_default();
+    let tabs = member_tabs(world, context.workspace);
     let selection = context.selection(world);
     match action {
         TabAction::New { name } => {
@@ -1033,11 +1028,7 @@ pub fn next_workspace_name(world: &mut World) -> String {
 /// Terminates every pane and retires the workspace with exit code 0.
 pub fn kill_workspace(world: &mut World, workspace: Entity) {
     let now = world.resource::<Clock>().now_ms;
-    let tabs = world
-        .get::<Workspace>(workspace)
-        .map(|workspace| workspace.tabs.clone())
-        .unwrap_or_default();
-    for tab in tabs {
+    for tab in member_tabs(world, workspace) {
         let panes = world
             .get::<Tab>(tab)
             .map(|tab| tab.layout.leaves())
@@ -1207,10 +1198,11 @@ fn list_workspaces(world: &mut World) -> Vec<WorkspaceSummary> {
 
 fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
     let selection = context.selection(world);
-    let (name, tabs) = world
+    let name = world
         .get::<Workspace>(context.workspace)
-        .map(|workspace| (workspace.name.clone(), workspace.tabs.clone()))
+        .map(|workspace| workspace.name.clone())
         .unwrap_or_default();
+    let tabs = member_tabs(world, context.workspace);
     let viewers =
         u32::try_from(viewers_of_workspace(world, context.workspace).len()).unwrap_or(u32::MAX);
     let tabs = tabs

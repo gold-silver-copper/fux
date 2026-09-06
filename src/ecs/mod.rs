@@ -186,7 +186,10 @@ impl Session {
             if ids.tab(tab.id) != Some(entity) {
                 return Err(format!("tab {} is not registered", tab.id));
             }
-            let member = workspace.tabs.contains(&entity);
+            let member = self
+                .world
+                .get::<components::TabOf>(entity)
+                .is_some_and(|member| member.0 == tab.workspace);
             for pane in tab.layout.leaves() {
                 if pane == Entity::PLACEHOLDER {
                     if member {
@@ -236,17 +239,18 @@ impl Session {
             if ids.workspace(&workspace.name) != Some(entity) {
                 return Err(format!("workspace {} is not registered", workspace.name));
             }
-            let mut seen = std::collections::HashSet::new();
-            for tab in &workspace.tabs {
-                if !seen.insert(*tab) {
-                    return Err(format!("workspace {} lists a tab twice", workspace.name));
-                }
-                if self.world.get::<components::Tab>(*tab).is_none() {
-                    return Err(format!("workspace {} lists a missing tab", workspace.name));
+            let members = support::member_tabs(&self.world, entity);
+            for tab in &members {
+                if self
+                    .world
+                    .get::<components::Tab>(*tab)
+                    .is_none_or(|tab| tab.workspace != entity)
+                {
+                    return Err(format!("workspace {} lists a foreign tab", workspace.name));
                 }
             }
             if let Some(tab) = workspace.selection.tab
-                && !workspace.tabs.contains(&tab)
+                && !members.contains(&tab)
                 && workspace.retiring.is_none()
                 && workspace.open
             {
@@ -269,7 +273,7 @@ impl Session {
                 .get::<components::Workspace>(viewer.workspace)
                 .ok_or_else(|| format!("viewer {} has no workspace", viewer.id))?;
             if let Some(tab) = viewer.selection.tab
-                && !workspace.tabs.contains(&tab)
+                && !support::is_member(&self.world, viewer.workspace, tab)
                 && workspace.retiring.is_none()
             {
                 return Err(format!("viewer {} shows a foreign tab", viewer.id));

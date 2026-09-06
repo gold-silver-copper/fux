@@ -1,22 +1,22 @@
 //! Layout phase: deterministic pane geometry per tab. A tab shown by several viewers is laid out
 //! over the smallest of their areas; hidden tabs keep their last geometry.
 
-use crate::ecs::components::{Pane, PaneState, Tab, Viewer, Workspace};
+use crate::ecs::components::{Pane, PaneState, Tab, TabOf, Viewer};
 use crate::ecs::messages::Effect;
 use crate::ecs::support::{Effects, tab_area};
 use bevy_ecs::prelude::*;
 
 pub fn resolve_layout(
     mut tabs: Query<(Entity, &mut Tab)>,
-    workspaces: Query<&Workspace>,
+    members: Query<&TabOf>,
     mut viewers: Query<&mut Viewer>,
     mut panes: Query<&mut Pane>,
     mut effects: Effects,
 ) {
     for (tab, mut component) in &mut tabs {
-        if !workspaces
-            .get(component.workspace)
-            .is_ok_and(|workspace| workspace.tabs.contains(&tab))
+        if !members
+            .get(tab)
+            .is_ok_and(|member| member.0 == component.workspace)
         {
             continue;
         }

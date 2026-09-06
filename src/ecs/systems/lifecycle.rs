@@ -1,11 +1,11 @@
 //! Lifecycle phase: natural exits, confirmed closes, tab and workspace retirement, shutdown.
 //! Ownership cascades are explicit despawns; the adapter releases OS handles per `ReleasePane`.
 
-use crate::ecs::components::{Pane, PaneState, Tab, Viewer, Workspace};
+use crate::ecs::components::{Pane, PaneState, Tab, Tabs, Viewer, Workspace};
 use crate::ecs::messages::Effect;
 use crate::ecs::resources::{Clock, Deadlines, Ids, Limits, ShuttingDown};
 use crate::ecs::support::{
-    close_tab, despawn_pane, effect, event, mark_workspace_dirty, pane_in_layout,
+    close_tab, despawn_pane, effect, event, mark_workspace_dirty, member_tabs, pane_in_layout,
     remove_from_layout, terminate_pane, viewers_of_workspace,
 };
 use crate::ecs::systems::requests::kill_workspace;
@@ -65,9 +65,7 @@ fn handle_exited_panes(world: &mut World, now: u64) {
             let sole_pane = world
                 .get::<Tab>(tab)
                 .is_some_and(|tab| tab.layout.len() == 1);
-            let sole_tab = world
-                .get::<Workspace>(workspace)
-                .is_some_and(|workspace| workspace.tabs.len() == 1);
+            let sole_tab = member_tabs(world, workspace).len() == 1;
             if sole_pane && sole_tab {
                 // Natural exit of the last pane: keep its final screen visible and retire the
                 // workspace with the process status once viewers have seen it.
@@ -169,8 +167,8 @@ fn retire_empty_workspaces(world: &mut World, now: u64) {
     let empty: Vec<Entity> = world
         .query::<(Entity, &Workspace)>()
         .iter(world)
-        .filter(|(_, workspace)| {
-            workspace.open && workspace.retiring.is_none() && workspace.tabs.is_empty()
+        .filter(|(entity, workspace)| {
+            workspace.open && workspace.retiring.is_none() && world.get::<Tabs>(*entity).is_none()
         })
         .map(|(entity, _)| entity)
         .collect();
@@ -218,9 +216,9 @@ fn finalize_retirements(world: &mut World, now: u64, grace_ms: u64) {
 }
 
 fn finalize(world: &mut World, workspace: Entity, now: u64) {
-    let Some((name, tabs)) = world
+    let Some(name) = world
         .get::<Workspace>(workspace)
-        .map(|workspace| (workspace.name.clone(), workspace.tabs.clone()))
+        .map(|workspace| workspace.name.clone())
     else {
         return;
     };
@@ -262,7 +260,7 @@ fn finalize(world: &mut World, workspace: Entity, now: u64) {
         .filter(|(_, tab)| tab.workspace == workspace)
         .map(|(entity, _)| entity)
         .collect();
-    for tab in all_tabs.into_iter().chain(tabs) {
+    for tab in all_tabs {
         if let Some(id) = world.get::<Tab>(tab).map(|tab| tab.id) {
             world.resource_mut::<Ids>().tabs.remove(&id);
             world.despawn(tab);

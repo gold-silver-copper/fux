@@ -1,7 +1,9 @@
 //! Helpers shared by the ordered systems: id lookups, effect/event emission, reply routing,
 //! layout membership edits and explicit ownership cascades.
 
-use super::components::{Creation, Pane, PaneState, Selection, Tab, Viewer, Workspace};
+use super::components::{
+    Creation, Pane, PaneState, Selection, Tab, TabOf, Tabs, Viewer, Workspace,
+};
 use super::messages::{Effect, Requester};
 use super::resources::{Clock, Ids, Limits, Registry};
 use crate::ids::{PaneId, TabId, ViewerId};
@@ -164,6 +166,21 @@ pub fn pane_tab(world: &World, pane: Entity) -> Option<Entity> {
 
 pub fn tab_workspace(world: &World, tab: Entity) -> Option<Entity> {
     world.get::<Tab>(tab).map(|tab| tab.workspace)
+}
+
+/// A workspace's member tabs in order (empty when it has none).
+pub fn member_tabs(world: &World, workspace: Entity) -> Vec<Entity> {
+    world
+        .get::<Tabs>(workspace)
+        .map(|tabs| tabs.to_vec())
+        .unwrap_or_default()
+}
+
+/// Whether `tab` is a member of `workspace` (reservations are not until they complete).
+pub fn is_member(world: &World, workspace: Entity, tab: Entity) -> bool {
+    world
+        .get::<TabOf>(tab)
+        .is_some_and(|member| member.0 == workspace)
 }
 
 /// The workspace a pane belongs to, through its tab.
@@ -340,16 +357,16 @@ pub fn close_tab(world: &mut World, tab: Entity, now_ms: u64, grace_ms: u64) {
     else {
         return;
     };
+    if world.get::<Workspace>(workspace).is_none() {
+        return;
+    }
     let (index, neighbour) = {
-        let Some(component) = world.get::<Workspace>(workspace) else {
-            return;
-        };
-        let index = component.tabs.iter().position(|entry| *entry == tab);
+        let members = member_tabs(world, workspace);
+        let index = members.iter().position(|entry| *entry == tab);
         let neighbour = index.and_then(|index| {
-            component
-                .tabs
+            members
                 .get(index.wrapping_sub(1))
-                .or_else(|| component.tabs.get(index + 1))
+                .or_else(|| members.get(index + 1))
                 .copied()
         });
         (index, neighbour)
@@ -364,13 +381,14 @@ pub fn close_tab(world: &mut World, tab: Entity, now_ms: u64, grace_ms: u64) {
         }
         terminate_pane(world, *pane, now_ms, grace_ms);
     }
+    if index.is_some() {
+        world.entity_mut(tab).remove::<TabOf>();
+    }
+    let first = member_tabs(world, workspace).first().copied();
     if let Some(mut component) = world.get_mut::<Workspace>(workspace) {
-        if index.is_some() {
-            component.tabs.retain(|entry| *entry != tab);
-        }
         component.selection.forget_tab(tab);
         if component.selection.tab.is_none() {
-            component.selection.tab = neighbour.or_else(|| component.tabs.first().copied());
+            component.selection.tab = neighbour.or(first);
         }
     }
     let viewers: Vec<Entity> = world
