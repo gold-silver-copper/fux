@@ -192,6 +192,14 @@ pub enum CreationKind {
     Workspace { tab: Entity },
 }
 
+/// A pane as last sent to a viewer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sent {
+    pub rows: u16,
+    pub columns: u16,
+    pub step: u64,
+}
+
 /// An attached viewer: private tab/focus selection, bounded request queue and publication state.
 #[derive(Component)]
 pub struct Viewer {
@@ -206,6 +214,9 @@ pub struct Viewer {
     pub generation: u64,
     /// Rectangles published in the last frame, for mouse hit tests.
     pub layout: Vec<(Entity, Rect)>,
+    /// What this viewer holds of each visible pane: its size and the step of its last update,
+    /// so the next frame carries only the rows changed since.
+    pub sent: BTreeMap<PaneId, Sent>,
     pub dirty: bool,
     pub notice: Option<String>,
     /// Ordered messages that must follow the next frame.

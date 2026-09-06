@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc, oneshot};
 
-/// Frames queued for one viewer connection. A state frame with no reply behind it is replaced
-/// by a newer frame (latest wins); replies keep their order after the frame they promise.
+/// Frames queued for one viewer connection. A state update with no reply behind it absorbs the
+/// next one (later rows replace earlier rows, so applying the merged update equals applying
+/// both); replies keep their order after the frame they promise.
 #[derive(Default)]
 pub struct Outbox {
     queue: VecDeque<ServerMessage>,
@@ -39,11 +40,17 @@ impl ViewerOutbox {
         if outbox.closed {
             return false;
         }
-        if matches!(message, ServerMessage::State { .. })
-            && matches!(outbox.queue.back(), Some(ServerMessage::State { .. }))
-        {
-            outbox.queue.pop_back();
-        }
+        let message = match message {
+            ServerMessage::State { state: newer } => {
+                if let Some(ServerMessage::State { state: queued }) = outbox.queue.back_mut() {
+                    queued.merge(*newer);
+                    self.notify.notify_one();
+                    return true;
+                }
+                ServerMessage::State { state: newer }
+            }
+            other => other,
+        };
         if outbox.queue.len() >= OUTBOX_DEPTH {
             outbox.closed = true;
             outbox.queue.clear();
@@ -321,13 +328,13 @@ fn publish(subscribers: &Mutex<Vec<Subscriber>>, event: &Event) {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
-    use crate::view::Frame;
+    use crate::view::FrameUpdate;
 
     fn frame(generation: u64) -> ServerMessage {
         ServerMessage::State {
-            state: Box::new(Frame {
+            state: Box::new(FrameUpdate {
                 generation,
-                ..Frame::default()
+                ..FrameUpdate::default()
             }),
         }
     }

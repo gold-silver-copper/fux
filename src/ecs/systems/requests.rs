@@ -6,7 +6,7 @@ use crate::ecs::components::{CreationKind, Pane, PaneState, Selection, Tab, View
 use crate::ecs::messages::{
     Effect, Inbound, ManagerAction, ManagerOutcome, Requester, ViewerRequest,
 };
-use crate::ecs::resources::{Clock, Ids, Limits, ShuttingDown, WorkspaceCounter};
+use crate::ecs::resources::{Clock, Ids, Limits, Registry, ShuttingDown, WorkspaceCounter};
 use crate::ecs::support::{
     Effects, ViewerExit, close_tab, despawn_tab, effect, event, failed, focus_in_tab, is_member,
     mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity, pane_id, pane_in_layout,
@@ -22,9 +22,9 @@ use crate::proto::control::{
     self, CommandResult, ErrorCode, Event, FocusTarget, PaneSummary, Reply, Request, TabAction,
     TabSummary, WorkspaceAction, WorkspaceSummary,
 };
-use crate::view::{MouseEncoding, MouseMode, PaneModes, PaneView};
+use crate::view::{MouseEncoding, MouseMode, PaneModes, PaneUpdate};
 use bevy_ecs::prelude::*;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Ingest: viewer arrivals and departures and the shutdown flag. Spawns apply at the sync point
 /// before the requests phase, so a viewer's first queued requests find its entity.
@@ -37,6 +37,7 @@ pub struct Arrivals<'w, 's> {
     limits: Res<'w, Limits>,
     clock: Res<'w, Clock>,
     shutting_down: ResMut<'w, ShuttingDown>,
+    registry: Res<'w, Registry>,
     workspaces: Query<'w, 's, &'static mut Workspace>,
     viewers: Query<'w, 's, &'static Viewer>,
 }
@@ -53,6 +54,7 @@ pub fn apply_attachments(
         limits,
         clock,
         shutting_down,
+        registry,
         workspaces,
         viewers,
     } = &mut arrivals;
@@ -124,6 +126,7 @@ pub fn apply_attachments(
                         barrier: None,
                         generation: 0,
                         layout: Vec::new(),
+                        sent: BTreeMap::new(),
                         dirty: true,
                         notice: None,
                         after_frame: Vec::new(),
@@ -133,6 +136,12 @@ pub fn apply_attachments(
                     .id();
                 ids.viewers.insert(id, viewer);
                 arrived.push((id, viewer, entity, workspace.clone()));
+                effects.emit(Effect::ToViewer {
+                    viewer: id,
+                    message: ServerMessage::Bindings {
+                        bindings: registry.bindings.clone(),
+                    },
+                });
                 effects.event(
                     workspace,
                     Event::ClientAttached {
@@ -379,7 +388,7 @@ fn history_view(
     let (view, history) = component.terminal.with_history_screen(wanted, |screen| {
         let actual = u32::try_from(screen.scrollback()).unwrap_or(u32::MAX);
         (
-            PaneView::from_screen(screen, &title, actual, exit).ok(),
+            PaneUpdate::full_from_screen(screen, &title, actual, exit).ok(),
             actual,
         )
     });
@@ -980,6 +989,7 @@ pub fn switch_viewer_workspace(world: &mut World, viewer: Entity, workspace: Ent
         component.workspace = workspace;
         component.selection = selection;
         component.layout.clear();
+        component.sent.clear();
         component.dirty = true;
     }
     event(

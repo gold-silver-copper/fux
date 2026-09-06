@@ -9,7 +9,7 @@ paint per-viewer frames with a small ratatui-core compositor. Koh (remote access
 
 | Project | Responsibility | Boundary |
 |---|---|---|
-| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment protocol v5 and control protocol `FUXCTL2` over private Unix sockets |
+| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment protocol v6 and control protocol `FUXCTL2` over private Unix sockets |
 | koh | identities, authorization, encryption, discovery, relays, reconnect | authenticated gateway carrying the opaque attachment stream to a private local socket |
 | zor | agent detection, rules, state machine, presentation | `zor observe` consuming `list`/`capture` over the control socket |
 
@@ -23,7 +23,7 @@ lock is released as soon as the manager is elected.
 | Path | Purpose |
 |---|---|
 | `RUNTIME/fux/manager.sock` | list/resolve/kill workspaces (preface `FUXCTL2`) |
-| `RUNTIME/fux/NAME.attach.sock` | attachment protocol v5: viewers and koh gateways |
+| `RUNTIME/fux/NAME.attach.sock` | attachment protocol v6: viewers and koh gateways |
 | `RUNTIME/fux/NAME.sock` | control protocol: CLI, scripts, zor |
 | `RUNTIME/fux/workspaces/NAME.json` | descriptor: pid, instance nonce, socket path, protocol version |
 

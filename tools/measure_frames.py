@@ -221,7 +221,7 @@ def measure(binary, version, config, keystrokes):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binary")
-    parser.add_argument("--version", type=int, default=5)
+    parser.add_argument("--version", type=int, default=6)
     parser.add_argument("--keystrokes", type=int, default=100)
     parser.add_argument("--config", action="append")
     args = parser.parse_args()

@@ -114,7 +114,10 @@ impl CopySession {
             return true;
         }
         self.pending_read = None;
-        let Some(view) = reply.view else {
+        let Some(view) = reply
+            .view
+            .and_then(|view| PaneView::from_update(&view).ok())
+        else {
             return false;
         };
         let resized = (view.rows, view.columns) != (self.view.rows, self.view.columns);
@@ -128,7 +131,7 @@ impl CopySession {
             // The clamp stopped moving: there is no more history in that direction.
             self.wanted_offset = view.offset;
         }
-        self.view = *view;
+        self.view = view;
         self.clamp_cursor();
         true
     }
@@ -271,6 +274,13 @@ mod tests {
         PaneView::from_screen(parser.screen(), "", offset, None).unwrap_or_default()
     }
 
+    fn update(rows: u16, columns: u16, text: &str, offset: u32) -> crate::view::PaneUpdate {
+        let mut parser = vt100::Parser::new(rows, columns, 0);
+        parser.process(text.as_bytes());
+        crate::view::PaneUpdate::full_from_screen(parser.screen(), "", offset, None)
+            .unwrap_or_default()
+    }
+
     #[test]
     fn selection_copies_visible_text_and_clears_on_view_change() {
         let mut session = CopySession::new(PaneId(1), view(3, 6, "hello\r\nworld", 0));
@@ -299,7 +309,7 @@ mod tests {
         let reply = ViewReply {
             request: 1,
             pane: PaneId(1),
-            view: Some(Box::new(view(3, 6, "older", 2))),
+            view: Some(Box::new(update(3, 6, "older", 2))),
             history: 2,
         };
         assert!(session.install(reply));

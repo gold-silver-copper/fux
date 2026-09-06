@@ -1,12 +1,12 @@
 //! Snapshot phase: derive one frame per dirty viewer and publish it before the replies it
 //! promises. Detaching viewers and retiring workspaces end with `exited` and a close.
 
-use crate::ecs::components::{Pane, PaneState, Tab, Tabs, Viewer, Workspace};
+use crate::ecs::components::{Pane, PaneState, Sent, Tab, Tabs, Viewer, Workspace};
 use crate::ecs::messages::{Effect, Inbound};
-use crate::ecs::resources::{Ids, Registry};
+use crate::ecs::resources::{Clock, Ids};
 use crate::ecs::support::{Effects, ViewerExit};
 use crate::proto::attach::ServerMessage;
-use crate::view::{Frame, PaneRect, PaneView, TabEntry};
+use crate::view::{Cursor, FrameUpdate, PaneModes, PaneRect, TabEntry};
 use bevy_ecs::prelude::*;
 
 /// Everything the snapshot reads besides the viewer being published.
@@ -16,7 +16,17 @@ pub struct Scene<'w, 's> {
     members: Query<'w, 's, &'static Tabs>,
     tabs: Query<'w, 's, &'static Tab>,
     panes: Query<'w, 's, &'static Pane>,
-    registry: Res<'w, Registry>,
+    clock: Res<'w, Clock>,
+}
+
+/// Reads every changed pane's emulator once per step into its retained grid, stamping the rows
+/// that differ, so frames for any number of viewers derive from the grid instead of the screen.
+pub fn refresh_grids(mut panes: Query<&mut Pane>, clock: Res<Clock>) {
+    for mut pane in &mut panes {
+        if pane.dirty {
+            pane.terminal.refresh_grid(clock.step);
+        }
+    }
 }
 
 pub fn publish_frames(
@@ -72,19 +82,12 @@ pub fn publish_frames(
         }
         if needs_frame {
             let frame = build_frame(&scene, &mut viewer, retiring.and_then(|r| r.exit_code));
-            if frame.valid() {
-                effects.emit(Effect::ToViewer {
-                    viewer: id,
-                    message: ServerMessage::State {
-                        state: Box::new(frame),
-                    },
-                });
-            } else {
-                tracing::error!(
-                    viewer = id.0,
-                    "derived frame failed validation; not published"
-                );
-            }
+            effects.emit(Effect::ToViewer {
+                viewer: id,
+                message: ServerMessage::State {
+                    state: Box::new(frame),
+                },
+            });
         }
         viewer.dirty = false;
         for message in std::mem::take(&mut viewer.after_frame) {
@@ -106,7 +109,7 @@ pub fn publish_frames(
     }
 }
 
-fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Frame {
+fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> FrameUpdate {
     let name = scene
         .workspaces
         .get(viewer.workspace)
@@ -133,6 +136,9 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
     let geometry = active
         .map(|(_, tab)| tab.geometry.clone())
         .unwrap_or_default();
+    // A viewer that holds nothing yet (attach, workspace switch) gets every pane in full.
+    let full = viewer.sent.is_empty();
+    let step = scene.clock.step;
     let mut layout = Vec::with_capacity(geometry.len());
     let mut panes = std::collections::BTreeMap::new();
     for (pane, rect) in &geometry {
@@ -142,20 +148,47 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
         if matches!(component.state, PaneState::Starting) {
             continue;
         }
-        let Ok(view) = PaneView::from_screen(
-            component.terminal.screen(),
-            &component.published_title,
-            0,
-            component.state.exit_code(),
-        ) else {
-            continue;
-        };
         layout.push(PaneRect {
             pane: component.id,
             rect: *rect,
         });
-        panes.insert(component.id, view);
+        let grid = component.terminal.grid();
+        let (rows, columns) = grid.size();
+        let held = viewer
+            .sent
+            .get(&component.id)
+            .filter(|sent| (sent.rows, sent.columns) == (rows, columns));
+        let since = held.map(|sent| sent.step);
+        if since.is_some() && !component.dirty {
+            continue;
+        }
+        let mut update = grid.update(since);
+        if !update.full && update.lines.is_empty() && !component.dirty {
+            continue;
+        }
+        let screen = component.terminal.screen();
+        let (row, column) = screen.cursor_position();
+        update.cursor = Cursor {
+            row,
+            column,
+            hidden: screen.hide_cursor(),
+        };
+        update.modes = PaneModes::from_vt100(screen);
+        update.title.clone_from(&component.published_title);
+        update.exit = component.state.exit_code();
+        panes.insert(component.id, update);
+        viewer.sent.insert(
+            component.id,
+            Sent {
+                rows,
+                columns,
+                step,
+            },
+        );
     }
+    viewer
+        .sent
+        .retain(|id, _| layout.iter().any(|entry| entry.pane == *id));
     let focused = active
         .and_then(|(tab, component)| {
             viewer
@@ -168,10 +201,10 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
         })
         .and_then(|pane| scene.panes.get(pane).ok())
         .map(|pane| pane.id)
-        .filter(|id| panes.contains_key(id));
+        .filter(|id| layout.iter().any(|entry| entry.pane == *id));
     viewer.generation = viewer.generation.wrapping_add(1);
     viewer.layout = geometry;
-    Frame {
+    FrameUpdate {
         workspace: name,
         generation: viewer.generation,
         tabs,
@@ -179,9 +212,9 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
         focused,
         layout,
         panes,
-        bindings: scene.registry.bindings.clone(),
         exit_code,
         message: viewer.notice.take(),
+        full,
     }
 }
 

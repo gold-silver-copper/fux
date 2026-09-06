@@ -209,17 +209,19 @@ async fn run(
                 let Some(message) = message else { break Err(anyhow::anyhow!("session server disconnected")) };
                 match message? {
                     ServerMessage::State { state } => {
-                        anyhow::ensure!(state.valid(), "invalid frame from session server");
-                        filter.configure(state.bindings.clone());
-                        controller.reconcile(&state);
-                        if let Some(previous) = &frame
-                            && previous.workspace != state.workspace
-                        {
+                        let mut current = frame.take().unwrap_or_default();
+                        let switched = !current.workspace.is_empty() && current.workspace != state.workspace;
+                        current
+                            .apply(*state)
+                            .map_err(|error| anyhow::anyhow!("invalid frame from session server: {error}"))?;
+                        controller.reconcile(&current);
+                        if switched {
                             // Workspace identity is shown transiently on switches, not permanently.
-                            controller.report_info(format!("Workspace {}", state.workspace));
+                            controller.report_info(format!("Workspace {}", current.workspace));
                         }
-                        frame = Some(*state);
+                        frame = Some(current);
                     }
+                    ServerMessage::Bindings { bindings } => filter.configure(bindings),
                     ServerMessage::Reply { reply } => {
                         if matches!(outstanding, Some(Outstanding::Control)) {
                             outstanding = None;

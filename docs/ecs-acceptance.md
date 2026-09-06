@@ -110,7 +110,7 @@ ordinary pane remains (`new`/`split` with `argv`, `cwd`).
 | Requirement | Evidence |
 |---|---|
 | builds/installs/runs without koh or zor; no cross-owner crate/build script/sibling source | `Cargo.toml`; `structure.rs::project_dependencies_and_application_imports_respect_ownership`, `default_ci_and_release_verification_require_only_fux`; `tests/verify/release-package.sh` |
-| versioned process protocols, no Entity/component/schedule exposure | `proto/attach.rs` v5, `proto/control.rs` `FUXCTL2`; `structure.rs` forbids `Entity` in `proto/` |
+| versioned process protocols, no Entity/component/schedule exposure | `proto/attach.rs` v6, `proto/control.rs` `FUXCTL2`; `structure.rs` forbids `Entity` in `proto/` |
 | control surface: stable ids, listing, bounded capture, lifecycle events; reads do not change focus | `Request::{List, Capture, Subscribe}`; control clients act on workspace selection | fixture control test; `observer.py` asserts focus/pid unchanged |
 | real koh gateway carries attachment stream; stopping leaves panes usable | koh `optional_gateway_failure_leaves_real_fux_panes_running`, `real_fux_keeps_its_pane_and_applies_input_once_across_five_quic_losses` passed against `target/debug/fux` |
 | zor observes via capture/events; failures isolated | `tests/verify/observer.py`: real `zor observe` reports working→idle from fux capture/title/progress; wrong preface and unknown command rejected; observer SIGKILL leaves pane pid/focus/output unchanged |
