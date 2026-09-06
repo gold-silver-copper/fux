@@ -134,7 +134,9 @@ workspace and tab choosers, rename, new workspace, confirmed close of a specific
 resize), a copy session over private `view` reads, and a compositor that paints the bottom bar on its own background (workspace,
 tabs with the current one reversed, the focused pane's `id: title` or a two-second notice), the
 panes, the shared separators derived from the one-cell gaps between leaves (bold next to the
-focused pane) and the popup, then a final frame before restoring the terminal. Colours come from
+focused pane) and the command column (a bottom-right box above the bar, as wide as its widest
+line, scrolling row by row with `▲/▼ n more` indicators only when the rows do not fit; choosers,
+prompts and confirmations share it), then a final frame before restoring the terminal. Colours come from
 the `[style]` table with muted defaults.
 Mouse events are hit-tested against the layout generation the viewer painted; wheel and drag
 browse or select locally unless the pane's application owns the mouse, and Shift forces the local

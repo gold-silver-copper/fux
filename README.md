@@ -67,11 +67,17 @@ in a separate runtime directory, `q` leaves it alone. Without a terminal it only
 ## Keys
 
 Ordinary keys are byte-exact pane input. The prefix (Ctrl-A by default) enters command mode and
-immediately shows the keybinding popup near the bottom with the current workspace name. Commands
-run at once; a burst such as prefix-`|` is applied before the next repaint, so nothing flashes.
-Prefix twice sends one literal prefix. Unknown keys stay in command mode and keep the popup open;
-Esc leaves without sending anything. Dim entries are unavailable in the current context and say
-why when pressed. There is no command-mode timeout.
+immediately shows the command column: a box in the bottom-right corner, directly above the bar,
+one row per binding under its group heading, only as wide as its widest line and only as tall as
+its content. Commands run at once; a burst such as prefix-`|` is applied before the next repaint,
+so nothing flashes. Prefix twice sends one literal prefix. Unknown keys stay in command mode and
+keep the column open; Esc leaves without sending anything. Dim rows are unavailable in the current
+context and say why when pressed. Keys are matched without Shift: `x` and `X`, `|` and `\`, `-`
+and `_` are the same key, so no two bindings may differ only by Shift. When the terminal is too
+short for every row the column scrolls one row per `↑`/`↓` and a screenful per `PgUp`/`PgDn`,
+with `▲ n more` / `▼ n more` rows marking what is hidden (on one or two rows it scrolls without
+them). The tab and workspace choosers, the rename and new-workspace prompts and the
+close confirmations use the same corner box. There is no command-mode timeout.
 
 | Group | Keys | Action |
 |---|---|---|
@@ -81,9 +87,9 @@ why when pressed. There is no command-mode timeout.
 | | `[` | history and copy mode for the focused pane |
 | Focus | `h j k l` | move focus by direction |
 | Tabs | `t` `n` `p` | new tab, next, previous |
-| | `w` `,` `X` | choose tab, rename the current tab, close the current tab (confirmed) |
-| Workspaces | `s` `S` | choose a workspace, create one (optionally named) and switch to it |
-| Session | `d` `?` | detach, show bindings |
+| | `w` `,` `c` | choose tab, rename the current tab, close the current tab (confirmed) |
+| Workspaces | `s` `a` | choose a workspace, add one (optionally named) and switch to it |
+| Session | `d` | detach |
 
 The bottom row is always the bar, on its own background: the workspace name, the tabs with the
 current one reversed, and the focused pane as `id: title` on the right (or its exit status once
@@ -93,8 +99,8 @@ seconds or until the next key. Panes have no frame: adjacent panes share one thi
 bold next to the focused pane, and a single pane fills everything above the bar. Colours are muted
 by default and configurable through `[style]`. Pane sizes are negotiated over the smallest viewer
 showing the tab, so two viewers with different terminals see the same pane contents; the larger
-viewer leaves unused margins. On a tiny terminal the popup pages and shrinks to what fits above the bar; with a single row only the
-bar is shown. A pane that exits while unfocused keeps a dim
+viewer leaves unused margins. On a tiny terminal the column first scrolls and then truncates labels with `…`; with a single row only
+the bar is shown. A pane that exits while unfocused keeps a dim
 `exit N` marker in its last row; the focused pane's status is in the bar.
 
 Copy mode (`[`) browses the pane's private history: arrows or `h j k l` move, `u`/`d` and

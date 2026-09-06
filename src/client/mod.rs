@@ -20,7 +20,7 @@ use crate::proto::control::{FocusTarget, Reply, Request, TabAction};
 use crate::view::Frame;
 use controller::{Controller, MouseDisposition};
 use hints::HintPanel;
-use input::{InputEvent, PrefixFilter};
+use input::{InputEvent, PrefixFilter, ScrollBy};
 use screen::Screen;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -175,7 +175,7 @@ async fn run(
     let mut pending: VecDeque<u8> = VecDeque::new();
     let mut resolved: VecDeque<InputEvent> = VecDeque::new();
     let mut outstanding: Option<Outstanding> = None;
-    let mut hint_page: usize = 0;
+    let mut hint_scroll: usize = 0;
     let mut lookups = tokio::task::JoinSet::new();
     let mut detaching = false;
     let (rows, cols) = screen.size()?;
@@ -380,31 +380,40 @@ async fn run(
                             }
                         },
                         InputEvent::Unknown => {
-                            hint_page = if filter.revealed() { hint_page } else { 0 };
+                            hint_scroll = if filter.revealed() { hint_scroll } else { 0 };
                         }
                         InputEvent::Cancel => {
-                            hint_page = 0;
+                            hint_scroll = 0;
                             controller.clear_error();
                         }
-                        InputEvent::Page(delta) => {
-                            let pages = HintPanel::commands(
+                        InputEvent::Scroll(step) => {
+                            let column = HintPanel::commands(
                                 filter.bindings(),
                                 workspaces_enabled,
                                 0,
                                 current,
+                            );
+                            // The column lives above the one-row bar.
+                            let rows = screen.size()?.0.saturating_sub(1);
+                            let delta = match step {
+                                ScrollBy::Rows(rows) => i64::from(rows),
+                                ScrollBy::Screens(screens) => {
+                                    i64::from(screens)
+                                        * i64::try_from(column.screenful(rows)).unwrap_or(1)
+                                }
+                            };
+                            let limit = i64::try_from(column.max_scroll(rows)).unwrap_or(0);
+                            hint_scroll = usize::try_from(
+                                (i64::try_from(hint_scroll).unwrap_or(0) + delta).clamp(0, limit),
                             )
-                            // The popup lives above the one-row bar; page over that height.
-                            .page_count(screen.size()?.0.saturating_sub(1));
-                            hint_page = (hint_page as i64 + i64::from(delta))
-                                .rem_euclid(pages.max(1) as i64)
-                                as usize;
+                            .unwrap_or(0);
                         }
                     }
                 }
             }
             if controller.take_back() {
                 filter.show_commands();
-                hint_page = 0;
+                hint_scroll = 0;
             }
             if let Some(text) = controller.take_copied() {
                 match screen.copy_to_clipboard(&text)? {
@@ -453,12 +462,12 @@ async fn run(
         }
         if controller.take_back() {
             filter.show_commands();
-            hint_page = 0;
+            hint_scroll = 0;
         }
         // Paint once per loop turn, after every ready event has been applied.
         let panel = controller.panel().or_else(|| {
             filter.popup_visible().then(|| {
-                HintPanel::commands(filter.bindings(), workspaces_enabled, hint_page, current)
+                HintPanel::commands(filter.bindings(), workspaces_enabled, hint_scroll, current)
             })
         });
         let local = controller.local_view();
@@ -513,10 +522,6 @@ fn dispatch(
     }
     match action {
         Action::Detach => Dispatch::Detach,
-        Action::Help => {
-            filter.show_commands();
-            Dispatch::Local
-        }
         Action::SplitSide | Action::SplitStack => Dispatch::Send(Request::Split {
             id: 0,
             axis: if action == Action::SplitSide {

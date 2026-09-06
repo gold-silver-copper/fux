@@ -28,7 +28,6 @@ pub enum Action {
     ChooseWorkspace,
     NewWorkspace,
     Detach,
-    Help,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -115,7 +114,7 @@ pub const DEFAULT_BINDINGS: &[BindingSpec] = &[
         action: Action::RenameTab,
     },
     BindingSpec {
-        key: b'X',
+        key: b'c',
         action: Action::CloseTab,
     },
     BindingSpec {
@@ -123,16 +122,12 @@ pub const DEFAULT_BINDINGS: &[BindingSpec] = &[
         action: Action::ChooseWorkspace,
     },
     BindingSpec {
-        key: b'S',
+        key: b'a',
         action: Action::NewWorkspace,
     },
     BindingSpec {
         key: b'd',
         action: Action::Detach,
-    },
-    BindingSpec {
-        key: b'?',
-        action: Action::Help,
     },
 ];
 
@@ -156,7 +151,6 @@ impl Action {
         Self::ChooseWorkspace,
         Self::NewWorkspace,
         Self::Detach,
-        Self::Help,
     ];
 
     pub const fn group(self) -> Group {
@@ -174,7 +168,7 @@ impl Action {
             | Self::RenameTab
             | Self::CloseTab => Group::Tabs,
             Self::ChooseWorkspace | Self::NewWorkspace => Group::Workspaces,
-            Self::Detach | Self::Help => Group::Session,
+            Self::Detach => Group::Session,
         }
     }
 
@@ -198,7 +192,6 @@ impl Action {
             Self::ChooseWorkspace => "choose workspace",
             Self::NewWorkspace => "new workspace",
             Self::Detach => "detach",
-            Self::Help => "show bindings",
         }
     }
 
@@ -208,7 +201,7 @@ impl Action {
         let visible = frame.layout.len();
         let live_focus = frame.focused_pane().is_some_and(|pane| pane.exit.is_none());
         match self {
-            Self::Help | Self::Detach | Self::NewTab => None,
+            Self::Detach | Self::NewTab => None,
             Self::ChooseWorkspace | Self::NewWorkspace => {
                 (!workspaces).then_some("Not available through this attachment")
             }
@@ -226,6 +219,38 @@ impl Action {
             | Self::FocusDown
             | Self::ResizeMode => (visible < 2).then_some("No split to adjust"),
         }
+    }
+}
+
+/// The key a byte stands for without Shift: letters fold to lowercase and the shifted symbols of
+/// a US layout fold to their unshifted twins (`|` → `\`, `_` → `-`, `?` → `/`, …). Bindings are
+/// matched on this form, so `X` and `x` are the same key and `\` triggers a binding on `|`.
+#[must_use]
+pub const fn canonical_key(key: u8) -> u8 {
+    match key {
+        b'A'..=b'Z' => key.to_ascii_lowercase(),
+        b'!' => b'1',
+        b'@' => b'2',
+        b'#' => b'3',
+        b'$' => b'4',
+        b'%' => b'5',
+        b'^' => b'6',
+        b'&' => b'7',
+        b'*' => b'8',
+        b'(' => b'9',
+        b')' => b'0',
+        b'_' => b'-',
+        b'+' => b'=',
+        b'{' => b'[',
+        b'}' => b']',
+        b'|' => b'\\',
+        b':' => b';',
+        b'"' => b'\'',
+        b'<' => b',',
+        b'>' => b'.',
+        b'?' => b'/',
+        b'~' => b'`',
+        _ => key,
     }
 }
 
@@ -281,7 +306,7 @@ impl ClientBindings {
     pub fn new(prefix: u8, bindings: impl IntoIterator<Item = (u8, Action)>) -> Self {
         let mut map = BTreeMap::new();
         for (key, action) in bindings {
-            if key != prefix {
+            if canonical_key(key) != canonical_key(prefix) {
                 map.insert(key, action);
             }
         }
@@ -296,9 +321,17 @@ impl ClientBindings {
         self.prefix
     }
 
+    /// The action bound to `key`, matched without Shift (see [`canonical_key`]).
     #[must_use]
     pub fn action(&self, key: u8) -> Option<Action> {
-        self.bindings.get(&key).copied()
+        if let Some(action) = self.bindings.get(&key) {
+            return Some(*action);
+        }
+        let wanted = canonical_key(key);
+        self.bindings
+            .iter()
+            .find(|(bound, _)| canonical_key(**bound) == wanted)
+            .map(|(_, action)| *action)
     }
 
     #[must_use]
@@ -309,14 +342,21 @@ impl ClientBindings {
             .map(|(key, _)| *key)
     }
 
-    /// Bindings ordered by group then key.
+    /// Bindings ordered by group, then by the registry's action order (`| - x r [` rather than
+    /// byte order), then key.
     pub fn entries(&self) -> Vec<(u8, Action)> {
         let mut entries: Vec<_> = self
             .bindings
             .iter()
             .map(|(key, action)| (*key, *action))
             .collect();
-        entries.sort_by_key(|(key, action)| (action.group(), *key));
+        entries.sort_by_key(|(key, action)| {
+            let rank = Action::ALL
+                .iter()
+                .position(|a| a == action)
+                .unwrap_or(usize::MAX);
+            (action.group(), rank, *key)
+        });
         entries
     }
 }
@@ -338,11 +378,17 @@ pub fn configured_bindings(config: &crate::config::Config) -> anyhow::Result<Cli
     for (key, action) in &config.bindings {
         let byte =
             key_byte(key).ok_or_else(|| anyhow::anyhow!("binding `{key}` must encode one byte"))?;
-        anyhow::ensure!(byte != prefix, "a binding cannot equal the prefix key");
         anyhow::ensure!(
-            bindings.insert(byte, *action).is_none(),
-            "two binding keys encode the same byte"
+            canonical_key(byte) != canonical_key(prefix),
+            "a binding cannot be the prefix key (with or without Shift)"
         );
+        anyhow::ensure!(
+            bindings
+                .keys()
+                .all(|bound| canonical_key(*bound) != canonical_key(byte)),
+            "two bindings use the same key with and without Shift (`{key}`)"
+        );
+        bindings.insert(byte, *action);
     }
     Ok(ClientBindings::new(prefix, bindings))
 }
@@ -383,7 +429,40 @@ mod tests {
         assert!(Action::NextTab.unavailable(&frame, true).is_some());
         assert!(Action::ChooseWorkspace.unavailable(&frame, false).is_some());
         assert!(Action::ChooseWorkspace.unavailable(&frame, true).is_none());
-        assert!(Action::Help.unavailable(&frame, false).is_none());
         assert!(Action::Detach.unavailable(&frame, false).is_none());
+    }
+
+    #[test]
+    fn keys_match_without_shift_and_shifted_twins_are_rejected() {
+        let bindings = ClientBindings::default();
+        assert_eq!(
+            bindings.action(b'\\'),
+            Some(Action::SplitSide),
+            "\\ is | without Shift"
+        );
+        assert_eq!(bindings.action(b'|'), Some(Action::SplitSide));
+        assert_eq!(bindings.action(b'_'), Some(Action::SplitStack));
+        assert_eq!(bindings.action(b'X'), Some(Action::ClosePane));
+        assert_eq!(bindings.action(b'C'), Some(Action::CloseTab));
+        assert_eq!(bindings.action(b'A'), Some(Action::NewWorkspace));
+        assert_eq!(
+            bindings.action(b'?'),
+            None,
+            "no help action; ? is an unknown key"
+        );
+        assert_eq!(canonical_key(b'{'), b'[');
+        assert_eq!(canonical_key(1), 1);
+        let mut config = crate::config::Config::default();
+        config.bindings.insert("X".into(), Action::CloseTab);
+        assert!(
+            configured_bindings(&config).is_err(),
+            "x and X are the same key"
+        );
+        let mut config = crate::config::Config {
+            prefix: "b".into(),
+            ..Default::default()
+        };
+        config.bindings.insert("B".into(), Action::Detach);
+        assert!(configured_bindings(&config).is_err());
     }
 }

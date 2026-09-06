@@ -16,8 +16,8 @@ independent pass verified the fixes; findings and resolutions are in the Review 
 | Requirement | Source | Evidence |
 |---|---|---|
 | workspace → tabs → recursive-split panes; no nesting of workspaces/tabs | `ecs/components.rs` (`Workspace.tabs`, `Tab.layout: LayoutTree<Entity>`), `layout.rs` | `ecs::check_invariants` rejects a tab in two workspaces or a pane in two layouts; `layout.rs` tests (6) and randomized ECS test |
-| create/switch workspaces | `systems/requests.rs` `workspace_action`, `reserve_workspace`; viewer `s`/`S` | ecs `workspace_switch_sends_the_suffix_to_the_destination`; fixture `concurrent_first_clients_elect_exactly_one_server_and_workspace`; `viewer.py` |
-| create/switch/name/close tabs | `tab_action`, `close_tab` (`ecs/support.rs`); viewer `t n p w , X` | ecs `natural_exit_of_one_pane_closes_it_and_of_a_tab_moves_viewers`, randomized test (found and fixed the orphaned-pane invariant, see Review); `viewer.py`; fixture `control_protocol_lists_captures_and_streams_events_without_touching_viewers` |
+| create/switch workspaces | `systems/requests.rs` `workspace_action`, `reserve_workspace`; viewer `s`/`a` | ecs `workspace_switch_sends_the_suffix_to_the_destination`; fixture `concurrent_first_clients_elect_exactly_one_server_and_workspace`; `viewer.py` |
+| create/switch/name/close tabs | `tab_action`, `close_tab` (`ecs/support.rs`); viewer `t n p w , c` | ecs `natural_exit_of_one_pane_closes_it_and_of_a_tab_moves_viewers`, randomized test (found and fixed the orphaned-pane invariant, see Review); `viewer.py`; fixture `control_protocol_lists_captures_and_streams_events_without_touching_viewers` |
 | splits, directional focus, repeated resize, confirmed close | `layout.rs` (`split/close/resize/neighbour`), `requests.rs`; controller modes `Resize`, `ClosePane`, `CloseTab` | ecs `split_focus_and_following_input_reach_the_new_pane_only_after_creation`; `viewer.py` split/resize/close scenarios; `local_tty.py` |
 | persistent PTYs, background output, detach and reconnect | `os/pty.rs`, `server/adapter.rs`, `server/connections.rs` | fixture `detach_and_reattach_preserve_the_pane_process_and_its_history`; `detach_drain.py`; `local_attachment.py` |
 | bounded per-pane history, keyboard browsing, mouse selection, clipboard | `terminal.rs` (`with_history_screen`, scrollback limit), `client/copy.rs`, `client/screen.rs` (OSC 52, 1 MiB cap) | ecs `history_views_are_private_and_clamped`; `viewer.py` copy/selection/shift-drag scenarios; `screen.rs` tests; `terminal.rs` tests |
@@ -335,6 +335,29 @@ Gate on the final tree (macOS): fmt, strict Clippy, root tests (lib 70, main 3, 
 detach-drain and migration harnesses, structure 8, real zor 1), rustdoc, MSRV 1.95 check,
 fixture-child 3 + 8 + 2, koh gateway 2 + 10 against the v4 binary, packaged binary 8, dependency
 patches verified, `git diff --check`; all passed on 2026-09-06.
+
+## Command column (0.3.3, 2026-09-06)
+
+[command-column-prompt.md](../command-column-prompt.md) replaced the full-width bottom popup band
+with a bottom-right column above the bar.
+
+| Requirement | Source | Evidence |
+|---|---|---|
+| bottom-right box, width from content, height from content, headings kept, no title/footer | `client/hints.rs::{commands, paint, window}` | hints test `command_column_sits_bottom_right_as_wide_as_its_widest_line_and_shows_everything`; `viewer.py` checks nothing is painted left of the column and both `Panes` and `Session` headings show |
+| scroll only when needed, row-wise arrows, screenful page keys, clamped, `▲/▼ n more` | `hints.rs::{max_scroll, screenful, window}`, `input.rs::ScrollBy`, `client/mod.rs` | hints test `short_terminals_scroll_row_by_row_with_indicators_and_clamp` (every entry reachable); `viewer.py` four-row terminal scrolls through all 23 rows |
+| choosers, prompts and confirmations in the same box with title, footer and a visible focused row | `HintPanel::context`, `text_input`, `window` focus rule | hints test `choosers_keep_their_title_footer_and_focused_row_visible`; `viewer.py` tab/workspace choosers, rename, close confirmations |
+| thin hints unchanged; tiny terminals safe | `paint` thin path; bounds-checked writes | hints test `narrow_and_tiny_terminals_truncate_and_never_panic`; `viewer.py` 1×1 and 2×20 |
+| keys matched without Shift; no two bindings differ only by Shift; `?` removed | `commands.rs::{canonical_key, ClientBindings::action, configured_bindings}`, `config.rs::validate` | commands test `keys_match_without_shift_and_shifted_twins_are_rejected`; `viewer.py` splits with `\` and `_` and closes a pane with `X`; defaults re-keyed to `c` (close tab) and `a` (new workspace) |
+
+An independent reviewer who did not implement the change found no P0; one P1 root cause (with
+one or two rows of capacity the indicator rows consumed the whole column, so no entry showed and a
+chooser's focused row could be off screen) fixed by scrolling without indicators below three rows,
+with a unit test over every scroll offset and every chooser focus on such terminals; P2 items: a
+placeholder and a wrong row count in this document, a stale comment about the removed help action
+and two broken README sentences, all corrected; the two-cell indent of bindings under their group
+headings is deliberate. Sound per the reviewer: bounds-checked painting, grapheme-aware
+truncation, scroll clamping shared between painter and viewer loop, no collision among the
+re-keyed defaults or with the prefix, and the unchanged prefix-twice and Esc paths.
 
 ## Platform and CI limits
 

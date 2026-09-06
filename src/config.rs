@@ -102,12 +102,15 @@ impl Config {
         }
         let mut seen = std::collections::BTreeSet::new();
         for key in self.bindings.keys() {
-            let byte = validate_key_notation("bindings key", key)?;
+            let byte = crate::commands::canonical_key(validate_key_notation("bindings key", key)?);
             if !seen.insert(byte) {
-                return invalid("bindings", "two key names encode the same byte");
+                return invalid(
+                    "bindings",
+                    "two bindings use the same key with and without Shift",
+                );
             }
-            if byte == prefix {
-                return invalid("bindings", "a binding cannot equal the prefix key");
+            if byte == crate::commands::canonical_key(prefix) {
+                return invalid("bindings", "a binding cannot be the prefix key");
             }
         }
         self.default_command.validate("default-command")?;

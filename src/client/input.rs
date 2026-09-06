@@ -10,6 +10,13 @@ const PASTE_END: &[u8] = b"\x1b[201~";
 /// Longest escape sequence kept together before being forwarded as ordinary bytes.
 const MAX_SEQUENCE: usize = 64;
 
+/// A scroll request for the command column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollBy {
+    Rows(i32),
+    Screens(i32),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputEvent {
     /// Ordinary pane input, byte-exact (paste delimiters included).
@@ -22,8 +29,8 @@ pub enum InputEvent {
     Unknown,
     /// Prefix then Esc, or Esc while the popup is open.
     Cancel,
-    /// Up/Down or PageUp/PageDown while the popup is open.
-    Page(i32),
+    /// Up/Down (one row) or PageUp/PageDown (one screenful) while the popup is open.
+    Scroll(ScrollBy),
 }
 
 /// A stateful classifier over one viewer's raw terminal input.
@@ -67,8 +74,8 @@ impl PrefixFilter {
         self.command_pending
     }
 
-    /// The popup is shown while command mode is pending; `reveal` distinguishes an explicit help
-    /// request or unknown key from a plain prefix press (both show it immediately).
+    /// The column is shown while command mode is pending; `reveal` distinguishes an unknown key
+    /// from a plain prefix press (both show it immediately).
     #[must_use]
     pub fn popup_visible(&self) -> bool {
         self.command_pending
@@ -197,13 +204,21 @@ impl PrefixFilter {
                     events.push(InputEvent::Cancel);
                 }
             }
-            b"\x1b[B" | b"\x1bOB" | b"\x1b[6~" => {
+            b"\x1b[B" | b"\x1bOB" => {
                 self.reveal = true;
-                events.push(InputEvent::Page(1));
+                events.push(InputEvent::Scroll(ScrollBy::Rows(1)));
             }
-            b"\x1b[A" | b"\x1bOA" | b"\x1b[5~" => {
+            b"\x1b[A" | b"\x1bOA" => {
                 self.reveal = true;
-                events.push(InputEvent::Page(-1));
+                events.push(InputEvent::Scroll(ScrollBy::Rows(-1)));
+            }
+            b"\x1b[6~" => {
+                self.reveal = true;
+                events.push(InputEvent::Scroll(ScrollBy::Screens(1)));
+            }
+            b"\x1b[5~" => {
+                self.reveal = true;
+                events.push(InputEvent::Scroll(ScrollBy::Screens(-1)));
             }
             _ => {
                 self.reveal = true;
@@ -227,10 +242,6 @@ impl PrefixFilter {
                 return;
             }
             match self.bindings.action(byte) {
-                Some(Action::Help) => {
-                    self.reveal = true;
-                    events.push(InputEvent::Unknown);
-                }
                 Some(action) => {
                     self.cancel();
                     events.push(InputEvent::Command(action));
@@ -306,8 +317,18 @@ mod tests {
         assert_eq!(filter.feed(b"\x01!"), vec![InputEvent::Unknown]);
         assert!(filter.command_pending() && filter.revealed());
         assert_eq!(filter.feed(b"?"), vec![InputEvent::Unknown]);
-        assert_eq!(filter.feed(b"\x1b[B"), vec![InputEvent::Page(1)]);
-        assert_eq!(filter.feed(b"\x1bOA"), vec![InputEvent::Page(-1)]);
+        assert_eq!(
+            filter.feed(b"\x1b[B"),
+            vec![InputEvent::Scroll(ScrollBy::Rows(1))]
+        );
+        assert_eq!(
+            filter.feed(b"\x1bOA"),
+            vec![InputEvent::Scroll(ScrollBy::Rows(-1))]
+        );
+        assert_eq!(
+            filter.feed(b"\x1b[6~"),
+            vec![InputEvent::Scroll(ScrollBy::Screens(1))]
+        );
         assert!(filter.command_pending());
         assert_eq!(filter.feed(b"\x1b"), vec![]);
         assert_eq!(filter.resolve_escape(), vec![InputEvent::Cancel]);

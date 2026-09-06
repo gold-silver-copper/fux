@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.3 - 2026-09-06
+
+- The command popup becomes a bottom-right column above the bar: one row per binding under its
+  group heading, as wide as its widest line, as tall as its content, no title or footer rows. It
+  scrolls one row per arrow and a screenful per page key only when the terminal is too short,
+  with `▲ n more` / `▼ n more` rows marking hidden entries. The choosers, prompts and close
+  confirmations use the same corner box, keeping their title and key-hint rows.
+- Keys are matched without Shift: `X` triggers the `x` binding, `\` the `|` binding, `_` the `-`
+  binding. Bindings that differ only by Shift are rejected, so close tab moves from `X` to `c`
+  and new workspace from `S` to `a`.
+- The `?` "show bindings" action is removed: the prefix itself shows the column and any unknown
+  key keeps it open. A configuration that binds `help` no longer parses.
+
 ## 0.3.2 - 2026-09-06
 
 - The bar moves to the bottom row and gets its own background (`[style] bar-background`, default

@@ -202,7 +202,7 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         rows = first.screen.text().splitlines()
         assert rows[-1].startswith(' default │ main '), f'bar missing: {rows[-1]!r}'
         assert rows[-1].rstrip().endswith('│ 1'), f'focused pane id missing from the bar: {rows[-1]!r}'
-        assert 'Commands' not in first.screen.text()
+        assert 'split side by side' not in first.screen.text()
         assert not any(ch in first.screen.text() for ch in '┌┐└┘'), 'no pane frames'
         assert all('│' not in row for row in rows[:-1]), 'a single pane has no separators'
         listing_state = listing()
@@ -212,19 +212,22 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
 
         # Prefix shows the popup immediately; a fast prefix+command never flashes it.
         first.send(b'\x01')
-        wait(lambda: 'Commands (C-a)' in first.screen.text(), 'popup missing after prefix')
-        assert 'split side by side' in first.screen.text()
+        wait(lambda: 'split side by side' in first.screen.text(), 'popup missing after prefix')
+        # The column hugs the right edge with nothing painted left of it on its rows.
+        column_rows = [row for row in first.screen.text().splitlines() if 'split side by side' in row]
+        assert column_rows and all(row.index('|') > 40 and row[:40].strip() == '' for row in column_rows), column_rows
+        assert 'Panes' in first.screen.text() and 'Session' in first.screen.text(), 'group headings missing'
         first.send(b'\x1b'); pump(.15)
-        assert 'Commands' not in first.screen.text(), 'Esc did not dismiss the popup'
+        assert 'split side by side' not in first.screen.text(), 'Esc did not dismiss the popup'
         first.send(b'\x01t')
         await_state(lambda state: len(state) == 2, 'new tab was not created')
         pump(.2)
-        assert 'Commands' not in first.screen.text(), 'fast command flashed the popup'
+        assert 'split side by side' not in first.screen.text(), 'fast command flashed the popup'
         wait(lambda: 'tab-2' in first.screen.text().splitlines()[-1] and 'main' in first.screen.text().splitlines()[-1], 'both tabs missing from the bar')
 
         # Unknown key stays in command mode and reveals the popup; literal prefix is one byte.
         first.send(b'\x01!')
-        wait(lambda: 'Commands (C-a)' in first.screen.text(), 'unknown key did not reveal the popup')
+        wait(lambda: 'split side by side' in first.screen.text(), 'unknown key did not reveal the popup')
         first.send(b'\x1b'); pump(.15)
         first.send(b'\x01\x01Q')
         wait(lambda: 'Q' in first.screen.text(), 'literal prefix probe did not echo')
@@ -243,7 +246,7 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         first.send(b'\x01,\x15discarded')
         wait(lambda: 'Rename tab' in first.screen.text(), 'rename prompt missing')
         first.send(b'\x1b'); pump(.15)
-        wait(lambda: 'Commands (C-a)' in first.screen.text(), 'Esc did not back out to the popup')
+        wait(lambda: 'split side by side' in first.screen.text(), 'Esc did not back out to the popup')
         first.send(b'\x1b'); pump(.15)
         assert tabs()[1]['name'] == 'tab-2', 'cancelled rename changed the label'
         first.send(b'\x01,\x15' + 'renamed界'.encode() + b'\r')
@@ -273,7 +276,7 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         await_state(lambda state: len(state[1]['panes']) == 1, 'confirmed close failed')
 
         # Close tab with confirmation naming the affected processes.
-        first.send(b'\x01X')
+        first.send(b'\x01c')
         wait(lambda: 'Close tab' in first.screen.text() and '1 pane' in first.screen.text(), 'close tab confirmation missing')
         first.send(b'y')
         await_state(lambda state: len(state) == 2, 'tab close failed')
@@ -299,11 +302,11 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
 
         # Shared separators: one column between side-by-side panes, a row with a junction for a
         # stacked split, no frame anywhere.
-        first.send(b'\x01|')
+        first.send(b'\x01\\')  # backslash is | without Shift
         await_state(lambda state: len(state[0]['panes']) == 2, 'side-by-side split failed')
         wait(lambda: first.screen.text().splitlines()[2].count('│') == 1, 'exactly one separator column expected')
         assert not any(ch in first.screen.text() for ch in '┌┐└┘'), 'no pane frames after a split'
-        first.send(b'\x01-')
+        first.send(b'\x01_')  # underscore is - with Shift
         await_state(lambda state: len(state[0]['panes']) == 3, 'stacked split failed')
         wait(lambda: '├─' in first.screen.text(), 'stacked separator must join the column with ├')
         # A notice appears in the bar and disappears on its own.
@@ -327,7 +330,7 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         subprocess.run([binary, 'default', 'tab', 'select', '0'], env=env, capture_output=True, timeout=5, check=True)
         first.send(b'\x01xy')
         await_state(lambda state: len(state[0]['panes']) == 2, 'close after split failed')
-        first.send(b'\x01xy')
+        first.send(b'\x01Xy')  # X is x with Shift
         await_state(lambda state: len(state[0]['panes']) == 1, 'second close after split failed')
 
         # A second viewer keeps private menus and input while sharing the workspace.
@@ -335,8 +338,8 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         viewers.append(second)
         wait(lambda: 'COPY_TARGET' in second.screen.text(), 'second viewer did not render')
         first.send(b'\x01')
-        wait(lambda: 'Commands' in first.screen.text(), 'first popup missing')
-        hold(lambda: 'Commands' not in second.screen.text(), 'popup crossed viewers', .3)
+        wait(lambda: 'split side by side' in first.screen.text(), 'first popup missing')
+        hold(lambda: 'split side by side' not in second.screen.text(), 'popup crossed viewers', .3)
         second.send(b'SECOND_INPUT\r')
         wait(lambda: 'SECOND_INPUT' in second.screen.text(), 'second viewer input blocked')
         first.send(b'\x1b'); pump(.15)
@@ -344,7 +347,7 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         wait(lambda: 'Copy selection' in first.screen.text(), 'first copy selection missing')
         assert 'Copy' not in second.screen.text(), 'copy mode crossed viewers'
         second.send(b'\x01')
-        wait(lambda: 'Commands' in second.screen.text(), 'second popup missing')
+        wait(lambda: 'split side by side' in second.screen.text(), 'second popup missing')
         second.send(b'\x1b'); pump(.1)
         second.send(b'MORE_OUTPUT\r')
         wait(lambda: 'MORE_OUTPUT' in second.screen.text(), 'second input while first copies')
@@ -352,20 +355,21 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         assert not second.screen.clipboards, 'clipboard crossed viewers'
 
         # Tiny screens: paging keeps every command reachable; 1x1 is safe; context returns.
-        # Four rows: three for the popup (title, one body row, footer) above the one-row bar.
+        # Four rows: three above the bar. The column shows two rows plus an indicator and scrolls
+        # one row per arrow press; every heading and binding must come around.
         first.resize(4, 18)
         first.send(b'\x01')
-        wait(lambda: 'Commands' in first.screen.text(), 'tiny popup missing')
-        pages = set()
+        wait(lambda: '|  split' in first.screen.text() and 'more' in first.screen.text(), 'tiny popup missing')
+        seen = set()
         for _ in range(40):
-            pages.add(first.screen.text().splitlines()[1])
+            rows = first.screen.text().splitlines()
+            seen.update(row.strip() for row in rows[:3] if row.strip() and 'more' not in row)
             first.send(b'\x1b[B'); pump(.03)
-        # One body row per page above the bar: every binding and heading must come around.
-        assert len(pages) >= 20, f'tiny popup pagination exposed only {len(pages)} rows'
+        assert len(seen) >= 23, f'tiny column scrolling exposed only {len(seen)} rows: {sorted(seen)}'
         first.resize(1, 1); pump(.3)
         assert not first.exited(), 'one-cell terminal crashed the viewer'
         first.resize(24, 80)
-        wait(lambda: 'Commands' in first.screen.text(), 'resize lost command context')
+        wait(lambda: 'split side by side' in first.screen.text(), 'resize lost command context')
         first.send(b'\x1b'); pump(.15)
         # Two rows: the bar and one pane row, nothing else.
         first.resize(2, 20); pump(.3)
@@ -376,7 +380,7 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         first.resize(24, 80); pump(.3)
 
         # Workspace creation and switching; the suffix after the switch reaches the destination.
-        first.send(b'\x01S')
+        first.send(b'\x01a')
         wait(lambda: 'New workspace' in first.screen.text(), 'new workspace prompt missing')
         first.send(b'other\r')
         wait(lambda: 'other' in first.screen.text().splitlines()[-1] or 'other' in first.screen.text(), 'new workspace did not attach')
@@ -390,7 +394,7 @@ with tempfile.TemporaryDirectory(prefix='fview-', dir='/tmp') as directory:
         first.send(b'\x01s')
         wait(lambda: 'Choose workspace' in first.screen.text(), 'workspace chooser missing')
         first.send(b'\x1b'); pump(.1)
-        wait(lambda: 'Commands' in first.screen.text(), 'chooser cancel did not return to commands')
+        wait(lambda: 'split side by side' in first.screen.text(), 'chooser cancel did not return to commands')
         first.send(b'\x1b'); pump(.1)
         first.send(b'\x01sk\r\x01,\x15switched\r')
         await_state(lambda state: state[0]['name'] == 'switched', 'workspace switch lost the queued rename')
