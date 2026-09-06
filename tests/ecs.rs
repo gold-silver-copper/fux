@@ -906,6 +906,24 @@ fn a_viewer_leaving_in_its_arrival_step_is_released_and_the_limit_counts_the_bat
         .count();
     assert_eq!(refused, 3, "one viewer was already attached");
     assert_eq!(harness.session.entity_counts().viewers, 64);
+    // A departure in the same step frees its place at once.
+    let effects = harness.step(vec![
+        Inbound::ViewerGone { viewer },
+        Inbound::ViewerAttached {
+            viewer: ViewerId(2_000),
+            workspace: "default".into(),
+            rows: 24,
+            cols: 80,
+        },
+    ]);
+    assert!(!effects.iter().any(|effect| matches!(
+        effect,
+        Effect::ToViewer {
+            viewer: ViewerId(2_000),
+            message: ServerMessage::Error { .. },
+        }
+    )));
+    assert_eq!(harness.session.entity_counts().viewers, 64);
 }
 
 // ---------------------------------------------------------------------------------------------

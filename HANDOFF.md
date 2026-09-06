@@ -24,6 +24,4 @@ protocols in `docs/local-*.md`.
 Runtime evidence is macOS only; Linux and Android are configured CI targets without an executed
 run. Emulator-specific clipboard and mouse behaviour and koh relay/NAT scenarios remain manual. A
 running 0.3.x server older than the viewer is rejected by the handshake and the viewer offers to
-stop it or run alongside it; nothing is ever stopped without a typed confirmation. The Python
-harnesses in `tests/local_cli.rs` are timing sensitive under heavy machine load (a partial first
-frame or a slow detach); rerun on a quiet machine before reading a failure as a regression.
+stop it or run alongside it; nothing is ever stopped without a typed confirmation.

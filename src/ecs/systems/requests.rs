@@ -56,9 +56,12 @@ pub fn apply_attachments(
         workspaces,
         viewers,
     } = &mut arrivals;
-    // Spawns apply at the next sync point, so the viewers that arrived in this batch are kept
-    // here: the limit counts them and a departure in the same batch still finds them.
+    // Spawns and despawns apply at the next sync point (`arrivals` is declared before `exit`, so
+    // a spawn queued here precedes a despawn queued for the same viewer), so the viewers that
+    // arrived or departed in this batch are kept here: the limit counts arrivals, discounts
+    // departures, and a departure in the same batch as its arrival still finds the viewer.
     let mut arrived: Vec<(ViewerId, Entity, Entity, String)> = Vec::new();
+    let mut departed: Vec<Entity> = Vec::new();
     for message in inbound.read() {
         match message {
             Inbound::ViewerAttached {
@@ -96,6 +99,14 @@ pub fn apply_attachments(
                     + arrived
                         .iter()
                         .filter(|(_, _, home, _)| *home == entity)
+                        .count()
+                    - departed
+                        .iter()
+                        .filter(|gone| {
+                            viewers
+                                .get(**gone)
+                                .is_ok_and(|viewer| viewer.workspace == entity && !viewer.detaching)
+                        })
                         .count();
                 if attached >= limits.max_viewers {
                     refuse(&mut effects, "viewer limit reached for this workspace");
@@ -135,10 +146,13 @@ pub fn apply_attachments(
                     continue;
                 };
                 let name = match viewers.get(entity) {
-                    Ok(viewer) => workspaces
-                        .get(viewer.workspace)
-                        .map(|workspace| workspace.name.clone())
-                        .unwrap_or_default(),
+                    Ok(viewer) => {
+                        departed.push(entity);
+                        workspaces
+                            .get(viewer.workspace)
+                            .map(|workspace| workspace.name.clone())
+                            .unwrap_or_default()
+                    }
                     // Arrived in this batch: the spawn is still queued and the despawn queues
                     // behind it.
                     Err(_) => match arrived.iter().position(|(arrived, ..)| arrived == id) {

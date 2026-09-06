@@ -230,14 +230,14 @@ pub fn viewers_where(world: &mut World, keep: impl Fn(&Viewer) -> bool) -> Vec<E
         .collect()
 }
 
-/// Applies `apply` to every viewer `keep` selects.
+/// Applies `apply` to every viewer `keep` selects, in one pass.
 pub fn each_viewer(
     world: &mut World,
     keep: impl Fn(&Viewer) -> bool,
     mut apply: impl FnMut(&mut Viewer),
 ) {
-    for entity in viewers_where(world, keep) {
-        if let Some(mut viewer) = world.get_mut::<Viewer>(entity) {
+    for mut viewer in world.query::<&mut Viewer>().iter_mut(world) {
+        if keep(&viewer) {
             apply(&mut viewer);
         }
     }

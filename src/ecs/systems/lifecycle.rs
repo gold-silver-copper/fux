@@ -118,7 +118,9 @@ fn drop_overdue_terminations(world: &mut World, now: u64, deadline_ms: u64) {
     }
 }
 
-/// A workspace whose last tab closed retires with code 0; viewers exit cleanly.
+/// A workspace whose last tab closed retires with code 0; viewers exit cleanly. `Tabs` is absent
+/// once empty because `TabOf` is only ever removed through `EntityWorldMut`, which flushes the
+/// relationship hook's removal at once; a `Commands`-based removal would leave an empty target.
 fn retire_empty_workspaces(world: &mut World, now: u64) {
     let empty: Vec<Entity> = world
         .query::<(Entity, &Workspace)>()
