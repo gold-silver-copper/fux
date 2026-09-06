@@ -51,6 +51,11 @@ max-workspaces = 64
 Private sockets live under `$XDG_RUNTIME_DIR/fux` (macOS fallback `~/Library/Caches/fux-runtime`);
 daemon diagnostics go to `$XDG_STATE_HOME/fux/daemon.log` (default `~/.local/state/fux`).
 
+If an older fux server (0.2.x, control preface `FUXCTL1`) still owns that directory, `fux` explains
+the mismatch, lists the workspaces it recorded, and asks in the terminal: `k` stops the old server
+after you type `stop` (this terminates its panes), `s` shows how to run the new version alongside it
+in a separate runtime directory, `q` leaves it alone. Without a terminal it only reports and exits.
+
 ## Keys
 
 Ordinary keys are byte-exact pane input. The prefix (Ctrl-A by default) enters command mode and

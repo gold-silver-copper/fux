@@ -77,7 +77,8 @@ Replies: `{"reply":"names","names":[…]}`, `{"reply":"attach","descriptor":{…
 nonce, attachment socket, attachment protocol version) and `{"reply":"failed","message":"…"}`.
 `resolve` with `null` applies the default rule: create `default` when nothing exists, otherwise the
 most recently attached workspace. `kill` deliberately terminates that workspace's panes; a version
-mismatch never does.
+mismatch never does by itself (the interactive viewer may offer to stop an older server, but only
+after the operator confirms).
 
 ## Consumers
 

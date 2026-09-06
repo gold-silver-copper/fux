@@ -40,8 +40,9 @@ counted reap gate keeps the leader un-reaped (reaping is polled under the gate) 
 signalled, so a descendant ignoring SIGHUP cannot survive and a recycled group id is never hit.
 A viewer attachment only sees and acts on its own workspace's panes; `workspace kill` over a
 workspace connection is limited to that workspace. The server exits only after its adapters have joined every reader, writer and
-spawn task. fux never kills an unrelated or older server: a protocol mismatch is reported to the
-user, who decides when to stop the old server with its own binary.
+spawn task. fux never kills an unrelated or older server on its own: a protocol mismatch is reported,
+and only an interactive, explicitly confirmed choice sends SIGTERM to the pids recorded in the
+private descriptor directory (never SIGKILL; an unresponsive server keeps its panes).
 
 ## Terminal output and clipboard
 

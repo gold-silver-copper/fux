@@ -19,11 +19,15 @@ is [docs/ecs-acceptance.md](docs/ecs-acceptance.md); the architecture is
   `python3 tools/dependencies.py verify --build`.
 - Version 0.3.0, MSRV 1.95, CI updated (`ci.yml`, `nightly.yml`), docs rewritten, earlier
   documents labelled historical.
+- After the first `main` merge: an interactive dialog when an older, incompatible session server
+  owns the runtime directory (explain, list its recorded workspaces, stop it after a typed
+  confirmation or show how to run alongside it; non-interactive runs only report). Covered by
+  `tests/verify/migration.py`.
 
 ## Verified locally (macOS)
 
-Formatting, strict Clippy, root tests (lib 66, main 2, ecs 19 incl. a randomized command-sequence
-test run with 2048 cases, local_cli 5, structure 8, zor_integration 1 with real zor), rustdoc,
+Formatting, strict Clippy, root tests (lib 67, main 3, ecs 19 incl. a randomized command-sequence
+test run with 2048 and 8192 cases, local_cli 6, structure 8, zor_integration 1 with real zor), rustdoc,
 MSRV 1.95 compilation, fixture-child (3 unit, 8 binary, 2 lifecycle), packaged-binary verifier,
 required real koh (2 + 10) integrations with explicit binary paths, zor's own suites, dependency
 reconstruction, and the performance measurements against the 0.2.1 baseline (idle, memory, burst

@@ -23,6 +23,8 @@ and effects; one explicitly ordered single-threaded schedule per event-driven st
   bindings, lifecycle hooks, desktop notifications, agent dashboards and the OSC 7877 adapter,
   zor sidecar supervision (`zor-path`), status segments, hint delay settings, SIGHUP config
   reload, `tokio-util` and `loom`.
+- Interactive handling of an older, incompatible session server: explain, list its recorded
+  workspaces, and offer to stop it after typed confirmation or to run alongside it.
 - MSRV 1.95 (required by bevy_ecs 0.19.1).
 
 ## 0.2.1 - 2026-09-04

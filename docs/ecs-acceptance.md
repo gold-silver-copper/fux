@@ -78,7 +78,7 @@ ordinary pane remains (`new`/`split` with `argv`, `cwd`).
 | EOF distinguished from exit; final output observed; process groups terminated; children reaped | `PaneState::Eof`, `ProcessGroup::terminate` with `ReapGate` | fixture `forced_close_terminates_descendants_and_reports_the_status` (a descendant ignoring SIGHUP is killed) |
 | partial startup failure | `Creation` rollback; `ServerChild` readiness channel | fixture `startup_failure_rolls_back_and_reports_an_error` |
 | private sockets, ownership/permission checks, peer auth, bounded framing, deadlines, safe cleanup, version rejection before raw mode | `proto/socket.rs`, `daemon/startup.rs`, `proto/attach.rs`, `proto/control.rs` | `protocol_rejection.py`; `local_attachment.py`; `daemon` unit tests |
-| never terminate personal sessions to upgrade | no code path kills a foreign server; mismatch reported (`client/mod.rs`) | `protocol_rejection.py` |
+| never terminate personal sessions to upgrade | no automatic kill; the mismatch is reported, and the interactive dialog in `main.rs` stops an old server only after the operator types `stop` (SIGTERM to recorded pids, no SIGKILL) | `protocol_rejection.py`; `migration.py` (non-interactive leaves it, `q` and a refused confirmation leave it, confirmed stop replaces it) |
 
 ## Viewer interaction and rendering
 
@@ -183,7 +183,7 @@ All run on 2026-09-05 from the repository root with `cargo 1.97.1` (stable) unle
 |---|---|
 | `cargo fmt --all --check` | clean |
 | `cargo clippy --all-targets --locked -- -D warnings` | clean (lints deny `unwrap`, `expect`, `panic`, `indexing_slicing`, `dead_code`) |
-| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 cargo test --locked -- --test-threads=1` (final run, after the review fixes) | lib 66, main 2, `ecs` 19 (incl. randomized and four review regressions), `local_cli` 5, `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
+| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 cargo test --locked -- --test-threads=1` (final run, after the review fixes and the incompatible-server dialog) | lib 67, main 3, `ecs` 19 (incl. randomized and four review regressions), `local_cli` 6 (incl. `migration.py`), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
 | `PROPTEST_CASES=2048 cargo test --locked --test ecs` and `PROPTEST_CASES=8192 …` (final gate) | 19 passed each; the randomized test found three defects during development, all fixed (see Review) |
 | `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 cargo test --locked --test zor_integration` | 1 passed |
 | `cargo doc --no-deps --locked` | generated, no warnings |

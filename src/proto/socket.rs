@@ -260,8 +260,10 @@ fn negotiate(stream: &mut UnixStream, client: bool) -> io::Result<()> {
             stream.write_all(CONTROL_PREFACE)?;
         }
         if &received != CONTROL_PREFACE {
+            // `Unsupported` lets callers recognise a version mismatch (as opposed to a broken or
+            // foreign peer) and offer the operator a way out.
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
+                io::ErrorKind::Unsupported,
                 "incompatible fux control protocol; expected FUXCTL2; use matching versions or restart the session server after saving your work",
             ));
         }

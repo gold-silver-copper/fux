@@ -8,7 +8,7 @@ mod startup;
 
 pub use descriptor::{
     Descriptor, DescriptorError, MAX_DESCRIPTOR_BYTES, ManagerIdentity, read_descriptor,
-    recover_stale_descriptors, remove_descriptor, write_descriptor,
+    recorded_servers, recover_stale_descriptors, remove_descriptor, write_descriptor,
 };
 pub use paths::{DaemonPaths, PathError};
 pub use rpc::{

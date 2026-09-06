@@ -250,3 +250,76 @@ pub fn random_token() -> std::io::Result<String> {
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
+
+/// Workspace names and server pids recorded in the descriptor directory, read leniently: this is
+/// how a viewer identifies an older, protocol-incompatible server so the operator can decide what
+/// to do with it. Unreadable or malformed files are skipped.
+#[must_use]
+pub fn recorded_servers(paths: &DaemonPaths) -> Vec<(String, u32)> {
+    let Ok(entries) = fs::read_dir(&paths.descriptors_dir) else {
+        return Vec::new();
+    };
+    let mut servers = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "json") {
+            continue;
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).custom_flags(nix::libc::O_NOFOLLOW);
+        let Ok(file) = options.open(&path) else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        if file
+            .take(MAX_DESCRIPTOR_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() as u64 > MAX_DESCRIPTOR_BYTES
+        {
+            continue;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        let name = value.get("name").and_then(serde_json::Value::as_str);
+        let pid = value
+            .get("pid")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok());
+        if let (Some(name), Some(pid)) = (name, pid)
+            && crate::ids::validate_workspace_name(name).is_ok()
+        {
+            servers.push((name.to_owned(), pid));
+        }
+    }
+    servers.sort();
+    servers
+}
+
+#[cfg(test)]
+mod recorded_tests {
+    use super::*;
+
+    #[test]
+    fn recorded_servers_reads_older_descriptors_leniently() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = std::env::temp_dir().join(format!("fux-desc-{}", std::process::id()));
+        let paths = DaemonPaths::from_env(
+            Some(root.clone().into_os_string()),
+            Some(root.clone().into_os_string()),
+            Some(root.clone().into_os_string()),
+        )?;
+        paths.prepare()?;
+        let dir = &paths.descriptors_dir;
+        fs::write(
+            dir.join("default.json"),
+            br#"{"name":"default","pid":4242,"instance_nonce":"n","socket_path":"/x","protocol":2,"extra":true}"#,
+        )?;
+        fs::write(dir.join("broken.json"), b"{")?;
+        fs::write(dir.join("notes.txt"), br#"{"name":"x","pid":1}"#)?;
+        assert_eq!(recorded_servers(&paths), vec![("default".to_owned(), 4242)]);
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
+    }
+}

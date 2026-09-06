@@ -43,3 +43,8 @@ fn detach_sends_preceding_input_waits_for_exit_and_drops_the_suffix() {
 fn real_viewer_scenarios_cover_the_interaction_contract() {
     run("viewer.py");
 }
+
+#[test]
+fn incompatible_server_dialog_keeps_the_old_server_unless_confirmed() {
+    run("migration.py");
+}
