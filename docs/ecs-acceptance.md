@@ -648,7 +648,7 @@ draining, stale generations ignored, bounded ingest).
 |---|---|
 | `cargo fmt --all --check` | clean |
 | `cargo clippy --all-targets --locked -- -D warnings` | clean |
-| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 PROPTEST_CASES=2048 cargo test --locked -- --test-threads=1` | lib 81, main 2, `ecs` 21 (randomized at 2048 cases, pacing test), `local_cli` 6 (all Python harnesses), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
+| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 PROPTEST_CASES=2048 cargo test --locked -- --test-threads=1` | lib 82, main 2, `ecs` 21 (randomized at 2048 cases, pacing test), `local_cli` 6 (all Python harnesses), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
 | `cargo doc --no-deps --locked` | generated, no warnings |
 | `cargo +1.95.0 check --all-targets --locked` | passed (MSRV) |
 | `cargo test --locked --manifest-path tests/verify/fixture-child/Cargo.toml` | 3 + 8 + 2 passed |
