@@ -43,3 +43,8 @@ fn detach_sends_preceding_input_waits_for_exit_and_drops_the_suffix() {
 fn real_viewer_scenarios_cover_the_interaction_contract() {
     run("viewer.py");
 }
+
+#[test]
+fn a_full_agent_session_runs_headlessly_over_the_control_protocol() {
+    run("agent_headless.py");
+}

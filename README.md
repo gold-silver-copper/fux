@@ -133,6 +133,25 @@ viewers have seen it (or after five seconds). Other natural exits close the pane
 tab closes. Confirmed close and `kill` send SIGHUP to the pane's process group, SIGKILL after one
 second, and reap it. Workspace kill and server shutdown do the same for every pane.
 
+## Headless and agent use
+
+Everything works without a terminal. `fux workspace new NAME` starts the server and a workspace;
+`fux [NAME] <command>` drives it over the control protocol (`new`, `split`, `focus`, `kill`,
+`resize`, `send-keys`, `capture`, `list`, `tab`, `subscribe`, `info`, `wait`). Panes carry a
+monotonic output sequence, so `fux [NAME] capture PANE --rows --since SEQ` returns only the rows
+that changed. `fux [NAME] wait PANE pattern REGEX` (or `quiet MS`, `exit`, `seq N`) blocks
+server-side until the condition holds instead of polling. `fux [NAME] new --env K=V --rows R
+--columns C -- CMD` sets a pane's environment and headless size, and `fux [NAME] send-keys PANE
+--keys "C-c Enter"` sends named keys.
+
+`fux run -- COMMAND` is the one-shot convenience: it creates an ephemeral workspace, runs the
+command in a pane of a given size and environment, streams its screen, waits for it to exit,
+prints the final screen and exits with the command's status.
+
+```sh
+fux run --rows 24 --columns 80 --env CI=1 -- pytest -q
+```
+
 ## Working with koh and zor
 
 fux composes with the independently built koh and zor programs through process protocols
