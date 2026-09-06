@@ -72,11 +72,7 @@ pub fn failed(id: RequestId, code: ErrorCode, message: impl Into<String>) -> Rep
 }
 
 pub fn sanitize_notice(message: &str) -> String {
-    message
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(crate::view::MAX_MESSAGE_BYTES / 4)
-        .collect()
+    crate::view::printable(message, crate::view::MAX_MESSAGE_BYTES / 4)
 }
 
 pub fn viewer_entity(world: &World, id: ViewerId) -> Option<Entity> {

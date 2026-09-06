@@ -20,10 +20,13 @@ pub const MAX_PANES: usize = crate::view::MAX_PANES;
 pub const MAX_TABS: usize = crate::view::MAX_TABS;
 pub const MAX_WORKSPACES: usize = 64;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+/// A sparse TOML document deserializes over the defaults: every key is optional, unknown keys
+/// are errors, and `[bindings]` merges with the default bindings instead of replacing them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Config {
     pub prefix: String,
+    #[serde(deserialize_with = "merged_bindings")]
     pub bindings: BTreeMap<String, Action>,
     pub default_command: Command,
     pub clipboard: ClipboardPolicy,
@@ -49,8 +52,7 @@ impl Default for Config {
 impl Config {
     /// Parses a sparse TOML document over the built-in defaults.
     pub fn from_toml(input: &str) -> Result<Self, ConfigError> {
-        let patch: ConfigPatch = toml::from_str(input).map_err(ConfigError::Toml)?;
-        let candidate = patch.apply_to(Self::default());
+        let candidate: Self = toml::from_str(input).map_err(ConfigError::Toml)?;
         candidate.validate()?;
         Ok(candidate)
     }
@@ -311,45 +313,6 @@ impl Limits {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct ConfigPatch {
-    prefix: Option<String>,
-    bindings: Option<BTreeMap<String, Action>>,
-    default_command: Option<Command>,
-    clipboard: Option<ClipboardPolicy>,
-    history: Option<HistoryLimits>,
-    limits: Option<Limits>,
-    style: Option<Style>,
-}
-
-impl ConfigPatch {
-    fn apply_to(self, mut config: Config) -> Config {
-        if let Some(value) = self.prefix {
-            config.prefix = value;
-        }
-        if let Some(value) = self.bindings {
-            config.bindings.extend(value);
-        }
-        if let Some(value) = self.default_command {
-            config.default_command = value;
-        }
-        if let Some(value) = self.clipboard {
-            config.clipboard = value;
-        }
-        if let Some(value) = self.history {
-            config.history = value;
-        }
-        if let Some(value) = self.limits {
-            config.limits = value;
-        }
-        if let Some(value) = self.style {
-            config.style = value;
-        }
-        config
-    }
-}
-
 #[derive(Debug)]
 pub enum ConfigError {
     NoConfigHome,
@@ -426,6 +389,15 @@ pub fn default_shell_from(
                 "/bin/sh".to_owned()
             }
         })
+}
+
+fn merged_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, Action>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let mut bindings = default_bindings();
+    bindings.extend(BTreeMap::<String, Action>::deserialize(deserializer)?);
+    Ok(bindings)
 }
 
 fn default_bindings() -> BTreeMap<String, Action> {

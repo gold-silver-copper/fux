@@ -164,26 +164,12 @@ impl Controller {
     /// A transient confirmation shown in the bar until the next key or [`NOTICE_TTL`].
     pub fn report_info(&mut self, message: impl Into<String>) {
         self.notice_since = Some(std::time::Instant::now());
-        self.info = Some(
-            message
-                .into()
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(256)
-                .collect(),
-        );
+        self.info = Some(crate::view::printable(&message.into(), 256));
     }
 
     pub fn report_error(&mut self, error: impl Into<String>) {
         self.notice_since = Some(std::time::Instant::now());
-        self.error = Some(
-            error
-                .into()
-                .chars()
-                .filter(|c| !c.is_control())
-                .take(256)
-                .collect(),
-        );
+        self.error = Some(crate::view::printable(&error.into(), 256));
     }
 
     pub fn error(&self) -> Option<&str> {

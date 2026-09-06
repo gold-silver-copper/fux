@@ -9,6 +9,7 @@ pub mod input;
 pub mod io;
 pub mod render;
 pub mod screen;
+pub mod text;
 
 use crate::commands::Action;
 use crate::config::Config;

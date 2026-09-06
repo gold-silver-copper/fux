@@ -11,6 +11,16 @@ use unicode_width::UnicodeWidthStr as _;
 pub const MAX_DIM: u16 = crate::terminal::MAX_DIM;
 pub const MAX_CELL_TEXT_BYTES: usize = 22;
 pub const MAX_TITLE_BYTES: usize = 1024;
+
+/// `text` without control characters, at most `max_chars` characters: the one rule for titles,
+/// labels and notices that cross the wire or reach the screen.
+#[must_use]
+pub fn printable(text: &str, max_chars: usize) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .take(max_chars)
+        .collect()
+}
 pub const MAX_LABEL_BYTES: usize = 128;
 pub const MAX_PANES: usize = 128;
 pub const MAX_TABS: usize = 32;
