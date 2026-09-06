@@ -368,8 +368,8 @@ Baseline: `main` at `5449616` (0.3.3). Counts are `wc -l` over `git ls-files` fo
 
 | Class | Baseline | 0.4.0 | Change |
 |---|---|---|---|
-| production Rust (`src/`) | 15,978 | 15,320 | −658 (−4.1 %) |
-| test Rust (`tests/`, fixture-child) | 3,496 | 3,551 | +55 (one regression test from the review) |
+| production Rust (`src/`) | 15,978 | 15,336 | −642 (−4.0 %) |
+| test Rust (`tests/`, fixture-child) | 3,496 | 3,569 | +73 (one regression test from the reviews) |
 | Python harnesses and tools | 1,424 | 1,443 | +19 (harness waits, see the assertion ledger) |
 | `docs/*.md` | 5,037 | 939 | historical audits and plans removed |
 | root `*.md` | 1,423 | 332 | prompts removed, HANDOFF rewritten |
@@ -384,7 +384,7 @@ inventoried and rejected as adding lines; see the pull request for the full ledg
 moved between files and counted as removed; `client/text.rs`, `daemon/migration.rs` and the
 `ecs::support` helpers are counted at their new size.
 
-By area (production Rust): `ecs/` 3,781 → 3,627, `client/` 4,544 → 4,404, `server/` 1,243 →
+By area (production Rust): `ecs/` 3,781 → 3,643, `client/` 4,544 → 4,404, `server/` 1,243 →
 1,240, `main.rs` 839 → 665, `daemon/` 1,029 → 1,135 (the incompatible-server dialog moved here
 from `main.rs`), `proto/` 1,313 → 1,238, the rest (`layout`, `terminal`, `view`, `commands`,
 `config`, `ids`, `os`) 3,229 → 3,011. The duplicated implementations that were removed are listed
@@ -500,7 +500,12 @@ commit (only stronger wait conditions).
 
 A verification pass by the same reviewer after these fixes is recorded below.
 
-VERIFICATION_RECORD
+The verification pass (same second reviewer, after the fixes): items 1–4, 6 and 7 FIXED (the
+links and the prompt are untracked and ignored by path; the departure case is discounted, its
+test fails without the fix; the comments are in place; `each_viewer` walks the query once),
+item 5 corrected apart from the three line counts the fix commit itself moved (refreshed below),
+no new finding introduced. Verdict: no open P0, P1 or P2; the branch may leave draft once the
+gate on the final tree is clean.
 
 ## Platform and CI limits
 
