@@ -299,7 +299,30 @@ pub fn key_byte(value: &str) -> Option<u8> {
 #[serde(deny_unknown_fields)]
 pub struct ClientBindings {
     prefix: u8,
+    /// Actions this build does not know (a server of another release) are dropped rather than
+    /// failing the whole frame, so binding-set changes never break attachment.
+    #[serde(deserialize_with = "known_actions")]
     bindings: BTreeMap<u8, Action>,
+}
+
+fn known_actions<'de, D>(deserializer: D) -> Result<BTreeMap<u8, Action>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Maybe {
+        Known(Action),
+        Unknown(serde::de::IgnoredAny),
+    }
+    let raw: BTreeMap<u8, Maybe> = BTreeMap::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|(key, action)| match action {
+            Maybe::Known(action) => Some((key, action)),
+            Maybe::Unknown(_) => None,
+        })
+        .collect())
 }
 
 impl ClientBindings {
@@ -406,6 +429,20 @@ mod tests {
         }
         assert_eq!(bindings.entries().len(), Action::ALL.len());
         assert_eq!(bindings.action(bindings.prefix()), None);
+    }
+
+    #[test]
+    fn unknown_actions_from_another_release_are_dropped_not_fatal() {
+        let json = r#"{"prefix":1,"bindings":{"63":"help","120":"close-pane","88":"close-tab"}}"#;
+        let bindings: ClientBindings = serde_json::from_str(json).unwrap_or_default();
+        assert_eq!(bindings.action(b'x'), Some(Action::ClosePane));
+        assert_eq!(
+            bindings.action(b'X'),
+            Some(Action::CloseTab),
+            "an older server's shifted binding still matches exactly first"
+        );
+        assert_eq!(bindings.action(b'?'), None, "unknown `help` dropped");
+        assert_eq!(bindings.entries().len(), 2);
     }
 
     #[test]

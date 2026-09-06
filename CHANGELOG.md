@@ -12,6 +12,9 @@
   and new workspace from `S` to `a`.
 - The `?` "show bindings" action is removed: the prefix itself shows the column and any unknown
   key keeps it open. A configuration that binds `help` no longer parses.
+- A viewer drops binding actions it does not know instead of rejecting the frame, so a server of
+  another 0.3.x release (with a different action set) still attaches; the keys shown are the
+  server's until it is restarted.
 
 ## 0.3.2 - 2026-09-06
 
