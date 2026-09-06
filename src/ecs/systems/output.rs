@@ -1,24 +1,23 @@
 //! Output phase: pane bytes into emulators, host query replies back out, EOF/exit records.
 
-use crate::ecs::components::{Pane, PaneState, Tab};
+use crate::ecs::components::{Pane, PaneState, Tab, Workspace};
 use crate::ecs::messages::{Effect, Inbound};
-use crate::ecs::resources::{Clock, Ids, Limits};
-use crate::ecs::support::Effects;
+use crate::ecs::support::{Effects, Step};
 use crate::proto::control::Event;
 use bevy_ecs::prelude::*;
 
 /// Applies this step's pane events in arrival order: bytes, then EOF, then the exit status.
 pub fn apply_pane_output(
     mut inbound: MessageReader<Inbound>,
-    clock: Res<Clock>,
-    limits: Res<Limits>,
-    ids: Res<Ids>,
+    step: Step,
     mut panes: Query<&mut Pane>,
     tabs: Query<&Tab>,
+    workspaces: Query<&Workspace>,
     mut effects: Effects,
 ) {
-    let now = clock.now_ms;
-    let interval = limits.output_event_interval_ms;
+    let now = step.clock.now_ms;
+    let interval = step.limits.output_event_interval_ms;
+    let ids = &step.ids;
     for message in inbound.read() {
         match message {
             Inbound::PaneOutput { pane, bytes } => {
@@ -46,14 +45,17 @@ pub fn apply_pane_output(
                         bytes: replies,
                     });
                 }
-                let workspace = tabs.get(component.tab).map(|tab| tab.workspace);
+                let workspace = tabs
+                    .get(component.tab)
+                    .and_then(|tab| workspaces.get(tab.workspace))
+                    .map(|workspace| workspace.name.clone());
                 if let Ok(workspace) = workspace {
                     if publish_output {
-                        effects.event(workspace, Event::PaneOutput { id: 0, pane: *pane });
+                        effects.event(&workspace, Event::PaneOutput { id: 0, pane: *pane });
                     }
                     if title_changed {
                         effects.event(
-                            workspace,
+                            &workspace,
                             Event::PaneTitle {
                                 id: 0,
                                 pane: *pane,

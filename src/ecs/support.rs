@@ -3,7 +3,7 @@
 
 use super::components::{Creation, Pane, PaneState, Selection, Tab, Viewer, Workspace};
 use super::messages::{Effect, Requester};
-use super::resources::{Ids, Registry};
+use super::resources::{Clock, Ids, Limits, Registry};
 use crate::ids::{PaneId, TabId, ViewerId};
 use crate::layout::Rect;
 use crate::proto::attach::ServerMessage;
@@ -15,23 +15,31 @@ pub fn effect(world: &mut World, effect: Effect) {
     world.resource_mut::<Messages<Effect>>().write(effect);
 }
 
+/// The step's read-only context: clock, limits and the identity registry.
+#[derive(SystemParam)]
+pub struct Step<'w> {
+    pub clock: Res<'w, Clock>,
+    pub limits: Res<'w, Limits>,
+    pub ids: Res<'w, Ids>,
+}
+
 /// Deferred viewer removal for typed systems: the entity goes at the next sync point, its id is
 /// released now, and the outbox is closed after the messages already queued for it.
 #[derive(SystemParam)]
 pub struct ViewerExit<'w, 's> {
     commands: Commands<'w, 's>,
-    ids: ResMut<'w, Ids>,
 }
 
 impl ViewerExit<'_, '_> {
     pub fn despawn(
         &mut self,
+        ids: &mut Ids,
         viewer: Entity,
         id: ViewerId,
-        workspace: Entity,
+        workspace: &str,
         effects: &mut Effects,
     ) {
-        self.ids.viewers.remove(&id);
+        ids.viewers.remove(&id);
         self.commands.entity(viewer).despawn();
         effects.emit(Effect::CloseViewer { viewer: id });
         effects.event(
@@ -47,24 +55,21 @@ impl ViewerExit<'_, '_> {
 /// The effect outlet of a typed system: effects and control events, the latter named by the
 /// workspace they concern.
 #[derive(SystemParam)]
-pub struct Effects<'w, 's> {
+pub struct Effects<'w> {
     writer: MessageWriter<'w, Effect>,
-    workspaces: Query<'w, 's, &'static Workspace>,
 }
 
-impl Effects<'_, '_> {
+impl Effects<'_> {
     pub fn emit(&mut self, effect: Effect) {
         self.writer.write(effect);
     }
 
-    /// Publishes a control event for `workspace`; a despawned workspace has no subscribers.
-    pub fn event(&mut self, workspace: Entity, event: control::Event) {
-        if let Ok(workspace) = self.workspaces.get(workspace) {
-            self.writer.write(Effect::Event {
-                workspace: workspace.name.clone(),
-                event,
-            });
-        }
+    /// Publishes a control event for the workspace called `workspace`.
+    pub fn event(&mut self, workspace: &str, event: control::Event) {
+        self.writer.write(Effect::Event {
+            workspace: workspace.to_owned(),
+            event,
+        });
     }
 }
 

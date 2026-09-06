@@ -3,7 +3,7 @@
 
 use crate::ecs::components::{Pane, PaneState, Tab, Viewer, Workspace};
 use crate::ecs::messages::{Effect, Inbound};
-use crate::ecs::resources::Registry;
+use crate::ecs::resources::{Ids, Registry};
 use crate::ecs::support::{Effects, ViewerExit};
 use crate::proto::attach::ServerMessage;
 use crate::view::{Frame, PaneRect, PaneView, TabEntry};
@@ -21,6 +21,7 @@ pub struct Scene<'w, 's> {
 pub fn publish_frames(
     mut viewers: Query<(Entity, &mut Viewer)>,
     scene: Scene,
+    mut ids: ResMut<Ids>,
     mut exit: ViewerExit,
     mut effects: Effects,
 ) {
@@ -42,7 +43,12 @@ pub fn publish_frames(
                     message: ServerMessage::Exited { code: None },
                 });
             }
-            exit.despawn(entity, id, viewer.workspace, &mut effects);
+            let name = scene
+                .workspaces
+                .get(viewer.workspace)
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_default();
+            exit.despawn(&mut ids, entity, id, &name, &mut effects);
             continue;
         }
         let retiring = scene

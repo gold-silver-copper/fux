@@ -8,9 +8,9 @@ use crate::ecs::messages::{
 };
 use crate::ecs::resources::{Clock, Ids, Limits, ShuttingDown, WorkspaceCounter};
 use crate::ecs::support::{
-    close_tab, effect, event, failed, focus_in_tab, mark_tab_dirty, mark_workspace_dirty,
-    pane_entity, pane_id, remove_from_layout, reply, sanitize_notice, tab_entity, terminate_pane,
-    viewer_entity, viewers_of_workspace, workspace_entity, write_pane,
+    Effects, ViewerExit, close_tab, effect, event, failed, focus_in_tab, mark_tab_dirty,
+    mark_workspace_dirty, pane_entity, pane_id, remove_from_layout, reply, sanitize_notice,
+    tab_entity, terminate_pane, viewer_entity, viewers_of_workspace, workspace_entity, write_pane,
 };
 use crate::ecs::systems::creation::{NewPane, reserve_pane, reserve_tab, reserve_workspace};
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
@@ -25,98 +25,117 @@ use crate::view::{MouseEncoding, MouseMode, PaneModes, PaneView};
 use bevy_ecs::prelude::*;
 use std::collections::VecDeque;
 
-pub fn apply_attachments(world: &mut World) {
-    let inbound: Vec<Inbound> = world
-        .resource::<Messages<Inbound>>()
-        .iter_current_update_messages()
-        .filter(|message| {
-            matches!(
-                message,
-                Inbound::ViewerAttached { .. } | Inbound::ViewerGone { .. } | Inbound::Shutdown
-            )
-        })
-        .cloned()
-        .collect();
-    for message in inbound {
+/// Ingest: viewer arrivals and departures and the shutdown flag. Spawns apply at the sync point
+/// before the requests phase, so a viewer's first queued requests find its entity.
+/// What an arriving viewer needs: the registry to claim an id in, the limits and clock, the
+/// workspace it targets and the viewers already there.
+#[derive(bevy_ecs::system::SystemParam)]
+pub struct Arrivals<'w, 's> {
+    commands: Commands<'w, 's>,
+    ids: ResMut<'w, Ids>,
+    limits: Res<'w, Limits>,
+    clock: Res<'w, Clock>,
+    shutting_down: ResMut<'w, ShuttingDown>,
+    workspaces: Query<'w, 's, &'static mut Workspace>,
+    viewers: Query<'w, 's, &'static Viewer>,
+}
+
+pub fn apply_attachments(
+    mut inbound: MessageReader<Inbound>,
+    mut arrivals: Arrivals,
+    mut exit: ViewerExit,
+    mut effects: Effects,
+) {
+    let Arrivals {
+        commands,
+        ids,
+        limits,
+        clock,
+        shutting_down,
+        workspaces,
+        viewers,
+    } = &mut arrivals;
+    for message in inbound.read() {
         match message {
             Inbound::ViewerAttached {
-                viewer,
+                viewer: id,
                 workspace,
                 rows,
                 cols,
-            } => attach(world, viewer, &workspace, rows, cols),
-            Inbound::ViewerGone { viewer } => {
-                if let Some(entity) = viewer_entity(world, viewer) {
-                    despawn_viewer(world, entity);
+            } => {
+                let id = *id;
+                let refuse = |effects: &mut Effects, message: &str| {
+                    effects.emit(Effect::ToViewer {
+                        viewer: id,
+                        message: ServerMessage::Error {
+                            message: message.to_owned(),
+                        },
+                    });
+                    effects.emit(Effect::CloseViewer { viewer: id });
+                };
+                let Some(entity) = ids.workspace(workspace) else {
+                    refuse(&mut effects, "workspace does not exist");
+                    continue;
+                };
+                let Ok(mut target) = workspaces.get_mut(entity) else {
+                    refuse(&mut effects, "workspace does not exist");
+                    continue;
+                };
+                if !target.open || target.retiring.is_some() {
+                    refuse(&mut effects, "workspace is not accepting viewers");
+                    continue;
+                }
+                let attached = viewers
+                    .iter()
+                    .filter(|viewer| viewer.workspace == entity && !viewer.detaching)
+                    .count();
+                if attached >= limits.max_viewers {
+                    refuse(&mut effects, "viewer limit reached for this workspace");
+                    continue;
+                }
+                target.last_attached = clock.step;
+                let viewer = commands
+                    .spawn(Viewer {
+                        id,
+                        workspace: entity,
+                        rows: *rows,
+                        cols: *cols,
+                        selection: target.selection.clone(),
+                        queue: VecDeque::new(),
+                        barrier: None,
+                        generation: 0,
+                        layout: Vec::new(),
+                        dirty: true,
+                        notice: None,
+                        after_frame: Vec::new(),
+                        detaching: false,
+                        exit_sent: false,
+                    })
+                    .id();
+                ids.viewers.insert(id, viewer);
+                effects.event(
+                    workspace,
+                    Event::ClientAttached {
+                        id: 0,
+                        client: id.0,
+                    },
+                );
+            }
+            Inbound::ViewerGone { viewer: id } => {
+                if let Some(entity) = ids.viewer(*id)
+                    && let Ok(viewer) = viewers.get(entity)
+                {
+                    let name = workspaces
+                        .get(viewer.workspace)
+                        .map(|workspace| workspace.name.clone())
+                        .unwrap_or_default();
+                    exit.despawn(ids, entity, *id, &name, &mut effects);
                 }
             }
-            Inbound::Shutdown => world.resource_mut::<ShuttingDown>().0 = true,
+            Inbound::Shutdown => shutting_down.0 = true,
             _ => {}
         }
     }
-}
-
-fn attach(world: &mut World, id: ViewerId, workspace: &str, rows: u16, cols: u16) {
-    let refuse = |world: &mut World, message: &str| {
-        effect(
-            world,
-            Effect::ToViewer {
-                viewer: id,
-                message: ServerMessage::Error {
-                    message: message.to_owned(),
-                },
-            },
-        );
-        effect(world, Effect::CloseViewer { viewer: id });
-    };
-    let Some(entity) = workspace_entity(world, workspace) else {
-        return refuse(world, "workspace does not exist");
-    };
-    let open = world
-        .get::<Workspace>(entity)
-        .is_some_and(|workspace| workspace.open && workspace.retiring.is_none());
-    if !open {
-        return refuse(world, "workspace is not accepting viewers");
-    }
-    let limit = world.resource::<Limits>().max_viewers;
-    if viewers_of_workspace(world, entity).len() >= limit {
-        return refuse(world, "viewer limit reached for this workspace");
-    }
-    let step = world.resource::<Clock>().step;
-    let selection = world
-        .get_mut::<Workspace>(entity)
-        .map(|mut workspace| {
-            workspace.last_attached = step;
-            workspace.selection.clone()
-        })
-        .unwrap_or_default();
-    let viewer = world
-        .spawn(Viewer {
-            id,
-            workspace: entity,
-            rows,
-            cols,
-            selection,
-            queue: VecDeque::new(),
-            barrier: None,
-            generation: 0,
-            layout: Vec::new(),
-            dirty: true,
-            notice: None,
-            after_frame: Vec::new(),
-            detaching: false,
-            exit_sent: false,
-        })
-        .id();
-    world.resource_mut::<Ids>().viewers.insert(id, viewer);
-    event(
-        world,
-        entity,
-        Event::ClientAttached {
-            id: 0,
-            client: id.0,
-        },
-    );
 }
 
 pub fn despawn_viewer(world: &mut World, viewer: Entity) {
