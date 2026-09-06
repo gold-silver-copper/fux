@@ -338,6 +338,14 @@ async fn serve_control_connection(
             return Ok(());
         }
         let request_id = request.id();
+        // A `wait` replies only when its condition or its own timeout fires, so the reply window
+        // must outlast the requested timeout; every other request keeps the fixed 30 s answer cap.
+        let answer_window = match &request {
+            Request::Wait { timeout_ms, .. } => {
+                Duration::from_millis(*timeout_ms).saturating_add(Duration::from_secs(5))
+            }
+            _ => Duration::from_secs(30),
+        };
         let token = owner.token();
         let (sender, receiver) = oneshot::channel();
         owner.control_replies.send((token, sender)).await?;
@@ -349,7 +357,7 @@ async fn serve_control_connection(
                 token,
             })
             .await?;
-        let reply = match tokio::time::timeout(Duration::from_secs(30), receiver).await {
+        let reply = match tokio::time::timeout(answer_window, receiver).await {
             Ok(Ok(reply)) => reply,
             _ => Reply::failed(
                 request_id,

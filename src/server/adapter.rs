@@ -322,9 +322,12 @@ fn publish(subscribers: &Mutex<Vec<Subscriber>>, event: &Event) {
         {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
-                // Output notifications are advisory and may be dropped; anything else means the
-                // subscriber is too slow and is disconnected.
-                kind == EventKind::PaneOutput
+                // High-frequency notifications are advisory and may be dropped; a full queue of
+                // structural events means the subscriber is too slow and is disconnected.
+                matches!(
+                    kind,
+                    EventKind::PaneOutput | EventKind::PaneTitle | EventKind::PaneAgent
+                )
             }
             Err(mpsc::error::TrySendError::Closed(_)) => false,
         }

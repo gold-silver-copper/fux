@@ -1036,6 +1036,25 @@ fn output_sequences_are_reported_by_list_capture_and_paced_events() {
         harness.replies(viewer).last(),
         Some(Reply::Completed { result: CommandResult::Capture { seq, .. }, .. }) if *seq == after
     ));
+    // A byte that changes nothing observable (a bell) fires no pane.output event.
+    harness.events.clear();
+    let quiet_seq = pane_seq(&mut harness, viewer, PaneId(1));
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"\x07".to_vec(),
+    }]);
+    assert_eq!(
+        pane_seq(&mut harness, viewer, PaneId(1)),
+        quiet_seq,
+        "a bell advances no sequence"
+    );
+    assert!(
+        !harness
+            .events
+            .iter()
+            .any(|(_, event)| matches!(event, Event::PaneOutput { .. })),
+        "a bell fires no output event"
+    );
     // A second change inside the event interval produces no event yet but proposes a deadline.
     harness.events.clear();
     harness.step(vec![Inbound::PaneOutput {

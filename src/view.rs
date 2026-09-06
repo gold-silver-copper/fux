@@ -205,10 +205,9 @@ impl AgentReport {
                 .agent
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-            && self
-                .message
-                .as_ref()
-                .is_none_or(|message| message.len() <= MAX_AGENT_MESSAGE_BYTES)
+            && self.message.as_ref().is_none_or(|message| {
+                message.len() <= MAX_AGENT_MESSAGE_BYTES && !message.chars().any(char::is_control)
+            })
     }
 }
 

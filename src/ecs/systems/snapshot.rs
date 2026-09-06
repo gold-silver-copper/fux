@@ -103,6 +103,12 @@ pub fn refresh_grids(
             continue;
         }
         pane.event_pending = false;
+        let seq = pane.terminal.grid().seq();
+        // Bytes that changed nothing (a bell, a no-op escape) advance no sequence and owe no event.
+        if seq == pane.last_event_seq {
+            continue;
+        }
+        pane.last_event_seq = seq;
         pane.last_output_event_ms = Some(clock.now_ms);
         let workspace = tabs
             .get(pane.tab)
@@ -114,7 +120,7 @@ pub fn refresh_grids(
                 Event::PaneOutput {
                     id: 0,
                     pane: pane.id,
-                    seq: pane.terminal.grid().seq(),
+                    seq,
                 },
             );
         }

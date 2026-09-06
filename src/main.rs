@@ -411,10 +411,18 @@ fn send_control(
 ) -> Result<ExitCode> {
     use std::io::Write as _;
     use std::os::unix::net::UnixStream;
+    // A `wait` reply arrives only when its condition or timeout fires, so its read window must
+    // outlast the requested timeout; everything else keeps the 30 s answer window.
+    let answer_window = match &request {
+        fux::proto::control::Request::Wait { timeout_ms, .. } => {
+            std::time::Duration::from_millis(*timeout_ms) + std::time::Duration::from_secs(5)
+        }
+        _ => std::time::Duration::from_secs(30),
+    };
     let socket = control_path(workspace)?;
     let mut stream = UnixStream::connect(&socket)
         .map_err(|error| anyhow::anyhow!("connecting to {}: {error}", socket.display()))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    stream.set_read_timeout(Some(answer_window))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(2)))?;
     fux::proto::socket::negotiate_client(&mut stream)?;
     fux::proto::control::write_frame(&mut stream, &request)?;
@@ -435,7 +443,7 @@ fn send_control(
             print_line(&frame)?;
         }
     }
-    let frame = fux::daemon::read_json_frame(&mut stream, std::time::Duration::from_secs(30))?;
+    let frame = fux::daemon::read_json_frame(&mut stream, answer_window)?;
     let reply: fux::proto::control::Reply = serde_json::from_slice(&frame)?;
     print_line(&frame)?;
     Ok(status(matches!(
@@ -465,7 +473,7 @@ fn run_open_control(socket: &std::path::Path) -> Result<std::os::unix::net::Unix
 }
 
 fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
-    use fux::proto::control::{CaptureFormat, CommandResult, Reply, Request, WaitUntil};
+    use fux::proto::control::{CaptureFormat, CommandResult, Reply, Request};
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
@@ -478,8 +486,6 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
             .parse()?;
         rest.drain(position..=position + 1);
     }
-    // `run` always uses a fresh, ephemeral workspace so the command's screen can be read live and
-    // the workspace cleans itself up; --workspace only names it (it must not already exist).
     let mut named = name.map(str::to_owned);
     if let Some(position) = rest.iter().position(|a| a == "--workspace") {
         named = Some(
@@ -501,10 +507,14 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
     fux::ids::validate_workspace_name(&workspace)?;
     let paths = fux::daemon::DaemonPaths::discover()?;
     paths.prepare()?;
+    // `run` owns an ephemeral workspace it kills at the end, so it must create it: a name that
+    // already exists is refused rather than borrowed and then destroyed.
     {
         let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
         match resolve(&paths, Some(&workspace))? {
-            Some(_) => {}
+            Some(_) => bail!(
+                "workspace {workspace:?} already exists; `run` needs a fresh name (it removes the workspace when the command exits)"
+            ),
             None => {
                 start_server(&paths, &workspace)?;
             }
@@ -512,11 +522,32 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
     }
     let socket = paths.control_socket(&workspace)?;
     let short = std::time::Duration::from_secs(30);
+    // Subscribe to pane.closed before the command exists, so the exit status is caught even for a
+    // command that exits immediately (a pane is removed on exit and cannot be waited on afterward).
+    let mut events = run_open_control(&socket)?;
+    events.set_read_timeout(Some(
+        std::time::Duration::from_millis(timeout_ms) + std::time::Duration::from_secs(5),
+    ))?;
+    fux::proto::control::write_frame(
+        &mut events,
+        &Request::Subscribe {
+            id: 1,
+            events: vec![fux::proto::control::EventKind::PaneClosed],
+        },
+    )?;
+    let accepted = fux::daemon::read_json_frame(&mut events, short)?;
+    anyhow::ensure!(
+        matches!(
+            serde_json::from_slice::<Reply>(&accepted),
+            Ok(Reply::Accepted { .. })
+        ),
+        "run could not subscribe to pane events"
+    );
     let mut control = run_open_control(&socket)?;
     let split = request_reply(
         &mut control,
         &Request::Split {
-            id: 1,
+            id: 2,
             axis: fux::layout::Axis::Horizontal,
             target: None,
             cwd,
@@ -532,11 +563,18 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
             result: CommandResult::Pane { pane },
             ..
         } => pane,
-        Reply::Failed { error, .. } => bail!("run could not start the command: {}", error.message),
+        Reply::Failed { error, .. } => {
+            let _ = fux::daemon::manager_request(
+                &paths.manager_socket,
+                &fux::daemon::ManagerRequest::Kill {
+                    name: workspace.clone(),
+                },
+            );
+            bail!("run could not start the command: {}", error.message);
+        }
         other => bail!("unexpected split reply: {other:?}"),
     };
-    // A background reader accumulates the pane's rows while it is alive, so the final screen
-    // survives the pane's removal on exit.
+    // A background reader accumulates the pane's rows while it is alive.
     let model: Arc<Mutex<BTreeMap<u16, String>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let done = Arc::new(AtomicBool::new(false));
     let reader = {
@@ -578,30 +616,32 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
             }
         })
     };
-    let wait = request_reply(
-        &mut control,
-        &Request::Wait {
-            id: 2,
-            pane,
-            until: WaitUntil::Exit,
-            timeout_ms,
-        },
-        std::time::Duration::from_millis(timeout_ms) + std::time::Duration::from_secs(5),
-    );
+    // Read pane.closed events until ours arrives (or the window elapses).
+    let mut exit_status = None;
+    loop {
+        let frame = match fux::daemon::read_json_frame(
+            &mut events,
+            std::time::Duration::from_millis(timeout_ms) + std::time::Duration::from_secs(5),
+        ) {
+            Ok(frame) => frame,
+            Err(_) => {
+                eprintln!("fux run: the command did not exit within the timeout");
+                break;
+            }
+        };
+        if let Ok(fux::proto::control::Event::PaneClosed {
+            pane: closed,
+            exit_status: code,
+            ..
+        }) = serde_json::from_slice(&frame)
+            && closed == pane
+        {
+            exit_status = code.and_then(|code| u32::try_from(code).ok());
+            break;
+        }
+    }
     done.store(true, Ordering::Relaxed);
     let _ = reader.join();
-    let exit_status = match wait {
-        Ok(Reply::Completed {
-            result: CommandResult::Waited { exit_status, .. },
-            ..
-        }) => exit_status,
-        Ok(Reply::Failed { error, .. }) => {
-            eprintln!("fux run: {}", error.message);
-            None
-        }
-        Ok(other) => bail!("unexpected wait reply: {other:?}"),
-        Err(error) => return Err(error),
-    };
     {
         use std::io::Write as _;
         let mut stdout = std::io::stdout().lock();
@@ -621,7 +661,6 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
         }
         stdout.flush()?;
     }
-    // Clean up the ephemeral workspace; a sole-pane exit already began retirement, so ignore errors.
     let _ = fux::daemon::manager_request(
         &paths.manager_socket,
         &fux::daemon::ManagerRequest::Kill {

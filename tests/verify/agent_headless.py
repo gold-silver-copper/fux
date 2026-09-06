@@ -92,16 +92,39 @@ with tempfile.TemporaryDirectory(prefix='fah-', dir='/tmp') as directory:
     assert 'agent-pane' in text, text
     assert rows['result']['value']['since_applied'] is True, rows
 
-    # React in key notation (single-char tokens plus the named Enter), then wait for exit.
+    # Observe the exit through a pane.closed subscription opened before the command can exit, so
+    # the race between "react" and "the pane is removed on exit" cannot lose the status.
+    events = socket.socket(socket.AF_UNIX)
+    events.settimeout(15)
+    events.connect(str(control_sock))
+    events.sendall(b'FUX\n')
+    assert events.recv(4) == b'FUX\n'
+    events.sendall(json.dumps({'command': 'subscribe', 'id': 7, 'events': ['pane.closed']}).encode() + b'\n')
+    buffer = b''
+    while b'\n' not in buffer:
+        buffer += events.recv(65536)
+    accepted, buffer = buffer.split(b'\n', 1)
+    assert json.loads(accepted)['status'] == 'accepted', accepted
+
+    # React in key notation (single-char tokens plus the named Enter).
     reacted = control(control_sock, {
         'command': 'send-keys', 'id': 5, 'pane': pane, 'keys': 'o k Enter', 'notation': 'keys',
     })[0]
     assert reacted['status'] == 'completed', reacted
-    exited = control(control_sock, {
-        'command': 'wait', 'id': 6, 'pane': pane, 'until': {'kind': 'exit'}, 'timeout_ms': 10000,
-    })[0]
-    assert exited['status'] == 'completed', exited
-    assert exited['result']['value']['exit_status'] == 7, exited
+
+    # The pane.closed event carries the exit status even if the pane is already gone.
+    status = None
+    while status is None:
+        while b'\n' not in buffer:
+            chunk = events.recv(65536)
+            assert chunk, 'subscription closed before pane.closed'
+            buffer += chunk
+        line, buffer = buffer.split(b'\n', 1)
+        event = json.loads(line)
+        if event.get('event') == 'pane.closed' and event.get('pane') == pane:
+            status = event.get('exit_status')
+    events.close()
+    assert status == 7, status
 
     subprocess.run([FUX, 'workspace', 'kill', 'agent'], env=env, capture_output=True, timeout=10)
     until(lambda: not manager_sock.exists(), 'server exited and removed its sockets')

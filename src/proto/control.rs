@@ -814,10 +814,16 @@ fn named_key(name: &str) -> Option<&'static [u8]> {
     })
 }
 
+/// The most `C-`/`M-` modifiers one key token may stack, bounding recursion.
+const MAX_KEY_MODIFIERS: usize = 8;
+
 /// Decodes one token (a named key, `C-<x>`, `M-<x>`, or a literal character) into bytes.
-fn decode_token(token: &str) -> Result<Vec<u8>, ControlError> {
+fn decode_token(token: &str, depth: usize) -> Result<Vec<u8>, ControlError> {
+    if depth > MAX_KEY_MODIFIERS {
+        return Err(ControlError::invalid(None, "too many key modifiers"));
+    }
     if let Some(rest) = token.strip_prefix("C-") {
-        let inner = decode_token(rest)?;
+        let inner = decode_token(rest, depth + 1)?;
         // Control applies to a single ASCII letter or `@`-`_`; otherwise it is undefined.
         let [byte] = inner.as_slice() else {
             return Err(ControlError::invalid(
@@ -829,7 +835,7 @@ fn decode_token(token: &str) -> Result<Vec<u8>, ControlError> {
     }
     if let Some(rest) = token.strip_prefix("M-") {
         let mut bytes = vec![0x1b];
-        bytes.extend(decode_token(rest)?);
+        bytes.extend(decode_token(rest, depth + 1)?);
         return Ok(bytes);
     }
     if let Some(bytes) = named_key(token) {
@@ -850,7 +856,7 @@ fn decode_token(token: &str) -> Result<Vec<u8>, ControlError> {
 pub fn decode_key_notation(input: &str) -> Result<Vec<u8>, ControlError> {
     let mut output = Vec::with_capacity(input.len());
     for token in input.split_whitespace() {
-        output.extend(decode_token(token)?);
+        output.extend(decode_token(token, 0)?);
     }
     Ok(output)
 }
@@ -982,6 +988,8 @@ mod tests {
         assert_eq!(decode_key_notation("h i").unwrap(), b"hi");
         assert!(decode_key_notation("Nope").is_err());
         assert!(decode_key_notation("C-ab").is_err());
+        // Deeply stacked modifiers are rejected rather than recursing without bound.
+        assert!(decode_key_notation(&"M-".repeat(64)).is_err());
         // The default escapes notation is unchanged.
         assert_eq!(decode_keys("a\\n", KeyNotation::Escapes).unwrap(), b"a\n");
     }

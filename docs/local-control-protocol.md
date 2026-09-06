@@ -119,7 +119,9 @@ fired with the pane's current `seq` and `exit_status`:
 
 A pane that closes fails every wait on it with `not-found`; a viewer that disconnects drops its
 waits. The timeout is a `failed` reply with code `timeout`, never a hang. A server holds at most
-1,024 pending waits, at most 64 on one pane; `timeout_ms` and `quiet` `ms` are 1–300000.
+1,024 pending waits, at most 64 on one pane; `timeout_ms` and `quiet` `ms` are 1–300000. A
+viewer's waits are dropped when it detaches; a control-connection wait that outlives its client
+is bounded by its own timeout (there is no separate close signal on the control socket).
 
 ## Events
 
