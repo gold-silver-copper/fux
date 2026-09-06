@@ -20,6 +20,7 @@ pub const MAX_SCROLLBACK_LINES: u32 = 100_000;
 pub const MAX_EVENT_FILTERS: usize = 32;
 pub const MAX_SUBSCRIBER_QUEUE: usize = 1024;
 pub const MAX_NAME_BYTES: usize = 128;
+pub const MAX_CONTROL_CONNECTIONS: usize = 64;
 
 pub type RequestId = u64;
 
@@ -63,6 +64,8 @@ pub enum Request {
         pane: PaneId,
         keys: String,
     },
+    /// The pane's text. `format: "rows"` returns the visible rows one by one with the cursor and
+    /// the output sequence; with `since` only the rows changed after that sequence.
     Capture {
         id: RequestId,
         pane: PaneId,
@@ -71,8 +74,16 @@ pub enum Request {
         #[serde(default)]
         scrollback: u32,
         max_bytes: usize,
+        #[serde(default)]
+        format: CaptureFormat,
+        #[serde(default)]
+        since: Option<u64>,
     },
     List {
+        id: RequestId,
+    },
+    /// The server's identity, version, runtime directory and limits.
+    Info {
         id: RequestId,
     },
     Tab {
@@ -101,6 +112,7 @@ impl Request {
             | Self::SendKeys { id, .. }
             | Self::Capture { id, .. }
             | Self::List { id }
+            | Self::Info { id }
             | Self::Tab { id, .. }
             | Self::Workspace { id, .. }
             | Self::Subscribe { id, .. } => *id,
@@ -141,6 +153,9 @@ impl Request {
             Self::Capture {
                 max_bytes,
                 scrollback,
+                format,
+                since,
+                attrs,
                 ..
             } => {
                 if *max_bytes == 0 || *max_bytes > MAX_CAPTURE_BYTES {
@@ -153,6 +168,18 @@ impl Request {
                     return Err(ControlError::invalid(
                         id,
                         format!("scrollback must be at most {MAX_SCROLLBACK_LINES} lines"),
+                    ));
+                }
+                if since.is_some() && (*format != CaptureFormat::Rows || *scrollback > 0) {
+                    return Err(ControlError::invalid(
+                        id,
+                        "capture since needs format rows and no scrollback (history rows carry no sequence)",
+                    ));
+                }
+                if *format == CaptureFormat::Rows && *attrs {
+                    return Err(ControlError::invalid(
+                        id,
+                        "capture format rows carries plain text; attrs applies to the text format",
                     ));
                 }
             }
@@ -190,6 +217,61 @@ fn validate_label(id: Option<RequestId>, name: &str) -> Result<(), ControlError>
         ));
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptureFormat {
+    /// The screen (and requested history) as one text, plain or with attributes.
+    #[default]
+    Text,
+    /// Visible rows as `{row, text, wrapped}` entries with the cursor and the output sequence.
+    Rows,
+}
+
+/// One visible row of a `rows` capture: plain text without trailing blanks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureRow {
+    pub row: u16,
+    pub text: String,
+    pub wrapped: bool,
+}
+
+/// What `info` reports about the server answering the socket.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerInfo {
+    pub pid: u32,
+    pub instance_nonce: String,
+    /// The fux crate version the server was built from.
+    pub version: String,
+    pub runtime_dir: PathBuf,
+    /// The workspace the socket serves; `null` on the manager socket.
+    pub workspace: Option<String>,
+    pub limits: InfoLimits,
+}
+
+/// The configured and fixed limits a client may plan against.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InfoLimits {
+    pub workspaces: usize,
+    pub tabs: usize,
+    pub panes: usize,
+    pub viewers: usize,
+    pub scrollback_lines: usize,
+    pub control_connections: usize,
+    pub frame_bytes: usize,
+    pub capture_bytes: usize,
+    pub key_bytes: usize,
+    pub event_filters: usize,
+    pub subscriber_queue: usize,
+    pub viewer_queue: usize,
+    pub retire_grace_ms: u64,
+    pub terminate_deadline_ms: u64,
+    pub output_event_interval_ms: u64,
+    pub frame_interval_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,11 +363,34 @@ impl Reply {
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
 pub enum CommandResult {
     Unit,
-    Pane { pane: PaneId },
-    Tab { tab: TabId },
-    Workspace { name: String },
-    Capture { text: String },
-    Listing { workspaces: Vec<WorkspaceSummary> },
+    Pane {
+        pane: PaneId,
+    },
+    Tab {
+        tab: TabId,
+    },
+    Workspace {
+        name: String,
+    },
+    /// `text` plus the output sequence the text reflects.
+    Capture {
+        text: String,
+        seq: u64,
+    },
+    /// The visible rows (only the changed ones when `since_applied`), the cursor and the output
+    /// sequence they reflect.
+    Rows {
+        seq: u64,
+        cursor: crate::view::Cursor,
+        rows: Vec<CaptureRow>,
+        since_applied: bool,
+    },
+    Listing {
+        workspaces: Vec<WorkspaceSummary>,
+    },
+    Info {
+        info: Box<ServerInfo>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -317,6 +422,9 @@ pub struct PaneSummary {
     pub title: String,
     #[serde(default)]
     pub progress: Option<(u8, u8)>,
+    /// The output sequence: advances whenever the visible screen, cursor, modes, title or exit
+    /// status changed; `capture` and `pane.output` report the same counter.
+    pub seq: u64,
     pub geometry: Rect,
     pub focused: bool,
     pub cursor: crate::view::Cursor,
@@ -368,7 +476,12 @@ pub enum Event {
         title: String,
     },
     #[serde(rename = "pane.output")]
-    PaneOutput { id: RequestId, pane: PaneId },
+    PaneOutput {
+        id: RequestId,
+        pane: PaneId,
+        /// The output sequence after the change that produced the event.
+        seq: u64,
+    },
     #[serde(rename = "tab.opened")]
     TabOpened {
         id: RequestId,
@@ -628,6 +741,96 @@ mod tests {
             serde_json::from_str::<EventKind>("\"pane.output\"").ok(),
             Some(EventKind::PaneOutput)
         );
+    }
+
+    #[test]
+    fn capture_since_needs_rows_without_history_and_rows_carry_no_attrs() {
+        let base = Request::Capture {
+            id: 1,
+            pane: PaneId(1),
+            attrs: false,
+            scrollback: 0,
+            max_bytes: 100,
+            format: CaptureFormat::Rows,
+            since: Some(3),
+        };
+        assert!(base.validate().is_ok());
+        let text_since = match base.clone() {
+            Request::Capture {
+                id,
+                pane,
+                attrs,
+                scrollback,
+                max_bytes,
+                since,
+                ..
+            } => Request::Capture {
+                id,
+                pane,
+                attrs,
+                scrollback,
+                max_bytes,
+                since,
+                format: CaptureFormat::Text,
+            },
+            other => other,
+        };
+        assert!(text_since.validate().is_err());
+        let history_since = match base.clone() {
+            Request::Capture {
+                id,
+                pane,
+                attrs,
+                max_bytes,
+                format,
+                since,
+                ..
+            } => Request::Capture {
+                id,
+                pane,
+                attrs,
+                max_bytes,
+                format,
+                since,
+                scrollback: 5,
+            },
+            other => other,
+        };
+        assert!(history_since.validate().is_err());
+        let rows_attrs = match base {
+            Request::Capture {
+                id,
+                pane,
+                scrollback,
+                max_bytes,
+                format,
+                since,
+                ..
+            } => Request::Capture {
+                id,
+                pane,
+                scrollback,
+                max_bytes,
+                format,
+                since,
+                attrs: true,
+            },
+            other => other,
+        };
+        assert!(rows_attrs.validate().is_err());
+        // The defaults keep yesterday's request shape valid.
+        assert!(matches!(
+            decode_request_frame(br#"{"command":"capture","id":2,"pane":1,"max_bytes":10}"#),
+            Ok(Request::Capture {
+                format: CaptureFormat::Text,
+                since: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            decode_request_frame(br#"{"command":"info","id":3}"#),
+            Ok(Request::Info { id: 3 })
+        ));
     }
 
     #[test]

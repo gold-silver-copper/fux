@@ -81,7 +81,7 @@ pub fn reserve_pane(
                     height: rows.saturating_add(2),
                 },
                 dirty: true,
-                changed_step: 0,
+                event_pending: false,
                 published_title: String::new(),
                 last_output_event_ms: None,
             },

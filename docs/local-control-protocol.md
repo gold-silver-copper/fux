@@ -42,8 +42,9 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 | `kill` | `pane` | unit (the pane leaves the layout now; `pane.closed` follows the exit report) |
 | `resize` | `pane`, `delta` (non-zero) | unit |
 | `send-keys` | `pane`, `keys` (escapes `\n \r \t \e \\ \0 \xHH`, at most 64 KiB) | unit |
-| `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows), `max_bytes` (1–131072) | `text` |
+| `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows), `max_bytes` (1–131072), `format?` (`text` default, `rows`), `since?` (an output sequence; `rows` only, no scrollback) | `text` + `seq`, or `rows` (below) |
 | `list` | | `workspaces[]` |
+| `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{…}` |
 | `tab` | `action`: `new{name?}`, `next`, `previous`, `select{index}`, `select-id{tab}`, `rename{tab,name}`, `close{tab}` | `tab` |
 | `workspace` | `action`: `list`, `new{name?}`, `kill{name}` (only the connection's own workspace; other workspaces are killed through the manager or `fux workspace kill`), `select{name}` (viewer attachments only) | `workspace`/`workspaces[]` |
 | `subscribe` | `events?` (≤32 filters) | `accepted`, then events |
@@ -53,8 +54,8 @@ Replies are `{"status":"completed","id":N,"result":{...}}`, `{"status":"failed",
 `{"status":"accepted","id":N}` for subscriptions.
 
 Listings carry stable identities: `workspaces[].{name,focused,viewers,tabs[]}`, `tabs[].{id,index,
-name,focused,panes[]}`, `panes[].{id,command,pid,cwd,title,progress,geometry,focused,cursor,modes,
-exit_status}`. Pane and tab ids are never reused during a server's lifetime; a request naming a
+name,focused,panes[]}`, `panes[].{id,command,pid,cwd,title,progress,seq,geometry,focused,cursor,
+modes,exit_status}`. Pane and tab ids are never reused during a server's lifetime; a request naming a
 closed id fails with `not-found` even if a replacement exists. Control clients act on the
 workspace's own selection, not on any viewer's, and `list`/`capture` never change focus,
 selection or a viewport.
@@ -63,9 +64,32 @@ Ordering: requests on one connection execute in order and are applied in the sam
 viewer input. A creation reply is sent only after the pane process was started (or failed).
 Events are published after the step that produced them, in step order.
 
+## Output sequence
+
+Every pane has an output sequence `seq`: a counter that advances once for each change an observer
+can see (visible rows, cursor, terminal modes, title or exit status), never for output that
+changes nothing. It is reported by `list`, by `capture` (the value the returned text or rows
+reflect) and by `pane.output` events, and a client that remembers the sequence it last read can
+ask for only what changed since:
+
+```json
+{"command":"capture","id":4,"pane":1,"max_bytes":65536,"format":"rows","since":17}
+{"status":"completed","id":4,"result":{"kind":"rows","value":{"seq":19,"cursor":{"row":3,"column":0,"hidden":false},
+  "rows":[{"row":2,"text":"$ make","wrapped":false},{"row":3,"text":"","wrapped":false}],"since_applied":true}}}
+```
+
+`rows` lists visible rows top to bottom with trailing blanks trimmed and wide characters as one
+entry; without `since` every visible row is listed and `since_applied` is `false`. A resize
+re-stamps every row, so the next `since` capture returns the whole screen. `since` with
+`scrollback` or with the `text` format is `invalid-request` (history rows carry no sequence), as
+is `attrs` with `rows`. `max_bytes` bounds the total row text; rows past it are dropped whole.
+The sequence is current at the moment of the reply: a hidden pane's screen is read when it is
+listed, captured or its output event is due, a shown pane's whenever a viewer's frame goes out.
+
 ## Events
 
-`pane.opened`, `pane.closed` (`exit_status`), `pane.title`, `pane.output` (rate-limited per pane),
+`pane.opened`, `pane.closed` (`exit_status`), `pane.title`, `pane.output` (`seq`; at most one per
+pane per 250 ms, the last change of a burst always produces one),
 `tab.opened`, `tab.closed`, `client.attached`, `client.detached`. Each event carries the
 subscription's `id`. A subscriber whose queue exceeds 1024 events is disconnected rather than
 buffered without bound; it may resubscribe and re-`list`.

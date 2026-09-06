@@ -108,6 +108,15 @@ pub struct Registry {
     pub default_command: Vec<String>,
 }
 
+/// What the server answers to `info`: installed by the owner before the first step. Tests keep
+/// the default.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct ServerIdentity {
+    pub pid: u32,
+    pub instance_nonce: String,
+    pub runtime_dir: std::path::PathBuf,
+}
+
 /// Set when the owner loop asked for shutdown; lifecycle drains everything and reports idle.
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub struct ShuttingDown(pub bool);

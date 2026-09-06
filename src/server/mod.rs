@@ -111,7 +111,12 @@ async fn start(
     let (control_reply_tx, control_reply_rx) = mpsc::channel(256);
     let (manager_reply_tx, manager_reply_rx) = mpsc::channel(64);
     let (outbox_tx, outbox_rx) = mpsc::channel(64);
-    let session = Session::new(&config)?;
+    let mut session = Session::new(&config)?;
+    session.set_identity(crate::ecs::ServerIdentity {
+        pid: identity.pid,
+        instance_nonce: identity.instance_nonce.clone(),
+        runtime_dir: paths.runtime_dir.clone(),
+    });
     let adapter = Adapter::new(paths.clone(), identity, pane_tx);
     let owner = Owner {
         inbound: ingress_tx,

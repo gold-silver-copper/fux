@@ -12,7 +12,7 @@ pub mod support;
 pub mod systems;
 
 pub use messages::{Effect, Inbound, ManagerAction, ManagerOutcome, Requester, ViewerRequest};
-pub use resources::{Clock, Deadlines, Ids, Limits, Registry};
+pub use resources::{Clock, Deadlines, Ids, Limits, Registry, ServerIdentity};
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::{ScheduleLabel, SingleThreadedExecutor};
@@ -51,6 +51,7 @@ impl Session {
         world.init_resource::<Clock>();
         world.init_resource::<Deadlines>();
         world.init_resource::<resources::ShuttingDown>();
+        world.init_resource::<ServerIdentity>();
         world.init_resource::<resources::WorkspaceCounter>();
         world.init_resource::<Messages<Inbound>>();
         world.init_resource::<Messages<Effect>>();
@@ -117,6 +118,11 @@ impl Session {
             .resource_mut::<Messages<Effect>>()
             .drain()
             .collect()
+    }
+
+    /// Installs what `info` reports about this server.
+    pub fn set_identity(&mut self, identity: ServerIdentity) {
+        self.world.insert_resource(identity);
     }
 
     /// The next time the session needs a step without new input, if any.

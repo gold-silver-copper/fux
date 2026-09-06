@@ -650,6 +650,180 @@ fn workspace_switch_sends_the_suffix_to_the_destination() {
     ));
 }
 
+fn pane_seq(harness: &mut Harness, viewer: ViewerId, pane: PaneId) -> u64 {
+    harness.control(viewer, Request::List { id: 900 });
+    match harness.replies(viewer).last() {
+        Some(Reply::Completed {
+            result: CommandResult::Listing { workspaces },
+            ..
+        }) => workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| &tab.panes)
+            .find(|summary| summary.id == pane)
+            .map(|summary| summary.seq)
+            .expect("pane listed"),
+        other => panic!("unexpected listing reply {other:?}"),
+    }
+}
+
+fn rows_capture(
+    harness: &mut Harness,
+    viewer: ViewerId,
+    pane: PaneId,
+    since: Option<u64>,
+) -> (u64, Vec<fux::proto::control::CaptureRow>, bool) {
+    harness.control(
+        viewer,
+        Request::Capture {
+            id: 901,
+            pane,
+            attrs: false,
+            scrollback: 0,
+            max_bytes: 4096,
+            format: fux::proto::control::CaptureFormat::Rows,
+            since,
+        },
+    );
+    match harness.replies(viewer).last() {
+        Some(Reply::Completed {
+            result:
+                CommandResult::Rows {
+                    seq,
+                    rows,
+                    since_applied,
+                    ..
+                },
+            ..
+        }) => (*seq, rows.clone(), *since_applied),
+        other => panic!("unexpected capture reply {other:?}"),
+    }
+}
+
+#[test]
+fn output_sequences_are_reported_by_list_capture_and_paced_events() {
+    let mut harness = Harness::new();
+    harness.create_workspace("default");
+    let viewer = harness.attach("default", 24, 80);
+    let before = pane_seq(&mut harness, viewer, PaneId(1));
+    harness.events.clear();
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"hello".to_vec(),
+    }]);
+    let after = pane_seq(&mut harness, viewer, PaneId(1));
+    assert_eq!(
+        after,
+        before + 1,
+        "one visible change advances the sequence once"
+    );
+    assert!(
+        harness.events.iter().any(|(_, event)| matches!(
+            event,
+            Event::PaneOutput { pane: PaneId(1), seq, .. } if *seq == after
+        )),
+        "the output event carries the new sequence: {:?}",
+        harness.events
+    );
+    let (seq, rows, applied) = rows_capture(&mut harness, viewer, PaneId(1), Some(before));
+    assert_eq!(seq, after);
+    assert!(applied);
+    assert_eq!(rows.len(), 1, "only the changed row: {rows:?}");
+    assert_eq!(rows[0].text, "hello");
+    assert_eq!(rows[0].row, 0);
+    let (_, rows, _) = rows_capture(&mut harness, viewer, PaneId(1), Some(after));
+    assert!(rows.is_empty(), "nothing changed since the capture");
+    let (_, rows, applied) = rows_capture(&mut harness, viewer, PaneId(1), None);
+    assert!(!applied);
+    assert_eq!(rows.len(), 23, "every visible row without since");
+    // The text capture reports the same sequence.
+    harness.control(
+        viewer,
+        Request::Capture {
+            id: 902,
+            pane: PaneId(1),
+            attrs: false,
+            scrollback: 0,
+            max_bytes: 4096,
+            format: fux::proto::control::CaptureFormat::Text,
+            since: None,
+        },
+    );
+    assert!(matches!(
+        harness.replies(viewer).last(),
+        Some(Reply::Completed { result: CommandResult::Capture { seq, .. }, .. }) if *seq == after
+    ));
+    // A second change inside the event interval produces no event yet but proposes a deadline.
+    harness.events.clear();
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b" world".to_vec(),
+    }]);
+    assert!(
+        !harness
+            .events
+            .iter()
+            .any(|(_, event)| matches!(event, Event::PaneOutput { .. })),
+        "events are paced"
+    );
+    let deadline = harness.session.next_deadline_ms().expect("event deadline");
+    assert!(
+        deadline <= harness.now + 250,
+        "{deadline} vs {}",
+        harness.now
+    );
+    harness.now = deadline;
+    harness.step(Vec::new());
+    let latest = pane_seq(&mut harness, viewer, PaneId(1));
+    assert!(
+        harness.events.iter().any(|(_, event)| matches!(
+            event,
+            Event::PaneOutput { pane: PaneId(1), seq, .. } if *seq == latest
+        )),
+        "the paced event fires at the deadline with the current sequence"
+    );
+    // A pane no viewer shows still advances and still reports its output.
+    harness.control(
+        viewer,
+        Request::Tab {
+            id: 903,
+            action: TabAction::New { name: None },
+        },
+    );
+    harness.complete_spawns();
+    assert_eq!(harness.last_frame(viewer).layout[0].pane, PaneId(2));
+    harness.now += 1_000;
+    harness.events.clear();
+    let hidden_before = pane_seq(&mut harness, viewer, PaneId(1));
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"\r\nhidden".to_vec(),
+    }]);
+    assert!(harness.events.iter().any(|(_, event)| matches!(
+        event,
+        Event::PaneOutput { pane: PaneId(1), seq, .. } if *seq == hidden_before + 1
+    )));
+    let (_, rows, _) = rows_capture(&mut harness, viewer, PaneId(1), Some(hidden_before));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].row, 1);
+    assert_eq!(rows[0].text, "hidden");
+    // `info` names the workspace, the crate version and the limits.
+    harness.control(viewer, Request::Info { id: 904 });
+    match harness.replies(viewer).last() {
+        Some(Reply::Completed {
+            result: CommandResult::Info { info },
+            ..
+        }) => {
+            assert_eq!(info.workspace.as_deref(), Some("default"));
+            assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+            assert_eq!(info.limits.panes, 128);
+            assert_eq!(info.limits.viewers, 64);
+            assert_eq!(info.limits.frame_interval_ms, 8);
+        }
+        other => panic!("unexpected info reply {other:?}"),
+    }
+}
+
 #[test]
 fn history_views_are_private_and_clamped() {
     let mut harness = Harness::new();
@@ -1055,13 +1229,21 @@ mod randomized {
                 pane,
                 keys: "x\\n".into(),
             }),
-            pane().prop_map(|pane| Request::Capture {
-                id: 1,
-                pane,
-                attrs: false,
-                scrollback: 5,
-                max_bytes: 4096,
-            }),
+            (pane(), any::<bool>(), proptest::option::of(0..4u64)).prop_map(
+                |(pane, rows, since)| Request::Capture {
+                    id: 1,
+                    pane,
+                    attrs: false,
+                    scrollback: if rows { 0 } else { 5 },
+                    max_bytes: 4096,
+                    format: if rows {
+                        fux::proto::control::CaptureFormat::Rows
+                    } else {
+                        fux::proto::control::CaptureFormat::Text
+                    },
+                    since: if rows { since } else { None },
+                }
+            ),
             Just(Request::List { id: 1 }),
             prop_oneof![
                 Just(TabAction::New { name: None }),

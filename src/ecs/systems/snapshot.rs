@@ -6,8 +6,18 @@ use crate::ecs::messages::{Effect, Inbound};
 use crate::ecs::resources::{Clock, Ids};
 use crate::ecs::support::{Effects, ViewerExit};
 use crate::proto::attach::ServerMessage;
-use crate::view::{Cursor, FrameUpdate, PaneModes, PaneRect, TabEntry};
+use crate::proto::control::Event;
+use crate::view::{FrameUpdate, PaneRect, TabEntry};
 use bevy_ecs::prelude::*;
+use std::collections::HashSet;
+
+/// The clock, the pacing limits and the deadline register the grid refresh works with.
+#[derive(bevy_ecs::system::SystemParam)]
+pub struct Pacing<'w> {
+    clock: Res<'w, Clock>,
+    limits: Res<'w, crate::ecs::resources::Limits>,
+    deadlines: ResMut<'w, crate::ecs::resources::Deadlines>,
+}
 
 /// Everything the snapshot reads besides the viewer being published.
 #[derive(bevy_ecs::system::SystemParam)]
@@ -20,20 +30,25 @@ pub struct Scene<'w, 's> {
 }
 
 /// Decides which viewers publish this step and reads the changed panes they show once into
-/// their retained grids (rows stamped with the step), so frames for any number of viewers derive
-/// from the grid instead of the screen. Output-driven frames are paced: a viewer whose last frame
-/// went out less than the frame interval ago waits for a deadline; frames that carry a reply, a
-/// selection change or a retirement are never delayed.
+/// their retained grids (rows stamped with the pane's output sequence), so frames for any number
+/// of viewers derive from the grid instead of the screen. Output-driven frames are paced: a
+/// viewer whose last frame went out less than the frame interval ago waits for a deadline; frames
+/// that carry a reply, a selection change or a retirement are never delayed. `pane.output` events
+/// are published here too, at most one per pane per output event interval, carrying the sequence
+/// the change produced; a hidden pane is refreshed when its event is due.
 pub fn refresh_grids(
     mut viewers: Query<&mut Viewer>,
-    mut panes: Query<&mut Pane>,
+    mut panes: Query<(Entity, &mut Pane)>,
     tabs: Query<&Tab>,
     workspaces: Query<&Workspace>,
-    clock: Res<Clock>,
-    limits: Res<crate::ecs::resources::Limits>,
-    mut deadlines: ResMut<crate::ecs::resources::Deadlines>,
+    mut pacing: Pacing,
+    mut effects: Effects,
 ) {
-    let mut refresh: Vec<Entity> = Vec::new();
+    let clock = *pacing.clock;
+    let frame_interval_ms = pacing.limits.frame_interval_ms;
+    let interval = pacing.limits.output_event_interval_ms;
+    let deadlines = &mut *pacing.deadlines;
+    let mut refresh: HashSet<Entity> = HashSet::new();
     for mut viewer in &mut viewers {
         if viewer.detaching {
             continue;
@@ -46,22 +61,20 @@ pub fn refresh_grids(
             .unwrap_or_default();
         let output = shown
             .iter()
-            .any(|pane| panes.get(*pane).is_ok_and(|pane| pane.dirty));
+            .any(|pane| panes.get(*pane).is_ok_and(|(_, pane)| pane.dirty));
         viewer.pending |= output;
         // Output within two intervals of the viewer's own input is its echo, shown at once.
         let echoing = clock.now_ms
             <= viewer
                 .input_ms
-                .saturating_add(limits.frame_interval_ms.saturating_mul(2));
+                .saturating_add(frame_interval_ms.saturating_mul(2));
         let forced = viewer.dirty
             || echoing
             || !viewer.after_frame.is_empty()
             || workspaces
                 .get(viewer.workspace)
                 .is_ok_and(|workspace| workspace.retiring.is_some());
-        let due_at = viewer
-            .last_frame_ms
-            .saturating_add(limits.frame_interval_ms);
+        let due_at = viewer.last_frame_ms.saturating_add(frame_interval_ms);
         if forced || clock.now_ms >= due_at {
             viewer.publish_now = true;
             refresh.extend(shown);
@@ -69,13 +82,41 @@ pub fn refresh_grids(
             deadlines.propose(due_at);
         }
     }
-    for entity in refresh {
-        if let Ok(mut pane) = panes.get_mut(entity)
-            && pane.dirty
-        {
-            pane.terminal.refresh_grid(clock.step);
-            pane.dirty = false;
-            pane.changed_step = clock.step;
+    for (entity, mut pane) in &mut panes {
+        if !pane.dirty && !pane.event_pending {
+            continue;
+        }
+        let due_at = pane
+            .last_output_event_ms
+            .map(|previous| previous.saturating_add(interval));
+        let event_due = due_at.is_none_or(|due| clock.now_ms >= due);
+        if pane.dirty && (refresh.contains(&entity) || event_due) {
+            pane.refresh();
+        }
+        if !pane.event_pending {
+            continue;
+        }
+        if !event_due {
+            if let Some(due) = due_at {
+                deadlines.propose(due);
+            }
+            continue;
+        }
+        pane.event_pending = false;
+        pane.last_output_event_ms = Some(clock.now_ms);
+        let workspace = tabs
+            .get(pane.tab)
+            .and_then(|tab| workspaces.get(tab.workspace))
+            .map(|workspace| workspace.name.clone());
+        if let Ok(workspace) = workspace {
+            effects.event(
+                &workspace,
+                Event::PaneOutput {
+                    id: 0,
+                    pane: pane.id,
+                    seq: pane.terminal.grid().seq(),
+                },
+            );
         }
     }
 }
@@ -184,7 +225,6 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
         .unwrap_or_default();
     // A viewer that holds nothing yet (attach, workspace switch) gets every pane in full.
     let full = viewer.sent.is_empty();
-    let step = scene.clock.step;
     let mut layout = Vec::with_capacity(geometry.len());
     let mut panes = std::collections::BTreeMap::new();
     for (pane, rect) in &geometry {
@@ -204,30 +244,15 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
             .sent
             .get(&component.id)
             .filter(|sent| (sent.rows, sent.columns) == (rows, columns));
-        let since = held.map(|sent| sent.step);
-        if since.is_some_and(|since| component.changed_step <= since) {
+        let since = held.map(|sent| sent.seq);
+        let seq = grid.seq();
+        if since.is_some_and(|since| seq <= since) {
             continue;
         }
-        let mut update = grid.update(since);
-        let screen = component.terminal.screen();
-        let (row, column) = screen.cursor_position();
-        update.cursor = Cursor {
-            row,
-            column,
-            hidden: screen.hide_cursor(),
-        };
-        update.modes = PaneModes::from_vt100(screen);
-        update.title.clone_from(&component.published_title);
-        update.exit = component.state.exit_code();
-        panes.insert(component.id, update);
-        viewer.sent.insert(
-            component.id,
-            Sent {
-                rows,
-                columns,
-                step,
-            },
-        );
+        panes.insert(component.id, grid.update(since));
+        viewer
+            .sent
+            .insert(component.id, Sent { rows, columns, seq });
     }
     viewer
         .sent

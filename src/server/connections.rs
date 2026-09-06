@@ -235,11 +235,10 @@ pub async fn serve_control(
     subscribers: Arc<Mutex<Vec<Subscriber>>>,
     stop: Arc<Notify>,
 ) {
-    const MAX_CONNECTIONS: usize = 64;
     let tasks = accept_loop(
         listener,
         &stop,
-        |tasks| tasks.len() < MAX_CONNECTIONS,
+        |tasks| tasks.len() < control::MAX_CONTROL_CONNECTIONS,
         |stream| {
             let owner = owner.clone();
             let workspace = workspace.clone();

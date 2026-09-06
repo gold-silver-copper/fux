@@ -45,10 +45,12 @@ enum Command {
     Resize(PassthroughArgs),
     /// Send input bytes to a pane: PANE KEYS (escapes: \n \r \t \e \\ \0 \xHH)
     SendKeys(PassthroughArgs),
-    /// Capture a pane's text: PANE [--attrs] [--scrollback LINES]
+    /// Capture a pane's text: PANE [--attrs] [--scrollback LINES] [--rows] [--since SEQ]
     Capture(PassthroughArgs),
     /// List the workspace's tabs and panes as JSON.
     List(PassthroughArgs),
+    /// Show the session server's pid, version, runtime directory and limits as JSON.
+    Info(PassthroughArgs),
     /// Tab commands: new [NAME] | next | previous | select INDEX | select-id TAB | rename TAB NAME | close TAB
     Tab(PassthroughArgs),
     /// Stream lifecycle events as JSON lines: [EVENT...]
@@ -229,6 +231,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Some(Command::Capture(args)) => ctl_alias(cli.name.as_deref(), "capture", args.arguments),
         Some(Command::List(args)) => ctl_alias(cli.name.as_deref(), "list", args.arguments),
+        Some(Command::Info(args)) => ctl_alias(cli.name.as_deref(), "info", args.arguments),
         Some(Command::Tab(args)) => ctl_alias(cli.name.as_deref(), "tab", args.arguments),
         Some(Command::Subscribe(args)) => {
             ctl_alias(cli.name.as_deref(), "subscribe", args.arguments)
@@ -486,16 +489,23 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
         },
         "capture" => {
             let pane = PaneId(number(0, "a pane id")?);
-            let (attrs, scrollback) = parse_capture_options(args.get(1..).unwrap_or_default())?;
+            let options = parse_capture_options(args.get(1..).unwrap_or_default())?;
             Request::Capture {
                 id,
                 pane,
-                attrs,
-                scrollback,
+                attrs: options.attrs,
+                scrollback: options.scrollback,
                 max_bytes: fux::proto::control::MAX_CAPTURE_BYTES,
+                format: if options.rows {
+                    fux::proto::control::CaptureFormat::Rows
+                } else {
+                    fux::proto::control::CaptureFormat::Text
+                },
+                since: options.since,
             }
         }
         "list" => Request::List { id },
+        "info" => Request::Info { id },
         "tab" => {
             let action = match get(0, "an action")?.as_str() {
                 "new" => TabAction::New {
@@ -565,27 +575,48 @@ fn parse_cwd_and_argv(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>)>
     Ok((cwd, Vec::new()))
 }
 
-fn parse_capture_options(args: &[String]) -> Result<(bool, u32)> {
-    let mut attrs = false;
-    let mut scrollback = 0;
+#[derive(Default)]
+struct CaptureOptions {
+    attrs: bool,
+    scrollback: u32,
+    rows: bool,
+    since: Option<u64>,
+}
+
+fn parse_capture_options(args: &[String]) -> Result<CaptureOptions> {
+    let mut options = CaptureOptions::default();
     let mut index = 0;
     while let Some(argument) = args.get(index) {
         match argument.as_str() {
             "--attrs" => {
-                attrs = true;
+                options.attrs = true;
+                index += 1;
+            }
+            "--rows" => {
+                options.rows = true;
                 index += 1;
             }
             "--scrollback" => {
-                scrollback = args
+                options.scrollback = args
                     .get(index + 1)
                     .ok_or_else(|| anyhow::anyhow!("--scrollback requires a line count"))?
                     .parse()?;
                 index += 2;
             }
+            "--since" => {
+                options.since = Some(
+                    args.get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--since requires a sequence"))?
+                        .parse()?,
+                );
+                // `since` only means anything for row captures.
+                options.rows = true;
+                index += 2;
+            }
             value => bail!("unknown capture option {value}"),
         }
     }
-    Ok((attrs, scrollback))
+    Ok(options)
 }
 
 #[cfg(test)]

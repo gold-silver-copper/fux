@@ -158,16 +158,28 @@ pub struct Pane {
     pub terminal: ServerTerminal,
     /// Outer rectangle within its tab, including the border cells.
     pub rect: Rect,
-    /// The emulator changed since the retained grid was last refreshed.
+    /// The emulator, title or exit status changed since the retained grid was last refreshed.
     pub dirty: bool,
-    /// The step in which the retained grid last changed; a viewer whose copy is older needs an
-    /// update.
-    pub changed_step: u64,
+    /// Application bytes arrived since the last `pane.output` event; one is due when the interval
+    /// allows. Set by the output phase, not by a refresh, so a resize or cursor move advances the
+    /// sequence without counting as output.
+    pub event_pending: bool,
     pub published_title: String,
     pub last_output_event_ms: Option<u64>,
 }
 
 impl Pane {
+    /// Brings the retained grid up to date when the pane is dirty; returns whether the output
+    /// sequence advanced (a change an observer can see: rows, cursor, modes, title or exit).
+    pub fn refresh(&mut self) -> bool {
+        if !self.dirty {
+            return false;
+        }
+        self.dirty = false;
+        self.terminal
+            .refresh_grid(&self.published_title, self.state.exit_code())
+    }
+
     /// Inner terminal size for an outer rectangle; never below the emulator minimum.
     #[must_use]
     pub fn terminal_size(rect: Rect) -> (u16, u16) {
@@ -196,12 +208,12 @@ pub enum CreationKind {
     Workspace { tab: Entity },
 }
 
-/// A pane as last sent to a viewer.
+/// A pane as last sent to a viewer: its size and the output sequence the viewer holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sent {
     pub rows: u16,
     pub columns: u16,
-    pub step: u64,
+    pub seq: u64,
 }
 
 /// An attached viewer: private tab/focus selection, bounded request queue and publication state.
@@ -218,8 +230,8 @@ pub struct Viewer {
     pub generation: u64,
     /// Rectangles published in the last frame, for mouse hit tests.
     pub layout: Vec<(Entity, Rect)>,
-    /// What this viewer holds of each visible pane: its size and the step of its last update,
-    /// so the next frame carries only the rows changed since.
+    /// What this viewer holds of each visible pane: its size and the output sequence of its last
+    /// update, so the next frame carries only the rows changed since.
     pub sent: BTreeMap<PaneId, Sent>,
     /// Metadata or selection changed: a frame goes out this step.
     pub dirty: bool,
