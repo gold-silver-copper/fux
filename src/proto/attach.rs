@@ -10,8 +10,8 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const VERSION: u32 = 6;
-/// Bound on one delta or full frame beyond the cells it carries; the cell budget is the pane
-/// area of the viewer's screen.
+/// Wire cells one history view may carry; frame updates are bounded per pane and in total by
+/// `view::PaneUpdate::within_bounds` and `view::FrameUpdate::within_bounds`.
 pub const MAX_UPDATE_CELLS: usize = crate::view::MAX_TOTAL_CELLS;
 pub const MAX_CLIENT_FRAME: usize = 64 * 1024;
 pub const MAX_INPUT_CHUNK: usize = 4096;
@@ -98,10 +98,9 @@ where
     D: serde::Deserializer<'de>,
 {
     let view = Option::<Box<PaneUpdate>>::deserialize(deserializer)?;
-    if view
-        .as_ref()
-        .is_some_and(|view| !view.full || view.cells.len() > MAX_UPDATE_CELLS)
-    {
+    if view.as_ref().is_some_and(|view| {
+        !view.full || !view.within_bounds() || view.cells.len() > MAX_UPDATE_CELLS
+    }) {
         return Err(serde::de::Error::custom("invalid pane view"));
     }
     Ok(view)

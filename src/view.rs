@@ -315,9 +315,10 @@ impl PaneView {
             && self.title.len() <= MAX_TITLE_BYTES
     }
 
-    /// A view from a full update; every row must be carried exactly once.
+    /// A view from a full update; every row must be carried exactly once. Nothing is allocated
+    /// before the update's dimensions and counts are checked.
     pub fn from_update(update: &PaneUpdate) -> Result<Self, PaneViewError> {
-        if !update.full {
+        if !update.full || !update.within_bounds() {
             return Err(PaneViewError);
         }
         let mut view = Self {
@@ -327,9 +328,6 @@ impl PaneView {
             wrapped_rows: vec![false; usize::from(update.rows)],
             ..Self::default()
         };
-        if update.rows > MAX_DIM || update.columns > MAX_DIM {
-            return Err(PaneViewError);
-        }
         view.apply_rows(update)?;
         view.apply_meta(update);
         if update.lines.len() != usize::from(update.rows) {
@@ -344,7 +342,7 @@ impl PaneView {
             *self = Self::from_update(update)?;
             return Ok(());
         }
-        if (update.rows, update.columns) != (self.rows, self.columns) {
+        if (update.rows, update.columns) != (self.rows, self.columns) || !update.within_bounds() {
             return Err(PaneViewError);
         }
         self.apply_rows(update)?;
@@ -524,6 +522,9 @@ impl Frame {
     /// Applies one update from the server. A full update replaces every pane; a delta replaces
     /// the carried rows of the panes it names. Panes that left the layout are dropped.
     pub fn apply(&mut self, update: FrameUpdate) -> Result<(), FrameError> {
+        if !update.within_bounds(self) {
+            return Err(FrameError::Invalid);
+        }
         if update.full {
             self.panes.clear();
         }
@@ -706,6 +707,43 @@ fn expand(carried: &[WireCell], target: &mut [Cell]) -> Result<(), PaneViewError
     Ok(())
 }
 
+/// Deserializes at most `limit` elements, so a hostile peer cannot make the receiver allocate
+/// beyond the documented bounds before the update is checked.
+fn bounded_seq<'de, D, T>(deserializer: D, limit: usize) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    struct Bounded<T>(usize, std::marker::PhantomData<T>);
+    impl<'de, T: serde::Deserialize<'de>> serde::de::Visitor<'de> for Bounded<T> {
+        type Value = Vec<T>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(formatter, "a sequence of at most {} elements", self.0)
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
+            let mut items = Vec::new();
+            while let Some(item) = seq.next_element()? {
+                if items.len() >= self.0 {
+                    return Err(serde::de::Error::custom("sequence exceeds its bound"));
+                }
+                items.push(item);
+            }
+            Ok(items)
+        }
+    }
+    deserializer.deserialize_seq(Bounded(limit, std::marker::PhantomData))
+}
+
+fn bounded_lines<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<Line>, D::Error> {
+    bounded_seq(deserializer, usize::from(MAX_DIM))
+}
+
+fn bounded_cells<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<WireCell>, D::Error> {
+    bounded_seq(deserializer, MAX_TOTAL_CELLS)
+}
+
 /// One pane on the wire: its metadata and either every row (`full`) or the rows that changed
 /// since the viewer's previous update.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -719,9 +757,17 @@ pub struct PaneUpdate {
     #[serde(default, skip_serializing_if = "is_false")]
     pub full: bool,
     /// The carried rows, each followed in `cells` by `len` wire cells.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "bounded_lines"
+    )]
     pub lines: Vec<Line>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "bounded_cells"
+    )]
     pub cells: Vec<WireCell>,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub offset: u32,
@@ -730,6 +776,17 @@ pub struct PaneUpdate {
 }
 
 impl PaneUpdate {
+    /// The documented bounds a receiver checks before it allocates anything: dimensions, the
+    /// carried rows and the wire cells (a line cannot need more wire cells than columns).
+    #[must_use]
+    pub fn within_bounds(&self) -> bool {
+        self.rows <= MAX_DIM
+            && self.columns <= MAX_DIM
+            && self.lines.len() <= usize::from(self.rows)
+            && self.cells.len() <= self.lines.len().saturating_mul(usize::from(self.columns))
+            && self.title.len() <= MAX_TITLE_BYTES
+    }
+
     /// A full update of a vt100 screen (history views and tests).
     pub fn full_from_screen(
         screen: &vt100::Screen,
@@ -849,6 +906,38 @@ pub struct FrameUpdate {
 }
 
 impl FrameUpdate {
+    /// Whether applying this update onto `held` stays within the documented bounds: pane counts,
+    /// every pane's own bounds and the total cell budget after the update, checked before any
+    /// pane is allocated.
+    #[must_use]
+    pub fn within_bounds(&self, held: &Frame) -> bool {
+        if self.panes.len() > MAX_PANES
+            || self.layout.len() > MAX_PANES
+            || self.tabs.len() > MAX_TABS
+        {
+            return false;
+        }
+        let mut cells = 0_usize;
+        for (id, pane) in &self.panes {
+            if !pane.within_bounds() {
+                return false;
+            }
+            let size = match held.panes.get(id) {
+                Some(view) if !pane.full && !self.full => view.cells.len(),
+                _ => usize::from(pane.rows).saturating_mul(usize::from(pane.columns)),
+            };
+            cells = cells.saturating_add(size);
+        }
+        if !self.full {
+            cells = held
+                .panes
+                .iter()
+                .filter(|(id, _)| !self.panes.contains_key(id))
+                .fold(cells, |sum, (_, view)| sum.saturating_add(view.cells.len()));
+        }
+        cells <= MAX_TOTAL_CELLS
+    }
+
     /// Folds a later update into this one so that applying the result equals applying both in
     /// order: later metadata wins, later rows replace earlier rows, untouched panes stay.
     pub fn merge(&mut self, newer: Self) {
@@ -894,6 +983,56 @@ mod tests {
         let parsed: PaneUpdate = serde_json::from_str(&json).unwrap_or_default();
         assert_eq!(parsed, update);
         assert!(json.contains("\"run\":"), "blank runs are compact: {json}");
+    }
+
+    #[test]
+    fn hostile_updates_are_rejected_before_anything_is_allocated() {
+        let huge = PaneUpdate {
+            rows: u16::MAX,
+            columns: u16::MAX,
+            full: true,
+            ..PaneUpdate::default()
+        };
+        assert!(PaneView::from_update(&huge).is_err());
+        let mut frame = Frame::default();
+        let mut update = FrameUpdate::default();
+        update.panes.insert(PaneId(1), huge);
+        assert!(frame.apply(update).is_err());
+        // Legal panes whose total exceeds the frame budget are refused as a whole.
+        let mut update = FrameUpdate::default();
+        for id in 1..=8 {
+            update.panes.insert(
+                PaneId(id),
+                PaneUpdate {
+                    rows: MAX_DIM,
+                    columns: MAX_DIM,
+                    full: true,
+                    ..PaneUpdate::default()
+                },
+            );
+        }
+        assert!(!update.within_bounds(&frame));
+        // The wire itself is bounded: more carried lines than a pane can have are refused while
+        // decoding, before the update is looked at.
+        let oversized = PaneUpdate {
+            rows: 1,
+            columns: 1,
+            full: true,
+            lines: vec![Line::default(); usize::from(MAX_DIM) + 1],
+            ..PaneUpdate::default()
+        };
+        let json = serde_json::to_string(&oversized).unwrap_or_default();
+        assert!(json.contains("\"lines\""));
+        assert!(serde_json::from_str::<PaneUpdate>(&json).is_err());
+        let fitting = PaneUpdate {
+            lines: vec![Line::default(); usize::from(MAX_DIM)],
+            ..oversized
+        };
+        let json = serde_json::to_string(&fitting).unwrap_or_default();
+        assert!(
+            serde_json::from_str::<PaneUpdate>(&json).is_ok(),
+            "decodes; rejected later"
+        );
     }
 
     #[test]
