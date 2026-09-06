@@ -370,9 +370,9 @@ Baseline: `main` at `5449616` (0.3.3). Counts are `wc -l` over `git ls-files` fo
 |---|---|---|---|
 | production Rust (`src/`) | 15,978 | 15,320 | −658 (−4.1 %) |
 | test Rust (`tests/`, fixture-child) | 3,496 | 3,551 | +55 (one regression test from the review) |
-| Python harnesses and tools | 1,424 | 1,424 | 0 |
-| `docs/*.md` | 5,037 | 885 | historical audits and plans removed |
-| root `*.md` | 1,423 | 569 | prompts removed, HANDOFF rewritten |
+| Python harnesses and tools | 1,424 | 1,443 | +19 (harness waits, see the assertion ledger) |
+| `docs/*.md` | 5,037 | 939 | historical audits and plans removed |
+| root `*.md` | 1,423 | 332 | prompts removed, HANDOFF rewritten |
 | CI, Cargo.toml, scripts | 260 | 260 | 0 |
 
 The reduction of hand-maintained Rust is 4 %, not the fifth the specification aimed for. The
@@ -474,9 +474,33 @@ membership), the schedule (sync point between ingest and output, `ViewerExit` de
 publish, `MessageReader` cursors across `Messages::clear`, no `SystemParam` conflicts), the accept
 loop, `write_line`, the shared `wait_for_activity`, the PTY abort closure and untouched reap gate,
 the bar's right-zone arithmetic, the merged controller arms, the deleted items (no reference left
-in source, tests, tools, docs or owner patches) and the byte-identical tests, CI and patches.
+in source, tests, tools, docs or owner patches) and the unchanged tests, CI and patches.
 
-FINAL_REVIEW_RECORD
+A second reviewer, independent of the first and of the implementation, reviewed the complete
+branch diff after the fixes above, ran the unit, ECS and structure suites and Clippy, and probed
+`Session::step` on both trees. It verified every mid-way resolution (items 1–5 fixed) and found:
+
+| # | Severity | Finding (confirmed unless noted) | Resolution |
+|---|---|---|---|
+| 1 | P1 | The first slice had committed the worktree's `zor` and `references` symlinks (machine-local targets) and the refactor prompt itself; the ignore patterns matched directories only. Dangling links would break CI checkout and collide with the real directories on merge. | Untracked; `.gitignore` now names the paths (`/zor`, `/references`); the prompt stays in git history as the audit says. |
+| 2 | P2 | A viewer that left in the same step as later arrivals still counted against the workspace limit (its despawn is deferred to the sync point); probe: 64 attached, `[ViewerGone, ViewerAttached]` in one step refused the newcomer where the baseline admitted it. | `apply_attachments` keeps the step's departures and discounts them; the regression test gained the case and fails without the fix. |
+| 3 | P3 | The spawn-before-despawn order in the same step rests on `SystemParam` declaration order without saying so. | Stated in the comment; the test pins it. |
+| 4 | P3 | `idiomatic-ecs-refactor-prompt.md` was committed although the audit says it lives in git history. | Removed from the tree (item 1). |
+| 5 | P3 | Stale figures and claims: `ecs` 19 in the gate table, the `docs/*.md` and Python counts before the harness fix, "byte-identical tests", a misspelt test name, and "same order" for the `actions!` table (the table emits registry order, which no consumer observes). | All corrected; counts recomputed on the final tree. |
+| 6 | P3 | `each_viewer` still collected entities before mutating; `member_tabs` allocates where only `len()`/`first()` is read. | `each_viewer` walks the query once; `member_tabs` kept (request path only, one small `Vec` per call). |
+| 7 | P3 | `retire_empty_workspaces` relies on the relationship hook's empty-target removal being flushed by `EntityWorldMut`, which a future `Commands`-based removal would break. | Documented at the site. |
+| 8 | P3 | `private_dir` maps every `PermissionDenied` to `UnsafeDirectory`, including a genuine EACCES on the metadata call. | Accepted (error-kind cosmetics; the message names the directory either way). |
+| 9 | P3 | The reduction is a fifth of the aim. | Reported as such above. |
+
+Sound per the second reviewer: the schedule and its automatic sync points, the relationship
+hooks and their flush points, every `support` helper against its baseline, the typed systems
+(no parameter conflicts, no added per-frame work), the accept loop, `write_line`, the shared
+wait, the bounded `read_line`, the CLI and daemon moves, the viewer helpers and the harness
+commit (only stronger wait conditions).
+
+A verification pass by the same reviewer after these fixes is recorded below.
+
+VERIFICATION_RECORD
 
 ## Platform and CI limits
 

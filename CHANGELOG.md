@@ -21,7 +21,7 @@ control `FUXCTL2`, the same default bindings and behaviour).
 - The runtime, state and descriptor directories are now checked by the same rule as socket
   directories: a real directory, mode 0700, owned by the effective user (before, ownership was
   compared with the parent directory's owner).
-- `src/` shrinks by about 660 lines (4 %); documentation by about 5,700 lines.
+- `src/` shrinks by about 660 lines (4 %); the markdown documentation by about 5,000 lines.
 
 ## 0.3.3 - 2026-09-06
 
