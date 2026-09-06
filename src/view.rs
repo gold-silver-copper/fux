@@ -528,7 +528,11 @@ impl Frame {
         if update.full {
             self.panes.clear();
         }
+        let shown: Vec<PaneId> = update.layout.iter().map(|entry| entry.pane).collect();
         for (id, pane) in update.panes {
+            if !shown.contains(&id) {
+                continue;
+            }
             match self.panes.get_mut(&id) {
                 Some(view) if !pane.full => view.apply(&pane)?,
                 _ => {
@@ -544,7 +548,6 @@ impl Frame {
         self.layout = update.layout;
         self.exit_code = update.exit_code;
         self.message = update.message;
-        let shown: Vec<PaneId> = self.layout.iter().map(|entry| entry.pane).collect();
         self.panes.retain(|id, _| shown.contains(id));
         if self.valid() {
             Ok(())
@@ -898,11 +901,46 @@ pub struct FrameUpdate {
     pub active_tab: Option<TabId>,
     pub focused: Option<PaneId>,
     pub layout: Vec<PaneRect>,
+    #[serde(deserialize_with = "bounded_panes")]
     pub panes: BTreeMap<PaneId, PaneUpdate>,
     pub exit_code: Option<u32>,
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub full: bool,
+}
+
+/// Deserializes the panes of one update while bounding their number and their wire cells in
+/// total, so a hostile peer's 16 MiB frame cannot decode into more than the frame's cell budget.
+fn bounded_panes<'de, D>(deserializer: D) -> Result<BTreeMap<PaneId, PaneUpdate>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Panes;
+    impl<'de> serde::de::Visitor<'de> for Panes {
+        type Value = BTreeMap<PaneId, PaneUpdate>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(
+                formatter,
+                "at most {MAX_PANES} panes within {MAX_TOTAL_CELLS} wire cells"
+            )
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut panes = BTreeMap::new();
+            let mut cells = 0_usize;
+            while let Some((id, pane)) = map.next_entry::<PaneId, PaneUpdate>()? {
+                cells = cells.saturating_add(pane.cells.len());
+                if panes.len() >= MAX_PANES || cells > MAX_TOTAL_CELLS {
+                    return Err(serde::de::Error::custom("frame update exceeds its bounds"));
+                }
+                panes.insert(id, pane);
+            }
+            Ok(panes)
+        }
+    }
+    deserializer.deserialize_map(Panes)
 }
 
 impl FrameUpdate {
@@ -917,10 +955,15 @@ impl FrameUpdate {
         {
             return false;
         }
+        // Only the panes the update leaves in the layout cost anything: carried ones at the
+        // size they will have, held ones the update does not name at the size they have.
         let mut cells = 0_usize;
         for (id, pane) in &self.panes {
             if !pane.within_bounds() {
                 return false;
+            }
+            if !self.shows(*id) {
+                continue;
             }
             let size = match held.panes.get(id) {
                 Some(view) if !pane.full && !self.full => view.cells.len(),
@@ -932,10 +975,14 @@ impl FrameUpdate {
             cells = held
                 .panes
                 .iter()
-                .filter(|(id, _)| !self.panes.contains_key(id))
+                .filter(|(id, _)| !self.panes.contains_key(id) && self.shows(**id))
                 .fold(cells, |sum, (_, view)| sum.saturating_add(view.cells.len()));
         }
         cells <= MAX_TOTAL_CELLS
+    }
+
+    fn shows(&self, pane: PaneId) -> bool {
+        self.layout.iter().any(|entry| entry.pane == pane)
     }
 
     /// Folds a later update into this one so that applying the result equals applying both in
@@ -945,6 +992,10 @@ impl FrameUpdate {
             *self = newer;
             return;
         }
+        // A pane the newer update's layout no longer shows is dropped on apply, so carrying it
+        // would only cost memory.
+        self.panes
+            .retain(|id, _| newer.layout.iter().any(|entry| entry.pane == *id));
         for (id, pane) in newer.panes {
             match self.panes.get_mut(&id) {
                 Some(existing) => existing.merge(pane),
@@ -994,12 +1045,25 @@ mod tests {
             ..PaneUpdate::default()
         };
         assert!(PaneView::from_update(&huge).is_err());
+        let shown = |ids: std::ops::RangeInclusive<u32>| -> Vec<PaneRect> {
+            ids.map(|id| PaneRect {
+                pane: PaneId(id),
+                rect: Rect::default(),
+            })
+            .collect()
+        };
         let mut frame = Frame::default();
-        let mut update = FrameUpdate::default();
+        let mut update = FrameUpdate {
+            layout: shown(1..=1),
+            ..FrameUpdate::default()
+        };
         update.panes.insert(PaneId(1), huge);
         assert!(frame.apply(update).is_err());
         // Legal panes whose total exceeds the frame budget are refused as a whole.
-        let mut update = FrameUpdate::default();
+        let mut update = FrameUpdate {
+            layout: shown(1..=8),
+            ..FrameUpdate::default()
+        };
         for id in 1..=8 {
             update.panes.insert(
                 PaneId(id),
@@ -1033,6 +1097,72 @@ mod tests {
             serde_json::from_str::<PaneUpdate>(&json).is_ok(),
             "decodes; rejected later"
         );
+    }
+
+    #[test]
+    fn a_large_viewer_switches_tabs_within_the_cell_budget() {
+        let big = || PaneUpdate {
+            rows: MAX_DIM,
+            columns: MAX_DIM,
+            full: true,
+            lines: (0..MAX_DIM)
+                .map(|row| Line {
+                    row,
+                    wrapped: false,
+                    len: 1,
+                })
+                .collect(),
+            cells: vec![
+                WireCell {
+                    run: MAX_DIM,
+                    ..WireCell::default()
+                };
+                usize::from(MAX_DIM)
+            ],
+            ..PaneUpdate::default()
+        };
+        let switch = |id: u32| {
+            let mut update = FrameUpdate {
+                layout: vec![PaneRect {
+                    pane: PaneId(id),
+                    rect: Rect {
+                        x: 0,
+                        y: 0,
+                        width: MAX_DIM,
+                        height: MAX_DIM,
+                    },
+                }],
+                ..FrameUpdate::default()
+            };
+            update.panes.insert(PaneId(id), big());
+            update
+        };
+        // Attach, then switch to a tab whose pane fills the whole budget on its own.
+        let mut frame = Frame::default();
+        assert!(frame.apply(switch(1)).is_ok());
+        assert!(
+            frame.apply(switch(2)).is_ok(),
+            "the left pane does not count"
+        );
+        assert_eq!(frame.panes.len(), 1);
+        // Several switches merged while the viewer was not reading apply as one.
+        let mut merged = switch(3);
+        merged.merge(switch(4));
+        merged.merge(switch(5));
+        assert_eq!(
+            merged.panes.len(),
+            1,
+            "panes that left the layout are pruned"
+        );
+        assert!(frame.apply(merged).is_ok());
+        assert!(frame.panes.contains_key(&PaneId(5)));
+        // The wire bound: 129 panes, or more wire cells than the budget, are refused at decoding.
+        let mut update = FrameUpdate::default();
+        for id in 1..=129 {
+            update.panes.insert(PaneId(id), PaneUpdate::default());
+        }
+        let json = serde_json::to_string(&update).unwrap_or_default();
+        assert!(serde_json::from_str::<FrameUpdate>(&json).is_err());
     }
 
     #[test]

@@ -110,6 +110,7 @@ def main():
             terminal = Terminal(binary, env, args.rows, args.columns)
             terminal.wait_for(lambda text: b"READY" in text, 10)
             terminal.pump(0.5)
+            terminal.raw = b""
             # Keystrokes.
             viewer_cpu = cpu_seconds(terminal.pid)
             server_cpu = cpu_seconds(server.pid)

@@ -12,13 +12,15 @@ unchanged.
   keeps its frame and applies updates; queued updates are merged rather than dropped; the
   bindings are sent once after the hello; cells are validated once, where they are produced.
 - Output feeding uses a reusable buffer per pane and no longer clones the title per chunk.
-- Measured on an M2 Max (release builds, `tools/measure*.py`, baseline 0.4.0 → 0.5.0): bytes on
-  the attachment socket per keystroke 289,920 → 852 at 80×24 and 1,853,858 → 855 at 200×60;
-  input-to-frame latency median 6.1 → 0.24 ms at 80×24, 44 → 0.47 ms at 200×60, 35.6 → 0.27 ms
-  with eight viewers on one tab; server CPU per 1,000 keystrokes 1.3 → 0.1 s; server CPU for a
-  20,000-line burst 0.21 → 0.06–0.09 s; the real viewer's CPU per 1,000 keystrokes 1.2 → 0.27 s
-  (5.9 → 0.93 s at 200×60); idle CPU stays 0.00 s; memory per retained history row unchanged
-  (vt100's 32 bytes per cell). The burst's wall time stays at the shell's own floor.
+- Measured on an M2 Max (release builds, `tools/measure*.py`, baseline 0.4.0 → 0.5.0, ranges
+  over the day's alternating runs): bytes on the attachment socket per keystroke 289,920 → 852
+  at 80×24 and 1,853,858 → 855 at 200×60; input-to-frame latency median 2.8–6.2 → 0.14–0.25 ms
+  at 80×24, 21–45 → 0.32–0.47 ms at 200×60, 21.8–35.8 → 0.16–0.30 ms with eight viewers on one
+  tab; server CPU per 1,000 keystrokes 0.94 → 0.08 s (6.99 → 0.09 s with eight viewers); server
+  CPU for a 20,000-line burst 0.21–0.23 → 0.06–0.09 s; the real viewer's CPU per 1,000
+  keystrokes 1.05–1.48 → 0.25–0.33 s (5.9 → 0.87–1.07 s at 200×60); idle CPU stays 0.00 s;
+  memory per retained history row unchanged (vt100's 32 bytes per cell). The burst's wall time
+  stays at the shell's own floor.
 - New measurement tools: `tools/measure_frames.py` (bytes and CPU per keystroke by screen size and
   viewer count), `tools/measure_viewer.py` (the real viewer on a pty) and
   `tools/measure_memory.py` (bytes per retained history row).

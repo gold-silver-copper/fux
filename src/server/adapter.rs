@@ -359,6 +359,10 @@ mod tests {
         let update = |generation: u64, row: u16, text: &str| {
             let mut frame = FrameUpdate {
                 generation,
+                layout: vec![crate::view::PaneRect {
+                    pane: PaneId(1),
+                    rect: crate::layout::Rect::default(),
+                }],
                 ..FrameUpdate::default()
             };
             frame.panes.insert(PaneId(1), pane(row, text));

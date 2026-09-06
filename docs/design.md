@@ -66,13 +66,15 @@ checks kind, workspace membership and liveness; destructive confirmations carry 
 The owner loop (`server::run_loop`) sleeps until a channel has data, a socket event arrives, a
 signal fires or the next deadline expires. It then collects a bounded batch (at most 64 chunks
 of up to 64 KiB from the shared 256-deep pane channel and 256 requests from the ingress channel
-per step; signals are polled between busy steps), runs the `Step` schedule once with the
+per collection, two collections per step at most; signals are polled between busy steps), runs the `Step` schedule once with the
 `SingleThreadedExecutor`, applies the returned effects through the adapters and goes back to sleep.
 A pty hands out output in reads of a few bytes, so a batch that is only pane output, arriving
 within 3 ms of the previous output step and not within 3 ms of any viewer input, is treated as a
 stream: the loop waits 1 ms for more chunks before stepping (a 20 000-line burst then costs a few
-hundred steps instead of twelve thousand). Input, requests and echoes never wait. There is no
-periodic tick.
+hundred steps instead of twelve thousand). A batch that carries input, a request, an exit or a
+completion never waits; something arriving during a wait is delayed by the remainder of that
+millisecond (the echo of a control-socket `send-keys` can be; a viewer's own echo is exempt by
+its input). There is no periodic tick.
 
 Phases are chained system sets; deferred mutations become visible at the sync points between them:
 

@@ -26,8 +26,8 @@ an instance nonce, socket paths and protocol versions only.
   1024-event subscriber queues.
 - Session: 64 workspaces, 32 tabs and 128 panes per workspace, 512×512 pane cells, 256 queued
   viewer requests during a creation barrier, per-step ingest budgets (64 pane chunks of at most
-  64 KiB from a 256-deep channel, 256 ingress requests; an output stream waits at most 1 ms for
-  more chunks) and signal polling between busy steps so a hot pane cannot starve input, timers,
+  64 KiB from a 256-deep channel and 256 ingress requests per collection, two collections per
+  step when an output stream waits its 1 ms for more chunks) and signal polling between busy steps so a hot pane cannot starve input, timers,
   exit handling or shutdown.
 - Configuration: 1 MiB file, 128 argv entries of at most 4 KiB, 16 KiB total per command.
 - Names: workspace names and labels reject path separators, `.`/`..`, control characters and

@@ -64,8 +64,9 @@ blank default cell, `{"run":40}` for a run of blank cells, `{"kind":"wide-contin
 cell after a wide character, with `style` present only when it is not the default
 (`{"foreground":"Default","background":"Default",…}`). A run never crosses a row. Each line must
 expand to exactly `columns` cells; text cells hold one grapheme of width one (two for
-`wide-leading`) and no control characters; titles are at most 1,024 bytes; a frame carries at most
-262,144 cells in total. A viewer rejects an update that breaks these rules or names a pane it does
+`wide-leading`) and no control characters; titles are at most 1,024 bytes; the panes an update
+leaves in its layout hold at most 262,144 cells in total, and an update decodes at most 128
+panes and 262,144 wire cells. A viewer rejects an update that breaks these rules or names a pane it does
 not hold as a delta, and closes the connection.
 
 `state.state.panes.<id>.cells[].text` is the shape koh's gateway tests consume: the text of the
