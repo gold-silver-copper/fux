@@ -2,7 +2,6 @@
 
 use super::{DaemonPaths, PathError};
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -54,29 +53,23 @@ impl Descriptor {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DescriptorError {
-    Path(PathError),
+    #[error(transparent)]
+    Path(#[from] PathError),
+    #[error("{}: {error}", path.display())]
     Io {
         path: PathBuf,
+        #[source]
         error: std::io::Error,
     },
+    #[error("invalid workspace descriptor")]
     Invalid,
-    Json(serde_json::Error),
+    #[error("descriptor JSON: {0}")]
+    Json(#[source] serde_json::Error),
+    #[error("descriptor exceeds size limit")]
     TooLarge,
 }
-impl fmt::Display for DescriptorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Path(error) => write!(f, "{error}"),
-            Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
-            Self::Invalid => f.write_str("invalid workspace descriptor"),
-            Self::Json(error) => write!(f, "descriptor JSON: {error}"),
-            Self::TooLarge => f.write_str("descriptor exceeds size limit"),
-        }
-    }
-}
-impl std::error::Error for DescriptorError {}
 
 pub fn read_descriptor(
     path: &Path,

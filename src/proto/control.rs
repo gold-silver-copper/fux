@@ -5,7 +5,6 @@
 use crate::ids::{PaneId, TabId};
 use crate::layout::Rect;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
@@ -436,7 +435,8 @@ pub enum EventKind {
     ClientDetached,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
 pub struct ControlError {
     pub id: Option<RequestId>,
     pub code: ErrorCode,
@@ -452,14 +452,6 @@ impl ControlError {
         }
     }
 }
-
-impl fmt::Display for ControlError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}", self.message)
-    }
-}
-
-impl std::error::Error for ControlError {}
 
 pub fn decode_request_frame(frame: &[u8]) -> Result<Request, ControlError> {
     if frame.len() > MAX_FRAME_BYTES {

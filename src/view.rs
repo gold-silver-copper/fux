@@ -204,16 +204,9 @@ pub struct PaneView {
     pub exit: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("pane view exceeds frame bounds")]
 pub struct PaneViewError;
-
-impl std::fmt::Display for PaneViewError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("pane view exceeds frame bounds")
-    }
-}
-
-impl std::error::Error for PaneViewError {}
 
 impl PaneView {
     pub fn from_screen(

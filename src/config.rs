@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsString;
-use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -313,46 +312,22 @@ impl Limits {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("neither XDG_CONFIG_HOME nor HOME is set")]
     NoConfigHome,
+    #[error("failed to read {}: {error}", path.display())]
     Io {
         path: PathBuf,
+        #[source]
         error: std::io::Error,
     },
-    Toml(toml::de::Error),
-    Serialize(toml::ser::Error),
-    Invalid {
-        field: &'static str,
-        reason: String,
-    },
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoConfigHome => write!(formatter, "neither XDG_CONFIG_HOME nor HOME is set"),
-            Self::Io { path, error } => {
-                write!(formatter, "failed to read {}: {error}", path.display())
-            }
-            Self::Toml(error) => write!(formatter, "invalid configuration TOML: {error}"),
-            Self::Serialize(error) => {
-                write!(formatter, "failed to serialize configuration: {error}")
-            }
-            Self::Invalid { field, reason } => write!(formatter, "invalid `{field}`: {reason}"),
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io { error, .. } => Some(error),
-            Self::Toml(error) => Some(error),
-            Self::Serialize(error) => Some(error),
-            Self::NoConfigHome | Self::Invalid { .. } => None,
-        }
-    }
+    #[error("invalid configuration TOML: {0}")]
+    Toml(#[source] toml::de::Error),
+    #[error("failed to serialize configuration: {0}")]
+    Serialize(#[source] toml::ser::Error),
+    #[error("invalid `{field}`: {reason}")]
+    Invalid { field: &'static str, reason: String },
 }
 
 fn default_shell() -> Command {

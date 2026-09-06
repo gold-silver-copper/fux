@@ -71,24 +71,23 @@ pub struct LayoutTree<L> {
     free: Vec<NodeId>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum LayoutError {
+    #[error("Empty")]
     Empty,
+    #[error("MissingNode")]
     MissingNode,
+    #[error("MissingPane")]
     MissingPane,
+    #[error("DuplicatePane")]
     DuplicatePane,
+    #[error("Cycle")]
     Cycle,
+    #[error("InvalidRatio")]
     InvalidRatio,
+    #[error("Limit")]
     Limit,
 }
-
-impl std::fmt::Display for LayoutError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-impl std::error::Error for LayoutError {}
 
 impl<L: Copy + Eq + Hash> LayoutTree<L> {
     #[must_use]

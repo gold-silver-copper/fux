@@ -2,7 +2,6 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::fmt;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -77,35 +76,19 @@ fn macos_runtime_fallback(_: Option<&OsString>) -> Option<PathBuf> {
     None
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum PathError {
+    #[error("XDG_RUNTIME_DIR (or HOME on macOS) must be set to an absolute path")]
     MissingRuntime,
+    #[error("XDG_STATE_HOME or HOME must be set to an absolute path")]
     MissingState,
+    #[error("unsafe workspace name")]
     UnsafeName,
+    #[error("{} must be a private directory owned by this user", .0.display())]
     UnsafeDirectory(PathBuf),
+    #[error("{0}")]
     Io(String),
 }
-
-impl fmt::Display for PathError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingRuntime => {
-                f.write_str("XDG_RUNTIME_DIR (or HOME on macOS) must be set to an absolute path")
-            }
-            Self::MissingState => {
-                f.write_str("XDG_STATE_HOME or HOME must be set to an absolute path")
-            }
-            Self::UnsafeName => f.write_str("unsafe workspace name"),
-            Self::UnsafeDirectory(path) => write!(
-                f,
-                "{} must be a private directory owned by this user",
-                path.display()
-            ),
-            Self::Io(error) => f.write_str(error),
-        }
-    }
-}
-impl std::error::Error for PathError {}
 
 fn absolute(value: Option<OsString>) -> Option<PathBuf> {
     value
