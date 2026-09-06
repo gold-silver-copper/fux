@@ -966,6 +966,29 @@ fn output_frames_are_paced_but_replies_are_not() {
     harness.now -= 9;
     harness.control(viewer, Request::List { id: 7 });
     assert_eq!(harness.frames[&viewer].len(), frames + 3);
+    // Neither does the echo of the viewer's own input, even when it arrives in fragments.
+    harness.now -= 9;
+    harness.step(vec![
+        Inbound::ViewerRequest {
+            viewer,
+            request: ViewerRequest::Input(b"xy".to_vec()),
+        },
+        Inbound::PaneOutput {
+            pane: PaneId(1),
+            bytes: b"x".to_vec(),
+        },
+    ]);
+    assert_eq!(harness.frames[&viewer].len(), frames + 4, "echo not paced");
+    harness.now -= 9;
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"y".to_vec(),
+    }]);
+    assert_eq!(
+        harness.frames[&viewer].len(),
+        frames + 5,
+        "the rest of the echo not paced"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

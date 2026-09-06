@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.0 - 2026-09-06
+
+Performance pass. Attachment protocol v6; control `FUXCTL2`, keys, configuration and CLI are
+unchanged.
+
+- Frames carry only what changed: the server keeps one retained grid per pane, read from the
+  emulator once per step with every row stamped by the step it changed in, and each viewer
+  remembers what it holds, so an update carries a pane only when it changed and then only its
+  changed rows, as compact wire cells (blank runs, styles omitted when default). The viewer
+  keeps its frame and applies updates; queued updates are merged rather than dropped; the
+  bindings are sent once after the hello; cells are validated once, where they are produced.
+- Output feeding uses a reusable buffer per pane and no longer clones the title per chunk.
+- Measured on an M2 Max (release builds, `tools/measure*.py`, baseline 0.4.0 → 0.5.0): bytes on
+  the attachment socket per keystroke 289,920 → 852 at 80×24 and 1,853,858 → 855 at 200×60;
+  input-to-frame latency median 6.1 → 0.24 ms at 80×24, 44 → 0.47 ms at 200×60, 35.6 → 0.27 ms
+  with eight viewers on one tab; server CPU per 1,000 keystrokes 1.3 → 0.1 s; server CPU for a
+  20,000-line burst 0.21 → 0.06–0.09 s; the real viewer's CPU per 1,000 keystrokes 1.2 → 0.27 s
+  (5.9 → 0.93 s at 200×60); idle CPU stays 0.00 s; memory per retained history row unchanged
+  (vt100's 32 bytes per cell). The burst's wall time stays at the shell's own floor.
+- New measurement tools: `tools/measure_frames.py` (bytes and CPU per keystroke by screen size and
+  viewer count), `tools/measure_viewer.py` (the real viewer on a pty) and
+  `tools/measure_memory.py` (bytes per retained history row).
+
 ## 0.4.0 - 2026-09-06
 
 Internal architecture only: no protocol, configuration, key or CLI change (attachment v5,

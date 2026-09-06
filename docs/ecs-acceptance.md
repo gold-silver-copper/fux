@@ -507,6 +507,143 @@ item 5 corrected apart from the three line counts the fix commit itself moved (r
 no new finding introduced. Verdict: no open P0, P1 or P2; the branch may leave draft once the
 gate on the final tree is clean.
 
+## Performance pass (0.5.0, 2026-09-06)
+
+The performance specification (`performance-prompt.md` in git history) asked for lower
+input-to-screen latency, frame cost, output throughput cost and memory, measured before and after
+with no capability, guarantee or assertion lost. Baseline: `main` at `fa0c286` (0.4.0). Machine:
+Apple M2 Max, macOS 26.5.2, release builds, disposable HOME/XDG roots, baseline and branch
+measured alternately on a quiet machine. Methods: `python3 tools/measure.py BIN --version 5|6
+--samples 100` (three runs each), `python3 tools/measure_frames.py BIN --version 5|6` (two runs
+each; every viewer drained), `python3 tools/measure_viewer.py BIN` (the real viewer on a pty),
+`python3 tools/measure_memory.py BIN` (bytes per retained history row), and macOS `sample` (8 s)
+of the server and the viewer under a keystroke loop and under a burst.
+
+What changed: attachment protocol v6 carries only changed rows (one retained grid per pane on
+the server, read from the emulator once per step with every row stamped by the step it changed
+in; `Viewer.sent` remembers what each viewer holds; compact wire cells with blank runs and
+default styles omitted; a retained frame on the viewer; queued updates merged in the outbox
+rather than dropped; bindings sent once); output-driven frames are paced to one per 8 ms per
+viewer while echoes, replies, selection changes and retirement are immediate; the owner loop
+treats continuous pane output as a stream and waits 1 ms for more chunks before a step; output
+feeding uses a reusable buffer per pane; cells the frame cannot carry are classified once at the
+source.
+
+### Before / after
+
+Keystroke cost (`measure_frames.py`, first viewer; bytes on the socket per keystroke, latency
+median / p95, server CPU per 1,000 keystrokes):
+
+| Configuration | 0.4.0 bytes | 0.5.0 bytes | 0.4.0 latency ms | 0.5.0 latency ms | 0.4.0 CPU s | 0.5.0 CPU s |
+|---|---|---|---|---|---|---|
+| 80×24, one viewer | 289,920 | 852 | 6.1 / 8.1–9.0 | 0.23–0.25 / 0.71–0.85 | 1.3–1.4 | 0.1–0.2 |
+| 200×60, one viewer | 1,853,858 | 855 | 44 / 51–53 | 0.47 / 1.2–1.3 | 8.4–8.8 | 0.3 |
+| 80×24, two viewers | 289,920 | 852 | 9.3–9.6 / 12.7–12.9 | 0.26 / 0.68–0.69 | 2.5 | 0.1 |
+| 80×24, four viewers | 289,920 | 852 | 15.9–16.6 / 23.0–24.4 | 0.24–0.29 / 0.70–1.01 | 4.6–4.7 | 0.1 |
+| 80×24, eight viewers | 289,920 | 852 | 35.5–35.8 / 55.6–57.8 | 0.26–0.27 / 0.80–0.81 | 9.3–9.7 | 0.1 |
+| 200×60 + 80×24 on one tab | 289,920 | 852 | 9.8–10.1 / 14.5–14.8 | 0.24–0.26 / 0.54–0.75 | 2.5–2.6 | 0.1 |
+
+Bursts and memory (`measure_frames.py`: 20,000-line burst to quiescence, server CPU for it, RSS
+after it, 80×24 one viewer; `measure.py`; `measure_viewer.py`; `measure_memory.py`):
+
+| Measure | 0.4.0 | 0.5.0 |
+|---|---|---|
+| burst wall time (shell floor 0.23 s alone, 0.28 s through a pty) | 0.25–0.31 s | 0.25–0.27 s |
+| server CPU for the burst | 0.21–0.23 s | 0.06–0.09 s |
+| RSS after the burst, 80×24 / 200×60 | 34.6 / 92.5–93.9 MiB | 33.1 / 78.5 MiB |
+| `measure.py` latency median / p95 (echoed command) | 7.1–7.3 / 9.0–11.0 ms | 0.96–1.03 / 1.7–2.3 ms |
+| `measure.py` startup, idle CPU per 10 s, RSS at start | 29–41 ms, 0.00 s, 6.3–6.5 MiB | 40–48 ms, 0.00 s, 5.8 MiB |
+| real viewer CPU per 1,000 keystrokes, 80×24 / 200×60 | 1.2 / 5.9 s | 0.27 / 0.93 s |
+| real viewer terminal bytes per keystroke | 112 | 112 |
+| bytes per retained history row, plain / styled wide | 2,518 / 1,468 | 2,573 / 1,441 |
+| release binary | 6,592,992 bytes | 6,622,560 bytes |
+
+Against the targets: latency median ≤ 2 ms and p95 ≤ 5 ms (met: 0.25 / 0.85 ms at 80×24, 1.0 /
+2.3 ms for the echoed-command loop); ≤ 2 KiB per keystroke (met: 852 bytes); server CPU per
+1,000 keystrokes ≤ ¼ of baseline (met: 0.1–0.2 s from 1.3–1.4 s); burst server CPU ≤ ½ of
+baseline (met: 0.06–0.09 s from 0.21–0.23 s); burst wall time ≤ 0.10 s (not met and not
+reachable: the shell producing the 20,000 lines takes 0.23 s by itself, 0.28 s when read through
+a pty; both binaries sit at the floor, and the 0.4.0 audit's earlier 0.13–0.16 s figures were an
+artefact of the shell's echo of the typed command satisfying the wait, which the scripts no
+longer allow); 200×60 latency ≤ 1.5× the 80×24 figure (0.47 vs 0.24 ms: 2×, not met at that
+ratio, though 90× better than before; the residual is the per-step comparison of a 12,000-cell
+grid); eight viewers ≤ 2× one viewer (met: server CPU and latency are flat in the viewer count);
+RSS after the burst not worse (met); idle CPU 0.00 s (met); startup not worse than the baseline
+range (overlapping: 18–63 ms for the branch and 16–71 ms for the baseline across the day's runs,
+40–48 vs 29–41 ms in the final alternating set; startup is a fork/exec plus a shell start and
+varies by more than 2× between runs on this machine).
+
+### Profiles (macOS `sample`, self samples at the top of the stack)
+
+Before (0.4.0), server under a keystroke loop: `BoundedBytes::write_all`/`write` (serde_json
+into the bounded frame writer) ≈ 840, `memmove` 223, `format_escaped_str` ≈ 200, `sendto` 110,
+`Cell::valid` 9, `PaneView::from_screen` 5 — the keystroke cost was JSON encoding of 1,920 cells.
+Server under a burst: vt100 `Grid::visible_row` 518, `Cell::valid` 366, `PaneView::from_screen`
+265, unicode-segmentation ≈ 200, `free` 123, `Cell::contents` 113, `malloc` 107,
+`drop_in_place<PaneView>` 49, `ServerTerminal::process` 26 — deriving a full view per step.
+Viewer under a keystroke loop: `from_utf8` 79, serde_json `skip_to_escape` 47, `parse_str` 35,
+deserializer ≈ 60, `Buffer::diff` 8, `compose` 6 — decoding the same 290 KB.
+
+After (0.5.0), server under a keystroke loop: vt100 `Grid::visible_row` 262, `refresh_grid` 258,
+`memmove` 141, `free` 107, `Screen::cell` 70, `Cell::contents` 49, `write_all` 47 — the residual is
+the per-step comparison of the visible grid against the emulator (one `Screen::cell` per cell).
+Server under a burst, before the stream wait: `visible_row` 530, `push_wire` 218, `copy_row` 143,
+`from_utf8` 130, `Grid::update` 79, `refresh_grid` 76, `PaneUpdate::merge` 24 — grid refresh,
+update building and outbox merging once per pty read; user and system time were equal, and a
+20,000-line burst was ~12,000 pty reads of ~11 bytes, each a step. With frames paced to 8 ms and
+the 1 ms stream wait the burst is a few hundred steps and its server CPU a third of the
+baseline's.
+
+### Memory
+
+vt100 stores every cell in 32 bytes, so a retained row costs about the row width times 32 bytes
+whatever it holds: 2,518–2,573 bytes per 80-column row of plain text (the grid's own 80 × 32 =
+2,560), and 1,441–1,468 bytes per row of styled wide characters (half the cells are wide
+continuations, which vt100 does not store twice). With the default 10,000 rows of history a pane
+retains about 25 MiB at 80 columns and 62 MiB at 200 columns, which is what RSS after the burst
+shows (33 MiB at 80×24, 78 MiB at 200×60 for one pane plus the server). The retained grid adds one
+visible screen per pane (about 40 bytes per cell: 77 KB at 80×24, 480 KB at 200×60); the viewer
+holds one `PaneView` per visible pane and one painted buffer. Options the user decides on, not
+this pass: a lower default `history.scrollback-lines` (documented behaviour), or a compact
+history representation outside the emulator (a larger change with the same limits). The
+documented range 1–100,000 is unchanged.
+
+### Contract evidence
+
+Every test of 0.4.0 passes with its assertion intact. `tests/ecs.rs` applies updates onto a
+retained frame per viewer and asserts on the result as before; the history-view assertion
+expands the full pane update. `tests/verify/detach_drain.py` and `local_attachment.py` read the
+`bindings` message before the first frame and pin version 6; `local_attachment.py` tolerates
+blank runs. Added: `view::tests::full_updates_round_trip_to_the_screen_view`,
+`terminal::tests::deltas_and_merged_deltas_reproduce_the_screen` (property-based: applying the
+deltas the server produces, merged in any grouping, equals the screen),
+`adapter::tests::queued_updates_merge_so_no_row_is_lost`, and
+`output_frames_are_paced_but_replies_are_not` in `tests/ecs.rs` (a paced frame proposes a
+deadline; replies and echoes, even fragmented ones, are never delayed). The koh gateway suites
+run against the v6 binary with the version pin as koh's only change; the ordering guarantees in
+[design.md](design.md) are unchanged (updates before replies, per-source byte order, detach
+draining, stale generations ignored, bounded ingest).
+
+### Rejected or deferred
+
+- A binary frame encoding: after deltas and compact cells a keystroke costs about 850 bytes and
+  0.2 ms; encoding is no longer measurable in the profile, so no dependency was added.
+- Row-damage repainting in the viewer's compositor: the viewer's CPU per keystroke fell from
+  1.05 s to 0.25 s per thousand at 80×24 (5.9 s to 0.9 s at 200×60) from the delta decode
+  alone; the remaining cost is the full-buffer compose and diff, kept because it is the safety
+  net for every overlay and the measured residual is under a millisecond per keystroke.
+- History storage outside the emulator: vt100 keeps 32 bytes per cell, so a retained row costs
+  the row width times 32 bytes regardless of content (see Memory); changing the default
+  scrollback is a documented behaviour change left to the user.
+
+### Gate on the final tree
+
+GATE_SUMMARY
+
+### Independent review
+
+REVIEW_RECORD
+
 ## Platform and CI limits
 
 - Runtime evidence is macOS only. `ci.yml` configures Linux and macOS hosts, an MSRV 1.95 job,
