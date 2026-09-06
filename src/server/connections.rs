@@ -426,6 +426,7 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
     };
     let action = match request {
         crate::daemon::ManagerRequest::List => ManagerAction::List,
+        crate::daemon::ManagerRequest::Info => ManagerAction::Info,
         crate::daemon::ManagerRequest::Resolve { name } => ManagerAction::Resolve { name },
         crate::daemon::ManagerRequest::Kill { name } => ManagerAction::Kill { name },
     };
@@ -450,6 +451,7 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
     };
     let reply = match outcome {
         ManagerOutcome::Names(names) => crate::daemon::ManagerReply::Names { names },
+        ManagerOutcome::Info(info) => crate::daemon::ManagerReply::Info { info },
         ManagerOutcome::Failed(message) => crate::daemon::ManagerReply::Failed { message },
         ManagerOutcome::Attach { name, .. } => match (DESCRIPTOR_HOOK.get())(&name) {
             Some(descriptor) => crate::daemon::ManagerReply::Attach { descriptor },

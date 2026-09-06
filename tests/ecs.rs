@@ -1473,8 +1473,12 @@ mod randomized {
                 Just(TabAction::New { name: None }),
                 Just(TabAction::Next),
                 Just(TabAction::Previous),
-                (0..4u32).prop_map(|index| TabAction::Select { index }),
-                tab().prop_map(|tab| TabAction::SelectId { tab }),
+                (0..4u32).prop_map(|index| TabAction::Select {
+                    target: fux::proto::control::TabTarget::Index(index)
+                }),
+                tab().prop_map(|tab| TabAction::Select {
+                    target: fux::proto::control::TabTarget::Id(tab)
+                }),
                 tab().prop_map(|tab| TabAction::Rename {
                     tab,
                     name: "renamed".into(),

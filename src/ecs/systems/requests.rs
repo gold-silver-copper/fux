@@ -598,25 +598,6 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         } => split(
             world, &context, id, axis, target, cwd, argv, env, rows, columns,
         ),
-        Request::New {
-            cwd,
-            argv,
-            env,
-            rows,
-            columns,
-            ..
-        } => split(
-            world,
-            &context,
-            id,
-            Axis::Horizontal,
-            None,
-            cwd,
-            argv,
-            env,
-            rows,
-            columns,
-        ),
         Request::Focus { target, .. } => focus(world, &context, id, target),
         Request::Kill { pane, .. } => kill(world, &context, id, pane),
         Request::Resize { pane, delta, .. } => resize(world, &context, id, pane, delta),
@@ -1096,21 +1077,19 @@ fn tab_action(
                 tab: tab_id(world, tab).unwrap_or_default(),
             })
         }
-        TabAction::Select { index } => {
-            let tab = *usize::try_from(index)
-                .ok()
-                .and_then(|index| tabs.get(index))
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
-            context.select_tab(world, tab);
-            Ok(CommandResult::Tab {
-                tab: tab_id(world, tab).unwrap_or_default(),
-            })
-        }
-        TabAction::SelectId { tab } => {
-            let entity = tab_in_workspace(world, context, tab)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab no longer exists"))?;
+        TabAction::Select { target } => {
+            let entity = match target {
+                control::TabTarget::Index(index) => *usize::try_from(index)
+                    .ok()
+                    .and_then(|index| tabs.get(index))
+                    .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?,
+                control::TabTarget::Id(tab) => tab_in_workspace(world, context, tab)
+                    .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab no longer exists"))?,
+            };
             context.select_tab(world, entity);
-            Ok(CommandResult::Tab { tab })
+            Ok(CommandResult::Tab {
+                tab: tab_id(world, entity).unwrap_or_default(),
+            })
         }
         TabAction::Rename { tab, name } => {
             let entity = tab_in_workspace(world, context, tab)
@@ -1300,6 +1279,10 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
                 ManagerOutcome::Failed("workspace not found".into()),
             ),
         },
+        ManagerAction::Info => {
+            let info = server_info(world, None);
+            manager(world, token, ManagerOutcome::Info(Box::new(info)));
+        }
         ManagerAction::Resolve { name } => {
             if world.resource::<ShuttingDown>().0 {
                 return manager(

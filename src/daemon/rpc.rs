@@ -18,14 +18,25 @@ pub enum ManagerRequest {
     Kill {
         name: String,
     },
+    /// The server's identity, version, runtime directory and limits.
+    Info,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reply", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ManagerReply {
-    Attach { descriptor: super::Descriptor },
-    Names { names: Vec<String> },
-    Failed { message: String },
+    Attach {
+        descriptor: super::Descriptor,
+    },
+    Names {
+        names: Vec<String>,
+    },
+    Info {
+        info: Box<crate::proto::control::ServerInfo>,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 pub const MANAGER_DEADLINE: Duration = Duration::from_secs(15);
@@ -89,7 +100,9 @@ pub fn workspace_names(path: &Path) -> Result<Vec<String>> {
             Ok(names)
         }
         ManagerReply::Failed { message } => bail!("{message}"),
-        ManagerReply::Attach { .. } => bail!("manager did not return a workspace list"),
+        ManagerReply::Attach { .. } | ManagerReply::Info { .. } => {
+            bail!("manager did not return a workspace list")
+        }
     }
 }
 

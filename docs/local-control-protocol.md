@@ -36,7 +36,6 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 
 | Command | Fields | Result |
 |---|---|---|
-| `new` | `cwd?`, `argv?`, `env?`, `rows?`, `columns?` | `pane` |
 | `split` | `axis` (`horizontal`/`vertical`), `target?`, `cwd?`, `argv?`, `env?`, `rows?`, `columns?` | `pane` |
 | `focus` | `target`: `left`/`right`/`up`/`down` or `{"pane":ID}` | unit |
 | `kill` | `pane` | unit (the pane leaves the layout now; `pane.closed` follows the exit report) |
@@ -46,7 +45,7 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 | `list` | | `workspaces[]` |
 | `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{…}` |
 | `wait` | `pane`, `until`, `timeout_ms` (1–300000) | `waited`: `fired`, `seq`, `exit_status` |
-| `tab` | `action`: `new{name?}`, `next`, `previous`, `select{index}`, `select-id{tab}`, `rename{tab,name}`, `close{tab}` | `tab` |
+| `tab` | `action`: `new{name?}`, `next`, `previous`, `select{target}` (`{index:N}` or `{id:TAB}`), `rename{tab,name}`, `close{tab}` | `tab` |
 | `workspace` | `action`: `list`, `new{name?}`, `kill{name}` (only the connection's own workspace; other workspaces are killed through the manager or `fux workspace kill`), `select{name}` (viewer attachments only) | `workspace`/`workspaces[]` |
 | `subscribe` | `events?` (≤32 filters) | `accepted`, then events |
 
@@ -139,10 +138,14 @@ Same preface, separate strict schema selected by the socket:
 {"request":"resolve","name":"default"}
 {"request":"resolve","name":null}
 {"request":"kill","name":"default"}
+{"request":"info"}
 ```
 
 Replies: `{"reply":"names","names":[…]}`, `{"reply":"attach","descriptor":{…}}` (name, pid,
-instance nonce, attachment socket path) and `{"reply":"failed","message":"…"}`.
+instance nonce, attachment socket path), `{"reply":"info","info":{…}}` (the same `info` the
+workspace socket returns, with `workspace` null) and `{"reply":"failed","message":"…"}`. The
+manager stays a small bootstrap RPC rather than folding into `FUXCTL`, because its attach reply
+carries a descriptor (socket paths) the shared control schema deliberately does not.
 `resolve` with `null` applies the default rule: create `default` when nothing exists, otherwise the
 most recently attached workspace. `kill` deliberately terminates that workspace's panes; nothing else does.
 

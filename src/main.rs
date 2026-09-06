@@ -285,7 +285,9 @@ fn resolve(
     ) {
         Ok(fux::daemon::ManagerReply::Attach { descriptor }) => Ok(Some(descriptor)),
         Ok(fux::daemon::ManagerReply::Failed { message }) => bail!("session server: {message}"),
-        Ok(fux::daemon::ManagerReply::Names { .. }) => bail!("unexpected manager reply"),
+        Ok(fux::daemon::ManagerReply::Names { .. } | fux::daemon::ManagerReply::Info { .. }) => {
+            bail!("unexpected manager reply")
+        }
         Err(error) if no_server(&error) => Ok(None),
         Err(error) => Err(error.context(
             "cannot use the existing session server; if it is older than this fux, save your work in it and restart it",
@@ -337,6 +339,9 @@ fn workspace_command(arguments: Vec<String>) -> Result<ExitCode> {
         "list" => {
             fux::daemon::manager_request(&paths.manager_socket, &fux::daemon::ManagerRequest::List)?
         }
+        "info" => {
+            fux::daemon::manager_request(&paths.manager_socket, &fux::daemon::ManagerRequest::Info)?
+        }
         "new" => {
             paths.prepare()?;
             let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
@@ -365,7 +370,7 @@ fn workspace_command(arguments: Vec<String>) -> Result<ExitCode> {
                     .clone(),
             },
         )?,
-        _ => bail!("workspace requires list, new [NAME], or kill NAME"),
+        _ => bail!("workspace requires list, new [NAME], kill NAME, or info"),
     };
     println!("{}", serde_json::to_string(&reply)?);
     Ok(status(matches!(
@@ -447,9 +452,12 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
     let number = |index: usize, name: &str| -> Result<u32> { Ok(get(index, name)?.parse()?) };
     let request = match command {
         "new" => {
+            // `new` is sugar for a side-by-side split of the focused pane.
             let (cwd, env, rows, columns, argv) = parse_pane_options(args)?;
-            Request::New {
+            Request::Split {
                 id,
+                axis: Axis::Horizontal,
+                target: None,
                 cwd,
                 argv,
                 env,
@@ -587,10 +595,10 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 "next" => TabAction::Next,
                 "previous" | "prev" => TabAction::Previous,
                 "select" => TabAction::Select {
-                    index: number(1, "an index")?,
+                    target: fux::proto::control::TabTarget::Index(number(1, "an index")?),
                 },
-                "select-id" => TabAction::SelectId {
-                    tab: TabId(number(1, "a tab id")?),
+                "select-id" => TabAction::Select {
+                    target: fux::proto::control::TabTarget::Id(TabId(number(1, "a tab id")?)),
                 },
                 "rename" => TabAction::Rename {
                     tab: TabId(number(1, "a tab id")?),

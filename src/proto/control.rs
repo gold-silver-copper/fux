@@ -54,20 +54,6 @@ pub enum Request {
         #[serde(default)]
         columns: Option<u16>,
     },
-    /// Alias for a side-by-side split of the focused pane.
-    New {
-        id: RequestId,
-        #[serde(default)]
-        cwd: Option<PathBuf>,
-        #[serde(default)]
-        argv: Vec<String>,
-        #[serde(default)]
-        env: Vec<(String, String)>,
-        #[serde(default)]
-        rows: Option<u16>,
-        #[serde(default)]
-        columns: Option<u16>,
-    },
     Focus {
         id: RequestId,
         target: FocusTarget,
@@ -138,7 +124,6 @@ impl Request {
     pub fn id(&self) -> RequestId {
         match self {
             Self::Split { id, .. }
-            | Self::New { id, .. }
             | Self::Focus { id, .. }
             | Self::Kill { id, .. }
             | Self::Resize { id, .. }
@@ -156,7 +141,7 @@ impl Request {
     pub fn validate(&self) -> Result<(), ControlError> {
         let id = Some(self.id());
         match self {
-            Self::Split { argv, cwd, env, .. } | Self::New { argv, cwd, env, .. } => {
+            Self::Split { argv, cwd, env, .. } => {
                 validate_argv(argv).map_err(|mut error| {
                     error.id = id;
                     error
@@ -387,11 +372,9 @@ pub enum TabAction {
     },
     Next,
     Previous,
+    /// Show a tab by its position or its stable id.
     Select {
-        index: u32,
-    },
-    SelectId {
-        tab: TabId,
+        target: TabTarget,
     },
     Rename {
         tab: TabId,
@@ -400,6 +383,14 @@ pub enum TabAction {
     Close {
         tab: TabId,
     },
+}
+
+/// Which tab `tab select` shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TabTarget {
+    Index(u32),
+    Id(TabId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -984,20 +975,22 @@ mod tests {
     #[test]
     fn env_and_send_keys_notation_are_validated() {
         let ok = decode_request_frame(
-            br#"{"command":"new","id":1,"env":[["FOO","bar"]],"rows":40,"columns":100}"#,
+            br#"{"command":"split","id":1,"axis":"horizontal","env":[["FOO","bar"]],"rows":40,"columns":100}"#,
         );
         assert!(matches!(
             ok,
-            Ok(Request::New {
+            Ok(Request::Split {
                 rows: Some(40),
                 columns: Some(100),
                 ..
             })
         ));
         assert!(ok.unwrap().validate().is_ok());
-        let bad_name = decode_request_frame(br#"{"command":"new","id":1,"env":[["A=B","c"]]}"#)
-            .ok()
-            .filter(|request| request.validate().is_ok());
+        let bad_name = decode_request_frame(
+            br#"{"command":"split","id":1,"axis":"horizontal","env":[["A=B","c"]]}"#,
+        )
+        .ok()
+        .filter(|request| request.validate().is_ok());
         assert!(bad_name.is_none(), "an `=` in an env name is rejected");
         let keys = decode_request_frame(
             br#"{"command":"send-keys","id":2,"pane":1,"keys":"C-c Enter","notation":"keys"}"#,

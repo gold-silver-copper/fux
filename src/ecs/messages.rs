@@ -33,6 +33,8 @@ pub enum ViewerRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagerAction {
     List,
+    /// Server identity and limits.
+    Info,
     /// `None` applies the documented default rule: create `default` when no workspace exists,
     /// otherwise attach to the most recently attached workspace.
     Resolve {
@@ -47,6 +49,7 @@ pub enum ManagerAction {
 pub enum ManagerOutcome {
     Names(Vec<String>),
     Attach { name: String, created: bool },
+    Info(Box<crate::proto::control::ServerInfo>),
     Failed(String),
 }
 

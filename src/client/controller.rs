@@ -568,7 +568,9 @@ impl Controller {
                 self.mode = Mode::Pane;
                 Some(Request::Tab {
                     id: 0,
-                    action: TabAction::SelectId { tab: target },
+                    action: TabAction::Select {
+                        target: crate::proto::control::TabTarget::Id(target),
+                    },
                 })
             }
             Mode::Rename { tab, text } => match key {
