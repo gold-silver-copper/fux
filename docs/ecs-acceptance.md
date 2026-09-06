@@ -406,6 +406,11 @@ path's `read_line` bounds frames by construction and every CLI and zor harness d
 `FUXCTL1` (the server half is `connections::negotiate`, exercised by `observer.py`, which sends
 `FUXCTL1` to a real server and expects the `FUXCTL2` answer or a closed connection). The commands and config unit tests use `entries()` and
 `toml::to_string_pretty` in place of the deleted test-only `key_for` and `to_toml_pretty`.
+Two harness races found while gating (both reproduce on the 0.3.3 debug binary, one failure in
+eight runs) were fixed without weakening an assertion: `migration.py` now drains the viewer's
+pty while polling for its exit (a pty buffer left full blocked the viewer inside its first frame
+write, so the detach key was never read), and `viewer.py` waits for the whole first frame, bar
+included, before asserting on the bar.
 
 Performance, release builds, `python3 tools/measure.py BIN --version 5`, three alternating runs
 per binary on the same machine:
@@ -434,7 +439,7 @@ Gate on the final tree (macOS, 2026-09-06):
 |---|---|
 | `cargo fmt --all --check` | clean |
 | `cargo clippy --all-targets --locked -- -D warnings` | clean |
-| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 PROPTEST_CASES=2048 cargo test --locked -- --test-threads=1` | lib 78, main 2, `ecs` 19 (randomized at 2048 cases), `local_cli` 6 (all Python harnesses), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
+| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 PROPTEST_CASES=2048 cargo test --locked -- --test-threads=1` | lib 78, main 2, `ecs` 20 (randomized at 2048 cases, plus the review regression test), `local_cli` 6 (all Python harnesses, after the harness fix), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
 | `cargo doc --no-deps --locked` | generated, no warnings |
 | `cargo +1.95.0 check --all-targets --locked` | passed (MSRV) |
 | `cargo test --locked --manifest-path tests/verify/fixture-child/Cargo.toml` | 3 + 8 + 2 passed |
@@ -446,7 +451,32 @@ Gate on the final tree (macOS, 2026-09-06):
 
 ### Independent review of the refactor
 
-REVIEW_RECORD
+A reviewer who implemented none of the branch reviewed the complete diff against `5449616`,
+ran the unit, ECS and structure suites and Clippy, and drove `Session::step` on both trees from
+a scratch crate with identical inputs. Findings and resolutions:
+
+| # | Severity | Finding (confirmed unless noted) | Resolution |
+|---|---|---|---|
+| 1 | P1 | The typed ingest system spawned viewers through `Commands`, so an arrival and a departure in the same step (a peer whose first read fails) could not find the entity: the ghost viewer stayed registered, counted against the limit, never got `CloseViewer` and clamped every later viewer's layout to its size (probe: a 10×40 ghost left a 40×160 viewer with a 9×40 pane). | `apply_attachments` keeps the step's arrivals and resolves a departure against them, queuing the despawn behind the spawn; test `a_viewer_leaving_in_its_arrival_step_is_released_and_the_limit_counts_the_batch` fails on the previous code and passes now. |
+| 2 | P2 | The per-step viewer limit ignored arrivals of the same batch (66 arrivals in one step were all admitted; the baseline admitted 64). | Same fix: the count includes the step's arrivals; the test asserts 64 viewers and three refusals. |
+| 3 | P3 | Output feeding cloned the workspace name for every `PaneOutput` message, not only when an event was emitted (a net gain over the baseline's per-message `Vec<u8>` clone, but the audit sentence claimed no added clone). | The lookup runs only when a `pane.output` or `pane.title` event is due; the audit sentence corrected. |
+| 4 | P3 | `IdIndex<K>` cost about thirty lines to replace four `.get().copied()` calls. | Removed; `Ids` holds plain `BTreeMap`s. |
+| 5 | P3 | The audit attributed the server-side preface rejection to `migration.py` and `protocol_rejection.py`; the former fakes the server and the latter tests the attachment hello. | Attributed to `observer.py`, which sends `FUXCTL1` to a real server. |
+| 6 | P3 | `private_dir` delegating to `ensure_private_directory` changes semantics (owner compared with the effective user instead of the parent directory's owner), which the ledger described only as an added check. | Recorded in the changelog and `security.md`. |
+| 7 | P3 | `read_descriptor` reads the bounded file before the metadata checks; no new hazard (`O_NOFOLLOW`, bounded, user-owned directory), only the error for a directory named `x.json` changes from `Invalid` to `Io`. | Accepted as noted. |
+| 8 | P3 | The audit's "root `*.md`" baseline counted every markdown file. | Baseline corrected to the root-only count. |
+
+Sound per the reviewer: the `ecs::support` helpers (both `fail_creations` modes match the two
+functions they replaced, `retire` matches the `already` guard, `close_tab` order preserved),
+completion, lifecycle and request paths, the relationship (no `linked_spawn`; `on_insert`/
+`on_discard` flushed synchronously inside the exclusive passes; `check_invariants` still pins
+membership), the schedule (sync point between ingest and output, `ViewerExit` despawns before
+publish, `MessageReader` cursors across `Messages::clear`, no `SystemParam` conflicts), the accept
+loop, `write_line`, the shared `wait_for_activity`, the PTY abort closure and untouched reap gate,
+the bar's right-zone arithmetic, the merged controller arms, the deleted items (no reference left
+in source, tests, tools, docs or owner patches) and the byte-identical tests, CI and patches.
+
+FINAL_REVIEW_RECORD
 
 ## Platform and CI limits
 
