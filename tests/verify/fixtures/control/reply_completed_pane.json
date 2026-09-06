@@ -1,0 +1,10 @@
+{
+  "status": "completed",
+  "id": 1,
+  "result": {
+    "kind": "pane",
+    "value": {
+      "pane": 2
+    }
+  }
+}

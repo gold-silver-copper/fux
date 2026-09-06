@@ -184,6 +184,13 @@ zor negotiates the control preface, samples `list` and `capture`, and runs its o
 missing, stalled, crashed or malformed observer cannot block or change a pane. The socket paths,
 identities and events zor consumes are documented in the [control protocol](docs/local-control-protocol.md).
 
+## Protocol fixtures
+
+`tests/verify/fixtures/` holds one golden JSON frame per schema and direction (control requests,
+replies and events, manager frames, attachment messages). `cargo test --test fixtures` round-trips
+each through its Rust type with `deny_unknown_fields`, so a schema change is a visible diff. These
+files are the shape koh and zor consume; the real-binary integration suites remain the final check.
+
 ## Verification
 
 ```sh

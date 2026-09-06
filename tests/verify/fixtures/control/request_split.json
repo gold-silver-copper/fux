@@ -1,0 +1,18 @@
+{
+  "command": "split",
+  "id": 1,
+  "axis": "horizontal",
+  "target": 2,
+  "cwd": "/tmp",
+  "argv": [
+    "/bin/sh"
+  ],
+  "env": [
+    [
+      "ROLE",
+      "agent"
+    ]
+  ],
+  "rows": 24,
+  "columns": 80
+}

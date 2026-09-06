@@ -1,0 +1,10 @@
+{
+  "command": "capture",
+  "id": 2,
+  "pane": 1,
+  "attrs": false,
+  "scrollback": 0,
+  "max_bytes": 65536,
+  "format": "rows",
+  "since": 7
+}

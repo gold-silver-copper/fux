@@ -1,0 +1,10 @@
+{
+  "command": "wait",
+  "id": 4,
+  "pane": 1,
+  "until": {
+    "kind": "pattern",
+    "regex": "\\$ $"
+  },
+  "timeout_ms": 10000
+}

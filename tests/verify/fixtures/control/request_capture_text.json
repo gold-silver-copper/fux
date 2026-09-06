@@ -1,0 +1,8 @@
+{
+  "command": "capture",
+  "id": 3,
+  "pane": 1,
+  "attrs": true,
+  "scrollback": 100,
+  "max_bytes": 131072
+}

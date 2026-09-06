@@ -1,0 +1,10 @@
+{
+  "event": "pane.agent",
+  "id": 10,
+  "pane": 1,
+  "agent": {
+    "state": "working",
+    "agent": "claude",
+    "message": "building"
+  }
+}

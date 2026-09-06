@@ -1,0 +1,11 @@
+{
+  "command": "tab",
+  "id": 7,
+  "action": {
+    "select": {
+      "target": {
+        "id": 3
+      }
+    }
+  }
+}

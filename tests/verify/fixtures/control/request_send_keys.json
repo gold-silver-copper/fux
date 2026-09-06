@@ -1,0 +1,7 @@
+{
+  "command": "send-keys",
+  "id": 6,
+  "pane": 1,
+  "keys": "C-c Enter",
+  "notation": "keys"
+}

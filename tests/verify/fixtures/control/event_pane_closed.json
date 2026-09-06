@@ -1,0 +1,6 @@
+{
+  "event": "pane.closed",
+  "id": 10,
+  "pane": 1,
+  "exit_status": 0
+}
