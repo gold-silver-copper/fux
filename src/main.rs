@@ -473,10 +473,6 @@ fn run_open_control(socket: &std::path::Path) -> Result<std::os::unix::net::Unix
 }
 
 fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
-    use fux::proto::control::{CaptureFormat, CommandResult, Reply, Request};
-    use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
     let mut timeout_ms: u64 = 300_000;
     let mut rest = arguments;
     if let Some(position) = rest.iter().position(|a| a == "--timeout") {
@@ -521,10 +517,36 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
         }
     }
     let socket = paths.control_socket(&workspace)?;
+    // Everything past here runs against the workspace `run` just created; on any exit path the
+    // ephemeral workspace is killed so a failed run leaves no stray server behind.
+    let result = run_in_workspace(&socket, cwd, env, rows, columns, argv, timeout_ms);
+    let _ = fux::daemon::manager_request(
+        &paths.manager_socket,
+        &fux::daemon::ManagerRequest::Kill {
+            name: workspace.clone(),
+        },
+    );
+    Ok(result?.map_or(ExitCode::SUCCESS, exit_code))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_in_workspace(
+    socket: &std::path::Path,
+    cwd: Option<PathBuf>,
+    env: Vec<(String, String)>,
+    rows: Option<u16>,
+    columns: Option<u16>,
+    argv: Vec<String>,
+    timeout_ms: u64,
+) -> Result<Option<u32>> {
+    use fux::proto::control::{CaptureFormat, CommandResult, Reply, Request};
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     let short = std::time::Duration::from_secs(30);
     // Subscribe to pane.closed before the command exists, so the exit status is caught even for a
     // command that exits immediately (a pane is removed on exit and cannot be waited on afterward).
-    let mut events = run_open_control(&socket)?;
+    let mut events = run_open_control(socket)?;
     events.set_read_timeout(Some(
         std::time::Duration::from_millis(timeout_ms) + std::time::Duration::from_secs(5),
     ))?;
@@ -543,7 +565,7 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
         ),
         "run could not subscribe to pane events"
     );
-    let mut control = run_open_control(&socket)?;
+    let mut control = run_open_control(socket)?;
     let split = request_reply(
         &mut control,
         &Request::Split {
@@ -563,22 +585,14 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
             result: CommandResult::Pane { pane },
             ..
         } => pane,
-        Reply::Failed { error, .. } => {
-            let _ = fux::daemon::manager_request(
-                &paths.manager_socket,
-                &fux::daemon::ManagerRequest::Kill {
-                    name: workspace.clone(),
-                },
-            );
-            bail!("run could not start the command: {}", error.message);
-        }
+        Reply::Failed { error, .. } => bail!("run could not start the command: {}", error.message),
         other => bail!("unexpected split reply: {other:?}"),
     };
     // A background reader accumulates the pane's rows while it is alive.
     let model: Arc<Mutex<BTreeMap<u16, String>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let done = Arc::new(AtomicBool::new(false));
     let reader = {
-        let (model, done, socket) = (Arc::clone(&model), Arc::clone(&done), socket.clone());
+        let (model, done, socket) = (Arc::clone(&model), Arc::clone(&done), socket.to_path_buf());
         std::thread::spawn(move || {
             let Ok(mut stream) = run_open_control(&socket) else {
                 return;
@@ -661,13 +675,7 @@ fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
         }
         stdout.flush()?;
     }
-    let _ = fux::daemon::manager_request(
-        &paths.manager_socket,
-        &fux::daemon::ManagerRequest::Kill {
-            name: workspace.clone(),
-        },
-    );
-    Ok(exit_status.map_or(ExitCode::SUCCESS, exit_code))
+    Ok(exit_status)
 }
 
 fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::Request> {
