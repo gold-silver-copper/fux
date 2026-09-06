@@ -1,3 +1,5 @@
+//! Private runtime/state locations for one user.
+
 use std::env;
 use std::ffi::OsString;
 use std::fmt;
@@ -50,8 +52,18 @@ impl DaemonPaths {
     }
 
     pub fn descriptor(&self, name: &str) -> Result<PathBuf, PathError> {
-        validate_workspace_name(name)?;
+        crate::ids::validate_workspace_name(name).map_err(|_| PathError::UnsafeName)?;
         Ok(self.descriptors_dir.join(format!("{name}.json")))
+    }
+
+    pub fn attach_socket(&self, name: &str) -> Result<PathBuf, PathError> {
+        crate::ids::validate_workspace_name(name).map_err(|_| PathError::UnsafeName)?;
+        Ok(self.runtime_dir.join(format!("{name}.attach.sock")))
+    }
+
+    pub fn control_socket(&self, name: &str) -> Result<PathBuf, PathError> {
+        crate::ids::validate_workspace_name(name).map_err(|_| PathError::UnsafeName)?;
+        Ok(self.runtime_dir.join(format!("{name}.sock")))
     }
 }
 
@@ -76,24 +88,24 @@ pub enum PathError {
 
 impl fmt::Display for PathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::MissingRuntime => {
+                f.write_str("XDG_RUNTIME_DIR (or HOME on macOS) must be set to an absolute path")
+            }
+            Self::MissingState => {
+                f.write_str("XDG_STATE_HOME or HOME must be set to an absolute path")
+            }
+            Self::UnsafeName => f.write_str("unsafe workspace name"),
+            Self::UnsafeDirectory(path) => write!(
+                f,
+                "{} must be a private directory owned by this user",
+                path.display()
+            ),
+            Self::Io(error) => f.write_str(error),
+        }
     }
 }
 impl std::error::Error for PathError {}
-
-pub fn validate_workspace_name(name: &str) -> Result<(), PathError> {
-    if name.is_empty()
-        || name.len() > 64
-        || name == "."
-        || name == ".."
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        return Err(PathError::UnsafeName);
-    }
-    Ok(())
-}
 
 fn absolute(value: Option<OsString>) -> Option<PathBuf> {
     value
@@ -120,13 +132,47 @@ fn private_dir(path: &Path) -> Result<(), PathError> {
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             use std::os::unix::fs::DirBuilderExt as _;
-            let mut builder = fs::DirBuilder::new();
-            builder.recursive(true).mode(0o700);
-            builder
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
                 .create(path)
                 .map_err(|error| PathError::Io(error.to_string()))?;
         }
         Err(error) => return Err(PathError::Io(error.to_string())),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_derive_from_runtime_and_state_homes() {
+        let paths = DaemonPaths::from_env(
+            Some("/run/user/1".into()),
+            Some("/home/u/.local/state".into()),
+            Some("/home/u".into()),
+        )
+        .unwrap_or_else(|_| DaemonPaths {
+            runtime_dir: PathBuf::new(),
+            state_dir: PathBuf::new(),
+            manager_socket: PathBuf::new(),
+            descriptors_dir: PathBuf::new(),
+        });
+        assert_eq!(
+            paths.manager_socket,
+            PathBuf::from("/run/user/1/fux/manager.sock")
+        );
+        assert_eq!(
+            paths.attach_socket("default").ok(),
+            Some(PathBuf::from("/run/user/1/fux/default.attach.sock"))
+        );
+        assert_eq!(
+            paths.control_socket("default").ok(),
+            Some(PathBuf::from("/run/user/1/fux/default.sock"))
+        );
+        assert!(paths.descriptor("../x").is_err());
+        assert!(DaemonPaths::from_env(Some("relative".into()), None, None).is_err());
+    }
 }

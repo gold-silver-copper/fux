@@ -1,24 +1,27 @@
 [package]
 name = "fux"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
-description = "Standalone local terminal multiplexer"
+description = "Minimal persistent terminal multiplexer built on bevy_ecs"
 license = "MIT"
-rust-version = "1.91"
+rust-version = "1.95"
 repository = "https://github.com/gold-silver-copper/fux"
 homepage = "https://github.com/gold-silver-copper/fux"
 documentation = "https://docs.rs/fux"
 readme = "README.md"
-exclude = ["dependency-patches/**", "tools/dependencies.py"]
+exclude = ["dependency-patches/**", "tools/dependencies.py", "tools/measure.py"]
 
 [dependencies]
 # Application error context and top-level error propagation.
 anyhow = "1.0"
 # Encoding OSC 52 clipboard payloads.
 base64 = "0.22"
-# Derive-based parsing for fux's independent command surface.
+# Authoritative multiplexer model: entities, components, resources, ordered schedules.
+# Standalone ECS only: no reflection, no async executor, no multi-threaded scheduler.
+bevy_ecs = { version = "=0.19.1", default-features = false, features = ["std"] }
+# Derive-based parsing for fux's command surface.
 clap = { version = "4.5", features = ["derive"] }
-# Safe Unix signal and process-group operations.
+# Safe Unix signal, process-group, peer-credential and flock operations.
 nix = { version = "0.30", features = ["fs", "poll", "signal", "socket", "term", "user"] }
 # Pane PTYs and application-owned process lifecycle.
 portable-pty = "=0.9.0"
@@ -27,30 +30,26 @@ termina = "0.3.3"
 thiserror = "2"
 # Terminal rendering primitives without ratatui's umbrella crate.
 ratatui-core = "=0.1.0"
-# Serialization for synchronized workspace and control-protocol values.
+# Serialization for viewer frames and the control protocol.
 serde = { version = "1.0", features = ["derive"] }
-# Newline-delimited JSON control protocol and persisted descriptors.
+# Newline-delimited JSON control protocol, length-prefixed attachment frames, descriptors.
 serde_json = "1.0"
-# Async runtime for endpoints, sessions, PTY drains, and signals.
-tokio = { version = "1.47", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
-# Cancellation tokens for owned tasks and process reaping.
-tokio-util = "0.7"
+# Owner loop wake-ups, Unix sockets, signals and bounded channels.
+tokio = { version = "1.47", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 # User configuration decoding.
 toml = "0.9"
 # Structured diagnostics that do not corrupt terminal output.
 tracing = "0.1"
 # Bounded daemon diagnostics and foreground stderr formatting.
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
-# Authoritative terminal emulation and pane snapshots.
+# Authoritative terminal emulation and bounded pane history.
 vt100 = "=0.16.2"
-# Validate synchronized terminal cells before rendering untrusted peer state.
+# Validate frame cells before rendering.
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.0"
 
 [dev-dependencies]
-# Exhaustive compact ownership and ordering models for verification.
-loom = "0.7"
-# Property tests for state/diff/layout/parser invariants.
+# Randomized command sequences for domain-invariant tests.
 proptest = "1.7"
 
 [lints.rust]

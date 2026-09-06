@@ -1,33 +1,21 @@
-//! Secure, testable lifecycle for the named-workspace daemon.
+//! Per-user session-server lifecycle: private paths, workspace descriptors, election locks,
+//! on-demand background startup and the manager RPC contract.
 
 mod descriptor;
-mod endpoint;
-mod manager;
 mod paths;
 mod rpc;
-mod spawn;
-pub use rpc::{ManagerReply, ManagerRequest, manager_request, workspace_names};
+mod startup;
 
 pub use descriptor::{
-    Descriptor, DescriptorError, ManagerIdentity, read_descriptor, recover_stale_descriptors,
-    write_descriptor,
+    Descriptor, DescriptorError, MAX_DESCRIPTOR_BYTES, ManagerIdentity, read_descriptor,
+    recover_stale_descriptors, remove_descriptor, write_descriptor,
 };
-pub use endpoint::{ProductionEndpoint, bind_workspace_endpoint};
-pub use manager::{
-    Daemon, DaemonAction, EndpointFactory, EndpointHandle, ManagerError, ManagerLock, Resolution,
-    WorkspaceEndpoint,
+pub use paths::{DaemonPaths, PathError};
+pub use rpc::{
+    MANAGER_DEADLINE, ManagerReply, ManagerRequest, manager_request, read_json_frame,
+    workspace_names,
 };
-pub use paths::{DaemonPaths, PathError, validate_workspace_name};
-pub use spawn::{
-    Clock, DaemonConnector, DaemonSpawner, ProcessDaemonSpawner, ProcessTicket, SpawnError,
-    SpawnRequest, SpawnTicket, StartupLock, StdioPolicy, SystemClock, receive_startup_async,
-    report_startup, sanitized_environment, start_or_connect,
+pub use startup::{
+    ManagerLock, STARTUP_TIMEOUT, ServerChild, StartupLock, report_startup, sanitized_environment,
+    secret_key,
 };
-
-pub const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;
-pub const STARTUP_TIMEOUT_MS: u64 = 10_000;
-pub const STARTUP_RETRY_MS: u64 = 25;
-pub const INITIAL_REQUEST_GRACE_MS: u64 = 5_000;
-pub const IDLE_WORKSPACE_TTL_MS: u64 = 30 * 60 * 1_000;
-pub const MAX_WORKSPACES: usize = 64;
-pub const MAX_CONNECTIONS_PER_WORKSPACE: usize = 64;

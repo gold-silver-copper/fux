@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  full-corpus:
+  repeated-scenarios:
     strategy:
       fail-fast: false
       matrix:
@@ -18,13 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - run: cargo build --locked --bin fux
-      - name: Repeat deterministic corpus and ownership checks
+      - name: Repeat deterministic ECS, structural and real-process checks
         run: |
           for pass in 1 2 3; do
-            cargo test --test chaos --test verification_corpus --test verification_structure --test verification_loom --locked
+            cargo test --test ecs --test structure --test local_cli --locked -- --test-threads=1
             cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
           done
-      - name: Extended deterministic property cases
+      - name: Extended randomized command sequences
         env:
-          PROPTEST_CASES: 4096
-        run: cargo test --test chaos --test verification_corpus --locked
+          PROPTEST_CASES: 2048
+        run: cargo test --test ecs --locked

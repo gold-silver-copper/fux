@@ -1,3 +1,5 @@
+//! Isolated real-binary scenarios driven through Python harnesses. Each script owns a disposable
+//! HOME/XDG root and its own processes; none touches personal sessions.
 #![allow(clippy::panic)]
 
 fn run(script: &str) {
@@ -8,10 +10,10 @@ fn run(script: &str) {
         ))
         .arg(env!("CARGO_BIN_EXE_fux"))
         .output()
-        .unwrap_or_else(|error| panic!("starting local CLI harness: {error}"));
+        .unwrap_or_else(|error| panic!("starting harness {script}: {error}"));
     assert!(
         output.status.success(),
-        "{}\n{}",
+        "{script} failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -33,11 +35,11 @@ fn incompatible_server_is_rejected_before_terminal_setup() {
 }
 
 #[test]
-fn contextual_help_repaints_a_silent_pane_without_slowing_fast_commands() {
-    run("contextual_help.py");
+fn detach_sends_preceding_input_waits_for_exit_and_drops_the_suffix() {
+    run("detach_drain.py");
 }
 
 #[test]
-fn contextual_modes_remain_private_and_usable_across_terminal_resizes() {
-    run("contextual_viewers.py");
+fn real_viewer_scenarios_cover_the_interaction_contract() {
+    run("viewer.py");
 }

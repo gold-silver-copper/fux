@@ -1,287 +1,231 @@
-//! Application commands and the authoritative default binding/help registry.
-use crate::state::Direction;
+//! The one command registry: configured prefix and bindings, labels, grouping, contextual
+//! availability, viewer dispatch and CLI binding output all read from here.
+
+use crate::view::Frame;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const DEFAULT_PREFIX: u8 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum BuiltinAction {
-    SplitHorizontal,
-    SplitVertical,
+pub enum Action {
+    SplitSide,
+    SplitStack,
     FocusLeft,
     FocusRight,
     FocusUp,
     FocusDown,
     ClosePane,
-    NewPane,
+    ResizeMode,
+    CopyMode,
     NewTab,
     NextTab,
     PreviousTab,
-    Zoom,
-    CopyMode,
-    Detach,
-    WorkspacePicker,
-    Help,
-    TabPicker,
+    ChooseTab,
     RenameTab,
-    ResizeMode,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Command {
-    SplitHorizontal,
-    SplitVertical,
-    Focus(Direction),
-    Close,
-    NewPane,
-    NewTab,
-    NextTab,
-    PreviousTab,
-    Zoom,
-    CopyMode,
+    CloseTab,
+    ChooseWorkspace,
+    NewWorkspace,
     Detach,
-    WorkspacePicker,
     Help,
-    TabPicker,
-    RenameTab,
-    ResizeMode,
-    External(Vec<String>),
 }
-
-pub struct BindingSpec {
-    pub key: u8,
-    pub action: BuiltinAction,
-    pub command: Command,
-    pub description: &'static str,
-}
-
-pub const DEFAULT_BINDINGS: &[BindingSpec] = &[
-    BindingSpec {
-        key: b'|',
-        action: BuiltinAction::SplitHorizontal,
-        command: Command::SplitHorizontal,
-        description: "split side by side",
-    },
-    BindingSpec {
-        key: b'-',
-        action: BuiltinAction::SplitVertical,
-        command: Command::SplitVertical,
-        description: "split stacked",
-    },
-    BindingSpec {
-        key: b'h',
-        action: BuiltinAction::FocusLeft,
-        command: Command::Focus(Direction::Left),
-        description: "focus left",
-    },
-    BindingSpec {
-        key: b'j',
-        action: BuiltinAction::FocusDown,
-        command: Command::Focus(Direction::Down),
-        description: "focus down",
-    },
-    BindingSpec {
-        key: b'k',
-        action: BuiltinAction::FocusUp,
-        command: Command::Focus(Direction::Up),
-        description: "focus up",
-    },
-    BindingSpec {
-        key: b'l',
-        action: BuiltinAction::FocusRight,
-        command: Command::Focus(Direction::Right),
-        description: "focus right",
-    },
-    BindingSpec {
-        key: b'x',
-        action: BuiltinAction::ClosePane,
-        command: Command::Close,
-        description: "close pane",
-    },
-    BindingSpec {
-        key: b'c',
-        action: BuiltinAction::NewPane,
-        command: Command::NewPane,
-        description: "new pane",
-    },
-    BindingSpec {
-        key: b't',
-        action: BuiltinAction::NewTab,
-        command: Command::NewTab,
-        description: "new tab",
-    },
-    BindingSpec {
-        key: b'n',
-        action: BuiltinAction::NextTab,
-        command: Command::NextTab,
-        description: "next tab",
-    },
-    BindingSpec {
-        key: b'p',
-        action: BuiltinAction::PreviousTab,
-        command: Command::PreviousTab,
-        description: "previous tab",
-    },
-    BindingSpec {
-        key: b'z',
-        action: BuiltinAction::Zoom,
-        command: Command::Zoom,
-        description: "toggle zoom",
-    },
-    BindingSpec {
-        key: b'[',
-        action: BuiltinAction::CopyMode,
-        command: Command::CopyMode,
-        description: "copy mode",
-    },
-    BindingSpec {
-        key: b'd',
-        action: BuiltinAction::Detach,
-        command: Command::Detach,
-        description: "detach viewer",
-    },
-    BindingSpec {
-        key: b's',
-        action: BuiltinAction::WorkspacePicker,
-        command: Command::WorkspacePicker,
-        description: "choose workspace",
-    },
-    BindingSpec {
-        key: b'?',
-        action: BuiltinAction::Help,
-        command: Command::Help,
-        description: "show bindings",
-    },
-    BindingSpec {
-        key: b'w',
-        action: BuiltinAction::TabPicker,
-        command: Command::TabPicker,
-        description: "choose tab",
-    },
-    BindingSpec {
-        key: b',',
-        action: BuiltinAction::RenameTab,
-        command: Command::RenameTab,
-        description: "rename tab",
-    },
-    BindingSpec {
-        key: b'r',
-        action: BuiltinAction::ResizeMode,
-        command: Command::ResizeMode,
-        description: "resize mode",
-    },
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum CommandGroup {
+pub enum Group {
     Panes,
     Focus,
     Tabs,
+    Workspaces,
     Session,
-    Custom,
 }
-impl CommandGroup {
+
+impl Group {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Panes => "Panes",
             Self::Focus => "Focus",
             Self::Tabs => "Tabs",
+            Self::Workspaces => "Workspaces",
             Self::Session => "Session",
-            Self::Custom => "Custom",
         }
     }
 }
 
-impl BuiltinAction {
-    pub const fn group(self) -> CommandGroup {
+pub struct BindingSpec {
+    pub key: u8,
+    pub action: Action,
+}
+
+pub const DEFAULT_BINDINGS: &[BindingSpec] = &[
+    BindingSpec {
+        key: b'|',
+        action: Action::SplitSide,
+    },
+    BindingSpec {
+        key: b'-',
+        action: Action::SplitStack,
+    },
+    BindingSpec {
+        key: b'x',
+        action: Action::ClosePane,
+    },
+    BindingSpec {
+        key: b'r',
+        action: Action::ResizeMode,
+    },
+    BindingSpec {
+        key: b'[',
+        action: Action::CopyMode,
+    },
+    BindingSpec {
+        key: b'h',
+        action: Action::FocusLeft,
+    },
+    BindingSpec {
+        key: b'j',
+        action: Action::FocusDown,
+    },
+    BindingSpec {
+        key: b'k',
+        action: Action::FocusUp,
+    },
+    BindingSpec {
+        key: b'l',
+        action: Action::FocusRight,
+    },
+    BindingSpec {
+        key: b't',
+        action: Action::NewTab,
+    },
+    BindingSpec {
+        key: b'n',
+        action: Action::NextTab,
+    },
+    BindingSpec {
+        key: b'p',
+        action: Action::PreviousTab,
+    },
+    BindingSpec {
+        key: b'w',
+        action: Action::ChooseTab,
+    },
+    BindingSpec {
+        key: b',',
+        action: Action::RenameTab,
+    },
+    BindingSpec {
+        key: b'X',
+        action: Action::CloseTab,
+    },
+    BindingSpec {
+        key: b's',
+        action: Action::ChooseWorkspace,
+    },
+    BindingSpec {
+        key: b'S',
+        action: Action::NewWorkspace,
+    },
+    BindingSpec {
+        key: b'd',
+        action: Action::Detach,
+    },
+    BindingSpec {
+        key: b'?',
+        action: Action::Help,
+    },
+];
+
+impl Action {
+    pub const ALL: &'static [Self] = &[
+        Self::SplitSide,
+        Self::SplitStack,
+        Self::FocusLeft,
+        Self::FocusRight,
+        Self::FocusUp,
+        Self::FocusDown,
+        Self::ClosePane,
+        Self::ResizeMode,
+        Self::CopyMode,
+        Self::NewTab,
+        Self::NextTab,
+        Self::PreviousTab,
+        Self::ChooseTab,
+        Self::RenameTab,
+        Self::CloseTab,
+        Self::ChooseWorkspace,
+        Self::NewWorkspace,
+        Self::Detach,
+        Self::Help,
+    ];
+
+    pub const fn group(self) -> Group {
         match self {
-            Self::FocusLeft | Self::FocusRight | Self::FocusUp | Self::FocusDown => {
-                CommandGroup::Focus
-            }
+            Self::SplitSide
+            | Self::SplitStack
+            | Self::ClosePane
+            | Self::ResizeMode
+            | Self::CopyMode => Group::Panes,
+            Self::FocusLeft | Self::FocusRight | Self::FocusUp | Self::FocusDown => Group::Focus,
             Self::NewTab
             | Self::NextTab
             | Self::PreviousTab
-            | Self::TabPicker
-            | Self::RenameTab => CommandGroup::Tabs,
-            Self::Detach | Self::WorkspacePicker | Self::Help => CommandGroup::Session,
-            Self::SplitHorizontal
-            | Self::SplitVertical
-            | Self::ClosePane
-            | Self::NewPane
-            | Self::Zoom
-            | Self::CopyMode
-            | Self::ResizeMode => CommandGroup::Panes,
+            | Self::ChooseTab
+            | Self::RenameTab
+            | Self::CloseTab => Group::Tabs,
+            Self::ChooseWorkspace | Self::NewWorkspace => Group::Workspaces,
+            Self::Detach | Self::Help => Group::Session,
         }
     }
-    /// Obvious context restrictions shared by hints and viewer dispatch. The host
-    /// remains authoritative for resources and changes made by other viewers.
-    pub fn unavailable(
-        self,
-        state: &crate::state::WorkspaceState,
-        manager: bool,
-    ) -> Option<&'static str> {
-        let tab = state
-            .tabs()
-            .iter()
-            .find(|tab| Some(tab.id) == state.active_tab());
-        let popup = state.popups().iter().max_by_key(|popup| popup.z_index);
-        let pane = popup
-            .map(|popup| popup.pane)
-            .or_else(|| tab.map(|tab| tab.focused))
-            .and_then(|pane| state.pane(pane));
+
+    pub const fn label(self) -> &'static str {
         match self {
-            Self::Help | Self::Detach => None,
-            Self::WorkspacePicker => {
-                (!manager).then_some("No workspace manager for this attachment")
+            Self::SplitSide => "split side by side",
+            Self::SplitStack => "split stacked",
+            Self::FocusLeft => "focus left",
+            Self::FocusRight => "focus right",
+            Self::FocusUp => "focus up",
+            Self::FocusDown => "focus down",
+            Self::ClosePane => "close pane",
+            Self::ResizeMode => "resize split",
+            Self::CopyMode => "history and copy",
+            Self::NewTab => "new tab",
+            Self::NextTab => "next tab",
+            Self::PreviousTab => "previous tab",
+            Self::ChooseTab => "choose tab",
+            Self::RenameTab => "rename tab",
+            Self::CloseTab => "close tab",
+            Self::ChooseWorkspace => "choose workspace",
+            Self::NewWorkspace => "new workspace",
+            Self::Detach => "detach",
+            Self::Help => "show bindings",
+        }
+    }
+
+    /// The obvious contextual restrictions shared by the popup and viewer dispatch. The server
+    /// remains authoritative for limits and for changes made by other viewers.
+    pub fn unavailable(self, frame: &Frame, workspaces: bool) -> Option<&'static str> {
+        let visible = frame.layout.len();
+        let live_focus = frame.focused_pane().is_some_and(|pane| pane.exit.is_none());
+        match self {
+            Self::Help | Self::Detach | Self::NewTab => None,
+            Self::ChooseWorkspace | Self::NewWorkspace => {
+                (!workspaces).then_some("Not available through this attachment")
             }
-            Self::ClosePane | Self::CopyMode => pane
-                .filter(|pane| pane.exit_status.is_none())
-                .is_none()
-                .then_some("No live pane"),
-            _ if popup.is_some() => Some("Close the popup first"),
-            Self::NewTab => None,
-            Self::NextTab | Self::PreviousTab => (state.tabs().len() < 2).then_some("Only one tab"),
-            Self::TabPicker | Self::RenameTab => tab.is_none().then_some("No active tab"),
+            Self::ClosePane | Self::CopyMode => (!live_focus).then_some("No live pane"),
+            Self::SplitSide | Self::SplitStack => {
+                frame.focused.is_none().then_some("No active pane")
+            }
+            Self::NextTab | Self::PreviousTab => (frame.tabs.len() < 2).then_some("Only one tab"),
+            Self::ChooseTab | Self::RenameTab | Self::CloseTab => {
+                frame.active_tab.is_none().then_some("No active tab")
+            }
             Self::FocusLeft
             | Self::FocusRight
             | Self::FocusUp
             | Self::FocusDown
-            | Self::ResizeMode => tab
-                .is_none_or(|tab| tab.layout.leaves().len() < 2)
-                .then_some("No split to adjust"),
-            Self::SplitHorizontal | Self::SplitVertical | Self::NewPane | Self::Zoom => {
-                pane.is_none().then_some("No active pane")
-            }
+            | Self::ResizeMode => (visible < 2).then_some("No split to adjust"),
         }
-    }
-
-    pub fn command(self) -> Option<Command> {
-        DEFAULT_BINDINGS
-            .iter()
-            .find(|spec| spec.action == self)
-            .map(|spec| spec.command.clone())
-    }
-    pub fn description(self) -> &'static str {
-        DEFAULT_BINDINGS
-            .iter()
-            .find(|spec| spec.action == self)
-            .map_or("unregistered action", |spec| spec.description)
-    }
-}
-
-impl Command {
-    pub fn group(&self) -> CommandGroup {
-        DEFAULT_BINDINGS
-            .iter()
-            .find(|spec| spec.command == *self)
-            .map_or(CommandGroup::Custom, |spec| spec.action.group())
-    }
-    pub fn description(&self) -> &'static str {
-        DEFAULT_BINDINGS
-            .iter()
-            .find(|spec| spec.command == *self)
-            .map_or("external command", |spec| spec.description)
     }
 }
 
@@ -289,200 +233,12 @@ pub fn key_name(key: u8) -> String {
     match key {
         0 => "C-@".to_owned(),
         1..=26 => format!("C-{}", char::from(key + b'a' - 1)),
-        27..=31 => format!("C-{}", char::from(key + b'@')),
+        27 => "Esc".to_owned(),
+        28..=31 => format!("C-{}", char::from(key + b'@')),
         32 => "Space".to_owned(),
         127 => "DEL".to_owned(),
         128..=255 => format!("0x{key:02x}"),
         _ => char::from(key).to_string(),
-    }
-}
-
-/// Resolve the configured registry once for both execution and command discovery.
-/// External command arguments remain local execution data; help uses the command's safe label.
-pub fn configured_bindings(
-    config: &crate::config::Config,
-) -> anyhow::Result<std::collections::BTreeMap<u8, Command>> {
-    let mut bindings = std::collections::BTreeMap::new();
-    for (key, binding) in &config.bindings {
-        let byte =
-            key_byte(key).ok_or_else(|| anyhow::anyhow!("binding `{key}` must encode one byte"))?;
-        let command = match binding {
-            crate::config::Binding::Builtin { builtin } => builtin
-                .command()
-                .ok_or_else(|| anyhow::anyhow!("unregistered binding action"))?,
-            crate::config::Binding::External { external } => {
-                Command::External(external.argv.clone())
-            }
-        };
-        anyhow::ensure!(
-            bindings.insert(byte, command).is_none(),
-            "bindings must not alias the same byte"
-        );
-    }
-    let prefix =
-        key_byte(&config.prefix).ok_or_else(|| anyhow::anyhow!("prefix must encode one byte"))?;
-    anyhow::ensure!(
-        !bindings.contains_key(&prefix),
-        "a binding cannot equal the prefix byte"
-    );
-    Ok(bindings)
-}
-
-/// Fixed-size viewer shortcuts published by the workspace alongside its state.
-/// Bitsets cover every possible single-byte binding without peer-controlled allocation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ClientBindings {
-    prefix: u8,
-    detach: [u8; 32],
-    workspace_picker: [u8; 32],
-    #[serde(default)]
-    commands: [u64; 32],
-}
-
-impl ClientBindings {
-    pub fn new<'a>(prefix: u8, bindings: impl IntoIterator<Item = (u8, &'a Command)>) -> Self {
-        let mut policy = Self {
-            prefix,
-            detach: [0; 32],
-            workspace_picker: [0; 32],
-            commands: [0; 32],
-        };
-        for (key, command) in bindings {
-            let code = DEFAULT_BINDINGS
-                .iter()
-                .position(|spec| spec.command == *command)
-                .and_then(|index| u8::try_from(index + 1).ok())
-                .unwrap_or(255);
-            if let Some(slot) = policy.commands.get_mut(usize::from(key / 8)) {
-                *slot |= u64::from(code) << (u32::from(key % 8) * 8);
-            }
-            let bits = match command {
-                Command::Detach => &mut policy.detach,
-                Command::WorkspacePicker => &mut policy.workspace_picker,
-                _ => continue,
-            };
-            if let Some(slot) = bits.get_mut(usize::from(key / 8)) {
-                *slot |= 1 << (key % 8);
-            }
-        }
-        policy
-    }
-
-    pub fn prefix(&self) -> u8 {
-        self.prefix
-    }
-
-    pub fn is_bound(&self, key: u8) -> bool {
-        self.code(key) != 0 || self.action(key).is_some()
-    }
-
-    pub fn description(&self, key: u8) -> &'static str {
-        self.action(key)
-            .map_or("external command", BuiltinAction::description)
-    }
-
-    pub fn entries(&self) -> impl Iterator<Item = (u8, &'static str)> + '_ {
-        (0..=u8::MAX)
-            .filter(|key| self.is_bound(*key))
-            .map(|key| (key, self.description(key)))
-    }
-
-    fn code(&self, key: u8) -> u8 {
-        self.commands
-            .get(usize::from(key / 8))
-            .map_or(0, |slot| ((slot >> (u32::from(key % 8) * 8)) & 255) as u8)
-    }
-
-    pub fn action(&self, key: u8) -> Option<BuiltinAction> {
-        if let Some(spec) = self
-            .code(key)
-            .checked_sub(1)
-            .and_then(|index| DEFAULT_BINDINGS.get(usize::from(index)))
-        {
-            return Some(spec.action);
-        }
-        let contains = |bits: &[u8; 32]| {
-            bits.get(usize::from(key / 8))
-                .is_some_and(|slot| slot & (1 << (key % 8)) != 0)
-        };
-        if contains(&self.detach) {
-            Some(BuiltinAction::Detach)
-        } else if contains(&self.workspace_picker) {
-            Some(BuiltinAction::WorkspacePicker)
-        } else {
-            None
-        }
-    }
-}
-
-impl Default for ClientBindings {
-    fn default() -> Self {
-        Self::new(
-            DEFAULT_PREFIX,
-            DEFAULT_BINDINGS
-                .iter()
-                .map(|spec| (spec.key, &spec.command)),
-        )
-    }
-}
-
-impl Command {
-    /// Translate viewer actions into the same typed requests used by CLI/control clients.
-    pub fn request(&self, focused: Option<u32>) -> Option<crate::control::Request> {
-        use crate::control::{Axis, FocusTarget, Request, TabAction};
-        Some(match self {
-            Self::SplitHorizontal | Self::SplitVertical => Request::Split {
-                id: 0,
-                axis: if *self == Self::SplitHorizontal {
-                    Axis::Horizontal
-                } else {
-                    Axis::Vertical
-                },
-                target: None,
-                argv: Vec::new(),
-                env: Default::default(),
-            },
-            Self::NewPane => Request::New {
-                id: 0,
-                cwd: None,
-                argv: Vec::new(),
-                env: Default::default(),
-            },
-            Self::Focus(direction) => Request::Focus {
-                id: 0,
-                target: match direction {
-                    Direction::Left => FocusTarget::Left,
-                    Direction::Right => FocusTarget::Right,
-                    Direction::Up => FocusTarget::Up,
-                    Direction::Down => FocusTarget::Down,
-                },
-            },
-            Self::Close => Request::Kill {
-                id: 0,
-                pane: focused?,
-            },
-            Self::Zoom => Request::Zoom { id: 0, pane: None },
-            Self::NewTab => Request::Tab {
-                id: 0,
-                action: TabAction::New { name: None },
-            },
-            Self::NextTab => Request::Tab {
-                id: 0,
-                action: TabAction::Next,
-            },
-            Self::PreviousTab => Request::Tab {
-                id: 0,
-                action: TabAction::Previous,
-            },
-            Self::TabPicker
-            | Self::RenameTab
-            | Self::ResizeMode
-            | Self::CopyMode
-            | Self::Detach
-            | Self::WorkspacePicker
-            | Self::Help
-            | Self::External(_) => return None,
-        })
     }
 }
 
@@ -496,7 +252,138 @@ pub fn key_byte(value: &str) -> Option<u8> {
             .next()
             .map(|byte| byte.to_ascii_uppercase() & 0x1f);
     }
+    match value {
+        "Esc" => return Some(27),
+        "Space" => return Some(32),
+        "DEL" => return Some(127),
+        _ => {}
+    }
+    if let Some(hex) = value.strip_prefix("0x")
+        && hex.len() == 2
+    {
+        return u8::from_str_radix(hex, 16).ok();
+    }
     (value.len() == 1)
         .then(|| value.as_bytes().first().copied())
         .flatten()
+}
+
+/// Viewer-facing bindings published with every frame. Keys are single bytes, so the map is
+/// bounded by construction.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientBindings {
+    prefix: u8,
+    bindings: BTreeMap<u8, Action>,
+}
+
+impl ClientBindings {
+    pub fn new(prefix: u8, bindings: impl IntoIterator<Item = (u8, Action)>) -> Self {
+        let mut map = BTreeMap::new();
+        for (key, action) in bindings {
+            if key != prefix {
+                map.insert(key, action);
+            }
+        }
+        Self {
+            prefix,
+            bindings: map,
+        }
+    }
+
+    #[must_use]
+    pub fn prefix(&self) -> u8 {
+        self.prefix
+    }
+
+    #[must_use]
+    pub fn action(&self, key: u8) -> Option<Action> {
+        self.bindings.get(&key).copied()
+    }
+
+    #[must_use]
+    pub fn key_for(&self, action: Action) -> Option<u8> {
+        self.bindings
+            .iter()
+            .find(|(_, bound)| **bound == action)
+            .map(|(key, _)| *key)
+    }
+
+    /// Bindings ordered by group then key.
+    pub fn entries(&self) -> Vec<(u8, Action)> {
+        let mut entries: Vec<_> = self
+            .bindings
+            .iter()
+            .map(|(key, action)| (*key, *action))
+            .collect();
+        entries.sort_by_key(|(key, action)| (action.group(), *key));
+        entries
+    }
+}
+
+impl Default for ClientBindings {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_PREFIX,
+            DEFAULT_BINDINGS.iter().map(|spec| (spec.key, spec.action)),
+        )
+    }
+}
+
+/// Resolve the configured registry once for execution, the popup and `fux bindings`.
+pub fn configured_bindings(config: &crate::config::Config) -> anyhow::Result<ClientBindings> {
+    let prefix =
+        key_byte(&config.prefix).ok_or_else(|| anyhow::anyhow!("prefix must encode one byte"))?;
+    let mut bindings = BTreeMap::new();
+    for (key, action) in &config.bindings {
+        let byte =
+            key_byte(key).ok_or_else(|| anyhow::anyhow!("binding `{key}` must encode one byte"))?;
+        anyhow::ensure!(byte != prefix, "a binding cannot equal the prefix key");
+        anyhow::ensure!(
+            bindings.insert(byte, *action).is_none(),
+            "two binding keys encode the same byte"
+        );
+    }
+    Ok(ClientBindings::new(prefix, bindings))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_action_is_bound_once_by_default_and_labelled() {
+        let bindings = ClientBindings::default();
+        for action in Action::ALL {
+            assert!(bindings.key_for(*action).is_some(), "{action:?} unbound");
+            assert!(!action.label().is_empty());
+        }
+        assert_eq!(bindings.entries().len(), Action::ALL.len());
+        assert_eq!(bindings.action(bindings.prefix()), None);
+    }
+
+    #[test]
+    fn key_notation_round_trips() {
+        assert_eq!(key_byte("C-a"), Some(1));
+        assert_eq!(key_byte("C-A"), Some(1));
+        assert_eq!(key_byte("Esc"), Some(27));
+        assert_eq!(key_byte("|"), Some(b'|'));
+        assert_eq!(key_byte("ab"), None);
+        assert_eq!(key_byte(""), None);
+        for key in [1_u8, 27, 32, 127, b'x', 200] {
+            assert_eq!(key_byte(&key_name(key)), Some(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn availability_follows_frame_context() {
+        let frame = Frame::default();
+        assert!(Action::SplitSide.unavailable(&frame, true).is_some());
+        assert!(Action::ResizeMode.unavailable(&frame, true).is_some());
+        assert!(Action::NextTab.unavailable(&frame, true).is_some());
+        assert!(Action::ChooseWorkspace.unavailable(&frame, false).is_some());
+        assert!(Action::ChooseWorkspace.unavailable(&frame, true).is_none());
+        assert!(Action::Help.unavailable(&frame, false).is_none());
+        assert!(Action::Detach.unavailable(&frame, false).is_none());
+    }
 }

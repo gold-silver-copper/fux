@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       integrations:
-        description: Verify optional koh and zor source integrations
+        description: Verify optional koh and zor process integrations
         type: boolean
         default: false
 
@@ -29,34 +29,20 @@ jobs:
           - os: macos-latest
             rust: stable
           - os: ubuntu-latest
-            rust: 1.91.0
+            rust: 1.95.0
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install Rust
         run: rustup toolchain install "${{ matrix.rust }}" --profile minimal --component rustfmt,clippy
       - run: cargo +${{ matrix.rust }} fmt --all --check
-      - run: cargo +${{ matrix.rust }} clippy --all-targets --all-features --locked -- -D warnings
-      - run: cargo +${{ matrix.rust }} test --all-features --locked -- --test-threads=1
-      - run: cargo +${{ matrix.rust }} doc --no-deps --all-features --locked
-      - name: Build exact binaries for the binary verification corpus
-        run: |
-          cargo +${{ matrix.rust }} build --locked --bin fux
+      - run: cargo +${{ matrix.rust }} clippy --all-targets --locked -- -D warnings
+      - run: cargo +${{ matrix.rust }} test --locked -- --test-threads=1
+      - run: cargo +${{ matrix.rust }} doc --no-deps --locked
+      - name: Build the exact binary for real-process scenarios
+        run: cargo +${{ matrix.rust }} build --locked --bin fux
       - run: cargo +${{ matrix.rust }} clippy --manifest-path tests/verify/fixture-child/Cargo.toml --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
-
-  verification-layers:
-    name: Verification layers / ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - run: cargo test --test verification_corpus --test verification_structure --test verification_loom --locked
-      - run: cargo build --locked --bin fux
-      - run: cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
 
   android-cross-check:
     name: Android aarch64 cross-check (not runtime coverage)
@@ -77,8 +63,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          submodules: recursive
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: gold-silver-copper/koh

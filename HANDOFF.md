@@ -1,92 +1,59 @@
-# Fux contextual-help handoff
+# fux 0.3.0 rewrite handoff
 
-The user asked to wrap up, commit/push all work, and leave a resumable checkpoint.
-The original goal is `execute contextual-help-prompt.md`. It is **not yet declared complete**.
-Do not continue implementation merely to finish this session; resume when requested.
+Updated 2026-09-05. The bevy_ecs rewrite requested by
+[bevy-ecs-multiplexer-prompt.md](bevy-ecs-multiplexer-prompt.md) is implemented, verified locally
+and independently reviewed. The requirement-by-requirement audit with exact commands and results
+is [docs/ecs-acceptance.md](docs/ecs-acceptance.md); the architecture is
+[docs/design.md](docs/design.md); the plan written first is [docs/ecs-plan.md](docs/ecs-plan.md).
 
-## What is implemented
+## What changed
 
-- Fux builds and runs as a standalone local multiplexer without koh/zor dependencies or keys.
-  Persistent PTYs remain in a local session process. Optional networking belongs to koh;
-  optional observation runs through zor's separate process/protocol.
-- Configured prefix enters viewer-local command mode; hints appear after 200 ms without pane
-  output. Fast shortcuts execute immediately. Explicit help, unknown-key discovery, Escape,
-  literal prefix, grouping, availability and custom bindings use the shared command registry.
-- Integrated workspace/tab pickers, grapheme-aware rename, target-specific close confirmation,
-  repeatable resize with a thin hint bar, private copy/scrollback/selection and OSC52 clipboard.
-- Hints can be immediate or automatic hints hidden. Popup hints preserve application input.
-  Private modes do not hijack another viewer. Small screens paginate; terminal resize repaints.
-- Attachment protocol v2 distinguishes raw pane bytes, typed commands, external bindings, mouse
-  and private copy requests. Old servers are rejected before raw terminal mode, without killing
-  sessions. Stable pane/tab IDs protect delayed actions from targeting replacement objects.
-- Review fixes include exact literal-prefix forwarding, bounded fragmented CSI/SS3/paste handling,
-  copy-limit feedback with retry, selection highlight clipping, long rename input visibility,
-  buffer invalidation on resize, and stopping at detach while draining preceding ordinary input.
+- `src/` and `tests/` are new trees. The old host, router, state store, control queue, popup
+  panes, pickers, hooks, notifications, observation adapter and sidecar supervision are gone; the
+  old files show as deleted in `git status`.
+- Authoritative state is a `bevy_ecs` 0.19.1 World (workspaces, tabs, panes, viewers as entities)
+  advanced by one ordered single-threaded schedule per event-driven step; adapters own PTYs,
+  processes and sockets and exchange typed messages/effects with the World.
+- Attachment protocol v3 and control protocol `FUXCTL2`. koh's real-fux tests and zor's observe
+  adapter received one-line version edits, exported to `dependency-patches/` and verified with
+  `python3 tools/dependencies.py verify --build`.
+- Version 0.3.0, MSRV 1.95, CI updated (`ci.yml`, `nightly.yml`), docs rewritten, earlier
+  documents labelled historical.
 
-## Remaining work, in order
+## Verified locally (macOS)
 
-1. Finish an explicit separate review of the complete intended diff and all new files. Review has
-   covered the input bridge, interaction controller, hints, command registry and local framing/
-   dispatch, but a complete final pass across the whole checkpoint is not finished. No subagents
-   were used. Distinguish the earlier standalone refactor from contextual-help changes without
-   dropping either. Starting fux commit was `c814a4a`.
-2. Validate and fix confirmed findings, then rerun affected tests and review the fixes. Pay attention
-   to per-viewer mode transitions, ordered input/acknowledgements, canceled loading/paste state,
-   resource bounds, stale targets, error visibility, optional integration contracts and documentation.
-3. Create a requirement-by-requirement acceptance audit against the original prompt. Use actual
-   source and runtime evidence for every requirement; do not infer completion from green tests.
-4. Run final relevant checks after any edits and report remaining platform/CI limits accurately.
-   No PR was requested or opened; GitHub CI is not an acceptance claim in this checkpoint.
-5. Only mark the contextual-help goal complete after the audit proves it. Then explain the final
-   flow, defaults, tests and limitations to the user.
+Formatting, strict Clippy, root tests (lib 66, main 2, ecs 19 incl. a randomized command-sequence
+test run with 2048 cases, local_cli 5, structure 8, zor_integration 1 with real zor), rustdoc,
+MSRV 1.95 compilation, fixture-child (3 unit, 8 binary, 2 lifecycle), packaged-binary verifier,
+required real koh (2 + 10) integrations with explicit binary paths, zor's own suites, dependency
+reconstruction, and the performance measurements against the 0.2.1 baseline (idle, memory, burst
+and latency budgets hold in every run; startup holds at the median of 40 ms but two of five runs
+exceeded the 50 ms budget). Exact commands and numbers are in the audit.
 
-## Verification evidence
+## Review
 
-Commands run locally on macOS; `/tmp` logs are convenient local evidence, not portable artifacts.
+Two independent passes by agents that implemented none of the code. The first found no P0,
+four P1 (exit racing spawn completion stuck a pane `Live`; a released `Starting` reservation leaked
+its process; `view` reads were not scoped to the attachment's workspace; the viewer's Escape
+deadline was reset by every frame) and ten P2 (outbox leak on disconnect, no SIGHUP grace on
+release, reap-gate TOCTOU, signal starvation under a hot pane, pending-workspace kill race, viewer
+limit bypass on switch, undocumented control idle timeout, double `exited`, doc mismatches, test
+gaps). All were fixed with regression tests. The second pass verified every fix and found one new
+P1 in the changed viewer code (a resolved lone Escape was re-fed through the filter, never
+reaching the pane and spinning the viewer); fixed and covered by a real-viewer check. The
+randomized ECS test independently found three invariant defects (an orphaned pane after closing the
+only tab; a tab attached to a not-yet-open workspace; a starting reservation orphaned when its tab
+closed under it), all fixed. Accepted P3 residuals are listed
+in the audit.
 
-- `cargo test --locked --test client --test local_cli`: latest UI pass has 41 client tests and five
-  isolated CLI scenarios (`/tmp/fux-contextual-review-ui-tests.log`).
-- Latest detach regression passes, including preceding input delivery and suppression of trailing
-  commands (`/tmp/fux-review-detach-drain-test.log`).
-- `cargo clippy --locked --all-targets --all-features -- -D warnings`: passed for latest production
-  changes (`/tmp/fux-handoff-clippy.log`). Formatting and `git diff --check` pass.
-- `cargo test --locked --all-features`: passed on the final production checkpoint
-  (`/tmp/fux-handoff-full-tests.log`).
-- Fixture-child full suite passed after migrating binary copy observation and workspace navigation
-  (`/tmp/fux-private-copy-fixture-tests.log`). Root corpus/structure oracle tests passed
-  (`/tmp/fux-private-copy-oracles.log`). Fixture-child strict Clippy passed.
-- Earlier optional koh gateway tests and five-loss reconnect test passed with explicit FUX_BIN and
-  KOH_REQUIRE_FUX_BIN=1 (`/tmp/fux-protocol2-final-gateway.log`,
-  `/tmp/fux-protocol2-final-reconnect.log`); these were not skipped.
-- Rustdoc passed (`/tmp/fux-contextual-edge-doc.log`). Dependency reconstruction was reverified
-  after pinning the newly committed owner snapshots. Cargo tree previously confirmed no koh/zor
-  packages in fux's all-features build (`/tmp/fux-protocol2-tree.log`).
+## State of the worktree and remaining limits
 
-Useful repeat commands:
-
-```sh
-cargo fmt --all --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-features
-cargo doc --no-deps --all-features --locked
-cargo build --locked --bin fux
-cargo clippy --manifest-path tests/verify/fixture-child/Cargo.toml --locked -- -D warnings
-cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
-python3 tools/dependencies.py verify
-```
-
-## Repository and documentation notes
-
-All three owner repositories are checkpointed on main. `dependency-patches/manifest.json` is the
-source of truth for koh/zor commit IDs; CI pins match it. Patches are now empty because their
-contents are committed in the owner repositories. The reconstruction tool remains available for
-future local integration edits. Do not blindly reapply old patches or reset personal sessions.
-
-Read README's contextual hints section, `docs/local-attachment-protocol.md`, and
-`docs/contextual-help-plan.md`. The plan is chronological: early incomplete statements describe
-older stages, not the final implementation. Standalone audit/release documents cover a broader
-refactor and must not be mistaken for a completed contextual-help acceptance audit.
-
-No personal sessions were restarted, keys cleared, or user workspaces killed. Tests own temporary
-runtime/config directories and clean up their own processes. No release, PR, or review comment
-was published. This is a checkpoint, not a release-ready certification.
+- Everything is unstaged or untracked in fux for your review; koh (`references/koh`) and zor
+  (`zor/`) carry only the patch-exported edits at their pinned bases. Nothing was committed, pushed,
+  tagged, released or commented on GitHub, and no hosted workflow was rerun.
+- No personal session was touched, no key cleared, no user workspace killed; all tests used
+  disposable HOME/XDG directories. A running 0.2.x server, if any, is incompatible with 0.3.0
+  viewers: save work and stop it with its own binary before using the new one.
+- Runtime evidence is macOS only; Linux and Android are configured CI targets without an executed
+  run of this tree. Emulator-specific clipboard/mouse behaviour and koh relay/NAT scenarios remain
+  manual.

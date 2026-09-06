@@ -1,0 +1,44 @@
+diff --git a/src/gateway/sessions_real_fux.rs b/src/gateway/sessions_real_fux.rs
+index 1ee4dc6..337381f 100644
+--- a/src/gateway/sessions_real_fux.rs
++++ b/src/gateway/sessions_real_fux.rs
+@@ -171,7 +171,7 @@ async fn frame(stream: &mut tokio::net::UnixStream) -> anyhow::Result<serde_json
+ async fn hello(stream: &mut tokio::net::UnixStream) -> anyhow::Result<()> {
+     message(
+         stream,
+-        serde_json::json!({"type":"hello","version":2,"rows":24,"columns":80}),
++        serde_json::json!({"type":"hello","version":3,"rows":24,"columns":80}),
+     )
+     .await?;
+     let value = tokio::time::timeout(Duration::from_secs(15), frame(stream)).await??;
+@@ -179,7 +179,7 @@ async fn hello(stream: &mut tokio::net::UnixStream) -> anyhow::Result<()> {
+         value
+             .pointer("/hello/version")
+             .and_then(serde_json::Value::as_u64),
+-        Some(2)
++        Some(3)
+     );
+     Ok(())
+ }
+diff --git a/tests/gateway.rs b/tests/gateway.rs
+index 9b0b50c..58ffe17 100644
+--- a/tests/gateway.rs
++++ b/tests/gateway.rs
+@@ -177,7 +177,7 @@ async fn frame(stream: &mut tokio::net::UnixStream) -> anyhow::Result<serde_json
+ async fn hello(stream: &mut tokio::net::UnixStream) -> anyhow::Result<()> {
+     message(
+         stream,
+-        serde_json::json!({"type":"hello","version":2,"rows":24,"columns":80}),
++        serde_json::json!({"type":"hello","version":3,"rows":24,"columns":80}),
+     )
+     .await?;
+     let value = tokio::time::timeout(Duration::from_secs(15), frame(stream)).await??;
+@@ -185,7 +185,7 @@ async fn hello(stream: &mut tokio::net::UnixStream) -> anyhow::Result<()> {
+         value
+             .pointer("/hello/version")
+             .and_then(serde_json::Value::as_u64),
+-        Some(2)
++        Some(3)
+     );
+     Ok(())
+ }

@@ -1,45 +1,55 @@
 # Security model
 
-Fux is a local multiplexer, not a process sandbox. Pane commands run with the authority of the
-user who launched the session server. The local OS account is the authorization boundary.
+fux is a local multiplexer, not a sandbox. Pane commands run with the authority of the user who
+started the session server, and that OS account is the authorization boundary.
 
 ## Trust boundaries
 
 | Boundary | Enforcement | Limits |
 |---|---|---|
-| Local attachment and control | Private owned directories and sockets, kernel peer UID checks, bounded messages, and protocol validation. | Other processes with the same UID may control sessions. Root and a compromised user account are outside this boundary. |
-| Optional remote access | Koh authenticates transport identities and checks its allowlist before connecting to the fixed local service. | Fux does not authenticate remote identities or manage keys. A permitted gateway conveys the local user's authority. |
-| Pane output | Terminal emulation and capture use bounded state. | Commands can emit titles, bells, clipboard requests, OSC 7877 reports, and misleading text. |
-| Observation | Fux parses bounded metadata and supervises the optional observer process. | Agent status is not an authenticated claim. Sequence numbers do not establish reporter identity. |
+| Attachment and control sockets | Private (0700) owner-checked directories, 0600 sockets, kernel peer-UID checks on both sides, version prefaces before any command, bounded frames and deadlines | Any process running as the same user can control sessions. Root and a compromised account are outside the boundary |
+| Server election and startup | `flock`-serialized manager election, inode-aware stale-socket recovery, a private nonce-named readiness channel, sanitized daemon environment | The daemon inherits the first viewer's environment minus credential-like keys |
+| Pane output | vt100 emulation with bounded dimensions and history; control strings are filtered and truncated; titles and OSC 52 payloads are bounded | Programs can emit misleading text, titles, bells and clipboard writes |
+| Remote access | Not part of fux. A koh gateway authenticates and authorizes peers before opening the local attachment socket and conveys the local user's authority | fux cannot distinguish a gateway from a local viewer |
+| Observation | Not part of fux. zor reads `list`/`capture` over the control socket like any local client | Agent state is zor's presentation, never an authenticated claim |
 
-Default fux has no network transport or cryptographic identities. Its descriptors contain local
-socket paths and protocol versions. Existing identity files from older versions are left untouched.
-Network policy, key storage, encryption, discovery, and relay configuration belong to koh.
+There are no cryptographic identities, key files or network listeners. Descriptors contain a pid,
+an instance nonce, socket paths and protocol versions only.
 
-## Defensive limits and lifecycle
+## Bounds
 
-Local attachment uses bounded length-prefixed frames, a version handshake, frame completion and
-write deadlines, bounded client counts, and bounded producer queues. Client detachment removes its
-viewport but leaves pane processes alive. Endpoint shutdown cancels and reaps its connection tasks.
-See [the attachment contract](local-attachment-protocol.md) for the wire limits.
+- Attachment: 64 KiB client frames, 4 KiB input chunks, 16 MiB server frames, five-second frame
+  and write deadlines, 64 attachments per workspace, 64-message viewer outbox (slow viewers are
+  disconnected, panes unaffected).
+- Control: 1 MiB frames, two-second preface deadline, 64 connections per workspace, 128 KiB
+  captures, 100 000 scrollback rows, 64 KiB `send-keys`, 128-byte labels, 32 event filters,
+  1024-event subscriber queues.
+- Session: 64 workspaces, 32 tabs and 128 panes per workspace, 512×512 pane cells, 256 queued
+  viewer requests during a creation barrier, per-step ingest budgets (512 pane chunks from a
+  2048-deep channel, 256 ingress requests) and signal polling between busy steps so a hot pane
+  cannot starve input, timers, exit handling or shutdown.
+- Configuration: 1 MiB file, 128 argv entries of at most 4 KiB, 16 KiB total per command.
+- Names: workspace names and labels reject path separators, `.`/`..`, control characters and
+  empty strings.
 
-Control requests, dimensions, panes, tabs, popups, cell text, metadata, clipboard data, scrollback,
-argv/environment entries, captures, and event queues have explicit bounds. Slow control subscribers
-are disconnected instead of accumulating unlimited output. Runtime names reject path separators,
-empty names, `.` and `..`. Unsafe ownership, permissions, symlinks, and non-socket collisions are
-rejected. Stale socket cleanup must identify a refused connection and preserve replacement nodes.
+## Lifecycle safety
 
-Fux starts commands directly. Optional zor sidecars cannot hold the pane's PTY open by owning the
-command. Fux terminates and reaps failed observers; observer failures clear stale status without
-terminating the observed pane. Detection and sampling logic remain in zor.
+Closing a viewer never terminates panes. Confirmed close, `kill`, workspace kill and shutdown send
+SIGHUP to the owned process group, SIGKILL after a one-second grace, and reap the leader; a
+counted reap gate keeps the leader un-reaped (reaping is polled under the gate) until the group is
+signalled, so a descendant ignoring SIGHUP cannot survive and a recycled group id is never hit.
+A viewer attachment only sees and acts on its own workspace's panes; `workspace kill` over a
+workspace connection is limited to that workspace. The server exits only after its adapters have joined every reader, writer and
+spawn task. fux never kills an unrelated or older server: a protocol mismatch is reported to the
+user, who decides when to stop the old server with its own binary.
 
-## Terminal output and reporting
+## Terminal output and clipboard
 
-Clipboard writes can replace text a user intends to paste; enable them only for sessions where
-that behavior is wanted. Agent reports and titles must be treated as presentation metadata by
-any automation. Terminal-emulator handling of unknown OSC sequences still needs manual coverage;
-OSC 21337 is observation-only.
+`clipboard = "write-only"` lets copies and application OSC 52 writes reach the enclosing
+terminal's clipboard, bounded to 1 MiB encoded and emitted once per copy; the default is
+`disabled`. Titles and progress reports are presentation metadata. Automation should treat
+captured text as untrusted.
 
-When reporting an issue, provide revisions, platform, terminal emulator, a minimal reproduction,
-and redacted diagnostics. Do not include captured terminal secrets, keys, environment dumps, or
-private command histories.
+When reporting an issue, include the fux revision, platform, terminal emulator, a minimal
+reproduction and redacted diagnostics. Do not include captured terminal contents, environment
+dumps or command histories.

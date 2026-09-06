@@ -1,19 +1,16 @@
 #![forbid(unsafe_code)]
+//! fux: a minimal persistent terminal multiplexer whose authoritative model lives in a
+//! `bevy_ecs` World. See docs/ecs-plan.md for the architecture.
 
 pub mod client;
 pub mod commands;
 pub mod config;
-pub mod control;
 pub mod daemon;
-pub mod host;
-pub mod local;
-pub mod observation;
-pub mod pty;
-pub mod state;
+pub mod ecs;
+pub mod ids;
+pub mod layout;
+pub mod os;
+pub mod proto;
+pub mod server;
 pub mod terminal;
-
-pub fn parse_agent_report(
-    input: &[u8],
-) -> Result<crate::observation::Report, crate::observation::Error> {
-    crate::observation::parse(input)
-}
+pub mod view;

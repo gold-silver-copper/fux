@@ -1,60 +1,45 @@
-//! Typed, validated user configuration.
+//! Typed, validated user configuration. Small on purpose: shell/program default, prefix and
+//! bindings, bounded history, clipboard policy and resource limits.
 
+use crate::commands::Action;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::env;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub const MAX_PREFIX_BYTES: usize = 16;
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
-pub const MAX_BINDINGS: usize = 128;
-pub const MAX_BINDING_KEY_BYTES: usize = 32;
 pub const MAX_COMMAND_ARGS: usize = 128;
 pub const MAX_COMMAND_ARG_BYTES: usize = 4096;
 pub const MAX_COMMAND_BYTES: usize = 16 * 1024;
-pub const MAX_HOOKS: usize = 32;
 pub const MAX_SCROLLBACK_LINES: u32 = 100_000;
-/// Matches the control protocol's pre-encoding capture ceiling.
-pub const MAX_CAPTURE_BYTES: usize = 128 * 1024;
-pub const MAX_RESOURCE_UNITS: usize = 256 * 1024 * 1024;
-pub const MAX_PANES: usize = 256;
-pub const MAX_TABS: usize = 64;
-pub const MAX_POPUPS: usize = 32;
-pub const MAX_STATUS_SEGMENTS: usize = 128;
-pub const MAX_TOTAL_CELLS: usize = 262_144;
+pub const MAX_PANES: usize = crate::view::MAX_PANES;
+pub const MAX_TABS: usize = crate::view::MAX_TABS;
+pub const MAX_WORKSPACES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
     pub prefix: String,
-    pub hints: HintPreferences,
-    pub bindings: BTreeMap<String, Binding>,
+    pub bindings: BTreeMap<String, Action>,
     pub default_command: Command,
-    pub zor_path: Option<PathBuf>,
     pub clipboard: ClipboardPolicy,
-    pub notifications: NotificationPolicy,
     pub history: HistoryLimits,
-    pub resources: ResourceLimits,
-    pub hooks: Vec<Hook>,
+    pub limits: Limits,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             prefix: crate::commands::key_name(crate::commands::DEFAULT_PREFIX),
-            hints: HintPreferences::default(),
             bindings: default_bindings(),
             default_command: default_shell(),
-            zor_path: None,
             clipboard: ClipboardPolicy::Disabled,
-            notifications: NotificationPolicy::default(),
             history: HistoryLimits::default(),
-            resources: ResourceLimits::default(),
-            hooks: Vec::new(),
+            limits: Limits::default(),
         }
     }
 }
@@ -62,14 +47,8 @@ impl Default for Config {
 impl Config {
     /// Parses a sparse TOML document over the built-in defaults.
     pub fn from_toml(input: &str) -> Result<Self, ConfigError> {
-        Self::default().merge_toml(input)
-    }
-
-    /// Applies a sparse TOML document to this configuration and validates the candidate.
-    /// The receiver is unchanged when parsing or validation fails.
-    pub fn merge_toml(&self, input: &str) -> Result<Self, ConfigError> {
         let patch: ConfigPatch = toml::from_str(input).map_err(ConfigError::Toml)?;
-        let candidate = patch.apply_to(self.clone());
+        let candidate = patch.apply_to(Self::default());
         candidate.validate()?;
         Ok(candidate)
     }
@@ -116,17 +95,11 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         let prefix = validate_key_notation("prefix", &self.prefix)?;
-        if self.hints.delay_ms > 5000 {
-            return invalid("hints.delay-ms", "must be between 0 and 5000");
-        }
-        if self.bindings.len() > MAX_BINDINGS {
-            return invalid(
-                "bindings",
-                format!("at most {MAX_BINDINGS} entries are allowed"),
-            );
+        if self.bindings.len() > 256 {
+            return invalid("bindings", "at most 256 entries are allowed");
         }
         let mut seen = std::collections::BTreeSet::new();
-        for (key, binding) in &self.bindings {
+        for key in self.bindings.keys() {
             let byte = validate_key_notation("bindings key", key)?;
             if !seen.insert(byte) {
                 return invalid("bindings", "two key names encode the same byte");
@@ -134,38 +107,14 @@ impl Config {
             if byte == prefix {
                 return invalid("bindings", "a binding cannot equal the prefix key");
             }
-            if let Binding::External { external } = binding {
-                external.validate("bindings external command")?;
-            }
         }
         self.default_command.validate("default-command")?;
-        if let Some(path) = &self.zor_path {
-            validate_path("zor-path", path)?;
-        }
         self.history.validate()?;
-        self.resources.validate()?;
-        if self.hooks.len() > MAX_HOOKS {
-            return invalid("hooks", format!("at most {MAX_HOOKS} hooks are allowed"));
-        }
-        let mut hook_names = BTreeSet::new();
-        for hook in &self.hooks {
-            if hook.name.is_empty() || hook.name.len() > 64 || !is_safe_name(&hook.name) {
-                return invalid(
-                    "hooks.name",
-                    "must use 1-64 ASCII letters, digits, `.`, `_`, or `-`",
-                );
-            }
-            if !hook_names.insert(&hook.name) {
-                return invalid("hooks.name", format!("duplicate hook name `{}`", hook.name));
-            }
-            hook.command.validate("hooks.command")?;
-        }
-        Ok(())
+        self.limits.validate()
     }
 }
 
-/// Resolves `$XDG_CONFIG_HOME/fux/config.toml`, falling back to
-/// `$HOME/.config/fux/config.toml` when XDG_CONFIG_HOME is unset or empty.
+/// Resolves `$XDG_CONFIG_HOME/fux/config.toml`, falling back to `$HOME/.config/fux/config.toml`.
 pub fn default_path() -> Result<PathBuf, ConfigError> {
     default_path_from(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"))
 }
@@ -231,73 +180,34 @@ impl Command {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields, untagged)]
-pub enum Binding {
-    Builtin { builtin: BuiltinAction },
-    External { external: Command },
-}
-
-pub use crate::commands::BuiltinAction;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClipboardPolicy {
+    /// Never write to the enclosing terminal's clipboard.
     #[default]
     Disabled,
-    ReadOnly,
+    /// Copies and application OSC 52 writes reach the terminal clipboard (bounded, once).
     WriteOnly,
-    ReadWrite,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
-pub struct NotificationPolicy {
-    pub enabled: bool,
-    pub notify_blocked: bool,
-    pub notify_idle: bool,
-    pub viewer_notifications: bool,
-}
-
-impl Default for NotificationPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            notify_blocked: true,
-            notify_idle: true,
-            viewer_notifications: true,
-        }
-    }
-}
-
-/// Local viewer preference; does not change key execution or explicit help.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
-pub struct HintPreferences {
-    pub automatic: bool,
-    pub delay_ms: u64,
-}
-impl Default for HintPreferences {
-    fn default() -> Self {
-        Self {
-            automatic: true,
-            delay_ms: 200,
-        }
+impl ClipboardPolicy {
+    #[must_use]
+    pub const fn writes(self) -> bool {
+        matches!(self, Self::WriteOnly)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct HistoryLimits {
+    /// Retained history rows per pane.
     pub scrollback_lines: u32,
-    pub capture_bytes: usize,
 }
 
 impl Default for HistoryLimits {
     fn default() -> Self {
         Self {
             scrollback_lines: 10_000,
-            capture_bytes: MAX_CAPTURE_BYTES,
         }
     }
 }
@@ -310,86 +220,49 @@ impl HistoryLimits {
                 format!("must be 1-{MAX_SCROLLBACK_LINES}"),
             );
         }
-        if self.capture_bytes == 0 || self.capture_bytes > MAX_CAPTURE_BYTES {
-            return invalid(
-                "history.capture-bytes",
-                format!("must be 1-{MAX_CAPTURE_BYTES}"),
-            );
-        }
         Ok(())
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
-pub struct ResourceLimits {
-    pub max_units: usize,
+pub struct Limits {
     pub max_panes: usize,
     pub max_tabs: usize,
-    pub max_popups: usize,
-    pub max_status_segments: usize,
-    pub max_total_cells: usize,
+    pub max_workspaces: usize,
 }
 
-impl Default for ResourceLimits {
+impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_units: 64 * 1024 * 1024,
-            max_panes: 128,
-            max_tabs: 32,
-            max_popups: 16,
-            max_status_segments: 32,
-            max_total_cells: MAX_TOTAL_CELLS,
+            max_panes: MAX_PANES,
+            max_tabs: MAX_TABS,
+            max_workspaces: MAX_WORKSPACES,
         }
     }
 }
 
-impl ResourceLimits {
+impl Limits {
     fn validate(&self) -> Result<(), ConfigError> {
-        validate_limit("resources.max-units", self.max_units, MAX_RESOURCE_UNITS)?;
-        validate_limit("resources.max-panes", self.max_panes, MAX_PANES)?;
-        validate_limit("resources.max-tabs", self.max_tabs, MAX_TABS)?;
-        validate_limit("resources.max-popups", self.max_popups, MAX_POPUPS)?;
-        validate_limit(
-            "resources.max-status-segments",
-            self.max_status_segments,
-            MAX_STATUS_SEGMENTS,
-        )?;
-        validate_limit(
-            "resources.max-total-cells",
-            self.max_total_cells,
-            MAX_TOTAL_CELLS,
-        )
+        validate_limit("limits.max-panes", self.max_panes, MAX_PANES)?;
+        validate_limit("limits.max-tabs", self.max_tabs, MAX_TABS)?;
+        validate_limit("limits.max-workspaces", self.max_workspaces, MAX_WORKSPACES)
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-pub struct Hook {
-    pub name: String,
-    pub command: Command,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct ConfigPatch {
     prefix: Option<String>,
-    hints: Option<HintPreferences>,
-    bindings: Option<BTreeMap<String, Binding>>,
+    bindings: Option<BTreeMap<String, Action>>,
     default_command: Option<Command>,
-    zor_path: Option<PathBuf>,
     clipboard: Option<ClipboardPolicy>,
-    notifications: Option<NotificationPolicy>,
     history: Option<HistoryLimits>,
-    resources: Option<ResourceLimits>,
-    hooks: Option<Vec<Hook>>,
+    limits: Option<Limits>,
 }
 
 impl ConfigPatch {
     fn apply_to(self, mut config: Config) -> Config {
-        if let Some(value) = self.hints {
-            config.hints = value;
-        }
         if let Some(value) = self.prefix {
             config.prefix = value;
         }
@@ -399,23 +272,14 @@ impl ConfigPatch {
         if let Some(value) = self.default_command {
             config.default_command = value;
         }
-        if let Some(value) = self.zor_path {
-            config.zor_path = Some(value);
-        }
         if let Some(value) = self.clipboard {
             config.clipboard = value;
-        }
-        if let Some(value) = self.notifications {
-            config.notifications = value;
         }
         if let Some(value) = self.history {
             config.history = value;
         }
-        if let Some(value) = self.resources {
-            config.resources = value;
-        }
-        if let Some(value) = self.hooks {
-            config.hooks = value;
+        if let Some(value) = self.limits {
+            config.limits = value;
         }
         config
     }
@@ -499,47 +363,23 @@ pub fn default_shell_from(
         })
 }
 
-fn default_bindings() -> BTreeMap<String, Binding> {
+fn default_bindings() -> BTreeMap<String, Action> {
     crate::commands::DEFAULT_BINDINGS
         .iter()
-        .map(|spec| {
-            (
-                char::from(spec.key).to_string(),
-                Binding::Builtin {
-                    builtin: spec.action,
-                },
-            )
-        })
+        .map(|spec| (crate::commands::key_name(spec.key), spec.action))
         .collect()
 }
 
 fn validate_key_notation(field: &'static str, value: &str) -> Result<u8, ConfigError> {
-    if let Some(byte) = crate::commands::key_byte(value) {
-        Ok(byte)
-    } else {
-        invalid(
-            field,
-            "must encode exactly one byte as a literal byte or `C-x`",
-        )
-    }
-}
-
-fn validate_path(field: &'static str, path: &Path) -> Result<(), ConfigError> {
-    if path.as_os_str().is_empty() || path == Path::new(".") || contains_nul(path.as_os_str()) {
-        return invalid(field, "must name an executable path without NUL");
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn contains_nul(value: &OsStr) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    value.as_bytes().contains(&0)
-}
-
-#[cfg(not(unix))]
-fn contains_nul(value: &OsStr) -> bool {
-    value.to_string_lossy().contains('\0')
+    crate::commands::key_byte(value).map_or_else(
+        || {
+            invalid(
+                field,
+                "must encode exactly one byte as a literal byte, `C-x`, `Esc`, `Space` or `DEL`",
+            )
+        },
+        Ok,
+    )
 }
 
 fn validate_limit(field: &'static str, value: usize, maximum: usize) -> Result<(), ConfigError> {
@@ -549,15 +389,68 @@ fn validate_limit(field: &'static str, value: usize, maximum: usize) -> Result<(
     Ok(())
 }
 
-fn is_safe_name(value: &str) -> bool {
-    value
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-}
-
 fn invalid<T>(field: &'static str, reason: impl Into<String>) -> Result<T, ConfigError> {
     Err(ConfigError::Invalid {
         field,
         reason: reason.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_round_trip_and_sparse_documents_merge() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+        let text = config.to_toml_pretty().unwrap_or_default();
+        let parsed = Config::from_toml(&text).unwrap_or_default();
+        assert_eq!(parsed, config);
+        let sparse = Config::from_toml("prefix = 'C-b'\n[history]\nscrollback-lines = 5\n")
+            .unwrap_or_default();
+        assert_eq!(sparse.prefix, "C-b");
+        assert_eq!(sparse.history.scrollback_lines, 5);
+        assert_eq!(sparse.bindings, config.bindings);
+    }
+
+    #[test]
+    fn invalid_documents_are_rejected() {
+        assert!(Config::from_toml("prefix = 'ab'").is_err());
+        assert!(Config::from_toml("[bindings]\n'C-a' = 'detach'").is_err());
+        assert!(Config::from_toml("[bindings]\n'x' = 'zoom'").is_err());
+        assert!(Config::from_toml("zor-path = '/bin/true'").is_err());
+        assert!(Config::from_toml("[hints]\ndelay-ms = 0").is_err());
+        assert!(Config::from_toml("[history]\nscrollback-lines = 0").is_err());
+        assert!(Config::from_toml("[limits]\nmax-panes = 100000").is_err());
+        assert!(Config::from_toml("default-command = { argv = [] }").is_err());
+        assert!(Config::from_toml("clipboard = 'read-write'").is_err());
+    }
+
+    #[test]
+    fn shell_default_prefers_env_then_platform() {
+        assert_eq!(
+            default_shell_from(Some("/usr/bin/fish".into()), None, false),
+            "/usr/bin/fish"
+        );
+        assert_eq!(default_shell_from(Some("".into()), None, false), "/bin/sh");
+        assert_eq!(default_shell_from(None, None, true), "/system/bin/sh");
+        assert_eq!(
+            default_shell_from(None, Some("/data/usr".into()), true),
+            "/data/usr/bin/sh"
+        );
+    }
+
+    #[test]
+    fn config_path_prefers_xdg_then_home() {
+        assert_eq!(
+            default_path_from(Some("/x".into()), Some("/h".into())).ok(),
+            Some(PathBuf::from("/x/fux/config.toml"))
+        );
+        assert_eq!(
+            default_path_from(Some("".into()), Some("/h".into())).ok(),
+            Some(PathBuf::from("/h/.config/fux/config.toml"))
+        );
+        assert!(default_path_from(None, None).is_err());
+    }
 }

@@ -1,3 +1,5 @@
+> Historical record from before the 0.3.0 bevy_ecs rewrite (2026-09-05). The host, popup panes, sidecar supervision, protocol v2/`FUXCTL1` and verification results described here no longer exist. Current architecture: [design.md](design.md); current evidence: [ecs-acceptance.md](ecs-acceptance.md).
+
 # koh, fux, and zor ownership refactor
 
 Refactor koh, fux, and zor into independently useful projects with clear ownership and reliable integration. Implement the changes—not just an architectural proposal.

@@ -99,7 +99,7 @@ def verify_combined_build():
             ["cargo", "check", "--all-targets", "--locked"],
             ["cargo", "build", "--locked", "--bin", "fux"],
             ["cargo", "build", "--manifest-path", "zor/Cargo.toml", "--locked", "--bin", "zor"],
-            ["cargo", "test", "--locked", "--test", "host", "--test", "client",
+            ["cargo", "test", "--locked", "--test", "ecs", "--test", "local_cli",
              "--test", "zor_integration", "--", "--test-threads=1"],
             ["cargo", "test", "--manifest-path", "references/koh/Cargo.toml", "--locked", "--lib", "gateway::"],
             ["cargo", "test", "--manifest-path", "references/koh/Cargo.toml", "--locked", "--test", "gateway"],

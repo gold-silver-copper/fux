@@ -1,4 +1,4 @@
-> Historical design/evidence for the earlier ownership refactor. Fux now starts pane commands directly and uses an optional zor sidecar. Current behavior is documented in [design.md](design.md); current verification is tracked in [standalone-plan.md](standalone-plan.md).
+> Historical (superseded twice: by the standalone refactor and by the 0.3.0 bevy_ecs rewrite; current architecture is [design.md](design.md), current evidence [ecs-acceptance.md](ecs-acceptance.md)). Original note: design/evidence for the earlier ownership refactor. Fux now starts pane commands directly and uses an optional zor sidecar. Current behavior is documented in [design.md](design.md); current verification is tracked in [standalone-plan.md](standalone-plan.md).
 
 # The Shape of zor
 

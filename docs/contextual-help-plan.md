@@ -1,3 +1,5 @@
+> Historical record from before the 0.3.0 bevy_ecs rewrite (2026-09-05). The host, popup panes, sidecar supervision, protocol v2/`FUXCTL1` and verification results described here no longer exist. Current architecture: [design.md](design.md); current evidence: [ecs-acceptance.md](ecs-acceptance.md).
+
 # Contextual interaction implementation plan
 
 Objective: execute contextual-help-prompt.md. Existing standalone-refactor changes and personal
@@ -381,3 +383,37 @@ Logs: /tmp/fux-handoff-full-tests.log, /tmp/fux-handoff-clippy.log,
 /tmp/fux-contextual-review-ui-tests.log, /tmp/fux-review-detach-drain-test.log.
 Remaining: finish the separate complete-diff review, fix any findings, perform the exhaustive prompt
 acceptance audit and report final completion. No release-ready or full-review claim is made.
+
+
+### Continuation: complete review, fixes and acceptance evidence (2026-09-05)
+
+Independent full review covered the complete fux checkpoint and koh/zor owner changes. Fixed
+five behavioral defects: UTF-8/C1 output filtering, SS3 arrows/keypad Enter, literal Escape prefix,
+input drain across detach reads, and canceled-paste command leakage. Independent fix review found
+no remaining source defect. Stable Clippy also exposed a test-only byte-array lint; its equivalent
+replacement passes lint and review.
+
+The final local pass has 258 root tests, 14 fixture tests, strict Clippy, formatting, rustdoc,
+standalone dependency checks and required real-zor integration passing. Installed stable Rust
+1.97.1 strict Clippy and fixture tests also pass. Required koh QUIC tests were attempted but this
+environment denies netmon initialization with EPERM; eight gateway state/replay tests pass.
+Checkpoint CI/nightly have failed jobs; public annotations and local stable reproduction narrow
+follow-up, but detailed hosted logs could not be retrieved and fixture failures remain unexplained.
+See HANDOFF.md and docs/contextual-help-acceptance.md for exact commands, scope and blockers.
+No commits, pushes, PRs, CI reruns or personal-session mutations were made. The goal remains
+incomplete; historical green integration logs are not substitutes for fresh verification.
+
+### Environment unblocked and acceptance completed (2026-09-05)
+
+Fresh required koh gateway (two tests) and reconnect (ten tests, including real-fux five-loss)
+checks pass after environment restrictions changed. Individual GitHub job logs became retrievable:
+CI Clippy failed on the already-fixed byte-character-array lint, and both CI/nightly macOS fixtures
+missed final output because they inspected the restored primary screen after viewer exit. The
+transcript proved final output was painted. The fixture now parses the actual frame before screen
+restoration after joining the viewer/reader; a deterministic regression rejects erased text too.
+Independent review approved the fix, and all 15 fixture tests plus strict Clippy pass on nightly
+and stable. Root/fixture formatting and diff checks pass.
+
+The requested review, audit and local verification are complete. Historical hosted failures remain
+failed; these uncommitted local fixes have no hosted execution or release claim. See the current
+acceptance audit and HANDOFF.md. No publication or personal-session changes were made.

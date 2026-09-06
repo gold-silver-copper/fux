@@ -1,10 +1,14 @@
-use super::{DaemonPaths, MAX_DESCRIPTOR_BYTES, PathError, validate_workspace_name};
+//! Workspace descriptors: which server instance serves a workspace and where to attach.
+
+use super::{DaemonPaths, PathError};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+
+pub const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,13 +26,23 @@ pub struct ManagerIdentity {
     pub instance_nonce: String,
 }
 
+impl ManagerIdentity {
+    pub fn current() -> std::io::Result<Self> {
+        Ok(Self {
+            pid: std::process::id(),
+            instance_nonce: random_token()?,
+        })
+    }
+}
+
 impl Descriptor {
     pub fn validate(&self) -> Result<(), DescriptorError> {
-        validate_workspace_name(&self.name).map_err(DescriptorError::Path)?;
+        crate::ids::validate_workspace_name(&self.name)
+            .map_err(|_| DescriptorError::Path(PathError::UnsafeName))?;
         if self.pid == 0
             || !safe_token(&self.instance_nonce, 128)
             || !self.socket_path.is_absolute()
-            || self.protocol != crate::local::VERSION
+            || self.protocol != crate::proto::attach::VERSION
         {
             return Err(DescriptorError::Invalid);
         }
@@ -53,7 +67,13 @@ pub enum DescriptorError {
 }
 impl fmt::Display for DescriptorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Path(error) => write!(f, "{error}"),
+            Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
+            Self::Invalid => f.write_str("invalid workspace descriptor"),
+            Self::Json(error) => write!(f, "descriptor JSON: {error}"),
+            Self::TooLarge => f.write_str("descriptor exceeds size limit"),
+        }
     }
 }
 impl std::error::Error for DescriptorError {}
@@ -68,7 +88,8 @@ pub fn read_descriptor(
         path: parent.to_owned(),
         error,
     })?;
-    validate_workspace_name(expected_name).map_err(DescriptorError::Path)?;
+    crate::ids::validate_workspace_name(expected_name)
+        .map_err(|_| DescriptorError::Path(PathError::UnsafeName))?;
     let mut bytes = Vec::new();
     let mut options = OpenOptions::new();
     options.read(true).custom_flags(nix::libc::O_NOFOLLOW);
@@ -149,8 +170,31 @@ pub fn write_descriptor(
     Ok(target)
 }
 
-/// Removes only regular, owner-matching descriptor files that do not belong to the elected
-/// manager instance. Symlinks and other file types are reported rather than followed or removed.
+/// Removes a descriptor only when it is a regular, owner-matching file.
+pub fn remove_descriptor(paths: &DaemonPaths, name: &str) -> Result<(), DescriptorError> {
+    let path = paths.descriptor(name).map_err(DescriptorError::Path)?;
+    let owner = fs::metadata(&paths.descriptors_dir)
+        .map_err(|error| DescriptorError::Io {
+            path: paths.descriptors_dir.clone(),
+            error,
+        })?
+        .uid();
+    match fs::symlink_metadata(&path) {
+        Ok(metadata)
+            if metadata.file_type().is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == owner =>
+        {
+            fs::remove_file(&path).map_err(|error| DescriptorError::Io { path, error })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(DescriptorError::Invalid),
+        Err(error) => Err(DescriptorError::Io { path, error }),
+    }
+}
+
+/// Removes regular, owner-matching descriptor files that do not belong to this server instance.
+/// Symlinks and other file types are reported rather than followed or removed.
 pub fn recover_stale_descriptors(
     paths: &DaemonPaths,
     manager: &ManagerIdentity,
@@ -199,4 +243,10 @@ fn safe_token(value: &str, max: usize) -> bool {
         && value.len() <= max
         && !value.chars().any(char::is_whitespace)
         && !value.contains('\0')
+}
+
+pub fn random_token() -> std::io::Result<String> {
+    let mut bytes = [0_u8; 16];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }

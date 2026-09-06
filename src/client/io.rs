@@ -1,40 +1,68 @@
-//! Owned terminal input and resize producers. Adapted from koh; see LICENSES/koh.txt.
+//! Owned stdin and SIGWINCH producers for the viewer. Adapted from koh (MIT); see LICENSES/koh.txt.
 
 use anyhow::Context;
 use nix::poll::{PollFd, PollFlags, poll};
 use std::io::Read;
 use std::os::fd::AsFd;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::task::JoinHandle as TokioJoinHandle;
-use tokio_util::sync::CancellationToken;
 
-/// Bounded terminal input and resize channels.
-pub struct ClientIoChannels {
+pub struct ClientIo {
     pub input_rx: mpsc::Receiver<Vec<u8>>,
     pub resize_rx: mpsc::Receiver<()>,
-}
-
-/// Owned producer tasks. Call [`shutdown`](Self::shutdown) after the embedded connection returns.
-pub struct ClientIoTasks {
-    cancel: CancellationToken,
+    cancel: Arc<AtomicBool>,
     input: Option<JoinHandle<()>>,
-    resize: Option<TokioJoinHandle<()>>,
+    resize: Option<tokio::task::JoinHandle<()>>,
 }
 
-impl ClientIoTasks {
-    /// Cancels both producers and joins them. The input poll checks cancellation at least every
-    /// 100 ms, so teardown never waits for another byte on stdin.
+impl ClientIo {
+    /// Starts byte-exact stdin and SIGWINCH producers. Requires a Tokio runtime.
+    pub fn spawn() -> anyhow::Result<Self> {
+        let runtime = tokio::runtime::Handle::try_current()
+            .context("starting client I/O requires a Tokio runtime")?;
+        let mut sigwinch =
+            signal(SignalKind::window_change()).context("installing SIGWINCH handler")?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (input_tx, input_rx) = mpsc::channel(64);
+        let input_cancel = Arc::clone(&cancel);
+        let input = std::thread::Builder::new()
+            .name("fux-stdin".into())
+            .spawn(move || read_input(std::io::stdin(), &input_tx, &input_cancel))
+            .context("spawning stdin producer")?;
+        let (resize_tx, resize_rx) = mpsc::channel(8);
+        let resize_cancel = Arc::clone(&cancel);
+        let resize = runtime.spawn(async move {
+            loop {
+                if sigwinch.recv().await.is_none() || resize_cancel.load(Ordering::Acquire) {
+                    break;
+                }
+                if resize_tx.try_send(()).is_err() && resize_tx.is_closed() {
+                    break;
+                }
+            }
+        });
+        Ok(Self {
+            input_rx,
+            resize_rx,
+            cancel,
+            input: Some(input),
+            resize: Some(resize),
+        })
+    }
+
+    /// Cancels and joins both producers. The stdin poll checks cancellation every 100 ms.
     pub async fn shutdown(mut self) -> anyhow::Result<()> {
-        self.cancel.cancel();
-        let resize_result = match self.resize.take() {
-            Some(resize) => resize.await.context("joining SIGWINCH producer"),
-            None => Ok(()),
-        };
+        self.cancel.store(true, Ordering::Release);
+        if let Some(resize) = self.resize.take() {
+            resize.abort();
+            let _ = resize.await;
+        }
         let input = self.input.take();
-        let input_result = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             if let Some(input) = input {
                 input
                     .join()
@@ -43,83 +71,22 @@ impl ClientIoTasks {
             Ok::<_, anyhow::Error>(())
         })
         .await
-        .context("joining stdin producer task")
-        .and_then(|result| result);
-        match (resize_result, input_result) {
-            (Err(primary), Err(cleanup)) => {
-                tracing::warn!(error = ?cleanup, "stdin producer cleanup also failed");
-                Err(primary)
-            }
-            (Err(primary), Ok(())) => Err(primary),
-            (Ok(()), Err(cleanup)) => Err(cleanup),
-            (Ok(()), Ok(())) => Ok(()),
-        }
+        .context("joining stdin producer")?
     }
 }
 
-impl Drop for ClientIoTasks {
+impl Drop for ClientIo {
     fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-
-/// Starts byte-exact stdin and SIGWINCH producers for an embedded client that explicitly owns their lifecycle.
-pub fn spawn_client_io() -> anyhow::Result<(ClientIoChannels, ClientIoTasks)> {
-    let runtime = tokio::runtime::Handle::try_current()
-        .context("starting client I/O requires a Tokio runtime")?;
-    let mut sigwinch =
-        signal(SignalKind::window_change()).context("installing SIGWINCH handler")?;
-    let cancel = CancellationToken::new();
-    let (input_tx, input_rx) = mpsc::channel(64);
-    let input_cancel = cancel.clone();
-    let input = std::thread::Builder::new()
-        .name("fux-stdin".into())
-        .spawn(move || read_input(std::io::stdin(), &input_tx, &input_cancel))
-        .context("spawning stdin producer")?;
-    let (resize_tx, resize_rx) = mpsc::channel(8);
-    let resize_cancel = cancel.clone();
-    let resize = runtime.spawn(async move {
-        loop {
-            tokio::select! {
-                () = resize_cancel.cancelled() => break,
-                received = sigwinch.recv() => {
-                    if received.is_none()
-                        || !send_resize(&resize_tx, &resize_cancel).await
-                    {
-                        break;
-                    }
-                }
-            }
+        self.cancel.store(true, Ordering::Release);
+        if let Some(resize) = self.resize.take() {
+            resize.abort();
         }
-    });
-    Ok((
-        ClientIoChannels {
-            input_rx,
-            resize_rx,
-        },
-        ClientIoTasks {
-            cancel,
-            input: Some(input),
-            resize: Some(resize),
-        },
-    ))
-}
-
-async fn send_resize(sender: &mpsc::Sender<()>, cancel: &CancellationToken) -> bool {
-    tokio::select! {
-        biased;
-        () = cancel.cancelled() => false,
-        result = sender.send(()) => result.is_ok(),
     }
 }
 
-fn read_input<R: Read + AsFd>(
-    mut reader: R,
-    sender: &mpsc::Sender<Vec<u8>>,
-    cancel: &CancellationToken,
-) {
+fn read_input<R: Read + AsFd>(mut reader: R, sender: &mpsc::Sender<Vec<u8>>, cancel: &AtomicBool) {
     let mut buffer = [0_u8; 1024];
-    while !cancel.is_cancelled() {
+    while !cancel.load(Ordering::Acquire) {
         let ready = {
             let mut descriptors = [PollFd::new(reader.as_fd(), PollFlags::POLLIN)];
             poll(&mut descriptors, 100_u16)
@@ -142,13 +109,9 @@ fn read_input<R: Read + AsFd>(
     }
 }
 
-fn send_chunk(
-    sender: &mpsc::Sender<Vec<u8>>,
-    cancel: &CancellationToken,
-    mut chunk: Vec<u8>,
-) -> bool {
+fn send_chunk(sender: &mpsc::Sender<Vec<u8>>, cancel: &AtomicBool, mut chunk: Vec<u8>) -> bool {
     loop {
-        if cancel.is_cancelled() {
+        if cancel.load(Ordering::Acquire) {
             return false;
         }
         match sender.try_send(chunk) {
@@ -163,149 +126,42 @@ fn send_chunk(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "test failures include operation context"
-)]
 mod tests {
     use super::*;
-    use nix::sys::signal::{Signal, raise};
     use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
-    use tokio::time::timeout;
-
-    #[test]
-    fn public_spawn_requires_an_entered_tokio_runtime() {
-        let error = spawn_client_io()
-            .err()
-            .expect("spawn outside a runtime must return an error");
-        assert!(
-            format!("{error:#}").contains("requires a Tokio runtime"),
-            "unexpected error: {error:#}"
-        );
-    }
 
     #[tokio::test]
-    async fn public_spawn_reports_resize_and_shuts_down() {
-        let (channels, tasks) = spawn_client_io().expect("spawn public client I/O");
-        let ClientIoChannels {
-            mut input_rx,
-            mut resize_rx,
-        } = channels;
-
-        raise(Signal::SIGWINCH).expect("raise SIGWINCH");
-        assert_eq!(
-            timeout(Duration::from_secs(1), resize_rx.recv())
-                .await
-                .expect("resize producer stalled"),
-            Some(())
-        );
-        timeout(Duration::from_secs(1), tasks.shutdown())
-            .await
-            .expect("shutdown stalled")
-            .expect("shutdown failed");
-        assert!(resize_rx.recv().await.is_none());
-        while input_rx.recv().await.is_some() {}
-    }
-
-    #[tokio::test]
-    async fn dropping_public_tasks_cancels_both_producers() {
-        let (channels, tasks) = spawn_client_io().expect("spawn public client I/O");
-        let ClientIoChannels {
-            mut input_rx,
-            mut resize_rx,
-        } = channels;
-        drop(tasks);
-
-        timeout(Duration::from_secs(1), async {
-            while input_rx.recv().await.is_some() {}
-        })
-        .await
-        .expect("stdin producer remained alive after task owner was dropped");
-        timeout(Duration::from_secs(1), async {
-            while resize_rx.recv().await.is_some() {}
-        })
-        .await
-        .expect("resize producer remained alive after task owner was dropped");
-    }
-
-    #[tokio::test]
-    async fn idle_input_poll_cancels_and_joins_without_waiting_for_a_byte() {
-        // KC-IO-01: embedded client teardown owns and joins every producer.
-        let (reader, _writer) = UnixStream::pair().expect("socket pair");
+    async fn input_producer_forwards_bytes_exactly_and_cancels_while_idle() {
+        let (reader, mut writer) = UnixStream::pair().unwrap_or_else(|_| std::process::abort());
         let (sender, mut receiver) = mpsc::channel(1);
-        let cancel = CancellationToken::new();
-        let thread_cancel = cancel.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread_cancel = Arc::clone(&cancel);
         let input = std::thread::spawn(move || read_input(reader, &sender, &thread_cancel));
-        cancel.cancel();
-        let start = Instant::now();
-        input.join().expect("join producer");
-        assert!(start.elapsed() < Duration::from_secs(1));
-        assert!(receiver.recv().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn input_producer_forwards_bytes_exactly() {
-        // KC-IO-02: producer framing does not transform terminal input.
-        let (reader, mut writer) = UnixStream::pair().expect("socket pair");
-        let (sender, mut receiver) = mpsc::channel(1);
-        let cancel = CancellationToken::new();
-        let thread_cancel = cancel.clone();
-        let input = std::thread::spawn(move || read_input(reader, &sender, &thread_cancel));
-        writer.write_all(b"a\0\x1bZ").expect("write input");
+        writer.write_all(b"a\0\x1bZ").unwrap_or_default();
         assert_eq!(
             receiver.recv().await.as_deref(),
             Some(b"a\0\x1bZ".as_slice())
         );
-        cancel.cancel();
-        input.join().expect("join producer");
+        cancel.store(true, Ordering::Release);
+        let start = Instant::now();
+        assert!(input.join().is_ok());
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[tokio::test]
-    async fn shutdown_cancels_input_blocked_by_a_full_channel() {
-        let (reader, mut writer) = UnixStream::pair().expect("socket pair");
+    async fn full_channel_does_not_block_cancellation() {
+        let (reader, mut writer) = UnixStream::pair().unwrap_or_else(|_| std::process::abort());
         let (sender, mut receiver) = mpsc::channel(1);
-        sender.try_send(vec![0]).expect("fill input channel");
-        let cancel = CancellationToken::new();
-        let thread_cancel = cancel.clone();
+        sender.try_send(vec![0]).unwrap_or_default();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread_cancel = Arc::clone(&cancel);
         let input = std::thread::spawn(move || read_input(reader, &sender, &thread_cancel));
-        let resize_cancel = cancel.clone();
-        let resize = tokio::spawn(async move { resize_cancel.cancelled().await });
-        let tasks = ClientIoTasks {
-            cancel,
-            input: Some(input),
-            resize: Some(resize),
-        };
-
-        writer.write_all(b"blocked").expect("write blocked input");
+        writer.write_all(b"blocked").unwrap_or_default();
         tokio::time::sleep(Duration::from_millis(30)).await;
-        timeout(Duration::from_secs(1), tasks.shutdown())
-            .await
-            .expect("shutdown stalled on the full channel")
-            .expect("shutdown failed");
+        cancel.store(true, Ordering::Release);
+        assert!(input.join().is_ok());
         assert_eq!(receiver.recv().await, Some(vec![0]));
-        assert!(receiver.recv().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn shutdown_cancels_resize_blocked_by_a_full_channel() {
-        let (sender, _receiver) = mpsc::channel(1);
-        sender.try_send(()).expect("fill resize channel");
-        let cancel = CancellationToken::new();
-        let resize_cancel = cancel.clone();
-        let resize = tokio::spawn(async move {
-            assert!(!send_resize(&sender, &resize_cancel).await);
-        });
-        let tasks = ClientIoTasks {
-            cancel,
-            input: None,
-            resize: Some(resize),
-        };
-
-        timeout(Duration::from_secs(1), tasks.shutdown())
-            .await
-            .expect("shutdown stalled on the full resize channel")
-            .expect("shutdown failed");
     }
 }

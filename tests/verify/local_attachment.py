@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='fl-',dir='/tmp') as d:
     def recv(s):return json.loads(exact(s,struct.unpack('>I',exact(s,4))[0]))
     def attach():
         s=socket.socket(socket.AF_UNIX);s.settimeout(5);s.connect(str(root/'fux/default.attach.sock'));peers.append(s)
-        send(s,dict(type='hello',version=2,rows=24,columns=80));assert recv(s)=={'hello': {'version': 2}}
+        send(s,dict(type='hello',version=3,rows=24,columns=80));assert recv(s)=={'hello': {'version': 3}}
         assert 'state' in recv(s)
         return s
     try:

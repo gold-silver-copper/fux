@@ -1,8 +1,13 @@
+> Historical record from before the 0.3.0 bevy_ecs rewrite (2026-09-05). The host, popup panes, sidecar supervision, protocol v2/`FUXCTL1` and verification results described here no longer exist. Current architecture: [design.md](design.md); current evidence: [ecs-acceptance.md](ecs-acceptance.md).
+
 # Standalone refactor completion audit
 
 Objective: execute [standalone-refactor-prompt.md](../standalone-refactor-prompt.md) in full.
-The requirement review below covers the current implementation, not the earlier coupled design.
-Verification ran locally on macOS. No hosted CI, publication, commits or pushes are claimed.
+This is the historical standalone-refactor checkpoint ledger. Its test counts and review
+conclusions describe that checkpoint, not the later contextual-help implementation or current
+worktree. See [the contextual-help acceptance audit](contextual-help-acceptance.md) for the
+subsequent complete review, newly discovered defects, fixes and current verification.
+Verification recorded below ran locally on macOS before the user-requested commit/push checkpoint.
 
 ## Requirement evidence
 
@@ -15,7 +20,7 @@ Verification ran locally on macOS. No hosted CI, publication, commits or pushes 
 | Persistent on-demand local server | Manager startup locks elect one server per runtime directory/user; named workspaces have separate sockets. Concurrent first-launch fixture passes. Real TTY detach and reattach preserve the pane PID and output; multiple simultaneous viewers are exercised. PTYs remain live in the server, not serialized to disk. |
 | Secure local interface | Private owned directories, mode-0600 sockets, symlink/non-socket rejection, current kernel UID checks, foreign-UID policy rejection, and inode-aware cleanup are exercised by control/daemon tests. A separate foreign-account process was not launched; OS credential retrieval and rejection policy are verified separately. |
 | Bound messages, queues, clients and stalled peers | Local protocol tests exercise malformed/oversized frames, invalid ordering/input, all 64 stalled handshake slots expiring and a blocked writer deadline. Source review confirms bounded channels, coalesced state, capped resources and cancellation. Control handshake/requests/subscribers also have explicit limits. |
-| Versioned attachment/control boundaries | Attachment v1 and FUXCTL1 control/manager prefaces are documented in the two local protocol contracts. Wrong/missing/partial control negotiation reaches no handler. Descriptor, state and control types carry no remote identities or keys. |
+| Versioned attachment/control boundaries | Attachment v1 at this historical checkpoint (now v2) and FUXCTL1 control/manager prefaces are documented in the two local protocol contracts. Wrong/missing/partial control negotiation reaches no handler. Descriptor, state and control types carry no remote identities or keys. |
 | Authorize remote clients before local access | Gateway integration denies an outsider and verifies zero application accepts. The socket target is fixed by the local operator; accepted peers receive byte-exact forwarding. |
 | Preserve remote functionality and reconnect | Real QUIC tests force five losses. The real-fux scenario retains one local attachment and one shell PID; six commands produce exactly six file effects and increasing shell state. Registry/replay tests cover peer-scoped tokens, missing/expired resumes, exclusive ownership, capacity, duplicate/partial writes, invalid sequencing and final-ACK recovery. |
 | Gateway start/stop independent of pane lifetime | Real-fux gateway integration forwards shell input, stops both gateway services, then attaches locally and reads the same shell variable. Restart/expired retention requires a new viewer attachment and does not terminate panes. |

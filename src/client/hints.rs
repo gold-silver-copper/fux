@@ -1,10 +1,16 @@
-//! Viewer-local contextual panels, painted into the existing ratatui frame.
-use crate::commands::{BuiltinAction, ClientBindings, CommandGroup, key_name};
+//! The keybinding popup and the small panels that share its presentation: a compact panel near
+//! the bottom of the terminal, painted into the composed frame buffer.
+
+use crate::commands::{Action, ClientBindings, Group, key_name};
+use crate::view::Frame;
 use ratatui_core::buffer::Buffer;
 use ratatui_core::style::{Color, Modifier, Style};
 use std::collections::BTreeSet;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
+
+/// At most this many body rows; larger lists page.
+pub const MAX_BODY_ROWS: usize = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HintPanel {
@@ -13,7 +19,6 @@ pub struct HintPanel {
     page: usize,
     footer: Option<String>,
     focus: Option<usize>,
-    single_column: bool,
     thin: bool,
     input: bool,
     headings: BTreeSet<usize>,
@@ -21,48 +26,39 @@ pub struct HintPanel {
 }
 
 impl HintPanel {
+    /// The command popup: actual bindings grouped, with unavailable actions dimmed.
     pub fn commands(
         bindings: &ClientBindings,
-        manager: bool,
+        workspaces: bool,
         page: usize,
-        state: &crate::state::WorkspaceState,
+        frame: &Frame,
     ) -> Self {
-        let mut bound: Vec<_> = bindings.entries().collect();
-        bound.sort_by_key(|(key, _)| {
-            (
-                bindings
-                    .action(*key)
-                    .map_or(CommandGroup::Custom, BuiltinAction::group),
-                *key,
-            )
-        });
         let mut entries = Vec::new();
         let mut headings = BTreeSet::new();
         let mut disabled = BTreeSet::new();
-        let mut previous = None;
-        for (key, description) in bound {
-            let action = bindings.action(key);
-            let group = action.map_or(CommandGroup::Custom, BuiltinAction::group);
+        let mut previous: Option<Group> = None;
+        for (key, action) in bindings.entries() {
+            let group = action.group();
             if previous != Some(group) {
                 headings.insert(entries.len());
                 entries.push(group.label().to_owned());
                 previous = Some(group);
             }
-            if action
-                .and_then(|action| action.unavailable(state, manager))
-                .is_some()
-            {
+            if action.unavailable(frame, workspaces).is_some() {
                 disabled.insert(entries.len());
             }
-            entries.push(format!("{}  {description}", key_name(key)));
+            entries.push(format!("{}  {}", key_name(key), action.label()));
         }
         Self {
-            title: format!("Commands ({})", key_name(bindings.prefix())),
+            title: format!(
+                "Commands ({}) · workspace {}",
+                key_name(bindings.prefix()),
+                frame.workspace
+            ),
             entries,
             page,
             footer: None,
             focus: None,
-            single_column: true,
             thin: false,
             input: false,
             headings,
@@ -83,7 +79,6 @@ impl HintPanel {
             page: 0,
             footer: Some(footer.into()),
             focus,
-            single_column: true,
             thin: false,
             input: false,
             headings: BTreeSet::new(),
@@ -91,18 +86,7 @@ impl HintPanel {
         }
     }
 
-    pub fn popup(bindings: &ClientBindings) -> Self {
-        let prefix = key_name(bindings.prefix());
-        let mut text = format!("Popup · {prefix} commands");
-        if let Some((key, _)) = bindings
-            .entries()
-            .find(|(key, _)| bindings.action(*key) == Some(BuiltinAction::ClosePane))
-        {
-            text.push_str(&format!(" · {prefix} {} close (confirm)", key_name(key)));
-        }
-        Self::bar(&text)
-    }
-
+    /// One reversed line at the bottom, for transient hints.
     pub fn bar(text: &str) -> Self {
         let mut panel = Self::context(String::new(), Vec::new(), text, None);
         panel.thin = true;
@@ -115,13 +99,26 @@ impl HintPanel {
         panel
     }
 
+    #[must_use]
+    pub fn page_count(&self, rows: u16) -> usize {
+        let available = usize::from(rows.saturating_sub(2).max(1));
+        let body = self.entries.len().max(1).min(available).min(MAX_BODY_ROWS);
+        self.entries.len().div_ceil(body).max(1)
+    }
+
+    /// The action the user is being asked to confirm, if this panel is a confirmation.
+    #[must_use]
+    pub fn is_thin(&self) -> bool {
+        self.thin
+    }
+
     pub fn paint(&self, buffer: &mut Buffer) {
         let area = buffer.area;
         if area.width == 0 || area.height == 0 {
             return;
         }
+        let style = Style::reset().fg(Color::White).bg(Color::DarkGray);
         if self.thin {
-            let style = Style::reset().fg(Color::White).bg(Color::DarkGray);
             let row = area.bottom() - 1;
             for x in area.x..area.right() {
                 if let Some(cell) = buffer.cell_mut((x, row)) {
@@ -137,30 +134,17 @@ impl HintPanel {
             );
             return;
         }
-        let columns = if self.single_column {
-            1
-        } else {
-            usize::from((area.width / 30).max(1))
-        };
         let available = usize::from(area.height.saturating_sub(2).max(1));
-        let rows = self
-            .entries
-            .len()
-            .div_ceil(columns)
-            .max(1)
-            .min(available)
-            .min(10);
-        let per_page = rows * columns;
-        let pages = self.entries.len().div_ceil(per_page).max(1);
+        let rows = self.entries.len().max(1).min(available).min(MAX_BODY_ROWS);
+        let pages = self.entries.len().div_ceil(rows).max(1);
         let page = self
             .focus
-            .map_or(self.page % pages, |focus| (focus / per_page).min(pages - 1));
-        let start = page * per_page;
+            .map_or(self.page % pages, |focus| (focus / rows).min(pages - 1));
+        let start = page * rows;
         let height = u16::try_from(rows + 2)
             .unwrap_or(area.height)
             .min(area.height);
         let top = area.bottom().saturating_sub(height);
-        let style = Style::reset().fg(Color::White).bg(Color::DarkGray);
         for y in top..area.bottom() {
             for x in area.x..area.right() {
                 if let Some(cell) = buffer.cell_mut((x, y)) {
@@ -180,47 +164,43 @@ impl HintPanel {
         let body_top = top + u16::from(height > 2);
         let body_rows =
             usize::from(height.saturating_sub(u16::from(height > 2) + u16::from(height > 1)));
-        let width = usize::from(area.width) / columns;
-        for (index, entry) in self
-            .entries
-            .iter()
-            .skip(start)
-            .take(body_rows * columns)
-            .enumerate()
-        {
-            let row = index / columns;
-            let column = index % columns;
-            let entry = if self.input {
+        let width = usize::from(area.width);
+        for (index, entry) in self.entries.iter().skip(start).take(body_rows).enumerate() {
+            let text = if self.input {
+                // Keep the insertion point visible on narrow terminals: show the tail.
                 let mut used = 0;
-                let mut start = entry.len();
-                for (index, grapheme) in entry.grapheme_indices(true).rev() {
+                let mut cut = entry.len();
+                for (offset, grapheme) in entry.grapheme_indices(true).rev() {
                     used += grapheme.width();
                     if used > width {
                         break;
                     }
-                    start = index;
+                    cut = offset;
                 }
-                entry.get(start..).unwrap_or_default()
+                entry.get(cut..).unwrap_or_default()
             } else {
                 entry.as_str()
             };
+            let entry_style = if self.headings.contains(&(start + index)) {
+                style.add_modifier(Modifier::BOLD)
+            } else if self.disabled.contains(&(start + index)) {
+                style.add_modifier(Modifier::DIM)
+            } else if self.focus == Some(start + index) {
+                style.add_modifier(Modifier::REVERSED)
+            } else {
+                style
+            };
             buffer.set_stringn(
-                area.x + u16::try_from(column * width).unwrap_or(0),
-                body_top + u16::try_from(row).unwrap_or(0),
-                entry,
+                area.x,
+                body_top + u16::try_from(index).unwrap_or(0),
+                text,
                 width,
-                if self.headings.contains(&(start + index)) {
-                    style.add_modifier(Modifier::BOLD)
-                } else if self.disabled.contains(&(start + index)) {
-                    style.add_modifier(Modifier::DIM)
-                } else {
-                    style
-                },
+                entry_style,
             );
         }
         if height > 1 {
             let default_footer = format!(
-                "Esc cancel · ↑/↓ {}/{} · dim unavailable · prefix twice: literal",
+                "Esc back · ↑/↓ page {}/{} · dim = unavailable · prefix twice = literal",
                 page + 1,
                 pages
             );
@@ -228,9 +208,86 @@ impl HintPanel {
                 area.x,
                 area.bottom() - 1,
                 self.footer.as_deref().unwrap_or(&default_footer),
-                usize::from(area.width),
+                width,
                 style,
             );
         }
+    }
+}
+
+/// A convenience for tests and the controller: labels of every entry as painted.
+pub fn action_label(action: Action) -> &'static str {
+    action.label()
+}
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::panic)]
+mod tests {
+    use super::*;
+    use ratatui_core::layout::Rect;
+
+    fn text(buffer: &Buffer) -> Vec<String> {
+        (0..buffer.area.height)
+            .map(|row| {
+                (0..buffer.area.width)
+                    .map(|col| buffer.cell((col, row)).map_or(" ", |cell| cell.symbol()))
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn command_popup_lists_every_binding_across_pages_and_dims_unavailable() {
+        let bindings = ClientBindings::default();
+        let frame = Frame::default();
+        let panel = HintPanel::commands(&bindings, true, 0, &frame);
+        let mut seen = String::new();
+        let pages = panel.page_count(6);
+        assert!(pages > 3, "tiny screens page");
+        for page in 0..pages {
+            let panel = HintPanel::commands(&bindings, true, page, &frame);
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 6));
+            panel.paint(&mut buffer);
+            seen.push_str(&text(&buffer).join("\n"));
+        }
+        for (key, action) in bindings.entries() {
+            assert!(
+                seen.contains(action.label()),
+                "{action:?} missing from pages"
+            );
+            assert!(seen.contains(&key_name(key)));
+        }
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 24));
+        panel.paint(&mut buffer);
+        let lines = text(&buffer);
+        assert!(lines.iter().any(|line| line.contains("Commands (C-a)")));
+        // Unavailable actions are dimmed: the empty frame has no split.
+        let dim_rows = (0..24)
+            .filter(|row| {
+                (0..60).any(|col| {
+                    buffer
+                        .cell((col, *row))
+                        .is_some_and(|cell| cell.modifier.contains(Modifier::DIM))
+                })
+            })
+            .count();
+        assert!(dim_rows > 0);
+    }
+
+    #[test]
+    fn one_cell_terminals_are_safe_and_thin_bars_take_the_last_row() {
+        let panel = HintPanel::bar("Copy · q finish");
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
+        panel.paint(&mut buffer);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 3));
+        panel.paint(&mut buffer);
+        assert!(text(&buffer)[2].starts_with("Copy"));
+        let input = HintPanel::text_input("Rename tab", "a-very-long-label-indeed", "Enter save");
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 4));
+        input.paint(&mut buffer);
+        assert!(
+            text(&buffer)[2].contains("▏"),
+            "insertion marker stays visible"
+        );
     }
 }

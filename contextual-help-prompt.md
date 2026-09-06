@@ -1,21 +1,20 @@
-# Contextual-help implementation checkpoint
+> Historical record from before the 0.3.0 bevy_ecs rewrite (2026-09-05); see [docs/ecs-acceptance.md](docs/ecs-acceptance.md) for current evidence.
 
-Status: implementation is substantially complete; final review and acceptance are unfinished.
-The user requested a committed/pushed checkpoint and handoff instead of continuing this session.
-See [HANDOFF.md](HANDOFF.md) for resume instructions and verification evidence.
+# Contextual-help completion record
 
-Implemented: shared command registry and contextual availability; viewer-local prefix/help,
-workspace/tab pickers, rename, close confirmation, repeatable resize, copy/selection/clipboard;
-200 ms delayed hints, immediate/hidden preferences; standalone local protocol v2; fragmented
-input/paste handling, Unicode input, tiny-terminal rendering, viewer isolation and detach ordering.
-The real-terminal and fixture scenarios have been updated for the new interaction flow.
+Status: implementation, independent complete review, requirement audit and local verification
+are complete. See [HANDOFF.md](HANDOFF.md) and [the acceptance audit](docs/contextual-help-acceptance.md).
 
-Remaining: finish the separate complete-diff review; fix any confirmed findings; perform a final
-requirement-by-requirement acceptance audit; rerun affected checks after further edits; write the
-final completion report. Do not treat this checkpoint or passing tests as completion of the goal.
-No final full-diff review or exhaustive acceptance audit has been claimed.
+Review covered all 104 fux checkpoint files and relevant koh/zor owner changes. Five behavioral
+findings and two verification findings were fixed and independently reviewed. Root tests (258),
+fixture tests (15), required real-zor checks, and all required koh gateway/reconnect checks pass.
+Formatting, strict linting, rustdoc and standalone dependency verification pass.
 
-The original implementation requirements below remain the scope for resuming work.
+The old hosted CI/nightly failures were diagnosed from their logs and fixed locally. These edits
+remain uncommitted; no new hosted run, publication or personal-session change is claimed.
+Linux/Android runtime and broader network/platform limits are recorded in the audit.
+
+The original requirements below are preserved as the acceptance specification.
 
 ---
 

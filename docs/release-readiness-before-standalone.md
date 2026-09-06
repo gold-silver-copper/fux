@@ -1,4 +1,4 @@
-> Historical snapshot from before the standalone refactor. This is not the current architecture or release status. See [the current design](design.md) and [standalone progress](standalone-plan.md).
+> Historical (superseded twice: by the standalone refactor and by the 0.3.0 bevy_ecs rewrite; current architecture is [design.md](design.md), current evidence [ecs-acceptance.md](ecs-acceptance.md)). Original note: snapshot from before the standalone refactor. This is not the current architecture or release status. See [the current design](design.md) and [standalone progress](standalone-plan.md).
 
 # Release readiness
 

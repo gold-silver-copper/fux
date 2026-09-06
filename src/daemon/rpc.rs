@@ -1,54 +1,53 @@
-//! Shared manager client contract for CLI commands and integrated viewer pickers.
-use crate::control::write_frame;
+//! Manager socket contract: list, resolve and kill workspaces. Uses the control preface and
+//! newline-delimited JSON, one request per connection.
+
+use crate::proto::control::write_frame;
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "request", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ManagerRequest {
-    Resolve { name: Option<String> },
+    /// Attach to `name`, creating it when missing. `None` applies the documented default rule.
+    Resolve {
+        name: Option<String>,
+    },
     List,
-    Kill { name: String },
+    Kill {
+        name: String,
+    },
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reply", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ManagerReply {
-    Attach {
-        descriptor: crate::daemon::Descriptor,
-    },
-    Pick {
-        names: Vec<String>,
-    },
-    Failed {
-        message: String,
-    },
+    Attach { descriptor: super::Descriptor },
+    Names { names: Vec<String> },
+    Failed { message: String },
 }
+
+pub const MANAGER_DEADLINE: Duration = Duration::from_secs(15);
 
 pub fn manager_request(path: &Path, request: &ManagerRequest) -> Result<ManagerReply> {
     let mut stream = UnixStream::connect(path)
         .with_context(|| format!("connecting to manager socket {}", path.display()))?;
-    set_rpc_deadlines(&stream).context("setting manager socket deadlines")?;
-    crate::control::negotiate_client(&mut stream)
+    stream.set_read_timeout(Some(MANAGER_DEADLINE))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    crate::proto::socket::negotiate_client(&mut stream)
         .context("authenticating the manager socket and negotiating its control protocol")?;
     write_frame(&mut stream, request).context("sending manager request")?;
-    let reply = read_json_frame(&mut stream).context("receiving manager reply")?;
+    let reply =
+        read_json_frame(&mut stream, MANAGER_DEADLINE).context("receiving manager reply")?;
     serde_json::from_slice(&reply).context("decoding manager reply")
 }
 
-fn set_rpc_deadlines(stream: &UnixStream) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    Ok(())
-}
-
-fn read_json_frame(stream: &mut UnixStream) -> Result<Vec<u8>> {
+pub fn read_json_frame(stream: &mut UnixStream, deadline: Duration) -> Result<Vec<u8>> {
     use nix::poll::{PollFd, PollFlags, poll};
     use std::io::Read as _;
     use std::os::fd::AsFd as _;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + deadline;
     let mut bytes = Vec::new();
     let mut byte = [0];
     loop {
@@ -70,7 +69,7 @@ fn read_json_frame(stream: &mut UnixStream) -> Result<Vec<u8>> {
             return Ok(bytes);
         }
         anyhow::ensure!(
-            bytes.len() < crate::control::MAX_FRAME_BYTES,
+            bytes.len() < crate::proto::control::MAX_FRAME_BYTES,
             "manager response exceeds frame limit"
         );
         bytes.push(byte[0]);
@@ -79,18 +78,18 @@ fn read_json_frame(stream: &mut UnixStream) -> Result<Vec<u8>> {
 
 pub fn workspace_names(path: &Path) -> Result<Vec<String>> {
     match manager_request(path, &ManagerRequest::List)? {
-        ManagerReply::Pick { names } => {
+        ManagerReply::Names { names } => {
             anyhow::ensure!(
-                names.len() <= super::MAX_WORKSPACES,
+                names.len() <= crate::config::MAX_WORKSPACES,
                 "too many workspaces in manager reply"
             );
             for name in &names {
-                super::validate_workspace_name(name)?;
+                crate::ids::validate_workspace_name(name)?;
             }
             Ok(names)
         }
         ManagerReply::Failed { message } => bail!("{message}"),
-        _ => bail!("manager did not return a workspace list"),
+        ManagerReply::Attach { .. } => bail!("manager did not return a workspace list"),
     }
 }
 
@@ -99,19 +98,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn manager_reply_reader_accepts_a_complete_frame() -> Result<()> {
+    fn reply_reader_accepts_a_complete_frame() -> Result<()> {
         let (mut reader, mut writer) = UnixStream::pair()?;
         write_frame(
             &mut writer,
-            &ManagerReply::Pick {
+            &ManagerReply::Names {
                 names: vec!["one".into()],
             },
         )?;
         drop(writer);
-        let bytes = read_json_frame(&mut reader)?;
+        let bytes = read_json_frame(&mut reader, Duration::from_secs(1))?;
         assert!(matches!(
             serde_json::from_slice::<ManagerReply>(&bytes),
-            Ok(ManagerReply::Pick { .. })
+            Ok(ManagerReply::Names { .. })
         ));
         Ok(())
     }

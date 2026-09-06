@@ -1,158 +1,174 @@
 # fux
 
-fux is a standalone local terminal multiplexer with persistent workspaces, PTY panes, tabs,
-popups, scrollback, multiple viewers, and a local JSON control interface. It builds and runs
-without koh or zor. Local operation requires no cryptographic keys and opens no network listeners.
+fux is a minimal persistent terminal multiplexer. Workspaces group related work, tabs switch
+layouts, and splits show terminals together. One session server per user keeps pane processes
+and their bounded history alive while viewers attach, detach and reconnect. The authoritative
+model lives in a standalone [`bevy_ecs`](https://docs.rs/bevy_ecs/0.19.1/bevy_ecs/) World; the
+viewer is a small terminal compositor. fux builds, installs and runs with no other program
+present, opens no network listeners and needs no keys.
 
-## Local use
+## Use
 
 ```sh
 cargo build --release --locked
 ./target/release/fux
 ```
 
-`fux` starts the local session server on demand and attaches to a workspace. Detaching or closing
-the terminal leaves the server and pane processes running. The server owns live PTYs; saved
-terminal output cannot replace those processes after the server or machine stops.
+A fresh `fux` starts the session server on demand, creates the workspace `default` with the tab
+`main` and one pane running your shell, and attaches. Detaching or closing the terminal leaves the
+server and its panes running. Persistence means surviving detach: nothing is resurrected after
+the server or the machine restarts.
 
-- `fux NAME` opens a named workspace.
-- `fux workspace list` lists workspaces.
-- `fux workspace kill NAME` terminates that workspace and its panes.
-- `fux bindings` lists configured bindings; prefix then `?` shows them in the workspace.
-- The default prefix is Ctrl-A. Prefix then `d` detaches; prefix twice sends literal Ctrl-A.
-- `fux serve --name NAME` runs the local server in the foreground.
+- `fux` attaches to the workspace most recently attached by any viewer; on a fresh server it
+  creates `default`. `fux NAME` opens or creates a named workspace. There is no startup picker.
+- `fux workspace list`, `fux workspace new [NAME]`, `fux workspace kill NAME`.
+- `fux bindings` prints the configured prefix and bindings by group.
+- `fux serve --name NAME` runs the server in the foreground (SIGINT/SIGTERM shut it down).
+- `fux attach --socket PATH` attaches to an explicit private attachment socket, for example one a
+  koh gateway exposes.
+- `fux [NAME] new|split|focus|kill|resize|send-keys|capture|list|tab|subscribe …` and
+  `fux [NAME] ctl JSON` drive the workspace's control socket from scripts. `fux --help` lists them.
 
-Run `fux --help` for commands. Configuration lives at `$XDG_CONFIG_HOME/fux/config.toml` or the
-platform configuration directory. Private sockets live below `$XDG_RUNTIME_DIR/fux`, with a
-per-user fallback when that variable is absent. Descriptors identify local sockets and protocol
-versions, not network identities.
-
-## Contextual command hints
-
-Press the configured prefix (Ctrl-A by default) and pause to see available bindings. Commands
-execute immediately; fast prefix-command sequences do not flash a panel. Unknown command keys
-reveal hints without reaching the pane. Prefix then `?` opens help explicitly. Esc cancels,
-up/down or Page Up/Page Down pages the list, and prefix twice sends the literal prefix.
-
-These interactions require attachment protocol version 2. Older session servers are rejected
-before terminal setup. Save your work before explicitly restarting an old server; fux does not
-terminate sessions automatically to upgrade them.
-
-Preferences are read from the viewer's configuration when attaching:
+Configuration is `$XDG_CONFIG_HOME/fux/config.toml` (default `~/.config/fux/config.toml`); a
+missing file means defaults. Every key is optional:
 
 ```toml
-[hints]
-automatic = true
-delay-ms = 200
+prefix = "C-a"                                  # one byte: a printable key, C-x, Esc, Space, DEL, 0xHH
+default-command = { argv = ["/bin/zsh", "-l"] } # default: $SHELL -l, else /bin/sh -l
+clipboard = "disabled"                          # or "write-only": OSC 52 copies reach the terminal
+[bindings]                                      # key = action, merged over the defaults
+"|" = "split-side"
+
+[history]
+scrollback-lines = 10000                        # per pane, 1-100000
+
+[limits]
+max-panes = 128                                 # per workspace
+max-tabs = 32
+max-workspaces = 64
 ```
 
-Set `delay-ms = 0` for immediate hints, or `automatic = false` to hide delayed automatic hints.
-Explicit help and unknown-command hints remain available. The delay is bounded to 0–5000 ms.
-Prefix panels and the new interaction modes are viewer-local:
+Private sockets live under `$XDG_RUNTIME_DIR/fux` (macOS fallback `~/Library/Caches/fux-runtime`);
+daemon diagnostics go to `$XDG_STATE_HOME/fux/daemon.log` (default `~/.local/state/fux`).
 
-Command help and `fux bindings` group actions into Panes, Focus, Tabs, Session, and Custom.
-Use the arrow keys to page through command help. Dim actions are unavailable in the current
-context; pressing one explains why. For example, resize requires a split, and pane/tab layout
-commands wait until a popup is closed. The host still checks changing state and resource limits.
+## Keys
 
-- Prefix then `s`: choose a workspace with arrows or j/k; Enter switches to it.
-- Prefix then `w`: choose a tab with arrows or j/k; Enter selects it.
-- Prefix then `,`: rename the current tab; Ctrl-U clears, Backspace deletes, Enter saves.
-- Prefix then `x`: confirm closing the focused pane with `y`; `n` cancels.
-- Prefix then `r`: repeat resize adjustments with arrows or h/j/k/l; Enter finishes.
-- Prefix then `[`: enter viewer-local copy mode. Arrows or h/j/k/l move, Space starts a
-  selection, and `y` or Enter copies it and returns to the pane. `u`/`d` scroll three rows.
-  Scrolling or resizing clears the selection; Esc clears it first, then returns to commands.
-  `q` leaves copy mode. Clipboard output follows your configured clipboard policy.
-  Selections exceeding the 1 MiB encoded clipboard limit remain selected and show an error;
-  clear the selection with Esc and choose a smaller region to retry.
+Ordinary keys are byte-exact pane input. The prefix (Ctrl-A by default) enters command mode and
+immediately shows the keybinding popup near the bottom with the current workspace name. Commands
+run at once; a burst such as prefix-`|` is applied before the next repaint, so nothing flashes.
+Prefix twice sends one literal prefix. Unknown keys stay in command mode and keep the popup open;
+Esc leaves without sending anything. Dim entries are unavailable in the current context and say
+why when pressed. There is no command-mode timeout.
 
-Shift-drag selects text locally in tiled or popup panes; `y` or Enter copies the selection.
-The mouse wheel opens local scrollback when the pane application has not requested mouse input.
-Popup footers show the configured command prefix and close binding while keeping application input
-available. Copy selections and scrollback do not move another viewer's viewport.
+| Group | Keys | Action |
+|---|---|---|
+| Panes | `|` `-` | split side by side / stacked (new pane runs the default command and takes focus) |
+| | `x` | close the focused pane after confirming with `y`; the target is the pane you pressed on |
+| | `r` | resize mode: arrows or `h j k l` adjust repeatedly, Enter finishes, changes are kept |
+| | `[` | history and copy mode for the focused pane |
+| Focus | `h j k l` | move focus by direction |
+| Tabs | `t` `n` `p` | new tab, next, previous |
+| | `w` `,` `X` | choose tab, rename the current tab, close the current tab (confirmed) |
+| Workspaces | `s` `S` | choose a workspace, create one (optionally named) and switch to it |
+| Session | `d` `?` | detach, show bindings |
 
-Esc returns from these modes to command help; a second Esc returns to pane input. Resize changes
-are applied immediately and are kept when leaving. Other modes change their target only on submit.
-Starting fux with multiple workspaces opens the same picker; Esc exits without attaching.
-Explicit socket attachments have no workspace picker. Pending close or rename actions fail if
-their original target disappears, even if another pane or tab is created afterward.
-These keys follow your configured bindings. The broader contextual mode refactor is in progress; see
-[the implementation plan](docs/contextual-help-plan.md).
+The tab strip appears only with two or more tabs. Split borders are thin; the focused pane is
+marked. Pane sizes are negotiated over the smallest viewer showing the tab, so two viewers with
+different terminals see the same pane contents; the larger viewer leaves unused margins. On a
+tiny terminal the popup pages and shrinks to what fits.
 
-## Optional integrations
+Copy mode (`[`) browses the pane's private history: arrows or `h j k l` move, `u`/`d` and
+PgUp/PgDn scroll, Space starts a selection, `y` or Enter copies it and returns to live output, `g`
+jumps back to live output, `q` leaves, Esc clears the selection first and then backs out. New
+output never moves another viewer's viewport or changes a selection silently: if eviction or a
+resize invalidates the selected rows, the selection is cleared with a visible notice.
 
-Koh owns remote networking, identities, encryption, authentication, authorization, discovery,
-relays, and reconnect policy. Its optional gateway exposes an authenticated remote service as a
-private local socket. Fux attaches with:
+Mouse: when the application under the pointer does not request mouse input, the wheel browses
+that pane's history and dragging selects text inside the pane. When it does, events reach the
+application with pane-relative coordinates. Hold Shift to force fux's own history/selection
+handling; the keyboard path above always works for terminals that reserve gestures. Copies use
+the configured clipboard policy (`disabled` by default; `write-only` emits one bounded OSC 52
+sequence of at most 1 MiB encoded) and report success or the reason for failure.
+
+Escape is both a key and the start of many sequences. A lone Esc is forwarded after a short
+disambiguation window (35 ms) unless more bytes arrive; sequences split across reads are
+reassembled, and a cancelled mode keeps ownership of an unfinished paste until it drains.
+
+## Panes and history
+
+Every pane keeps up to `scrollback-lines` rows of history in the server while hidden, on another
+tab, or detached; switching tabs or workspaces and reattaching never discards it. Older rows are
+evicted first. Closing a pane, closing a tab or killing a workspace frees the history. There is no
+merged output log.
+
+When the only pane of the only tab exits by itself the workspace retires with that exit status:
+attached viewers see the final screen, then exit with the code; the server finalizes once the
+viewers have seen it (or after five seconds). Other natural exits close the pane, and an emptied
+tab closes. Confirmed close and `kill` send SIGHUP to the pane's process group, SIGKILL after one
+second, and reap it. Workspace kill and server shutdown do the same for every pane.
+
+## Working with koh and zor
+
+fux composes with the independently built koh and zor programs through versioned process
+protocols; it never links, spawns or supervises them.
+
+Remote access is koh's job. On the machine running fux:
 
 ```sh
-fux attach --socket /absolute/private/path/remote.sock
+koh gateway serve --socket "$XDG_RUNTIME_DIR/fux/default.attach.sock" --allow CLIENT_ID
 ```
 
-The koh commands are `koh gateway serve --socket LOCAL_SOCKET --allow CLIENT_ID` on the host and
-`koh gateway connect SERVER_ID --socket PRIVATE_SOCKET` on the viewer machine. Use each command's
-help for key files, direct addresses, and relay options. Parent directories must already be
-private. Keys are loaded by koh, never by fux. Stopping either gateway leaves local pane processes
-running. Koh retries detected connection loss for up to 30 seconds while retaining the local attachment.
-An expired session or restarted gateway requires a new attachment; local panes remain alive.
+and on the viewer machine:
 
-Zor owns agent detection and observation. Enable its sidecar explicitly in fux configuration:
-
-```toml
-zor-path = "/absolute/path/to/zor"
+```sh
+koh gateway connect SERVER_ID --socket /private/dir/fux.sock
+fux attach --socket /private/dir/fux.sock
 ```
 
-This requires a zor build supporting `zor observe`. Fux always starts pane commands directly;
-an optional observer samples the local control interface and sends bounded metadata. Missing,
-crashed, stalled, or malformed observers leave panes usable. Fux clears stale observer status
-when that observer exits. Observation is disabled by default.
+koh authenticates the peer before it opens the local socket, carries the opaque attachment
+stream, and resumes it across transient link loss without repeating input. Stopping either side
+leaves the panes and local attachments untouched.
 
-## Local security and migration
+Observation is zor's job. Point it at a pane's workspace control socket:
 
-The OS user account is the local security boundary. Fux checks private directory/socket ownership,
-permissions, and kernel peer credentials, and bounds attachment frames and control requests.
-Other processes running as the same user can control sessions. Pane processes can emit titles,
-bells, clipboard requests, and agent reports; displayed agent state is untrusted metadata.
-Clipboard output is subject to client configuration.
+```sh
+zor observe --socket "$XDG_RUNTIME_DIR/fux/default.sock" --pane 1 --pid PID
+```
 
-Local fux no longer has `key`, `id`, or `connect` commands, remote allowlists, or a `local-network`
-setting. Remove obsolete settings from fux configuration. The notification setting `remote-clients` is now `viewer-notifications`; it controls notifications
-in an explicit socket viewer. Existing koh and workspace key files
-are left untouched and are not needed for local use; manage koh identities through koh.
+zor negotiates the control preface, samples `list` and `capture`, and runs its own rules. A
+missing, stalled, crashed or malformed observer cannot block or change a pane. The socket paths,
+identities and events zor consumes are documented in the [control protocol](docs/local-control-protocol.md).
 
-An older running server may use an incompatible protocol. Fux reports that mismatch and does not
-silently kill it. Save work and deliberately stop the old server using its matching binary before
-starting the new one. Stopping that server terminates its panes. Closing a viewer alone does not
-upgrade a persistent server.
-
-## Development and verification
-
-A clean fux checkout needs no sibling source trees or dependency patches:
+## Verification
 
 ```sh
 cargo fmt --all --check
-cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo test --all-targets --locked
-cargo build --locked --bin fux
-cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked -- --test-threads=1
 cargo doc --no-deps --locked
-cargo package --locked
+cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
+tests/verify/release-package.sh
 ```
 
-Real-binary tests use disposable HOME/XDG directories and require Python 3; the network-socket
-assertion also uses `lsof`. They do not access personal keys or sessions. Default CI and package
-verification use only this repository. Linux and macOS are CI host targets; Android has a cross-check
-job, which is not runtime coverage. Current refactor runtime verification was performed on macOS.
+Deterministic ECS tests inject events and time (`tests/ecs.rs`, including randomized command
+sequences); real-process scenarios use disposable HOME/XDG directories and owned processes only
+(`tests/local_cli.rs`, the fixture-child suite). The optional cross-repository job and
+`python3 tools/dependencies.py verify --build` rebuild koh and zor from pinned bases plus the
+patches in `dependency-patches/` and run the required real koh and real zor integrations with
+explicit binary paths; set `ZOR_BIN` and `FUX_REQUIRE_ZOR_BIN=1`, or `FUX_BIN` and
+`KOH_REQUIRE_FUX_BIN=1`, so they can never silently skip.
 
-For optional integration development, `python3 tools/dependencies.py apply` reconstructs koh and
-zor from pinned owner-repository bases plus local patches. Edit their owning checkouts, then use
-`export` and `verify` to refresh and check those inputs. These patches are integration-only and
-are excluded from the fux package. CI's manual `integrations` switch enables the cross-repository
-job. Set `ZOR_BIN` to a built sidecar to run the real observer integration locally.
+## Documents
 
-See [the completion audit](docs/standalone-audit.md) for requirement evidence and platform limits. The [local attachment protocol](docs/local-attachment-protocol.md)
-describes the current wire interface.
+- [docs/design.md](docs/design.md): architecture, entity model, system order, lifecycle.
+- [docs/ecs-plan.md](docs/ecs-plan.md): the plan written before the rewrite.
+- [docs/ecs-acceptance.md](docs/ecs-acceptance.md): requirement-by-requirement acceptance audit.
+- [docs/local-attachment-protocol.md](docs/local-attachment-protocol.md) (v3) and
+  [docs/local-control-protocol.md](docs/local-control-protocol.md) (`FUXCTL2`).
+- [docs/security.md](docs/security.md), [docs/release-readiness.md](docs/release-readiness.md),
+  [CHANGELOG.md](CHANGELOG.md), [HANDOFF.md](HANDOFF.md).
+- Everything else under `docs/` and the `*-prompt.md` files are historical records of earlier
+  architectures and are labelled as such.
 
-Licensed under MIT; incorporated terminal and observation-schema code retains attribution in
-[LICENSES](LICENSES).
+Licensed under MIT. Terminal handling reused from earlier fux releases and the koh/zor projects
+retains attribution in [LICENSES](LICENSES).
