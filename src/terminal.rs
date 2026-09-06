@@ -5,8 +5,8 @@
 
 use crate::proto::control::CaptureRow;
 use crate::view::{
-    CellKind, CellStyle, Cursor, Line, MAX_CELL_TEXT_BYTES, PaneModes, PaneUpdate, classify,
-    push_wire,
+    AgentReport, AgentState, CellKind, CellStyle, Cursor, Line, MAX_AGENT_MESSAGE_BYTES,
+    MAX_CELL_TEXT_BYTES, PaneModes, PaneUpdate, classify, push_wire,
 };
 use vt100::Screen;
 
@@ -51,6 +51,87 @@ fn parse_progress(params: &[&[u8]]) -> Option<Progress> {
     (percent <= 100).then_some(Progress { state, percent })
 }
 
+/// Decodes a percent-encoded OSC 7877 value (zor's encoding of optional messages).
+fn percent_decode(bytes: &[u8]) -> Option<String> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while let Some(&byte) = bytes.get(index) {
+        if byte == b'%' {
+            let hi = bytes
+                .get(index + 1)
+                .and_then(|b| (*b as char).to_digit(16))?;
+            let lo = bytes
+                .get(index + 2)
+                .and_then(|b| (*b as char).to_digit(16))?;
+            out.push(u8::try_from((hi << 4) | lo).ok()?);
+            index += 3;
+        } else {
+            out.push(byte);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Parses an OSC 7877 agent report (zor's v1 schema). Returns `Some(None)` for `state=none`
+/// (clear the report), `Some(Some(report))` for a valid one, and `None` when the sequence is not
+/// a well-formed 7877 report (which leaves the current report untouched).
+fn parse_agent(params: &[&[u8]]) -> Option<Option<AgentReport>> {
+    // The whole payload is bounded like zor's producer contract (1 KiB).
+    let total: usize = params.iter().map(|part| part.len() + 1).sum();
+    if params.first().copied() != Some(b"7877".as_slice()) || total > 1024 {
+        return None;
+    }
+    let mut version = None;
+    let mut state = None;
+    let mut agent = None;
+    let mut message = None;
+    for part in params.iter().skip(1) {
+        let at = part.iter().position(|byte| *byte == b'=')?;
+        let (key, rest) = part.split_at(at);
+        let value = rest.get(1..)?;
+        match key {
+            b"v" if version.is_none() => version = Some(value.to_vec()),
+            b"state" if state.is_none() => {
+                state = Some(match value {
+                    b"working" => Some(AgentState::Working),
+                    b"blocked" => Some(AgentState::Blocked),
+                    b"idle" => Some(AgentState::Idle),
+                    b"none" => None,
+                    _ => return None,
+                });
+            }
+            b"agent" if agent.is_none() => {
+                agent = Some(std::str::from_utf8(value).ok()?.to_owned());
+            }
+            b"msg" | b"message" if message.is_none() => {
+                let decoded = percent_decode(value)?;
+                if decoded.len() > MAX_AGENT_MESSAGE_BYTES {
+                    return None;
+                }
+                message = Some(decoded);
+            }
+            // Unknown extension fields within v1 are ignored; duplicates of known fields fail.
+            b"v" | b"state" | b"agent" | b"msg" | b"message" => return None,
+            _ => {}
+        }
+    }
+    if version.as_deref() != Some(b"1") {
+        return None;
+    }
+    match state? {
+        None => Some(None),
+        Some(state) => {
+            let report = AgentReport {
+                state,
+                agent: agent?,
+                message,
+            };
+            report.within_bounds().then_some(Some(report))
+        }
+    }
+}
+
 fn title_from(bytes: &[u8]) -> String {
     crate::view::printable(&String::from_utf8_lossy(bytes), MAX_TITLE_CHARS)
 }
@@ -63,6 +144,7 @@ struct Callbacks {
     /// Query answers the application expects back on its input.
     host_replies: Vec<u8>,
     progress: Option<Progress>,
+    agent: Option<AgentReport>,
 }
 
 impl vt100::Callbacks for Callbacks {
@@ -83,6 +165,9 @@ impl vt100::Callbacks for Callbacks {
             Some(progress) if progress.state == 0 => self.progress = None,
             Some(progress) => self.progress = Some(progress),
             None => {}
+        }
+        if let Some(update) = parse_agent(params) {
+            self.agent = update;
         }
     }
     fn unhandled_csi(
@@ -549,6 +634,11 @@ impl ServerTerminal {
     }
 
     #[must_use]
+    pub fn agent(&self) -> Option<&AgentReport> {
+        self.parser.callbacks().agent.as_ref()
+    }
+
+    #[must_use]
     pub fn history_limit(&self) -> usize {
         self.history_limit
     }
@@ -660,6 +750,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn osc_7877_agent_reports_are_parsed_and_bounded() {
+        let mut terminal = ServerTerminal::new(4, 10, 0);
+        terminal.process(b"\x1b]7877;v=1;state=working;agent=claude;seq=3\x1b\\");
+        let report = terminal.agent().cloned();
+        assert_eq!(
+            report,
+            Some(AgentReport {
+                state: AgentState::Working,
+                agent: "claude".into(),
+                message: None,
+            })
+        );
+        // A message is percent-decoded and kept.
+        terminal.process(b"\x1b]7877;v=1;state=blocked;agent=claude;msg=needs%20input;seq=4\x1b\\");
+        assert_eq!(
+            terminal
+                .agent()
+                .and_then(|report| report.message.clone())
+                .as_deref(),
+            Some("needs input")
+        );
+        // state=none clears the report.
+        terminal.process(b"\x1b]7877;v=1;state=none;seq=5\x1b\\");
+        assert_eq!(terminal.agent(), None);
+        // A hostile id is rejected and leaves the (empty) state unchanged.
+        terminal.process(b"\x1b]7877;v=1;state=working;agent=has space;seq=6\x1b\\");
+        assert_eq!(terminal.agent(), None);
+        // An unknown version is ignored.
+        terminal.process(b"\x1b]7877;v=2;state=working;agent=x;seq=7\x1b\\");
+        assert_eq!(terminal.agent(), None);
+        // A non-7877 OSC (progress) does not disturb the agent state.
+        terminal.process(b"\x1b]7877;v=1;state=idle;agent=x;seq=8\x1b\\\x1b]9;4;1;50\x1b\\");
+        assert_eq!(
+            terminal.agent().map(|report| report.state),
+            Some(AgentState::Idle)
+        );
+        assert!(terminal.progress().is_some());
     }
 
     #[test]

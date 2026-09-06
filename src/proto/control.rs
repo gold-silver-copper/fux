@@ -513,6 +513,9 @@ pub struct PaneSummary {
     pub title: String,
     #[serde(default)]
     pub progress: Option<(u8, u8)>,
+    /// The pane's self-reported agent state (OSC 7877), or `null` when none. Unverified.
+    #[serde(default)]
+    pub agent: Option<crate::view::AgentReport>,
     /// The output sequence: advances whenever the visible screen, cursor, modes, title or exit
     /// status changed; `capture` and `pane.output` report the same counter.
     pub seq: u64,
@@ -567,6 +570,13 @@ pub enum Event {
         pane: PaneId,
         title: String,
     },
+    #[serde(rename = "pane.agent")]
+    PaneAgent {
+        id: RequestId,
+        pane: PaneId,
+        /// The new agent state, or `null` when the pane no longer reports one.
+        agent: Option<crate::view::AgentReport>,
+    },
     #[serde(rename = "pane.output")]
     PaneOutput {
         id: RequestId,
@@ -594,6 +604,7 @@ impl Event {
             Self::PaneOpened { .. } => EventKind::PaneOpened,
             Self::PaneClosed { .. } => EventKind::PaneClosed,
             Self::PaneTitle { .. } => EventKind::PaneTitle,
+            Self::PaneAgent { .. } => EventKind::PaneAgent,
             Self::PaneOutput { .. } => EventKind::PaneOutput,
             Self::TabOpened { .. } => EventKind::TabOpened,
             Self::TabClosed { .. } => EventKind::TabClosed,
@@ -608,6 +619,7 @@ impl Event {
             Self::PaneOpened { id, .. }
             | Self::PaneClosed { id, .. }
             | Self::PaneTitle { id, .. }
+            | Self::PaneAgent { id, .. }
             | Self::PaneOutput { id, .. }
             | Self::TabOpened { id, .. }
             | Self::TabClosed { id, .. }
@@ -627,6 +639,8 @@ pub enum EventKind {
     PaneClosed,
     #[serde(rename = "pane.title")]
     PaneTitle,
+    #[serde(rename = "pane.agent")]
+    PaneAgent,
     #[serde(rename = "pane.output")]
     PaneOutput,
     #[serde(rename = "tab.opened")]

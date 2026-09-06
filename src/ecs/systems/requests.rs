@@ -1450,6 +1450,7 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
                             .terminal
                             .progress()
                             .map(|progress| (progress.state, progress.percent)),
+                        agent: component.terminal.agent().cloned(),
                         geometry: component.rect,
                         focused: focused_pane == Some(pane),
                         cursor: crate::view::Cursor {

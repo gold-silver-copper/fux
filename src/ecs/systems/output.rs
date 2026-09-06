@@ -33,28 +33,46 @@ pub fn apply_pane_output(
                 if title_changed {
                     component.published_title = component.terminal.title().to_owned();
                 }
+                let agent_changed =
+                    component.terminal.agent() != component.published_agent.as_ref();
+                if agent_changed {
+                    component.published_agent = component.terminal.agent().cloned();
+                }
                 if !replies.is_empty() && component.state.accepts_input() {
                     effects.emit(Effect::WriteInput {
                         pane: *pane,
                         bytes: replies,
                     });
                 }
-                if !title_changed {
+                if !title_changed && !agent_changed {
                     continue;
                 }
+                let agent = component.published_agent.clone();
                 let workspace = tabs
                     .get(component.tab)
                     .and_then(|tab| workspaces.get(tab.workspace))
                     .map(|workspace| workspace.name.clone());
                 if let Ok(workspace) = workspace {
-                    effects.event(
-                        &workspace,
-                        Event::PaneTitle {
-                            id: 0,
-                            pane: *pane,
-                            title: component.published_title.clone(),
-                        },
-                    );
+                    if title_changed {
+                        effects.event(
+                            &workspace,
+                            Event::PaneTitle {
+                                id: 0,
+                                pane: *pane,
+                                title: component.published_title.clone(),
+                            },
+                        );
+                    }
+                    if agent_changed {
+                        effects.event(
+                            &workspace,
+                            Event::PaneAgent {
+                                id: 0,
+                                pane: *pane,
+                                agent,
+                            },
+                        );
+                    }
                 }
             }
             Inbound::PaneEof { pane } => {

@@ -85,6 +85,7 @@ pub fn reserve_pane(
                 dirty: true,
                 event_pending: false,
                 published_title: String::new(),
+                published_agent: None,
                 last_output_event_ms: None,
             },
             Creation {

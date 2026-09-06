@@ -165,6 +165,8 @@ pub struct Pane {
     /// sequence without counting as output.
     pub event_pending: bool,
     pub published_title: String,
+    /// The agent state last announced in a `pane.agent` event, to detect changes.
+    pub published_agent: Option<crate::view::AgentReport>,
     pub last_output_event_ms: Option<u64>,
 }
 

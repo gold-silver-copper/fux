@@ -36,6 +36,9 @@ an instance nonce and socket paths only; the protocols carry no version numbers.
   `new`/`split` `env` holds at most 64 entries and 16 KiB total.
 - Names: workspace names and labels reject path separators, `.`/`..`, control characters and
   empty strings.
+- Agent reports: OSC 7877 payloads are bounded to 1 KiB, agent ids to 64 ASCII `[A-Za-z0-9._-]`
+  bytes, messages to 128 bytes; a malformed report is dropped and leaves the current state. The
+  state is unverified self-report, never an authorization signal.
 
 ## Lifecycle safety
 

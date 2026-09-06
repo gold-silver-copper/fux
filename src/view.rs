@@ -22,6 +22,8 @@ pub fn printable(text: &str, max_chars: usize) -> String {
         .collect()
 }
 pub const MAX_LABEL_BYTES: usize = 128;
+pub const MAX_AGENT_ID_BYTES: usize = 64;
+pub const MAX_AGENT_MESSAGE_BYTES: usize = 128;
 pub const MAX_PANES: usize = 128;
 pub const MAX_TABS: usize = 32;
 /// One maximum-size pane across a frame (`MAX_DIM * MAX_DIM`).
@@ -170,6 +172,43 @@ impl Cell {
                     self.text.graphemes(true).count() == 1 && self.text.width() == 2
                 }
             }
+    }
+}
+
+/// A pane's self-reported agent state, parsed from OSC 7877 (zor's observation schema). It is
+/// unverified terminal output: any program can write it, so it is presentation only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentReport {
+    pub state: AgentState,
+    /// The reporting agent's identifier (ASCII letters, digits, `.`, `_`, `-`, at most 64 bytes).
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentState {
+    Working,
+    Blocked,
+    Idle,
+}
+
+impl AgentReport {
+    /// Validates the bounds an OSC 7877 report must respect.
+    #[must_use]
+    pub fn within_bounds(&self) -> bool {
+        self.agent.len() <= MAX_AGENT_ID_BYTES
+            && !self.agent.is_empty()
+            && self
+                .agent
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            && self
+                .message
+                .as_ref()
+                .is_none_or(|message| message.len() <= MAX_AGENT_MESSAGE_BYTES)
     }
 }
 

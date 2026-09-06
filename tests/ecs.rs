@@ -730,6 +730,66 @@ fn send_wait(
 }
 
 #[test]
+fn osc_7877_agent_state_reaches_list_and_a_pane_agent_event() {
+    use fux::proto::control::{CommandResult, Event};
+    use fux::view::{AgentReport, AgentState};
+    let mut harness = Harness::new();
+    harness.create_workspace("default");
+    let viewer = harness.attach("default", 24, 80);
+    harness.events.clear();
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"\x1b]7877;v=1;state=working;agent=claude;seq=1\x1b\\".to_vec(),
+    }]);
+    // The listing carries the agent state.
+    harness.control(viewer, Request::List { id: 950 });
+    let agent = match harness.replies(viewer).last() {
+        Some(Reply::Completed {
+            result: CommandResult::Listing { workspaces },
+            ..
+        }) => workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| &tab.panes)
+            .find(|pane| pane.id == PaneId(1))
+            .and_then(|pane| pane.agent.clone()),
+        other => panic!("unexpected reply {other:?}"),
+    };
+    assert_eq!(
+        agent,
+        Some(AgentReport {
+            state: AgentState::Working,
+            agent: "claude".into(),
+            message: None
+        })
+    );
+    // A pane.agent event announced the change.
+    assert!(
+        harness.events.iter().any(|(_, event)| matches!(
+            event,
+            Event::PaneAgent { pane: PaneId(1), agent: Some(report), .. }
+                if report.agent == "claude" && report.state == AgentState::Working
+        )),
+        "a pane.agent event fired: {:?}",
+        harness.events
+    );
+    // Clearing it fires an event with a null agent.
+    harness.events.clear();
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"\x1b]7877;v=1;state=none;seq=2\x1b\\".to_vec(),
+    }]);
+    assert!(harness.events.iter().any(|(_, event)| matches!(
+        event,
+        Event::PaneAgent {
+            pane: PaneId(1),
+            agent: None,
+            ..
+        }
+    )));
+}
+
+#[test]
 fn split_carries_env_and_a_requested_headless_size_to_the_spawn() {
     let mut harness = Harness::new();
     harness.create_workspace("default");

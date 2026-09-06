@@ -54,8 +54,8 @@ Replies are `{"status":"completed","id":N,"result":{...}}`, `{"status":"failed",
 `{"status":"accepted","id":N}` for subscriptions.
 
 Listings carry stable identities: `workspaces[].{name,focused,viewers,tabs[]}`, `tabs[].{id,index,
-name,focused,panes[]}`, `panes[].{id,command,pid,cwd,title,progress,seq,geometry,focused,cursor,
-modes,exit_status}`. Pane and tab ids are never reused during a server's lifetime; a request naming a
+name,focused,panes[]}`, `panes[].{id,command,pid,cwd,title,progress,agent,seq,geometry,focused,
+cursor,modes,exit_status}`. Pane and tab ids are never reused during a server's lifetime; a request naming a
 closed id fails with `not-found` even if a replacement exists. Control clients act on the
 workspace's own selection, not on any viewer's, and `list`/`capture` never change focus,
 selection or a viewport.
@@ -123,11 +123,25 @@ waits. The timeout is a `failed` reply with code `timeout`, never a hang. A serv
 
 ## Events
 
-`pane.opened`, `pane.closed` (`exit_status`), `pane.title`, `pane.output` (`seq`; at most one per
-pane per 250 ms, the last change of a burst always produces one),
+`pane.opened`, `pane.closed` (`exit_status`), `pane.title`, `pane.agent` (self-reported agent
+state, below), `pane.output` (`seq`; at most one per pane per 250 ms, the last change of a burst
+always produces one),
 `tab.opened`, `tab.closed`, `client.attached`, `client.detached`. Each event carries the
 subscription's `id`. A subscriber whose queue exceeds 1024 events is disconnected rather than
 buffered without bound; it may resubscribe and re-`list`.
+
+## Agent state
+
+fux reads OSC 7877 agent reports (zor's observation schema v1) from pane output the way it reads
+progress: `ESC ] 7877 ; v=1 ; state=working ; agent=claude ; seq=N ST`. The `state` is `working`,
+`blocked`, `idle`, or `none` (which clears it); `agent` is an id of at most 64 ASCII letters,
+digits, `.`, `_` or `-`; an optional percent-encoded `msg` of at most 128 bytes is kept; the whole
+report is bounded to 1 KiB. The parsed state appears as `agent` in `list` and in a `pane.agent`
+event. This means `zor -- COMMAND` as a pane's command, or an agent that emits the OSC itself,
+lights up fux with no observer socket; `zor observe` stays available. The report is unverified
+terminal output: any program can write it, so it is presentation only and never an authorization
+signal. It does not yet travel in the attachment frame or the viewer's bar; that display is a
+later pass.
 
 ## Manager requests
 
