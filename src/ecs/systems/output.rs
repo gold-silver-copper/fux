@@ -28,10 +28,9 @@ pub fn apply_pane_output(
                 component.terminal.process(bytes);
                 component.dirty = true;
                 let replies = component.terminal.take_host_replies();
-                let title = component.terminal.title().to_owned();
-                let title_changed = title != component.published_title;
+                let title_changed = component.terminal.title() != component.published_title;
                 if title_changed {
-                    component.published_title = title.clone();
+                    component.published_title = component.terminal.title().to_owned();
                 }
                 let publish_output = component
                     .last_output_event_ms
@@ -62,7 +61,7 @@ pub fn apply_pane_output(
                             Event::PaneTitle {
                                 id: 0,
                                 pane: *pane,
-                                title,
+                                title: component.published_title.clone(),
                             },
                         );
                     }

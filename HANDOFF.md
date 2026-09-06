@@ -1,15 +1,18 @@
 # fux handoff
 
-Updated 2026-09-06 for 0.4.0. fux is a persistent terminal multiplexer whose authoritative model
+Updated 2026-09-06 for 0.5.0. fux is a persistent terminal multiplexer whose authoritative model
 is a standalone `bevy_ecs` World; the architecture is in [docs/design.md](docs/design.md), the
 requirement audit and review record in [docs/ecs-acceptance.md](docs/ecs-acceptance.md),
 protocols in `docs/local-*.md`.
 
 ## State
 
-- 0.4.0 is an internal refactor of 0.3.3: typed systems with `SystemParam` bundles, the
-  `TabOf`/`Tabs` relationship, shared helpers, dead code removed. Attachment protocol v5, control
-  `FUXCTL2`, keys, configuration and CLI are unchanged.
+- 0.5.0 is the performance pass over the 0.4.0 refactor: attachment protocol v6 carries only
+  the rows that changed (retained grid per pane on the server, retained frame on the viewer,
+  merged updates in the outbox, bindings sent once); the emulator is fed from a reusable
+  buffer. Control `FUXCTL2`, keys, configuration and CLI are unchanged. The measurement method
+  is `tools/measure.py`, `tools/measure_frames.py`, `tools/measure_viewer.py` and
+  `tools/measure_memory.py`; the numbers are in docs/ecs-acceptance.md "Performance pass".
 - Four systems remain exclusive (`&mut World`): request execution, viewer queue draining, spawn
   completion and the lifecycle cascade; each mutates entities it must observe again within the
   same phase (see docs/design.md "Systems").

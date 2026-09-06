@@ -20,6 +20,9 @@ pub struct Limits {
     pub terminate_deadline_ms: u64,
     /// Minimum spacing of `pane.output` events per pane.
     pub output_event_interval_ms: u64,
+    /// Minimum spacing of output-driven frames per viewer; replies, selection changes and
+    /// retirement are never delayed.
+    pub frame_interval_ms: u64,
 }
 
 impl Limits {
@@ -36,6 +39,7 @@ impl Limits {
             retire_grace_ms: 5_000,
             terminate_deadline_ms: 10_000,
             output_event_interval_ms: 250,
+            frame_interval_ms: 8,
         }
     }
 }

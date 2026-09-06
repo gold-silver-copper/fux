@@ -14,7 +14,7 @@ use fux::proto::attach::{MouseEvent, ServerMessage};
 use fux::proto::control::{
     CommandResult, ErrorCode, Event, FocusTarget, Reply, Request, TabAction, WorkspaceAction,
 };
-use fux::view::Frame;
+use fux::view::{Frame, PaneView};
 use std::collections::BTreeMap;
 
 /// A fake operating system: records effects and completes spawns on demand.
@@ -25,6 +25,8 @@ struct Harness {
     next_pid: u32,
     effects: Vec<Effect>,
     frames: BTreeMap<ViewerId, Vec<Frame>>,
+    /// The frame each viewer holds after applying every update it received.
+    retained: BTreeMap<ViewerId, Frame>,
     messages: BTreeMap<ViewerId, Vec<ServerMessage>>,
     events: Vec<(String, Event)>,
     released: Vec<PaneId>,
@@ -48,6 +50,7 @@ impl Harness {
             next_pid: 100,
             effects: Vec::new(),
             frames: BTreeMap::new(),
+            retained: BTreeMap::new(),
             messages: BTreeMap::new(),
             events: Vec::new(),
             released: Vec::new(),
@@ -74,8 +77,14 @@ impl Harness {
                 Effect::SpawnPane { pane, .. } => self.pending_spawns.push(*pane),
                 Effect::ToViewer { viewer, message } => {
                     if let ServerMessage::State { state } = message {
-                        assert!(state.valid());
-                        self.frames.entry(*viewer).or_default().push(*state.clone());
+                        let current = self.retained.entry(*viewer).or_default();
+                        current
+                            .apply((**state).clone())
+                            .unwrap_or_else(|error| panic!("invalid update: {error}"));
+                        self.frames
+                            .entry(*viewer)
+                            .or_default()
+                            .push(current.clone());
                     }
                     self.messages
                         .entry(*viewer)
@@ -410,14 +419,7 @@ fn output_eof_and_exit_keep_final_output_and_retire_the_workspace() {
         },
     ]);
     let messages = &harness.messages[&viewer];
-    let last_frame = messages
-        .iter()
-        .rev()
-        .find_map(|message| match message {
-            ServerMessage::State { state } => Some(state),
-            _ => None,
-        })
-        .unwrap();
+    let last_frame = harness.last_frame(viewer);
     let text: String = last_frame.panes[&PaneId(1)]
         .cells
         .iter()
@@ -678,7 +680,7 @@ fn history_views_are_private_and_clamped() {
             _ => None,
         })
         .expect("view reply");
-    let view_pane = view.view.expect("pane exists");
+    let view_pane = PaneView::from_update(&view.view.expect("pane exists")).expect("valid view");
     assert!(view_pane.offset > 0 && view_pane.offset <= view.history);
     let text: String = view_pane
         .cells
@@ -924,6 +926,69 @@ fn a_viewer_leaving_in_its_arrival_step_is_released_and_the_limit_counts_the_bat
         }
     )));
     assert_eq!(harness.session.entity_counts().viewers, 64);
+}
+
+#[test]
+fn output_frames_are_paced_but_replies_are_not() {
+    let mut harness = Harness::new();
+    harness.create_workspace("default");
+    let viewer = harness.attach("default", 24, 80);
+    let frames = harness.frames[&viewer].len();
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"one".to_vec(),
+    }]);
+    assert_eq!(harness.frames[&viewer].len(), frames + 1);
+    // One millisecond after a frame, more output waits for the frame interval.
+    harness.now -= 9;
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"two".to_vec(),
+    }]);
+    assert_eq!(harness.frames[&viewer].len(), frames + 1, "paced");
+    assert!(
+        harness
+            .session
+            .next_deadline_ms()
+            .is_some_and(|at| at <= harness.now + 8),
+        "a wake-up is proposed for the pending rows"
+    );
+    harness.now += 8;
+    harness.step(Vec::new());
+    assert_eq!(harness.frames[&viewer].len(), frames + 2);
+    let text: String = harness.last_frame(viewer).panes[&PaneId(1)]
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect();
+    assert!(text.contains("onetwo"), "{text}");
+    // A reply never waits: its frame goes out in the same step.
+    harness.now -= 9;
+    harness.control(viewer, Request::List { id: 7 });
+    assert_eq!(harness.frames[&viewer].len(), frames + 3);
+    // Neither does the echo of the viewer's own input, even when it arrives in fragments.
+    harness.now -= 9;
+    harness.step(vec![
+        Inbound::ViewerRequest {
+            viewer,
+            request: ViewerRequest::Input(b"xy".to_vec()),
+        },
+        Inbound::PaneOutput {
+            pane: PaneId(1),
+            bytes: b"x".to_vec(),
+        },
+    ]);
+    assert_eq!(harness.frames[&viewer].len(), frames + 4, "echo not paced");
+    harness.now -= 9;
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"y".to_vec(),
+    }]);
+    assert_eq!(
+        harness.frames[&viewer].len(),
+        frames + 5,
+        "the rest of the echo not paced"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

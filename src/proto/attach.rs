@@ -1,15 +1,18 @@
-//! Attachment protocol v5: bounded length-prefixed JSON frames between a viewer (or a koh gateway
+//! Attachment protocol v6: bounded length-prefixed JSON frames between a viewer (or a koh gateway
 //! carrying a viewer) and the session server. A partial frame may only be abandoned with its
 //! connection; reading another frame after a cancelled partial read would lose synchronization.
 
 use crate::ids::PaneId;
-use crate::view::{Frame, PaneView};
+use crate::view::{FrameUpdate, PaneUpdate};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::{self, Write};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
+/// Wire cells one history view may carry; frame updates are bounded per pane and in total by
+/// `view::PaneUpdate::within_bounds` and `view::FrameUpdate::within_bounds`.
+pub const MAX_UPDATE_CELLS: usize = crate::view::MAX_TOTAL_CELLS;
 pub const MAX_CLIENT_FRAME: usize = 64 * 1024;
 pub const MAX_INPUT_CHUNK: usize = 4096;
 pub const MAX_SERVER_FRAME: usize = 16 << 20;
@@ -53,12 +56,29 @@ pub enum ClientMessage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ServerMessage {
-    Hello { version: u32 },
-    State { state: Box<Frame> },
-    Reply { reply: crate::proto::control::Reply },
-    View { reply: ViewReply },
-    Error { message: String },
-    Exited { code: Option<u32> },
+    Hello {
+        version: u32,
+    },
+    /// The registry of prefix and bindings, sent once after the hello.
+    Bindings {
+        bindings: crate::commands::ClientBindings,
+    },
+    /// A full frame or a delta; see docs/local-attachment-protocol.md.
+    State {
+        state: Box<FrameUpdate>,
+    },
+    Reply {
+        reply: crate::proto::control::Reply,
+    },
+    View {
+        reply: ViewReply,
+    },
+    Error {
+        message: String,
+    },
+    Exited {
+        code: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,19 +86,21 @@ pub enum ServerMessage {
 pub struct ViewReply {
     pub request: u64,
     pub pane: PaneId,
-    /// `None` when the pane no longer exists.
+    /// `None` when the pane no longer exists; otherwise a full update of the viewport.
     #[serde(deserialize_with = "deserialize_view")]
-    pub view: Option<Box<PaneView>>,
+    pub view: Option<Box<PaneUpdate>>,
     /// History rows retained above the live screen at the time of the read.
     pub history: u32,
 }
 
-fn deserialize_view<'de, D>(deserializer: D) -> Result<Option<Box<PaneView>>, D::Error>
+fn deserialize_view<'de, D>(deserializer: D) -> Result<Option<Box<PaneUpdate>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let view = Option::<Box<PaneView>>::deserialize(deserializer)?;
-    if view.as_ref().is_some_and(|view| !view.valid()) {
+    let view = Option::<Box<PaneUpdate>>::deserialize(deserializer)?;
+    if view.as_ref().is_some_and(|view| {
+        !view.full || !view.within_bounds() || view.cells.len() > MAX_UPDATE_CELLS
+    }) {
         return Err(serde::de::Error::custom("invalid pane view"));
     }
     Ok(view)
@@ -258,12 +280,13 @@ mod tests {
 
     #[test]
     fn frame_state_shape_is_stable_for_gateway_consumers() {
-        let mut frame = Frame::default();
+        // Gateway consumers read `/state/state/panes/*/cells[].text`; blank runs have no text.
+        let mut frame = FrameUpdate::default();
         let mut parser = vt100::Parser::new(2, 3, 0);
         parser.process(b"hi");
         frame.panes.insert(
             PaneId(1),
-            PaneView::from_screen(parser.screen(), "", 0, None).unwrap_or_default(),
+            PaneUpdate::full_from_screen(parser.screen(), "", 0, None).unwrap_or_default(),
         );
         let value = serde_json::to_value(ServerMessage::State {
             state: Box::new(frame),

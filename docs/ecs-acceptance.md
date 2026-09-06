@@ -110,7 +110,7 @@ ordinary pane remains (`new`/`split` with `argv`, `cwd`).
 | Requirement | Evidence |
 |---|---|
 | builds/installs/runs without koh or zor; no cross-owner crate/build script/sibling source | `Cargo.toml`; `structure.rs::project_dependencies_and_application_imports_respect_ownership`, `default_ci_and_release_verification_require_only_fux`; `tests/verify/release-package.sh` |
-| versioned process protocols, no Entity/component/schedule exposure | `proto/attach.rs` v5, `proto/control.rs` `FUXCTL2`; `structure.rs` forbids `Entity` in `proto/` |
+| versioned process protocols, no Entity/component/schedule exposure | `proto/attach.rs` v6, `proto/control.rs` `FUXCTL2`; `structure.rs` forbids `Entity` in `proto/` |
 | control surface: stable ids, listing, bounded capture, lifecycle events; reads do not change focus | `Request::{List, Capture, Subscribe}`; control clients act on workspace selection | fixture control test; `observer.py` asserts focus/pid unchanged |
 | real koh gateway carries attachment stream; stopping leaves panes usable | koh `optional_gateway_failure_leaves_real_fux_panes_running`, `real_fux_keeps_its_pane_and_applies_input_once_across_five_quic_losses` passed against `target/debug/fux` |
 | zor observes via capture/events; failures isolated | `tests/verify/observer.py`: real `zor observe` reports working→idle from fux capture/title/progress; wrong preface and unknown command rejected; observer SIGKILL leaves pane pid/focus/output unchanged |
@@ -506,6 +506,220 @@ test fails without the fix; the comments are in place; `each_viewer` walks the q
 item 5 corrected apart from the three line counts the fix commit itself moved (refreshed below),
 no new finding introduced. Verdict: no open P0, P1 or P2; the branch may leave draft once the
 gate on the final tree is clean.
+
+## Performance pass (0.5.0, 2026-09-06)
+
+The performance specification (`performance-prompt.md` in git history) asked for lower
+input-to-screen latency, frame cost, output throughput cost and memory, measured before and after
+with no capability, guarantee or assertion lost. Baseline: `main` at `fa0c286` (0.4.0). Machine:
+Apple M2 Max, macOS 26.5.2, release builds, disposable HOME/XDG roots, baseline and branch
+measured alternately on a quiet machine. Methods: `python3 tools/measure.py BIN --version 5|6
+--samples 100` (three runs each), `python3 tools/measure_frames.py BIN --version 5|6` (two runs
+each; every viewer drained), `python3 tools/measure_viewer.py BIN` (the real viewer on a pty),
+`python3 tools/measure_memory.py BIN` (bytes per retained history row), and macOS `sample` (8 s)
+of the server and the viewer under a keystroke loop and under a burst.
+
+What changed: attachment protocol v6 carries only changed rows (one retained grid per pane on
+the server, read from the emulator once per step with every row stamped by the step it changed
+in; `Viewer.sent` remembers what each viewer holds; compact wire cells with blank runs and
+default styles omitted; a retained frame on the viewer; queued updates merged in the outbox
+rather than dropped; bindings sent once); output-driven frames are paced to one per 8 ms per
+viewer while echoes, replies, selection changes and retirement are immediate; the owner loop
+treats continuous pane output as a stream and waits 1 ms for more chunks before a step; output
+feeding uses a reusable buffer per pane; cells the frame cannot carry are classified once at the
+source.
+
+### Before / after
+
+Keystroke cost (`measure_frames.py`, first viewer; bytes on the socket per keystroke, latency
+median / p95, server CPU per 1,000 keystrokes):
+
+| Configuration | 0.4.0 bytes | 0.5.0 bytes | 0.4.0 latency ms | 0.5.0 latency ms | 0.4.0 CPU s | 0.5.0 CPU s |
+|---|---|---|---|---|---|---|
+| 80×24, one viewer | 289,920 | 852 | 2.8–6.2 / 3.6–9.0 | 0.14–0.25 / 0.17–0.85 | 0.9–1.4 | 0.08 |
+| 200×60, one viewer | 1,853,858 | 855 | 21–45 / 27–53 | 0.32–0.47 / 0.39–1.3 | 5.9–8.8 | 0.21 |
+| 80×24, two viewers | 289,920 | 852 | 4.7–9.6 / 6.3–12.9 | 0.14–0.30 / 0.21–0.69 | 1.7–2.5 | 0.08 |
+| 80×24, four viewers | 289,920 | 852 | 8.7–17.0 / 15.1–24.4 | 0.14–0.29 / 0.19–1.01 | 3.6–4.7 | 0.08 |
+| 80×24, eight viewers | 289,920 | 852 | 21.8–35.8 / 36.3–57.8 | 0.16–0.30 / 0.34–0.81 | 7.6–9.7 | 0.09 |
+| 200×60 + 80×24 on one tab | 289,920 | 852 | 6.4–11.0 / 8.6–16.8 | 0.13–0.26 / 0.17–0.75 | 1.8–2.6 | 0.1 |
+
+Ranges are the union of every run of the day (four rounds of `measure_frames.py`, alternating
+baseline and branch, on the same binaries); the branch's rows include the rounds before the
+stream wait, whose keystroke figures did not change. `ps cputime` on this macOS ticks in 10 ms,
+so the CPU columns come from the 1,000-keystroke runs (the 100-keystroke rounds quantise to
+0.1 s per 1,000): baseline 0.94 (one viewer), 1.78 (two), 3.49 (four), 6.99 s (eight); branch 0.08, 0.08, 0.08, 0.09 s, and 0.21 s at 200×60.
+
+Bursts and memory (`measure_frames.py`: 20,000-line burst to quiescence, server CPU for it, RSS
+after it, 80×24 one viewer; `measure.py`; `measure_viewer.py`; `measure_memory.py`):
+
+| Measure | 0.4.0 | 0.5.0 |
+|---|---|---|
+| burst wall time (shell floor 0.23 s alone, 0.28 s through a pty) | 0.25–0.31 s | 0.25–0.27 s |
+| server CPU for the burst | 0.21–0.23 s | 0.06–0.09 s |
+| RSS after the burst, 80×24 / 200×60 | 34.6 / 92.5–93.9 MiB | 33.1 / 78.5 MiB |
+| `measure.py` latency median / p95 (echoed command) | 3.4–7.3 / 5.3–11.0 ms | 0.56–2.03 / 0.87–2.45 ms |
+| `measure.py` startup, idle CPU per 10 s, RSS at start | 16–71 ms, 0.00 s, 6.3–6.6 MiB | 18–63 ms, 0.00 s, 5.8–6.1 MiB |
+| real viewer CPU per 1,000 keystrokes, 80×24 / 200×60 | 1.05–1.48 / 5.9 s | 0.25–0.33 / 0.87–1.07 s |
+| real viewer terminal bytes per keystroke | 112 | 112 |
+| bytes per retained history row, plain / styled wide | 2,518 / 1,468 | 2,573 / 1,441 |
+| release binary | 6,592,992 bytes | 6,622,560 bytes |
+
+Against the targets: latency median ≤ 2 ms and p95 ≤ 5 ms (met: 0.14–0.25 / 0.17–0.85 ms at
+80×24, 0.56–2.03 / 0.87–2.45 ms for the echoed-command loop); ≤ 2 KiB per keystroke (met: 852
+bytes); server CPU per 1,000 keystrokes ≤ ¼ of baseline (met: 0.08 s from 0.94 s at 80×24, 0.21 s from 5.9–8.8 s at 200×60); burst server CPU ≤ ½ of
+baseline (met: 0.06–0.09 s from 0.21–0.23 s); burst wall time ≤ 0.10 s (not met and not
+reachable: the shell producing the 20,000 lines takes 0.23 s by itself, 0.28 s when read through
+a pty; both binaries sit at the floor, and the 0.4.0 audit's earlier 0.13–0.16 s figures were an
+artefact of the shell's echo of the typed command satisfying the wait, which the scripts no
+longer allow); 200×60 latency ≤ 1.5× the 80×24 figure (0.47 vs 0.24 ms: 2×, not met at that
+ratio, though 90× better than before; the residual is the per-step comparison of a 12,000-cell
+grid); eight viewers ≤ 2× one viewer (met: 0.09 s against 0.08 s, latency 0.12 against 0.11 ms, from a baseline that scaled 0.94 to 6.99 s);
+RSS after the burst not worse (met); idle CPU 0.00 s (met); startup not worse than the baseline
+range (overlapping: 18–63 ms for the branch and 16–71 ms for the baseline across the day's runs;
+startup is a fork/exec plus a shell start and varies by more than 2× between runs on this
+machine).
+
+### Profiles (macOS `sample`, self samples at the top of the stack)
+
+Before (0.4.0), server under a keystroke loop: `BoundedBytes::write_all`/`write` (serde_json
+into the bounded frame writer) ≈ 840, `memmove` 223, `format_escaped_str` ≈ 200, `sendto` 110,
+`Cell::valid` 9, `PaneView::from_screen` 5 — the keystroke cost was JSON encoding of 1,920 cells.
+Server under a burst: vt100 `Grid::visible_row` 518, `Cell::valid` 366, `PaneView::from_screen`
+265, unicode-segmentation ≈ 200, `free` 123, `Cell::contents` 113, `malloc` 107,
+`drop_in_place<PaneView>` 49, `ServerTerminal::process` 26 — deriving a full view per step.
+Viewer under a keystroke loop: `from_utf8` 79, serde_json `skip_to_escape` 47, `parse_str` 35,
+deserializer ≈ 60, `Buffer::diff` 8, `compose` 6 — decoding the same 290 KB.
+
+After (0.5.0), server under a keystroke loop: vt100 `Grid::visible_row` 262, `refresh_grid` 258,
+`memmove` 141, `free` 107, `Screen::cell` 70, `Cell::contents` 49, `write_all` 47 — the residual is
+the per-step comparison of the visible grid against the emulator (one `Screen::cell` per cell).
+Server under a burst, before the stream wait: `visible_row` 530, `push_wire` 218, `copy_row` 143,
+`from_utf8` 130, `Grid::update` 79, `refresh_grid` 76, `PaneUpdate::merge` 24 — grid refresh,
+update building and outbox merging once per pty read; user and system time were equal, and a
+20,000-line burst was ~12,000 pty reads of ~11 bytes, each a step. With frames paced to 8 ms and
+the 1 ms stream wait the burst is a few hundred steps and its server CPU a third of the
+baseline's.
+
+### Memory
+
+vt100 stores every cell in 32 bytes, so a retained row costs about the row width times 32 bytes
+whatever it holds: 2,518–2,573 bytes per 80-column row of plain text (the grid's own 80 × 32 =
+2,560), and 1,441–1,468 bytes per row of styled wide characters (half the cells are wide
+continuations, which vt100 does not store twice). With the default 10,000 rows of history a pane
+retains about 25 MiB at 80 columns and 62 MiB at 200 columns, which is what RSS after the burst
+shows (33 MiB at 80×24, 78 MiB at 200×60 for one pane plus the server). The retained grid adds one
+visible screen per pane (about 40 bytes per cell: 77 KB at 80×24, 480 KB at 200×60); the viewer
+holds one `PaneView` per visible pane and one painted buffer. Options the user decides on, not
+this pass: a lower default `history.scrollback-lines` (documented behaviour), or a compact
+history representation outside the emulator (a larger change with the same limits). The
+documented range 1–100,000 is unchanged.
+
+### Contract evidence
+
+Every test of 0.4.0 passes with its assertion intact. `tests/ecs.rs` applies updates onto a
+retained frame per viewer and asserts on the result as before; the history-view assertion
+expands the full pane update. `tests/verify/detach_drain.py` and `local_attachment.py` read the
+`bindings` message before the first frame and pin version 6; `local_attachment.py` tolerates
+blank runs. Added: `view::tests::full_updates_round_trip_to_the_screen_view`,
+`terminal::tests::deltas_and_merged_deltas_reproduce_the_screen` (property-based: applying the
+deltas the server produces, merged in any grouping, equals the screen),
+`adapter::tests::queued_updates_merge_so_no_row_is_lost`, and
+`output_frames_are_paced_but_replies_are_not` in `tests/ecs.rs` (a paced frame proposes a
+deadline; replies and echoes, even fragmented ones, are never delayed). The koh gateway suites
+run against the v6 binary with the version pin as koh's only change; the ordering guarantees in
+[design.md](design.md) are unchanged (updates before replies, per-source byte order, detach
+draining, stale generations ignored, bounded ingest).
+
+### Rejected or deferred
+
+- A binary frame encoding: after deltas and compact cells a keystroke costs about 850 bytes and
+  0.2 ms; encoding is no longer measurable in the profile, so no dependency was added.
+- Row-damage repainting in the viewer's compositor: the viewer's CPU per keystroke fell from
+  1.05 s to 0.25 s per thousand at 80×24 (5.9 s to 0.9 s at 200×60) from the delta decode
+  alone; the remaining cost is the full-buffer compose and diff, kept because it is the safety
+  net for every overlay and the measured residual is under a millisecond per keystroke.
+- History storage outside the emulator: vt100 keeps 32 bytes per cell, so a retained row costs
+  the row width times 32 bytes regardless of content (see Memory); changing the default
+  scrollback is a documented behaviour change left to the user.
+
+### Gate on the final tree
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | clean |
+| `cargo clippy --all-targets --locked -- -D warnings` | clean |
+| `ZOR_BIN=$PWD/zor/target/debug/zor FUX_REQUIRE_ZOR_BIN=1 PROPTEST_CASES=2048 cargo test --locked -- --test-threads=1` | lib 83, main 2, `ecs` 21 (randomized at 2048 cases, pacing test), `local_cli` 6 (all Python harnesses), `structure` 8, `zor_integration` 1 (real zor), doc-tests 0; all passed |
+| `cargo doc --no-deps --locked` | generated, no warnings |
+| `cargo +1.95.0 check --all-targets --locked` | passed (MSRV) |
+| `cargo test --locked --manifest-path tests/verify/fixture-child/Cargo.toml` | 3 + 8 + 2 passed |
+| `FUX_BIN=$PWD/target/debug/fux KOH_REQUIRE_FUX_BIN=1 cargo test --manifest-path references/koh/Cargo.toml --test gateway --locked` | 2 passed against the v6 binary |
+| same with `--lib gateway:: --locked` | 10 passed (219 filtered) |
+| `tests/verify/release-package.sh --allow-dirty` | 8 passed |
+| `python3 tools/dependencies.py verify` | koh (version 6 pin) and zor patches verified |
+| `git diff --check` | clean |
+
+### Independent review
+
+A reviewer who implemented none of the branch reviewed the complete diff against `fa0c286`, ran
+the unit, ECS, structure and harness suites and Clippy, probed the real viewer with a fake server,
+and traced the delta path against the ordering guarantees. Findings and resolutions:
+
+| # | Severity | Finding (confirmed unless noted) | Resolution |
+|---|---|---|---|
+| 1 | P1 | The viewer allocated a pane's grid from wire-supplied dimensions before checking them, and neither a frame update's total cells nor its wire cell count was bounded: a fake server's 588-byte update naming a 65535×100 pane took the viewer to 264 MB before it was rejected; 128 legal panes of blank runs could allocate 1.3 GB. | Dimensions, carried rows, wire cells and titles are checked before anything is allocated (`PaneUpdate::within_bounds`), a frame update is refused as a whole when its panes would exceed the frame's cell budget (`FrameUpdate::within_bounds`), lines and cells are bounded while decoding (`bounded_seq`), and the history view reply checks the same bounds; test `hostile_updates_are_rejected_before_anything_is_allocated`. |
+| 2 | P2 | The baseline column reported one run set where the day's earlier runs of the same binary were better (for example 2.8–5.6 ms latency against the 6.1 ms shown). | The tables report the union of every run of the day for both binaries. |
+| 3 | P2 | `ps cputime` ticks in 10 ms on this macOS, so the 100-keystroke CPU columns were quantised to 0.1 s per 1,000 and could not support the eight-viewer claim. | The CPU columns come from 1,000-keystroke runs (baseline 0.94 → 6.99 s from one to eight viewers; branch 0.08 → 0.09 s) and the quantum is stated. |
+| 4 | P2 | A Python bytecode file had been committed under `tools/__pycache__`. | Removed and ignored. |
+| 5 | P3 | `MAX_UPDATE_CELLS`'s comment claimed to bound frames while it guarded view replies only. | Comment corrected; frames are bounded by the two `within_bounds` checks. |
+| 6 | P3 | A malformed history view now ends copy mode with "pane no longer available" where 0.4.0 rejected it as a protocol error at decoding. | Accepted: the reply is decoded with the same bounds, and a malformed body only ends the local mode. |
+| 7 | P3 | A reply-only flush bumps `last_frame_ms`, so the next output-driven frame is paced from the reply. | Accepted: at most one interval, and the echo window covers the viewer's own input. |
+| 8 | P3 | `publish_frames` no longer validates a frame before sending; an invariant slip would disconnect the viewer instead of withholding the frame. | Accepted: the ECS harness applies and validates every update under the 2,048-case randomized test. |
+| 9 | P3 | When two merged updates both carry a notice the older is lost (0.4.0 dropped the older frame entirely). | Accepted as an improvement. |
+| 10 | P3 | `GridCell` truncates to 22 bytes, unreachable because `classify` bounds text first. | Accepted; the two share the bound. |
+
+Sound per the reviewer: every traced sequence of attach, tab and workspace switches, resizes,
+pane creation and closure, exits, and merges (full then delta, delta then full, three-way with
+a pane leaving and re-entering) keeps `Viewer.sent` consistent with the viewer's retained frame,
+because `sent` is written exactly when a pane is carried and the outbox never drops an update;
+no update overtakes a reply; the wire encoding bounds every path and blank runs never cross a
+row; pacing cannot stall (the deadline is re-proposed every step while rows are pending) and
+the stream wait never delays input, requests, exits, spawn completions or signals; the grid
+refresh, the three cell producers and the property test; the measurement scripts measure what
+the text claims, and the shell floor for the burst (0.21–0.23 s) was confirmed.
+
+A second reviewer, independent of the first and of the implementation, reviewed the complete
+branch after the fixes above, ran the suites and harnesses, decoded hostile frames against the
+real viewer, and drove a real viewer through tab switches at large sizes. It verified the first
+review's resolutions (items 1, 4 and 5 fixed; 2 and 3 partial because the changelog still carried
+the earlier figures) and found:
+
+| # | Severity | Finding (confirmed unless noted) | Resolution |
+|---|---|---|---|
+| 1 | P2 | The viewer's cell budget counted panes the same update drops from the layout, so a viewer above about 131,000 cells could not switch tabs (a real 512×300 viewer exited with "frame violates its bounds"), and updates merged while a viewer was not reading kept panes that had left the layout, so a merged run of switches could disconnect any viewer. | `FrameUpdate::merge` prunes panes outside the newer layout; the budget and the apply count only panes the update leaves in its layout; test `a_large_viewer_switches_tabs_within_the_cell_budget` (512×512 attach, switch, three merged switches). |
+| 2 | P2 | CHANGELOG.md still published the single-run and quantised figures the first review replaced. | Aligned with the union ranges and the 1,000-keystroke CPU columns. |
+| 3 | P3 | A hostile 16 MiB frame of `{}` cells decoded into about 212 MiB before it was refused, because the cell bound was per pane. | Panes are bounded in number and wire cells while decoding (`bounded_panes`). |
+| 4 | P3 | The loop documents said 64 chunks per step (128 with the stream wait) and that input never waits (an arrival during the 1 ms wait is delayed by its remainder). | Both statements corrected in design.md, security.md and the protocol document. |
+| 5 | P3 | `measure_viewer.py` counted the previous keystroke's echo in its first block. | The pty buffer is cleared before the loop. |
+| 6 | P3 (plausible) | Small per-step allocations in the snapshot phase (the shown-pane list per viewer, the geometry and label clones per frame, as in 0.4.0). | Accepted: below the profile's noise and not on the per-chunk path. |
+
+Sound per the second reviewer: `Viewer.sent` stays consistent with the viewer's retained frame
+through attach, resize, tab and workspace switches, closure and retirement because `sent` is
+written when a pane is carried and the outbox never drops an update; the merge is order
+preserving and replies still stop it; pacing cannot stall and the stream wait cannot starve
+exits, completions, requests or signals; the wire cells, `classify` and the grid refresh; the
+scripts measure what the text claims (reproduced 832 bytes and 0.29 ms per keystroke, 0.06 s of
+server CPU for the burst); the harness edits are stronger only; the koh patch delta is the
+version literal.
+
+The verification pass (same second reviewer, after the fixes, against its own build of the fix
+commit): items 1–5 FIXED with evidence (a real viewer at 80×24, 512×300 and 512×512 survives a
+tab switch; 200 merged switches stay within the budget; the 16.7 MB hostile frame is refused
+inside its second pane; the changelog matches the record; the loop documents match the code; the
+viewer script clears its buffer), item 6 accepted, no new finding introduced. Verdict: the
+ordering guarantees and the measurement record are unchanged; the branch may leave draft once
+the gate on the fix commit is clean, which it is (lib 83, main 2, `ecs` 21 at 2,048 randomized
+cases, `local_cli` 6, `structure` 8, real zor 1, fixture-child 3 + 8 + 2, koh 2 + 10, packaging
+8, patches verified, fmt, Clippy, rustdoc, MSRV, `git diff --check`).
 
 ## Platform and CI limits
 

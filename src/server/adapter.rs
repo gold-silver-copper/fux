@@ -16,8 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc, oneshot};
 
-/// Frames queued for one viewer connection. A state frame with no reply behind it is replaced
-/// by a newer frame (latest wins); replies keep their order after the frame they promise.
+/// Frames queued for one viewer connection. A state update with no reply behind it absorbs the
+/// next one (later rows replace earlier rows, so applying the merged update equals applying
+/// both); replies keep their order after the frame they promise.
 #[derive(Default)]
 pub struct Outbox {
     queue: VecDeque<ServerMessage>,
@@ -39,11 +40,17 @@ impl ViewerOutbox {
         if outbox.closed {
             return false;
         }
-        if matches!(message, ServerMessage::State { .. })
-            && matches!(outbox.queue.back(), Some(ServerMessage::State { .. }))
-        {
-            outbox.queue.pop_back();
-        }
+        let message = match message {
+            ServerMessage::State { state: newer } => {
+                if let Some(ServerMessage::State { state: queued }) = outbox.queue.back_mut() {
+                    queued.merge(*newer);
+                    self.notify.notify_one();
+                    return true;
+                }
+                ServerMessage::State { state: newer }
+            }
+            other => other,
+        };
         if outbox.queue.len() >= OUTBOX_DEPTH {
             outbox.closed = true;
             outbox.queue.clear();
@@ -321,15 +328,67 @@ fn publish(subscribers: &Mutex<Vec<Subscriber>>, event: &Event) {
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
-    use crate::view::Frame;
+    use crate::view::FrameUpdate;
 
     fn frame(generation: u64) -> ServerMessage {
         ServerMessage::State {
-            state: Box::new(Frame {
+            state: Box::new(FrameUpdate {
                 generation,
-                ..Frame::default()
+                ..FrameUpdate::default()
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn queued_updates_merge_so_no_row_is_lost() {
+        use crate::view::{FrameUpdate, Line, PaneUpdate, WireCell};
+        let pane = |row: u16, text: &str| PaneUpdate {
+            rows: 2,
+            columns: 1,
+            lines: vec![Line {
+                row,
+                wrapped: false,
+                len: 1,
+            }],
+            cells: vec![WireCell {
+                text: Some(text.into()),
+                ..WireCell::default()
+            }],
+            ..PaneUpdate::default()
+        };
+        let update = |generation: u64, row: u16, text: &str| {
+            let mut frame = FrameUpdate {
+                generation,
+                layout: vec![crate::view::PaneRect {
+                    pane: PaneId(1),
+                    rect: crate::layout::Rect::default(),
+                }],
+                ..FrameUpdate::default()
+            };
+            frame.panes.insert(PaneId(1), pane(row, text));
+            ServerMessage::State {
+                state: Box::new(frame),
+            }
+        };
+        let outbox = ViewerOutbox::default();
+        assert!(outbox.push(update(1, 0, "a")));
+        assert!(outbox.push(update(2, 1, "b")));
+        assert!(outbox.push(update(3, 0, "c")));
+        assert_eq!(outbox.queued(), 1);
+        let Some(ServerMessage::State { state }) = outbox.next().await else {
+            panic!("a merged update");
+        };
+        assert_eq!(state.generation, 3);
+        let Some(merged) = state.panes.get(&PaneId(1)) else {
+            panic!("the merged pane");
+        };
+        let rows: Vec<(u16, Option<String>)> = merged
+            .lines
+            .iter()
+            .zip(&merged.cells)
+            .map(|(line, cell)| (line.row, cell.text.clone()))
+            .collect();
+        assert_eq!(rows, vec![(0, Some("c".into())), (1, Some("b".into()))]);
     }
 
     #[tokio::test]

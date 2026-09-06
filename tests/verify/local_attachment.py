@@ -19,7 +19,8 @@ with tempfile.TemporaryDirectory(prefix='fl-',dir='/tmp') as d:
     def recv(s):return json.loads(exact(s,struct.unpack('>I',exact(s,4))[0]))
     def attach():
         s=socket.socket(socket.AF_UNIX);s.settimeout(5);s.connect(str(root/'fux/default.attach.sock'));peers.append(s)
-        send(s,dict(type='hello',version=5,rows=24,columns=80));assert recv(s)=={'hello': {'version': 5}}
+        send(s,dict(type='hello',version=6,rows=24,columns=80));assert recv(s)=={'hello': {'version': 6}}
+        assert 'bindings' in recv(s)
         assert 'state' in recv(s)
         return s
     try:
@@ -37,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix='fl-',dir='/tmp') as d:
             for i in range(20):
                 msg=recv(s)
                 if 'state' in msg:
-                    text=''.join(c['text'] for p in msg['state']['state']['panes'].values() for c in p['cells'])
+                    text=''.join(c.get('text', '') for p in msg['state']['state']['panes'].values() for c in p['cells'])
                     import re
                     match=re.search(r'LOCAL_OK_(\d+)',text)
                     if match:return match.group(1)

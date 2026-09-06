@@ -89,7 +89,12 @@ impl Session {
                 .in_set(Phase::Completions),
             systems::lifecycle::resolve_lifecycle.in_set(Phase::Lifecycle),
             systems::layout::resolve_layout.in_set(Phase::Layout),
-            systems::snapshot::publish_frames.in_set(Phase::Snapshot),
+            (
+                systems::snapshot::refresh_grids,
+                systems::snapshot::publish_frames,
+            )
+                .chain()
+                .in_set(Phase::Snapshot),
             systems::snapshot::finish_step.in_set(Phase::Publish),
         ));
         Ok(Self { world, schedule })

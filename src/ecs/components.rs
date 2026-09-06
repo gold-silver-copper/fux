@@ -158,7 +158,11 @@ pub struct Pane {
     pub terminal: ServerTerminal,
     /// Outer rectangle within its tab, including the border cells.
     pub rect: Rect,
+    /// The emulator changed since the retained grid was last refreshed.
     pub dirty: bool,
+    /// The step in which the retained grid last changed; a viewer whose copy is older needs an
+    /// update.
+    pub changed_step: u64,
     pub published_title: String,
     pub last_output_event_ms: Option<u64>,
 }
@@ -192,6 +196,14 @@ pub enum CreationKind {
     Workspace { tab: Entity },
 }
 
+/// A pane as last sent to a viewer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sent {
+    pub rows: u16,
+    pub columns: u16,
+    pub step: u64,
+}
+
 /// An attached viewer: private tab/focus selection, bounded request queue and publication state.
 #[derive(Component)]
 pub struct Viewer {
@@ -206,7 +218,20 @@ pub struct Viewer {
     pub generation: u64,
     /// Rectangles published in the last frame, for mouse hit tests.
     pub layout: Vec<(Entity, Rect)>,
+    /// What this viewer holds of each visible pane: its size and the step of its last update,
+    /// so the next frame carries only the rows changed since.
+    pub sent: BTreeMap<PaneId, Sent>,
+    /// Metadata or selection changed: a frame goes out this step.
     pub dirty: bool,
+    /// Output changed under this viewer since its last frame; paced by the frame interval.
+    pub pending: bool,
+    /// Set by the grid refresh when this step's frame may go out.
+    pub publish_now: bool,
+    /// When this viewer last sent input (keys, mouse, a request): output that follows within
+    /// the frame interval is its echo and is never delayed.
+    pub input_ms: u64,
+    /// When the last frame went out, for pacing output-driven frames.
+    pub last_frame_ms: u64,
     pub notice: Option<String>,
     /// Ordered messages that must follow the next frame.
     pub after_frame: Vec<ServerMessage>,

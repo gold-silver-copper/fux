@@ -16,7 +16,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-const READ_CHUNK: usize = 8192;
+const READ_CHUNK: usize = 65536;
 /// Input chunks queued for the writer thread before `write_input` reports backpressure.
 const WRITE_CHANNEL_DEPTH: usize = 1024;
 

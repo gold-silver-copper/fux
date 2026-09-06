@@ -152,7 +152,7 @@ def main():
                 except (socket.timeout, TimeoutError):
                     pass
                 peer.settimeout(10)
-            send(peer, dict(type="input", bytes=list(b"i=0; while [ $i -lt 20000 ]; do echo line$i; i=$((i+1)); done; printf BURSTDONE\\\\n\n")))
+            send(peer, dict(type="input", bytes=list(b"i=0; while [ $i -lt 20000 ]; do echo line$i; i=$((i+1)); done; printf BURST''DONE\\\\n\n")))
             burst_start = time.monotonic()
             while True:
                 message = receive(peer)
