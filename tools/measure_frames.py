@@ -52,7 +52,9 @@ class Viewer:
         self.buffer = b""
         self.bytes = 0
         self.frames = []
-        hello = self.wait_frame(5)
+        self.wait_frame(5)
+        # The hello may arrive together with the bindings and the first frame.
+        hello = self.frames[0]
         assert hello == {"hello": {"version": version}}, hello
         self.frames.clear()
         self.bytes = 0
@@ -124,15 +126,19 @@ def drain_all(viewers, quiet):
 
 
 def wait_text(viewers, first, predicate, timeout):
-    """Pumps every viewer until the first viewer's newest frame satisfies `predicate`."""
+    """Pumps every viewer until a frame the first viewer received after the call started
+    satisfies `predicate` (a delta carries only changed rows, so every new frame is checked)."""
     end = time.monotonic() + timeout
+    seen = len(first.frames)
     while time.monotonic() < end:
         ready, _, _ = select.select([v.sock for v in viewers], [], [], max(0, end - time.monotonic()))
         for viewer in viewers:
             if viewer.sock in ready:
                 viewer.pump()
-        if first.frames and predicate(frame_text(first.frames[-1])):
-            return
+        while seen < len(first.frames):
+            if predicate(frame_text(first.frames[seen])):
+                return
+            seen += 1
     raise TimeoutError("frame did not arrive")
 
 
@@ -188,7 +194,7 @@ def measure(binary, version, config, keystrokes):
             bytes_before = first.bytes
             cpu_before = cpu_seconds(server.pid)
             send(first.sock, dict(type="input", bytes=list(
-                b"i=0; while [ $i -lt 20000 ]; do echo line$i; i=$((i+1)); done; printf BURSTDONE\\\\n\n")))
+                b"i=0; while [ $i -lt 20000 ]; do echo line$i; i=$((i+1)); done; printf BURST''DONE\\\\n\n")))
             begin = time.monotonic()
             wait_text(viewers, first, lambda text: "BURSTDONE" in text, 60)
             burst = time.monotonic() - begin

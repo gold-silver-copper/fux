@@ -152,8 +152,10 @@ struct ControlStringFilter {
 }
 
 impl ControlStringFilter {
-    fn process(&mut self, input: &[u8]) -> Vec<u8> {
-        let mut output = Vec::with_capacity(input.len().min(MAX_CONTROL_STRING_BYTES));
+    /// Filters `input` into `output` (cleared first); the buffer is the pane's scratch space so a
+    /// chunk costs no allocation once it has grown to the chunk size.
+    fn process_into(&mut self, input: &[u8], output: &mut Vec<u8>) {
+        output.clear();
         for &byte in input {
             let continuation = self.utf8_remaining > 0 && (0x80..=0xbf).contains(&byte);
             self.utf8_remaining = if continuation {
@@ -181,7 +183,7 @@ impl ControlStringFilter {
                 self.string_escape = byte == 0x1b;
                 if terminated || matches!(byte, 0x18 | 0x1a) {
                     if !self.dropping {
-                        output.append(&mut self.buffered);
+                        output.extend_from_slice(&self.buffered);
                     }
                     self.buffered.clear();
                     self.string = None;
@@ -209,7 +211,6 @@ impl ControlStringFilter {
                 output.push(byte);
             }
         }
-        output
     }
 }
 
@@ -376,6 +377,8 @@ pub struct ServerTerminal {
     filter: ControlStringFilter,
     history_limit: usize,
     grid: Grid,
+    /// Filtered output of the chunk being fed; reused across chunks.
+    scratch: Vec<u8>,
 }
 
 impl ServerTerminal {
@@ -392,6 +395,7 @@ impl ServerTerminal {
             filter: ControlStringFilter::default(),
             history_limit,
             grid: Grid::default(),
+            scratch: Vec::new(),
         }
     }
 
@@ -408,9 +412,9 @@ impl ServerTerminal {
     /// Feeds application output. A `vt100` panic on hostile output is contained: the chunk is
     /// dropped and later output repaints.
     pub fn process(&mut self, bytes: &[u8]) {
-        let filtered = self.filter.process(bytes);
+        self.filter.process_into(bytes, &mut self.scratch);
         let contained = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.parser.process(&filtered)
+            self.parser.process(&self.scratch)
         }));
         if contained.is_err() {
             tracing::error!("terminal emulator rejected application output; chunk dropped");

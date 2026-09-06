@@ -135,7 +135,7 @@ def main():
             viewer_cpu = cpu_seconds(terminal.pid)
             server_cpu = cpu_seconds(server.pid)
             bytes_before = terminal.read_bytes
-            terminal.send(b"i=0; while [ $i -lt 20000 ]; do echo line$i; i=$((i+1)); done; printf BURSTDONE\\\\n\n")
+            terminal.send(b"i=0; while [ $i -lt 20000 ]; do echo line$i; i=$((i+1)); done; printf BURST''DONE\\\\n\n")
             begin = time.monotonic()
             terminal.wait_for(lambda text: b"BURSTDONE" in text, 60)
             burst_s = time.monotonic() - begin
