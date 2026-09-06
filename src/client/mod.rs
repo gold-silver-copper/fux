@@ -128,7 +128,7 @@ pub async fn attach(
     // Negotiation succeeded: only now does the terminal enter raw mode.
     let mut screen = Screen::enter_default(
         config.clipboard.writes(),
-        render::Palette::from_style(&config.style),
+        render::Palette::from(&config.style),
     )?;
     let mut io = io::ClientIo::spawn()?;
     let result = run(
@@ -180,13 +180,12 @@ async fn run(
     let mut lookups = tokio::task::JoinSet::new();
     let mut detaching = false;
     let (rows, cols) = screen.size()?;
-    write_frame(
+    send(
         &mut writer,
         &ClientMessage::Resize {
             rows,
             columns: cols,
         },
-        MAX_CLIENT_FRAME,
     )
     .await?;
     let mut escape_timer = EscapeTimer::default();
@@ -251,7 +250,7 @@ async fn run(
             }
             Some(()) = io.resize_rx.recv() => {
                 let (rows, cols) = screen.size()?;
-                write_frame(&mut writer, &ClientMessage::Resize { rows, columns: cols }, MAX_CLIENT_FRAME).await?;
+                send(&mut writer, &ClientMessage::Resize { rows, columns: cols }).await?;
                 screen.invalidate();
             }
             Some(result) = lookups.join_next(), if !lookups.is_empty() => {
@@ -260,9 +259,7 @@ async fn run(
                 let replay = controller.take_loading_input();
                 for byte in replay.into_iter().rev() { pending.push_front(byte); }
             }
-            () = async {
-                match escape_deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await }
-            } => {
+            () = at(escape_deadline) => {
                 if controller.owns_input() { controller.resolve_escape(); }
                 else {
                     // Resolved events are dispatched as they are; feeding the bytes back through
@@ -270,14 +267,10 @@ async fn run(
                     resolved.extend(filter.resolve_escape());
                 }
             }
-            () = async {
-                match request_deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await }
-            } => {
+            () = at(request_deadline) => {
                 break Err(anyhow::anyhow!("session server did not answer a request in time"));
             }
-            () = async {
-                match notice_deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await }
-            } => {
+            () = at(notice_deadline) => {
                 // The bar notice timed out; repaint without it.
                 controller.expire_notice(std::time::Instant::now());
             }
@@ -298,12 +291,7 @@ async fn run(
                     controller.clear_error();
                     if let Some(request) = controller.feed(byte, current) {
                         flush(&mut writer, &mut pane_bytes).await?;
-                        write_frame(
-                            &mut writer,
-                            &ClientMessage::Control { request },
-                            MAX_CLIENT_FRAME,
-                        )
-                        .await?;
+                        send(&mut writer, &ClientMessage::Control { request }).await?;
                         outstanding = Some(Outstanding::Control);
                     }
                     Vec::new()
@@ -334,21 +322,11 @@ async fn run(
                                 workspaces_enabled,
                             ) {
                                 Dispatch::Send(request) => {
-                                    write_frame(
-                                        &mut writer,
-                                        &ClientMessage::Control { request },
-                                        MAX_CLIENT_FRAME,
-                                    )
-                                    .await?;
+                                    send(&mut writer, &ClientMessage::Control { request }).await?;
                                     outstanding = Some(Outstanding::Control);
                                 }
                                 Dispatch::Detach => {
-                                    write_frame(
-                                        &mut writer,
-                                        &ClientMessage::Detach,
-                                        MAX_CLIENT_FRAME,
-                                    )
-                                    .await?;
+                                    send(&mut writer, &ClientMessage::Detach).await?;
                                     detaching = true;
                                     pending.clear();
                                 }
@@ -369,13 +347,12 @@ async fn run(
                             MouseDisposition::Forward => {
                                 flush(&mut writer, &mut pane_bytes).await?;
                                 let _ = raw;
-                                write_frame(
+                                send(
                                     &mut writer,
                                     &ClientMessage::Mouse {
                                         event,
                                         generation: current.generation,
                                     },
-                                    MAX_CLIENT_FRAME,
                                 )
                                 .await?;
                             }
@@ -432,14 +409,13 @@ async fn run(
             }
             if let Some((request, pane, offset)) = controller.take_read() {
                 flush(&mut writer, &mut pane_bytes).await?;
-                write_frame(
+                send(
                     &mut writer,
                     &ClientMessage::View {
                         request,
                         pane,
                         offset,
                     },
-                    MAX_CLIENT_FRAME,
                 )
                 .await?;
                 outstanding = Some(Outstanding::View);
@@ -449,14 +425,13 @@ async fn run(
         if let Some((request, pane, offset)) = controller.take_read()
             && outstanding.is_none()
         {
-            write_frame(
+            send(
                 &mut writer,
                 &ClientMessage::View {
                     request,
                     pane,
                     offset,
                 },
-                MAX_CLIENT_FRAME,
             )
             .await?;
             outstanding = Some(Outstanding::View);
@@ -480,25 +455,37 @@ async fn run(
     outcome
 }
 
+async fn send(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    message: &ClientMessage,
+) -> anyhow::Result<()> {
+    write_frame(writer, message, MAX_CLIENT_FRAME).await?;
+    Ok(())
+}
+
 async fn flush(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
     bytes: &mut Vec<u8>,
 ) -> anyhow::Result<()> {
-    if bytes.is_empty() {
-        return Ok(());
-    }
     for chunk in bytes.chunks(MAX_INPUT_CHUNK) {
-        write_frame(
+        send(
             writer,
             &ClientMessage::Input {
                 bytes: chunk.to_vec(),
             },
-            MAX_CLIENT_FRAME,
         )
         .await?;
     }
     bytes.clear();
     Ok(())
+}
+
+/// Resolves at `deadline`, or never.
+async fn at(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
 }
 
 enum Dispatch {
@@ -534,33 +521,24 @@ fn dispatch(
             cwd: None,
             argv: Vec::new(),
         }),
-        Action::FocusLeft => Dispatch::Send(Request::Focus {
+        Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
+            Dispatch::Send(Request::Focus {
+                id: 0,
+                target: match action {
+                    Action::FocusLeft => FocusTarget::Left,
+                    Action::FocusRight => FocusTarget::Right,
+                    Action::FocusUp => FocusTarget::Up,
+                    _ => FocusTarget::Down,
+                },
+            })
+        }
+        Action::NewTab | Action::NextTab | Action::PreviousTab => Dispatch::Send(Request::Tab {
             id: 0,
-            target: FocusTarget::Left,
-        }),
-        Action::FocusRight => Dispatch::Send(Request::Focus {
-            id: 0,
-            target: FocusTarget::Right,
-        }),
-        Action::FocusUp => Dispatch::Send(Request::Focus {
-            id: 0,
-            target: FocusTarget::Up,
-        }),
-        Action::FocusDown => Dispatch::Send(Request::Focus {
-            id: 0,
-            target: FocusTarget::Down,
-        }),
-        Action::NewTab => Dispatch::Send(Request::Tab {
-            id: 0,
-            action: TabAction::New { name: None },
-        }),
-        Action::NextTab => Dispatch::Send(Request::Tab {
-            id: 0,
-            action: TabAction::Next,
-        }),
-        Action::PreviousTab => Dispatch::Send(Request::Tab {
-            id: 0,
-            action: TabAction::Previous,
+            action: match action {
+                Action::NewTab => TabAction::New { name: None },
+                Action::NextTab => TabAction::Next,
+                _ => TabAction::Previous,
+            },
         }),
         Action::ChooseWorkspace => {
             controller.enter(action, frame);

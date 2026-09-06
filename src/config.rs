@@ -92,10 +92,6 @@ impl Config {
         Self::load_from_path(&default_path()?)
     }
 
-    pub fn to_toml_pretty(&self) -> Result<String, ConfigError> {
-        toml::to_string_pretty(self).map_err(ConfigError::Serialize)
-    }
-
     pub fn validate(&self) -> Result<(), ConfigError> {
         let prefix = validate_key_notation("prefix", &self.prefix)?;
         if self.bindings.len() > 256 {
@@ -324,8 +320,6 @@ pub enum ConfigError {
     },
     #[error("invalid configuration TOML: {0}")]
     Toml(#[source] toml::de::Error),
-    #[error("failed to serialize configuration: {0}")]
-    Serialize(#[source] toml::ser::Error),
     #[error("invalid `{field}`: {reason}")]
     Invalid { field: &'static str, reason: String },
 }
@@ -435,7 +429,7 @@ mod tests {
     fn defaults_round_trip_and_sparse_documents_merge() {
         let config = Config::default();
         assert!(config.validate().is_ok());
-        let text = config.to_toml_pretty().unwrap_or_default();
+        let text = toml::to_string_pretty(&config).unwrap_or_default();
         let parsed = Config::from_toml(&text).unwrap_or_default();
         assert_eq!(parsed, config);
         let sparse = Config::from_toml("prefix = 'C-b'\n[history]\nscrollback-lines = 5\n")

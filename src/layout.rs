@@ -169,29 +169,15 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
             self.validate()?;
             return Ok(None);
         }
-        let (parent, sibling) = self
-            .parent_and_sibling(leaf)
-            .ok_or(LayoutError::MissingNode)?;
-        let direction = match self.node(parent) {
-            Some(Node::Split {
-                axis: Axis::Horizontal,
-                first,
-                ..
-            }) if *first == leaf => Direction::Right,
-            Some(Node::Split {
-                axis: Axis::Horizontal,
-                ..
-            }) => Direction::Left,
-            Some(Node::Split {
-                axis: Axis::Vertical,
-                first,
-                ..
-            }) if *first == leaf => Direction::Down,
-            Some(Node::Split {
-                axis: Axis::Vertical,
-                ..
-            }) => Direction::Up,
-            _ => return Err(LayoutError::MissingNode),
+        let (parent, is_first, sibling) = self.parent(leaf).ok_or(LayoutError::MissingNode)?;
+        let Some(Node::Split { axis, .. }) = self.node(parent) else {
+            return Err(LayoutError::MissingNode);
+        };
+        let direction = match (axis, is_first) {
+            (Axis::Horizontal, true) => Direction::Right,
+            (Axis::Horizontal, false) => Direction::Left,
+            (Axis::Vertical, true) => Direction::Down,
+            (Axis::Vertical, false) => Direction::Up,
         };
         let directional = self.neighbour(
             pane,
@@ -219,7 +205,7 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
     pub fn resize(&mut self, pane: L, delta: i16) -> Result<(), LayoutError> {
         self.validate()?;
         let leaf = self.find_leaf(pane).ok_or(LayoutError::MissingPane)?;
-        let (parent, is_first) = self.parent_of(leaf).ok_or(LayoutError::MissingNode)?;
+        let (parent, is_first, _) = self.parent(leaf).ok_or(LayoutError::MissingNode)?;
         let Node::Split {
             axis,
             ratio,
@@ -438,7 +424,7 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
     fn find_leaf(&self, pane: L) -> Option<NodeId> {
         self.nodes.iter().enumerate().find_map(|(index, node)| {
             matches!(node, Some(Node::Leaf(id)) if *id == pane)
-                .then(|| u32::try_from(index).ok().map(NodeId))
+                .then(|| id_at(index))
                 .flatten()
         })
     }
@@ -448,31 +434,18 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
             Node::Split { first, .. } => self.first_leaf(*first),
         }
     }
-    fn parent_of(&self, child: NodeId) -> Option<(NodeId, bool)> {
+    /// The split holding `child`: its id, whether the child is the first branch, and the sibling.
+    fn parent(&self, child: NodeId) -> Option<(NodeId, bool, NodeId)> {
         self.nodes
             .iter()
             .enumerate()
             .find_map(|(index, node)| match node {
-                Some(Node::Split { first, .. }) if *first == child => {
-                    u32::try_from(index).ok().map(|index| (NodeId(index), true))
+                Some(Node::Split { first, second, .. }) if *first == child => {
+                    Some((id_at(index)?, true, *second))
                 }
-                Some(Node::Split { second, .. }) if *second == child => u32::try_from(index)
-                    .ok()
-                    .map(|index| (NodeId(index), false)),
-                _ => None,
-            })
-    }
-    fn parent_and_sibling(&self, child: NodeId) -> Option<(NodeId, NodeId)> {
-        self.nodes
-            .iter()
-            .enumerate()
-            .find_map(|(index, node)| match node {
-                Some(Node::Split { first, second, .. }) if *first == child => u32::try_from(index)
-                    .ok()
-                    .map(|index| (NodeId(index), *second)),
-                Some(Node::Split { first, second, .. }) if *second == child => u32::try_from(index)
-                    .ok()
-                    .map(|index| (NodeId(index), *first)),
+                Some(Node::Split { first, second, .. }) if *second == child => {
+                    Some((id_at(index)?, false, *first))
+                }
                 _ => None,
             })
     }
@@ -494,7 +467,7 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
             self.set(id, node)?;
             return Ok(id);
         }
-        let id = NodeId(u32::try_from(self.nodes.len()).map_err(|_| LayoutError::Limit)?);
+        let id = id_at(self.nodes.len()).ok_or(LayoutError::Limit)?;
         self.nodes.push(Some(node));
         Ok(id)
     }
@@ -520,6 +493,10 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
             Err(LayoutError::InvalidRatio)
         }
     }
+}
+
+fn id_at(index: usize) -> Option<NodeId> {
+    u32::try_from(index).ok().map(NodeId)
 }
 
 fn overlap(a_start: u16, a_len: u16, b_start: u16, b_len: u16) -> u16 {

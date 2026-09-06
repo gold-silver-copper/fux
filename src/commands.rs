@@ -252,14 +252,6 @@ impl ClientBindings {
             .map(|(_, action)| *action)
     }
 
-    #[must_use]
-    pub fn key_for(&self, action: Action) -> Option<u8> {
-        self.bindings
-            .iter()
-            .find(|(_, bound)| **bound == action)
-            .map(|(key, _)| *key)
-    }
-
     /// Bindings ordered by group, then by the registry's action order (`| - x r [` rather than
     /// byte order), then key.
     pub fn entries(&self) -> Vec<(u8, Action)> {
@@ -288,26 +280,18 @@ impl Default for ClientBindings {
     }
 }
 
-/// Resolve the configured registry once for execution, the popup and `fux bindings`.
+/// Resolve the configured registry once for execution, the popup and `fux bindings`. The
+/// configuration's own validation rejects unknown notation, prefix clashes and Shift twins.
 pub fn configured_bindings(config: &crate::config::Config) -> anyhow::Result<ClientBindings> {
-    let prefix =
-        key_byte(&config.prefix).ok_or_else(|| anyhow::anyhow!("prefix must encode one byte"))?;
-    let mut bindings = BTreeMap::new();
-    for (key, action) in &config.bindings {
-        let byte =
-            key_byte(key).ok_or_else(|| anyhow::anyhow!("binding `{key}` must encode one byte"))?;
-        anyhow::ensure!(
-            canonical_key(byte) != canonical_key(prefix),
-            "a binding cannot be the prefix key (with or without Shift)"
-        );
-        anyhow::ensure!(
-            bindings
-                .keys()
-                .all(|bound| canonical_key(*bound) != canonical_key(byte)),
-            "two bindings use the same key with and without Shift (`{key}`)"
-        );
-        bindings.insert(byte, *action);
-    }
+    config.validate()?;
+    let byte =
+        |key: &str| key_byte(key).ok_or_else(|| anyhow::anyhow!("`{key}` must encode one byte"));
+    let prefix = byte(&config.prefix)?;
+    let bindings = config
+        .bindings
+        .iter()
+        .map(|(key, action)| Ok((byte(key)?, *action)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(ClientBindings::new(prefix, bindings))
 }
 
@@ -319,7 +303,10 @@ mod tests {
     fn every_action_is_bound_once_by_default_and_labelled() {
         let bindings = ClientBindings::default();
         for action in Action::ALL {
-            assert!(bindings.key_for(*action).is_some(), "{action:?} unbound");
+            assert!(
+                bindings.entries().iter().any(|(_, bound)| bound == action),
+                "{action:?} unbound"
+            );
             assert!(!action.label().is_empty());
         }
         assert_eq!(bindings.entries().len(), Action::ALL.len());

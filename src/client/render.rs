@@ -42,9 +42,8 @@ pub struct Palette {
     pub notice: Option<Color>,
 }
 
-impl Palette {
-    #[must_use]
-    pub fn from_style(style: &crate::config::Style) -> Self {
+impl From<&crate::config::Style> for Palette {
+    fn from(style: &crate::config::Style) -> Self {
         Self {
             bar: color(style.bar),
             bar_background: color(style.bar_background),
@@ -58,7 +57,7 @@ impl Palette {
 
 impl Default for Palette {
     fn default() -> Self {
-        Self::from_style(&crate::config::Style::default())
+        Self::from(&crate::config::Style::default())
     }
 }
 
@@ -233,29 +232,29 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
         ),
         None => (focused_label(frame), base),
     };
-    // Layout: left, then tabs, then the right zone flush right. The right zone yields first.
+    // Layout: left, then tabs, then the right zone (`│ text `) flush right. The right zone yields
+    // first.
     let left_width = text::width(&left).min(width);
-    let mut right = if right_text.is_empty() {
-        String::new()
-    } else {
-        format!("│ {right_text} ")
-    };
     let mut room = width.saturating_sub(left_width);
     let allowance = room.saturating_sub(active_width.min(room));
-    if text::width(&right) > allowance {
-        right = if allowance >= 4 {
+    let mut right_text = right_text;
+    if !right_text.is_empty() && text::width(&right_text).saturating_add(3) > allowance {
+        right_text = if allowance >= 4 {
             // Titles are paths: keep their tail. Notices are sentences: keep their head.
-            let text = if notice.is_some() {
+            if notice.is_some() {
                 text::head(&right_text, allowance.saturating_sub(3))
             } else {
                 text::tail(&right_text, allowance.saturating_sub(3))
-            };
-            format!("│ {text} ")
+            }
         } else {
             String::new()
         };
     }
-    let right_width = text::width(&right);
+    let right_width = if right_text.is_empty() {
+        0
+    } else {
+        text::width(&right_text).saturating_add(3)
+    };
     room = room.saturating_sub(right_width);
     let mut x = 0_u16;
     text::put(buffer, x, row, &left, left_width, base);
@@ -280,15 +279,11 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
             buffer,
             start.saturating_add(2),
             row,
-            &right_text_only(&right),
+            &right_text,
             right_width.saturating_sub(2),
             right_style,
         );
     }
-}
-
-fn right_text_only(right: &str) -> String {
-    right.strip_prefix("│ ").unwrap_or(right).to_owned()
 }
 
 fn focused_label(frame: &Frame) -> String {
@@ -521,22 +516,17 @@ fn paint_selection(buffer: &mut Buffer, content: Rect, local: &LocalView<'_>) {
 }
 
 fn cell_style(style: crate::view::CellStyle) -> Style {
-    let mut modifiers = Modifier::empty();
-    if style.bold {
-        modifiers.insert(Modifier::BOLD);
-    }
-    if style.dim {
-        modifiers.insert(Modifier::DIM);
-    }
-    if style.italic {
-        modifiers.insert(Modifier::ITALIC);
-    }
-    if style.underline {
-        modifiers.insert(Modifier::UNDERLINED);
-    }
-    if style.inverse {
-        modifiers.insert(Modifier::REVERSED);
-    }
+    let flags = [
+        (style.bold, Modifier::BOLD),
+        (style.dim, Modifier::DIM),
+        (style.italic, Modifier::ITALIC),
+        (style.underline, Modifier::UNDERLINED),
+        (style.inverse, Modifier::REVERSED),
+    ];
+    let modifiers = flags
+        .into_iter()
+        .filter(|(set, _)| *set)
+        .fold(Modifier::empty(), |all, (_, flag)| all | flag);
     Style::default()
         .fg(rat_color(style.foreground))
         .bg(rat_color(style.background))

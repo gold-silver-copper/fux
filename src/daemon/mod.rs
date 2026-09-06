@@ -22,5 +22,4 @@ pub use rpc::{
 };
 pub use startup::{
     ManagerLock, STARTUP_TIMEOUT, ServerChild, StartupLock, report_startup, sanitized_environment,
-    secret_key,
 };

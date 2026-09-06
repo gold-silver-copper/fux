@@ -3,7 +3,7 @@
 
 use super::DaemonPaths;
 use std::collections::BTreeMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -367,13 +367,10 @@ fn same_user(stream: &UnixStream, expected: Option<u32>) -> bool {
     crate::proto::socket::authorize_peer(stream).is_ok() && expected.is_some()
 }
 
-pub fn secret_key(key: &OsStr) -> bool {
-    crate::os::pty::is_private_env_key(key)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     #[test]
     fn sanitized_environment_drops_private_keys() {

@@ -305,19 +305,28 @@ fn resolve(
         Ok(fux::daemon::ManagerReply::Attach { descriptor }) => Ok(Some(descriptor)),
         Ok(fux::daemon::ManagerReply::Failed { message }) => bail!("session server: {message}"),
         Ok(fux::daemon::ManagerReply::Names { .. }) => bail!("unexpected manager reply"),
-        Err(error)
-            if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                )
-            }) =>
-        {
-            Ok(None)
-        }
+        Err(error) if no_server(&error) => Ok(None),
         Err(error) => Err(error.context(
             "cannot use the existing session server; it may speak an incompatible protocol. Save your work in it before stopping it",
         )),
+    }
+}
+
+/// No session server is listening (as opposed to one that answered badly).
+fn no_server(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        )
+    })
+}
+
+fn status(failed: bool) -> ExitCode {
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -326,14 +335,12 @@ fn start_server(paths: &fux::daemon::DaemonPaths, name: &str) -> Result<fux::dae
     let mut child = fux::daemon::ServerChild::spawn(&paths.runtime_dir, &executable, name)?;
     let deadline = std::time::Instant::now() + fux::daemon::STARTUP_TIMEOUT;
     loop {
-        let ready = child.poll()?;
+        // READY may arrive before the manager answers; keep polling until the deadline either way.
+        child.poll()?;
         if let Ok(Some(descriptor)) = resolve(paths, Some(name)) {
             // A reply from this exact child proves readiness even if the READY frame raced.
             let _ = child.confirm(descriptor.pid);
             return Ok(descriptor);
-        }
-        if ready {
-            // READY arrived but the manager reply lagged; keep polling until the deadline.
         }
         if std::time::Instant::now() >= deadline {
             bail!("session server startup timed out");
@@ -361,14 +368,7 @@ fn workspace_command(arguments: Vec<String>) -> Result<ExitCode> {
                 &fux::daemon::ManagerRequest::Resolve { name: name.clone() },
             ) {
                 Ok(reply) => reply,
-                Err(error)
-                    if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-                        matches!(
-                            error.kind(),
-                            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                        )
-                    }) =>
-                {
+                Err(error) if no_server(&error) => {
                     let descriptor = start_server(&paths, name.as_deref().unwrap_or("default"))?;
                     fux::daemon::ManagerReply::Attach { descriptor }
                 }
@@ -387,13 +387,10 @@ fn workspace_command(arguments: Vec<String>) -> Result<ExitCode> {
         _ => bail!("workspace requires list, new [NAME], or kill NAME"),
     };
     println!("{}", serde_json::to_string(&reply)?);
-    Ok(
-        if matches!(reply, fux::daemon::ManagerReply::Failed { .. }) {
-            ExitCode::FAILURE
-        } else {
-            ExitCode::SUCCESS
-        },
-    )
+    Ok(status(matches!(
+        reply,
+        fux::daemon::ManagerReply::Failed { .. }
+    )))
 }
 
 fn ctl_json(workspace: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
@@ -432,32 +429,29 @@ fn send_control(
     fux::proto::socket::negotiate_client(&mut stream)?;
     fux::proto::control::write_frame(&mut stream, &request)?;
     let mut stdout = std::io::stdout().lock();
+    let mut print_line = |frame: &[u8]| -> std::io::Result<()> {
+        stdout.write_all(frame)?;
+        stdout.write_all(b"\n")?;
+        stdout.flush()
+    };
     if matches!(request, fux::proto::control::Request::Subscribe { .. }) {
         let accepted =
             fux::daemon::read_json_frame(&mut stream, std::time::Duration::from_secs(30))?;
-        stdout.write_all(&accepted)?;
-        stdout.write_all(b"\n")?;
-        stdout.flush()?;
+        print_line(&accepted)?;
         stream.set_read_timeout(None)?;
         loop {
             let frame =
                 fux::daemon::read_json_frame(&mut stream, std::time::Duration::from_secs(86_400))?;
-            stdout.write_all(&frame)?;
-            stdout.write_all(b"\n")?;
-            stdout.flush()?;
+            print_line(&frame)?;
         }
     }
     let frame = fux::daemon::read_json_frame(&mut stream, std::time::Duration::from_secs(30))?;
     let reply: fux::proto::control::Reply = serde_json::from_slice(&frame)?;
-    stdout.write_all(&frame)?;
-    stdout.write_all(b"\n")?;
-    Ok(
-        if matches!(reply, fux::proto::control::Reply::Failed { .. }) {
-            ExitCode::FAILURE
-        } else {
-            ExitCode::SUCCESS
-        },
-    )
+    print_line(&frame)?;
+    Ok(status(matches!(
+        reply,
+        fux::proto::control::Reply::Failed { .. }
+    )))
 }
 
 fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::Request> {
