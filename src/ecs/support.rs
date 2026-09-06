@@ -408,11 +408,12 @@ pub fn default_command(world: &World) -> Vec<String> {
 }
 
 /// Body area available to a tab for a viewer of the given size.
-/// The pane area of a viewer: everything below the always-present one-row bar.
+/// The pane area of a viewer: everything above the always-present one-row bar, which is the last
+/// row.
 pub fn tab_area(rows: u16, cols: u16) -> Rect {
     Rect {
         x: 0,
-        y: u16::from(rows > 0),
+        y: 0,
         width: cols,
         height: rows.saturating_sub(1),
     }

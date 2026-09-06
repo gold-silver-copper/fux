@@ -9,7 +9,7 @@ paint per-viewer frames with a small ratatui-core compositor. Koh (remote access
 
 | Project | Responsibility | Boundary |
 |---|---|---|
-| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment protocol v4 and control protocol `FUXCTL2` over private Unix sockets |
+| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment protocol v5 and control protocol `FUXCTL2` over private Unix sockets |
 | koh | identities, authorization, encryption, discovery, relays, reconnect | authenticated gateway carrying the opaque attachment stream to a private local socket |
 | zor | agent detection, rules, state machine, presentation | `zor observe` consuming `list`/`capture` over the control socket |
 
@@ -23,7 +23,7 @@ lock is released as soon as the manager is elected.
 | Path | Purpose |
 |---|---|
 | `RUNTIME/fux/manager.sock` | list/resolve/kill workspaces (preface `FUXCTL2`) |
-| `RUNTIME/fux/NAME.attach.sock` | attachment protocol v4: viewers and koh gateways |
+| `RUNTIME/fux/NAME.attach.sock` | attachment protocol v5: viewers and koh gateways |
 | `RUNTIME/fux/NAME.sock` | control protocol: CLI, scripts, zor |
 | `RUNTIME/fux/workspaces/NAME.json` | descriptor: pid, instance nonce, socket path, protocol version |
 
@@ -85,7 +85,7 @@ Phases are chained system sets; deferred mutations become visible at the sync po
    shutdown, idle detection.
 6. **Layout**: recompute geometry for tabs whose layout or displaying viewers changed, over the
    smallest viewer showing the tab (hidden tabs keep their last area; viewer-less tabs use 80×24).
-   Row 0 of every viewer is the bar, so the pane area is `rows - 1`; siblings in a split are
+   The last row of every viewer is the bar, so the pane area is `rows - 1` starting at row 0; siblings in a split are
    separated by exactly one cell, and leaf rectangles are the panes' content areas. Emulators are
    resized and `ResizePty` emitted.
 7. **Snapshot**: derive a frame for each dirty viewer at its own size and queue it before the
@@ -131,7 +131,7 @@ The viewer holds private state as explicit Rust state machines: a byte-exact pre
 (literal prefix on double press, immediate popup, unknown keys stay in command mode, 35 ms Escape
 disambiguation, paste and fragmented sequences preserved), a controller with modes (copy,
 workspace and tab choosers, rename, new workspace, confirmed close of a specific pane or tab,
-resize), a copy session over private `view` reads, and a compositor that paints the bar (workspace,
+resize), a copy session over private `view` reads, and a compositor that paints the bottom bar on its own background (workspace,
 tabs with the current one reversed, the focused pane's `id: title` or a two-second notice), the
 panes, the shared separators derived from the one-cell gaps between leaves (bold next to the
 focused pane) and the popup, then a final frame before restoring the terminal. Colours come from

@@ -213,6 +213,8 @@ pub enum StyleColor {
 pub struct Style {
     /// Workspace name, inactive tabs and the focused pane's `id: title`.
     pub bar: StyleColor,
+    /// Background of the whole bar row.
+    pub bar_background: StyleColor,
     /// The current tab (drawn reversed).
     pub tab_active: StyleColor,
     /// Separators not touching the focused pane.
@@ -226,7 +228,8 @@ pub struct Style {
 impl Default for Style {
     fn default() -> Self {
         Self {
-            bar: StyleColor::BrightBlack,
+            bar: StyleColor::White,
+            bar_background: StyleColor::BrightBlack,
             tab_active: StyleColor::Default,
             separator: StyleColor::BrightBlack,
             separator_focused: StyleColor::Default,
@@ -473,6 +476,7 @@ mod tests {
             StyleColor::BrightBlack,
             "defaults fill the rest"
         );
+        assert_eq!(config.style.bar_background, StyleColor::BrightBlack);
         assert!(Config::from_toml("[style]\nbar = \"teal\"\n").is_err());
         assert!(Config::from_toml("[style]\naccent = \"red\"\n").is_err());
     }

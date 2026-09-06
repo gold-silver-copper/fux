@@ -215,7 +215,10 @@ fn fresh_workspace_has_one_tab_and_pane_below_the_bar() {
     assert_eq!(frame.tabs.len(), 1);
     assert_eq!(frame.tabs[0].label, "main");
     assert_eq!(frame.layout.len(), 1);
-    assert_eq!(frame.layout[0].rect.y, 1, "the bar always takes row 0");
+    assert_eq!(
+        frame.layout[0].rect.y, 0,
+        "panes start at row 0; the bar is the last row"
+    );
     assert_eq!(frame.layout[0].rect.height, 23);
     assert_eq!(frame.focused, Some(PaneId(1)));
     assert_eq!(frame.panes[&PaneId(1)].rows, 23);
@@ -495,7 +498,7 @@ fn natural_exit_of_one_pane_closes_it_and_of_a_tab_moves_viewers() {
     assert_eq!(frame.tabs.len(), 2);
     assert_eq!(frame.active_tab, Some(TabId(2)));
     assert_eq!(frame.tabs[1].label, "tab-2");
-    assert_eq!(frame.layout[0].rect.y, 1, "the bar reserves a row");
+    assert_eq!(frame.layout[0].rect.y, 0, "the bar reserves the last row");
     assert_eq!(frame.layout[0].rect.height, 23);
     harness.step(vec![Inbound::PaneExited {
         pane: PaneId(3),
@@ -755,9 +758,9 @@ fn control_requests_and_mouse_hit_tests_respect_stale_generations() {
             generation,
         },
     );
-    // Pane-relative coordinates start at the leaf rectangle itself (no frame): x 4 → column 5,
-    // y 3 below the bar row → row 3.
-    assert_eq!(harness.written, vec![(PaneId(1), b"\x1b[<0;5;3M".to_vec())]);
+    // Pane-relative coordinates start at the leaf rectangle itself (no frame, panes from row 0):
+    // x 4 → column 5, y 3 → row 4.
+    assert_eq!(harness.written, vec![(PaneId(1), b"\x1b[<0;5;4M".to_vec())]);
     harness.step(vec![Inbound::ControlRequest {
         workspace: "missing".into(),
         request: Request::List { id: 4 },

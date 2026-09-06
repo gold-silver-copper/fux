@@ -1,14 +1,16 @@
-# fux 0.3.1 handoff
+# fux 0.3.2 handoff
 
-Updated 2026-09-06 (top bar); the 0.3.0 rewrite notes below still apply. The bevy_ecs rewrite requested by
+Updated 2026-09-06 (bar at the bottom with its own background, attachment v5); the 0.3.0 rewrite
+notes below still apply. The bevy_ecs rewrite requested by
 [bevy-ecs-multiplexer-prompt.md](bevy-ecs-multiplexer-prompt.md) is implemented, verified locally
 and independently reviewed. The requirement-by-requirement audit with exact commands and results
 is [docs/ecs-acceptance.md](docs/ecs-acceptance.md); the architecture is
 [docs/design.md](docs/design.md); the plan written first is [docs/ecs-plan.md](docs/ecs-plan.md).
 
-## Top bar (0.3.1)
+## Bar and separators (0.3.1, 0.3.2)
 
-[top-bar-design-prompt.md](top-bar-design-prompt.md) is implemented: an always-visible one-row bar
+[top-bar-design-prompt.md](top-bar-design-prompt.md) is implemented, with the bar moved to the
+bottom row on its own background in 0.3.2 (attachment v5): an always-visible one-row bar
 (workspace, tabs with the current one reversed, focused pane `id: title` or a two-second notice),
 no pane frames, shared one-cell separators bold next to the focused pane, and a `[style]` table
 with muted defaults. Geometry changed (bar row reserved, one-cell sibling gap, leaf rectangle is

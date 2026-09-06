@@ -393,7 +393,8 @@ async fn run(
                                 0,
                                 current,
                             )
-                            .page_count(screen.size()?.0);
+                            // The popup lives above the one-row bar; page over that height.
+                            .page_count(screen.size()?.0.saturating_sub(1));
                             hint_page = (hint_page as i64 + i64::from(delta))
                                 .rem_euclid(pages.max(1) as i64)
                                 as usize;

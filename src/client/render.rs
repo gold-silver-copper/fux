@@ -1,8 +1,8 @@
 //! Frame compositor: paints one server frame plus viewer-local overlays (history view, selection,
 //! popup) into a ratatui buffer, then diffs it against the previous paint.
 //!
-//! Row 0 is the bar: workspace, tabs (the current one reversed) and the focused pane's
-//! `id: title` or a transient notice. Panes have no frame; the one-cell gaps the layout leaves
+//! The last row is the bar: workspace, tabs (the current one reversed) and the focused pane's
+//! `id: title` or a transient notice, on its own background. Panes have no frame; the one-cell gaps the layout leaves
 //! between siblings are drawn as shared separators, bold next to the focused pane.
 
 use super::backend::{CellStyle as BackendStyle, TerminalBackend};
@@ -35,6 +35,7 @@ pub struct Notice {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
     pub bar: Option<Color>,
+    pub bar_background: Option<Color>,
     pub tab_active: Option<Color>,
     pub separator: Option<Color>,
     pub separator_focused: Option<Color>,
@@ -46,6 +47,7 @@ impl Palette {
     pub fn from_style(style: &crate::config::Style) -> Self {
         Self {
             bar: color(style.bar),
+            bar_background: color(style.bar_background),
             tab_active: color(style.tab_active),
             separator: color(style.separator),
             separator_focused: color(style.separator_focused),
@@ -116,7 +118,6 @@ pub fn compose(
     if rows == 0 || cols == 0 {
         return Composed { buffer, cursor };
     }
-    paint_bar(&mut buffer, frame, notice, palette);
     for entry in &frame.layout {
         let content = Rect::new(
             entry.rect.x,
@@ -161,8 +162,12 @@ pub fn compose(
         }
     }
     paint_separators(&mut buffer, frame, palette);
+    // The bar is painted last so a stale, taller frame (repainted after a shrink) cannot cover it.
+    paint_bar(&mut buffer, frame, notice, palette);
     if let Some(panel) = panel {
-        panel.paint(&mut buffer);
+        // Popups sit above the bar, never on it.
+        let above_bar = Rect::new(0, 0, cols, rows.saturating_sub(1));
+        panel.paint(&mut buffer, above_bar);
         if !panel.is_thin() || local.is_none() {
             cursor = None;
         }
@@ -250,9 +255,12 @@ fn truncate_head(text: &str, width: u16) -> String {
 
 fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palette: &Palette) {
     let width = buffer.area.width;
-    let base = styled(palette.bar);
+    let row = buffer.area.height.saturating_sub(1);
+    let base = palette
+        .bar_background
+        .map_or_else(|| styled(palette.bar), |bg| styled(palette.bar).bg(bg));
     for col in 0..width {
-        if let Some(cell) = buffer.cell_mut((col, 0)) {
+        if let Some(cell) = buffer.cell_mut((col, row)) {
             cell.set_symbol(" ").set_style(base);
         }
     }
@@ -279,9 +287,9 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
         Some(notice) => (
             notice.text.clone(),
             if notice.error {
-                Style::default().fg(Color::Red)
+                base.fg(Color::Red)
             } else {
-                styled(palette.notice)
+                palette.notice.map_or(base, |fg| base.fg(fg))
             },
         ),
         None => (focused_label(frame), base),
@@ -311,25 +319,28 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
     let right_width = width_of(&right);
     room = room.saturating_sub(right_width);
     let mut x = 0_u16;
-    put_str(buffer, x, 0, &left, left_width, base);
+    put_str(buffer, x, row, &left, left_width, base);
     x = x.saturating_add(left_width);
     for (label, active) in fit_tabs(frame, room) {
         let style = if active {
-            styled(palette.tab_active).add_modifier(Modifier::REVERSED)
+            palette
+                .tab_active
+                .map_or(base, |fg| base.fg(fg))
+                .add_modifier(Modifier::REVERSED)
         } else {
             base
         };
         let w = width_of(&label);
-        put_str(buffer, x, 0, &label, w, style);
+        put_str(buffer, x, row, &label, w, style);
         x = x.saturating_add(w);
     }
     if right_width > 0 && right_width <= width {
         let start = width - right_width;
-        put_str(buffer, start, 0, "│ ", 2, base);
+        put_str(buffer, start, row, "│ ", 2, base);
         put_str(
             buffer,
             start.saturating_add(2),
-            0,
+            row,
             &right_text_only(&right),
             right_width.saturating_sub(2),
             right_style,
@@ -701,7 +712,7 @@ mod tests {
             pane: PaneId(1),
             rect: crate::layout::Rect {
                 x: 0,
-                y: 1,
+                y: 0,
                 width: 10,
                 height: 4,
             },
@@ -718,7 +729,7 @@ mod tests {
             pane: PaneId(1),
             rect: crate::layout::Rect {
                 x: 0,
-                y: 1,
+                y: 0,
                 width: 4,
                 height: 5,
             },
@@ -727,7 +738,7 @@ mod tests {
             pane: PaneId(2),
             rect: crate::layout::Rect {
                 x: 5,
-                y: 1,
+                y: 0,
                 width: 5,
                 height: 2,
             },
@@ -736,7 +747,7 @@ mod tests {
             pane: PaneId(3),
             rect: crate::layout::Rect {
                 x: 5,
-                y: 4,
+                y: 3,
                 width: 5,
                 height: 2,
             },
@@ -761,18 +772,24 @@ mod tests {
     fn bar_shows_workspace_tab_and_focused_pane_without_any_frame() {
         let composed = compose(&frame(1), None, None, None, &Palette::default(), 5, 30);
         let lines = text(&composed.buffer);
-        assert!(lines[0].starts_with(" default │ t0 "), "{:?}", lines[0]);
-        assert!(lines[0].ends_with("│ 1: shell "), "{:?}", lines[0]);
-        assert_eq!(lines[0].chars().count(), 30);
-        assert!(lines[1].starts_with("hello"));
+        let bar = &lines[4];
+        assert!(bar.starts_with(" default │ t0 "), "{bar:?}");
+        assert!(bar.ends_with("│ 1: shell "), "{bar:?}");
+        assert_eq!(bar.chars().count(), 30);
+        assert!(lines[0].starts_with("hello"));
         assert!(
-            !lines.iter().any(
-                |line| line.contains(['┌', '┐', '└', '┘', '│'].as_slice()) && line != &lines[0]
-            )
+            !lines
+                .iter()
+                .any(|line| line.contains(['┌', '┐', '└', '┘', '│'].as_slice()) && line != bar)
         );
-        assert_eq!(composed.cursor, Some((1, 5)));
-        let active = composed.buffer.cell((11, 0)).map(|cell| cell.modifier);
-        assert_eq!(active, Some(Modifier::REVERSED));
+        assert_eq!(composed.cursor, Some((0, 5)));
+        let active = composed.buffer.cell((11, 4));
+        assert_eq!(active.map(|cell| cell.modifier), Some(Modifier::REVERSED));
+        assert_eq!(
+            active.map(|cell| cell.bg),
+            Some(Color::DarkGray),
+            "own background"
+        );
     }
 
     #[test]
@@ -781,7 +798,7 @@ mod tests {
         frame.active_tab = Some(TabId(2));
         frame.tabs[1].label = "a-very-long-tab-label".into();
         let composed = compose(&frame, None, None, None, &Palette::default(), 3, 24);
-        let line = &text(&composed.buffer)[0];
+        let line = &text(&composed.buffer)[2];
         // 24 cells: the name shrinks to its quarter share, the current tab takes the rest and
         // the right zone is dropped rather than squeezing the tab.
         assert_eq!(line.trim_end(), " de… │ a-very-long-tab…");
@@ -806,7 +823,7 @@ mod tests {
             3,
             40,
         );
-        let line = &text(&composed.buffer)[0];
+        let line = &text(&composed.buffer)[2];
         assert!(line.ends_with("│ Copied 5 bytes "), "{line:?}");
         assert!(!line.contains("shell"));
     }
@@ -816,9 +833,11 @@ mod tests {
         let frame = split_frame();
         let composed = compose(&frame, None, None, None, &Palette::default(), 6, 12);
         let lines = text(&composed.buffer);
-        assert!(lines[1].starts_with("aaaa│bb"), "{:?}", lines[1]);
-        assert!(lines[3].starts_with("    ├─────"), "{:?}", lines[3]);
-        assert!(lines[4].starts_with("    │cc"), "{:?}", lines[4]);
+        assert!(lines[0].starts_with("aaaa│bb"), "{:?}", lines[0]);
+        assert!(lines[2].starts_with("    ├─────"), "{:?}", lines[2]);
+        assert!(lines[3].starts_with("    │cc"), "{:?}", lines[3]);
+        // 12 cells: the name shrinks so the current tab fits; the bar is the last row.
+        assert_eq!(lines[5].trim_end(), " defa… │ t0", "bar on the last row");
         assert!(lines.iter().all(|line| !line.contains('┌')));
         let bold = |x: u16, y: u16| {
             composed
@@ -826,20 +845,20 @@ mod tests {
                 .cell((x, y))
                 .is_some_and(|cell| cell.modifier.contains(Modifier::BOLD))
         };
-        assert!(bold(4, 1), "separator next to the focused pane is bold");
-        assert!(bold(4, 3), "the junction touches the focused pane too");
+        assert!(bold(4, 0), "separator next to the focused pane is bold");
+        assert!(bold(4, 2), "the junction touches the focused pane too");
         let mut other = frame;
         other.focused = Some(PaneId(3));
         let composed = compose(&other, None, None, None, &Palette::default(), 6, 12);
         let bold_now = composed
             .buffer
-            .cell((4, 1))
+            .cell((4, 0))
             .is_some_and(|cell| cell.modifier.contains(Modifier::BOLD));
         assert!(!bold_now, "far separator is dim when focus moved");
         assert!(
             composed
                 .buffer
-                .cell((6, 3))
+                .cell((6, 2))
                 .is_some_and(|cell| cell.modifier.contains(Modifier::BOLD)),
             "the row separator above pane 3 is bold"
         );

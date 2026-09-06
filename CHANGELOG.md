@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2 - 2026-09-06
+
+- The bar moves to the bottom row and gets its own background (`[style] bar-background`, default
+  `bright-black`, with `bar` now defaulting to `white`). Popups sit above the bar. Pane content
+  starts at row 0; the attachment protocol is v5 for that change of rectangle contract.
+
 ## 0.3.1 - 2026-09-06
 
 - Replace the per-pane boxes with an always-visible top bar (workspace, tabs with the current one

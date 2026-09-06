@@ -23,7 +23,7 @@ independent pass verified the fixes; findings and resolutions are in the Review 
 | bounded per-pane history, keyboard browsing, mouse selection, clipboard | `terminal.rs` (`with_history_screen`, scrollback limit), `client/copy.rs`, `client/screen.rs` (OSC 52, 1 MiB cap) | ecs `history_views_are_private_and_clamped`; `viewer.py` copy/selection/shift-drag scenarios; `screen.rs` tests; `terminal.rs` tests |
 | one configurable prefix and a contextual popup | `commands.rs` (`DEFAULT_BINDINGS`, `Action::unavailable`), `client/input.rs`, `client/hints.rs` | `viewer.py` (immediate popup with workspace name, unknown key keeps it, Esc, literal prefix, dim entries); `hints.rs` paging test |
 | multiple viewers with independent navigation/history/selection | `Viewer.selection`, per-viewer frames in `systems/snapshot.rs`, viewer-private `view` reads | ecs `viewers_keep_private_tabs_and_focus_while_sharing_layout_edits`; `viewer.py` two-viewer scenario; fixture `tiny_viewer_and_resize_keep_the_pane_size_negotiated_over_the_smallest_viewer` |
-| interoperability with independently built koh and zor | attachment v4 (v3 until 0.3.1), control `FUXCTL2` | koh: `cargo test --manifest-path references/koh/Cargo.toml --test gateway` 2 passed and `--lib gateway::` 10 passed with `FUX_BIN`/`KOH_REQUIRE_FUX_BIN=1`; zor: `tests/zor_integration.rs` 1 passed with `ZOR_BIN`/`FUX_REQUIRE_ZOR_BIN=1`; `python3 tools/dependencies.py verify --build` passed |
+| interoperability with independently built koh and zor | attachment v5 (v3 until 0.3.1, v4 in 0.3.1), control `FUXCTL2` | koh: `cargo test --manifest-path references/koh/Cargo.toml --test gateway` 2 passed and `--lib gateway::` 10 passed with `FUX_BIN`/`KOH_REQUIRE_FUX_BIN=1`; zor: `tests/zor_integration.rs` 1 passed with `ZOR_BIN`/`FUX_REQUIRE_ZOR_BIN=1`; `python3 tools/dependencies.py verify --build` passed |
 | fresh launch: one default workspace/tab/pane, no configuration, name or program | `main.rs`, `daemon/startup.rs`, `ManagerAction::Resolve{None}` | ecs `fresh_workspace_has_one_tab_and_pane_below_the_bar`; `local_tty.py`; fixture election test |
 | deterministic no-name attach rule, no startup picker | `requests.rs` manager resolve: most recently attached workspace | ecs harness `create_workspace` + `Resolve{None}` path exercised in randomized test; documented in README |
 | automatic labels, names optional | `next_workspace_name` (`ws-N`), tab `tab-N`, first tab `main` | ecs fresh-workspace test; randomized test uses unnamed creation |
@@ -111,12 +111,12 @@ ordinary pane remains (`new`/`split` with `argv`, `cwd`).
 | Requirement | Evidence |
 |---|---|
 | builds/installs/runs without koh or zor; no cross-owner crate/build script/sibling source | `Cargo.toml`; `structure.rs::project_dependencies_and_application_imports_respect_ownership`, `default_ci_and_release_verification_require_only_fux`; `tests/verify/release-package.sh` |
-| versioned process protocols, no Entity/component/schedule exposure | `proto/attach.rs` v4, `proto/control.rs` `FUXCTL2`; `structure.rs` forbids `Entity` in `proto/` |
+| versioned process protocols, no Entity/component/schedule exposure | `proto/attach.rs` v5, `proto/control.rs` `FUXCTL2`; `structure.rs` forbids `Entity` in `proto/` |
 | control surface: stable ids, listing, bounded capture, lifecycle events; reads do not change focus | `Request::{List, Capture, Subscribe}`; control clients act on workspace selection | fixture control test; `observer.py` asserts focus/pid unchanged |
 | real koh gateway carries attachment stream; stopping leaves panes usable | koh `optional_gateway_failure_leaves_real_fux_panes_running`, `real_fux_keeps_its_pane_and_applies_input_once_across_five_quic_losses` passed against `target/debug/fux` |
 | zor observes via capture/events; failures isolated | `tests/verify/observer.py`: real `zor observe` reports working→idle from fux capture/title/progress; wrong preface and unknown command rejected; observer SIGKILL leaves pane pid/focus/output unchanged |
 | explicit user-started programs, no supervisor | README composition commands; no spawn of koh/zor in `src/` (`structure.rs` spawn-owner list) |
-| owner edits minimal and reproducible | `dependency-patches/koh.patch` (26 lines: `"version":4`, `Some(4)`), `dependency-patches/zor.patch` (32 lines: `FUXCTL2`); `tools/dependencies.py export` and `verify --build` passed; owner builds stay independent (`zor` tests 39+2+6+9 passed, `--no-default-features` check passed) |
+| owner edits minimal and reproducible | `dependency-patches/koh.patch` (26 lines: `"version":5`, `Some(5)`), `dependency-patches/zor.patch` (32 lines: `FUXCTL2`); `tools/dependencies.py export` and `verify --build` passed; owner builds stay independent (`zor` tests 39+2+6+9 passed, `--no-default-features` check passed) |
 
 Composition commands: see README "Working with koh and zor".
 
@@ -273,21 +273,24 @@ tab until its exit report arrives (or adapter shutdown reaps it); `check_invaria
 exactly that state and rejects any other orphan. The shrunk case is recorded in
 `tests/ecs.proptest-regressions`.
 
-## Top bar (0.3.1, 2026-09-06)
+## Bar and shared separators (0.3.1 top bar, 0.3.2 bottom bar, 2026-09-06)
 
 [top-bar-design-prompt.md](../top-bar-design-prompt.md) replaced the per-pane boxes with an
-always-visible one-row bar and shared one-cell separators. Requirement mapping:
+always-visible one-row bar and shared one-cell separators; 0.3.2 then moved the bar to the last
+row with its own background (`[style] bar-background`), painted after panes and separators so a
+stale taller frame can never cover it, with popups confined to the rows above it. Requirement
+mapping:
 
 | Requirement | Source | Evidence |
 |---|---|---|
-| bar always on row 0: workspace, tabs (current reversed), focused `id: title` / `(exit N)` | `client/render.rs::paint_bar`, `support::tab_area` | render tests `bar_shows_workspace_tab_and_focused_pane_without_any_frame`; `viewer.py` bar assertions; fixture natural-exit test checks `(exit 29)` in the final frame |
+| bar always on the last row, own background: workspace, tabs (current reversed), focused `id: title` / `(exit N)` | `client/render.rs::paint_bar`, `support::tab_area` | render tests `bar_shows_workspace_tab_and_focused_pane_without_any_frame`; `viewer.py` bar assertions; fixture natural-exit test checks `(exit 29)` in the final frame |
 | truncation: right zone yields first, current tab keeps priority, `…` | `paint_bar`, `fit_tabs`, `truncate_head/tail` | render test `bar_truncates_from_the_right_zone_first_and_keeps_the_current_tab`; `viewer.py` 70-character label |
 | no frame; one-cell shared separators with junctions; bold next to focus | `layout.rs::geometry_node` gap; `render.rs::paint_separators` | render test `separators_join_between_panes_and_brighten_next_to_focus`; `viewer.py` one-column and `├─` checks; layout proptest (leaves disjoint, at most one line per split) |
 | configurable muted colours (`[style]`) | `config.rs::{Style, StyleColor}`, `render.rs::Palette` | config parsing tests; README example |
 | notices in the bar for two seconds or until a key; no bottom notice bar | `controller.rs::{notice, notice_deadline, expire_notice, NOTICE_TTL}`, `client/mod.rs` wake-up | render test `notices_replace_the_pane_title_in_the_bar`; `viewer.py` copy notice appears then expires |
-| geometry: bar row reserved, one-cell sibling gap, content = leaf rect, smallest-viewer negotiation kept | `support::tab_area`, `Pane::terminal_size`, `layout.rs` | ecs `fresh_workspace_has_one_tab_and_pane_below_the_bar` (23×80 under a 24×80 viewer), split widths `[39, 40]`; fixture sizes 39×120 / 11×40 / 29×100 |
-| tiny screens safe; separators and bar are non-pane cells for the mouse | `render.rs` bounds, `Frame::pane_at` | render `tiny_and_zero_terminals_never_panic` (incl. 2×20); `viewer.py` 1×1 and 2×20; ecs mouse test (`\x1b[<0;5;3M` from a click at column 5, row 4) |
-| guarantees kept: byte-exact input, per-viewer frames, barrier, mouse translation, Shift override, selection bounds, final frame | unchanged paths | full suites below; attachment protocol unchanged (no version bump) |
+| geometry: bottom bar row reserved, one-cell sibling gap, content = leaf rect from row 0, smallest-viewer negotiation kept | `support::tab_area`, `Pane::terminal_size`, `layout.rs` | ecs `fresh_workspace_has_one_tab_and_pane_below_the_bar` (23×80 from row 0 under a 24×80 viewer), split widths `[39, 40]`; fixture sizes 39×120 / 11×40 / 29×100 |
+| tiny screens safe; separators and bar are non-pane cells for the mouse | `render.rs` bounds, `Frame::pane_at` | render `tiny_and_zero_terminals_never_panic` (incl. 2×20); `viewer.py` 1×1 and 2×20; ecs mouse test (`\x1b[<0;5;4M` from a click at column 5, row 4) |
+| guarantees kept: byte-exact input, per-viewer frames, barrier, mouse translation, Shift override, selection bounds, final frame | unchanged paths | full suites below; the attachment protocol moved to v4 (0.3.1) and v5 (0.3.2) because the frame's rectangle contract changed |
 
 ### Independent review of the top bar
 
@@ -310,6 +313,13 @@ Sound per the reviewer: gap arithmetic and the layout proptest, `tab_area`, `ter
 server/viewer mouse agreement, separator and bar cells never hit-testing as panes, selection
 bounds, notice expiry (no repeated wake-ups), `[style]` validation and colour mapping, bounded
 truncation widths, tiny sizes.
+
+A third pass reviewed the 0.3.2 move of the bar to the bottom row: geometry and mouse agreement,
+popup bounds, `bar-background = "none"`, and bar painting at widths 0–8 passed; it found one P1,
+the popup's page count still using the full terminal height while painting used the rows above
+the bar, which made the last pages unreachable on short terminals (fixed by paging over
+`rows - 1`; `viewer.py` now requires every entry to come around on a four-row terminal), plus
+stale doc lines that were corrected.
 
 A second independent pass verified the resolutions: items 3–6 and 9 FIXED; item 1 PARTIAL because
 a 0.3.0 server rejects the v4 hello with an `error` message that the viewer did not classify, so
@@ -334,5 +344,5 @@ patches verified, `git diff --check`; all passed on 2026-09-06.
   requested or executed, so those jobs are configuration, not evidence.
 - Terminal-emulator specific clipboard and mouse behaviour needs manual checks per emulator.
 - Relay/NAT and mobile suspend/resume belong to koh and were not exercised.
-- Attachment v4 and `FUXCTL2` are incompatible with 0.2.x and 0.3.0 servers; the user stops an old server
+- Attachment v5 and `FUXCTL2` are incompatible with 0.2.x, 0.3.0 and 0.3.1 servers; the user stops an old server
   deliberately with its own binary.

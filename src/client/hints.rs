@@ -4,6 +4,7 @@
 use crate::commands::{Action, ClientBindings, Group, key_name};
 use crate::view::Frame;
 use ratatui_core::buffer::Buffer;
+use ratatui_core::layout::Rect;
 use ratatui_core::style::{Color, Modifier, Style};
 use std::collections::BTreeSet;
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -112,8 +113,9 @@ impl HintPanel {
         self.thin
     }
 
-    pub fn paint(&self, buffer: &mut Buffer) {
-        let area = buffer.area;
+    /// Paints the panel at the bottom of `area` (the compositor passes everything above the bar).
+    pub fn paint(&self, buffer: &mut Buffer, area: Rect) {
+        let area = area.intersection(buffer.area);
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -247,7 +249,10 @@ mod tests {
         for page in 0..pages {
             let panel = HintPanel::commands(&bindings, true, page, &frame);
             let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 6));
-            panel.paint(&mut buffer);
+            {
+                let area = buffer.area;
+                panel.paint(&mut buffer, area);
+            }
             seen.push_str(&text(&buffer).join("\n"));
         }
         for (key, action) in bindings.entries() {
@@ -258,7 +263,10 @@ mod tests {
             assert!(seen.contains(&key_name(key)));
         }
         let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 24));
-        panel.paint(&mut buffer);
+        {
+            let area = buffer.area;
+            panel.paint(&mut buffer, area);
+        }
         let lines = text(&buffer);
         assert!(lines.iter().any(|line| line.contains("Commands (C-a)")));
         // Unavailable actions are dimmed: the empty frame has no split.
@@ -278,13 +286,22 @@ mod tests {
     fn one_cell_terminals_are_safe_and_thin_bars_take_the_last_row() {
         let panel = HintPanel::bar("Copy · q finish");
         let mut buffer = Buffer::empty(Rect::new(0, 0, 1, 1));
-        panel.paint(&mut buffer);
+        {
+            let area = buffer.area;
+            panel.paint(&mut buffer, area);
+        }
         let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 3));
-        panel.paint(&mut buffer);
+        {
+            let area = buffer.area;
+            panel.paint(&mut buffer, area);
+        }
         assert!(text(&buffer)[2].starts_with("Copy"));
         let input = HintPanel::text_input("Rename tab", "a-very-long-label-indeed", "Enter save");
         let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 4));
-        input.paint(&mut buffer);
+        {
+            let area = buffer.area;
+            input.paint(&mut buffer, area);
+        }
         assert!(
             text(&buffer)[2].contains("▏"),
             "insertion marker stays visible"
