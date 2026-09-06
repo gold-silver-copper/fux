@@ -45,6 +45,9 @@ pub fn apply_pane_output(
                         bytes: replies,
                     });
                 }
+                if !publish_output && !title_changed {
+                    continue;
+                }
                 let workspace = tabs
                     .get(component.tab)
                     .and_then(|tab| workspaces.get(tab.workspace))

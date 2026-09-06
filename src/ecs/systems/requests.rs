@@ -56,6 +56,9 @@ pub fn apply_attachments(
         workspaces,
         viewers,
     } = &mut arrivals;
+    // Spawns apply at the next sync point, so the viewers that arrived in this batch are kept
+    // here: the limit counts them and a departure in the same batch still finds them.
+    let mut arrived: Vec<(ViewerId, Entity, Entity, String)> = Vec::new();
     for message in inbound.read() {
         match message {
             Inbound::ViewerAttached {
@@ -89,7 +92,11 @@ pub fn apply_attachments(
                 let attached = viewers
                     .iter()
                     .filter(|viewer| viewer.workspace == entity && !viewer.detaching)
-                    .count();
+                    .count()
+                    + arrived
+                        .iter()
+                        .filter(|(_, _, home, _)| *home == entity)
+                        .count();
                 if attached >= limits.max_viewers {
                     refuse(&mut effects, "viewer limit reached for this workspace");
                     continue;
@@ -114,6 +121,7 @@ pub fn apply_attachments(
                     })
                     .id();
                 ids.viewers.insert(id, viewer);
+                arrived.push((id, viewer, entity, workspace.clone()));
                 effects.event(
                     workspace,
                     Event::ClientAttached {
@@ -123,15 +131,22 @@ pub fn apply_attachments(
                 );
             }
             Inbound::ViewerGone { viewer: id } => {
-                if let Some(entity) = ids.viewer(*id)
-                    && let Ok(viewer) = viewers.get(entity)
-                {
-                    let name = workspaces
+                let Some(entity) = ids.viewer(*id) else {
+                    continue;
+                };
+                let name = match viewers.get(entity) {
+                    Ok(viewer) => workspaces
                         .get(viewer.workspace)
                         .map(|workspace| workspace.name.clone())
-                        .unwrap_or_default();
-                    exit.despawn(ids, entity, *id, &name, &mut effects);
-                }
+                        .unwrap_or_default(),
+                    // Arrived in this batch: the spawn is still queued and the despawn queues
+                    // behind it.
+                    Err(_) => match arrived.iter().position(|(arrived, ..)| arrived == id) {
+                        Some(index) => arrived.swap_remove(index).3,
+                        None => continue,
+                    },
+                };
+                exit.despawn(ids, entity, *id, &name, &mut effects);
             }
             Inbound::Shutdown => shutting_down.0 = true,
             _ => {}
