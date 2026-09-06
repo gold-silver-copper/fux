@@ -255,9 +255,6 @@ pub fn apply_spawn_completions(world: &mut World) {
             Err(message) => roll_back(world, entity, creation, &message),
         }
     }
-    // Barriers released above unblock queued requests; apply them now so input that followed a
-    // split in the same read reaches the newly focused pane before this step publishes frames.
-    crate::ecs::systems::requests::drain_viewer_queues(world);
 }
 
 fn clear_barriers(world: &mut World, pane: Entity) {

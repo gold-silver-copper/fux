@@ -69,11 +69,24 @@ impl Session {
             )
                 .chain(),
         );
+        // Queued viewer requests are drained after the requests phase and again after
+        // completions release creation barriers, so input that followed a split in the same read
+        // reaches the newly focused pane before this step publishes frames.
         schedule.add_systems((
             systems::requests::apply_attachments.in_set(Phase::Ingest),
             systems::output::apply_pane_output.in_set(Phase::Output),
-            systems::requests::apply_requests.in_set(Phase::Requests),
-            systems::creation::apply_spawn_completions.in_set(Phase::Completions),
+            (
+                systems::requests::apply_requests,
+                systems::requests::drain_viewer_queues,
+            )
+                .chain()
+                .in_set(Phase::Requests),
+            (
+                systems::creation::apply_spawn_completions,
+                systems::requests::drain_viewer_queues,
+            )
+                .chain()
+                .in_set(Phase::Completions),
             systems::lifecycle::resolve_lifecycle.in_set(Phase::Lifecycle),
             systems::layout::resolve_layout.in_set(Phase::Layout),
             systems::snapshot::publish_frames.in_set(Phase::Snapshot),

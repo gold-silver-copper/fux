@@ -15,6 +15,35 @@ pub fn effect(world: &mut World, effect: Effect) {
     world.resource_mut::<Messages<Effect>>().write(effect);
 }
 
+/// Deferred viewer removal for typed systems: the entity goes at the next sync point, its id is
+/// released now, and the outbox is closed after the messages already queued for it.
+#[derive(SystemParam)]
+pub struct ViewerExit<'w, 's> {
+    commands: Commands<'w, 's>,
+    ids: ResMut<'w, Ids>,
+}
+
+impl ViewerExit<'_, '_> {
+    pub fn despawn(
+        &mut self,
+        viewer: Entity,
+        id: ViewerId,
+        workspace: Entity,
+        effects: &mut Effects,
+    ) {
+        self.ids.viewers.remove(&id);
+        self.commands.entity(viewer).despawn();
+        effects.emit(Effect::CloseViewer { viewer: id });
+        effects.event(
+            workspace,
+            control::Event::ClientDetached {
+                id: 0,
+                client: id.0,
+            },
+        );
+    }
+}
+
 /// The effect outlet of a typed system: effects and control events, the latter named by the
 /// workspace they concern.
 #[derive(SystemParam)]

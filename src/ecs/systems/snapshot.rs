@@ -4,161 +4,127 @@
 use crate::ecs::components::{Pane, PaneState, Tab, Viewer, Workspace};
 use crate::ecs::messages::{Effect, Inbound};
 use crate::ecs::resources::Registry;
-use crate::ecs::support::effect;
+use crate::ecs::support::{Effects, ViewerExit};
 use crate::proto::attach::ServerMessage;
 use crate::view::{Frame, PaneRect, PaneView, TabEntry};
 use bevy_ecs::prelude::*;
 
-pub fn publish_frames(world: &mut World) {
-    let viewers: Vec<Entity> = {
-        let mut entries: Vec<(crate::ids::ViewerId, Entity)> = world
-            .query::<(Entity, &Viewer)>()
-            .iter(world)
-            .map(|(entity, viewer)| (viewer.id, entity))
-            .collect();
-        entries.sort();
-        entries.into_iter().map(|(_, entity)| entity).collect()
-    };
-    for viewer in viewers {
-        publish_viewer(world, viewer);
-    }
+/// Everything the snapshot reads besides the viewer being published.
+#[derive(bevy_ecs::system::SystemParam)]
+pub struct Scene<'w, 's> {
+    workspaces: Query<'w, 's, &'static Workspace>,
+    tabs: Query<'w, 's, &'static Tab>,
+    panes: Query<'w, 's, &'static Pane>,
+    registry: Res<'w, Registry>,
 }
 
-fn publish_viewer(world: &mut World, viewer: Entity) {
-    let Some((id, workspace, tab, dirty, detaching, exit_sent)) =
-        world.get::<Viewer>(viewer).map(|viewer| {
-            (
-                viewer.id,
-                viewer.workspace,
-                viewer.selection.tab,
-                viewer.dirty,
-                viewer.detaching,
-                viewer.exit_sent,
-            )
-        })
-    else {
-        return;
-    };
-    if detaching {
-        // A viewer detaching because its workspace retired was already told the exit status.
-        if !exit_sent {
-            effect(
-                world,
-                Effect::ToViewer {
+pub fn publish_frames(
+    mut viewers: Query<(Entity, &mut Viewer)>,
+    scene: Scene,
+    mut exit: ViewerExit,
+    mut effects: Effects,
+) {
+    let mut order: Vec<(crate::ids::ViewerId, Entity)> = viewers
+        .iter()
+        .map(|(entity, viewer)| (viewer.id, entity))
+        .collect();
+    order.sort();
+    for (_, entity) in order {
+        let Ok((_, mut viewer)) = viewers.get_mut(entity) else {
+            continue;
+        };
+        let id = viewer.id;
+        if viewer.detaching {
+            // A viewer detaching because its workspace retired was already told the exit status.
+            if !viewer.exit_sent {
+                effects.emit(Effect::ToViewer {
                     viewer: id,
                     message: ServerMessage::Exited { code: None },
-                },
-            );
+                });
+            }
+            exit.despawn(entity, id, viewer.workspace, &mut effects);
+            continue;
         }
-        crate::ecs::systems::requests::despawn_viewer(world, viewer);
-        return;
-    }
-    let retiring = world
-        .get::<Workspace>(workspace)
-        .and_then(|workspace| workspace.retiring);
-    let tab_dirty = tab.is_some_and(|tab| {
-        world.get::<Tab>(tab).is_some_and(|component| {
-            component
-                .geometry
-                .iter()
-                .any(|(pane, _)| world.get::<Pane>(*pane).is_some_and(|pane| pane.dirty))
-        })
-    });
-    let needs_frame = dirty || tab_dirty || retiring.is_some();
-    let has_replies = world
-        .get::<Viewer>(viewer)
-        .is_some_and(|viewer| !viewer.after_frame.is_empty());
-    if !needs_frame && !has_replies {
-        return;
-    }
-    if needs_frame {
-        let frame = build_frame(
-            world,
-            viewer,
-            workspace,
-            tab,
-            retiring.and_then(|r| r.exit_code),
-        );
-        if frame.valid() {
-            effect(
-                world,
-                Effect::ToViewer {
+        let retiring = scene
+            .workspaces
+            .get(viewer.workspace)
+            .ok()
+            .and_then(|workspace| workspace.retiring);
+        let tab_dirty = viewer
+            .selection
+            .tab
+            .and_then(|tab| scene.tabs.get(tab).ok())
+            .is_some_and(|tab| {
+                tab.geometry
+                    .iter()
+                    .any(|(pane, _)| scene.panes.get(*pane).is_ok_and(|pane| pane.dirty))
+            });
+        let needs_frame = viewer.dirty || tab_dirty || retiring.is_some();
+        if !needs_frame && viewer.after_frame.is_empty() {
+            continue;
+        }
+        if needs_frame {
+            let frame = build_frame(&scene, &mut viewer, retiring.and_then(|r| r.exit_code));
+            if frame.valid() {
+                effects.emit(Effect::ToViewer {
                     viewer: id,
                     message: ServerMessage::State {
                         state: Box::new(frame),
                     },
-                },
-            );
-        } else {
-            tracing::error!(
-                viewer = id.0,
-                "derived frame failed validation; not published"
-            );
+                });
+            } else {
+                tracing::error!(
+                    viewer = id.0,
+                    "derived frame failed validation; not published"
+                );
+            }
         }
-    }
-    let after: Vec<ServerMessage> = world
-        .get_mut::<Viewer>(viewer)
-        .map(|mut viewer| {
-            viewer.dirty = false;
-            std::mem::take(&mut viewer.after_frame)
-        })
-        .unwrap_or_default();
-    for message in after {
-        effect(
-            world,
-            Effect::ToViewer {
+        viewer.dirty = false;
+        for message in std::mem::take(&mut viewer.after_frame) {
+            effects.emit(Effect::ToViewer {
                 viewer: id,
                 message,
-            },
-        );
-    }
-    if let Some(retiring) = retiring {
-        effect(
-            world,
-            Effect::ToViewer {
+            });
+        }
+        if let Some(retiring) = retiring {
+            effects.emit(Effect::ToViewer {
                 viewer: id,
                 message: ServerMessage::Exited {
                     code: retiring.exit_code,
                 },
-            },
-        );
-        if let Some(mut component) = world.get_mut::<Viewer>(viewer) {
-            component.detaching = true;
-            component.exit_sent = true;
+            });
+            viewer.detaching = true;
+            viewer.exit_sent = true;
         }
     }
 }
 
-fn build_frame(
-    world: &mut World,
-    viewer: Entity,
-    workspace: Entity,
-    tab: Option<Entity>,
-    exit_code: Option<u32>,
-) -> Frame {
-    let (name, tab_entities) = world
-        .get::<Workspace>(workspace)
+fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Frame {
+    let (name, tab_entities) = scene
+        .workspaces
+        .get(viewer.workspace)
         .map(|workspace| (workspace.name.clone(), workspace.tabs.clone()))
         .unwrap_or_default();
     let tabs: Vec<TabEntry> = tab_entities
         .iter()
-        .filter_map(|tab| {
-            let component = world.get::<Tab>(*tab)?;
-            Some(TabEntry {
-                id: component.id,
-                label: component.label.clone(),
-            })
+        .filter_map(|tab| scene.tabs.get(*tab).ok())
+        .map(|tab| TabEntry {
+            id: tab.id,
+            label: tab.label.clone(),
         })
         .collect();
-    let active = tab.filter(|tab| tab_entities.contains(tab));
+    let active = viewer
+        .selection
+        .tab
+        .filter(|tab| tab_entities.contains(tab))
+        .and_then(|tab| scene.tabs.get(tab).ok().map(|component| (tab, component)));
     let geometry = active
-        .and_then(|tab| world.get::<Tab>(tab))
-        .map(|tab| tab.geometry.clone())
+        .map(|(_, tab)| tab.geometry.clone())
         .unwrap_or_default();
     let mut layout = Vec::with_capacity(geometry.len());
     let mut panes = std::collections::BTreeMap::new();
     for (pane, rect) in &geometry {
-        let Some(component) = world.get::<Pane>(*pane) else {
+        let Ok(component) = scene.panes.get(*pane) else {
             continue;
         };
         if matches!(component.state, PaneState::Starting) {
@@ -179,35 +145,31 @@ fn build_frame(
         panes.insert(component.id, view);
     }
     let focused = active
-        .and_then(|tab| {
-            let selection = world.get::<Viewer>(viewer)?.selection.clone();
-            crate::ecs::support::focus_in_tab(world, &selection, tab)
+        .and_then(|(tab, component)| {
+            viewer
+                .selection
+                .focus
+                .get(&tab)
+                .copied()
+                .filter(|pane| component.layout.contains(*pane))
+                .or_else(|| component.layout.leaves().first().copied())
         })
-        .and_then(|pane| world.get::<Pane>(pane))
+        .and_then(|pane| scene.panes.get(pane).ok())
         .map(|pane| pane.id)
         .filter(|id| panes.contains_key(id));
-    let bindings = world.resource::<Registry>().bindings.clone();
-    let (generation, message) = world
-        .get_mut::<Viewer>(viewer)
-        .map(|mut component| {
-            component.generation = component.generation.wrapping_add(1);
-            component.layout = geometry.clone();
-            (component.generation, component.notice.take())
-        })
-        .unwrap_or((0, None));
+    viewer.generation = viewer.generation.wrapping_add(1);
+    viewer.layout = geometry;
     Frame {
         workspace: name,
-        generation,
+        generation: viewer.generation,
         tabs,
-        active_tab: active
-            .and_then(|tab| world.get::<Tab>(tab))
-            .map(|tab| tab.id),
+        active_tab: active.map(|(_, tab)| tab.id),
         focused,
         layout,
         panes,
-        bindings,
+        bindings: scene.registry.bindings.clone(),
         exit_code,
-        message,
+        message: viewer.notice.take(),
     }
 }
 

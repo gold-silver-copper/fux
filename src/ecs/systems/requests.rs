@@ -219,7 +219,6 @@ pub fn apply_requests(world: &mut World) {
             _ => {}
         }
     }
-    drain_viewer_queues(world);
 }
 
 /// Applies queued requests in arrival order per viewer, stopping at a creation barrier.
