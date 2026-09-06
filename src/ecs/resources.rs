@@ -124,3 +124,26 @@ pub struct ShuttingDown(pub bool);
 /// Automatic workspace label counter.
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub struct WorkspaceCounter(pub u32);
+
+/// One client blocked in a `wait`, waiting for a pane condition or its timeout. Keyed by the
+/// public pane id because pane entities are despawned; the workspace scopes the lookup.
+#[derive(Clone, Debug)]
+pub struct PendingWait {
+    pub requester: crate::ecs::messages::Requester,
+    pub id: u64,
+    pub pane: PaneId,
+    pub workspace: Entity,
+    pub until: crate::proto::control::WaitUntil,
+    /// Absolute time the wait fails with a timeout.
+    pub timeout_at_ms: u64,
+    /// The pane's output sequence when it last changed, and the time of that change: a `quiet`
+    /// wait fires when the clock passes this time plus its window.
+    pub last_seq: u64,
+    pub last_change_ms: u64,
+}
+
+/// Pending waits across every connection; evaluated once per step before the lifecycle cascade.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct Waits {
+    pub pending: Vec<PendingWait>,
+}

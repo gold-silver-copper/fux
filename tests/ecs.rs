@@ -700,6 +700,188 @@ fn rows_capture(
     }
 }
 
+fn wait_reply(harness: &mut Harness, viewer: ViewerId) -> Option<Reply> {
+    harness
+        .replies(viewer)
+        .into_iter()
+        .find(|reply| matches!(reply.id(), 800..=899))
+}
+
+fn send_wait(
+    harness: &mut Harness,
+    viewer: ViewerId,
+    id: u64,
+    pane: PaneId,
+    until: fux::proto::control::WaitUntil,
+    timeout_ms: u64,
+) {
+    harness.control(
+        viewer,
+        Request::Wait {
+            id,
+            pane,
+            until,
+            timeout_ms,
+        },
+    );
+}
+
+#[test]
+fn waits_fire_on_output_pattern_exit_and_timeout_and_never_hang() {
+    use fux::proto::control::{CommandResult, WaitFired, WaitUntil};
+    let mut harness = Harness::new();
+    harness.create_workspace("default");
+    let viewer = harness.attach("default", 24, 80);
+    // A seq wait fires when the pane's output sequence reaches the target; no reply before that.
+    let target = pane_seq(&mut harness, viewer, PaneId(1)) + 1;
+    send_wait(
+        &mut harness,
+        viewer,
+        800,
+        PaneId(1),
+        WaitUntil::Seq { value: target },
+        60_000,
+    );
+    assert!(wait_reply(&mut harness, viewer).is_none(), "seq wait waits");
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"progress\n".to_vec(),
+    }]);
+    assert!(matches!(
+        wait_reply(&mut harness, viewer),
+        Some(Reply::Completed {
+            result: CommandResult::Waited {
+                fired: WaitFired::Seq,
+                ..
+            },
+            ..
+        })
+    ));
+    harness.messages.get_mut(&viewer).map(Vec::clear);
+    // A pattern wait matches the visible screen text.
+    send_wait(
+        &mut harness,
+        viewer,
+        801,
+        PaneId(1),
+        WaitUntil::Pattern {
+            regex: "done-[0-9]+".into(),
+        },
+        60_000,
+    );
+    assert!(wait_reply(&mut harness, viewer).is_none());
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"done-42\n".to_vec(),
+    }]);
+    assert!(matches!(
+        wait_reply(&mut harness, viewer),
+        Some(Reply::Completed {
+            result: CommandResult::Waited {
+                fired: WaitFired::Pattern,
+                ..
+            },
+            ..
+        })
+    ));
+    harness.messages.get_mut(&viewer).map(Vec::clear);
+    // A quiet wait fires after the window with no output, and proposes a deadline meanwhile.
+    send_wait(
+        &mut harness,
+        viewer,
+        802,
+        PaneId(1),
+        WaitUntil::Quiet { ms: 500 },
+        60_000,
+    );
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"busy".to_vec(),
+    }]);
+    assert!(
+        wait_reply(&mut harness, viewer).is_none(),
+        "output resets quiet"
+    );
+    // A deadline is proposed while the window runs (a frame-pacing deadline may be nearer).
+    assert!(
+        harness.session.next_deadline_ms().is_some(),
+        "quiet proposes a deadline"
+    );
+    harness.now += 600;
+    harness.step(Vec::new());
+    assert!(matches!(
+        wait_reply(&mut harness, viewer),
+        Some(Reply::Completed {
+            result: CommandResult::Waited {
+                fired: WaitFired::Quiet,
+                ..
+            },
+            ..
+        })
+    ));
+    harness.messages.get_mut(&viewer).map(Vec::clear);
+    // A timeout is a failed reply with the timeout code, never a hang.
+    send_wait(
+        &mut harness,
+        viewer,
+        803,
+        PaneId(1),
+        WaitUntil::Pattern {
+            regex: "never".into(),
+        },
+        100,
+    );
+    harness.now += 200;
+    harness.step(Vec::new());
+    assert!(matches!(
+        wait_reply(&mut harness, viewer),
+        Some(Reply::Failed { error, .. }) if error.code == ErrorCode::Timeout
+    ));
+    harness.messages.get_mut(&viewer).map(Vec::clear);
+    // An exit wait fires when the pane's process exits, carrying the status.
+    harness.control(viewer, split(1, Axis::Horizontal));
+    harness.complete_spawns();
+    assert!(harness.pane_ids(viewer).contains(&PaneId(2)));
+    send_wait(
+        &mut harness,
+        viewer,
+        804,
+        PaneId(2),
+        WaitUntil::Exit,
+        60_000,
+    );
+    assert!(wait_reply(&mut harness, viewer).is_none());
+    harness.step(vec![Inbound::PaneExited {
+        pane: PaneId(2),
+        code: 7,
+    }]);
+    assert!(matches!(
+        wait_reply(&mut harness, viewer),
+        Some(Reply::Completed {
+            result: CommandResult::Waited {
+                fired: WaitFired::Exit,
+                exit_status: Some(7),
+                ..
+            },
+            ..
+        })
+    ));
+    harness.messages.get_mut(&viewer).map(Vec::clear);
+    // A wait on a pane that never existed fails not-found at once.
+    send_wait(
+        &mut harness,
+        viewer,
+        805,
+        PaneId(999),
+        WaitUntil::Exit,
+        60_000,
+    );
+    assert!(matches!(
+        wait_reply(&mut harness, viewer),
+        Some(Reply::Failed { error, .. }) if error.code == ErrorCode::NotFound
+    ));
+}
+
 #[test]
 fn output_sequences_are_reported_by_list_capture_and_paced_events() {
     let mut harness = Harness::new();

@@ -7,7 +7,7 @@ use crate::ecs::messages::{
     Effect, Inbound, ManagerAction, ManagerOutcome, Requester, ViewerRequest,
 };
 use crate::ecs::resources::{
-    Clock, Ids, Limits, Registry, ServerIdentity, ShuttingDown, WorkspaceCounter,
+    Clock, Deadlines, Ids, Limits, Registry, ServerIdentity, ShuttingDown, WorkspaceCounter,
 };
 use crate::ecs::support::{
     Effects, ViewerExit, close_tab, despawn_tab, effect, event, failed, focus_in_tab, is_member,
@@ -667,6 +667,12 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         Request::Info { .. } => Ok(CommandResult::Info {
             info: Box::new(server_info(world, Some(context.workspace))),
         }),
+        Request::Wait {
+            pane,
+            until,
+            timeout_ms,
+            ..
+        } => register_wait(world, &context, requester, id, pane, until, timeout_ms),
         Request::Tab { action, .. } => tab_action(world, &context, id, action),
         Request::Workspace { action, .. } => workspace_action(world, &context, id, action),
         Request::Subscribe { .. } => Err(failed(
@@ -676,10 +682,162 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         )),
     };
     match result {
+        // A started creation (barrier) and a registered wait both reply later, not now.
         Ok(CommandResult::Pane { pane: PaneId(0) }) => {}
         Ok(result) => reply(world, requester, Reply::Completed { id, result }),
         Err(reply_value) => reply(world, requester, reply_value),
     }
+}
+
+/// Registers a `wait`; the reply comes from `resolve_waits` when the condition or the timeout
+/// fires. Returns the barrier sentinel so `apply_control` sends no immediate reply.
+fn register_wait(
+    world: &mut World,
+    context: &Context,
+    requester: Requester,
+    id: u64,
+    pane: PaneId,
+    until: control::WaitUntil,
+    timeout_ms: u64,
+) -> Result<CommandResult, Reply> {
+    let entity = pane_in_workspace(world, context, pane)
+        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
+    let waits = world.resource::<crate::ecs::resources::Waits>();
+    if waits.pending.len() >= control::MAX_PENDING_WAITS {
+        return Err(failed(id, ErrorCode::Limit, "too many pending waits"));
+    }
+    if waits
+        .pending
+        .iter()
+        .filter(|wait| wait.pane == pane)
+        .count()
+        >= control::MAX_WAITS_PER_PANE
+    {
+        return Err(failed(
+            id,
+            ErrorCode::Limit,
+            "too many pending waits on this pane",
+        ));
+    }
+    let now = world.resource::<Clock>().now_ms;
+    let seq = world
+        .get::<Pane>(entity)
+        .map(|component| component.terminal.grid().seq())
+        .unwrap_or(0);
+    world
+        .resource_mut::<crate::ecs::resources::Waits>()
+        .pending
+        .push(crate::ecs::resources::PendingWait {
+            requester,
+            id,
+            pane,
+            workspace: context.workspace,
+            until,
+            timeout_at_ms: now.saturating_add(timeout_ms),
+            last_seq: seq,
+            last_change_ms: now,
+        });
+    Ok(CommandResult::Pane { pane: PaneId(0) })
+}
+
+/// Evaluates every pending wait against the current pane state and the clock, replying to those
+/// that fired or timed out and proposing a deadline for the rest. A wait whose viewer is gone or
+/// whose pane left the workspace is dropped; a pane that no longer exists fails the wait.
+pub fn resolve_waits(world: &mut World) {
+    let pending = std::mem::take(&mut world.resource_mut::<crate::ecs::resources::Waits>().pending);
+    let now = world.resource::<Clock>().now_ms;
+    let mut keep = Vec::with_capacity(pending.len());
+    for mut wait in pending {
+        // Drop a wait whose viewer connection is gone.
+        if let Requester::Viewer(id) = wait.requester
+            && viewer_entity(world, id).is_none()
+        {
+            continue;
+        }
+        let entity = pane_in_workspace_ids(world, wait.workspace, wait.pane);
+        let Some(entity) = entity else {
+            reply(
+                world,
+                wait.requester,
+                failed(wait.id, ErrorCode::NotFound, "pane not found"),
+            );
+            continue;
+        };
+        if let Some(mut pane) = world.get_mut::<Pane>(entity) {
+            pane.refresh();
+        }
+        let Some(pane) = world.get::<Pane>(entity) else {
+            reply(
+                world,
+                wait.requester,
+                failed(wait.id, ErrorCode::NotFound, "pane not found"),
+            );
+            continue;
+        };
+        let seq = pane.terminal.grid().seq();
+        let exit_status = pane.state.exit_code();
+        if seq != wait.last_seq {
+            wait.last_seq = seq;
+            wait.last_change_ms = now;
+        }
+        let fired = match &wait.until {
+            control::WaitUntil::Exit => exit_status.is_some().then_some(control::WaitFired::Exit),
+            control::WaitUntil::Seq { value } => (seq >= *value).then_some(control::WaitFired::Seq),
+            control::WaitUntil::Quiet { ms } => (now.saturating_sub(wait.last_change_ms) >= *ms)
+                .then_some(control::WaitFired::Quiet),
+            control::WaitUntil::Pattern { regex } => {
+                let text = pane
+                    .terminal
+                    .grid()
+                    .rows_since(None)
+                    .iter()
+                    .map(|row| row.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                regex_lite::Regex::new(regex)
+                    .ok()
+                    .filter(|re| re.is_match(&text))
+                    .map(|_| control::WaitFired::Pattern)
+            }
+        };
+        if let Some(fired) = fired {
+            reply(
+                world,
+                wait.requester,
+                Reply::Completed {
+                    id: wait.id,
+                    result: CommandResult::Waited {
+                        fired,
+                        seq,
+                        exit_status,
+                    },
+                },
+            );
+            continue;
+        }
+        if now >= wait.timeout_at_ms {
+            reply(
+                world,
+                wait.requester,
+                failed(wait.id, ErrorCode::Timeout, "wait timed out"),
+            );
+            continue;
+        }
+        // Propose the next time this wait might fire: its timeout, and for quiet its window end.
+        let mut next = wait.timeout_at_ms;
+        if let control::WaitUntil::Quiet { ms } = &wait.until {
+            next = next.min(wait.last_change_ms.saturating_add(*ms));
+        }
+        world.resource_mut::<Deadlines>().propose(next);
+        keep.push(wait);
+    }
+    world.resource_mut::<crate::ecs::resources::Waits>().pending = keep;
+}
+
+/// Resolves a public pane id to its entity within `workspace` without a `Context`.
+fn pane_in_workspace_ids(world: &World, workspace: Entity, pane: PaneId) -> Option<Entity> {
+    let entity = pane_entity(world, pane)?;
+    (pane_workspace(world, entity)? == workspace).then_some(entity)
 }
 
 /// A pane id that belongs to the requester's workspace.

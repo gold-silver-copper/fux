@@ -45,6 +45,7 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 | `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows), `max_bytes` (1–131072), `format?` (`text` default, `rows`), `since?` (an output sequence; `rows` only, no scrollback) | `text` + `seq`, or `rows` (below) |
 | `list` | | `workspaces[]` |
 | `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{…}` |
+| `wait` | `pane`, `until`, `timeout_ms` (1–300000) | `waited`: `fired`, `seq`, `exit_status` |
 | `tab` | `action`: `new{name?}`, `next`, `previous`, `select{index}`, `select-id{tab}`, `rename{tab,name}`, `close{tab}` | `tab` |
 | `workspace` | `action`: `list`, `new{name?}`, `kill{name}` (only the connection's own workspace; other workspaces are killed through the manager or `fux workspace kill`), `select{name}` (viewer attachments only) | `workspace`/`workspaces[]` |
 | `subscribe` | `events?` (≤32 filters) | `accepted`, then events |
@@ -85,6 +86,27 @@ re-stamps every row, so the next `since` capture returns the whole screen. `sinc
 is `attrs` with `rows`. `max_bytes` bounds the total row text; rows past it are dropped whole.
 The sequence is current at the moment of the reply: a hidden pane's screen is read when it is
 listed, captured or its output event is due, a shown pane's whenever a viewer's frame goes out.
+
+## Waiting
+
+`wait` blocks a request until a pane meets a condition or the timeout elapses, so an agent need
+not poll. It is a server-side deadline, never a held thread, and the reply says which condition
+fired with the pane's current `seq` and `exit_status`:
+
+- `{"kind":"quiet","ms":M}` — no observable change (the output sequence did not advance) for `M` ms.
+- `{"kind":"pattern","regex":R}` — the visible screen's plain text matches `R` (a linear-time
+  regex, at most 512 bytes).
+- `{"kind":"exit"}` — the pane's process exits (the reply carries `exit_status`).
+- `{"kind":"seq","value":V}` — the pane's output sequence reaches `V`.
+
+```json
+{"command":"wait","id":8,"pane":1,"until":{"kind":"pattern","regex":"\\$ $"},"timeout_ms":10000}
+{"status":"completed","id":8,"result":{"kind":"waited","value":{"fired":"pattern","seq":31,"exit_status":null}}}
+```
+
+A pane that closes fails every wait on it with `not-found`; a viewer that disconnects drops its
+waits. The timeout is a `failed` reply with code `timeout`, never a hang. A server holds at most
+1,024 pending waits, at most 64 on one pane; `timeout_ms` and `quiet` `ms` are 1–300000.
 
 ## Events
 

@@ -51,6 +51,8 @@ enum Command {
     List(PassthroughArgs),
     /// Show the session server's pid, version, runtime directory and limits as JSON.
     Info(PassthroughArgs),
+    /// Wait on a pane: PANE quiet MS | pattern REGEX | exit | seq N [--timeout MS]
+    Wait(PassthroughArgs),
     /// Tab commands: new [NAME] | next | previous | select INDEX | select-id TAB | rename TAB NAME | close TAB
     Tab(PassthroughArgs),
     /// Stream lifecycle events as JSON lines: [EVENT...]
@@ -232,6 +234,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Capture(args)) => ctl_alias(cli.name.as_deref(), "capture", args.arguments),
         Some(Command::List(args)) => ctl_alias(cli.name.as_deref(), "list", args.arguments),
         Some(Command::Info(args)) => ctl_alias(cli.name.as_deref(), "info", args.arguments),
+        Some(Command::Wait(args)) => ctl_alias(cli.name.as_deref(), "wait", args.arguments),
         Some(Command::Tab(args)) => ctl_alias(cli.name.as_deref(), "tab", args.arguments),
         Some(Command::Subscribe(args)) => {
             ctl_alias(cli.name.as_deref(), "subscribe", args.arguments)
@@ -506,6 +509,47 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
         }
         "list" => Request::List { id },
         "info" => Request::Info { id },
+        "wait" => {
+            use fux::proto::control::WaitUntil;
+            let pane = PaneId(number(0, "a pane id")?);
+            let mut timeout_ms = 30_000;
+            let mut rest = args.get(1..).unwrap_or_default().to_vec();
+            if let Some(position) = rest.iter().position(|a| a == "--timeout") {
+                timeout_ms = rest
+                    .get(position + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--timeout requires milliseconds"))?
+                    .parse()?;
+                rest.drain(position..=position + 1);
+            }
+            let until = match rest.first().map(String::as_str) {
+                Some("quiet") => WaitUntil::Quiet {
+                    ms: rest
+                        .get(1)
+                        .ok_or_else(|| anyhow::anyhow!("quiet requires ms"))?
+                        .parse()?,
+                },
+                Some("pattern") => WaitUntil::Pattern {
+                    regex: rest
+                        .get(1)
+                        .ok_or_else(|| anyhow::anyhow!("pattern requires a regex"))?
+                        .clone(),
+                },
+                Some("exit") => WaitUntil::Exit,
+                Some("seq") => WaitUntil::Seq {
+                    value: rest
+                        .get(1)
+                        .ok_or_else(|| anyhow::anyhow!("seq requires a value"))?
+                        .parse()?,
+                },
+                _ => bail!("wait requires quiet MS | pattern REGEX | exit | seq N"),
+            };
+            Request::Wait {
+                id,
+                pane,
+                until,
+                timeout_ms,
+            }
+        }
         "tab" => {
             let action = match get(0, "an action")?.as_str() {
                 "new" => TabAction::New {

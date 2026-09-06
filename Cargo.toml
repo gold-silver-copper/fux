@@ -44,6 +44,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # Authoritative terminal emulation and bounded pane history.
 vt100 = "=0.16.2"
+# Linear-time (no catastrophic backtracking) regex for server-side `wait` patterns; pure Rust,
+# no transitive dependencies.
+regex-lite = "0.1"
 # Validate frame cells before rendering.
 unicode-segmentation = "1.12.0"
 unicode-width = "0.2.0"

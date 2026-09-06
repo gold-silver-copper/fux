@@ -21,6 +21,12 @@ pub const MAX_EVENT_FILTERS: usize = 32;
 pub const MAX_SUBSCRIBER_QUEUE: usize = 1024;
 pub const MAX_NAME_BYTES: usize = 128;
 pub const MAX_CONTROL_CONNECTIONS: usize = 64;
+pub const MAX_WAIT_MS: u64 = 300_000;
+pub const MAX_WAIT_PATTERN_BYTES: usize = 512;
+/// A server holds at most this many pending waits across every connection.
+pub const MAX_PENDING_WAITS: usize = 1024;
+/// And at most this many on one pane, so one client cannot fill the table against a pane.
+pub const MAX_WAITS_PER_PANE: usize = 64;
 
 pub type RequestId = u64;
 
@@ -86,6 +92,13 @@ pub enum Request {
     Info {
         id: RequestId,
     },
+    /// Block until `pane` meets `until` or `timeout_ms` elapses; the reply says which fired.
+    Wait {
+        id: RequestId,
+        pane: PaneId,
+        until: WaitUntil,
+        timeout_ms: u64,
+    },
     Tab {
         id: RequestId,
         action: TabAction,
@@ -113,6 +126,7 @@ impl Request {
             | Self::Capture { id, .. }
             | Self::List { id }
             | Self::Info { id }
+            | Self::Wait { id, .. }
             | Self::Tab { id, .. }
             | Self::Workspace { id, .. }
             | Self::Subscribe { id, .. } => *id,
@@ -197,6 +211,41 @@ impl Request {
                 crate::ids::validate_workspace_name(name)
                     .map_err(|error| ControlError::invalid(id, error.to_string()))?;
             }
+            Self::Wait {
+                until, timeout_ms, ..
+            } => {
+                if *timeout_ms == 0 || *timeout_ms > MAX_WAIT_MS {
+                    return Err(ControlError::invalid(
+                        id,
+                        format!("wait timeout must be 1-{MAX_WAIT_MS} ms"),
+                    ));
+                }
+                match until {
+                    WaitUntil::Quiet { ms } if *ms == 0 || *ms > MAX_WAIT_MS => {
+                        return Err(ControlError::invalid(
+                            id,
+                            format!("wait quiet must be 1-{MAX_WAIT_MS} ms"),
+                        ));
+                    }
+                    WaitUntil::Pattern { regex } => {
+                        if regex.len() > MAX_WAIT_PATTERN_BYTES {
+                            return Err(ControlError::invalid(
+                                id,
+                                format!(
+                                    "wait pattern must be at most {MAX_WAIT_PATTERN_BYTES} bytes"
+                                ),
+                            ));
+                        }
+                        if regex_lite::Regex::new(regex).is_err() {
+                            return Err(ControlError::invalid(
+                                id,
+                                "wait pattern is not a valid regex",
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Self::Subscribe { events, .. } if events.len() > MAX_EVENT_FILTERS => {
                 return Err(ControlError::invalid(
                     id,
@@ -272,6 +321,30 @@ pub struct InfoLimits {
     pub terminate_deadline_ms: u64,
     pub output_event_interval_ms: u64,
     pub frame_interval_ms: u64,
+}
+
+/// What a `wait` blocks for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum WaitUntil {
+    /// No observable change for `ms`.
+    Quiet { ms: u64 },
+    /// The visible screen's plain text matches `regex`.
+    Pattern { regex: String },
+    /// The pane's process exits.
+    Exit,
+    /// The pane's output sequence reaches `value`.
+    Seq { value: u64 },
+}
+
+/// Which `wait` condition fired.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WaitFired {
+    Quiet,
+    Pattern,
+    Exit,
+    Seq,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,6 +464,12 @@ pub enum CommandResult {
     Info {
         info: Box<ServerInfo>,
     },
+    /// A `wait` fired: which condition, the pane's current sequence and its exit status.
+    Waited {
+        fired: WaitFired,
+        seq: u64,
+        exit_status: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -450,6 +529,7 @@ pub enum ErrorCode {
     NotFound,
     Conflict,
     Limit,
+    Timeout,
     Internal,
 }
 

@@ -23,8 +23,10 @@ an instance nonce and socket paths only; the protocols carry no version numbers.
   disconnected, panes unaffected).
 - Control: 1 MiB frames, two-second preface deadline, 64 connections per workspace, 128 KiB
   captures (text, or the total row text of a `rows` capture), 100 000 scrollback rows, 64 KiB
-  `send-keys`, 128-byte labels, 32 event filters, 1024-event subscriber queues. `info` reports
-  these and the configured session limits.
+  `send-keys`, 128-byte labels, 32 event filters, 1024-event subscriber queues, 1024 pending
+  `wait`s per server and 64 per pane, `wait` timeout and quiet windows 1–300000 ms, 512-byte
+  `wait` regex patterns (matched in linear time). `info` reports these and the configured session
+  limits.
 - Session: 64 workspaces, 32 tabs and 128 panes per workspace, 512×512 pane cells, 256 queued
   viewer requests during a creation barrier, per-step ingest budgets (64 pane chunks of at most
   64 KiB from a 256-deep channel and 256 ingress requests per collection, two collections per
