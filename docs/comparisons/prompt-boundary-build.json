@@ -1,0 +1,19 @@
+{
+  "reference_commit": "94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0",
+  "zig": {
+    "tarball": "https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz",
+    "shasum": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+    "size": "50635984"
+  },
+  "binary_sha256": "0bac24ff60e74f7def09b904a15b3f0894dfda340ec8dfd6df9b4b7a4a175060",
+  "source_archive_sha256": "c354a6d37564bdf2c6550e4a1201ed410c4ff90245a461c411e793c6bbcd2cfa",
+  "tracked_files_compared": 2452,
+  "tracked_file_bytes_and_symlink_targets_equal": true,
+  "tracked_source_manifest_sha256": "0496fa67c6c455ff4e5963bfc18fff75ffbf8881a4ee74a08f21bb84152fc3b5",
+  "build_profile": "debug",
+  "build_exit": 0,
+  "rustc": "rustc 1.96.0-nightly (80381278a 2026-03-01)",
+  "build_log_sha256": "062c214e740e7138db7ec56988e9664426e333d729639ea0d6633e690e9575cc",
+  "build_log_path": "/tmp/herdr-reference-build-7omd3gg2/build-canonical.log",
+  "initial_path_failure_log": "/tmp/herdr-reference-build-7omd3gg2/build.log"
+}

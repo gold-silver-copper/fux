@@ -21,6 +21,7 @@ use tokio::sync::{Notify, mpsc, oneshot};
 /// Shared by every accept loop: how to reach the owner and how to hand it reply channels.
 #[derive(Clone)]
 pub struct Owner {
+    pub instance: String,
     pub inbound: mpsc::Sender<Inbound>,
     pub tokens: Arc<AtomicU64>,
     pub control_replies: mpsc::Sender<(u64, oneshot::Sender<Reply>)>,
@@ -297,27 +298,86 @@ async fn serve_control_connection(
                 continue;
             }
         };
-        if let Request::Subscribe { id, events } = request {
+        if request
+            .instance()
+            .is_some_and(|instance| instance != owner.instance)
+        {
+            write_reply(
+                &mut writer,
+                &Reply::failed(
+                    request.id(),
+                    ErrorCode::Conflict,
+                    "server instance changed; rediscover before retrying",
+                ),
+            )
+            .await?;
+            continue;
+        }
+        if let Request::Subscribe {
+            id, events, after, ..
+        } = request
+        {
             let (sender, mut receiver) = mpsc::channel(MAX_SUBSCRIBER_QUEUE);
-            subscribers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(Subscriber {
-                    id,
-                    filters: events,
+            {
+                let mut active = subscribers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                active.retain(|subscriber| !subscriber.sender.is_closed());
+                active.push(Subscriber {
+                    filters: events.clone(),
                     sender,
+                    bytes: Arc::new(AtomicUsize::new(0)),
                 });
+            }
+            // Register first, then replay through the authoritative ECS boundary. Events that
+            // race this read are either in the replay or in the queue (possibly both).
+            let mut boundary = after;
+            let mut replay = Vec::new();
+            if let Some(after) = after {
+                let reply = dispatch_control(
+                    &owner,
+                    &workspace,
+                    Request::Events {
+                        id,
+                        instance: Some(owner.instance.clone()),
+                        after,
+                    },
+                )
+                .await?;
+                match reply {
+                    Reply::Completed {
+                        result:
+                            control::CommandResult::Events {
+                                cursor,
+                                events: entries,
+                            },
+                        ..
+                    } => {
+                        boundary = Some(cursor);
+                        replay = entries;
+                    }
+                    other => {
+                        write_reply(&mut writer, &bounded(other)).await?;
+                        return Ok(());
+                    }
+                }
+            }
             write_reply(&mut writer, &Reply::Accepted { id }).await?;
+            for entry in replay {
+                if events.is_empty() || events.contains(&entry.event.kind()) {
+                    write_event(&mut writer, entry, id).await?;
+                }
+            }
             let mut probe = [0_u8; 1];
             loop {
                 tokio::select! {
                     event = receiver.recv() => {
                         let Some(event) = event else { break };
-                        let bytes = serde_json::to_vec(&event)?;
-                        tokio::time::timeout(FRAME_TIMEOUT, async {
-                            writer.write_all(&bytes).await?;
-                            writer.write_all(b"\n").await
-                        }).await??;
+                        if boundary.is_some_and(|cursor| cursor.stream == event.entry.cursor.stream
+                            && event.entry.cursor.sequence <= cursor.sequence) {
+                            continue;
+                        }
+                        write_event(&mut writer, (*event.entry).clone(), id).await?;
                     }
                     read = reader.read(&mut probe) => {
                         // Any further byte or EOF ends the subscription.
@@ -328,28 +388,51 @@ async fn serve_control_connection(
             }
             return Ok(());
         }
-        let request_id = request.id();
-        let token = owner.token();
-        let (sender, receiver) = oneshot::channel();
-        owner.control_replies.send((token, sender)).await?;
-        owner
-            .inbound
-            .send(Inbound::ControlRequest {
-                workspace: workspace.clone(),
-                request,
-                token,
-            })
-            .await?;
-        let reply = match tokio::time::timeout(Duration::from_secs(30), receiver).await {
+        let reply = dispatch_control(&owner, &workspace, request).await?;
+        write_reply(&mut writer, &bounded(reply)).await?;
+    }
+    Ok(())
+}
+
+async fn dispatch_control(
+    owner: &Owner,
+    workspace: &str,
+    request: Request,
+) -> anyhow::Result<Reply> {
+    let request_id = request.id();
+    let token = owner.token();
+    let (sender, receiver) = oneshot::channel();
+    owner.control_replies.send((token, sender)).await?;
+    owner
+        .inbound
+        .send(Inbound::ControlRequest {
+            workspace: workspace.to_owned(),
+            request,
+            token,
+        })
+        .await?;
+    Ok(
+        match tokio::time::timeout(Duration::from_secs(30), receiver).await {
             Ok(Ok(reply)) => reply,
             _ => Reply::failed(
                 request_id,
                 ErrorCode::Internal,
                 "control request was not answered",
             ),
-        };
-        write_reply(&mut writer, &bounded(reply)).await?;
-    }
+        },
+    )
+}
+
+async fn write_event(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    mut event: control::SequencedEvent,
+    id: u64,
+) -> anyhow::Result<()> {
+    event.event = event.event.with_id(id);
+    let mut bytes = serde_json::to_vec(&event)?;
+    anyhow::ensure!(bytes.len() <= MAX_FRAME_BYTES, "event exceeds frame limit");
+    bytes.push(b'\n');
+    tokio::time::timeout(FRAME_TIMEOUT, writer.write_all(&bytes)).await??;
     Ok(())
 }
 
@@ -425,6 +508,9 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
         }
     };
     let action = match request {
+        crate::daemon::ManagerRequest::Final { instance, pane } => {
+            ManagerAction::Final { instance, pane }
+        }
         crate::daemon::ManagerRequest::List => ManagerAction::List,
         crate::daemon::ManagerRequest::Resolve { name } => ManagerAction::Resolve { name },
         crate::daemon::ManagerRequest::Kill { name } => ManagerAction::Kill { name },
@@ -452,6 +538,7 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
         _ => ManagerOutcome::Failed("manager request was not answered".into()),
     };
     let reply = match outcome {
+        ManagerOutcome::Final(result) => crate::daemon::ManagerReply::Final { result },
         ManagerOutcome::Names(names) => crate::daemon::ManagerReply::Names { names },
         ManagerOutcome::Failed(message) => crate::daemon::ManagerReply::Failed { message },
         ManagerOutcome::Attach { name, .. } => match (DESCRIPTOR_HOOK.get())(&name) {

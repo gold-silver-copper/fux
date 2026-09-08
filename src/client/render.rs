@@ -717,7 +717,7 @@ mod tests {
                 height: 4,
             },
         });
-        frame.panes.insert(PaneId(1), view(b"hello", 4, 10));
+        frame.panes.insert(PaneId(1), view(b"hello", 4, 10).into());
         frame
     }
 
@@ -752,9 +752,9 @@ mod tests {
                 height: 2,
             },
         });
-        frame.panes.insert(PaneId(1), view(b"aaaa", 5, 4));
-        frame.panes.insert(PaneId(2), view(b"bb", 2, 5));
-        frame.panes.insert(PaneId(3), view(b"cc", 2, 5));
+        frame.panes.insert(PaneId(1), view(b"aaaa", 5, 4).into());
+        frame.panes.insert(PaneId(2), view(b"bb", 2, 5).into());
+        frame.panes.insert(PaneId(3), view(b"cc", 2, 5).into());
         frame
     }
 
@@ -869,7 +869,7 @@ mod tests {
         // An unfocused pane that exited sits below the visible rows after a shrink.
         let mut stale = split_frame();
         if let Some(view) = stale.panes.get_mut(&PaneId(3)) {
-            view.exit = Some(1);
+            std::sync::Arc::make_mut(view).exit = Some(1);
         }
         for (rows, cols) in [(0, 0), (1, 1), (2, 3), (1, 80), (24, 1), (2, 20), (3, 12)] {
             let composed = compose(

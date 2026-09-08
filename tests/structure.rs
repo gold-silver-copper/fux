@@ -194,7 +194,7 @@ fn default_ci_and_release_verification_require_only_fux() {
                     "zor/Cargo.toml",
                     "gold-silver-copper/koh",
                     "gold-silver-copper/zor",
-                    "tools/dependencies.py",
+                    "-- dependencies",
                 ] {
                     assert!(
                         !line.contains(forbidden),

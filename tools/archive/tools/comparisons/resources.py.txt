@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Paired owned-process idle/burst resource measurements; synthetic workers only."""
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import subprocess
+import tempfile
+import time
+
+import prompt_boundary as common
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKER = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+int main(void) {
+    alarm(90);
+    char path[4096], line[128];
+    snprintf(path, sizeof path, "%s/%ld", getenv("WORKER_DIR"), (long)getpid());
+    FILE *file = fopen(path, "w");
+    if (!file) return 2;
+    struct winsize size;
+    if (ioctl(STDIN_FILENO, TIOCGWINSZ, &size)) return 3;
+    fprintf(file, "%u %u\n", size.ws_col, size.ws_row);
+    fclose(file);
+    setbuf(stdout, NULL);
+    puts("READY");
+    while (fgets(line, sizeof line, stdin)) {
+        for (int i = 0; i < 256; ++i) printf("%04d 012345678901234567890123456789012345678901234567890123456789\n", i);
+        puts("BURST_DONE");
+    }
+    return 0;
+}
+'''
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_case(row):
+    assert row['panes'] in [1, 4, 8]
+    expected = {'fux', 'zor'} if row['backend'] == 'zor' else {'herdr'}
+    assert set(row['owners_exit']) == expected
+    assert all(code == 0 for code in row['owners_exit'].values())
+    assert row['worker_exit_confirmed'] is True
+    assert len(row['initial_captures']) == len(row['worker_viewports']) == row['panes']
+    assert all(len(size) == 2 and all(d > 0 for d in size) for size in row['worker_viewports'])
+    assert row['harness_capture_reads'] >= row['panes']
+    assert 0 < row['burst_all_visible_ms'] < row['burst']['wall_ms']
+    assert len(row['samples']) == 4
+    for interval_name, indices in [('idle', (0, 1)), ('burst', (2, 3))]:
+        interval = row[interval_name]
+        before, after = [row['samples'][i] for i in indices]
+        assert set(interval['components']) == set(before['components']) == set(after['components']) == expected
+        assert abs(interval['wall_ms'] - (after['monotonic']-before['monotonic'])*1000) < .001
+        assert interval['wall_ms'] >= (3000 if interval_name == 'idle' else 1000)
+        for name in expected:
+            a, b = before['components'][name], after['components'][name]
+            assert a['pid'] == b['pid'] > 1
+            assert a['start_abstime'] == b['start_abstime'] > 0
+            assert a['timebase_numer'] == b['timebase_numer'] > 0
+            assert a['timebase_denom'] == b['timebase_denom'] > 0
+            cpu = (b['user_ticks']+b['system_ticks']-a['user_ticks']-a['system_ticks'])*b['timebase_numer']/b['timebase_denom']/1e6
+            assert cpu >= 0 and abs(cpu-interval['components'][name]['cpu_ms']) < .001
+            for field in ['rss_bytes', 'footprint_bytes']:
+                assert interval['components'][name][field] == b[field] > 0
+
+
+def run_case(backend, count, binaries, worker, sampler):
+    with tempfile.TemporaryDirectory(prefix='resource-pair-', dir='/tmp') as directory:
+        root = Path(directory); config = root/'config'
+        (root/'workers').mkdir()
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=directory, XDG_CONFIG_HOME=str(config),
+            XDG_STATE_HOME=str(root/'state'), XDG_CACHE_HOME=str(root/'cache'), XDG_RUNTIME_DIR=directory,
+            SHELL='/bin/sh', TERM='xterm-256color', WORKER_DIR=str(root/'workers'))
+        owners = {}; panes = []; snapshots = []
+        def cli(tool, *args):
+            result = subprocess.run([str(binaries[tool]), *args], env=env, cwd=root,
+                capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, (args, result.stderr)
+            return result.stdout
+        with (root/'owners.log').open('w+') as log:
+            def start(name, *args):
+                owners[name] = subprocess.Popen([str(binaries[name]), *args], env=env, cwd=root,
+                    stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+            def sample():
+                rows = {}
+                for name, process in owners.items():
+                    assert process.poll() is None, (name, 'exited')
+                    rows[name] = json.loads(subprocess.run([str(sampler), str(process.pid)],
+                        capture_output=True, text=True, timeout=5, check=True).stdout)
+                value = dict(monotonic=time.monotonic(), components=rows)
+                snapshots.append(value)
+                return value
+            try:
+                if backend == 'zor':
+                    path = config/'fux/config.toml'; path.parent.mkdir(parents=True)
+                    path.write_text('default-command = { argv = '+json.dumps([str(worker)])+' }\n')
+                    start('fux', 'serve')
+                    common.until(lambda: (root/'fux/default.sock').exists())
+                    for i in range(1, count): cli('fux', 'workspace', 'new', 'pane'+str(i))
+                    for name in ['default'] + ['pane'+str(i) for i in range(1, count)]:
+                        endpoint = root/'fux'/(name+'.sock')
+                        listing = common.rpc(endpoint, dict(id=1, command='list'), True)['result']['value']
+                        for workspace in listing['workspaces']:
+                            for tab in workspace['tabs']:
+                                for pane in tab['panes']:
+                                    panes.append((endpoint, pane['id']))
+                    start('zor', 'serve')
+                    common.until(lambda: (root/'zor/control.sock').exists())
+                    common.until(lambda: len(json.loads(cli('zor', 'status'))['snapshot']['observations']) == count)
+                    def capture(pane):
+                        return common.rpc(pane[0], dict(id=1, command='capture', pane=pane[1],
+                            max_bytes=131072), True)['result']['value']
+                    def send(pane):
+                        result = common.rpc(pane[0], dict(id=1, command='send-keys', pane=pane[1], keys='burst\\n'), True)
+                        assert result['status'] == 'completed', result
+                else:
+                    for name in ['herdr', 'herdr-dev']:
+                        path = config/name/'config.toml'; path.parent.mkdir(parents=True)
+                        path.write_text('onboarding = false\n[terminal]\ndefault_shell = '+json.dumps(str(worker))+
+                            '\nshell_mode = "non_login"\n[update]\nversion_check = false\nmanifest_check = false\n')
+                    start('herdr', 'server')
+                    endpoint = common.until(lambda: next(iter(config.glob('herdr*/herdr.sock')), None))
+                    def call(method, **params):
+                        value = common.rpc(endpoint, dict(id='resources', method=method, params=params))
+                        assert 'error' not in value, value
+                        return value['result']
+                    for _ in range(count): call('workspace.create', cwd=directory, focus=True)
+                    panes = [row['pane_id'] for row in call('pane.list')['panes']]
+                    common.until(lambda: len(call('agent.list')['agents']) == count)
+                    def capture(pane): return call('pane.read', pane_id=pane, source='visible', strip_ansi=True)
+                    def send(pane): return call('pane.send_input', pane_id=pane, text='burst\n')
+                assert len(panes) == count, panes
+                common.until(lambda: len(list((root/'workers').iterdir())) == count)
+                for pane in panes: common.until(lambda: 'READY' in json.dumps(capture(pane)))
+                initial = [capture(pane) for pane in panes]
+                time.sleep(1)
+                idle_before = sample(); time.sleep(3); idle_after = sample()
+                burst_before = sample(); started = time.monotonic()
+                for pane in panes: send(pane)
+                reads = 0
+                for pane in panes:
+                    def done():
+                        nonlocal reads
+                        reads += 1
+                        return 'BURST_DONE' in json.dumps(capture(pane))
+                    common.until(done)
+                visible_ms = (time.monotonic()-started)*1000
+                # Include a fixed settling interval so asynchronous observation work is sampled.
+                time.sleep(1)
+                burst_after = sample()
+                def interval(before, after):
+                    result = {}
+                    for name, a in before['components'].items():
+                        b = after['components'][name]
+                        assert a['start_abstime'] == b['start_abstime'] > 0
+                        ticks = b['user_ticks']+b['system_ticks']-a['user_ticks']-a['system_ticks']
+                        assert ticks >= 0
+                        result[name] = dict(cpu_ms=ticks*b['timebase_numer']/b['timebase_denom']/1e6,
+                            rss_bytes=b['rss_bytes'], footprint_bytes=b['footprint_bytes'])
+                    return dict(wall_ms=(after['monotonic']-before['monotonic'])*1000, components=result)
+                result = dict(backend=backend, panes=count, idle=interval(idle_before, idle_after),
+                    burst=interval(burst_before, burst_after), burst_all_visible_ms=visible_ms,
+                    harness_capture_reads=reads, initial_captures=initial, samples=snapshots,
+                    worker_viewports=[list(map(int, path.read_text().split())) for path in sorted((root/'workers').iterdir())])
+            finally:
+                try:
+                    if 'zor' in owners and owners['zor'].poll() is None: cli('zor', 'shutdown')
+                finally:
+                    cleanup_errors = []
+                    for name, process in reversed(list(owners.items())):
+                        if process.poll() is None and name != 'zor': process.terminate()
+                        try: process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            process.kill(); process.wait(timeout=5)
+                            cleanup_errors.append('forced owner cleanup: '+name)
+                        if process.returncode != 0: cleanup_errors.append((name, process.returncode))
+                def workers_gone():
+                    for path in (root/'workers').iterdir():
+                        try: os.kill(int(path.name), 0)
+                        except ProcessLookupError: continue
+                        return False
+                    return True
+                common.until(workers_gone)
+                assert not cleanup_errors, cleanup_errors
+            result['owners_exit'] = {name:process.returncode for name, process in owners.items()}
+            result['worker_exit_confirmed'] = True
+            validate_case(result)
+            return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ['fux', 'zor', 'herdr', 'output', 'herdr-provenance']:
+        parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--repetitions', type=int, default=3)
+    args = parser.parse_args()
+    assert 1 <= args.repetitions <= 3 and not args.output.exists()
+    binaries = {name:getattr(args, name).resolve(strict=True) for name in ['fux', 'zor', 'herdr']}
+    provenance = dict(binaries={name:dict(path=str(path), sha256=digest(path)) for name,path in binaries.items()},
+        sources={str(path.relative_to(ROOT)):digest(path) for path in [Path(__file__).resolve(),
+            ROOT/'tools/comparisons/resource_sampler.c', ROOT/'tools/comparisons/prompt_boundary.py',
+            ROOT/'zor/src/watch.rs', ROOT/'zor/src/service.rs', ROOT/'src/ecs/systems/output.rs']},
+        herdr_build=json.loads(args.herdr_provenance.read_text()))
+    assert provenance['herdr_build']['binary_sha256'] == provenance['binaries']['herdr']['sha256']
+    results = []
+    with tempfile.TemporaryDirectory(prefix='resource-worker-', dir='/tmp') as directory:
+        root = Path(directory); source = root/'worker.c'; source.write_text(WORKER)
+        worker = root/'claude'; sampler = root/'sample'
+        for src, binary in [(source, worker), (ROOT/'tools/comparisons/resource_sampler.c', sampler)]:
+            subprocess.run(['/usr/bin/clang', '-Wall', '-Wextra', '-Werror', str(src), '-o', str(binary)], check=True, timeout=30)
+        calibration = json.loads(subprocess.run([str(sampler), '--calibrate'], check=True,
+            capture_output=True, text=True, timeout=5).stdout)
+        for repetition in range(1, args.repetitions+1):
+            for count in [1, 4, 8]:
+                for backend in ['zor', 'herdr']:
+                    value = run_case(backend, count, binaries, worker, sampler)
+                    value['repetition'] = repetition; results.append(value)
+                    print(backend, count, repetition, 'passed', flush=True)
+    args.output.write_text(json.dumps(dict(schema=1, recorded_at=datetime.now(timezone.utc).isoformat(),
+        platform=platform.platform(), provenance=provenance, calibration=calibration, results=results), indent=2)+'\n')
+
+
+if __name__ == '__main__': main()

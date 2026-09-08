@@ -78,8 +78,10 @@ pub fn reserve_pane(
                     height: rows.saturating_add(2),
                 },
                 dirty: true,
+                input_sequence: 0,
                 published_title: String::new(),
                 last_output_event_ms: None,
+                output_event_pending: false,
             },
             Creation {
                 requesters: vec![(new.requester, new.request_id)],
@@ -168,10 +170,21 @@ pub fn reserve_workspace(
             format!("workspace {name} already exists"),
         ));
     }
+    let stream = world
+        .resource_mut::<Ids>()
+        .next_event_stream()
+        .ok_or_else(|| {
+            failed(
+                request_id,
+                ErrorCode::Limit,
+                "workspace event stream ids exhausted",
+            )
+        })?;
     let step = world.resource::<Clock>().step;
     let workspace = world
         .spawn(Workspace {
             name: name.clone(),
+            events: crate::ecs::events::EventLog::new(stream),
             tabs: Vec::new(),
             selection: Selection::default(),
             last_attached: step,

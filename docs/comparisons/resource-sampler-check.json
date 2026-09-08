@@ -1,0 +1,51 @@
+{
+  "recorded_at": "2026-09-07T18:45:33.487098+00:00",
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "source_sha256": "f9fd441eef48829761b9ecb9019db88777f9b9c8df04b7b7e71c875e313b77e7",
+  "calibration": [
+    {
+      "clock_cpu_ns": 200038000,
+      "converted_cpu_ns": 200026667,
+      "ratio": 0.999943,
+      "timebase_numer": 125,
+      "timebase_denom": 3
+    },
+    {
+      "clock_cpu_ns": 200036000,
+      "converted_cpu_ns": 200020208,
+      "ratio": 0.999921,
+      "timebase_numer": 125,
+      "timebase_denom": 3
+    },
+    {
+      "clock_cpu_ns": 200021000,
+      "converted_cpu_ns": 200008083,
+      "ratio": 0.999935,
+      "timebase_numer": 125,
+      "timebase_denom": 3
+    }
+  ],
+  "allocation_bytes": 33554432,
+  "before": {
+    "pid": 21243,
+    "rss_bytes": 15384576,
+    "footprint_bytes": 7176624,
+    "user_ticks": 430960,
+    "system_ticks": 217910,
+    "start_abstime": 3875830025288,
+    "timebase_numer": 125,
+    "timebase_denom": 3
+  },
+  "after": {
+    "pid": 21243,
+    "rss_bytes": 48971776,
+    "footprint_bytes": 40780232,
+    "user_ticks": 477415,
+    "system_ticks": 332882,
+    "start_abstime": 3875830025288,
+    "timebase_numer": 125,
+    "timebase_denom": 3
+  },
+  "worker_exit": 0,
+  "invalid_pid_arguments_rejected": 6
+}

@@ -1,4 +1,4 @@
-# Local attachment protocol v5
+# Local attachment protocol v6
 
 A workspace attachment socket is `RUNTIME/fux/NAME.attach.sock` in the private fux runtime
 directory. The server owns the path and removes only the inode it bound. Both peers check the
@@ -20,7 +20,7 @@ version mismatch is reported and the old server is never terminated to upgrade i
 
 | Message | Meaning |
 |---|---|
-| `{"type":"hello","version":5,"rows":24,"columns":80}` | negotiate and declare the terminal size |
+| `{"type":"hello","version":6,"rows":24,"columns":80}` | negotiate and declare the terminal size |
 | `{"type":"input","bytes":[108,115,10]}` | byte-exact input for the viewer's focused pane |
 | `{"type":"mouse","event":{"code":64,"column":12,"row":3,"release":false},"generation":7}` | an SGR mouse report for the application under the pointer; `generation` names the frame that was hit-tested. Stale generations are ignored |
 | `{"type":"control","request":CONTROL_REQUEST}` | a control-protocol request executed in order with this viewer's input |
@@ -32,7 +32,7 @@ version mismatch is reported and the old server is never terminated to upgrade i
 
 | Message | Meaning |
 |---|---|
-| `{"hello":{"version":5}}` | negotiation complete |
+| `{"hello":{"version":6}}` | negotiation complete |
 | `{"state":{"state":FRAME}}` | this viewer's frame (below) |
 | `{"reply":{"reply":CONTROL_REPLY}}` | reply to one of this viewer's `control` requests |
 | `{"view":{"reply":{"request":9,"pane":1,"view":PANE_VIEW,"history":812}}}` | history read; `view` is `null` when the pane is gone, `history` is the retained row count |
@@ -69,3 +69,7 @@ Workspace and manager commands use the separate [control protocol](local-control
 Versions 2 (with `pane-input`, `binding` and `copy-view` messages), 3 (box-rectangle layouts) and
 4 (bar on row 0) are no longer served; a viewer meeting one reports the mismatch and, when interactive, offers to
 stop the old server or run alongside it.
+
+Version 6 includes the generic control-request `instance` precondition and coherent capture
+replies. Version 5 peers are rejected at attachment negotiation instead of accepting a stream
+whose embedded control schema they cannot decode.

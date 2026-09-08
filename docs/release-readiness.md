@@ -4,6 +4,10 @@ fux 0.3.0 builds, tests and packages from a clean checkout with no other program
 key or graphical environment. Nothing in the rewrite authorizes a commit, tag, release or
 registry publication; those remain separate user decisions.
 
+The zor runtime/API work is in progress. Its current verification and outstanding requirements
+are tracked in [agent-workflow-ledger.md](agent-workflow-ledger.md); earlier release evidence
+below does not establish readiness of the new work.
+
 ## Evidence
 
 Local verification on macOS is recorded command by command in
@@ -12,7 +16,7 @@ compilation, the fixture-child suite, the packaged-binary verifier, the reconstr
 integrations and the performance measurements against the 0.2.1 baseline.
 
 Configured CI (`ci.yml`: Linux and macOS hosts, MSRV job, Android cross-compilation check,
-package job, optional cross-repository job; `nightly.yml` with 2048 randomized cases;
+package job, required cross-repository job; `nightly.yml` with 2048 randomized cases;
 `release-verify.yml`) describes what hosted runs would execute. No hosted run of this tree was
 requested, so configured jobs are not executed evidence.
 
@@ -23,7 +27,7 @@ requested, so configured jobs are not executed evidence.
 - Terminal-emulator specific behaviour (OSC 52 handling, reserved mouse gestures) needs manual
   checks per emulator.
 - Relay/NAT behaviour and mobile suspend/resume are koh's scope and were not exercised here.
-- Attachment protocol v5 and control protocol `FUXCTL2` are incompatible with 0.2.x, 0.3.0 and 0.3.1 servers. An
+- Attachment protocol v6 and control protocol `FUXCTL3` reject prior protocol schemas. An
   interactive `fux` offers to stop the old server after an explicit typed confirmation (terminating
   its panes), or shows how to run alongside it; it never stops one without that confirmation.
 

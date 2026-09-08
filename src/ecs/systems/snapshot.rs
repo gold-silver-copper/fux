@@ -8,6 +8,7 @@ use crate::ecs::support::effect;
 use crate::proto::attach::ServerMessage;
 use crate::view::{Frame, PaneRect, PaneView, TabEntry};
 use bevy_ecs::prelude::*;
+use std::{collections::BTreeMap, sync::Arc};
 
 pub fn publish_frames(world: &mut World) {
     let viewers: Vec<Entity> = {
@@ -19,12 +20,19 @@ pub fn publish_frames(world: &mut World) {
         entries.sort();
         entries.into_iter().map(|(_, entity)| entity).collect()
     };
+    // Panes do not change during publication. Share each derived view only within
+    // this step; the next step must rebuild from current terminal state.
+    let mut pane_views = BTreeMap::new();
     for viewer in viewers {
-        publish_viewer(world, viewer);
+        publish_viewer(world, viewer, &mut pane_views);
     }
 }
 
-fn publish_viewer(world: &mut World, viewer: Entity) {
+fn publish_viewer(
+    world: &mut World,
+    viewer: Entity,
+    pane_views: &mut BTreeMap<Entity, Arc<PaneView>>,
+) {
     let Some((id, workspace, tab, dirty, detaching, exit_sent)) =
         world.get::<Viewer>(viewer).map(|viewer| {
             (
@@ -78,6 +86,7 @@ fn publish_viewer(world: &mut World, viewer: Entity) {
             workspace,
             tab,
             retiring.and_then(|r| r.exit_code),
+            pane_views,
         );
         if frame.valid() {
             effect(
@@ -135,6 +144,7 @@ fn build_frame(
     workspace: Entity,
     tab: Option<Entity>,
     exit_code: Option<u32>,
+    pane_views: &mut BTreeMap<Entity, Arc<PaneView>>,
 ) -> Frame {
     let (name, tab_entities) = world
         .get::<Workspace>(workspace)
@@ -164,13 +174,19 @@ fn build_frame(
         if matches!(component.state, PaneState::Starting) {
             continue;
         }
-        let Ok(view) = PaneView::from_screen(
-            component.terminal.screen(),
-            &component.published_title,
-            0,
-            component.state.exit_code(),
-        ) else {
-            continue;
+        let view = match pane_views.entry(*pane) {
+            std::collections::btree_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let Ok(view) = PaneView::from_screen(
+                    component.terminal.screen(),
+                    &component.published_title,
+                    0,
+                    component.state.exit_code(),
+                ) else {
+                    continue;
+                };
+                Arc::clone(entry.insert(Arc::new(view)))
+            }
         };
         layout.push(PaneRect {
             pane: component.id,

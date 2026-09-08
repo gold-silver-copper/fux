@@ -1,0 +1,813 @@
+{
+  "provenance": {
+    "herdr": {
+      "sha256": "0bac24ff60e74f7def09b904a15b3f0894dfda340ec8dfd6df9b4b7a4a175060",
+      "version": "herdr 0.8.2"
+    },
+    "fux": {
+      "sha256": "eefa921d22e0cc739dc8d19579dd62199bb380a79389487ae9ebd05382c6ff8a",
+      "version": "fux 0.3.3"
+    },
+    "zor": {
+      "sha256": "b6dd96fb719641121a531627bfec75b58664c1a5a03641e0dabb06a07c7ae66c",
+      "version": "zor 0.1.2"
+    },
+    "reference_commit": "94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "harness_sha256": "cf2c4a756029c0a12afd2e9d48937ef54649a730c19c851f64ee01b1a184a4b6",
+    "helper_sha256": "3a29778f9717501d45edf8968e28e7124f913eb3df0d5e6d2c794eef057a2d89",
+    "worker_source_sha256": "245647e4c042f78a8e786ddf127b17604c9be098d942cd8570e4225eaf6ce2fe"
+  },
+  "synthetic": true,
+  "results": [
+    {
+      "first": {
+        "transport": "eof"
+      },
+      "retry": {
+        "id": "stable-request-id",
+        "result": {
+          "type": "agent_prompted",
+          "agent": {
+            "terminal_id": "term_65ae0c056d98f1",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/retry-comparison-8haluo3d",
+            "foreground_cwd": "/private/tmp/retry-comparison-8haluo3d",
+            "revision": 0
+          }
+        }
+      },
+      "input_before_retry": "",
+      "received": "retry-probe\n",
+      "input_count": 1,
+      "proxy_events": [
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "request-dropped"
+        },
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "herdr",
+      "fault": "before-forward",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "first": {
+        "exit": 1,
+        "error": "zor: prompt operation incomplete; inspect/reconcile before retrying: control socket closed before a response\n"
+      },
+      "first_delivery": "uncertain",
+      "retry": {
+        "delivery": "delivered",
+        "wait": "pending",
+        "operation": 1
+      },
+      "input_before_retry": "",
+      "received": "retry-probe\n",
+      "input_count": 1,
+      "proxy_events": [
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "405683d5d36d03796bd643a59da0fa612f8fbffe5673f709cc1aadf93a56c183",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "405683d5d36d03796bd643a59da0fa612f8fbffe5673f709cc1aadf93a56c183",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-reserve",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "d0b17f91beab52c1dea1fa40522b2e478df2e5c967806577b809de47ccae4239",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "204f5ffd232892c622f23f56caa788b935a9f1f68cdd09fbb37c964c133c9f9f",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "405683d5d36d03796bd643a59da0fa612f8fbffe5673f709cc1aadf93a56c183",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-submit",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "6709cbe98a4921b1d105d329bc15f9bd64ee9ea9f31036d4dc49886835f6fb46",
+          "effect": "request-dropped"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "204f5ffd232892c622f23f56caa788b935a9f1f68cdd09fbb37c964c133c9f9f",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "405683d5d36d03796bd643a59da0fa612f8fbffe5673f709cc1aadf93a56c183",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-submit",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "6709cbe98a4921b1d105d329bc15f9bd64ee9ea9f31036d4dc49886835f6fb46",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "204f5ffd232892c622f23f56caa788b935a9f1f68cdd09fbb37c964c133c9f9f",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "zor",
+      "fault": "before-forward",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "first": {
+        "transport": "eof"
+      },
+      "retry": {
+        "id": "stable-request-id",
+        "result": {
+          "type": "agent_prompted",
+          "agent": {
+            "terminal_id": "term_65ae0c07aa8261",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/retry-comparison-adcza8ss",
+            "foreground_cwd": "/private/tmp/retry-comparison-adcza8ss",
+            "revision": 0
+          }
+        }
+      },
+      "input_before_retry": "retry-probe\n",
+      "received": "retry-probe\nretry-probe\n",
+      "input_count": 2,
+      "proxy_events": [
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "reply-dropped-after-consumption"
+        },
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "herdr",
+      "fault": "after-consumption",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "first": {
+        "exit": 1,
+        "error": "zor: prompt operation incomplete; inspect/reconcile before retrying: control socket closed before a response\n"
+      },
+      "first_delivery": "uncertain",
+      "retry": {
+        "delivery": "delivered",
+        "wait": "pending",
+        "operation": 1
+      },
+      "input_before_retry": "retry-probe\n",
+      "received": "retry-probe\n",
+      "input_count": 1,
+      "proxy_events": [
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "0a513203932752cf4008f5856b607c02bde5eed6e73ad8c12c3f68761a86f305",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "0a513203932752cf4008f5856b607c02bde5eed6e73ad8c12c3f68761a86f305",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-reserve",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "b1cdba770467dd01ceb4581e78915fbf62c7469492b1daa01087d75096dd3426",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "af716f72d94c98576ef8e3d19d6560ebcf2afb38d9a58567427b63f377a73e64",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "0a513203932752cf4008f5856b607c02bde5eed6e73ad8c12c3f68761a86f305",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-submit",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "4e49026d522d9df8351daf3ccc7f7da60d78dd824d1965cb05e0019758038773",
+          "effect": "reply-dropped-after-consumption"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "af716f72d94c98576ef8e3d19d6560ebcf2afb38d9a58567427b63f377a73e64",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "zor",
+      "fault": "after-consumption",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "first": {
+        "transport": "eof"
+      },
+      "retry": {
+        "id": "stable-request-id",
+        "result": {
+          "type": "agent_prompted",
+          "agent": {
+            "terminal_id": "term_65ae0c0a259381",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/retry-comparison-qrf9cq_9",
+            "foreground_cwd": "/private/tmp/retry-comparison-qrf9cq_9",
+            "revision": 0
+          }
+        }
+      },
+      "input_before_retry": "",
+      "received": "retry-probe\n",
+      "input_count": 1,
+      "proxy_events": [
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "request-dropped"
+        },
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "herdr",
+      "fault": "before-forward",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "first": {
+        "exit": 1,
+        "error": "zor: prompt operation incomplete; inspect/reconcile before retrying: control socket closed before a response\n"
+      },
+      "first_delivery": "uncertain",
+      "retry": {
+        "delivery": "delivered",
+        "wait": "pending",
+        "operation": 1
+      },
+      "input_before_retry": "",
+      "received": "retry-probe\n",
+      "input_count": 1,
+      "proxy_events": [
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "132baad768e883aec93c327fd75eb2bc9f93f2e8db252cdbde780326fbe5fd18",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "132baad768e883aec93c327fd75eb2bc9f93f2e8db252cdbde780326fbe5fd18",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-reserve",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "db9d46a8c7326ac5428b04ca3e8627168544e4d92bc33b9b01940e169491a00f",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "998e0690dc57b8f9861646cba848e12c94ff6e21aab1b61da00632355cd2b13e",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "132baad768e883aec93c327fd75eb2bc9f93f2e8db252cdbde780326fbe5fd18",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-submit",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "6ad28f9ae10fa77e4f1642232397beed4e12b21c3cf3183a0eff2443a406928a",
+          "effect": "request-dropped"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "998e0690dc57b8f9861646cba848e12c94ff6e21aab1b61da00632355cd2b13e",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "132baad768e883aec93c327fd75eb2bc9f93f2e8db252cdbde780326fbe5fd18",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-submit",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "6ad28f9ae10fa77e4f1642232397beed4e12b21c3cf3183a0eff2443a406928a",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "998e0690dc57b8f9861646cba848e12c94ff6e21aab1b61da00632355cd2b13e",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "zor",
+      "fault": "before-forward",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "first": {
+        "transport": "eof"
+      },
+      "retry": {
+        "id": "stable-request-id",
+        "result": {
+          "type": "agent_prompted",
+          "agent": {
+            "terminal_id": "term_65ae0c0c582891",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/retry-comparison-daqrbguy",
+            "foreground_cwd": "/private/tmp/retry-comparison-daqrbguy",
+            "revision": 0
+          }
+        }
+      },
+      "input_before_retry": "retry-probe\n",
+      "received": "retry-probe\nretry-probe\n",
+      "input_count": 2,
+      "proxy_events": [
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "reply-dropped-after-consumption"
+        },
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "herdr",
+      "fault": "after-consumption",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "first": {
+        "exit": 1,
+        "error": "zor: prompt operation incomplete; inspect/reconcile before retrying: control socket closed before a response\n"
+      },
+      "first_delivery": "uncertain",
+      "retry": {
+        "delivery": "delivered",
+        "wait": "pending",
+        "operation": 1
+      },
+      "input_before_retry": "retry-probe\n",
+      "received": "retry-probe\n",
+      "input_count": 1,
+      "proxy_events": [
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "c5f19417686b784b25d493ab35752b5ca01dd16028ee70a4443a69c5168b4dc1",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "c5f19417686b784b25d493ab35752b5ca01dd16028ee70a4443a69c5168b4dc1",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-reserve",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "e68b4710bdec6b10f40b48466982dddea3997ace1c68b7171837797856645215",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "8768734d1e517f094c40411ed20ccd586486b20372efcaf577e1b7f571c15a51",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "c5f19417686b784b25d493ab35752b5ca01dd16028ee70a4443a69c5168b4dc1",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-submit",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "89be51ccd3dfe8d58452154af4b3d883da9e9e398507eb9f887dda2a3e40dbaf",
+          "effect": "reply-dropped-after-consumption"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "8768734d1e517f094c40411ed20ccd586486b20372efcaf577e1b7f571c15a51",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "zor",
+      "fault": "after-consumption",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "first": {
+        "transport": "eof"
+      },
+      "retry": {
+        "id": "stable-request-id",
+        "result": {
+          "type": "agent_prompted",
+          "agent": {
+            "terminal_id": "term_65ae0c0ed43501",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/retry-comparison-h7ctir6b",
+            "foreground_cwd": "/private/tmp/retry-comparison-h7ctir6b",
+            "revision": 0
+          }
+        }
+      },
+      "input_before_retry": "",
+      "received": "retry-probe\n",
+      "input_count": 1,
+      "proxy_events": [
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "request-dropped"
+        },
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "herdr",
+      "fault": "before-forward",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "first": {
+        "exit": 1,
+        "error": "zor: prompt operation incomplete; inspect/reconcile before retrying: control socket closed before a response\n"
+      },
+      "first_delivery": "uncertain",
+      "retry": {
+        "delivery": "delivered",
+        "wait": "pending",
+        "operation": 1
+      },
+      "input_before_retry": "",
+      "received": "retry-probe\n",
+      "input_count": 1,
+      "proxy_events": [
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "2239aaa0fb0edd4fa987782df3a38f417b145d781a577b0485e04f23f26de760",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "2239aaa0fb0edd4fa987782df3a38f417b145d781a577b0485e04f23f26de760",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-reserve",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "e12abe01c0f91bfece6918fe3a427918c2214363a855517aefd2f401534b4fc2",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "cb51e71b9b700ad641863774d8347ff87d8819aba18cb3ad478e5366a181cfde",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "2239aaa0fb0edd4fa987782df3a38f417b145d781a577b0485e04f23f26de760",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-submit",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "fe23d333c999d51d0618f90acd5c98f2e9ffc98216bd32699fb22f9361d0c4ac",
+          "effect": "request-dropped"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "cb51e71b9b700ad641863774d8347ff87d8819aba18cb3ad478e5366a181cfde",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "2239aaa0fb0edd4fa987782df3a38f417b145d781a577b0485e04f23f26de760",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-submit",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "fe23d333c999d51d0618f90acd5c98f2e9ffc98216bd32699fb22f9361d0c4ac",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "cb51e71b9b700ad641863774d8347ff87d8819aba18cb3ad478e5366a181cfde",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "zor",
+      "fault": "before-forward",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "first": {
+        "transport": "eof"
+      },
+      "retry": {
+        "id": "stable-request-id",
+        "result": {
+          "type": "agent_prompted",
+          "agent": {
+            "terminal_id": "term_65ae0c111dd0c1",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/retry-comparison-iyndhvko",
+            "foreground_cwd": "/private/tmp/retry-comparison-iyndhvko",
+            "revision": 0
+          }
+        }
+      },
+      "input_before_retry": "retry-probe\n",
+      "received": "retry-probe\nretry-probe\n",
+      "input_count": 2,
+      "proxy_events": [
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "reply-dropped-after-consumption"
+        },
+        {
+          "method": "agent.prompt",
+          "id": "stable-request-id",
+          "operation": null,
+          "request_sha256": "eb5b8b8cbc60512f3bdf80b9cd171f9eea9203011f9708d730a34d1a0085b8bd",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "herdr",
+      "fault": "after-consumption",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "first": {
+        "exit": 1,
+        "error": "zor: prompt operation incomplete; inspect/reconcile before retrying: control socket closed before a response\n"
+      },
+      "first_delivery": "uncertain",
+      "retry": {
+        "delivery": "delivered",
+        "wait": "pending",
+        "operation": 1
+      },
+      "input_before_retry": "retry-probe\n",
+      "received": "retry-probe\n",
+      "input_count": 1,
+      "proxy_events": [
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "2686221487b4f47152ad36609eabbd88aeded3fa1bed4d4dc47a08f0f122690b",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "2686221487b4f47152ad36609eabbd88aeded3fa1bed4d4dc47a08f0f122690b",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-reserve",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "a90327d4fe66f5000f812097a0571758885e90421b57ca9614a26ed32abeb4e9",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "920ae2fb920f19d80ed56e0e9d5de90862f6bc57b31d9e9b3105819c85344f63",
+          "effect": "forwarded"
+        },
+        {
+          "method": "list",
+          "id": 1,
+          "operation": null,
+          "request_sha256": "2686221487b4f47152ad36609eabbd88aeded3fa1bed4d4dc47a08f0f122690b",
+          "effect": "forwarded"
+        },
+        {
+          "method": "input-submit",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "836f138b26402fd4758da6dfda97c4f58a3cddae0273af6da33ae0c14a804f3f",
+          "effect": "reply-dropped-after-consumption"
+        },
+        {
+          "method": "input-status",
+          "id": 1,
+          "operation": 1,
+          "request_sha256": "920ae2fb920f19d80ed56e0e9d5de90862f6bc57b31d9e9b3105819c85344f63",
+          "effect": "forwarded"
+        }
+      ],
+      "final_input_verified": true,
+      "backend": "zor",
+      "fault": "after-consumption",
+      "server_exit": 0,
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    }
+  ]
+}

@@ -9,9 +9,9 @@ paint per-viewer frames with a small ratatui-core compositor. Koh (remote access
 
 | Project | Responsibility | Boundary |
 |---|---|---|
-| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment protocol v5 and control protocol `FUXCTL2` over private Unix sockets |
+| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment protocol v6 and control protocol `FUXCTL3` over private Unix sockets |
 | koh | identities, authorization, encryption, discovery, relays, reconnect | authenticated gateway carrying the opaque attachment stream to a private local socket |
-| zor | agent detection, rules, state machine, presentation | `zor observe` consuming `list`/`capture` over the control socket |
+| zor | agent detection, rules, sessions/tasks, prompt coordination, worktrees, checks, retained results, agent presentation | external CLI/service consuming fux's generic control API; orchestration policy and persistence stay in zor |
 
 ## Processes and sockets
 
@@ -22,8 +22,8 @@ lock is released as soon as the manager is elected.
 
 | Path | Purpose |
 |---|---|
-| `RUNTIME/fux/manager.sock` | list/resolve/kill workspaces (preface `FUXCTL2`) |
-| `RUNTIME/fux/NAME.attach.sock` | attachment protocol v5: viewers and koh gateways |
+| `RUNTIME/fux/manager.sock` | list/resolve/kill workspaces (preface `FUXCTL3`) |
+| `RUNTIME/fux/NAME.attach.sock` | attachment protocol v6: viewers and koh gateways |
 | `RUNTIME/fux/NAME.sock` | control protocol: CLI, scripts, zor |
 | `RUNTIME/fux/workspaces/NAME.json` | descriptor: pid, instance nonce, socket path, protocol version |
 
@@ -92,6 +92,13 @@ Phases are chained system sets; deferred mutations become visible at the sync po
    replies it promises.
 8. **Publish**: control events, deadlines, message clearing, `clear_trackers`.
 
+Workspace event evidence lives in ECS alongside the workspace: a unique stream ID, increasing
+sequence, and bounded replay log. Listings expose the cursor from their read boundary. Socket
+adapters register subscribers before requesting ECS replay and suppress queued duplicates through
+that boundary. They own only bounded delivery queues; any overflow disconnects. Generic
+`workspace.changed` and trailing coalesced output notifications invalidate controller snapshots.
+See the local control protocol for cursor scope, retention, and gap recovery.
+
 No observers or component hooks drive core commands; process cleanup is explicit.
 
 ## Ordering guarantees
@@ -123,7 +130,10 @@ reaps by polling under a counted gate that terminations hold, so the group id ca
 before the SIGKILL. Releasing a pane whose process still runs (workspace kill, finalize) uses the
 same grace. A completion for a reservation released meanwhile is stopped and reaped as well. Server shutdown moves every workspace to retiring, sends final frames and
 `exited`, then the adapter terminates and joins everything before the process exits (five-second
-deadline). Persistence is surviving viewer loss; nothing is resurrected after a restart.
+deadline). On ordinary pane release, a bounded final screen/exit record moves into an ECS resource
+independent of workspace entities. The manager can read it after workspace retirement and stays
+available until retention expires; explicit shutdown bypasses that wait. Persistence is surviving
+viewer loss; neither processes nor final records are resurrected after a restart.
 
 ## Viewer
 
@@ -147,6 +157,10 @@ behaviour. Each viewer has its own active tab, focus, history position, selectio
 `tests/ecs.rs` drives `Session::step` with injected events and time (no sockets, sleeps or
 processes) and checks World invariants after every step, including a randomized command-sequence
 test with stale ids, delayed and failed completions, viewer churn and time skips.
+The [multiplexer boundary gate](multiplexer-boundary.md) inventories production declarations and
+macro tokens and tests that agent OSC reports have no semantic effect on fux. Inventory changes
+require semantic ownership review; keyword checks alone do not establish the boundary.
+
 `tests/structure.rs` pins architectural invariants (spawn owners, bounded channels, ECS as the
 only authority, CI surfaces). Real adapters are exercised by `tests/local_cli.rs` and the
 fixture-child binary suite. See [ecs-acceptance.md](ecs-acceptance.md) for evidence and

@@ -38,6 +38,7 @@ impl Selection {
 #[derive(Component, Debug)]
 pub struct Workspace {
     pub name: String,
+    pub events: super::events::EventLog,
     /// Ordered tab membership; the owning edge (despawning the workspace despawns its tabs).
     pub tabs: Vec<Entity>,
     /// Default selection for new attachments and control-socket clients.
@@ -122,15 +123,18 @@ pub struct Pane {
     pub cwd: PathBuf,
     pub state: PaneState,
     pub terminal: ServerTerminal,
-    /// Outer rectangle within its tab, including the border cells.
+    /// Content rectangle within its tab; shared separators are outside this rectangle.
     pub rect: Rect,
     pub dirty: bool,
     pub published_title: String,
+    /// Monotonic sequence of nonempty controller/viewer input operations, excluding query replies.
+    pub input_sequence: u64,
     pub last_output_event_ms: Option<u64>,
+    pub output_event_pending: bool,
 }
 
 impl Pane {
-    /// Inner terminal size for an outer rectangle; never below the emulator minimum.
+    /// Terminal size for a content rectangle; never below the emulator minimum.
     #[must_use]
     pub fn terminal_size(rect: Rect) -> (u16, u16) {
         crate::terminal::clamp_dims(rect.height, rect.width)

@@ -572,6 +572,7 @@ impl Controller {
                             return None;
                         }
                         return Some(Request::Workspace {
+                            instance: None,
                             id: 0,
                             action: WorkspaceAction::Select { name },
                         });
@@ -597,6 +598,7 @@ impl Controller {
                         }
                         self.mode = Mode::Pane;
                         return Some(Request::Tab {
+                            instance: None,
                             id: 0,
                             action: TabAction::SelectId { tab: target },
                         });
@@ -612,7 +614,11 @@ impl Controller {
                         name: text.clone(),
                     };
                     self.mode = Mode::Pane;
-                    Some(Request::Tab { id: 0, action })
+                    Some(Request::Tab {
+                        instance: None,
+                        id: 0,
+                        action,
+                    })
                 }
                 _ => {
                     edit_text(text, key);
@@ -628,6 +634,7 @@ impl Controller {
                     }
                     self.mode = Mode::Pane;
                     Some(Request::Workspace {
+                        instance: None,
                         id: 0,
                         action: WorkspaceAction::New {
                             name: (!name.is_empty()).then_some(name),
@@ -647,7 +654,11 @@ impl Controller {
                     'y' | 'Y' => {
                         let pane = *pane;
                         self.mode = Mode::Pane;
-                        Some(Request::Kill { id: 0, pane })
+                        Some(Request::Kill {
+                            instance: None,
+                            id: 0,
+                            pane,
+                        })
                     }
                     'n' | 'N' => {
                         self.cancel();
@@ -665,6 +676,7 @@ impl Controller {
                         let tab = *tab;
                         self.mode = Mode::Pane;
                         Some(Request::Tab {
+                            instance: None,
                             id: 0,
                             action: TabAction::Close { tab },
                         })
@@ -690,6 +702,7 @@ impl Controller {
                     _ => return None,
                 };
                 Some(Request::Resize {
+                    instance: None,
                     id: 0,
                     pane: *pane,
                     delta,
@@ -824,7 +837,7 @@ mod tests {
                 height: 6,
             },
         });
-        frame.panes.insert(PaneId(1), view);
+        frame.panes.insert(PaneId(1), view.into());
         frame
     }
 
@@ -844,6 +857,7 @@ mod tests {
         assert_eq!(
             requests,
             vec![Request::Tab {
+                instance: None,
                 id: 0,
                 action: TabAction::Rename {
                     tab: TabId(1),
@@ -868,6 +882,7 @@ mod tests {
         assert_eq!(
             feed(&mut controller, b"y", &frame),
             vec![Request::Kill {
+                instance: None,
                 id: 0,
                 pane: PaneId(1)
             }]
@@ -876,6 +891,7 @@ mod tests {
         assert_eq!(
             feed(&mut controller, b"Y", &frame),
             vec![Request::Tab {
+                instance: None,
                 id: 0,
                 action: TabAction::Close { tab: TabId(1) }
             }]
@@ -915,6 +931,7 @@ mod tests {
         assert_eq!(
             feed(&mut controller, &replay, &frame),
             vec![Request::Workspace {
+                instance: None,
                 id: 0,
                 action: WorkspaceAction::Select {
                     name: "other".into()
@@ -930,6 +947,7 @@ mod tests {
         assert_eq!(
             feed(&mut controller, b"proj\r", &frame),
             vec![Request::Workspace {
+                instance: None,
                 id: 0,
                 action: WorkspaceAction::New {
                     name: Some("proj".into())
@@ -976,7 +994,7 @@ mod tests {
         // Shift-drag selects locally even when the application owns the mouse.
         let mut owned = frame.clone();
         if let Some(view) = owned.panes.get_mut(&PaneId(1)) {
-            view.modes.mouse_mode = MouseMode::AnyMotion;
+            std::sync::Arc::make_mut(view).modes.mouse_mode = MouseMode::AnyMotion;
         }
         let mut shift = Controller::new(true);
         let press = MouseEvent {

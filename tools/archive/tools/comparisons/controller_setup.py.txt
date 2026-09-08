@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""Measure a bounded headless controller setup path and unavailable-server diagnostics.
+
+Uses a synthetic foreground process; no real-agent accuracy or task verification claim.
+Installed binaries and an explicit fixture default-command config are prerequisites.
+"""
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import time
+
+import prompt_boundary as common
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKER = common.WORKER.replace('    char line[4096];', '    alarm(60);\n    char line[4096];')
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_case(value):
+    backend = value['backend']
+    assert value['server_exit'] == 0 and value['worker_exit_confirmed']
+    assert value['prompt_input_sent'] is False and value['controller_reused']
+    calls = value['calls']
+    cold = calls[0]
+    assert cold['purpose'] == 'unavailable-service diagnostic' and cold['exit_code'] == 1
+    if backend == 'zor':
+        assert 'zor service unavailable; start `zor serve` with the same --directory' in cold['stderr']
+        assert value['worker_survives_controller_stop'] is True
+        def populated(call):
+            if call['argv'] != ['dashboard', '--once']:
+                return False
+            return any(row['kind'] == 'observation' for row in json.loads(call['stdout'])['rows'])
+    else:
+        error = json.loads(cold['stderr'])['error']
+        assert error['code'] == 'server_not_running' and 'run `herdr` to start or attach it' in error['message']
+        assert value['worker_survives_controller_stop'] is None
+        created = next(call for call in calls if call['purpose'] == 'create fixture workspace')
+        pane = json.loads(created['stdout'])['result']['root_pane']['pane_id']
+        def populated(call):
+            if call['argv'] != ['agent', 'list'] or call['exit_code'] != 0:
+                return False
+            return any(row['pane_id'] == pane for row in json.loads(call['stdout'])['result']['agents'])
+    first = next(i for i, call in enumerate(calls) if populated(call))
+    assert value['commands_to_visible_overview'] == len(value['startup']) + first
+    assert value['initial_overview_polls'] == sum(call['purpose'] == 'wait for initial overview' for call in calls)
+    reuse = next(call for call in calls if call['purpose'] == 'reuse controller and show overview')
+    assert populated(reuse)
+    assert all(call['exit_code'] == (1 if 'diagnostic' in call['purpose'] else 0) for call in calls)
+
+
+def run_case(backend, binaries, worker):
+    with tempfile.TemporaryDirectory(prefix='setup-pair-', dir='/tmp') as directory:
+        root = Path(directory)
+        config = root/'config'
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=directory, XDG_CONFIG_HOME=str(config),
+            XDG_STATE_HOME=str(root/'state'), XDG_CACHE_HOME=str(root/'cache'), XDG_RUNTIME_DIR=directory,
+            SHELL='/bin/sh', TERM='xterm-256color', WORKER_LOG=str(root/'received'),
+            WORKER_PID=str(root/'worker.pid'), WORKER_RESPONSE=str(root/'responded'))
+        value = dict(backend=backend, calls=[], startup=[], configuration=[])
+        def cli(tool, args, purpose, success=True):
+            result = subprocess.run([str(binaries[tool]), *args], env=env, cwd=root,
+                capture_output=True, text=True, timeout=12)
+            assert len(result.stdout)+len(result.stderr) <= 512*1024, 'CLI output limit'
+            value['calls'].append(dict(tool=tool, argv=args, purpose=purpose, exit_code=result.returncode,
+                stdout=result.stdout, stderr=result.stderr))
+            assert (result.returncode == 0) == success, value['calls'][-1]
+            return result
+        server = None
+        zor_started = False
+        worker_pid = None
+        with (root/'server.log').open('w+') as log:
+            try:
+                if backend == 'zor':
+                    cli('zor', ['status'], 'unavailable-service diagnostic', False)
+                    path = config/'fux/config.toml'
+                    path.parent.mkdir(parents=True)
+                    path.write_text('default-command = { argv = '+json.dumps([str(worker)])+' }\n')
+                    value['configuration'].append(dict(path=str(path), contents=path.read_text()))
+                    command = [str(binaries['fux']), 'serve']
+                    value['startup'].append(dict(tool='fux', argv=['serve']))
+                else:
+                    cli('herdr', ['agent', 'list'], 'unavailable-service diagnostic', False)
+                    # Reference debug/release binaries use distinct config directories.
+                    for name in ['herdr', 'herdr-dev']:
+                        path = config/name/'config.toml'
+                        path.parent.mkdir(parents=True)
+                        path.write_text('onboarding = false\n[terminal]\ndefault_shell = '+json.dumps(str(worker))+
+                            '\nshell_mode = "non_login"\n[update]\nversion_check = false\nmanifest_check = false\n')
+                        value['configuration'].append(dict(path=str(path), contents=path.read_text()))
+                    command = [str(binaries['herdr']), 'server']
+                    value['startup'].append(dict(tool='herdr', argv=['server']))
+                server = subprocess.Popen(command, env=env, cwd=root, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+                def ready():
+                    assert server.poll() is None, 'owned server exited'
+                    candidates = [root/'fux/default.sock'] if backend == 'zor' else list(config.glob('herdr*/herdr.sock'))
+                    return next((path for path in candidates if path.exists()), None)
+                endpoint = common.until(ready)
+                if backend == 'herdr':
+                    created = cli('herdr', ['workspace', 'create', '--cwd', directory, '--focus'], 'create fixture workspace')
+                    expected_pane = json.loads(created.stdout)['result']['root_pane']['pane_id']
+                common.until(lambda: (root/'worker.pid').exists() and (root/'worker.pid').read_text().isdigit())
+                worker_pid = int((root/'worker.pid').read_text())
+                assert worker_pid > 1
+                value['worker_pid'] = worker_pid
+                if backend == 'zor':
+                    result = cli('zor', ['dashboard', '--once'], 'start controller and show overview')
+                    zor_started = True
+                    snapshot = json.loads(result.stdout)
+                    deadline = time.monotonic()+8
+                    while not snapshot['rows']:
+                        assert time.monotonic() < deadline, snapshot
+                        time.sleep(.05)
+                        result = cli('zor', ['dashboard', '--once'], 'wait for initial overview')
+                        snapshot = json.loads(result.stdout)
+                    assert any(row['kind'] == 'observation' and 'claude' in row['label'] for row in snapshot['rows']), snapshot
+                    value['initial_overview_polls'] = sum(call['purpose'] == 'wait for initial overview' for call in value['calls'])
+                    value['commands_to_visible_overview'] = len(value['startup']) + sum(call['purpose'] != 'unavailable-service diagnostic' for call in value['calls'])
+                    first = cli('zor', ['status'], 'check shared service identity')
+                    state = json.loads(first.stdout)
+                    assert any(row['detected_pid'] == worker_pid and row['input_sequence'] == 0 for row in state['snapshot']['observations'])
+                    instance = state['service_instance']
+                    second = cli('zor', ['dashboard', '--once'], 'reuse controller and show overview')
+                    assert json.loads(second.stdout)['service_instance'] == instance
+                    value['controller_reused'] = True
+                    cli('zor', ['shutdown'], 'stop only controller')
+                    zor_started = False
+                    common.until(lambda: not (root/'zor/control.sock').exists())
+                    # Multiplexer and foreground process survive this controller stop.
+                    assert server.poll() is None
+                    os.kill(worker_pid, 0)
+                    value['worker_survives_controller_stop'] = True
+                    cli('zor', ['status'], 'stopped-service diagnostic', False)
+                else:
+                    result = cli('herdr', ['agent', 'list'], 'show overview')
+                    overview = json.loads(result.stdout)
+                    deadline = time.monotonic()+8
+                    while not overview['result']['agents']:
+                        assert time.monotonic() < deadline, overview
+                        time.sleep(.05)
+                        result = cli('herdr', ['agent', 'list'], 'wait for initial overview')
+                        overview = json.loads(result.stdout)
+                    assert any(row['pane_id'] == expected_pane for row in overview['result']['agents']), overview
+                    value['initial_overview_polls'] = sum(call['purpose'] == 'wait for initial overview' for call in value['calls'])
+                    value['commands_to_visible_overview'] = len(value['startup']) + sum(call['purpose'] != 'unavailable-service diagnostic' for call in value['calls'])
+                    cli('herdr', ['agent', 'list'], 'reuse controller and show overview')
+                    assert server.poll() is None
+                    value['controller_reused'] = True
+                    value['worker_survives_controller_stop'] = None
+                    value['controller_stop_scope'] = 'separate agent-controller stop is unsupported; server owns PTYs'
+            finally:
+                try:
+                    if backend == 'zor' and (zor_started or (root/'zor/control.sock').exists()):
+                        cli('zor', ['shutdown'], 'cleanup owned controller')
+                        common.until(lambda: not (root/'zor/control.sock').exists())
+                finally:
+                    if server is not None:
+                        if server.poll() is None:
+                            server.terminate()
+                        try:
+                            server.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            server.kill(); server.wait(timeout=5)
+                            raise AssertionError('forced server cleanup; worker cleanup unproven')
+                        assert server.returncode == 0, server.returncode
+                        value['server_exit'] = server.returncode
+                if worker_pid is not None:
+                    def gone():
+                        try:
+                            os.kill(worker_pid, 0)
+                        except ProcessLookupError:
+                            return True
+                        return False
+                    common.until(gone)
+                    value['worker_exit_confirmed'] = True
+        assert not (root/'received').exists(), 'setup must not submit a prompt'
+        value['prompt_input_sent'] = False
+        encoded = json.dumps(value).replace(str(root.resolve()), '<RUN_ROOT>').replace(directory, '<RUN_ROOT>')
+        value = json.loads(encoded)
+        validate_case(value)
+        return value
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ['fux', 'zor', 'herdr', 'output']:
+        parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--herdr-provenance', type=Path, required=True)
+    parser.add_argument('--repetitions', type=int, default=3)
+    args = parser.parse_args()
+    assert 1 <= args.repetitions <= 5 and not args.output.exists()
+    binaries = {name:getattr(args,name).resolve(strict=True) for name in ['fux','zor','herdr']}
+    provenance = dict(harness_sha256=digest(Path(__file__)), helper_sha256=digest(ROOT/'tools/comparisons/prompt_boundary.py'),
+        worker_sha256=hashlib.sha256(WORKER.encode()).hexdigest(), binaries={name:dict(path=str(path),sha256=digest(path)) for name,path in binaries.items()})
+    build = json.loads(args.herdr_provenance.read_text())
+    assert build['binary_sha256'] == provenance['binaries']['herdr']['sha256']
+    provenance['herdr_build'] = build
+    provenance['source_hashes'] = {path:digest(ROOT/path) for path in ['zor/src/service.rs','zor/src/dashboard.rs','src/config.rs','src/proto/control.rs']}
+    results = []
+    with tempfile.TemporaryDirectory(prefix='setup-worker-', dir='/tmp') as directory:
+        root = Path(directory)
+        for name, binary in binaries.items():
+            result = subprocess.run([str(binary), '--version'], env=dict(PATH='/usr/bin:/bin', HOME=directory, XDG_CONFIG_HOME=str(root/'config')), capture_output=True, text=True, check=True, timeout=5)
+            provenance['binaries'][name]['version'] = result.stdout.strip()
+        assert provenance['binaries']['herdr']['version'] == 'herdr 0.8.2'
+        source = root/'worker.c'; source.write_text(WORKER)
+        worker = root/'claude'
+        subprocess.run(['/usr/bin/clang', str(source), '-o', str(worker)], check=True, timeout=30)
+        for repetition in range(args.repetitions):
+            for backend in ['zor','herdr']:
+                row = run_case(backend, binaries, worker)
+                row['repetition'] = repetition+1
+                results.append(row)
+                print(backend, repetition+1, 'passed', flush=True)
+        value = dict(schema=1, captured_at=datetime.now(timezone.utc).isoformat(), provenance=provenance,
+            synthetic=True, results=results, limitation='Prepared installed binaries and fixture configs; headless setup path only, not installation/onboarding, agent accuracy or a universal usability score.')
+        encoded = json.dumps(value, indent=2).replace(str(root.resolve()), '<WORKER_ROOT>').replace(directory, '<WORKER_ROOT>')
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(encoded+'\n')
+
+
+if __name__ == '__main__':
+    main()

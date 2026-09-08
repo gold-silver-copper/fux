@@ -9,7 +9,7 @@ use crate::ids::PaneId;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 const READ_CHUNK: usize = 8192;
 /// Input chunks queued for the writer thread before `write_input` reports backpressure.
 const WRITE_CHANNEL_DEPTH: usize = 1024;
+const MAX_PENDING_INPUT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Application and credential environment variables excluded from pane inheritance.
 pub fn is_private_env_key(key: &std::ffi::OsStr) -> bool {
@@ -36,14 +37,49 @@ fn scrub_parent_env(cmd: &mut CommandBuilder, keys: impl IntoIterator<Item = std
 /// A running pane process. Dropping the handle kills anything still running and lets the pump
 /// threads finish; the reader thread reaps the child.
 pub struct PaneProcess {
-    master: Box<dyn MasterPty + Send>,
-    writer_tx: Option<SyncSender<Vec<u8>>>,
+    master: Option<Box<dyn MasterPty + Send>>,
+    writer_tx: Option<SyncSender<InputChunk>>,
+    pending_input_bytes: Arc<AtomicUsize>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     pid: u32,
     reaped: Arc<AtomicBool>,
     gate: Arc<ReapGate>,
     reader: Option<std::thread::JoinHandle<()>>,
     writer: Option<std::thread::JoinHandle<()>>,
+}
+
+struct InputChunk {
+    bytes: Vec<u8>,
+    operation: Option<u64>,
+    pending: Arc<AtomicUsize>,
+}
+
+impl Drop for InputChunk {
+    fn drop(&mut self) {
+        self.pending.fetch_sub(self.bytes.len(), Ordering::AcqRel);
+    }
+}
+
+/// Count only bytes accepted by write; a partial failure is observable and never retried.
+fn deliver_input(writer: &mut impl Write, bytes: &[u8]) -> (usize, Option<String>) {
+    let mut written = 0;
+    while let Some(remaining) = bytes.get(written..) {
+        if remaining.is_empty() {
+            break;
+        }
+        match writer.write(remaining) {
+            Ok(0) => return (written, Some("PTY input write returned zero".into())),
+            Ok(count) if count <= remaining.len() => written += count,
+            Ok(_) => return (written, Some("invalid PTY write count".into())),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return (written, Some(error.to_string().chars().take(256).collect())),
+        }
+    }
+    let error = writer
+        .flush()
+        .err()
+        .map(|error| error.to_string().chars().take(256).collect());
+    (written, error)
 }
 
 /// While a termination is in progress the leader must stay un-reaped: its zombie reserves the
@@ -147,6 +183,7 @@ impl PaneProcess {
                 return Err(io::Error::other(format!("pty writer: {error}")));
             }
         };
+        let input_events = events.clone();
         let reader_reaped = Arc::clone(&reaped);
         let reader_gate = Arc::clone(&gate);
         let reader_handle = std::thread::Builder::new()
@@ -173,6 +210,9 @@ impl PaneProcess {
                         Err(_) => break,
                     }
                 }
+                // No further reads are possible; retaining this descriptor can keep the
+                // controlling terminal open while the child is trying to finish exiting.
+                drop(reader);
                 let _ = events.blocking_send(Inbound::PaneEof { pane });
                 // EOF only says the slave closed; wait for the real status before reporting exit.
                 // Reaping is polled under the gate (a blocking `wait` would reap the leader the
@@ -192,23 +232,35 @@ impl PaneProcess {
                 reader_reaped.store(true, Ordering::SeqCst);
                 let _ = events.blocking_send(Inbound::PaneExited { pane, code });
             })?;
-        let (writer_tx, writer_rx) = sync_channel::<Vec<u8>>(WRITE_CHANNEL_DEPTH);
+        let pending_input_bytes = Arc::new(AtomicUsize::new(0));
+        let (writer_tx, writer_rx) = sync_channel::<InputChunk>(WRITE_CHANNEL_DEPTH);
         let writer_handle = std::thread::Builder::new()
             .name(format!("fux-pane-input-{}", pane.0))
             .spawn(move || {
+                let mut failed = false;
                 while let Ok(chunk) = writer_rx.recv() {
-                    if writer
-                        .write_all(&chunk)
-                        .and_then(|()| writer.flush())
-                        .is_err()
-                    {
-                        break;
+                    let (bytes_written, error) = if failed {
+                        (0, Some("PTY input writer closed".into()))
+                    } else {
+                        deliver_input(&mut writer, &chunk.bytes)
+                    };
+                    failed |= error.is_some();
+                    if let Some(operation) = chunk.operation {
+                        let _ = input_events.blocking_send(Inbound::InputCompleted {
+                            pane,
+                            operation,
+                            bytes_written,
+                            error,
+                        });
                     }
+                    // After failure continue draining/rejecting: a sender racing the first
+                    // error must still receive a completion, never a silently dropped chunk.
                 }
             })?;
         Ok(Self {
-            master: pair.master,
+            master: Some(pair.master),
             writer_tx: Some(writer_tx),
+            pending_input_bytes,
             killer,
             pid,
             reaped,
@@ -225,10 +277,32 @@ impl PaneProcess {
 
     /// Queues input for the writer thread. Full queue means the application stopped reading.
     pub fn write_input(&self, bytes: &[u8]) -> io::Result<()> {
+        self.queue_input(bytes, None)
+    }
+
+    pub fn write_tracked_input(&self, operation: u64, bytes: &[u8]) -> io::Result<()> {
+        self.queue_input(bytes, Some(operation))
+    }
+
+    fn queue_input(&self, bytes: &[u8], operation: Option<u64>) -> io::Result<()> {
         let Some(sender) = &self.writer_tx else {
             return Err(io::Error::from(io::ErrorKind::BrokenPipe));
         };
-        match sender.try_send(bytes.to_vec()) {
+        self.pending_input_bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                pending
+                    .checked_add(bytes.len())
+                    .filter(|sum| *sum <= MAX_PENDING_INPUT_BYTES)
+            })
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::WouldBlock, "pane input byte budget reached")
+            })?;
+        let chunk = InputChunk {
+            bytes: bytes.to_vec(),
+            operation,
+            pending: self.pending_input_bytes.clone(),
+        };
+        match sender.try_send(chunk) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -240,6 +314,8 @@ impl PaneProcess {
 
     pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
         self.master
+            .as_ref()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?
             .resize(PtySize {
                 rows,
                 cols,
@@ -269,9 +345,6 @@ impl PaneProcess {
     /// SIGKILL, then the pump threads are joined. Call from a blocking context.
     pub fn join(mut self) {
         self.writer_tx.take();
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.join();
-        }
         // A termination that already escalated is reaped moments after it releases the gate.
         let settle = std::time::Instant::now() + Duration::from_millis(250);
         while !self.reaped() && std::time::Instant::now() < settle {
@@ -279,6 +352,13 @@ impl PaneProcess {
         }
         if !self.reaped() {
             self.group().terminate(RELEASE_GRACE);
+        }
+        // Explicit release must close the control descriptor before waiting for reaping.
+        // A child exiting through its controlling terminal may need the master to close.
+        self.master.take();
+        // Terminate before joining input: a child that stopped reading can hold write forever.
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -350,6 +430,127 @@ fn signal_number(name: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Model the resource dependency deterministically: the reaper cannot finish until the
+    /// control handle closes. The timeout makes an ordering regression fail instead of hang.
+    #[test]
+    fn explicit_release_closes_control_handle_before_joining_reaper() {
+        struct ControlHandle(std::sync::mpsc::Sender<()>);
+        impl Drop for ControlHandle {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+        impl MasterPty for ControlHandle {
+            fn resize(&self, _: PtySize) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn get_size(&self) -> anyhow::Result<PtySize> {
+                Ok(PtySize::default())
+            }
+            fn try_clone_reader(&self) -> anyhow::Result<Box<dyn Read + Send>> {
+                anyhow::bail!("unused test operation")
+            }
+            fn take_writer(&self) -> anyhow::Result<Box<dyn Write + Send>> {
+                anyhow::bail!("unused test operation")
+            }
+            fn process_group_leader(&self) -> Option<i32> {
+                None
+            }
+            fn as_raw_fd(&self) -> Option<i32> {
+                None
+            }
+            fn tty_name(&self) -> Option<std::path::PathBuf> {
+                None
+            }
+        }
+        #[derive(Debug)]
+        struct NoProcess;
+        impl ChildKiller for NoProcess {
+            fn kill(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+            fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+                Box::new(Self)
+            }
+        }
+        let (closed, wait_closed) = std::sync::mpsc::channel();
+        let reaped = Arc::new(AtomicBool::new(false));
+        let reader_reaped = Arc::clone(&reaped);
+        let observed_close = Arc::new(AtomicBool::new(false));
+        let reader_observed = Arc::clone(&observed_close);
+        let reader = std::thread::spawn(move || {
+            reader_observed.store(
+                wait_closed.recv_timeout(Duration::from_secs(5)).is_ok(),
+                Ordering::SeqCst,
+            );
+            reader_reaped.store(true, Ordering::SeqCst);
+        });
+        let process = PaneProcess {
+            master: Some(Box::new(ControlHandle(closed))),
+            writer_tx: None,
+            pending_input_bytes: Arc::new(AtomicUsize::new(0)),
+            killer: Box::new(NoProcess),
+            // Fails checked PID conversion; no OS process is ever signalled by this test.
+            pid: u32::MAX,
+            reaped: Arc::clone(&reaped),
+            gate: Arc::new(ReapGate::default()),
+            reader: Some(reader),
+            writer: None,
+        };
+        process.join();
+        assert!(reaped.load(Ordering::SeqCst));
+        assert!(observed_close.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tracked_writes_report_partial_failure_and_retry_only_interruptions() {
+        struct Partial {
+            step: usize,
+            received: Vec<u8>,
+        }
+        impl Write for Partial {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.step += 1;
+                match self.step {
+                    1 => Err(io::ErrorKind::Interrupted.into()),
+                    2 => {
+                        self.received
+                            .extend_from_slice(bytes.get(..2).unwrap_or_default());
+                        Ok(2)
+                    }
+                    _ => Err(io::ErrorKind::BrokenPipe.into()),
+                }
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = Partial {
+            step: 0,
+            received: Vec::new(),
+        };
+        let (written, error) = deliver_input(&mut writer, b"abcd");
+        assert_eq!(written, 2);
+        assert!(error.is_some());
+        assert_eq!(writer.received, b"ab");
+        assert_eq!(writer.step, 3);
+        let mut complete = Vec::new();
+        assert_eq!(deliver_input(&mut complete, b"abcd"), (4, None));
+        assert_eq!(complete, b"abcd");
+    }
+
+    #[test]
+    fn discarded_input_releases_its_byte_budget() {
+        let pending = Arc::new(AtomicUsize::new(3));
+        let chunk = InputChunk {
+            bytes: b"abc".to_vec(),
+            operation: Some(1),
+            pending: pending.clone(),
+        };
+        drop(chunk);
+        assert_eq!(pending.load(Ordering::Acquire), 0);
+    }
 
     #[test]
     fn private_environment_keys_are_scrubbed() {

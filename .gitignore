@@ -1,3 +1,6 @@
 /target
 references/
 /zor/
+__pycache__/
+*.py[cod]
+/.verification/

@@ -32,6 +32,10 @@ pub enum ViewerRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagerAction {
+    Final {
+        instance: String,
+        pane: PaneId,
+    },
     List,
     /// `None` applies the documented default rule: create `default` when no workspace exists,
     /// otherwise attach to the most recently attached workspace.
@@ -45,6 +49,7 @@ pub enum ManagerAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagerOutcome {
+    Final(control::Reply),
     Names(Vec<String>),
     Attach { name: String, created: bool },
     Failed(String),
@@ -52,6 +57,12 @@ pub enum ManagerOutcome {
 
 #[derive(Message, Clone, Debug, PartialEq, Eq)]
 pub enum Inbound {
+    InputCompleted {
+        pane: PaneId,
+        operation: u64,
+        bytes_written: usize,
+        error: Option<String>,
+    },
     PaneOutput {
         pane: PaneId,
         bytes: Vec<u8>,
@@ -94,6 +105,11 @@ pub enum Inbound {
 
 #[derive(Message, Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
+    WriteTrackedInput {
+        pane: PaneId,
+        operation: u64,
+        bytes: Vec<u8>,
+    },
     SpawnPane {
         pane: PaneId,
         argv: Vec<String>,
@@ -137,6 +153,7 @@ pub enum Effect {
     Event {
         workspace: String,
         event: control::Event,
+        cursor: Option<control::EventCursor>,
     },
     /// Bind the workspace's sockets and publish its descriptor.
     WorkspaceOpened {

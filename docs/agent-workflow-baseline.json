@@ -1,0 +1,18 @@
+{
+  "fux": {
+    "head": "544961626d7572ac1b7f129801333b855e8fb301",
+    "status": "?? agent-surface-prompt.md\n?? docs/capability-audit-2026-09-06.md\n?? hardening-prompt.md\n?? herdr-gap-closure-prompt.md\n?? herdr-parity-prompt.md\n?? idiomatic-ecs-refactor-prompt.md\n?? performance-prompt.md\n"
+  },
+  "zor": {
+    "head": "fb6a1ef18c043ecf9dc94a10a18719e820bee685",
+    "status": " M OBSERVATION-CONTRACT.md\n M src/observe.rs\n"
+  },
+  "koh": {
+    "head": "50a8270f48175c4a23e84c0ece008ff9ae49d918",
+    "status": " M src/gateway/sessions_real_fux.rs\n M tests/gateway.rs\n"
+  },
+  "herdr": {
+    "head": "94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0",
+    "status": ""
+  }
+}

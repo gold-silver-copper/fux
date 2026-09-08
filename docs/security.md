@@ -23,7 +23,12 @@ an instance nonce, socket paths and protocol versions only.
   disconnected, panes unaffected).
 - Control: 1 MiB frames, two-second preface deadline, 64 connections per workspace, 128 KiB
   captures, 100 000 scrollback rows, 64 KiB `send-keys`, 128-byte labels, 32 event filters,
-  1024-event subscriber queues.
+  subscriber queues bounded by 1024 events and 512 KiB serialized data, and replay histories
+  with the same limits per workspace. Overflow breaks the subscription; replay reports evicted
+  intervals explicitly. Input receipts retain at most 128 operations for 60 seconds; per-pane
+  pending PTY input is bounded by 4 MiB, including the active write.
+- Final evidence: at most 128 records server-wide, each with a 128 KiB plain-text viewport and
+  bounded launch metadata, retained for at most 60 seconds. Capacity eviction/expiry are explicit.
 - Session: 64 workspaces, 32 tabs and 128 panes per workspace, 512×512 pane cells, 256 queued
   viewer requests during a creation barrier, per-step ingest budgets (512 pane chunks from a
   2048-deep channel, 256 ingress requests) and signal polling between busy steps so a hot pane
@@ -31,6 +36,10 @@ an instance nonce, socket paths and protocol versions only.
 - Configuration: 1 MiB file, 128 argv entries of at most 4 KiB, 16 KiB total per command.
 - Names: workspace names and labels reject path separators, `.`/`..`, control characters and
   empty strings.
+
+Split UTF-8 characters are completed before bulk terminal parsing so parser lookahead cannot
+skip adjacent output. This retains one byte of continuation-count state, not extra terminal
+output; normal control-string bounds and panic containment still apply.
 
 ## Lifecycle safety
 
@@ -40,7 +49,10 @@ counted reap gate keeps the leader un-reaped (reaping is polled under the gate) 
 signalled, so a descendant ignoring SIGHUP cannot survive and a recycled group id is never hit.
 A viewer attachment only sees and acts on its own workspace's panes; `workspace kill` over a
 workspace connection is limited to that workspace. The server exits only after its adapters have joined every reader, writer and
-spawn task. fux never kills an unrelated or older server on its own: a protocol mismatch is reported,
+spawn task. During explicit pane release, the control descriptor closes after termination and
+before joining the pumps; the reader drops its descriptor at EOF before waiting to reap. This
+avoids retaining the controlling terminal across a child-exit dependency on master closure.
+Natural EOF alone does not close the control descriptor. fux never kills an unrelated or older server on its own: a protocol mismatch is reported,
 and only an interactive, explicitly confirmed choice sends SIGTERM to the pids recorded in the
 private descriptor directory (never SIGKILL; an unresponsive server keeps its panes).
 

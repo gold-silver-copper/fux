@@ -17,6 +17,586 @@ use fux::proto::control::{
 use fux::view::Frame;
 use std::collections::BTreeMap;
 
+#[test]
+fn viewers_share_immutable_pane_views_only_within_one_publication_step() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let first = h.attach("default", 24, 80);
+    let second = h.attach("default", 24, 80);
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"before".to_vec(),
+    }]);
+    let original = h.last_frame(first).panes[&PaneId(1)].clone();
+    assert!(std::sync::Arc::ptr_eq(
+        &original,
+        &h.last_frame(second).panes[&PaneId(1)]
+    ));
+    let snapshot = serde_json::to_value(&original).unwrap();
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b" after".to_vec(),
+    }]);
+    let next = &h.last_frame(first).panes[&PaneId(1)];
+    assert!(!std::sync::Arc::ptr_eq(&original, next));
+    assert!(std::sync::Arc::ptr_eq(
+        next,
+        &h.last_frame(second).panes[&PaneId(1)]
+    ));
+    assert_ne!(serde_json::to_value(next).unwrap(), snapshot);
+    assert_eq!(serde_json::to_value(&original).unwrap(), snapshot);
+}
+
+fn input_request(harness: &mut Harness, workspace: &str, request: Request) -> Reply {
+    harness.step(vec![Inbound::ControlRequest {
+        workspace: workspace.into(),
+        request,
+        token: 900,
+    }]);
+    harness.control.last().expect("input reply").1.clone()
+}
+
+fn input_receipt(reply: Reply) -> fux::proto::control::InputReceipt {
+    match reply {
+        Reply::Completed {
+            result: CommandResult::Input { receipt },
+            ..
+        } => receipt,
+        other => panic!("expected input receipt, got {other:?}"),
+    }
+}
+
+fn final_reply(h: &mut Harness, pane: PaneId, instance: &str) -> Reply {
+    h.step(vec![Inbound::Manager {
+        action: ManagerAction::Final {
+            instance: instance.into(),
+            pane,
+        },
+        token: 402,
+    }]);
+    match &h.manager.last().expect("final reply").1 {
+        ManagerOutcome::Final(reply) => reply.clone(),
+        other => panic!("unexpected final reply: {other:?}"),
+    }
+}
+
+#[test]
+fn explicit_last_pane_kill_retains_final_identity_and_output() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"BEFORE_KILL".to_vec(),
+    }]);
+    input_request(
+        &mut h,
+        "default",
+        Request::Kill {
+            id: 1,
+            instance: None,
+            pane: PaneId(1),
+        },
+    );
+    let Reply::Completed {
+        result: CommandResult::Final { record },
+        ..
+    } = final_reply(&mut h, PaneId(1), "test-instance")
+    else {
+        panic!("explicit kill lost final evidence");
+    };
+    assert_eq!(record.workspace, "default");
+    assert!(record.capture.text.contains("BEFORE_KILL"));
+    assert_eq!(
+        record.exit_status, None,
+        "release before exit report must remain unknown"
+    );
+    assert_eq!(h.session.entity_counts(), Default::default());
+}
+
+#[test]
+fn closed_tab_keeps_exit_evidence_then_releases_its_internal_identity() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let viewer = h.attach("default", 24, 80);
+    h.control(
+        viewer,
+        Request::Tab {
+            id: 1,
+            instance: None,
+            action: TabAction::New { name: None },
+        },
+    );
+    h.complete_spawns();
+    h.control(
+        viewer,
+        Request::Kill {
+            id: 2,
+            instance: None,
+            pane: PaneId(2),
+        },
+    );
+    assert_eq!(h.last_frame(viewer).tabs.len(), 1);
+    assert_eq!(
+        h.session.entity_counts().tabs,
+        2,
+        "terminating pane retains ownership metadata"
+    );
+    let reply = input_request(
+        &mut h,
+        "default",
+        Request::SendKeys {
+            id: 3,
+            instance: None,
+            pane: PaneId(2),
+            keys: "must not arrive".into(),
+        },
+    );
+    assert!(matches!(reply, Reply::Failed { error, .. } if error.code == ErrorCode::Conflict));
+    let reply = input_request(
+        &mut h,
+        "default",
+        Request::Tab {
+            id: 4,
+            instance: None,
+            action: TabAction::Rename {
+                tab: TabId(2),
+                name: "closed".into(),
+            },
+        },
+    );
+    assert!(matches!(reply, Reply::Failed { error, .. } if error.code == ErrorCode::NotFound));
+    h.step(vec![
+        Inbound::PaneOutput {
+            pane: PaneId(2),
+            bytes: b"DRAINED_EXIT".to_vec(),
+        },
+        Inbound::PaneExited {
+            pane: PaneId(2),
+            code: 19,
+        },
+    ]);
+    let Reply::Completed {
+        result: CommandResult::Final { record },
+        ..
+    } = final_reply(&mut h, PaneId(2), "test-instance")
+    else {
+        panic!("closed tab lost exit evidence");
+    };
+    assert_eq!(record.exit_status, Some(19));
+    assert!(record.capture.text.contains("DRAINED_EXIT"));
+    assert_eq!(h.session.entity_counts().tabs, 1);
+    assert_eq!(h.pane_ids(viewer), vec![PaneId(1)]);
+}
+
+#[test]
+fn final_evidence_survives_workspace_release_and_expires_explicitly() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    assert!(
+        matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Conflict)
+    );
+    h.step(vec![
+        Inbound::PaneOutput {
+            pane: PaneId(1),
+            bytes: b"FINAL_MARKER".to_vec(),
+        },
+        Inbound::PaneEof { pane: PaneId(1) },
+        Inbound::PaneExited {
+            pane: PaneId(1),
+            code: 23,
+        },
+    ]);
+    assert_eq!(h.session.entity_counts(), Default::default());
+    assert!(!h.idle);
+    let record = match final_reply(&mut h, PaneId(1), "test-instance") {
+        Reply::Completed {
+            result: CommandResult::Final { record },
+            ..
+        } => record,
+        other => panic!("final evidence: {other:?}"),
+    };
+    assert!(record.capture.text.contains("FINAL_MARKER"));
+    assert_eq!(record.exit_status, Some(23));
+    assert_eq!(record.workspace, "default");
+    assert!(!record.capture.truncated);
+    assert!(
+        matches!(final_reply(&mut h, PaneId(1), "replacement"), Reply::Failed { error, .. } if error.code == ErrorCode::Conflict)
+    );
+    h.create_workspace("default");
+    let listing = input_request(
+        &mut h,
+        "default",
+        Request::List {
+            id: 1,
+            instance: None,
+        },
+    );
+    assert!(
+        matches!(listing, Reply::Completed { result: CommandResult::Listing { workspaces, .. }, .. }
+        if workspaces[0].event_cursor.stream != record.stream)
+    );
+    assert!(matches!(
+        final_reply(&mut h, PaneId(1), "test-instance"),
+        Reply::Completed { .. }
+    ));
+    h.now = record.expires_ms;
+    assert!(
+        matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    assert!(
+        matches!(final_reply(&mut h, PaneId(999), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+}
+
+#[test]
+fn final_record_capacity_evicts_oldest_and_idle_waits_only_until_expiry() {
+    let mut h = Harness::new();
+    for id in 1..=fux::ecs::resources::MAX_FINAL_RECORDS + 1 {
+        h.create_workspace("default");
+        h.step(vec![Inbound::PaneExited {
+            pane: PaneId(id as u32),
+            code: 0,
+        }]);
+    }
+    assert!(
+        matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    assert!(matches!(
+        final_reply(&mut h, PaneId(2), "test-instance"),
+        Reply::Completed { .. }
+    ));
+    assert!(!h.idle);
+    h.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    h.step(vec![]);
+    assert!(h.idle);
+}
+
+#[test]
+fn forced_release_keeps_unknown_exit_and_final_captures_stay_bounded() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"LAST_OBSERVED".to_vec(),
+    }]);
+    h.step(vec![Inbound::Manager {
+        action: ManagerAction::Kill {
+            name: "default".into(),
+        },
+        token: 10,
+    }]);
+    match final_reply(&mut h, PaneId(1), "test-instance") {
+        Reply::Completed {
+            result: CommandResult::Final { record },
+            ..
+        } => {
+            assert_eq!(record.exit_status, None);
+            assert!(record.capture.text.contains("LAST_OBSERVED"));
+        }
+        other => panic!("forced evidence: {other:?}"),
+    }
+    h.create_workspace("default");
+    let viewer = h.attach("default", 512, 512);
+    h.step(vec![
+        Inbound::PaneOutput {
+            pane: PaneId(2),
+            bytes: vec![b'x'; 512 * 512],
+        },
+        Inbound::PaneExited {
+            pane: PaneId(2),
+            code: 0,
+        },
+    ]);
+    h.step(vec![Inbound::ViewerGone { viewer }]);
+    match final_reply(&mut h, PaneId(2), "test-instance") {
+        Reply::Completed {
+            result: CommandResult::Final { record },
+            ..
+        } => {
+            assert!(record.capture.truncated);
+            assert!(record.capture.text.len() <= 131_072);
+            assert_eq!(record.exit_status, Some(0));
+        }
+        other => panic!("bounded evidence: {other:?}"),
+    }
+}
+
+#[test]
+fn snapshots_invalidate_on_silent_changes_and_output_bursts_have_a_final_event() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let viewer = h.attach("default", 24, 80);
+    h.control(viewer, split(1, Axis::Horizontal));
+    h.complete_spawns();
+    let snapshot = input_request(
+        &mut h,
+        "default",
+        Request::List {
+            id: 2,
+            instance: None,
+        },
+    );
+    let cursor = match snapshot {
+        Reply::Completed {
+            result: CommandResult::Listing { workspaces, .. },
+            ..
+        } => workspaces[0].event_cursor,
+        other => panic!("listing: {other:?}"),
+    };
+    for request in [
+        Request::Resize {
+            id: 3,
+            instance: None,
+            pane: PaneId(1),
+            delta: 2,
+        },
+        Request::Focus {
+            id: 4,
+            instance: None,
+            target: FocusTarget::Pane(PaneId(1)),
+        },
+        Request::Tab {
+            id: 5,
+            instance: None,
+            action: TabAction::Rename {
+                tab: TabId(1),
+                name: "renamed".into(),
+            },
+        },
+    ] {
+        h.events.clear();
+        input_request(&mut h, "default", request);
+        assert!(
+            h.events
+                .iter()
+                .any(|(_, event)| matches!(event, Event::WorkspaceChanged { .. }))
+        );
+    }
+    let replay = input_request(
+        &mut h,
+        "default",
+        Request::Events {
+            id: 6,
+            instance: Some("test-instance".into()),
+            after: cursor,
+        },
+    );
+    assert!(
+        matches!(replay, Reply::Completed { result: CommandResult::Events { events, .. }, .. } if events.len() >= 3)
+    );
+    h.now = 1000;
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"first".to_vec(),
+    }]);
+    h.events.clear();
+    h.now = 1001;
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"last".to_vec(),
+    }]);
+    assert!(
+        !h.events
+            .iter()
+            .any(|(_, event)| matches!(event, Event::PaneOutput { .. }))
+    );
+    assert_eq!(h.session.next_deadline_ms(), Some(1260));
+    h.now = 1260;
+    h.step(vec![]);
+    assert_eq!(
+        h.events
+            .iter()
+            .filter(|(_, event)| matches!(event, Event::PaneOutput { .. }))
+            .count(),
+        1
+    );
+    h.events.clear();
+    h.now = 1500;
+    h.step(vec![]);
+    assert!(
+        h.events.is_empty(),
+        "idle panes do not produce periodic events"
+    );
+}
+
+#[test]
+fn input_operations_deduplicate_and_report_actual_completion() {
+    use fux::proto::control::InputState;
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let reserved = input_receipt(input_request(
+        &mut h,
+        "default",
+        Request::InputReserve {
+            id: 1,
+            instance: Some("test-instance".into()),
+            pane: PaneId(1),
+        },
+    ));
+    assert_eq!(reserved.state, InputState::Reserved);
+    assert!(h.written.is_empty());
+    let submit = |keys: &str| Request::InputSubmit {
+        id: 2,
+        instance: Some("test-instance".into()),
+        operation: reserved.operation,
+        keys: keys.into(),
+    };
+    let queued = input_receipt(input_request(&mut h, "default", submit("abc")));
+    assert_eq!(queued.state, InputState::Queued);
+    assert_eq!(queued.input_sequence, reserved.input_sequence + 1);
+    assert_eq!(queued.bytes_written, 0);
+    assert_eq!(h.written, vec![(PaneId(1), b"abc".to_vec())]);
+    assert_eq!(
+        input_receipt(input_request(&mut h, "default", submit("abc"))),
+        queued
+    );
+    assert_eq!(h.written.len(), 1, "retry must never type twice");
+    assert!(
+        matches!(input_request(&mut h, "default", submit("xyz")), Reply::Failed { error, .. } if error.code == ErrorCode::Conflict)
+    );
+    h.step(vec![Inbound::InputCompleted {
+        pane: PaneId(1),
+        operation: reserved.operation,
+        bytes_written: 3,
+        error: None,
+    }]);
+    let delivered = input_receipt(input_request(&mut h, "default", submit("abc")));
+    assert_eq!(delivered.state, InputState::Delivered);
+    assert_eq!(delivered.bytes_written, 3);
+    assert_eq!(h.written.len(), 1);
+    // A delayed duplicate/forged completion cannot overwrite the established result.
+    h.step(vec![Inbound::InputCompleted {
+        pane: PaneId(2),
+        operation: reserved.operation,
+        bytes_written: 0,
+        error: Some("wrong pane".into()),
+    }]);
+    assert_eq!(
+        input_receipt(input_request(&mut h, "default", submit("abc"))),
+        delivered
+    );
+}
+
+#[test]
+fn terminal_query_replies_do_not_invalidate_controller_input_reservations() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let reserved = input_receipt(input_request(
+        &mut h,
+        "default",
+        Request::InputReserve {
+            id: 1,
+            instance: Some("test-instance".into()),
+            pane: PaneId(1),
+        },
+    ));
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"\x1b[6n".to_vec(),
+    }]);
+    assert!(!h.written.is_empty(), "terminal query must produce a reply");
+    let queued = input_receipt(input_request(
+        &mut h,
+        "default",
+        Request::InputSubmit {
+            id: 2,
+            instance: Some("test-instance".into()),
+            operation: reserved.operation,
+            keys: "abc".into(),
+        },
+    ));
+    assert_eq!(queued.input_sequence, reserved.input_sequence + 1);
+    assert_eq!(h.written.last(), Some(&(PaneId(1), b"abc".to_vec())));
+}
+
+#[test]
+fn reservations_detect_intervening_input_and_receipts_expire_without_reusing_ids() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    h.create_workspace("other");
+    let reserve = || Request::InputReserve {
+        id: 1,
+        instance: Some("test-instance".into()),
+        pane: PaneId(1),
+    };
+    let first = input_receipt(input_request(&mut h, "default", reserve()));
+    input_request(
+        &mut h,
+        "default",
+        Request::SendKeys {
+            id: 2,
+            instance: None,
+            pane: PaneId(1),
+            keys: "human".into(),
+        },
+    );
+    let submit = Request::InputSubmit {
+        id: 3,
+        instance: Some("test-instance".into()),
+        operation: first.operation,
+        keys: "stale".into(),
+    };
+    assert!(
+        matches!(input_request(&mut h, "default", submit.clone()), Reply::Failed { error, .. } if error.code == ErrorCode::Conflict)
+    );
+    assert_eq!(h.written.len(), 1);
+    let status = || Request::InputStatus {
+        id: 4,
+        instance: Some("test-instance".into()),
+        operation: first.operation,
+    };
+    assert!(
+        matches!(input_request(&mut h, "other", status()), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    assert!(h.session.next_deadline_ms().is_some());
+    h.now = first.expires_ms;
+    h.step(vec![]);
+    assert!(
+        matches!(input_request(&mut h, "default", submit), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    let next = input_receipt(input_request(&mut h, "default", reserve()));
+    assert!(next.operation > first.operation);
+    assert!(
+        matches!(input_request(&mut h, "default", status()), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+}
+
+#[test]
+fn input_receipt_capacity_and_partial_failure_are_explicit() {
+    use fux::proto::control::InputState;
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let reserve = || Request::InputReserve {
+        id: 1,
+        instance: Some("test-instance".into()),
+        pane: PaneId(1),
+    };
+    let first = input_receipt(input_request(&mut h, "default", reserve()));
+    for _ in 1..fux::ecs::resources::MAX_INPUT_OPERATIONS {
+        input_receipt(input_request(&mut h, "default", reserve()));
+    }
+    assert!(
+        matches!(input_request(&mut h, "default", reserve()), Reply::Failed { error, .. } if error.code == ErrorCode::Limit)
+    );
+    let submit = || Request::InputSubmit {
+        id: 2,
+        instance: Some("test-instance".into()),
+        operation: first.operation,
+        keys: "abc".into(),
+    };
+    input_receipt(input_request(&mut h, "default", submit()));
+    h.step(vec![Inbound::InputCompleted {
+        pane: PaneId(1),
+        operation: first.operation,
+        bytes_written: 1,
+        error: Some("broken pipe".into()),
+    }]);
+    let failed = input_receipt(input_request(&mut h, "default", submit()));
+    assert_eq!(failed.state, InputState::Failed);
+    assert_eq!(failed.bytes_written, 1);
+    assert_eq!(h.written.len(), 1, "a partial write must not be retried");
+}
+
 /// A fake operating system: records effects and completes spawns on demand.
 struct Harness {
     session: Session,
@@ -42,7 +622,7 @@ impl Harness {
     fn new() -> Self {
         let config = Config::from_toml("default-command = { argv = [\"/bin/sh\"] }").unwrap();
         Self {
-            session: Session::new(&config).unwrap(),
+            session: Session::new(&config, "test-instance".into()).unwrap(),
             now: 1_000,
             pending_spawns: Vec::new(),
             next_pid: 100,
@@ -82,12 +662,17 @@ impl Harness {
                         .or_default()
                         .push(message.clone());
                 }
-                Effect::Event { workspace, event } => {
+                Effect::Event {
+                    workspace, event, ..
+                } => {
                     self.events.push((workspace.clone(), event.clone()));
                 }
                 Effect::ReleasePane { pane } => self.released.push(*pane),
                 Effect::Terminate { pane, .. } => self.terminated.push(*pane),
-                Effect::WriteInput { pane, bytes } => self.written.push((*pane, bytes.clone())),
+                Effect::WriteInput { pane, bytes }
+                | Effect::WriteTrackedInput { pane, bytes, .. } => {
+                    self.written.push((*pane, bytes.clone()))
+                }
                 Effect::Manager { token, outcome } => self.manager.push((*token, outcome.clone())),
                 Effect::ControlReply { token, reply } => self.control.push((*token, reply.clone())),
                 Effect::WorkspaceOpened { name } => self.opened.push(name.clone()),
@@ -197,11 +782,58 @@ impl Harness {
 
 fn split(id: u64, axis: Axis) -> Request {
     Request::Split {
+        instance: None,
         id,
         axis,
         target: None,
         cwd: None,
         argv: Vec::new(),
+    }
+}
+
+#[test]
+fn controller_handles_cannot_cross_server_incarnations_even_when_pane_and_pid_repeat() {
+    for incarnation in ["test-instance", "replacement-instance"] {
+        let mut harness = Harness::new();
+        let config = Config::from_toml("default-command = { argv = [\"/bin/sh\"] }").unwrap();
+        harness.session = Session::new(&config, incarnation.into()).unwrap();
+        harness.create_workspace("default");
+        harness.step(vec![Inbound::ControlRequest {
+            workspace: "default".into(),
+            request: Request::List {
+                id: 1,
+                instance: None,
+            },
+            token: 10,
+        }]);
+        assert!(matches!(&harness.control.last().unwrap().1,
+            Reply::Completed { result: CommandResult::Listing { instance, .. }, .. }
+                if instance == incarnation));
+        harness.step(vec![Inbound::ControlRequest {
+            workspace: "default".into(),
+            request: Request::SendKeys {
+                id: 2,
+                instance: Some("test-instance".into()),
+                pane: PaneId(1),
+                keys: "x".into(),
+            },
+            token: 11,
+        }]);
+        if incarnation == "test-instance" {
+            assert!(
+                harness
+                    .written
+                    .iter()
+                    .any(|(pane, bytes)| *pane == PaneId(1) && bytes == b"x")
+            );
+        } else {
+            assert!(
+                harness.written.is_empty(),
+                "a stale controller must not type into a replacement process"
+            );
+            assert!(matches!(&harness.control.last().unwrap().1,
+                Reply::Failed { error, .. } if error.code == ErrorCode::Conflict));
+        }
     }
 }
 
@@ -336,6 +968,7 @@ fn stale_targets_fail_without_hitting_replacements() {
     harness.control(
         viewer,
         Request::Kill {
+            instance: None,
             id: 2,
             pane: PaneId(2),
         },
@@ -354,6 +987,7 @@ fn stale_targets_fail_without_hitting_replacements() {
     harness.control(
         viewer,
         Request::Kill {
+            instance: None,
             id: 4,
             pane: PaneId(2),
         },
@@ -380,6 +1014,7 @@ fn stale_targets_fail_without_hitting_replacements() {
     harness.control(
         viewer,
         Request::Tab {
+            instance: None,
             id: 8,
             action: TabAction::Rename {
                 tab: TabId(99),
@@ -446,7 +1081,10 @@ fn output_eof_and_exit_keep_final_output_and_retire_the_workspace() {
     harness.step(vec![Inbound::ViewerGone { viewer }]);
     assert_eq!(harness.closed, vec!["default".to_owned()]);
     assert!(harness.released.contains(&PaneId(1)));
-    assert!(harness.idle);
+    assert!(
+        !harness.idle,
+        "retained evidence keeps the manager available"
+    );
     assert_eq!(harness.session.entity_counts(), Default::default());
 }
 
@@ -468,7 +1106,7 @@ fn retirement_grace_expires_without_viewer_acknowledgement() {
     harness.now = deadline;
     harness.step(Vec::new());
     assert_eq!(harness.closed, vec!["default".to_owned()]);
-    assert!(harness.idle);
+    assert!(!harness.idle);
 }
 
 #[test]
@@ -489,6 +1127,7 @@ fn natural_exit_of_one_pane_closes_it_and_of_a_tab_moves_viewers() {
     harness.control(
         viewer,
         Request::Tab {
+            instance: None,
             id: 2,
             action: TabAction::New { name: None },
         },
@@ -535,6 +1174,7 @@ fn viewers_keep_private_tabs_and_focus_while_sharing_layout_edits() {
     harness.control(
         alice,
         Request::Tab {
+            instance: None,
             id: 2,
             action: TabAction::New {
                 name: Some("work".into()),
@@ -554,6 +1194,7 @@ fn viewers_keep_private_tabs_and_focus_while_sharing_layout_edits() {
     harness.control(
         bob,
         Request::Focus {
+            instance: None,
             id: 9,
             target: FocusTarget::Right,
         },
@@ -579,6 +1220,7 @@ fn detach_applies_preceding_input_and_drops_the_suffix() {
         Inbound::ViewerRequest {
             viewer,
             request: ViewerRequest::Control(Request::Tab {
+                instance: None,
                 id: 1,
                 action: TabAction::New { name: None },
             }),
@@ -617,6 +1259,7 @@ fn workspace_switch_sends_the_suffix_to_the_destination() {
         Inbound::ViewerRequest {
             viewer,
             request: ViewerRequest::Control(Request::Workspace {
+                instance: None,
                 id: 1,
                 action: WorkspaceAction::Select {
                     name: "other".into(),
@@ -713,14 +1356,17 @@ fn control_requests_and_mouse_hit_tests_respect_stale_generations() {
     let viewer = harness.attach("default", 24, 80);
     harness.step(vec![Inbound::ControlRequest {
         workspace: "default".into(),
-        request: Request::List { id: 3 },
+        request: Request::List {
+            instance: None,
+            id: 3,
+        },
         token: 42,
     }]);
     let (token, reply) = harness.control.last().cloned().unwrap();
     assert_eq!(token, 42);
     match reply {
         Reply::Completed {
-            result: CommandResult::Listing { workspaces },
+            result: CommandResult::Listing { workspaces, .. },
             ..
         } => {
             assert_eq!(workspaces[0].name, "default");
@@ -763,7 +1409,10 @@ fn control_requests_and_mouse_hit_tests_respect_stale_generations() {
     assert_eq!(harness.written, vec![(PaneId(1), b"\x1b[<0;5;4M".to_vec())]);
     harness.step(vec![Inbound::ControlRequest {
         workspace: "missing".into(),
-        request: Request::List { id: 4 },
+        request: Request::List {
+            instance: None,
+            id: 4,
+        },
         token: 43,
     }]);
     assert!(matches!(
@@ -805,7 +1454,7 @@ fn limits_and_queue_overflow_are_enforced() {
     )
     .unwrap();
     let mut harness = Harness::new();
-    harness.session = Session::new(&config).unwrap();
+    harness.session = Session::new(&config, "test-instance".into()).unwrap();
     harness.create_workspace("default");
     let viewer = harness.attach("default", 24, 80);
     harness.control(viewer, split(1, Axis::Horizontal));
@@ -819,6 +1468,7 @@ fn limits_and_queue_overflow_are_enforced() {
     harness.control(
         viewer,
         Request::Tab {
+            instance: None,
             id: 3,
             action: TabAction::New { name: None },
         },
@@ -901,7 +1551,11 @@ mod randomized {
                     Axis::Horizontal
                 }
             )),
-            pane().prop_map(|pane| Request::Kill { id: 1, pane }),
+            pane().prop_map(|pane| Request::Kill {
+                instance: None,
+                id: 1,
+                pane
+            }),
             prop_oneof![
                 Just(FocusTarget::Left),
                 Just(FocusTarget::Right),
@@ -909,22 +1563,38 @@ mod randomized {
                 Just(FocusTarget::Down),
                 pane().prop_map(FocusTarget::Pane),
             ]
-            .prop_map(|target| Request::Focus { id: 1, target }),
-            (pane(), prop_oneof![Just(-3i16), Just(2), Just(40)])
-                .prop_map(|(pane, delta)| Request::Resize { id: 1, pane, delta }),
+            .prop_map(|target| Request::Focus {
+                instance: None,
+                id: 1,
+                target
+            }),
+            (pane(), prop_oneof![Just(-3i16), Just(2), Just(40)]).prop_map(|(pane, delta)| {
+                Request::Resize {
+                    instance: None,
+                    id: 1,
+                    pane,
+                    delta,
+                }
+            }),
             pane().prop_map(|pane| Request::SendKeys {
+                instance: None,
                 id: 1,
                 pane,
                 keys: "x\\n".into(),
             }),
             pane().prop_map(|pane| Request::Capture {
+                instance: None,
                 id: 1,
                 pane,
                 attrs: false,
                 scrollback: 5,
                 max_bytes: 4096,
+                if_revision: None,
             }),
-            Just(Request::List { id: 1 }),
+            Just(Request::List {
+                instance: None,
+                id: 1
+            }),
             prop_oneof![
                 Just(TabAction::New { name: None }),
                 Just(TabAction::Next),
@@ -937,7 +1607,11 @@ mod randomized {
                 }),
                 tab().prop_map(|tab| TabAction::Close { tab }),
             ]
-            .prop_map(|action| Request::Tab { id: 1, action }),
+            .prop_map(|action| Request::Tab {
+                instance: None,
+                id: 1,
+                action
+            }),
             prop_oneof![
                 Just(WorkspaceAction::List),
                 Just(WorkspaceAction::New { name: None }),
@@ -945,7 +1619,11 @@ mod randomized {
                 name().prop_map(|name| WorkspaceAction::Kill { name }),
                 name().prop_map(|name| WorkspaceAction::Select { name }),
             ]
-            .prop_map(|action| Request::Workspace { id: 1, action }),
+            .prop_map(|action| Request::Workspace {
+                instance: None,
+                id: 1,
+                action
+            }),
         ]
     }
 
@@ -1214,9 +1892,9 @@ fn a_workspace_whose_first_pane_exits_at_once_retires_with_its_status() {
             ..
         }
     )));
-    // Nobody is watching, so the workspace finalizes at once and the server goes idle.
+    // Nobody is watching, so the workspace finalizes while final evidence remains available.
     assert!(harness.closed.contains(&"default".to_owned()));
-    assert!(harness.idle);
+    assert!(!harness.idle);
     let counts = harness.session.entity_counts();
     assert_eq!((counts.workspaces, counts.panes), (0, 0));
 }
@@ -1284,6 +1962,7 @@ fn viewer_requests_never_reach_other_workspaces() {
     harness.control(
         viewer,
         Request::Workspace {
+            instance: None,
             id: 5,
             action: WorkspaceAction::Kill {
                 name: "other".into(),
@@ -1299,6 +1978,7 @@ fn viewer_requests_never_reach_other_workspaces() {
     harness.control(
         viewer,
         Request::Workspace {
+            instance: None,
             id: 6,
             action: WorkspaceAction::Select {
                 name: "other".into(),

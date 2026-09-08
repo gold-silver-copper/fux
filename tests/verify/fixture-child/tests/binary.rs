@@ -141,6 +141,32 @@ impl Environment {
     fn daemon_log(&self) -> String {
         fs::read_to_string(self.root.join("state/fux/daemon.log")).unwrap_or_default()
     }
+
+    fn wait_for_retirement(&self, workspace: &str) {
+        wait_for_absent(&self.control_socket(workspace));
+        wait_for_absent(&self.attach_socket(workspace));
+        wait_for_absent(&self.descriptor(workspace));
+        assert!(
+            self.manager_socket().exists(),
+            "manager remains available for retained final evidence"
+        );
+    }
+
+    fn stop_background(&self) {
+        let peer = UnixStream::connect(self.manager_socket()).expect("owned manager");
+        fux::proto::socket::authorize_peer(&peer).expect("same-user manager");
+        #[cfg(target_os = "macos")]
+        let pid = nix::sys::socket::getsockopt(&peer, nix::sys::socket::sockopt::LocalPeerPid)
+            .expect("manager peer PID");
+        #[cfg(target_os = "linux")]
+        let pid = nix::sys::socket::getsockopt(&peer, nix::sys::socket::sockopt::PeerCredentials)
+            .expect("manager peer credentials")
+            .pid();
+        assert!(pid > 1 && pid != i32::try_from(std::process::id()).expect("own PID"));
+        kill(Pid::from_raw(pid), Signal::SIGTERM).expect("stop authenticated fixture manager");
+        drop(peer);
+        wait_for_absent(&self.manager_socket());
+    }
 }
 
 impl Drop for Environment {
@@ -195,6 +221,16 @@ impl Server {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    fn finish_retired(&mut self, environment: &Environment) -> std::process::ExitStatus {
+        environment.wait_for_retirement("binary");
+        // Workspace retirement is immediate, but final records keep the manager
+        // available for up to 60 seconds. Explicit owned shutdown bypasses that wait.
+        self.terminate();
+        let status = self.wait();
+        wait_for_absent(&environment.manager_socket());
+        status
     }
 }
 
@@ -519,8 +555,8 @@ fn natural_last_pane_exit_is_observable_before_workspace_retirement() {
         "the bar shows the focused pane's exit status"
     );
     assert!(
-        server.wait().success(),
-        "server exits once its last workspace retired"
+        server.finish_retired(&environment).success(),
+        "owned server exits cleanly after workspace retirement"
     );
     wait_for_absent(&environment.manager_socket());
     wait_for_absent(&environment.control_socket("binary"));
@@ -574,7 +610,7 @@ fn detach_and_reattach_preserve_the_pane_process_and_its_history() {
     );
     fixture.send(json!({"command":"quit"}));
     assert_eq!(fixture.receive()["event"], "cleanup");
-    assert!(server.wait().success());
+    assert!(server.finish_retired(&environment).success());
 }
 
 #[test]
@@ -625,7 +661,7 @@ fn forced_close_terminates_descendants_and_reports_the_status() {
     subscriber.expect_silence(Duration::from_millis(200));
     second.send(json!({"command":"quit"}));
     assert_eq!(second.receive()["event"], "cleanup");
-    assert!(server.wait().success());
+    assert!(server.finish_retired(&environment).success());
 }
 
 #[test]
@@ -697,7 +733,8 @@ fn concurrent_first_clients_elect_exactly_one_server_and_workspace() {
     }
     let killed = environment.run(&["workspace", "kill", "shared"]);
     assert!(killed.status.success());
-    wait_for_absent(&environment.manager_socket());
+    environment.wait_for_retirement("shared");
+    environment.stop_background();
 }
 
 #[test]
@@ -779,7 +816,7 @@ fn control_protocol_lists_captures_and_streams_events_without_touching_viewers()
     fixture.receive();
     second.send(json!({"command":"quit"}));
     second.receive();
-    assert!(server.wait().success());
+    assert!(server.finish_retired(&environment).success());
 }
 
 #[test]
@@ -836,7 +873,7 @@ fn tiny_viewer_and_resize_keep_the_pane_size_negotiated_over_the_smallest_viewer
     assert_eq!(large.detach(), 0);
     fixture.send(json!({"command":"quit"}));
     fixture.receive();
-    assert!(server.wait().success());
+    assert!(server.finish_retired(&environment).success());
 }
 
 #[test]

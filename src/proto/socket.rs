@@ -264,7 +264,7 @@ fn negotiate(stream: &mut UnixStream, client: bool) -> io::Result<()> {
             // foreign peer) and offer the operator a way out.
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "incompatible fux control protocol; expected FUXCTL2; use matching versions or restart the session server after saving your work",
+                "incompatible fux control protocol; expected FUXCTL3; use matching versions or restart the session server after saving your work",
             ));
         }
         Ok(())

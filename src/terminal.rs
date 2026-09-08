@@ -154,21 +154,26 @@ struct ControlStringFilter {
     buffered: Vec<u8>,
 }
 
+/// Upper bound on continuation bytes still needed by the current UTF-8 prefix.
+fn utf8_remaining(remaining: u8, byte: u8) -> u8 {
+    if remaining > 0 && (0x80..=0xbf).contains(&byte) {
+        remaining - 1
+    } else {
+        match byte {
+            0xc2..=0xdf => 1,
+            0xe0..=0xef => 2,
+            0xf0..=0xf4 => 3,
+            _ => 0,
+        }
+    }
+}
+
 impl ControlStringFilter {
     fn process(&mut self, input: &[u8]) -> Vec<u8> {
         let mut output = Vec::with_capacity(input.len().min(MAX_CONTROL_STRING_BYTES));
         for &byte in input {
             let continuation = self.utf8_remaining > 0 && (0x80..=0xbf).contains(&byte);
-            self.utf8_remaining = if continuation {
-                self.utf8_remaining - 1
-            } else {
-                match byte {
-                    0xc2..=0xdf => 1,
-                    0xe0..=0xef => 2,
-                    0xf0..=0xf4 => 3,
-                    _ => 0,
-                }
-            };
+            self.utf8_remaining = utf8_remaining(self.utf8_remaining, byte);
             if let Some(kind) = self.string {
                 let terminated = (byte == 0x9c && !continuation)
                     || (kind == ControlStringKind::Osc && byte == 0x07)
@@ -232,11 +237,30 @@ fn c1_control_string_introducer(byte: u8) -> Option<ControlStringKind> {
     }
 }
 
+/// A bounded history viewport, not an append-only output transcript. Its first row is
+/// `scrollback_offset` rows above the live screen and its height is `rows`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureSnapshot {
+    pub text: String,
+    pub revision: u64,
+    pub rows: u16,
+    pub columns: u16,
+    pub scrollback_offset: u32,
+    pub title: String,
+    pub progress: Option<(u8, u8)>,
+    pub unchanged: bool,
+    /// Whether the returned text hit the byte limit. For unchanged responses consult the cache.
+    pub truncated: bool,
+}
+
 /// The authoritative emulator and bounded history for one pane.
 pub struct ServerTerminal {
     parser: vt100::Parser<Callbacks>,
     filter: ControlStringFilter,
+    parser_utf8_remaining: u8,
     history_limit: usize,
+    revision: u64,
 }
 
 impl ServerTerminal {
@@ -251,19 +275,44 @@ impl ServerTerminal {
                 Callbacks::default(),
             ),
             filter: ControlStringFilter::default(),
+            parser_utf8_remaining: 0,
             history_limit,
+            revision: 0,
         }
     }
 
     /// Feeds application output. A `vt100` panic on hostile output is contained: the chunk is
     /// dropped and later output repaints.
     pub fn process(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.revision = self.revision.wrapping_add(1);
+        }
         let filtered = self.filter.process(bytes);
         let contained = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.parser.process(&filtered)
+            self.process_parser(&filtered)
         }));
         if contained.is_err() {
             tracing::error!("terminal emulator rejected application output; chunk dropped");
+        }
+    }
+
+    // vte 0.15 may skip following bytes when completing a split character using lookahead.
+    // Finish a pending character separately, then preserve the normal bulk parsing path.
+    fn process_parser(&mut self, bytes: &[u8]) {
+        let mut rest = bytes;
+        while self.parser_utf8_remaining > 0 && !rest.is_empty() {
+            let (next, suffix) = rest.split_at(1);
+            self.parser.process(next);
+            if let Some(&byte) = next.first() {
+                self.parser_utf8_remaining = utf8_remaining(self.parser_utf8_remaining, byte);
+            }
+            rest = suffix;
+        }
+        if !rest.is_empty() {
+            self.parser.process(rest);
+        }
+        for &byte in rest {
+            self.parser_utf8_remaining = utf8_remaining(self.parser_utf8_remaining, byte);
         }
     }
 
@@ -274,7 +323,16 @@ impl ServerTerminal {
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let (rows, cols) = clamp_dims(rows, cols);
-        self.parser.screen_mut().set_size(rows, cols);
+        if self.size() != (rows, cols) {
+            self.revision = self.revision.wrapping_add(1);
+            self.parser.screen_mut().set_size(rows, cols);
+        }
+    }
+
+    /// A change token scoped to this terminal lifetime; not a timestamp or byte count.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     #[must_use]
@@ -331,31 +389,90 @@ impl ServerTerminal {
     /// Plain or attribute-preserving text of the visible screen preceded by up to `scrollback`
     /// history rows, truncated to `max_bytes` on a character boundary.
     pub fn capture(&mut self, scrollback: usize, attrs: bool, max_bytes: usize) -> String {
-        let columns = usize::from(self.size().1).max(1);
+        self.capture_snapshot(scrollback, attrs, max_bytes, None)
+            .text
+    }
+
+    /// Text and metadata from one terminal revision. Conditional callers must reuse capture
+    /// options and invalidate cached revisions when the pane/server identity changes.
+    pub fn capture_snapshot(
+        &mut self,
+        scrollback: usize,
+        attrs: bool,
+        max_bytes: usize,
+        if_revision: Option<u64>,
+    ) -> CaptureSnapshot {
+        let (rows, columns) = self.size();
+        let progress = self.progress().map(|p| (p.state, p.percent));
+        let mut snapshot = CaptureSnapshot {
+            text: String::new(),
+            revision: self.revision,
+            rows,
+            columns,
+            scrollback_offset: 0,
+            title: self.title().to_owned(),
+            progress,
+            unchanged: if_revision == Some(self.revision),
+            truncated: false,
+        };
+        let columns = usize::from(columns).max(1);
         let bytes_per_row = if attrs {
             columns.saturating_mul(128)
         } else {
             columns.saturating_mul(4).saturating_add(1)
         };
         let bounded_rows = max_bytes.saturating_div(bytes_per_row).saturating_add(1);
-        let rows = scrollback.min(self.history_limit).min(bounded_rows);
-        let mut output = self.with_history_screen(rows, |screen| {
-            if attrs {
-                String::from_utf8_lossy(&screen.contents_formatted()).into_owned()
-            } else {
-                screen.contents()
+        let offset = scrollback.min(self.history_limit).min(bounded_rows);
+        self.with_history_screen(offset, |screen| {
+            snapshot.scrollback_offset = u32::try_from(screen.scrollback()).unwrap_or(u32::MAX);
+            if !snapshot.unchanged {
+                snapshot.text = if attrs {
+                    String::from_utf8_lossy(&screen.contents_formatted()).into_owned()
+                } else {
+                    screen.contents()
+                };
+                snapshot.truncated = snapshot.text.len() > max_bytes;
+                if snapshot.truncated {
+                    snapshot
+                        .text
+                        .truncate(snapshot.text.floor_char_boundary(max_bytes));
+                }
             }
         });
-        if output.len() > max_bytes {
-            output.truncate(output.floor_char_boundary(max_bytes));
-        }
-        output
+        snapshot
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conditional_capture_tracks_output_resize_and_metadata_without_moving_history() {
+        let mut terminal = ServerTerminal::new(4, 8, 20);
+        terminal.process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\x1b]2;title\x07");
+        let first = terminal.capture_snapshot(1, false, 4096, None);
+        assert_eq!((first.rows, first.columns), (4, 8));
+        assert_eq!(first.scrollback_offset, 1);
+        assert_eq!(first.title, "title");
+        assert!(!first.unchanged);
+        assert_eq!(terminal.screen().scrollback(), 0);
+        let cached = terminal.capture_snapshot(1, false, 4096, Some(first.revision));
+        assert!(cached.unchanged);
+        assert!(cached.text.is_empty());
+        assert_eq!(cached.scrollback_offset, first.scrollback_offset);
+        terminal.resize(4, 8);
+        assert_eq!(terminal.revision(), first.revision);
+        terminal.resize(6, 10);
+        let resized = terminal.capture_snapshot(1, false, 4096, Some(first.revision));
+        assert!(!resized.unchanged);
+        assert_eq!((resized.rows, resized.columns), (6, 10));
+        terminal.process(b"\x1b]9;4;1;50\x07");
+        let progress = terminal.capture_snapshot(0, true, 4096, Some(resized.revision));
+        assert!(!progress.unchanged);
+        assert_eq!(progress.progress, Some((1, 50)));
+        assert!(terminal.capture_snapshot(0, true, 1, None).truncated);
+    }
 
     #[test]
     fn answers_cursor_position_and_device_attributes() {
@@ -422,7 +539,7 @@ mod tests {
 
     #[test]
     fn utf8_continuations_do_not_open_or_terminate_control_strings() {
-        let text = "beforeАИМНОП😀after";
+        let text = "beforeАИМНОП😀 prefix Ü 🐝 end";
         for split in 0..=text.len() {
             let mut terminal = ServerTerminal::new(24, 80, 0);
             let (first, second) = text.as_bytes().split_at(split);

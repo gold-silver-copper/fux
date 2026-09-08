@@ -15,9 +15,9 @@ pub fn effect(world: &mut World, effect: Effect) {
 }
 
 pub fn event(world: &mut World, workspace: Entity, event: control::Event) {
-    let Some(name) = world
-        .get::<Workspace>(workspace)
-        .map(|workspace| workspace.name.clone())
+    let Some((name, sequenced)) = world
+        .get_mut::<Workspace>(workspace)
+        .map(|mut workspace| (workspace.name.clone(), workspace.events.push(event.clone())))
     else {
         return;
     };
@@ -26,6 +26,7 @@ pub fn event(world: &mut World, workspace: Entity, event: control::Event) {
         Effect::Event {
             workspace: name,
             event,
+            cursor: sequenced.map(|entry| entry.cursor),
         },
     );
 }
@@ -154,6 +155,7 @@ pub fn viewers_on_tab(world: &mut World, tab: Entity) -> Vec<Entity> {
 }
 
 pub fn mark_workspace_dirty(world: &mut World, workspace: Entity) {
+    event(world, workspace, control::Event::WorkspaceChanged { id: 0 });
     let viewers = viewers_of_workspace(world, workspace);
     for viewer in viewers {
         if let Some(mut viewer) = world.get_mut::<Viewer>(viewer) {
@@ -163,6 +165,9 @@ pub fn mark_workspace_dirty(world: &mut World, workspace: Entity) {
 }
 
 pub fn mark_tab_dirty(world: &mut World, tab: Entity) {
+    if let Some(workspace) = tab_workspace(world, tab) {
+        event(world, workspace, control::Event::WorkspaceChanged { id: 0 });
+    }
     let viewers = viewers_on_tab(world, tab);
     for viewer in viewers {
         if let Some(mut viewer) = world.get_mut::<Viewer>(viewer) {
@@ -239,6 +244,8 @@ pub fn despawn_pane(world: &mut World, pane: Entity) {
     let Some(id) = pane_id(world, pane) else {
         return;
     };
+    let tab = pane_tab(world, pane);
+    super::systems::final_records::remember(world, pane);
     world.resource_mut::<Ids>().panes.remove(&id);
     let viewers: Vec<Entity> = world
         .query::<(Entity, &Viewer)>()
@@ -253,6 +260,22 @@ pub fn despawn_pane(world: &mut World, pane: Entity) {
     }
     world.despawn(pane);
     effect(world, Effect::ReleasePane { pane: id });
+    if let Some(tab) = tab
+        && world.get::<Tab>(tab).is_some_and(|owner| {
+            world
+                .get::<Workspace>(owner.workspace)
+                .is_none_or(|workspace| !workspace.tabs.contains(&tab))
+        })
+        && !world
+            .query::<&Pane>()
+            .iter(world)
+            .any(|pane| pane.tab == tab)
+    {
+        if let Some(id) = world.get::<Tab>(tab).map(|tab| tab.id) {
+            world.resource_mut::<Ids>().tabs.remove(&id);
+        }
+        world.despawn(tab);
+    }
 }
 
 /// Requests termination of a pane's process if it is running.
@@ -334,7 +357,6 @@ pub fn close_tab(world: &mut World, tab: Entity, now_ms: u64, grace_ms: u64) {
             viewer.dirty = true;
         }
     }
-    world.resource_mut::<Ids>().tabs.remove(&id);
     for pane in panes {
         // Panes that already exited leave immediately; running ones wait for their exit report
         // and are despawned by the lifecycle system when it arrives.
@@ -346,7 +368,17 @@ pub fn close_tab(world: &mut World, tab: Entity, now_ms: u64, grace_ms: u64) {
         }
     }
     fail_pending_creations_in_tab(world, tab, "tab closed before the pane started");
-    world.despawn(tab);
+    // Terminating panes still need their tab's workspace identity for final evidence.
+    // The tab is already absent from selection and public tab membership; lifecycle releases it
+    // after its last pane, or workspace retirement releases both in ownership order.
+    if !world
+        .query::<&Pane>()
+        .iter(world)
+        .any(|pane| pane.tab == tab)
+    {
+        world.resource_mut::<Ids>().tabs.remove(&id);
+        world.despawn(tab);
+    }
     if index.is_some() {
         event(
             world,
@@ -384,13 +416,24 @@ pub fn fail_pending_creations_in_tab(world: &mut World, tab: Entity, reason: &st
 
 /// Bounded pane input: chunks the bytes into attachment-sized writes.
 pub fn write_pane(world: &mut World, pane: Entity, bytes: &[u8]) -> bool {
-    let Some(component) = world.get::<Pane>(pane) else {
+    let Some(mut component) = world.get_mut::<Pane>(pane) else {
         return false;
     };
     if !component.state.accepts_input() {
         return false;
     }
+    if !bytes.is_empty() {
+        let Some(sequence) = component.input_sequence.checked_add(1) else {
+            return false;
+        };
+        component.input_sequence = sequence;
+    }
     let id = component.id;
+    if !bytes.is_empty()
+        && let Some(workspace) = pane_workspace(world, pane)
+    {
+        event(world, workspace, control::Event::WorkspaceChanged { id: 0 });
+    }
     for chunk in bytes.chunks(crate::proto::attach::MAX_INPUT_CHUNK) {
         effect(
             world,

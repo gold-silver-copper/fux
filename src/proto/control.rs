@@ -1,4 +1,4 @@
-//! Control protocol `FUXCTL2`: newline-delimited JSON commands, replies, subscriptions and
+//! Control protocol `FUXCTL3`: newline-delimited JSON commands, replies, subscriptions and
 //! lifecycle events over a per-workspace Unix socket. Zor's observer and the fux CLI are wire
 //! consumers; nothing here references ECS types.
 
@@ -9,8 +9,8 @@ use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-pub const CONTROL_VERSION: u32 = 2;
-pub const CONTROL_PREFACE: &[u8; 8] = b"FUXCTL2\n";
+pub const CONTROL_VERSION: u32 = 3;
+pub const CONTROL_PREFACE: &[u8; 8] = b"FUXCTL3\n";
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const MAX_ARGV_ENTRIES: usize = 128;
 pub const MAX_ARG_BYTES: usize = 4096;
@@ -31,6 +31,8 @@ pub enum Request {
     /// Split the focused pane (or `target`) and start `argv` (default command when empty).
     Split {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         axis: crate::layout::Axis,
         #[serde(default)]
         target: Option<PaneId>,
@@ -43,52 +45,102 @@ pub enum Request {
     New {
         id: RequestId,
         #[serde(default)]
+        instance: Option<String>,
+        /// Require this workspace lifetime before creating a process.
+        #[serde(default)]
+        stream: Option<u64>,
+        #[serde(default)]
         cwd: Option<PathBuf>,
         #[serde(default)]
         argv: Vec<String>,
     },
     Focus {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         target: FocusTarget,
     },
     Kill {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         pane: PaneId,
     },
     Resize {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         pane: PaneId,
         delta: i16,
     },
     SendKeys {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         pane: PaneId,
         keys: String,
     },
+    /// Reserve a server-issued operation before submitting bytes. Never types by itself.
+    InputReserve {
+        id: RequestId,
+        instance: Option<String>,
+        pane: PaneId,
+    },
+    InputSubmit {
+        id: RequestId,
+        instance: Option<String>,
+        operation: u64,
+        keys: String,
+    },
+    InputStatus {
+        id: RequestId,
+        instance: Option<String>,
+        operation: u64,
+    },
     Capture {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         pane: PaneId,
         #[serde(default)]
         attrs: bool,
         #[serde(default)]
         scrollback: u32,
         max_bytes: usize,
+        /// Skip text when the caller already holds this revision with identical capture options.
+        #[serde(default)]
+        if_revision: Option<u64>,
     },
     List {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
     },
     Tab {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         action: TabAction,
     },
     Workspace {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         action: WorkspaceAction,
     },
     Subscribe {
         id: RequestId,
         #[serde(default)]
+        instance: Option<String>,
+        #[serde(default)]
         events: Vec<EventKind>,
+        #[serde(default)]
+        after: Option<EventCursor>,
+    },
+    Events {
+        id: RequestId,
+        instance: Option<String>,
+        after: EventCursor,
     },
 }
 
@@ -101,16 +153,64 @@ impl Request {
             | Self::Kill { id, .. }
             | Self::Resize { id, .. }
             | Self::SendKeys { id, .. }
+            | Self::InputReserve { id, .. }
+            | Self::InputSubmit { id, .. }
+            | Self::InputStatus { id, .. }
             | Self::Capture { id, .. }
-            | Self::List { id }
+            | Self::List { id, .. }
             | Self::Tab { id, .. }
             | Self::Workspace { id, .. }
             | Self::Subscribe { id, .. } => *id,
+            Self::Events { id, .. } => *id,
+        }
+    }
+
+    /// Optional server-incarnation precondition for every workspace operation.
+    pub fn instance(&self) -> Option<&str> {
+        match self {
+            Self::Split { instance, .. }
+            | Self::New { instance, .. }
+            | Self::Focus { instance, .. }
+            | Self::Kill { instance, .. }
+            | Self::Resize { instance, .. }
+            | Self::SendKeys { instance, .. }
+            | Self::InputReserve { instance, .. }
+            | Self::InputSubmit { instance, .. }
+            | Self::InputStatus { instance, .. }
+            | Self::Capture { instance, .. }
+            | Self::List { instance, .. }
+            | Self::Tab { instance, .. }
+            | Self::Workspace { instance, .. }
+            | Self::Subscribe { instance, .. } => instance.as_deref(),
+            Self::Events { instance, .. } => instance.as_deref(),
         }
     }
 
     pub fn validate(&self) -> Result<(), ControlError> {
         let id = Some(self.id());
+        if self.instance().is_some_and(|instance| {
+            instance.is_empty()
+                || instance.len() > 128
+                || !instance
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        }) {
+            return Err(ControlError::invalid(id, "invalid server instance"));
+        }
+        if matches!(
+            self,
+            Self::InputReserve { .. }
+                | Self::InputSubmit { .. }
+                | Self::InputStatus { .. }
+                | Self::Events { .. }
+                | Self::Subscribe { after: Some(_), .. }
+        ) && self.instance().is_none()
+        {
+            return Err(ControlError::invalid(
+                id,
+                "input and replay operations require a server instance",
+            ));
+        }
         match self {
             Self::Split { argv, cwd, .. } | Self::New { argv, cwd, .. } => {
                 validate_argv(argv).map_err(|mut error| {
@@ -128,7 +228,7 @@ impl Request {
             Self::Resize { delta: 0, .. } => {
                 return Err(ControlError::invalid(id, "resize delta must not be zero"));
             }
-            Self::SendKeys { keys, .. } => {
+            Self::SendKeys { keys, .. } | Self::InputSubmit { keys, .. } => {
                 if keys.len() > MAX_KEY_BYTES {
                     return Err(ControlError::invalid(
                         id,
@@ -283,17 +383,80 @@ impl Reply {
 #[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
 pub enum CommandResult {
     Unit,
-    Pane { pane: PaneId },
-    Tab { tab: TabId },
-    Workspace { name: String },
-    Capture { text: String },
-    Listing { workspaces: Vec<WorkspaceSummary> },
+    Final {
+        record: Box<FinalRecord>,
+    },
+    Events {
+        cursor: EventCursor,
+        events: Vec<SequencedEvent>,
+    },
+    Input {
+        receipt: InputReceipt,
+    },
+    Pane {
+        pane: PaneId,
+    },
+    Tab {
+        tab: TabId,
+    },
+    Workspace {
+        name: String,
+    },
+    Capture {
+        input_sequence: u64,
+        #[serde(flatten)]
+        capture: Box<crate::terminal::CaptureSnapshot>,
+    },
+    Listing {
+        instance: String,
+        workspaces: Vec<WorkspaceSummary>,
+    },
+}
+
+/// Receipt retention is scoped to the server incarnation; expiry never cancels queued bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputReceipt {
+    pub operation: u64,
+    pub pane: PaneId,
+    pub state: InputState,
+    pub revision: u64,
+    pub input_sequence: u64,
+    pub expires_ms: u64,
+    pub bytes_written: usize,
+    pub error: Option<String>,
+}
+
+/// Bounded final screen evidence; a missing exit status means teardown preceded exit observation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FinalRecord {
+    pub pane: PaneId,
+    pub workspace: String,
+    pub stream: u64,
+    pub command: Vec<String>,
+    pub cwd: PathBuf,
+    pub exit_status: Option<u32>,
+    pub closed_ms: u64,
+    pub expires_ms: u64,
+    pub input_sequence: u64,
+    pub capture: crate::terminal::CaptureSnapshot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputState {
+    Reserved,
+    Queued,
+    Delivered,
+    Failed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceSummary {
     pub name: String,
+    pub event_cursor: EventCursor,
     pub focused: bool,
     pub viewers: u32,
     pub tabs: Vec<TabSummary>,
@@ -320,6 +483,8 @@ pub struct PaneSummary {
     #[serde(default)]
     pub progress: Option<(u8, u8)>,
     pub geometry: Rect,
+    pub revision: u64,
+    pub input_sequence: u64,
     pub focused: bool,
     pub cursor: crate::view::Cursor,
     pub modes: crate::view::PaneModes,
@@ -336,6 +501,8 @@ pub struct ReplyError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorCode {
+    Expired,
+    Gap,
     InvalidJson,
     UnknownCommand,
     InvalidRequest,
@@ -347,9 +514,26 @@ pub enum ErrorCode {
     Internal,
 }
 
+/// Scoped to one workspace lifetime within the required server instance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventCursor {
+    pub stream: u64,
+    pub sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SequencedEvent {
+    pub cursor: EventCursor,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Event {
+    #[serde(rename = "workspace.changed")]
+    WorkspaceChanged { id: RequestId },
     #[serde(rename = "pane.opened")]
     PaneOpened {
         id: RequestId,
@@ -388,6 +572,7 @@ pub enum Event {
 impl Event {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::WorkspaceChanged { .. } => EventKind::WorkspaceChanged,
             Self::PaneOpened { .. } => EventKind::PaneOpened,
             Self::PaneClosed { .. } => EventKind::PaneClosed,
             Self::PaneTitle { .. } => EventKind::PaneTitle,
@@ -402,6 +587,7 @@ impl Event {
     /// Stamps the subscriber's request id on a published copy.
     pub fn with_id(mut self, subscription: RequestId) -> Self {
         match &mut self {
+            Self::WorkspaceChanged { id } => *id = subscription,
             Self::PaneOpened { id, .. }
             | Self::PaneClosed { id, .. }
             | Self::PaneTitle { id, .. }
@@ -418,6 +604,8 @@ impl Event {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
+    #[serde(rename = "workspace.changed")]
+    WorkspaceChanged,
     #[serde(rename = "pane.opened")]
     PaneOpened,
     #[serde(rename = "pane.closed")]
@@ -607,11 +795,14 @@ fn validate_argv(argv: &[String]) -> Result<(), ControlError> {
         ));
     }
     let mut total = 0usize;
-    for argument in argv {
-        if argument.is_empty() || argument.len() > MAX_ARG_BYTES || argument.contains('\0') {
+    for (index, argument) in argv.iter().enumerate() {
+        if (index == 0 && argument.is_empty())
+            || argument.len() > MAX_ARG_BYTES
+            || argument.contains('\0')
+        {
             return Err(ControlError::invalid(
                 None,
-                "argv entries must be non-empty, bounded, and contain no NUL",
+                "executable must be non-empty; argv entries must be bounded and contain no NUL",
             ));
         }
         total = total.saturating_add(argument.len());
@@ -664,6 +855,9 @@ mod tests {
             b"{\"command\":\"list\",\"id\":9,\"extra\":[]}",
             b"{\"command\":\"resize\",\"id\":1,\"pane\":1,\"delta\":0}",
             b"{\"command\":\"capture\",\"id\":1,\"pane\":1,\"max_bytes\":0}",
+            b"{\"command\":\"input-reserve\",\"id\":1,\"pane\":1}",
+            b"{\"command\":\"input-submit\",\"id\":1,\"operation\":1,\"keys\":\"x\"}",
+            b"{\"command\":\"input-status\",\"id\":1,\"operation\":1}",
             b"{\"command\":\"workspace\",\"id\":1,\"action\":{\"kill\":{\"name\":\"../x\"}}}",
             b"{\"command\":\"send-keys\",\"id\":1,\"pane\":1,\"keys\":\"\\\\q\"}",
         ] {

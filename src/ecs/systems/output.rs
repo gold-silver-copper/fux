@@ -2,7 +2,7 @@
 
 use crate::ecs::components::{Pane, PaneState};
 use crate::ecs::messages::{Effect, Inbound};
-use crate::ecs::resources::{Clock, Limits};
+use crate::ecs::resources::{Clock, Deadlines, Limits};
 use crate::ecs::support::{effect, event, pane_entity, pane_workspace};
 use crate::proto::control::Event;
 use bevy_ecs::prelude::*;
@@ -44,6 +44,7 @@ pub fn apply_pane_output(world: &mut World) {
                 if publish_output {
                     component.last_output_event_ms = Some(now);
                 }
+                component.output_event_pending = !publish_output;
                 let accepts = component.state.accepts_input();
                 if !replies.is_empty() && accepts {
                     effect(
@@ -83,6 +84,34 @@ pub fn apply_pane_output(world: &mut World) {
                 }
             }
             _ => {}
+        }
+    }
+    // Rate limiting must not hide the last update in a burst indefinitely.
+    let pending: Vec<_> = world
+        .query::<(Entity, &Pane)>()
+        .iter(world)
+        .filter(|(_, pane)| pane.output_event_pending)
+        .map(|(entity, pane)| {
+            (
+                entity,
+                pane.id,
+                pane.last_output_event_ms
+                    .unwrap_or(now)
+                    .saturating_add(interval),
+            )
+        })
+        .collect();
+    for (entity, pane, due) in pending {
+        if due > now {
+            world.resource_mut::<Deadlines>().propose(due);
+        } else {
+            if let Some(mut component) = world.get_mut::<Pane>(entity) {
+                component.output_event_pending = false;
+                component.last_output_event_ms = Some(now);
+            }
+            if let Some(workspace) = pane_workspace(world, entity) {
+                event(world, workspace, Event::PaneOutput { id: 0, pane });
+            }
         }
     }
 }

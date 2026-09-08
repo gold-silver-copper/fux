@@ -47,6 +47,12 @@ enum Command {
     SendKeys(PassthroughArgs),
     /// Capture a pane's text: PANE [--attrs] [--scrollback LINES]
     Capture(PassthroughArgs),
+    /// Read retained final screen and exit evidence for an incarnation-scoped pane.
+    Final {
+        #[arg(long)]
+        instance: String,
+        pane: u32,
+    },
     /// List the workspace's tabs and panes as JSON.
     List(PassthroughArgs),
     /// Tab commands: new [NAME] | next | previous | select INDEX | select-id TAB | rename TAB NAME | close TAB
@@ -217,6 +223,29 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Some(Command::Final { instance, pane }) => {
+            let paths = fux::daemon::DaemonPaths::discover()?;
+            let response = fux::daemon::manager_request(
+                &paths.manager_socket,
+                &fux::daemon::ManagerRequest::Final {
+                    instance,
+                    pane: fux::ids::PaneId(pane),
+                },
+            )?;
+            match response {
+                fux::daemon::ManagerReply::Final { result } => {
+                    println!("{}", serde_json::to_string(&result)?);
+                    Ok(
+                        if matches!(result, fux::proto::control::Reply::Completed { .. }) {
+                            ExitCode::SUCCESS
+                        } else {
+                            ExitCode::FAILURE
+                        },
+                    )
+                }
+                _ => bail!("manager did not return final evidence"),
+            }
+        }
         Some(Command::Workspace(args)) => workspace_command(args.arguments),
         Some(Command::Ctl(args)) => ctl_json(cli.name.as_deref(), args.arguments),
         Some(Command::New(args)) => ctl_alias(cli.name.as_deref(), "new", args.arguments),
@@ -304,7 +333,7 @@ fn resolve(
     ) {
         Ok(fux::daemon::ManagerReply::Attach { descriptor }) => Ok(Some(descriptor)),
         Ok(fux::daemon::ManagerReply::Failed { message }) => bail!("session server: {message}"),
-        Ok(fux::daemon::ManagerReply::Names { .. }) => bail!("unexpected manager reply"),
+        Ok(fux::daemon::ManagerReply::Names { .. } | fux::daemon::ManagerReply::Final { .. }) => bail!("unexpected manager reply"),
         Err(error)
             if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
                 matches!(
@@ -629,7 +658,13 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
     let request = match command {
         "new" => {
             let (cwd, argv) = parse_cwd_and_argv(args)?;
-            Request::New { id, cwd, argv }
+            Request::New {
+                instance: None,
+                stream: None,
+                id,
+                cwd,
+                argv,
+            }
         }
         "split" => {
             let (axis, rest) = match args.first().map(String::as_str) {
@@ -640,6 +675,7 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
             let (target, rest) = parse_target(rest)?;
             let (cwd, argv) = parse_cwd_and_argv(rest)?;
             Request::Split {
+                instance: None,
                 id,
                 axis,
                 target: target.map(PaneId),
@@ -655,18 +691,25 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 "down" => FocusTarget::Down,
                 value => FocusTarget::Pane(PaneId(value.parse()?)),
             };
-            Request::Focus { id, target }
+            Request::Focus {
+                instance: None,
+                id,
+                target,
+            }
         }
         "kill" => Request::Kill {
+            instance: None,
             id,
             pane: PaneId(number(0, "a pane id")?),
         },
         "resize" => Request::Resize {
+            instance: None,
             id,
             pane: PaneId(number(0, "a pane id")?),
             delta: get(1, "a delta")?.parse()?,
         },
         "send-keys" => Request::SendKeys {
+            instance: None,
             id,
             pane: PaneId(number(0, "a pane id")?),
             keys: get(1, "keys")?.to_owned(),
@@ -675,14 +718,16 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
             let pane = PaneId(number(0, "a pane id")?);
             let (attrs, scrollback) = parse_capture_options(args.get(1..).unwrap_or_default())?;
             Request::Capture {
+                instance: None,
                 id,
                 pane,
                 attrs,
                 scrollback,
                 max_bytes: fux::proto::control::MAX_CAPTURE_BYTES,
+                if_revision: None,
             }
         }
-        "list" => Request::List { id },
+        "list" => Request::List { instance: None, id },
         "tab" => {
             let action = match get(0, "an action")?.as_str() {
                 "new" => TabAction::New {
@@ -705,7 +750,11 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 },
                 _ => bail!("tab requires new, next, previous, select, select-id, rename or close"),
             };
-            Request::Tab { id, action }
+            Request::Tab {
+                instance: None,
+                id,
+                action,
+            }
         }
         "subscribe" => {
             let events = args
@@ -714,7 +763,12 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                     serde_json::from_value::<EventKind>(serde_json::Value::String(value.clone()))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            Request::Subscribe { id, events }
+            Request::Subscribe {
+                after: None,
+                instance: None,
+                id,
+                events,
+            }
         }
         _ => bail!("unknown control command {command}"),
     };

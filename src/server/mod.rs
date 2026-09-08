@@ -100,9 +100,11 @@ async fn start(
     let (control_reply_tx, control_reply_rx) = mpsc::channel(256);
     let (manager_reply_tx, manager_reply_rx) = mpsc::channel(64);
     let (outbox_tx, outbox_rx) = mpsc::channel(64);
-    let session = Session::new(&config)?;
+    let session = Session::new(&config, identity.instance_nonce.clone())?;
+    let instance = identity.instance_nonce.clone();
     let adapter = Adapter::new(paths.clone(), identity, pane_tx);
     let owner = Owner {
+        instance,
         inbound: ingress_tx,
         tokens: Arc::new(AtomicU64::new(1)),
         control_replies: control_reply_tx,
@@ -166,7 +168,9 @@ async fn start(
         match receiver.try_recv() {
             Ok(ManagerOutcome::Attach { .. }) => break,
             Ok(ManagerOutcome::Failed(message)) => anyhow::bail!("initial workspace: {message}"),
-            Ok(ManagerOutcome::Names(_)) => anyhow::bail!("unexpected manager outcome"),
+            Ok(ManagerOutcome::Names(_) | ManagerOutcome::Final(_)) => {
+                anyhow::bail!("unexpected manager outcome")
+            }
             Err(oneshot::error::TryRecvError::Closed) => {
                 anyhow::bail!("initial workspace creation was abandoned")
             }
@@ -370,6 +374,9 @@ async fn run_loop(mut state: ServerState) -> anyhow::Result<()> {
     for name in names {
         state.close_workspace(&name).await;
     }
+    // Pumps may be waiting to report output or input completion. Stop accepting reports before
+    // joining them; this loop will no longer drain the channel during adapter shutdown.
+    state.pane_rx.close();
     state.adapter.shutdown().await;
     Ok(())
 }

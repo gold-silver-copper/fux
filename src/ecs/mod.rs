@@ -6,6 +6,7 @@
 //! `Session` with injected events and time.
 
 pub mod components;
+pub mod events;
 pub mod messages;
 pub mod resources;
 pub mod support;
@@ -39,15 +40,26 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(config: &crate::config::Config) -> anyhow::Result<Self> {
+    pub fn new(config: &crate::config::Config, instance: String) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !instance.is_empty()
+                && instance.len() <= 128
+                && instance
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
+            "invalid server instance"
+        );
         let bindings = crate::commands::configured_bindings(config)?;
         let mut world = World::new();
         world.insert_resource(Limits::from_config(config));
+        world.insert_resource(resources::ServerInstance(instance));
         world.insert_resource(Registry {
             bindings,
             default_command: config.default_command.argv.clone(),
         });
         world.init_resource::<Ids>();
+        world.init_resource::<resources::InputOperations>();
+        world.init_resource::<resources::FinalRecords>();
         world.init_resource::<Clock>();
         world.init_resource::<Deadlines>();
         world.init_resource::<resources::ShuttingDown>();
@@ -71,7 +83,12 @@ impl Session {
         );
         schedule.add_systems((
             systems::requests::apply_attachments.in_set(Phase::Ingest),
-            systems::output::apply_pane_output.in_set(Phase::Output),
+            (
+                systems::output::apply_pane_output,
+                systems::input::apply_completions,
+            )
+                .chain()
+                .in_set(Phase::Output),
             systems::requests::apply_requests.in_set(Phase::Requests),
             systems::creation::apply_spawn_completions.in_set(Phase::Completions),
             systems::lifecycle::resolve_lifecycle.in_set(Phase::Lifecycle),

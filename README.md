@@ -26,6 +26,7 @@ the server or the machine restarts.
 - `fux serve --name NAME` runs the server in the foreground (SIGINT/SIGTERM shut it down).
 - `fux attach --socket PATH` attaches to an explicit private attachment socket, for example one a
   koh gateway exposes.
+- `fux final --instance INSTANCE PANE` reads bounded final screen/exit evidence after pane closure.
 - `fux [NAME] new|split|focus|kill|resize|send-keys|capture|list|tab|subscribe …` and
   `fux [NAME] ctl JSON` drive the workspace's control socket from scripts. `fux --help` lists them.
 
@@ -178,8 +179,11 @@ tests/verify/release-package.sh
 
 Deterministic ECS tests inject events and time (`tests/ecs.rs`, including randomized command
 sequences); real-process scenarios use disposable HOME/XDG directories and owned processes only
-(`tests/local_cli.rs`, the fixture-child suite). The optional cross-repository job and
-`python3 tools/dependencies.py verify --build` rebuild koh and zor from pinned bases plus the
+(`tests/local_cli.rs`, the fixture-child suite). The combined gate requires Node for zor's
+OpenCode adapter tests. Standalone fux builds do not.
+
+The required cross-repository job and `cargo run --manifest-path tools/xtask/Cargo.toml --locked -- dependencies verify --build` rebuild
+koh and zor from pinned bases plus the
 patches in `dependency-patches/` and run the required real koh and real zor integrations with
 explicit binary paths; set `ZOR_BIN` and `FUX_REQUIRE_ZOR_BIN=1`, or `FUX_BIN` and
 `KOH_REQUIRE_FUX_BIN=1`, so they can never silently skip.
@@ -189,8 +193,8 @@ explicit binary paths; set `ZOR_BIN` and `FUX_REQUIRE_ZOR_BIN=1`, or `FUX_BIN` a
 - [docs/design.md](docs/design.md): architecture, entity model, system order, lifecycle.
 - [docs/ecs-plan.md](docs/ecs-plan.md): the plan written before the rewrite.
 - [docs/ecs-acceptance.md](docs/ecs-acceptance.md): requirement-by-requirement acceptance audit.
-- [docs/local-attachment-protocol.md](docs/local-attachment-protocol.md) (v5) and
-  [docs/local-control-protocol.md](docs/local-control-protocol.md) (`FUXCTL2`).
+- [docs/local-attachment-protocol.md](docs/local-attachment-protocol.md) (v6) and
+  [docs/local-control-protocol.md](docs/local-control-protocol.md) (`FUXCTL3`).
 - [docs/security.md](docs/security.md), [docs/release-readiness.md](docs/release-readiness.md),
   [CHANGELOG.md](CHANGELOG.md), [HANDOFF.md](HANDOFF.md).
 - Everything else under `docs/` and the `*-prompt.md` files are historical records of earlier

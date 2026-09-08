@@ -1,0 +1,102 @@
+{
+  "audited_at": "2026-09-07T19:23:13.309973+00:00",
+  "requirement": "herdr-gap-closure-prompt.md section 4",
+  "scope": "Recorded initial-agent states; native busy evidence is not passive screen recognition; forced exit is not natural success.",
+  "sources": [
+    {
+      "agent": "codex-0.153.4",
+      "path": "zor/tests/fixtures/agents/codex-0.153.4/startup.json",
+      "sha256": "50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5"
+    },
+    {
+      "agent": "codex-0.153.4",
+      "path": "zor/tests/fixtures/agents/codex-0.153.4/lifecycle.json",
+      "sha256": "07c50bf33974660b6befffcd45f313fbc00e6bfcf6fd23dbbb5f55f49055b926",
+      "resize_widths": [
+        80,
+        39,
+        80
+      ],
+      "exit_kind": "explicit fux kill; not natural completion",
+      "exit_status": null
+    },
+    {
+      "agent": "codex-0.153.4",
+      "path": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "exit_kind": "Codex /quit",
+      "exit_status": 0
+    },
+    {
+      "agent": "codex-0.153.4",
+      "path": "zor/tests/fixtures/agents/codex-0.153.4/approval.json",
+      "sha256": "2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f"
+    },
+    {
+      "agent": "claude-2.1.263",
+      "path": "zor/tests/fixtures/agents/claude-2.1.263/startup.json",
+      "sha256": "c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6"
+    },
+    {
+      "agent": "claude-2.1.263",
+      "path": "zor/tests/fixtures/agents/claude-2.1.263/lifecycle.json",
+      "sha256": "77a7db5b404fac54487b41ea143c5b749232913f7cad75a5bbece767440c4d6d",
+      "resize_widths": [
+        80,
+        39,
+        80
+      ],
+      "exit_kind": "explicit fux kill; not natural completion",
+      "exit_status": null
+    },
+    {
+      "agent": "claude-2.1.263",
+      "path": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "exit_kind": "Claude /exit",
+      "exit_status": 0
+    },
+    {
+      "agent": "opencode-1.18.29",
+      "path": "zor/tests/fixtures/agents/opencode-1.18.29/startup.json",
+      "sha256": "6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242"
+    },
+    {
+      "agent": "opencode-1.18.29",
+      "path": "zor/tests/fixtures/agents/opencode-1.18.29/lifecycle.json",
+      "sha256": "a4ac98052d62db61aca3ec7dd60934eade475c47fe6b067c252b59d14af7070f",
+      "resize_widths": [
+        80,
+        39,
+        80
+      ],
+      "exit_kind": "explicit fux kill; not natural completion",
+      "exit_status": null
+    },
+    {
+      "agent": "opencode-1.18.29",
+      "path": "zor/tests/fixtures/agents/opencode-1.18.29/events.json",
+      "sha256": "fcb9926c3b39942fca2566127b06249e93f189f531d46b2f5f46046edc1fe993",
+      "native_busy_pointers": [
+        "/events/4",
+        "/events/7",
+        "/events/14",
+        "/events/21",
+        "/events/24",
+        "/events/32",
+        "/events/35",
+        "/events/42"
+      ]
+    },
+    {
+      "agent": "opencode-1.18.29",
+      "path": "zor/tests/fixtures/agents/opencode-1.18.29/integration.json",
+      "sha256": "7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa"
+    },
+    {
+      "agent": "opencode-1.18.29",
+      "path": "zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json",
+      "sha256": "18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3"
+    }
+  ]
+}

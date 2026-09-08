@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "request", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ManagerRequest {
+    Final {
+        instance: String,
+        pane: crate::ids::PaneId,
+    },
     /// Attach to `name`, creating it when missing. `None` applies the documented default rule.
     Resolve {
         name: Option<String>,
@@ -23,9 +27,18 @@ pub enum ManagerRequest {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reply", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ManagerReply {
-    Attach { descriptor: super::Descriptor },
-    Names { names: Vec<String> },
-    Failed { message: String },
+    Final {
+        result: crate::proto::control::Reply,
+    },
+    Attach {
+        descriptor: super::Descriptor,
+    },
+    Names {
+        names: Vec<String>,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 pub const MANAGER_DEADLINE: Duration = Duration::from_secs(15);
@@ -89,7 +102,9 @@ pub fn workspace_names(path: &Path) -> Result<Vec<String>> {
             Ok(names)
         }
         ManagerReply::Failed { message } => bail!("{message}"),
-        ManagerReply::Attach { .. } => bail!("manager did not return a workspace list"),
+        ManagerReply::Attach { .. } | ManagerReply::Final { .. } => {
+            bail!("manager did not return a workspace list")
+        }
     }
 }
 

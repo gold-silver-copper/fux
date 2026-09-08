@@ -4,11 +4,6 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      integrations:
-        description: Verify optional koh and zor process integrations
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -58,8 +53,7 @@ jobs:
       - run: cargo check --target aarch64-linux-android --locked
 
   cross-repository:
-    name: Optional koh and zor integrations
-    if: github.event_name == 'workflow_dispatch' && inputs.integrations
+    name: Required koh and zor integrations
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -73,8 +67,21 @@ jobs:
           repository: gold-silver-copper/zor
           path: zor
           ref: fb6a1ef18c043ecf9dc94a10a18719e820bee685
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: herdrdev/herdr
+          path: references/herdr
+          ref: 94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0
       - name: Assemble reviewed dependency sources
-        run: python3 tools/dependencies.py apply
+        run: cargo run --manifest-path tools/xtask/Cargo.toml --locked -- dependencies apply
+      - name: Validate retained comparison evidence
+        run: |
+          cargo run --manifest-path tools/xtask/Cargo.toml --locked -- verify-detection-screens
+          cargo run --manifest-path tools/xtask/Cargo.toml --locked -- verify-controller-setup
+          cargo run --manifest-path tools/xtask/Cargo.toml --locked -- verify-resources
+          cargo run --manifest-path tools/xtask/Cargo.toml --locked -- verify-capture-traffic
+          cargo run --manifest-path tools/xtask/Cargo.toml --locked -- verify-workflow
+          cargo run --manifest-path tools/xtask/Cargo.toml --locked -- verify-detection-freshness
       - name: Build zor and expose its exact path to tests
         run: |
           cargo build --manifest-path zor/Cargo.toml --locked
@@ -86,11 +93,13 @@ jobs:
         env:
           FUX_BIN: ${{ github.workspace }}/target/debug/fux
           KOH_REQUIRE_FUX_BIN: "1"
+          KOH_REQUIRE_ZOR_BIN: "1"
         run: cargo test --manifest-path references/koh/Cargo.toml --test gateway --locked
       - name: Verify gateway reconnect with the exact fux binary
         env:
           FUX_BIN: ${{ github.workspace }}/target/debug/fux
           KOH_REQUIRE_FUX_BIN: "1"
+          KOH_REQUIRE_ZOR_BIN: "1"
         run: |
           cargo test --manifest-path references/koh/Cargo.toml --lib gateway:: --locked
       - run: cargo test --manifest-path zor/Cargo.toml --all-features --locked

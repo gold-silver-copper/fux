@@ -1,5 +1,62 @@
 # fux 0.3.2 handoff
 
+Current work (2026-09-08) is **complete within the required non-R6 scope** under
+[headless-native-agent-milestone-prompt.md](headless-native-agent-milestone-prompt.md).
+The new acceptance checklist and execution record are in
+[docs/native-agent-milestone.md](docs/native-agent-milestone.md). Bounded verification
+execution and durable validated continuation are implemented, regression-tested and
+independently reviewed. Codex native protocol/stdio core and atomic native journal
+operations are implemented and reviewed. Nonblocking idle polling and native thread
+start/resume validation are also implemented and independently reviewed. The first
+managed Codex worker path now passes a real-fux fixture regression for literal
+submission, response correlation, contention, prepared-input notifications, completion
+followed by EOF, and child cleanup. Durable history-read and interrupt controls now
+also pass real-fux CLI/service fixture coverage, including lost acknowledgement,
+duplicate control requests, cancellation remaining distinct from interruption, and
+near-capacity journal expiry/retirement. These fixes are independently reviewed.
+Native storage identity is now retained and tested, including allocated paths whose
+dated directories do not yet exist. The installed metadata probe succeeded; an
+exploratory empty-thread resume was rejected because no rollout had been written.
+The installed evidence remains separately attributed; no live model turn is claimed.
+Recreation orchestration now passes state regressions and real-fux fixture coverage:
+the owned wrapper stops its provider before resuming retained native storage, keeps
+the fux session, and reconciles history without input replay. Independent review
+found and accepted a fix to enforce the original deadline again at final publication.
+Codex capability reporting now describes the implemented native paths and their limits.
+Retained native evidence has tested, read-only age invalidation; duplicate events do
+not renew freshness, and availability remains separately unprobed.
+The existing attention view now consumes bounded native summaries joined to current
+pane observations; expiry and observer invalidation produce unknown state. Dashboard
+unit and real-fux integration tests pass, and independent review accepted the change.
+The N2 failure coverage map is complete; the current native suite passes 38 tests
+with two optional installed probes ignored. N3 baseline binaries/source/toolchain and
+the three-repetition viewer capture are retained under `.verification/native-performance-20260908/baseline/`.
+N3 measured an ASCII validation optimization and rejected it after mixed paired results,
+including a slow-consumer sustained regression. Baseline/candidate artifacts and the
+full decision are retained in `docs/native-performance-decision.md`; independent review
+verified the measurements. Production validation is restored. The extended native
+two-worker workflow now passes and retains its verified artifact handoff under
+`.verification/native-workflow-20260908/`; independent review accepted its final fixes.
+N5 companion refresh and complete intended-diff/final-fix reviews passed. The fresh
+final gate `.verification/gate-tbzpPi/manifest.json` records all 45 mandatory commands
+passed, a finalized checkpoint and `complete: true`; its invocation exited 0.
+Exact results, review dispositions and retained failed attempts are documented in
+[docs/native-final-verification.md](docs/native-final-verification.md).
+No unresolved non-R6 blocker remains. No live model-turn or
+materialized real-provider recreation validation is claimed.
+
+The previous milestone is **complete within the non-R6 scope**: it includes migration
+of all first-party Python to Rust. The authoritative final verification is
+[docs/headless-final-verification.md](docs/headless-final-verification.md), with context in
+[docs/headless-milestone.md](docs/headless-milestone.md) and
+[docs/python-rust-migration.md](docs/python-rust-migration.md). All 74 inventoried
+Python files and both embedded execution sites are replaced and reviewed. Complete intended-diff
+review, companion reconstruction and every mandatory non-R6 check passed. The verification
+record identifies actual gate failures, confirmed test fixes and targeted continuations;
+unchanged successful evidence was reused. No unresolved non-R6 blocker remains.
+R6 remote runtime work remains explicitly deferred. Earlier completion records below describe
+their historical milestones. No repository commits, pushes or PRs were made.
+
 Updated 2026-09-06 (bar at the bottom with its own background, attachment v5); the 0.3.0 rewrite
 notes below still apply. The bevy_ecs rewrite requested by
 [bevy-ecs-multiplexer-prompt.md](bevy-ecs-multiplexer-prompt.md) is implemented, verified locally
@@ -32,7 +89,7 @@ patches verified, `git diff --check`; all passed on 2026-09-06.
   processes and sockets and exchange typed messages/effects with the World.
 - Attachment protocol v3 and control protocol `FUXCTL2`. koh's real-fux tests and zor's observe
   adapter received one-line version edits, exported to `dependency-patches/` and verified with
-  `python3 tools/dependencies.py verify --build`.
+  `cargo run --manifest-path tools/xtask/Cargo.toml --locked -- dependencies verify --build`.
 - Version 0.3.0, MSRV 1.95, CI updated (`ci.yml`, `nightly.yml`), docs rewritten, earlier
   documents labelled historical.
 - After the first `main` merge: an interactive dialog when an older, incompatible session server

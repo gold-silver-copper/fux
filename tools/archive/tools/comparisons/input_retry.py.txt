@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Compare explicit retry after a lost request/reply through private Unix-socket proxies.
+
+Herdr's request ID is a response-correlation ID; zor's operation ID is durable intent.
+Their different semantics are the subject of this comparison, not a shared promise.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import socket
+import subprocess
+import tempfile
+import threading
+
+import prompt_boundary as fixture
+
+
+class Proxy:
+    def __init__(self, path, upstream, backend, fault, received):
+        self.path, self.upstream, self.backend = path, upstream, backend
+        self.fault, self.received = fault, received
+        self.events, self.errors = [], []
+        self.dropped = False
+        self.stopping = threading.Event()
+        self.listener = socket.socket(socket.AF_UNIX)
+        self.listener.bind(str(path))
+        self.listener.listen(4)
+        self.listener.settimeout(.1)
+        self.thread = threading.Thread(target=self.run)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *unused):
+        self.stopping.set()
+        self.thread.join(timeout=12)
+        self.listener.close()
+        assert not self.thread.is_alive(), 'proxy did not stop'
+        assert not self.errors, self.errors
+
+    def run(self):
+        while not self.stopping.is_set():
+            try:
+                peer, _ = self.listener.accept()
+            except socket.timeout:
+                continue
+            try:
+                with peer, peer.makefile('rb') as reader:
+                    peer.settimeout(3)
+                    if self.backend == 'zor':
+                        assert reader.read(8) == b'FUXCTL3\n'
+                        peer.sendall(b'FUXCTL3\n')
+                    raw = reader.readline(1024 * 1024 + 1)
+                    assert len(raw) <= 1024 * 1024 and raw.endswith(b'\n')
+                    request = json.loads(raw)
+                    method = request.get('method', request.get('command'))
+                    submit = method == ('agent.prompt' if self.backend == 'herdr' else 'input-submit')
+                    drop = submit and not self.dropped
+                    event = dict(method=method, id=request['id'], operation=request.get('operation'),
+                                 request_sha256=hashlib.sha256(raw).hexdigest())
+                    if drop and self.fault == 'before-forward':
+                        event['effect'] = 'request-dropped'
+                        self.dropped = True
+                        self.events.append(event)
+                        continue
+                    response = fixture.rpc(self.upstream, request, fux=self.backend == 'zor')
+                    event['effect'] = 'forwarded'
+                    self.events.append(event)
+                    if drop:
+                        assert 'error' not in response and response.get('status', 'completed') == 'completed', response
+                        # Close downstream only after the owned worker has consumed the line.
+                        fixture.until(lambda: self.received.exists() and self.received.read_text() == 'retry-probe\n')
+                        event['effect'] = 'reply-dropped-after-consumption'
+                        self.dropped = True
+                        continue
+                    peer.sendall(json.dumps(response).encode() + b'\n')
+            except BaseException as error:
+                self.errors.append(repr(error))
+                return
+
+
+def raw_prompt(path, request):
+    """Expose EOF as the caller's lost-reply result, without accepting malformed JSON."""
+    with socket.socket(socket.AF_UNIX) as peer:
+        peer.settimeout(10)
+        peer.connect(str(path))
+        peer.sendall(json.dumps(request).encode() + b'\n')
+        with peer.makefile('rb') as reader:
+            raw = reader.readline(1024 * 1024 + 1)
+            if not raw:
+                return dict(transport='eof')
+            assert len(raw) <= 1024 * 1024 and raw.endswith(b'\n')
+            return json.loads(raw)
+
+
+def herdr_retry(control, proxy, root):
+    def direct(method, **params):
+        return fixture.rpc(control, dict(id='setup', method=method, params=params))
+    assert 'error' not in direct('workspace.create', cwd=str(root), focus=True)
+    panes = direct('pane.list')['result']['panes']
+    assert len(panes) == 1
+    pane = panes[0]['pane_id']
+    fixture.until(lambda: (root / 'worker.pid').exists() and (root / 'worker.pid').read_text().isdigit())
+    assert 'error' not in direct('pane.report_agent', pane_id=pane, agent='claude',
+                                source='comparison:fixture', state='idle', seq=1)
+    fixture.until(lambda: direct('agent.get', target=pane)['result']['agent']['agent_status'] == 'idle')
+    request = dict(id='stable-request-id', method='agent.prompt', params=dict(target=pane, text='retry-probe'))
+    first = raw_prompt(proxy.path, request)
+    assert first == {'transport': 'eof'}, first
+    before = root.joinpath('received').read_text() if root.joinpath('received').exists() else ''
+    retried = raw_prompt(proxy.path, request)
+    assert retried.get('result', {}).get('type') == 'agent_prompted', retried
+    return dict(first=first, retry=retried, input_before_retry=before)
+
+
+def zor_retry(control, proxy, root, zor, env):
+    def task(*args, ok=True):
+        # Every call is a fresh CLI process, reading the same retained journal.
+        result = subprocess.run([str(zor), 'task', *args], env=env, capture_output=True, timeout=10)
+        assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
+        return json.loads(result.stdout) if ok else dict(exit=result.returncode, error=result.stderr.decode()[:4096])
+    listing = fixture.rpc(control, dict(id=1, command='list'), fux=True)['result']['value']
+    pane = listing['workspaces'][0]['tabs'][0]['panes'][0]['id']
+    fixture.until(lambda: (root / 'worker.pid').exists() and (root / 'worker.pid').read_text().isdigit())
+    task('adopt', 'worker', '--title', 'retry comparison', '--instance', listing['instance'],
+         '--workspace', 'default', '--pane', str(pane), '--runtime', str(proxy.path.parent))
+    task('prepare', 'worker', '--operation', 'stable-operation-id', '--text', 'retry-probe', '--timeout-ms', '30000')
+    reserved = task('reserve', 'stable-operation-id')
+    operation = reserved['receipt']['operation']
+    first = task('submit', 'stable-operation-id', ok=False)
+    before = root.joinpath('received').read_text() if root.joinpath('received').exists() else ''
+    failed_phase = task('inspect', 'worker')['prompts'][0]['delivery']
+    task('submit', 'stable-operation-id')
+    retried = fixture.until(lambda: (value := task('reconcile', 'stable-operation-id'))['delivery'] == 'delivered' and value)
+    assert retried['receipt']['operation'] == operation
+    assert retried['wait'] == 'pending', 'delivery must not be interpreted as a response'
+    after_retry = dict(delivery=retried['delivery'], wait=retried['wait'], operation=operation)
+    assert task('inspect', 'worker')['task']['outcome'] == 'open'
+    return dict(first=first, first_delivery=failed_phase, retry=after_retry, input_before_retry=before)
+
+
+def run_case(backend, fault, binaries, worker):
+    with tempfile.TemporaryDirectory(prefix='retry-comparison-', dir='/tmp') as directory:
+        root = Path(directory)
+        config = root / 'config'
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=directory,
+                   XDG_CONFIG_HOME=str(config), XDG_STATE_HOME=str(root / 'state'),
+                   XDG_RUNTIME_DIR=directory, SHELL='/bin/sh', TERM='xterm-256color',
+                   WORKER_LOG=str(root / 'received'), WORKER_PID=str(root / 'worker.pid'),
+                   WORKER_RESPONSE=str(root / 'responded'))
+        if backend == 'herdr':
+            for name in ('herdr', 'herdr-dev'):
+                (config / name).mkdir(parents=True)
+                (config / name / 'config.toml').write_text(
+                    'onboarding = false\n[terminal]\ndefault_shell = ' + json.dumps(str(worker)) +
+                    '\nshell_mode = "non_login"\n[update]\nversion_check = false\nmanifest_check = false\n')
+            command = [str(binaries['herdr']), 'server']
+        else:
+            (config / 'fux').mkdir(parents=True)
+            (config / 'fux/config.toml').write_text('default-command = { argv = ' + json.dumps([str(worker)]) + ' }\n')
+            command = [str(binaries['fux']), 'serve']
+        with (root / 'server.log').open('w+') as log:
+            server = subprocess.Popen(command, env=env, stdout=log, stderr=log)
+            try:
+                def ready():
+                    assert server.poll() is None
+                    paths = list(config.glob('herdr*/herdr.sock')) if backend == 'herdr' else [root / 'fux/default.sock']
+                    return next((path for path in paths if path.exists()), None)
+                control = fixture.until(ready)
+                (root / 'proxy').mkdir()
+                with Proxy(root / 'proxy/default.sock', control, backend, fault, root / 'received') as proxy:
+                    result = herdr_retry(control, proxy, root) if backend == 'herdr' else zor_retry(control, proxy, root, binaries['zor'], env)
+                    assert proxy.dropped
+                    expected_before = '' if fault == 'before-forward' else 'retry-probe\n'
+                    assert result['input_before_retry'] == expected_before, result
+                    count = 2 if backend == 'herdr' and fault == 'after-consumption' else 1
+                    fixture.until(lambda: (root / 'received').exists() and (root / 'received').read_text() == 'retry-probe\n' * count)
+                    submissions = [event for event in proxy.events if event['method'] == ('agent.prompt' if backend == 'herdr' else 'input-submit')]
+                    if backend == 'herdr':
+                        assert len(submissions) == 2
+                        assert len({event['request_sha256'] for event in submissions}) == 1
+                    else:
+                        assert len(submissions) == (2 if fault == 'before-forward' else 1)
+                        assert {event['operation'] for event in submissions} == {result['retry']['operation']}
+                    result.update(received=(root / 'received').read_text(), input_count=count, proxy_events=proxy.events)
+            except BaseException:
+                log.seek(0)
+                print(log.read(16384), flush=True)
+                raise
+            finally:
+                if server.poll() is None:
+                    server.terminate()
+                try:
+                    server.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    server.wait(timeout=3)
+                    raise AssertionError('server required forced termination; worker cleanup unproven')
+            assert server.returncode == 0
+            pid = int((root / 'worker.pid').read_text())
+            assert pid > 1
+            def gone():
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    return True
+                return False
+            fixture.until(gone)
+            assert (root / 'received').read_text() == result['received'] == 'retry-probe\n' * result['input_count']
+            result['final_input_verified'] = True
+            result.update(backend=backend, fault=fault, server_exit=server.returncode, worker_exit_confirmed=True)
+            return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('herdr', 'fux', 'zor', 'output'):
+        parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--herdr-reference', type=Path, default=Path('references/herdr'))
+    parser.add_argument('--repetitions', type=int, default=3)
+    args = parser.parse_args()
+    assert 1 <= args.repetitions <= 20 and not args.output.exists()
+    binaries = {name: getattr(args, name).resolve(strict=True) for name in ('herdr', 'fux', 'zor')}
+    with tempfile.TemporaryDirectory(prefix='retry-worker-', dir='/tmp') as directory:
+        root = Path(directory)
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=directory, XDG_CONFIG_HOME=str(root / 'config'),
+                   XDG_STATE_HOME=str(root / 'state'), XDG_RUNTIME_DIR=directory)
+        provenance = {name: dict(sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                                version=subprocess.check_output([str(path), '--version'], env=env, timeout=5, text=True).strip())
+                      for name, path in binaries.items()}
+        assert provenance['herdr']['version'].startswith('herdr 0.8.2')
+        provenance['reference_commit'] = subprocess.check_output(['git', '-C', str(args.herdr_reference), 'rev-parse', 'HEAD'], text=True).strip()
+        provenance['platform'] = platform.platform()
+        provenance['harness_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        provenance['helper_sha256'] = hashlib.sha256(Path(fixture.__file__).read_bytes()).hexdigest()
+        source = root / 'worker.c'
+        source.write_text(fixture.WORKER)
+        provenance['worker_source_sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+        worker = root / 'claude'
+        subprocess.run(['/usr/bin/clang', str(source), '-o', str(worker)], env=env, check=True, timeout=30)
+        results = []
+        for repetition in range(1, args.repetitions + 1):
+            for fault in ('before-forward', 'after-consumption'):
+                for backend in ('herdr', 'zor'):
+                    result = run_case(backend, fault, binaries, worker)
+                    result['repetition'] = repetition
+                    results.append(result)
+                    print(backend, fault, repetition, 'passed', flush=True)
+        with args.output.open('x') as output:
+            json.dump(dict(provenance=provenance, synthetic=True, results=results), output, indent=2)
+            output.write('\n')
+
+
+if __name__ == '__main__':
+    main()

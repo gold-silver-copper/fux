@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""Measure worker continuity across zor service loss and PTY-owner loss.
+
+These are explicitly different fault scopes. Session resume after PTY-owner loss
+is not tested. The worker is synthetic, not a real Claude integration.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+import prompt_boundary as fixture
+
+# Default SIGALRM bounds the lifetime of an orphan even if a PTY-owner regression
+# leaves stdin alive. Install before publishing its PID; never signal a raw PID.
+WORKER = fixture.WORKER.replace('    char line[4096];', '    alarm(45);\n    char line[4096];')
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def stop(child):
+    if child is None or child.poll() is not None:
+        return
+    child.terminate()
+    try:
+        child.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait(timeout=3)
+        raise AssertionError('cleanup required forced termination')
+    assert child.returncode == 0, child.returncode
+
+
+def run_case(scope, binaries, worker):
+    with tempfile.TemporaryDirectory(prefix='svc-fault-', dir='/tmp') as directory:
+        root = Path(directory)
+        config = root / 'config'
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=directory,
+                   XDG_CONFIG_HOME=str(config), XDG_STATE_HOME=str(root / 'state'),
+                   XDG_RUNTIME_DIR=directory, SHELL='/bin/sh', TERM='xterm-256color',
+                   WORKER_LOG=str(root / 'received'), WORKER_PID=str(root / 'worker.pid'),
+                   WORKER_RESPONSE=str(root / 'responded'))
+        herdr = scope == 'herdr-server'
+        if herdr:
+            for name in ('herdr', 'herdr-dev'):
+                (config / name).mkdir(parents=True)
+                (config / name / 'config.toml').write_text(
+                    'onboarding = false\n[terminal]\ndefault_shell = ' + json.dumps(str(worker)) +
+                    '\nshell_mode = "non_login"\n[update]\nversion_check = false\nmanifest_check = false\n')
+        else:
+            (config / 'fux').mkdir(parents=True)
+            (config / 'fux/config.toml').write_text(
+                'default-command = { argv = ' + json.dumps([str(worker)]) + ' }\n')
+        server = service = None
+        pid = None
+        result = dict(fault=scope, signal='SIGKILL', session_resume_tested=False)
+        with (root / 'process.log').open('w+') as log:
+            try:
+                command = [str(binaries['herdr']), 'server'] if herdr else [str(binaries['fux']), 'serve']
+                worker_earliest_start = time.monotonic()
+                server = subprocess.Popen(command, env=env, stdout=log, stderr=log)
+                def ready():
+                    assert server.poll() is None
+                    paths = list(config.glob('herdr*/herdr.sock')) if herdr else [root / 'fux/default.sock']
+                    return next((path for path in paths if path.exists()), None)
+                control = fixture.until(ready)
+                def direct(method, **params):
+                    response = fixture.rpc(control, dict(id='fixture', method=method, params=params))
+                    assert 'error' not in response, response
+                    return response['result']
+                if herdr:
+                    direct('workspace.create', cwd=directory, focus=True)
+                    panes = direct('pane.list')['panes']
+                    assert len(panes) == 1
+                    pane = panes[0]['pane_id']
+                else:
+                    listing = fixture.rpc(control, dict(id=1, command='list'), fux=True)['result']['value']
+                    pane = listing['workspaces'][0]['tabs'][0]['panes'][0]['id']
+                fixture.until(lambda: (root / 'worker.pid').exists() and (root / 'worker.pid').read_text().isdigit())
+                pid = int((root / 'worker.pid').read_text())
+                assert pid > 1 and alive(pid)
+                result['worker_pid'] = pid
+                if herdr:
+                    direct('pane.report_agent', pane_id=pane, agent='claude', source='comparison:fixture', state='idle', seq=1)
+                    fixture.until(lambda: direct('agent.get', target=pane)['agent']['agent_status'] == 'idle')
+                    direct('agent.prompt', target=pane, text='before-crash')
+                else:
+                    endpoint = root / 'zor/control.sock'
+                    service_command = [str(binaries['zor']), 'serve']
+                    def start_service(previous=None):
+                        nonlocal service
+                        service = subprocess.Popen(service_command, env=env, stdout=log, stderr=log)
+                        def ready_service():
+                            assert service.poll() is None
+                            try:
+                                value = fixture.rpc(endpoint, dict(v=1, id=1, op='ping'))
+                                instance = value['service_instance']
+                                return instance if instance != previous else None
+                            except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError):
+                                return None
+                        return fixture.until(ready_service)
+                    service_instance = start_service()
+                    def task(**payload):
+                        response = fixture.rpc(endpoint, dict(v=1, id=1, op='task',
+                            service_instance=service_instance, task=payload))
+                        assert response['status'] == 'completed', response
+                        return response['value']
+                    adopted = task(action='adopt', id='worker', title='failure comparison',
+                        instance=listing['instance'], workspace='default', pane=pane)
+                    prepared = task(action='prepare', id='worker', operation='before', text='before-crash', timeout_ms=60000)
+                    task(action='submit', operation='before')
+                    delivered = fixture.until(lambda: (value if (value := task(action='reconcile', operation='before'))['delivery'] == 'delivered' else None))
+                    assert delivered['wait'] == 'pending'
+                fixture.until(lambda: (root / 'received').exists() and (root / 'received').read_text() == 'before-crash\n')
+                fixture.until(lambda: (root / 'responded').exists() and (root / 'responded').read_text() == 'response\n')
+                result['input_before_crash'] = (root / 'received').read_text()
+                victim = service if scope == 'zor-service' else server
+                # Alarm must not account for an exit in the 8-second crash window.
+                result['setup_seconds'] = time.monotonic() - worker_earliest_start
+                assert result['setup_seconds'] < 30
+                victim.kill()
+                assert victim.wait(timeout=5) == -signal.SIGKILL
+                result['fault_exit'] = victim.returncode
+                if scope == 'zor-service':
+                    assert alive(pid) and server.poll() is None
+                    old_instance = service_instance
+                    service_instance = start_service(old_instance)
+                    retained = task(action='inspect', id='worker')
+                    assert retained['session'] == adopted['session']
+                    reconciled = task(action='reconcile', operation='before')
+                    assert reconciled['receipt'] == delivered['receipt'] and reconciled['wait'] == 'pending'
+                    task(action='submit', operation='before')
+                    task(action='report', operation='before', token=prepared['report_token'],
+                         producer='comparison-fixture', sequence=1,
+                         input_operation=delivered['receipt']['operation'], kind='response-observed')
+                    assert task(action='wait', operation='before')['wait'] == 'response-observed'
+                    task(action='prepare', id='worker', operation='after', text='after-crash', timeout_ms=60000)
+                    task(action='submit', operation='after')
+                    fixture.until(lambda: (root / 'received').read_text() == 'before-crash\nafter-crash\n')
+                    assert (root / 'worker.pid').read_text() == str(pid) and alive(pid)
+                    assert task(action='inspect', id='worker')['task']['outcome'] == 'open'
+                    result.update(worker_survived=True, service_instance_changed=True,
+                                  session_retained=True, receipt_retained=True, retry_duplicated_input=False,
+                                  fresh_report_wait='response-observed', task_outcome='open')
+                else:
+                    fixture.until(lambda: not alive(pid))
+                    result['worker_survived'] = False
+                result['input_after_fault'] = (root / 'received').read_text()
+            finally:
+                # Attempt every cleanup action, preserving the primary failure.
+                primary = sys.exception()
+                errors = []
+                for child in (service, server):
+                    try:
+                        stop(child)
+                    except BaseException as error:
+                        errors.append(repr(error))
+                if pid is not None:
+                    try:
+                        fixture.until(lambda: not alive(pid), seconds=47)
+                    except BaseException as error:
+                        errors.append(repr(error))
+                if primary is not None or errors:
+                    try:
+                        log.seek(0)
+                        print(log.read(16384), flush=True)
+                    except BaseException as error:
+                        errors.append(repr(error))
+                if errors:
+                    if primary is not None:
+                        primary.add_note('cleanup errors: ' + repr(errors))
+                    else:
+                        raise AssertionError(errors)
+            assert (root / 'received').read_text() == result['input_after_fault']
+            result['cleanup_worker_exit_confirmed'] = True
+            return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('herdr', 'fux', 'zor', 'output'):
+        parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--repetitions', type=int, default=3)
+    args = parser.parse_args()
+    assert 1 <= args.repetitions <= 20 and not args.output.exists()
+    binaries = {name: getattr(args, name).resolve(strict=True) for name in ('herdr', 'fux', 'zor')}
+    provenance = dict(platform=platform.platform(), harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        helper_sha256=hashlib.sha256(Path(fixture.__file__).read_bytes()).hexdigest(),
+        binaries={name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in binaries.items()})
+    reference = json.loads(Path('docs/comparisons/prompt-boundary-build.json').read_text())
+    assert provenance['binaries']['herdr'] == reference['binary_sha256'], 'use the verified reference build'
+    provenance['herdr_reference_commit'] = reference['reference_commit']
+    with tempfile.TemporaryDirectory(prefix='svc-worker-', dir='/tmp') as directory:
+        source = Path(directory) / 'worker.c'
+        source.write_text(WORKER)
+        provenance['worker_source_sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+        worker = Path(directory) / 'claude'
+        subprocess.run(['/usr/bin/clang', str(source), '-o', str(worker)], check=True, timeout=30)
+        results = []
+        for repetition in range(1, args.repetitions + 1):
+            for scope in ('zor-service', 'fux-server', 'herdr-server'):
+                result = run_case(scope, binaries, worker)
+                result['repetition'] = repetition
+                results.append(result)
+                print(scope, repetition, 'passed', flush=True)
+        with args.output.open('x') as output:
+            json.dump(dict(provenance=provenance, synthetic=True, results=results), output, indent=2)
+            output.write('\n')
+
+
+if __name__ == '__main__':
+    main()

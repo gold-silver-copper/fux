@@ -1,0 +1,688 @@
+{
+  "scope": "All first-party Python scripts; upstream references excluded by user clarification",
+  "source_count": 74,
+  "scripts": [
+    {
+      "source": "tests/verify/cleanup.py",
+      "sha256_before": "73295ee417d66f37195a61daa586b604f58c72449b2fc85343863d392aba231b",
+      "lines": 34,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/support/local.rs",
+      "verification": "Final dependency audit and independent review confirm no remaining Python callers. Existing reviewed Rust replacement and passed local CLI/observer/owned-process regressions remain unchanged; root helper test already dispatches Rust. Removed unused original helper without rerunning unchanged measurements."
+    },
+    {
+      "source": "tests/verify/detach_drain.py",
+      "sha256_before": "5361f03b930ffc691c5add8173beb7557ed51765f017c55664009e36f13db9da",
+      "lines": 128,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/detach_drain.rs",
+      "verification": "All four normal Cargo scenario entry tests and strict tooling clippy passed; independent source review found no remaining findings"
+    },
+    {
+      "source": "tests/verify/empty_arguments.py",
+      "sha256_before": "c72ac0d71623df16a283ec84c31b5e4d0b17486f41237c00b9c5b45af5f26a6e",
+      "lines": 82,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/mod.rs",
+      "verification": "Real fux scenarios and normal root Cargo entry tests passed; independent review accepted after reaped-child cleanup fix and regression"
+    },
+    {
+      "source": "tests/verify/event_sync.py",
+      "sha256_before": "3a116b44683fb1bbb068f1564539e5de827e14cf97427112773bf62f64e34824",
+      "lines": 136,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/event_sync.rs",
+      "verification": "All four normal Cargo scenario entry tests and strict tooling clippy passed; independent source review found no remaining findings"
+    },
+    {
+      "source": "tests/verify/final_records.py",
+      "sha256_before": "33e29df35872fa057599e41b3caa3044e235bfa14390a14c11fb0c1e455a1aa9",
+      "lines": 96,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/final_records.rs",
+      "verification": "All four normal Cargo scenario entry tests and strict tooling clippy passed; independent source review found no remaining findings"
+    },
+    {
+      "source": "tests/verify/input_receipts.py",
+      "sha256_before": "9dc8e4f5515b236f1ebd2141df622b807870a2882982741c0aae41a18ebc334c",
+      "lines": 130,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/input_receipts.rs",
+      "verification": "All four normal Cargo scenario entry tests and strict tooling clippy passed; independent source review found no remaining findings"
+    },
+    {
+      "source": "tests/verify/local_attachment.py",
+      "sha256_before": "806753feda83c3b5f9143262132a82b73d3eabe704bb1dafec69b566728c89b7",
+      "lines": 57,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/local_attachment.rs",
+      "verification": "Direct real-binary checks and normal Cargo entry tests passed; independent review accepted diagnostic overflow and PTY CLOEXEC fixes"
+    },
+    {
+      "source": "tests/verify/local_tty.py",
+      "sha256_before": "dc6a4e6dfd0e0d8c29d00582e6754c2f886e016580f0104363f7e3bf3aa0a666",
+      "lines": 40,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/local_tty.rs",
+      "verification": "Direct real-binary checks and normal Cargo entry tests passed; independent review accepted diagnostic overflow and PTY CLOEXEC fixes"
+    },
+    {
+      "source": "tests/verify/migration.py",
+      "sha256_before": "c92bdb1799e306d7be450af3209c38bf88540784cf41b1f0e13fcf290b7e74df",
+      "lines": 206,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/migration.rs",
+      "verification": "Direct real binary and normal Cargo scenario passed; strict tooling clippy and independent source review accepted"
+    },
+    {
+      "source": "tests/verify/observer.py",
+      "sha256_before": "1d1c4dfb5de0b2c975f58e795bd8ffc67f3adc9539db0cba2b96a311e5747faa",
+      "lines": 240,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/observer.rs",
+      "verification": "Direct real fux+zor and normal Cargo observer test passed; strict tooling clippy and independent source review accepted"
+    },
+    {
+      "source": "tests/verify/owned_processes.py",
+      "sha256_before": "63229d81b8cea9acaf659eb93731ea6412036f3c02d40e9c55febc359880dc3e",
+      "lines": 20,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/support",
+      "verification": "Final dependency audit and independent review confirm no remaining Python callers. Existing reviewed Rust replacement and passed local CLI/observer/owned-process regressions remain unchanged; root helper test already dispatches Rust. Removed unused original helper without rerunning unchanged measurements."
+    },
+    {
+      "source": "tests/verify/protocol_rejection.py",
+      "sha256_before": "30d35eeddf933284952857be9a7ef342546198032247e54a7e684eec91d71c8c",
+      "lines": 78,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/rejection.rs",
+      "verification": "All three real rejection cases pass; independent review accepted blocking-peer and private-root fixes; private-root regression passes"
+    },
+    {
+      "source": "tests/verify/test_owned_processes.py",
+      "sha256_before": "296b7c7635eb16977e98761b723ca0abcc75dc36f7742bf3f7a118f374bfe2dd",
+      "lines": 36,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/support/process.rs",
+      "verification": "Normal Cargo integration entry passed with Rust replacement; strict tooling clippy and independent source review accepted"
+    },
+    {
+      "source": "tests/verify/test_zor_contention.py",
+      "sha256_before": "8e9917c218dc6ceb9e0bcf91bcc496980cb9e4b983f107aa75cd1f4dc4ec24d6",
+      "lines": 77,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/support/contention.rs",
+      "verification": "Normal Cargo integration entry passed with Rust replacement; strict tooling clippy and independent source review accepted"
+    },
+    {
+      "source": "tests/verify/utf8_capture.py",
+      "sha256_before": "17c68918462d29cda5bc2af00dfd3df6fc02b6e0e6cc37ea769cb60e6d206f1e",
+      "lines": 94,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/mod.rs",
+      "verification": "Real fux scenarios and normal root Cargo entry tests passed; independent review accepted after reaped-child cleanup fix and regression"
+    },
+    {
+      "source": "tests/verify/viewer.py",
+      "sha256_before": "ac21850cc3148fd6f1f3fa34322bd58c93543b2a4b180604315fd66f9b7ceb7d",
+      "lines": 445,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/viewer.rs",
+      "verification": "Direct real binary and normal Cargo scenario passed; strict tooling clippy and independent source review accepted after chunked OSC bound regression and terminal cleanup fixes"
+    },
+    {
+      "source": "tests/verify/zor_bindings.py",
+      "sha256_before": "1df714f8f7edc8c6d490f02fb9af127f3c292ffc52a2cd92242aea7746d41d0d",
+      "lines": 703,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_bindings.rs and binding_adapter.rs",
+      "verification": "Full real-fux/zor Cargo scenario passed in 27.55s; strict all-target tooling lint, formatting and independent complete source/adapter/dispatch review accepted. Retains ancestry, receipt recovery, immutable heartbeat replay and expiry, unsafe sidecar refusal, concurrent probe invalidation, arming, retirement and dashboard evidence."
+    },
+    {
+      "source": "tests/verify/zor_changes.py",
+      "sha256_before": "2438bfdd906e019e0f637c387d3e5bc94b7a35d3df58f535f09e3651ea9058f8",
+      "lines": 94,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_changes.rs",
+      "verification": "Normal Cargo integration entry passed with Rust replacement; strict tooling clippy and independent source review accepted"
+    },
+    {
+      "source": "tests/verify/zor_check_workers.py",
+      "sha256_before": "093f331a84c78bc7cf99e2c7dfac4f14ff7599034c04e07759bb60f5f21e3ac4",
+      "lines": 144,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_check_workers.rs",
+      "verification": "Normal Cargo integration passed; independent review accepted macOS buffered-reply fix with closed-peer regression; final strict tooling clippy passed"
+    },
+    {
+      "source": "tests/verify/zor_checks.py",
+      "sha256_before": "b8939e8a1a6fc9b9f8c606dc8bcf17bc717bcc4490018a88d23bd692fcc0cf37",
+      "lines": 439,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_checks.rs",
+      "verification": "Normal required real-binary Cargo zor_checks passed (27.09s), preserving all artifact limits/requirements, generation ordering, exact journal-capacity error publication, crash/no-replay and concurrent cancellation assertions. Three embedded Python workers are Rust modes. Independent full parity review and strict all-target tooling clippy/fmt passed."
+    },
+    {
+      "source": "tests/verify/zor_contention.py",
+      "sha256_before": "2436494f573378559056bd43cf4b2ba6141873aa6ed62e41ac70d7c1f186a189",
+      "lines": 43,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/support/contention.rs",
+      "verification": "All remaining callers are Rust. Prior exact Busy envelope, non-idempotent refusal and original-deadline regressions remain valid; full service and binding runtime checks pass with Python removed."
+    },
+    {
+      "source": "tests/verify/zor_dashboard.py",
+      "sha256_before": "ef063f20dcbf59d9ef070d3344cd1ca5729aa6d66045221e1cd85f91eb10810f",
+      "lines": 230,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_dashboard.rs",
+      "verification": "Normal required Cargo integration entry passed against real local fux/zor; embedded Python workers replaced in Rust; independent source review accepted. Affected formatting and strict lint pass."
+    },
+    {
+      "source": "tests/verify/zor_events.py",
+      "sha256_before": "28934586fba3aa56c04dcb17cc2c6c8112762ebe5236ec24274cafa228006faa",
+      "lines": 247,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_events.rs and events_proxy.rs",
+      "verification": "Required real-fux/zor Cargo scenario passed through Rust dispatch: idle traffic, event refresh, gaps, duplicate cursors, identity preservation and reload. Strict all-target tooling lint and formatting passed; independent review found no remaining issues."
+    },
+    {
+      "source": "tests/verify/zor_group_scheduler.py",
+      "sha256_before": "44be5ea01928beba03ccb4d09b664bb10b11634319d56a94991866930f79864b",
+      "lines": 7,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_groups.rs with Rust group worker/check and both Cargo entry points",
+      "verification": "Both required real-fux/zor Cargo scenarios passed (manual concurrent stepping and automatic scheduler), strict all-target tooling lint and formatting pass; independent source review found no remaining findings. Python scripts and embedded worker/check execution removed."
+    },
+    {
+      "source": "tests/verify/zor_groups.py",
+      "sha256_before": "68276187ff20acbaaee1216a0a843d226ab7e4e0263872be62be7f924fae4cb5",
+      "lines": 397,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_groups.rs with Rust group worker/check and both Cargo entry points",
+      "verification": "Both required real-fux/zor Cargo scenarios passed (manual concurrent stepping and automatic scheduler), strict all-target tooling lint and formatting pass; independent source review found no remaining findings. Python scripts and embedded worker/check execution removed."
+    },
+    {
+      "source": "tests/verify/zor_headless.py",
+      "sha256_before": "734b494eecd9d60e78fd1f7cd1bd6db641950dbe562f660de96a8e03c6033201",
+      "lines": 89,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_headless.rs",
+      "verification": "Normal Cargo integration entry passed with Rust replacement; strict tooling clippy and independent source review accepted"
+    },
+    {
+      "source": "tests/verify/zor_launch.py",
+      "sha256_before": "bf96d22672962ea6b5ed074dffcaed414faeb12a0c5c337bb0f4f0abff76b812",
+      "lines": 391,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_launch.rs and support/launch_proxy.rs",
+      "verification": "Required real-fux/zor Cargo scenario passed, proxy regressions and strict all-target tooling lint/formatting passed; independent complete source review found no remaining defects. Python caller removed, normal Cargo dispatch uses Rust."
+    },
+    {
+      "source": "tests/verify/zor_producers.py",
+      "sha256_before": "509a2f0d1530743dfa9afc1c952018ecfbd89137075ebcb243fee4477919f7f0",
+      "lines": 252,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_producers.rs + producer-worker.mjs",
+      "verification": "Normal required real-binary Cargo zor_producers passes on final source;exact original Node worker retained. Retry/producer lifetime/heartbeat/crash/report assertions preserved. Review cleanup drop-order finding fixed;strictlint,fmt and independent final review pass."
+    },
+    {
+      "source": "tests/verify/zor_recovery.py",
+      "sha256_before": "ee8af804e08342928522a5b3c44cdcaeb85f2f175204e510ef69a4212c0803b9",
+      "lines": 199,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_recovery.rs",
+      "verification": "Normal Cargo zor_recovery entry passed against real local fux/zor; independent source review accepted all original recovery/history/no-replay assertions."
+    },
+    {
+      "source": "tests/verify/zor_service.py",
+      "sha256_before": "ee296d4c89d572195206907e2e130d7fdd14aeed8c450fb9f2f95e1e5f8265e4",
+      "lines": 792,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_service.rs, service_fixture.rs, service_worktrees.rs and service_tasks.rs",
+      "verification": "Complete real-binary scenario passed on final source in 69.87s; strict tooling lint and root/tool formatting passed. Independent parity review found all assertions and Busy allowlist represented. Two accepted-socket blocking-mode fixes validated. Disposable failure-path restoration difference rejected with reviewer agreement: owned children stop before private Root deletion; no failed scenario reuses fixture state. Python dispatcher/helper removed."
+    },
+    {
+      "source": "tests/verify/zor_sources.py",
+      "sha256_before": "5aa605e5232e0f2fc91e2656dc7d4b18684cba3386634bfbda621d61447be92a",
+      "lines": 494,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_sources.rs; tools/xtask/src/scenarios/source_workers.rs",
+      "verification": "Normal required real-binary Cargo zor_sources passed (24.69s); all committed-source, private-check, artifact ordering/descriptor/capacity, historical-attempt, SHA256 and sealed-verification assertions preserved. Embedded Python workers are Rust modes exercised by that test. Independent full parity review, strict all-target tooling clippy and affected fmt passed."
+    },
+    {
+      "source": "tests/verify/zor_tasks.py",
+      "sha256_before": "dfb559871021acb42153ae9987646c563978813bb65c324c2397438e8a86fabf",
+      "lines": 475,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_tasks.rs; tools/xtask/src/support/task_proxy.rs",
+      "verification": "Required normal Cargo zor_tasks passed (10.53s); strict all-target tooling clippy and proxy cleanup regression passed. Full assertion-parity review accepted; deterministic waiter-kill fixture correction reviewed separately."
+    },
+    {
+      "source": "tests/verify/zor_workflow.py",
+      "sha256_before": "682f139b7a021e1684870ac4d3867ba1e5fcc1536160fd6b567b6876104fb2d4",
+      "lines": 248,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_workflow.rs",
+      "verification": "Normal required Cargo integration entry passed against real local fux/zor; embedded Python workers replaced in Rust; independent source review accepted. Affected formatting and strict lint pass."
+    },
+    {
+      "source": "tests/verify/zor_worktree.py",
+      "sha256_before": "4dcb7d04818c414a1ffea35cf5da7e3e1382fb72bd0e42885b4dd95f513bf0f3",
+      "lines": 248,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/scenarios/zor_worktree.rs",
+      "verification": "Normal required Cargo zor_worktree real-binary scenario passes; all original creation/removal/crash/capacity assertions retained and embedded filter replaced by Rust worker. Canonical injected parent paths fixed after test/review finding. Strict all-target tooling lint, root/tooling formatting and final independent review pass."
+    },
+    {
+      "source": "tools/comparisons/capture_traffic.py",
+      "sha256_before": "020c831a57021cf88203dd301aae5815e41e141ade29d859d240e3683747dbb1",
+      "lines": 227,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/traffic_capture.rs + support/traffic_proxy.rs",
+      "verification": "Finalsettledsource9case realmatrix(1/4/8workspaces x3) passes;fresh and archived historical reports validate. Originalbyteaccounting/idle/freshness/cleanup assertions retained. Targetedproxy+validator regressions,strictlint,fmt and independent final source/wiringreview pass."
+    },
+    {
+      "source": "tools/comparisons/controller_setup.py",
+      "sha256_before": "81e1f8aa218cc6dc34a51ad943e768b268722f0fd916eb93c0805332e96e2cf8",
+      "lines": 230,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/setup_capture.rs",
+      "verification": "Six real zor/herdr cases on corrected source, fresh and historical evidence validation, two targeted regression tests, strict lint and formatting passed. Independent review accepted after requiring both service identity fields; exact original preserved as nonexecutable provenance archive."
+    },
+    {
+      "source": "tools/comparisons/detection_freshness.py",
+      "sha256_before": "f3b9e812a12a7e188587f2895ab5e48be435b3c9b6e797577600c1c7cca6971d",
+      "lines": 128,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/freshness_capture.rs",
+      "verification": "All6real signed-out Codex cases pass with empty account storage/no prompts;fresh and historical reports validate. Originalsampling/pane-loss/cleanup contract retained;exact archivedPython sourcehash checked. Strictlint,formatting,targetedregressions and independent final source/wiring review pass."
+    },
+    {
+      "source": "tools/comparisons/detection_inventory.py",
+      "sha256_before": "739b690a95862a5048bf8433e6ab49a9716151b94e2fc2752493e63800634d4b",
+      "lines": 62,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/inventory.rs",
+      "verification": "Exact Python/Rust JSON payload and Markdown parity on normal PATH, empty PATH with cwd executable, and alias-only PATH plus primary override; independent final review accepted both edge fixes; 20 tooling tests and strict lint pass."
+    },
+    {
+      "source": "tools/comparisons/detection_screens.py",
+      "sha256_before": "b6ba5464871932b881fff5832658eccd6bc1551d05b31afb31cb54c37be7500d",
+      "lines": 150,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/evidence/screens.rs capture",
+      "verification": "Final-source77case paired productionCLI capture exactly matches original Python results/summary/scope/limitations. Fresh Rust and retained archived reports validate; provenance dispatch fixed after review. Strictlint,fmt,targeted regressions and final independent review pass; no agents/accounts launched."
+    },
+    {
+      "source": "tools/comparisons/input_retry.py",
+      "sha256_before": "cf2c4a756029c0a12afd2e9d48937ef54649a730c19c851f64ee01b1a184a4b6",
+      "lines": 259,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/retry_capture.rs; tools/xtask/src/support/retry_proxy.rs",
+      "verification": "All four backend/fault combinations passed at one repetition; independent parity review accepted; exact input counts, request byte hashes, durable operation identity and final cleanup verified; EOF/partial-response regression passed."
+    },
+    {
+      "source": "tools/comparisons/prompt_boundary.py",
+      "sha256_before": "3a29778f9717501d45edf8968e28e7124f913eb3df0d5e6d2c794eef057a2d89",
+      "lines": 264,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/prompt_capture.rs; tools/xtask/src/prompt-worker.c",
+      "verification": "All seven backend/case combinations passed at one repetition; independent parity review accepted; exact synthetic worker and prompt-scoped report contracts preserved. Historical helper bytes archived for exact provenance. Final headless-performance import caller is now Rust; original Python module removed."
+    },
+    {
+      "source": "tools/comparisons/resource_sampler_check.py",
+      "sha256_before": "4f60bf1ba7189a3cd9000ca69b9c430f4a1638d588503353bd31c53daa71bfa7",
+      "lines": 75,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/resource_sampler.rs",
+      "verification": "Real macOS C sampler compilation,3 calibrations,6 invalid PID rejections,stable owned Rust worker identity,>=24MiB RSS/footprint growth and normal cleanup pass. Strict all-target clippy and independent source review accepted. Reproduction docs updated; historical Python measurements retained without relabeling."
+    },
+    {
+      "source": "tools/comparisons/resources.py",
+      "sha256_before": "ea33ab75e5770f2234f02652e1bfea42f5c05a064adc2e943b8a72242d0c7209",
+      "lines": 232,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/resource_capture.rs",
+      "verification": "Independent parity review accepted; six-case real fux+zor/herdr capture at 1/4/8 panes passed with raw resource accounting and normal cleanup, retained 18-row/negative regressions and strict tooling clippy passed. Historical Python source archived with exact hash; fresh timing includes Rust process polling overhead."
+    },
+    {
+      "source": "tools/comparisons/service_failure.py",
+      "sha256_before": "92626705ec4329fe0da71ae46cc985973560c3aef87e0cae1b5dc8052585f0b4",
+      "lines": 225,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/service_failure_capture.rs; tools/xtask/src/prompt-worker.c",
+      "verification": "All three real SIGKILL fault scopes passed at one repetition, preserving retained session/receipt and no replay after controller restart, exact input and worker cleanup. Independent parity review accepted; strict all-target tooling clippy passed. Original Python archived, fresh verified herdr build recorded explicitly."
+    },
+    {
+      "source": "tools/comparisons/test_capture_traffic.py",
+      "sha256_before": "7021c5ee0460a84e6e09717379283103f30fd58db88c2695452c1eb10628fd09",
+      "lines": 40,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/evidence/traffic.rs",
+      "verification": "Retained source hashes, complete measurement matrices and all original negative mutations pass; standalone Rust CLI, strict Clippy and gate policy pass; independent final source/wiring review accepted. No benchmark rerun."
+    },
+    {
+      "source": "tools/comparisons/test_controller_setup.py",
+      "sha256_before": "e7d0960691e72b486451715a3f6a5c9b4980ff34675f0363d40cdc8a7175dd88",
+      "lines": 60,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/evidence/setup.rs",
+      "verification": "Retained source hashes, complete measurement matrices and all original negative mutations pass; standalone Rust CLI, strict Clippy and gate policy pass; independent final source/wiring review accepted. No benchmark rerun."
+    },
+    {
+      "source": "tools/comparisons/test_detection_freshness.py",
+      "sha256_before": "6b571a6b2cc9f36ead53c1c7d65edd19ab41481c23ac1055dd8cc3e83b4a7bad",
+      "lines": 63,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/evidence/freshness.rs",
+      "verification": "Original corpus/timing/provenance assertions and negative mutations pass in Rust; historical main.rs reconstructed to exact recorded hash; missing-null-rule regression added; independent final review accepted; CI/full/headless entries updated."
+    },
+    {
+      "source": "tools/comparisons/test_detection_screens.py",
+      "sha256_before": "de1572b8121c1bc3160d6d278865119a78b39e86a06329d56fc6a939c19751cb",
+      "lines": 57,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/evidence/screens.rs",
+      "verification": "Original corpus/timing/provenance assertions and negative mutations pass in Rust; historical main.rs reconstructed to exact recorded hash; missing-null-rule regression added; independent final review accepted; CI/full/headless entries updated."
+    },
+    {
+      "source": "tools/comparisons/test_resources.py",
+      "sha256_before": "0374e1a87ae033b4d92f710b307a2990254eb6fda2837eca8cc8901bff6fd41c",
+      "lines": 46,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/evidence/resources.rs",
+      "verification": "Retained source hashes, complete measurement matrices and all original negative mutations pass; standalone Rust CLI, strict Clippy and gate policy pass; independent final source/wiring review accepted. No benchmark rerun."
+    },
+    {
+      "source": "tools/comparisons/test_workflow.py",
+      "sha256_before": "d5b7705b1590310d723932a34877210e5094e55858cdb2b1600fa569bb920a48",
+      "lines": 54,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/evidence.rs",
+      "verification": "Original four evidence cases and all mutations pass against retained workflow JSON; exact historical archives preserve hashes, current-source regression covers updated capture caller; independent final review accepted. Both gate profiles invoke Rust."
+    },
+    {
+      "source": "tools/comparisons/workflow.py",
+      "sha256_before": "217b868447d056f43d705f23d35fa1897842f47d88a02f690e7ca0b25b82b87b",
+      "lines": 146,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/workflow_capture.rs",
+      "verification": "Real paired zor acceptance/herdr3worker worktree workload passes using Rust worker. Fresh+historical reports validate;original4mutations/current-sourcehash regression,strictlint,fmt and independent final review pass. External herdr checks remain explicitly external;existing historical archive unchanged."
+    },
+    {
+      "source": "tools/dependencies.py",
+      "sha256_before": "cf208bd67904530236c265b7cfd70425f0a4c161010d5eff383e732529fb73f4",
+      "lines": 224,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/dependencies.rs",
+      "verification": "3 unit tests; strict all-target clippy; Rust reconstruction and Python byte-equivalence verification; independent review accepted with missing standalone-crate gate checks fixed"
+    },
+    {
+      "source": "tools/headless_journal.py",
+      "sha256_before": "4e9740c242e34ba684fd887a7981abb97f8e407dd558773d6f5bda3475e80fa7",
+      "lines": 105,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/headless_journal.rs",
+      "verification": "Full final-source3x96 real CLI capture passes with generation32,zero inspect/replay replacements,normal server/worker cleanup. Rust timing polling overhead disclosed. Historical source retained byte-identical as nonexecutable archive; retained validator/headless gate policy,strictlint,fmt and independent final review pass."
+    },
+    {
+      "source": "tools/headless_performance.py",
+      "sha256_before": "a528eaa007ad7ccaf61b00a27028c72224399e8327843f3b902fdf9fff2e1e7f",
+      "lines": 226,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/headless_performance.rs; tools/xtask/src/performance-worker.c",
+      "verification": "Four-case real headless viewer matrix passed at one repetition on final source; full raw counter/identity/cleanup validation runs before report publication. Fragmentation and missing-source regressions and retained historical mutations passed. Independent review accepted after exact source-inventory fix; strict all-target tooling clippy passed."
+    },
+    {
+      "source": "tools/measure.py",
+      "sha256_before": "18bb0e45d0fab7bde0c78cc16dc83a62e71db635c66dbda0efb719cb7bf5277e",
+      "lines": 185,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/measure.rs",
+      "verification": "Final real protocol6 startup/10sidle/RSS/5latency/20kburst run passes with original report fields and quantile rule. Decimal rounding and socketerrno parity fixes covered by2tests. Strictlint,formatting and independent final review pass. Legacy default3 retained;historical measurements not relabelled."
+    },
+    {
+      "source": "tools/test_dependencies.py",
+      "sha256_before": "d2f0e17d8d34c8ec1f2db8bb1539afdd639ebcad12fbeeb50b26c619a9a0c05c",
+      "lines": 43,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/dependencies.rs",
+      "verification": "3 unit tests; strict all-target clippy; Rust reconstruction and Python byte-equivalence verification; independent review accepted with missing standalone-crate gate checks fixed"
+    },
+    {
+      "source": "tools/test_headless_performance.py",
+      "sha256_before": "ab22b1fdf621799243ebfc7661d1dce0bbb5e379b0100fa13584b74eee5a392f",
+      "lines": 132,
+      "owner": "fux",
+      "status": "ported",
+      "replacement": "tools/xtask/src/headless_evidence.rs",
+      "verification": "Retained paired viewer/journal/build provenance and all4 original mutations pass. Review precision finding fixed with exact integer counters;positive large-counter evidence and3 one-unit rejection regressions pass. Headless gate policy, strictlint,formatting,CLI and final independent review accepted; capture tools remain pending and original evidence/source hashes unchanged."
+    },
+    {
+      "source": "zor/tools/capture_claude_authenticated.py",
+      "sha256_before": "c2a831aec8066f2334cb37a368f28e289298d17cc7a8cc087c34e107e9786c7e",
+      "lines": 194,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_authenticated.rs",
+      "verification": "Rust 1.91 unit and strict clippy checks; independent source review accepted; real fux with scripted Rust Codex/approval/Claude terminals passed using dummy credentials only. No live provider claim."
+    },
+    {
+      "source": "zor/tools/capture_codex_approval.py",
+      "sha256_before": "7f8e8f989acdd537253672bd83ff812c3dccb6c54f4db8a3d93647c51be02c2d",
+      "lines": 193,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_authenticated.rs",
+      "verification": "Rust 1.91 unit and strict clippy checks; independent source review accepted; real fux with scripted Rust Codex/approval/Claude terminals passed using dummy credentials only. No live provider claim."
+    },
+    {
+      "source": "zor/tools/capture_codex_authenticated.py",
+      "sha256_before": "5e74f071e133add5251e4ae7a6e980820e57b9d08391bb3fe8d4d19eb3fa3992",
+      "lines": 192,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_authenticated.rs",
+      "verification": "Rust 1.91 unit and strict clippy checks; independent source review accepted; real fux with scripted Rust Codex/approval/Claude terminals passed using dummy credentials only. No live provider claim."
+    },
+    {
+      "source": "zor/tools/capture_lifecycle.py",
+      "sha256_before": "5e622f699ccf339663f3425465c6b57db064a86756892b385d1411f7baf0c69c",
+      "lines": 108,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_lifecycle.rs",
+      "verification": "Rust1.91 build and strict clippy passed; real fux capture with no-account Rust fixture passed all lifecycle assertions; independent review accepted; historical Python bytes remain nonexecutable and hash-checked"
+    },
+    {
+      "source": "zor/tools/capture_opencode_events.py",
+      "sha256_before": "071c7bf2d283256b3c2c8fe4c42b2bd002967b3bf390dbeff4405dad5a486384",
+      "lines": 291,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_native.rs, native_provider.rs and native-probe.mjs",
+      "verification": "Rust capture and all callers accepted; Python removed after last importer conversion. Real permission/question/reload integration captures passed, all15 zor tooling tests pass after deletion, strict Rust1.91 lint/formatting and independent review passed. Historical Python bytes remain nonexecutable archives."
+    },
+    {
+      "source": "zor/tools/capture_opencode_integration.py",
+      "sha256_before": "dd09a0bfaa0acdc14fe54ce1ac574dec6cf58e87ee75cd9dc285560ccb5ba72f",
+      "lines": 513,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_integration.rs and native_provider.rs",
+      "verification": "Rust capture and all callers accepted; Python removed after last importer conversion. Real permission/question/reload integration captures passed, all15 zor tooling tests pass after deletion, strict Rust1.91 lint/formatting and independent review passed. Historical Python bytes remain nonexecutable archives."
+    },
+    {
+      "source": "zor/tools/capture_opencode_resume.py",
+      "sha256_before": "1ef0b4ae26a741e6206155d2bc9c4fd700e6274c9d3478ffaf725e53d9d75b00",
+      "lines": 189,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_resume.rs and native_provider.rs",
+      "verification": "Real OpenCode1.18.29 native and explicit zor resume passed; all13 tooling tests, strict1.91 lint, formatting and final independent review pass. Both Python resume callers removed; exact historical source archives retain prior provenance. Zor lost-creation-reply capture proves one creation and current-attempt verification."
+    },
+    {
+      "source": "zor/tools/capture_startup.py",
+      "sha256_before": "9cffb1fe5b4bc76174ff4df8dd7f7de6243bf4bf1d7b119611a0e58e44118241",
+      "lines": 171,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_startup.rs",
+      "verification": "Rust capture and all callers accepted; Python removed after last importer conversion. Real permission/question/reload integration captures passed, all15 zor tooling tests pass after deletion, strict Rust1.91 lint/formatting and independent review passed. Historical Python bytes remain nonexecutable archives."
+    },
+    {
+      "source": "zor/tools/capture_zor_resume.py",
+      "sha256_before": "004f3f24f48b90f99334995e3720d411a89617beb4f3f3c2a6269364bc5eea0f",
+      "lines": 337,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_zor_resume.rs and resume_proxy.rs",
+      "verification": "Real OpenCode1.18.29 native and explicit zor resume passed; all13 tooling tests, strict1.91 lint, formatting and final independent review pass. Both Python resume callers removed; exact historical source archives retain prior provenance. Zor lost-creation-reply capture proves one creation and current-attempt verification."
+    },
+    {
+      "source": "zor/tools/test_capture_startup.py",
+      "sha256_before": "108100dbd246863473e597136127092d71b4f6f5b0baba99d18dd8d738e04acd",
+      "lines": 124,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/capture_startup.rs",
+      "verification": "Rust1.91 original failure matrix and signal-race regressions pass; real fux no-account startup capture passes; strict clippy and independent review accepted. Python capture_startup module remains for pending Python RPC importers."
+    },
+    {
+      "source": "zor/tools/test_claude_authenticated.py",
+      "sha256_before": "47cab1e5041b2d34b8f14a0f51875b37d169715a9558407dff2ef871bc63eb51",
+      "lines": 49,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/authenticated.rs",
+      "verification": "Retained fixtures, all original mutations and recursive redaction pass in Rust; historical source bytes hash-checked; independent review accepted; strict1.91clippy passed"
+    },
+    {
+      "source": "zor/tools/test_codex_authenticated.py",
+      "sha256_before": "f5985b91f470701388b1c9673eb12877a0fd9c1ca6f0783f7c4e0c7576127be1",
+      "lines": 76,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/authenticated.rs",
+      "verification": "Retained fixtures, all original mutations and recursive redaction pass in Rust; historical source bytes hash-checked; independent review accepted; strict1.91clippy passed"
+    },
+    {
+      "source": "zor/tools/test_lifecycle.py",
+      "sha256_before": "e6aa0e7a08cdeec7496b7cb2c2aa38103b8efebb6e49e5d2d326372feb8e899d",
+      "lines": 47,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/lifecycle.rs",
+      "verification": "Retained three-agent fixtures and all original mutations pass; independent review accepted missing-field fixes with regressions; original capture source retained as hash-checked nonexecutable archive"
+    },
+    {
+      "source": "zor/tools/test_opencode_events.py",
+      "sha256_before": "89078e4c0092c79f8b644f07971ac002b058284678f8bc92916a6467b6398e0f",
+      "lines": 99,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/native_events.rs",
+      "verification": "Exact retained outcomes and all original12 negative mutations pass on Rust1.91;9 tooling test functions/strictlint/CLI/gate assertion pass; independent final source/wiring review accepted."
+    },
+    {
+      "source": "zor/tools/test_opencode_integration.py",
+      "sha256_before": "de8247d3925d307a864bbb1d43276bed5863a7c5ee837cdce8330e2db74d28db",
+      "lines": 279,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/integration.rs",
+      "verification": "Four retained contracts and all original mutation cases including inherited producer-reload cases pass; missing dashboard key/provider response regressions added;10 tooling tests, Rust1.91 strict lint, CLI and independent final review accepted. Full/headless gates use Rust; historical reload instrumentation retained as nonexecutable hash evidence."
+    },
+    {
+      "source": "zor/tools/test_opencode_resume.py",
+      "sha256_before": "9cf29942599e51b327e4393fd2862c464daadd0333218e8348790272f90aba4e",
+      "lines": 66,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/resume.rs",
+      "verification": "Rust1.91 retained native/zor resume provenance, all original 8+9 negative mutations plus missing part-type/role regressions pass; strict all-target lint and independent final review accepted; full/headless callers updated."
+    },
+    {
+      "source": "zor/tools/test_zor_resume.py",
+      "sha256_before": "b1a37a1da9221560b581e6ccb25427d6eac474a06989ab12111f6e9683d7323a",
+      "lines": 65,
+      "owner": "zor",
+      "status": "ported",
+      "replacement": "zor/tools/xtask/src/resume.rs",
+      "verification": "Rust1.91 retained native/zor resume provenance, all original 8+9 negative mutations plus missing part-type/role regressions pass; strict all-target lint and independent final review accepted; full/headless callers updated."
+    }
+  ],
+  "embedded_python": [
+    {
+      "source": "tests/verify/release-package.sh",
+      "status": "ported",
+      "purpose": "Cargo metadata version extraction",
+      "verification": "Real Cargo metadata extraction or full Node adapter test passed; independent source review accepted",
+      "replacement": "tools/xtask/src/package.rs"
+    },
+    {
+      "source": "zor/tools/test_opencode_adapter.mjs",
+      "status": "ported",
+      "purpose": "Generated adapter command fixture",
+      "verification": "Real Cargo metadata extraction or full Node adapter test passed; independent source review accepted",
+      "replacement": "zor/tools/xtask/src/adapter_fixture.rs"
+    }
+  ]
+}

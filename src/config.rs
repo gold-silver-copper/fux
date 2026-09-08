@@ -163,14 +163,14 @@ impl Command {
             );
         }
         let mut total = 0usize;
-        for argument in &self.argv {
-            if argument.is_empty()
+        for (index, argument) in self.argv.iter().enumerate() {
+            if (index == 0 && argument.is_empty())
                 || argument.len() > MAX_COMMAND_ARG_BYTES
                 || argument.contains('\0')
             {
                 return invalid(
                     field,
-                    "arguments must be non-empty, bounded UTF-8 without NUL",
+                    "executable must be non-empty; arguments must be bounded UTF-8 without NUL",
                 );
             }
             total = total.saturating_add(argument.len());
@@ -508,6 +508,8 @@ mod tests {
         assert!(Config::from_toml("[history]\nscrollback-lines = 0").is_err());
         assert!(Config::from_toml("[limits]\nmax-panes = 100000").is_err());
         assert!(Config::from_toml("default-command = { argv = [] }").is_err());
+        assert!(Config::from_toml("default-command = { argv = [\"\"] }").is_err());
+        assert!(Config::from_toml("default-command = { argv = [\"/bin/printf\", \"\"] }").is_ok());
         assert!(Config::from_toml("clipboard = 'read-write'").is_err());
     }
 

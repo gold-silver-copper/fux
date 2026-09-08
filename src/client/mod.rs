@@ -523,6 +523,7 @@ fn dispatch(
     match action {
         Action::Detach => Dispatch::Detach,
         Action::SplitSide | Action::SplitStack => Dispatch::Send(Request::Split {
+            instance: None,
             id: 0,
             axis: if action == Action::SplitSide {
                 crate::layout::Axis::Horizontal
@@ -534,30 +535,37 @@ fn dispatch(
             argv: Vec::new(),
         }),
         Action::FocusLeft => Dispatch::Send(Request::Focus {
+            instance: None,
             id: 0,
             target: FocusTarget::Left,
         }),
         Action::FocusRight => Dispatch::Send(Request::Focus {
+            instance: None,
             id: 0,
             target: FocusTarget::Right,
         }),
         Action::FocusUp => Dispatch::Send(Request::Focus {
+            instance: None,
             id: 0,
             target: FocusTarget::Up,
         }),
         Action::FocusDown => Dispatch::Send(Request::Focus {
+            instance: None,
             id: 0,
             target: FocusTarget::Down,
         }),
         Action::NewTab => Dispatch::Send(Request::Tab {
+            instance: None,
             id: 0,
             action: TabAction::New { name: None },
         }),
         Action::NextTab => Dispatch::Send(Request::Tab {
+            instance: None,
             id: 0,
             action: TabAction::Next,
         }),
         Action::PreviousTab => Dispatch::Send(Request::Tab {
+            instance: None,
             id: 0,
             action: TabAction::Previous,
         }),

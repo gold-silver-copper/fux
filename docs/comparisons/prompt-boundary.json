@@ -1,0 +1,722 @@
+{
+  "provenance": {
+    "herdr": {
+      "sha256": "0bac24ff60e74f7def09b904a15b3f0894dfda340ec8dfd6df9b4b7a4a175060",
+      "version": "herdr 0.8.2"
+    },
+    "fux": {
+      "sha256": "eefa921d22e0cc739dc8d19579dd62199bb380a79389487ae9ebd05382c6ff8a",
+      "version": "fux 0.3.3"
+    },
+    "zor": {
+      "sha256": "b6dd96fb719641121a531627bfec75b58664c1a5a03641e0dabb06a07c7ae66c",
+      "version": "zor 0.1.2"
+    },
+    "reference_commit": "94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "worker_source_sha256": "245647e4c042f78a8e786ddf127b17604c9be098d942cd8570e4225eaf6ce2fe",
+    "harness_sha256": "3a29778f9717501d45edf8968e28e7124f913eb3df0d5e6d2c794eef057a2d89"
+  },
+  "synthetic": true,
+  "results": [
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a1dda59a1",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-wagk82q2",
+            "foreground_cwd": "/private/tmp/prompt-comparison-wagk82q2",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "error": {
+          "code": "timeout",
+          "message": "timed out waiting for agent status"
+        }
+      },
+      "received": "silent\n",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "idle",
+          "state_change_seq": 1
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "stale-idle",
+      "server_exit": 0,
+      "repetition": 1
+    },
+    {
+      "response": {
+        "delivery": "delivered",
+        "wait": "timed-out"
+      },
+      "task_outcome": "open",
+      "prior_prompt_wait": "response-observed",
+      "received": "silent\n",
+      "worker_exit_confirmed": true,
+      "backend": "zor",
+      "case": "stale-idle",
+      "server_exit": 0,
+      "repetition": 1
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a22e6bd21",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-ohigogd8",
+            "foreground_cwd": "/private/tmp/prompt-comparison-ohigogd8",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "error": {
+          "code": "timeout",
+          "message": "timed out waiting for agent status"
+        }
+      },
+      "received": "respond\n",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "idle",
+          "state_change_seq": 1
+        },
+        {
+          "source_sequence": 2,
+          "state": "idle",
+          "state_change_seq": 1
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "immediate-response",
+      "server_exit": 0,
+      "repetition": 1
+    },
+    {
+      "response": {
+        "delivery": "delivered",
+        "wait": "response-observed"
+      },
+      "task_outcome": "open",
+      "prior_prompt_wait": null,
+      "received": "respond\n",
+      "worker_exit_confirmed": true,
+      "backend": "zor",
+      "case": "immediate-response",
+      "server_exit": 0,
+      "repetition": 1
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a26cfbc01",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-tfzfc6er",
+            "foreground_cwd": "/private/tmp/prompt-comparison-tfzfc6er",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_prompted",
+          "agent": {
+            "terminal_id": "term_65ae0a26cfbc01",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 3,
+            "cwd": "/private/tmp/prompt-comparison-tfzfc6er",
+            "foreground_cwd": "/private/tmp/prompt-comparison-tfzfc6er",
+            "revision": 0
+          }
+        }
+      },
+      "received": "respond\n",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "idle",
+          "state_change_seq": 1
+        },
+        {
+          "source_sequence": 2,
+          "state": "working",
+          "state_change_seq": 2
+        },
+        {
+          "source_sequence": 3,
+          "state": "idle",
+          "state_change_seq": 3
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "working-response",
+      "server_exit": 0,
+      "repetition": 1
+    },
+    {
+      "response": {
+        "delivery": "delivered",
+        "wait": "response-observed"
+      },
+      "task_outcome": "open",
+      "prior_prompt_wait": null,
+      "received": "respond\n",
+      "worker_exit_confirmed": true,
+      "backend": "zor",
+      "case": "working-response",
+      "server_exit": 0,
+      "repetition": 1
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a294b7641",
+            "agent": "claude",
+            "agent_status": "blocked",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-ha7gulzj",
+            "foreground_cwd": "/private/tmp/prompt-comparison-ha7gulzj",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "error": {
+          "code": "agent_blocked",
+          "message": "agent w1:p1 is blocked and requires interactive input"
+        }
+      },
+      "received": "",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "blocked",
+          "state_change_seq": 1
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "preblocked",
+      "server_exit": 0,
+      "repetition": 1
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a29bf1d11",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-fa8tj1n2",
+            "foreground_cwd": "/private/tmp/prompt-comparison-fa8tj1n2",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "error": {
+          "code": "timeout",
+          "message": "timed out waiting for agent status"
+        }
+      },
+      "received": "silent\n",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "idle",
+          "state_change_seq": 1
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "stale-idle",
+      "server_exit": 0,
+      "repetition": 2
+    },
+    {
+      "response": {
+        "delivery": "delivered",
+        "wait": "timed-out"
+      },
+      "task_outcome": "open",
+      "prior_prompt_wait": "response-observed",
+      "received": "silent\n",
+      "worker_exit_confirmed": true,
+      "backend": "zor",
+      "case": "stale-idle",
+      "server_exit": 0,
+      "repetition": 2
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a2ea4d2e1",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-nb70jy72",
+            "foreground_cwd": "/private/tmp/prompt-comparison-nb70jy72",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "error": {
+          "code": "timeout",
+          "message": "timed out waiting for agent status"
+        }
+      },
+      "received": "respond\n",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "idle",
+          "state_change_seq": 1
+        },
+        {
+          "source_sequence": 2,
+          "state": "idle",
+          "state_change_seq": 1
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "immediate-response",
+      "server_exit": 0,
+      "repetition": 2
+    },
+    {
+      "response": {
+        "delivery": "delivered",
+        "wait": "response-observed"
+      },
+      "task_outcome": "open",
+      "prior_prompt_wait": null,
+      "received": "respond\n",
+      "worker_exit_confirmed": true,
+      "backend": "zor",
+      "case": "immediate-response",
+      "server_exit": 0,
+      "repetition": 2
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a31fc2fa1",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-5470jko6",
+            "foreground_cwd": "/private/tmp/prompt-comparison-5470jko6",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_prompted",
+          "agent": {
+            "terminal_id": "term_65ae0a31fc2fa1",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 3,
+            "cwd": "/private/tmp/prompt-comparison-5470jko6",
+            "foreground_cwd": "/private/tmp/prompt-comparison-5470jko6",
+            "revision": 0
+          }
+        }
+      },
+      "received": "respond\n",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "idle",
+          "state_change_seq": 1
+        },
+        {
+          "source_sequence": 2,
+          "state": "working",
+          "state_change_seq": 2
+        },
+        {
+          "source_sequence": 3,
+          "state": "idle",
+          "state_change_seq": 3
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "working-response",
+      "server_exit": 0,
+      "repetition": 2
+    },
+    {
+      "response": {
+        "delivery": "delivered",
+        "wait": "response-observed"
+      },
+      "task_outcome": "open",
+      "prior_prompt_wait": null,
+      "received": "respond\n",
+      "worker_exit_confirmed": true,
+      "backend": "zor",
+      "case": "working-response",
+      "server_exit": 0,
+      "repetition": 2
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a343f7351",
+            "agent": "claude",
+            "agent_status": "blocked",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-at4eyp23",
+            "foreground_cwd": "/private/tmp/prompt-comparison-at4eyp23",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "error": {
+          "code": "agent_blocked",
+          "message": "agent w1:p1 is blocked and requires interactive input"
+        }
+      },
+      "received": "",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "blocked",
+          "state_change_seq": 1
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "preblocked",
+      "server_exit": 0,
+      "repetition": 2
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a34c01811",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-7gzjk52a",
+            "foreground_cwd": "/private/tmp/prompt-comparison-7gzjk52a",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "error": {
+          "code": "timeout",
+          "message": "timed out waiting for agent status"
+        }
+      },
+      "received": "silent\n",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "idle",
+          "state_change_seq": 1
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "stale-idle",
+      "server_exit": 0,
+      "repetition": 3
+    },
+    {
+      "response": {
+        "delivery": "delivered",
+        "wait": "timed-out"
+      },
+      "task_outcome": "open",
+      "prior_prompt_wait": "response-observed",
+      "received": "silent\n",
+      "worker_exit_confirmed": true,
+      "backend": "zor",
+      "case": "stale-idle",
+      "server_exit": 0,
+      "repetition": 3
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a39978661",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-67gmw418",
+            "foreground_cwd": "/private/tmp/prompt-comparison-67gmw418",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "error": {
+          "code": "timeout",
+          "message": "timed out waiting for agent status"
+        }
+      },
+      "received": "respond\n",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "idle",
+          "state_change_seq": 1
+        },
+        {
+          "source_sequence": 2,
+          "state": "idle",
+          "state_change_seq": 1
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "immediate-response",
+      "server_exit": 0,
+      "repetition": 3
+    },
+    {
+      "response": {
+        "delivery": "delivered",
+        "wait": "response-observed"
+      },
+      "task_outcome": "open",
+      "prior_prompt_wait": null,
+      "received": "respond\n",
+      "worker_exit_confirmed": true,
+      "backend": "zor",
+      "case": "immediate-response",
+      "server_exit": 0,
+      "repetition": 3
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a3cfc2501",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-1wup52rl",
+            "foreground_cwd": "/private/tmp/prompt-comparison-1wup52rl",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_prompted",
+          "agent": {
+            "terminal_id": "term_65ae0a3cfc2501",
+            "agent": "claude",
+            "agent_status": "idle",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 3,
+            "cwd": "/private/tmp/prompt-comparison-1wup52rl",
+            "foreground_cwd": "/private/tmp/prompt-comparison-1wup52rl",
+            "revision": 0
+          }
+        }
+      },
+      "received": "respond\n",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "idle",
+          "state_change_seq": 1
+        },
+        {
+          "source_sequence": 2,
+          "state": "working",
+          "state_change_seq": 2
+        },
+        {
+          "source_sequence": 3,
+          "state": "idle",
+          "state_change_seq": 3
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "working-response",
+      "server_exit": 0,
+      "repetition": 3
+    },
+    {
+      "response": {
+        "delivery": "delivered",
+        "wait": "response-observed"
+      },
+      "task_outcome": "open",
+      "prior_prompt_wait": null,
+      "received": "respond\n",
+      "worker_exit_confirmed": true,
+      "backend": "zor",
+      "case": "working-response",
+      "server_exit": 0,
+      "repetition": 3
+    },
+    {
+      "before": {
+        "id": "comparison",
+        "result": {
+          "type": "agent_info",
+          "agent": {
+            "terminal_id": "term_65ae0a3f396351",
+            "agent": "claude",
+            "agent_status": "blocked",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "pane_id": "w1:p1",
+            "focused": true,
+            "state_change_seq": 1,
+            "cwd": "/private/tmp/prompt-comparison-v0gxbytf",
+            "foreground_cwd": "/private/tmp/prompt-comparison-v0gxbytf",
+            "revision": 0
+          }
+        }
+      },
+      "response": {
+        "id": "comparison",
+        "error": {
+          "code": "agent_blocked",
+          "message": "agent w1:p1 is blocked and requires interactive input"
+        }
+      },
+      "received": "",
+      "reports": [
+        {
+          "source_sequence": 1,
+          "state": "blocked",
+          "state_change_seq": 1
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "backend": "herdr",
+      "case": "preblocked",
+      "server_exit": 0,
+      "repetition": 3
+    }
+  ]
+}

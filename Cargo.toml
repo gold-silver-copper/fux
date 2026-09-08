@@ -31,7 +31,7 @@ thiserror = "2"
 # Terminal rendering primitives without ratatui's umbrella crate.
 ratatui-core = "=0.1.0"
 # Serialization for viewer frames and the control protocol.
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 # Newline-delimited JSON control protocol, length-prefixed attachment frames, descriptors.
 serde_json = "1.0"
 # Owner loop wake-ups, Unix sockets, signals and bounded channels.
@@ -51,6 +51,10 @@ unicode-width = "0.2.0"
 [dev-dependencies]
 # Randomized command sequences for domain-invariant tests.
 proptest = "1.7"
+# Test-only parsing of the reviewed multiplexer model/API boundary.
+syn = { version = "=2.0.119", features = ["full", "visit"] }
+quote = "=1.0.47"
+proc-macro2 = "=1.0.107"
 
 [lints.rust]
 dead_code = "deny"

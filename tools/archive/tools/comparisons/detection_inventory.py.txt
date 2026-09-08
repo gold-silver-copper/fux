@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Inventory declared detection rules and local executable availability, not accuracy."""
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import tomllib
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def collect(overrides):
+    rows = []
+    for path in sorted((ROOT/'references/herdr/src/detect/manifests').glob('*.toml')):
+        source = tomllib.loads(path.read_text())
+        identifier = source['id']
+        names = list(dict.fromkeys([identifier, *source.get('aliases', [])]))
+        found = {name: str(Path(value).absolute()) for name in names if (value := shutil.which(name))}
+        if identifier in overrides:
+            found[identifier] = str(Path(overrides[identifier]).resolve(strict=True))
+        zor_path = ROOT/'zor/rules'/f'{identifier}.toml'
+        zor = tomllib.loads(zor_path.read_text()) if zor_path.exists() else None
+        rows.append(dict(agent=identifier, herdr_source=str(path.relative_to(ROOT)),
+            herdr_sha256=digest(path), version=source.get('version'), aliases=names,
+            herdr_rules=[dict(id=rule['id'],state=rule['state'],region=rule.get('region'),
+                skip_state_update=rule.get('skip_state_update',False)) for rule in source.get('rules',[])],
+            zor_source=str(zor_path.relative_to(ROOT)) if zor else None,
+            zor_sha256=digest(zor_path) if zor else None,
+            zor_rules=[dict(id=rule['id'],state=rule['state']) for rule in zor.get('rules',[])] if zor else [],
+            executables=found, availability_scope='PATH and explicit fixture-binary overrides only'))
+    return dict(schema=1, captured_at=datetime.now(timezone.utc).isoformat(),
+        harness_sha256=digest(Path(__file__)), agents=rows,
+        limitation='Manifest declarations are not measured detection accuracy or real-agent coverage. Executable availability is not authentication or provider availability.')
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--binary',action='append',default=[],metavar='AGENT=PATH')
+    parser.add_argument('--output',type=Path,required=True)
+    args=parser.parse_args()
+    overrides=dict(value.split('=',1) for value in args.binary)
+    value=collect(overrides)
+    args.output.write_text(json.dumps(value,indent=2)+'\n')
+    lines=['# Detection inventory', '', value['limitation'], '',
+        '| Agent | herdr declared rules/states | zor bundled rules/states | Available executable |',
+        '|---|---|---|---|']
+    for row in value['agents']:
+        describe=lambda rules: str(len(rules))+' / '+(', '.join(sorted({rule['state'] for rule in rules})) or 'none')
+        lines.append('| '+row['agent']+' | '+describe(row['herdr_rules'])+' | '+describe(row['zor_rules'])+' | '+(', '.join(row['executables']) or 'not found')+' |')
+    lines.extend(['', 'The JSON retains exact manifest paths, hashes, rule IDs, regions, aliases and executable paths.',
+        'A missing executable here means unavailable through the searched names in this environment; it does not establish an installation or authentication blocker.',
+        'The initial Claude/Codex/OpenCode real-state gaps remain in the completion checklist. Pi startup has been captured separately; no Pi state rule is inferred from its name.', ''])
+    args.output.with_suffix('.md').write_text('\n'.join(lines))
+
+
+if __name__=='__main__': main()
