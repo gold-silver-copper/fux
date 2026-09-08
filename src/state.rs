@@ -46,6 +46,7 @@ pub enum Event {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObservationState {
+    Unknown,
     Working,
     Blocked,
     Idle,
@@ -109,6 +110,7 @@ impl Machine {
                 });
             } else if self.agent.is_some() {
                 events.push(Event::AgentLost);
+                self.agent = None;
                 events.push(self.publish(State::None, Flags::default(), false, now));
             }
             self.agent = agent.clone();
@@ -126,6 +128,7 @@ impl Machine {
             return events;
         }
         let state = match verdict.state {
+            ObservationState::Unknown => State::None,
             ObservationState::Working => State::Working,
             ObservationState::Blocked => State::Blocked,
             ObservationState::Idle => State::Idle,
@@ -173,7 +176,9 @@ impl Machine {
             self.heartbeat_at = Some(now + self.config.heartbeat);
             return vec![Event::Heartbeat {
                 state: self.current,
-                agent: self.agent.clone(),
+                agent: (self.current != State::None)
+                    .then(|| self.agent.clone())
+                    .flatten(),
                 seq: self.seq,
                 visible: self.visible,
             }];
@@ -211,7 +216,7 @@ impl Machine {
         Event::Changed {
             state,
             previous,
-            agent: self.agent.clone(),
+            agent: (state != State::None).then(|| self.agent.clone()).flatten(),
             seq: self.seq,
             visible,
             exited,
@@ -222,6 +227,75 @@ impl Machine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unknown_clears_blocked_and_pending_idle_without_losing_identity() {
+        let mut machine = Machine::new(Config::default());
+        let now = Instant::now();
+        machine.observe(
+            Some(verdict(
+                ObservationState::Blocked,
+                Flags {
+                    blocker: true,
+                    ..Flags::default()
+                },
+            )),
+            agent(),
+            Some(1),
+            false,
+            now,
+        );
+        let events = machine.observe(
+            Some(verdict(ObservationState::Unknown, Flags::default())),
+            agent(),
+            Some(1),
+            false,
+            now,
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            Event::Changed {
+                state: State::None,
+                agent: None,
+                ..
+            }
+        )));
+        assert!(!events.iter().any(|event| matches!(event, Event::AgentLost)));
+        let heartbeat = machine.tick(now + Duration::from_secs(1));
+        assert!(matches!(
+            heartbeat.first(),
+            Some(Event::Heartbeat {
+                state: State::None,
+                agent: None,
+                ..
+            })
+        ));
+        machine.observe(
+            Some(verdict(ObservationState::Working, Flags::default())),
+            agent(),
+            Some(1),
+            false,
+            now + Duration::from_secs(4),
+        );
+        machine.observe(
+            Some(verdict(ObservationState::Idle, Flags::default())),
+            agent(),
+            Some(1),
+            false,
+            now + Duration::from_secs(4),
+        );
+        assert!(machine.hold_pending());
+        machine.observe(
+            Some(verdict(ObservationState::Unknown, Flags::default())),
+            agent(),
+            Some(1),
+            false,
+            now + Duration::from_secs(4),
+        );
+        assert!(!machine.hold_pending());
+        machine.tick(now + Duration::from_secs(5));
+        assert_eq!(machine.current().0, State::None);
+    }
+
     fn verdict(state: ObservationState, visible: Flags) -> Observation {
         Observation { state, visible }
     }
@@ -368,6 +442,7 @@ mod tests {
                 Event::AgentLost,
                 Event::Changed {
                     state: State::None,
+                    agent: None,
                     ..
                 }
             ]

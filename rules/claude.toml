@@ -1,0 +1,70 @@
+# Evidence: tests/fixtures/agents/claude-2.1.263/startup.json
+# Exact startup theme selection only; partial and other screens remain unknown.
+id = 'claude'
+process_names = ['claude']
+
+[[rules]]
+id = 'claude-2.1.263-theme-selection'
+state = 'blocked'
+visible_blocker = true
+region = 'whole'
+# Matches zor ScreenView normalization: trailing line padding removed, final LF added.
+# All three predicates must match. Exact prefix + suffix + total Unicode length
+# preserve whole-screen specificity while keeping each regex below 512 bytes.
+regex = [
+'''\AWelcome to Claude Code v2\.1\.263
+
+ Let's get started\.
+
+ Choose the text style that looks best with your terminal
+ To change this later, run /theme
+
+   1\. Auto \(match terminal\)
+ ❯ 2\. Dark mode ✔
+   3\. Light mode
+   4\. Dark mode \(colorblind-friendly\)''',
+'''\n   5\. Light mode \(colorblind-friendly\)
+   6\. Dark mode \(ANSI colors only\)
+   7\. Light mode \(ANSI colors only\)
+
+ ╌{78}
+  1  function greet\(\) \{
+  2 -  console\.log\("Hello, World!"\);
+  2 \+  console\.log\("Hello, Claude!"\);
+  3  \}
+ ╌{78}
+  Syntax theme: Monokai Extended \(ctrl\+t to disable\)
+\z''',
+'''(?s)\A.{678}\z'''
+]
+
+# Real authenticated.json: bare mode, Sonnet 5, 80-column English manual-mode UI.
+# The interrupt footer is working evidence; a response or “done” label is not a task outcome.
+[[rules]]
+id = 'claude-2.1.263-working'
+state = 'working'
+visible_working = true
+region = 'whole'
+regex = ['''\A ▐▛███▛█   Claude Code v2\.1\.263
+▝▜██████▀  Sonnet 5 · API Usage Billing
+''', '''\n─{80}
+❯
+─{80}
+  ⏸ manual mode on · esc to interrupt · ← for agents(?: +● high · /effort)?
+\z''']
+
+# Real authenticated.json: input-ready manual-mode composer before/after a response.
+# Idle is visible input readiness only, never task verification or response correlation.
+[[rules]]
+id = 'claude-2.1.263-input-ready'
+state = 'idle'
+visible_idle = true
+region = 'whole'
+regex = ['''\A ▐▛███▛█   Claude Code v2\.1\.263
+▝▜██████▀  Sonnet 5 · API Usage Billing
+''', '''\n─{80}
+❯(?:\x{00a0}Try "fix lint errors")?
+─{80}
+  ⏸ manual mode on · \? for shortcuts · ← for agents(?: +● high · /effort)?
+\z''']
+not = [{ contains = ['esc to interrupt'] }, { regex = ['(?m)^[✳✶✻✽][^\n]*…'] }]

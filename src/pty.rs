@@ -711,7 +711,7 @@ fn write_fixture(screen: &Screen, agent: Option<&crate::osc::AgentId>) {
         format!("{}:{}", value.state, value.percent)
     });
     let body = format!(
-        "# agent: {}\n# title: {}\n# progress: {progress}\n# expect: idle\n# matched: none\n{}",
+        "# agent: {}\n# title: {}\n# progress: {progress}\n# expect: unknown\n# matched: none\n{}",
         agent.map_or("unknown", crate::osc::AgentId::as_str),
         screen.title(),
         screen.text()
@@ -880,6 +880,7 @@ fn observation(verdict: &crate::rules::Verdict) -> crate::state::Observation {
     use crate::{rules::RuleState, state::ObservationState};
     crate::state::Observation {
         state: match verdict.state {
+            RuleState::Unknown => ObservationState::Unknown,
             RuleState::Working => ObservationState::Working,
             RuleState::Blocked => ObservationState::Blocked,
             RuleState::Idle => ObservationState::Idle,

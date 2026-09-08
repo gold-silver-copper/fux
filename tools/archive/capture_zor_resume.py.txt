@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""Probe real OpenCode TUI session resume across an owned fux restart.
+
+Fixed prompts and a loopback synthetic provider; no inherited user credentials.
+This exercises the explicit zor task resume policy and retained native session.
+"""
+import argparse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+from pathlib import Path
+import subprocess
+import socket
+import tempfile
+import threading
+import time
+
+from capture_startup import rpc
+from capture_opencode_events import PLUGIN, read_events, sha256
+
+PROMPTS = ['RESUME_FIRST: reply briefly', 'RESUME_SECOND: reply briefly']
+
+
+def validate(evidence):
+    from capture_opencode_resume import validate as native_validate
+    native_validate(evidence)
+    first, second = evidence['zor_attempts']
+    assert first['task']['id'] == second['task']['id'] == 'worker'
+    assert first['task']['created_ms'] == second['task']['created_ms']
+    assert first['task']['required_checks'] == second['task']['required_checks']
+    assert first['attempt']['id'] != second['attempt']['id']
+    assert first['session']['id'] != second['session']['id']
+    assert second['launch']['resume']['previous_attempt'] == first['attempt']['id']
+    assert evidence['historical_launches']
+    assert not any(row['kind'] == 'launch' for row in evidence['dashboard']['rows'])
+    assert second['launch']['resume']['native_session'] == evidence['session']
+    assert evidence['resume_retry']['session'] == second['session']
+    assert evidence['old_prompt_before'] == evidence['old_prompt_after']
+    assert evidence['pending_before'] == evidence['pending_after']
+    assert evidence['pending_after']['receipt']['bytes_written'] == 0
+    assert evidence['loss']['attempt']['state'] == 'lost'
+    assert evidence['verified_task']['outcome'] == 'verified'
+    assert evidence['verified_task']['attempt'] == second['attempt']['id']
+    assert evidence['refused_cases'] == ['metadata', 'cancelled', 'terminator']
+    assert evidence['creation_requests'] == 1
+    assert 'creation outcome uncertain' in evidence['dropped_reply']
+    assert len(evidence['zor_outcomes']) == 2
+    for outcome in evidence['zor_outcomes']:
+        assert outcome['wait'] == 'response-observed'
+        assert outcome['report_binding']['message'] == outcome['response']['message']
+        assert outcome['report_binding']['message']['session'] == evidence['session']
+
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ['fux', 'zor', 'opencode', 'output']:
+        parser.add_argument('--' + name, type=Path, required=True)
+    args = parser.parse_args()
+    fux, agent = args.fux.resolve(strict=True), args.opencode.resolve(strict=True)
+    zor = args.zor.resolve(strict=True)
+    args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    evidence = dict(zor_sha256=sha256(zor), zor_attempts=[], zor_outcomes=[], fux_sha256=sha256(fux), opencode_sha256=sha256(agent),
+        harness_sha256=sha256(Path(__file__)), requests=[], captures=[], targets=[], submissions=[], exits=[],
+        limitation='Real OpenCode TUI and persisted session, synthetic provider; explicit zor resume policy; no model-quality claim.')
+    with tempfile.TemporaryDirectory(prefix='zresume-', dir='/tmp') as directory:
+        root = Path(directory).resolve()
+        for name in ['config/fux', 'work', 'data', 'cache', 'state']:
+            (root/name).mkdir(parents=True)
+        plugin = root/'probe.mjs'
+        plugin.write_text(PLUGIN)
+        class Provider(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_POST(self):
+                size = int(self.headers.get('Content-Length', '0'))
+                if self.path != '/v1/chat/completions' or not 0 < size <= 1048576 or len(evidence['requests']) >= 8:
+                    self.send_error(400); return
+                body = json.loads(self.rfile.read(size))
+                evidence['requests'].append(body['messages'])
+                second = any('RESUME_SECOND' in str(m.get('content')) for m in body['messages'] if m['role'] == 'user')
+                answer = 'RESUME_REPLY_2' if second else 'RESUME_REPLY_1'
+                base = dict(id='chatcmpl-fixture', object='chat.completion.chunk', created=1, model='fixture')
+                chunks = [dict(base, choices=[dict(index=0,delta=dict(role='assistant',content=answer),finish_reason=None)]),
+                          dict(base, choices=[dict(index=0,delta={},finish_reason='stop')])]
+                payload = (''.join('data: '+json.dumps(chunk)+'\n\n' for chunk in chunks)+'data: [DONE]\n\n').encode()
+                self.send_response(200); self.send_header('Content-Type','text/event-stream')
+                self.send_header('Content-Length',str(len(payload))); self.end_headers(); self.wfile.write(payload)
+        class BoundedServer(HTTPServer):
+            def get_request(self):
+                peer, address = super().get_request(); peer.settimeout(3); return peer, address
+        provider = BoundedServer(('127.0.0.1',0),Provider)
+        thread = threading.Thread(target=provider.serve_forever); thread.start()
+        process = None
+        proxy = None
+        proxy_thread = None
+        proxy_stopped = threading.Event()
+        proxy_errors = []
+        evidence['creation_requests'] = 0
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=str(root), TMPDIR=str(root),
+            XDG_RUNTIME_DIR=str(root), XDG_CONFIG_HOME=str(root/'config'), XDG_DATA_HOME=str(root/'data'),
+            XDG_CACHE_HOME=str(root/'cache'), XDG_STATE_HOME=str(root/'state'), TERM='xterm-256color',
+            SHELL='/bin/sh', LANG='en_US.UTF-8', OPENCODE_CONFIG=str(root/'work/opencode.json'),
+            ZOR_PROBE_LOG=str(root/'events.jsonl'), OPENCODE_DISABLE_DEFAULT_PLUGINS='true',
+            OPENCODE_DISABLE_MODELS_FETCH='true', OPENCODE_DISABLE_AUTOUPDATE='true')
+        config = dict(plugin=[plugin.as_uri()],model='fixture/fixture',small_model='fixture/fixture',
+            enabled_providers=['fixture'],permission={'*':'deny'},provider={'fixture':dict(
+                npm='@ai-sdk/openai-compatible',name='Local Fixture',
+                options=dict(baseURL=f'http://127.0.0.1:{provider.server_port}/v1',apiKey='fixture'),
+                models={'fixture':dict(name='Fixture',limit=dict(context=65536,output=1024))})})
+        (root/'work/opencode.json').write_text(json.dumps(config))
+        def git(*args):
+            return subprocess.run(['/usr/bin/git','-C',str(root/'work'),*args],env=env,
+                capture_output=True,check=True,timeout=5)
+        git('init','-b','main')
+        git('config','user.name','Fixture'); git('config','user.email','fixture@example.invalid')
+        git('add','opencode.json'); git('commit','-m','fixture')
+
+        control = root/'fux/default.sock'
+        def until(check):
+            deadline = time.monotonic()+30
+            while time.monotonic() < deadline:
+                assert process.poll() is None, 'owned fux exited'
+                value = check()
+                if value: return value
+                time.sleep(.1)
+            raise TimeoutError('resume observation deadline')
+        def task(*args, ok=True):
+            deadline = time.monotonic()+12
+            while True:
+                result = subprocess.run([str(zor), 'task', *args], env=env, capture_output=True,
+                    timeout=max(.01, deadline-time.monotonic()))
+                if result.stderr != b'zor: zor journal is busy; retry the operation ID\n' or time.monotonic() >= deadline:
+                    break
+                time.sleep(.03)
+            assert (result.returncode == 0) == ok, (args, result.stdout, result.stderr)
+            return json.loads(result.stdout) if ok else result.stderr.decode()
+        journal = root/'state/zor/journal.json'
+        def stop():
+            if process is not None:
+                if process.poll() is None: process.terminate()
+                try: code = process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill(); process.wait(timeout=5); raise
+                evidence['exits'].append(code)
+                assert code == 0, code
+        try:
+            evidence['version'] = subprocess.run([str(agent),'--version'],env=env,capture_output=True,
+                check=True,timeout=10).stdout.decode().strip()
+            evidence['help'] = subprocess.run([str(agent),'--help'],env=env,capture_output=True,
+                check=True,timeout=10).stdout.decode()
+            session = None
+            for turn, prompt in enumerate(PROMPTS):
+                argv = [str(agent), '--model','fixture/fixture']
+                (root/'config/fux/config.toml').write_text('default-command = { argv = '+json.dumps(['/bin/cat'])+' }\n')
+                with (root/f'stderr-{turn}').open('wb') as error:
+                    process = subprocess.Popen([str(fux),'serve'],env=env,cwd=root/'work',
+                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=error)
+                until(control.exists)
+                listing = rpc(control,dict(id=1,command='list'))
+                pane = listing['workspaces'][0]['tabs'][0]['panes'][0]
+                instance = listing['instance']
+                if turn == 0:
+                    created = subprocess.run([str(zor),'worktree','create','tree','--repo',str(root/'work'),'--branch','worker'],
+                        env=env,capture_output=True,check=True,timeout=12)
+                    evidence['worktree'] = json.loads(created.stdout)['worktree']
+                    task('start','worker','--title','resume fixture','--integration','opencode',
+                        '--instance',instance,'--workspace','default','--worktree','tree','--',*argv)
+                    task('require-check','worker','verify','--','/usr/bin/true')
+                else:
+                    assert 'ownership lost' in task('launch-reconcile','worker',ok=False)
+                    evidence['loss'] = task('inspect','worker')
+                    saved = journal.read_bytes()
+                    rejected = []
+                    for kind in ['metadata', 'cancelled', 'terminator']:
+                        state = json.loads(saved)
+                        if kind == 'metadata':
+                            state['launches']['worker']['integration']['storage_environment'] = None
+                            journal.write_text(json.dumps(state))
+                        elif kind == 'cancelled':
+                            task('cancel','worker')
+                        else:
+                            state['launches']['worker']['argv'].append('--')
+                            journal.write_text(json.dumps(state))
+                        before = journal.read_bytes()
+                        error = task('resume','worker','--operation','refused-'+kind,'--instance',instance,ok=False)
+                        assert {'metadata':'storage metadata unavailable', 'cancelled':'open task', 'terminator':'session selection flags'}[kind] in error, (kind,error)
+                        assert journal.read_bytes() == before
+                        rejected.append(kind)
+                        journal.write_bytes(saved)
+                    evidence['refused_cases'] = rejected
+
+                    actual = control.with_name('actual.sock')
+                    control.rename(actual)
+                    proxy = socket.socket(socket.AF_UNIX)
+                    proxy.bind(str(control)); proxy.listen(8); proxy.settimeout(.1)
+                    def forward():
+                        try:
+                            while not proxy_stopped.is_set():
+                                try: peer, _ = proxy.accept()
+                                except socket.timeout: continue
+                                with peer:
+                                    peer.settimeout(3)
+                                    with peer.makefile('rb') as reader:
+                                        assert reader.read(8) == b'FUXCTL3\n'
+                                        peer.sendall(b'FUXCTL3\n')
+                                        line = reader.readline(1048576)
+                                        request = json.loads(line)
+                                        with socket.socket(socket.AF_UNIX) as remote:
+                                            remote.settimeout(3); remote.connect(str(actual)); remote.sendall(b'FUXCTL3\n')
+                                            with remote.makefile('rb') as response:
+                                                assert response.read(8) == b'FUXCTL3\n'
+                                                remote.sendall(line)
+                                                reply = response.readline(1048576)
+                                        if request.get('command') == 'new':
+                                            evidence['creation_requests'] += 1
+                                            continue  # actual creation accepted; discard its reply
+                                        peer.sendall(reply)
+                        except Exception as error:
+                            if not proxy_stopped.is_set(): proxy_errors.append(repr(error))
+                    proxy_thread = threading.Thread(target=forward); proxy_thread.start()
+                    evidence['dropped_reply'] = task('resume','worker','--operation','resume-one','--instance',instance,ok=False)
+                    pending = task('inspect','resume-one')
+                    assert pending['launch']['phase'] == 'uncertain'
+                    assert pending['launch']['resume']['previous_attempt'] == evidence['loss']['attempt']['id']
+                    task('resume','worker','--operation','resume-one','--instance',instance)
+
+                def registered():
+                    value = task('inspect','worker')
+                    return value if value['launch']['integration']['producer'] else None
+                owner = until(registered)
+                evidence['zor_attempts'].append(owner)
+                if turn:
+                    evidence['resume_retry'] = task('resume','worker','--operation','resume-one','--instance',instance)
+                    saved = journal.read_bytes()
+                    assert 'different intent' in task('resume','worker','--operation','resume-one','--instance','foreign',ok=False)
+                    assert journal.read_bytes() == saved
+                    state = json.loads(saved)
+                    evidence['old_prompt_after'] = state['prompts']['prompt-0']
+                    evidence['pending_after'] = state['prompts']['never-replay']
+                listing = rpc(control,dict(id=1,command='list'))
+                pane = next(p for tab in listing['workspaces'][0]['tabs'] for p in tab['panes']
+                    if p['id'] == owner['session']['target']['pane'])
+                argv = owner['launch']['argv']
+                evidence['targets'].append(dict(instance=instance,pane=pane,argv=argv))
+                def value(command, **fields):
+                    return rpc(control,dict(id=1,command=command,instance=instance,**fields))
+                def capture(): return value('capture',pane=pane['id'],max_bytes=131072)
+                until(lambda: ('RESUME_REPLY_1' if turn else 'Ask anything') in capture()['text'])
+                before = capture(); evidence['captures'].append(before)
+                assert before['input_sequence'] == 0, 'resume must not replay terminal input'
+                task('prepare','worker','--operation',f'prompt-{turn}','--text',prompt)
+                submitted = task('submit',f'prompt-{turn}')
+                receipt = submitted['receipt']
+                def finished():
+                    events = read_events(root/'events.jsonl')
+                    chats = [r for r in events if r.get('hook') == 'chat.message']
+                    if len(chats) != turn+1: return None
+                    message = chats[-1]['output']['message']
+                    return message if any(r.get('event',{}).get('type') == 'message.updated'
+                        and r['event']['properties']['info'].get('parentID') == message['id']
+                        and r['event']['properties']['info'].get('time',{}).get('completed')
+                        and r['event']['properties']['info'].get('finish') == 'stop' for r in events) else None
+                message = until(finished)
+                if session: assert message['sessionID'] == session
+                session = message['sessionID']
+                until(lambda: f'RESUME_REPLY_{turn+1}' in capture()['text'])
+                evidence['submissions'].append(dict(message=message,receipt=value('input-status',operation=receipt['operation'])['receipt']))
+                evidence['captures'].append(capture())
+                evidence['zor_outcomes'].append(until(lambda: result if (result := task('wait',f'prompt-{turn}'))['wait'] == 'response-observed' else None))
+                if not turn:
+                    saved = journal.read_bytes()
+                    assert 'lost or finished' in task('resume','worker','--operation','too-early','--instance',instance,ok=False)
+                    assert journal.read_bytes() == saved
+                    task('prepare','worker','--operation','never-replay','--text','NEVER REPLAY')
+                    task('reserve','never-replay')
+                    state = json.loads(journal.read_text())
+                    evidence['old_prompt_before'] = state['prompts']['prompt-0']
+                    evidence['pending_before'] = state['prompts']['never-replay']
+                if turn:
+                    task('source-collect','worker','resumed-source')
+                    task('check','worker','resumed-check','--source','resumed-source','--requirement','verify','--','/usr/bin/true')
+                    evidence['verification'] = task('verify','worker','resumed-source')
+                    evidence['verified_task'] = task('inspect','worker')['task']
+                    dashboard_service = subprocess.Popen([str(zor), 'serve'], env=env,
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    try:
+                        until(lambda: (root/'zor/control.sock').exists())
+                        dashboard = subprocess.run([str(zor), 'dashboard', '--once'], env=env,
+                            capture_output=True, check=True, timeout=12)
+                        evidence['dashboard'] = json.loads(dashboard.stdout)
+                        evidence['historical_launches'] = [key for key, launch in
+                            json.loads(journal.read_text())['launches'].items() if launch.get('task')]
+                        assert evidence['historical_launches']
+                        assert not any(row['kind'] == 'launch' for row in evidence['dashboard']['rows'])
+                    finally:
+                        dashboard_service.terminate()
+                        try: dashboard_service.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            dashboard_service.kill(); dashboard_service.wait(timeout=3); raise
+                    assert json.loads(journal.read_text())['prompts']['never-replay'] == evidence['pending_before']
+                if proxy_thread:
+                    proxy_stopped.set(); proxy_thread.join(timeout=4)
+                    assert not proxy_thread.is_alive() and not proxy_errors
+                    proxy.close(); proxy = None; proxy_thread = None
+                    control.unlink(); actual.rename(control)
+                stop(); process = None
+            assert evidence['targets'][0]['instance'] != evidence['targets'][1]['instance']
+            assert evidence['targets'][0]['pane']['pid'] != evidence['targets'][1]['pane']['pid']
+            assert any(any('RESUME_FIRST' in str(m.get('content')) for m in messages if m['role']=='user')
+                and any('RESUME_SECOND' in str(m.get('content')) for m in messages if m['role']=='user')
+                and any('RESUME_REPLY_1' in str(m.get('content')) for m in messages if m['role']=='assistant')
+                for messages in evidence['requests']), 'resumed request did not retain prior conversation'
+            evidence['session'] = session
+        finally:
+            try:
+                if proxy_thread:
+                    proxy_stopped.set(); proxy_thread.join(timeout=4)
+                    if proxy: proxy.close()
+                stop()
+            finally:
+                provider.shutdown(); provider.server_close(); thread.join(timeout=5)
+                evidence['provider_stopped'] = not thread.is_alive()
+                evidence['events'] = read_events(root/'events.jsonl')
+                encoded = json.dumps(evidence,indent=2).replace(str(root),'<FIXTURE_ROOT>')
+                for prompt in json.loads(journal.read_text()).get('prompts', {}).values() if journal.exists() else []:
+                    if prompt.get('report_token'): encoded = encoded.replace(prompt['report_token'], '<PROMPT_TOKEN>')
+                (args.output/'resume.json').write_text(encoded+'\n')
+        validate(evidence)
+        evidence['passed'] = True
+        encoded = json.dumps(evidence,indent=2).replace(str(root),'<FIXTURE_ROOT>')
+        for prompt in json.loads(journal.read_text())['prompts'].values():
+            if prompt.get('report_token'): encoded = encoded.replace(prompt['report_token'], '<PROMPT_TOKEN>')
+        (args.output/'resume.json').write_text(encoded+'\n')
+    print(args.output/'resume.json')
+
+
+if __name__ == '__main__':
+    main()

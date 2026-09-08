@@ -18,3 +18,19 @@ pub mod state;
 
 #[cfg(feature = "cli")]
 pub mod observe;
+
+#[cfg(feature = "cli")]
+pub mod fux;
+#[cfg(feature = "cli")]
+pub mod watch;
+
+#[cfg(feature = "cli")]
+pub mod dashboard;
+#[cfg(feature = "cli")]
+pub mod service;
+
+#[cfg(feature = "cli")]
+pub mod tasks;
+
+#[cfg(feature = "cli")]
+mod service_tasks;

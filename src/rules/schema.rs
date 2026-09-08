@@ -66,6 +66,7 @@ impl FromStr for Region {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleState {
+    Unknown,
     Working,
     Blocked,
     Idle,
@@ -142,10 +143,31 @@ impl std::error::Error for Error {}
 pub fn load(path: &Path, source: &str) -> Result<RuleSet, Error> {
     let mut set: RuleSet =
         toml::from_str(source).map_err(|error| Error(format!("{}: {error}", path.display())))?;
+    crate::osc::AgentId::new(set.id.clone())
+        .map_err(|error| Error(format!("{}: invalid agent id: {error}", path.display())))?;
+    if set.aliases.len() > 64
+        || set.process_names.len() > 64
+        || set
+            .aliases
+            .iter()
+            .chain(&set.process_names)
+            .any(|name| name.is_empty() || name.len() > 256 || name.chars().any(char::is_control))
+    {
+        return Err(Error(format!(
+            "{}: process names/aliases must have at most 64 bounded names",
+            path.display()
+        )));
+    }
     if set.process_names.is_empty() {
         set.process_names = std::iter::once(set.id.clone())
             .chain(set.aliases.clone())
             .collect();
+    }
+    if set.process_names.len() > 64 {
+        return Err(Error(format!(
+            "{}: inherited process names exceed 64 entries",
+            path.display()
+        )));
     }
     if set.rules.len() > 128 {
         return Err(Error(format!("{}: more than 128 rules", path.display())));
@@ -153,6 +175,13 @@ pub fn load(path: &Path, source: &str) -> Result<RuleSet, Error> {
     let mut ids = std::collections::HashSet::new();
     let mut totals = (0usize, 0usize);
     for rule in &mut set.rules {
+        if rule.id.is_empty() || rule.id.len() > 128 || rule.id.chars().any(char::is_control) {
+            return Err(rule_error(
+                path,
+                rule,
+                "rule id must be 1..128 bytes without controls",
+            ));
+        }
         if !ids.insert(rule.id.clone()) {
             return Err(rule_error(path, rule, "duplicate rule id"));
         }

@@ -3,6 +3,121 @@ use super::{Job, Pid, Process};
 use std::{ffi::CStr, io};
 const PROC_PGRP_ONLY: u32 = 2;
 
+pub(crate) fn process_identity(pid: Pid) -> io::Result<super::ProcessRef> {
+    let value = info(pid).ok_or_else(|| io::Error::other("process identity unavailable"))?;
+    Ok(super::ProcessRef {
+        pid,
+        birth: (value.pbi_start_tvsec, value.pbi_start_tvusec),
+    })
+}
+
+pub(crate) fn process_children(pid: Pid) -> io::Result<Vec<super::ProcessRef>> {
+    if pid <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid process ID",
+        ));
+    }
+    let before = info(pid).ok_or_else(|| io::Error::other("parent process unavailable"))?;
+    // PROC_PPID_ONLY is defined as 6 in the platform sys/proc_info.h.
+    // One spare slot detects truncation at the 256-process traversal bound.
+    let mut pids = [0; 257];
+    let size = std::mem::size_of_val(&pids) as i32;
+    // SAFETY: errno is thread-local; proc_listpids writes at most size bytes
+    // into this live array and retains no pointer.
+    let written = unsafe {
+        *libc::__error() = 0;
+        let written = libc::proc_listpids(6, pid as u32, pids.as_mut_ptr().cast(), size);
+        if written < 0 || (written == 0 && *libc::__error() != 0) {
+            return Err(io::Error::last_os_error());
+        }
+        written
+    };
+    if written >= size || written % std::mem::size_of::<Pid>() as i32 != 0 {
+        return Err(io::Error::other(
+            "child process list exceeds bound or is incomplete",
+        ));
+    }
+    let mut children = Vec::new();
+    for child in pids
+        .into_iter()
+        .take(written as usize / std::mem::size_of::<Pid>())
+    {
+        let entry = info(child).ok_or_else(|| io::Error::other("child process unavailable"))?;
+        if child <= 0 || entry.pbi_ppid as Pid != pid {
+            return Err(io::Error::other("child process changed during inspection"));
+        }
+        children.push(super::ProcessRef {
+            pid: child,
+            birth: (entry.pbi_start_tvsec, entry.pbi_start_tvusec),
+        });
+    }
+    let after = info(pid).ok_or_else(|| io::Error::other("parent process disappeared"))?;
+    if (before.pbi_start_tvsec, before.pbi_start_tvusec)
+        != (after.pbi_start_tvsec, after.pbi_start_tvusec)
+    {
+        return Err(io::Error::other("parent process replaced"));
+    }
+    Ok(children)
+}
+
+pub fn process_cwd(pid: Pid) -> io::Result<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    if pid <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid process ID",
+        ));
+    }
+    // SAFETY: the zero-initialized C structure has no invalid bit patterns;
+    // proc_pidinfo receives its exact allocated size and retains no pointer.
+    let value: libc::proc_vnodepathinfo = unsafe {
+        let mut value = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as i32;
+        let written = libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&mut value as *mut libc::proc_vnodepathinfo).cast(),
+            size,
+        );
+        if written <= 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if written != size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "incomplete process cwd metadata",
+            ));
+        }
+        value
+    };
+    // Do not trust the kernel path to be NUL terminated: bound all reads to
+    // the fixed buffer, rejecting missing termination and empty paths.
+    let bytes: Vec<u8> = value
+        .pvi_cdir
+        .vip_path
+        .iter()
+        .flatten()
+        .map(|c| *c as u8)
+        .collect();
+    let end = bytes
+        .iter()
+        .position(|b| *b == 0)
+        .filter(|end| *end > 0)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid process cwd path"))?;
+    let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(
+        bytes.into_iter().take(end).collect(),
+    ));
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "process cwd is not absolute",
+        ));
+    }
+    Ok(path)
+}
+
 pub fn foreground_pgid(child: Pid, _: Option<i32>) -> Option<Pid> {
     info(child)
         .map(|value| value.e_tpgid as Pid)
@@ -60,11 +175,8 @@ fn process(pid: Pid) -> Option<Process> {
     }
     .to_string_lossy()
     .into_owned();
-    let (argv0, argv, mut env_agent) =
+    let (argv0, argv, env_agent) =
         arguments(pid).unwrap_or_else(|| (Some(comm.clone()), vec![comm.clone()], None));
-    if env_agent.is_none() {
-        env_agent = environment_fallback(pid);
-    }
     Some(Process {
         pid,
         ppid: value.pbi_ppid as Pid,
@@ -73,16 +185,6 @@ fn process(pid: Pid) -> Option<Process> {
         argv,
         env_agent,
     })
-}
-
-fn environment_fallback(pid: Pid) -> Option<String> {
-    let output = std::process::Command::new("/bin/ps")
-        .args(["eww", "-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .find_map(|field| field.strip_prefix("ZOR_AGENT=").map(str::to_owned))
 }
 
 fn arguments(pid: Pid) -> Option<(Option<String>, Vec<String>, Option<String>)> {

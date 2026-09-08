@@ -87,6 +87,7 @@ enum Sequence {
 #[derive(Default)]
 struct BoundaryTracker {
     state: Sequence,
+    utf8: Utf8State,
 }
 
 struct ParserStep {
@@ -95,6 +96,40 @@ struct ParserStep {
     exited_string: bool,
     cancelled_string: bool,
     injected_reset: bool,
+}
+
+#[derive(Default)]
+struct Utf8State {
+    remaining: u8,
+    min: u8,
+    max: u8,
+}
+
+impl Utf8State {
+    // C1 byte values inside valid UTF-8 are character data, including inside OSC payloads.
+    // Validate the first continuation range too, so malformed prefixes cannot mask controls.
+    fn continuation(&mut self, byte: u8) -> bool {
+        if self.remaining > 0 && (self.min..=self.max).contains(&byte) {
+            self.remaining -= 1;
+            self.min = 0x80;
+            self.max = 0xbf;
+            return true;
+        }
+        let (remaining, min, max) = match byte {
+            0xc2..=0xdf => (1, 0x80, 0xbf),
+            0xe0 => (2, 0xa0, 0xbf),
+            0xe1..=0xec | 0xee..=0xef => (2, 0x80, 0xbf),
+            0xed => (2, 0x80, 0x9f),
+            0xf0 => (3, 0x90, 0xbf),
+            0xf1..=0xf3 => (3, 0x80, 0xbf),
+            0xf4 => (3, 0x80, 0x8f),
+            _ => (0, 0, 0),
+        };
+        self.remaining = remaining;
+        self.min = min;
+        self.max = max;
+        false
+    }
 }
 
 impl BoundaryTracker {
@@ -106,11 +141,12 @@ impl BoundaryTracker {
     }
 
     fn byte(&mut self, byte: u8) {
+        let continuation = self.utf8.continuation(byte);
         self.state = match self.state {
             Sequence::Ground => match byte {
                 0x1b => Sequence::Escape,
-                0x9b => Sequence::Csi,
-                0x90 | 0x98 | 0x9d | 0x9e | 0x9f => Sequence::String {
+                0x9b if !continuation => Sequence::Csi,
+                0x90 | 0x98 | 0x9d | 0x9e | 0x9f if !continuation => Sequence::String {
                     osc: byte == 0x9d,
                     escape: false,
                     bytes: 0,
@@ -143,7 +179,7 @@ impl BoundaryTracker {
                 discarded,
             } => {
                 if matches!(byte, 0x18 | 0x1a)
-                    || byte == 0x9c
+                    || (byte == 0x9c && !continuation)
                     || (osc && byte == 0x07)
                     || (escape && byte == b'\\')
                 {
@@ -208,13 +244,14 @@ impl BoundaryTracker {
     }
 
     const fn ground(&self) -> bool {
-        matches!(self.state, Sequence::Ground)
+        matches!(self.state, Sequence::Ground) && self.utf8.remaining == 0
     }
 }
 
 pub struct Screen {
     parser: vt100::Parser<Callbacks>,
     boundary: BoundaryTracker,
+    parser_utf8: Utf8State,
     changed: bool,
     rows: u16,
     cols: u16,
@@ -263,6 +300,7 @@ impl Screen {
                 Callbacks::default(),
             ),
             boundary: BoundaryTracker::default(),
+            parser_utf8: Utf8State::default(),
             changed: true,
             rows,
             cols,
@@ -272,6 +310,27 @@ impl Screen {
         };
         value.refresh_window();
         value
+    }
+
+    // vte 0.15 can skip bytes after completing a split character when its four-byte
+    // lookahead includes another character plus a partial one. Complete only that character
+    // first, then keep the normal bulk path. No additional input bytes are retained.
+    fn process_parser(&mut self, bytes: &[u8]) {
+        let mut rest = bytes;
+        while self.parser_utf8.remaining > 0 && !rest.is_empty() {
+            let (next, suffix) = rest.split_at(1);
+            self.parser.process(next);
+            if let Some(&byte) = next.first() {
+                self.parser_utf8.continuation(byte);
+            }
+            rest = suffix;
+        }
+        if !rest.is_empty() {
+            self.parser.process(rest);
+        }
+        for &byte in rest {
+            self.parser_utf8.continuation(byte);
+        }
     }
 
     pub fn process(&mut self, bytes: &[u8]) -> bool {
@@ -285,7 +344,7 @@ impl Screen {
         for &byte in bytes {
             let step = self.boundary.parser_byte(byte);
             if step.entered_string {
-                self.parser.process(&filtered);
+                self.process_parser(&filtered);
                 filtered.clear();
                 self.control_checkpoint =
                     Some(CallbackCheckpoint::capture(self.parser.callbacks()));
@@ -306,7 +365,7 @@ impl Screen {
                     filtered.push(parser_byte);
                 }
                 if filtered.len() >= 8192 || step.injected_reset || step.exited_string {
-                    self.parser.process(&filtered);
+                    self.process_parser(&filtered);
                     filtered.clear();
                 }
             }
@@ -318,7 +377,7 @@ impl Screen {
                 self.control_checkpoint = None;
             }
         }
-        self.parser.process(&filtered);
+        self.process_parser(&filtered);
         let after = self.parser.screen();
         self.changed = before
             != (
@@ -440,6 +499,45 @@ impl ScreenView for Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_continuations_preserve_text_titles_and_injection_boundaries() {
+        let text = "❯ 2. Dark mode ✔ Ü 🐝";
+        for split in 0..=text.len() {
+            let mut screen = Screen::new(4, 80);
+            let prefix = text.as_bytes().get(..split).unwrap_or_default();
+            assert_eq!(screen.process(prefix), text.is_char_boundary(split));
+            assert!(screen.process(text.as_bytes().get(split..).unwrap_or_default()));
+            assert_eq!(screen.text(), format!("{text}\n"), "split {split}");
+        }
+        let title = format!("\x1b]2;{text}\x07");
+        let mut screen = Screen::new(4, 80);
+        for byte in title.as_bytes() {
+            screen.process(&[*byte]);
+        }
+        assert!(screen.ground());
+        assert_eq!(screen.title(), text);
+        assert_eq!(screen.text(), "");
+    }
+
+    #[test]
+    fn malformed_utf8_cannot_hide_c1_controls_or_evade_string_byte_bounds() {
+        for prefix in [0xc0, 0xc1, 0xe0, 0xf4, 0xf5] {
+            let mut screen = Screen::new(4, 80);
+            screen.process(&[prefix, 0x9d]);
+            assert!(!screen.ground());
+            screen.process(b"2;title\x9c");
+            assert!(screen.ground());
+            assert_eq!(screen.title(), "title");
+        }
+        let mut bytes = b"\x1b]2;".to_vec();
+        bytes.extend_from_slice("❯".repeat(MAX_CONTROL_STRING_BYTES / 3 + 1).as_bytes());
+        bytes.extend_from_slice(b"\x07recovered");
+        let mut screen = Screen::new(4, 80);
+        assert!(screen.process(&bytes));
+        assert_eq!(screen.title(), "");
+        assert_eq!(screen.text(), "recovered\n");
+    }
 
     #[test]
     fn tracker_recognizes_every_split_of_control_strings() {

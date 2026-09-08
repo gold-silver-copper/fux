@@ -1,0 +1,1967 @@
+{
+  "schema": 1,
+  "storage_metadata": true,
+  "fux_sha256": "735cd5c134c702f8f5b0604b9756dd941ede9d8bb6dc3f658308e35aa575c72d",
+  "zor_sha256": "463ec686fc14e7d89d32e6654513a7b74762a9463c5853770f911b19491531d5",
+  "opencode_sha256": "2f24593f1b8e578d0b7ed7ca399440d4b6c125330eece20a69ad8d380190d669",
+  "harness_sha256": "dd09a0bfaa0acdc14fe54ce1ac574dec6cf58e87ee75cd9dc285560ccb5ba72f",
+  "limitation": "Real local OpenCode integration with a synthetic provider; not model quality, authenticated cloud or verified task success.",
+  "blocker": "question",
+  "requests": [
+    {
+      "response": "text",
+      "roles": [
+        "system",
+        "user",
+        "user"
+      ]
+    },
+    {
+      "response": "text",
+      "roles": [
+        "system",
+        "user"
+      ]
+    },
+    {
+      "response": "tool-stop",
+      "roles": [
+        "system",
+        "user",
+        "assistant",
+        "user"
+      ]
+    },
+    {
+      "response": "after-tool",
+      "roles": [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "tool"
+      ]
+    },
+    {
+      "response": "question",
+      "roles": [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user"
+      ]
+    }
+  ],
+  "outcomes": [
+    {
+      "arm": {
+        "acknowledged": true,
+        "disarm_requested": false,
+        "disarmed": false,
+        "input_operation": 2,
+        "input_started": true,
+        "producer": "1be065f312d5be784a5a58be797e8820"
+      },
+      "attempt": "5a1a1614abdd2260bea095ae1466fdab",
+      "created_ms": 1788810629985,
+      "deadline_ms": 1788810659985,
+      "delivery": "delivered",
+      "handoff": null,
+      "id": "prompt-1",
+      "receipt": {
+        "bytes_written": 28,
+        "expires_server_ms": 66978,
+        "input_sequence": 1,
+        "operation": 2,
+        "revision": 28
+      },
+      "released": false,
+      "report_binding": {
+        "bound_ms": 1788810630109,
+        "input_operation": 2,
+        "message": {
+          "id": "msg_07d6c13d40016v49y2thwjn2Ld",
+          "session": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+        },
+        "producer": "1be065f312d5be784a5a58be797e8820",
+        "sequence": 1
+      },
+      "report_token": "<PROMPT_TOKEN>",
+      "response": {
+        "input_operation": 2,
+        "kind": "response-observed",
+        "message": {
+          "id": "msg_07d6c13d40016v49y2thwjn2Ld",
+          "session": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+        },
+        "producer": "1be065f312d5be784a5a58be797e8820",
+        "received_ms": 1788810630571,
+        "sequence": 2
+      },
+      "text": "Reply with FIXTURE RESPONSE",
+      "wait": "response-observed",
+      "wait_exit_status": null,
+      "wait_problem": null
+    },
+    {
+      "arm": {
+        "acknowledged": true,
+        "disarm_requested": false,
+        "disarmed": false,
+        "input_operation": 3,
+        "input_started": true,
+        "producer": "9e579318a41f015deedc2ddebc605f44"
+      },
+      "attempt": "5a1a1614abdd2260bea095ae1466fdab",
+      "created_ms": 1788810630798,
+      "deadline_ms": 1788810660798,
+      "delivery": "delivered",
+      "handoff": null,
+      "id": "prompt-2",
+      "receipt": {
+        "bytes_written": 35,
+        "expires_server_ms": 67795,
+        "input_sequence": 2,
+        "operation": 3,
+        "revision": 53
+      },
+      "released": false,
+      "report_binding": {
+        "bound_ms": 1788810630923,
+        "input_operation": 3,
+        "message": {
+          "id": "msg_07d6c1701001VIp1EpZsgLHSx0",
+          "session": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+        },
+        "producer": "9e579318a41f015deedc2ddebc605f44",
+        "sequence": 1
+      },
+      "report_token": "<PROMPT_TOKEN>",
+      "response": {
+        "input_operation": 3,
+        "kind": "response-observed",
+        "message": {
+          "id": "msg_07d6c1701001VIp1EpZsgLHSx0",
+          "session": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+        },
+        "producer": "9e579318a41f015deedc2ddebc605f44",
+        "received_ms": 1788810631001,
+        "sequence": 2
+      },
+      "text": "ZOR_TOOL_STOP: inspect the fixture",
+      "wait": "response-observed",
+      "wait_exit_status": null,
+      "wait_problem": null
+    },
+    {
+      "arm": {
+        "acknowledged": true,
+        "disarm_requested": false,
+        "disarmed": false,
+        "input_operation": 4,
+        "input_started": true,
+        "producer": "9e579318a41f015deedc2ddebc605f44"
+      },
+      "attempt": "5a1a1614abdd2260bea095ae1466fdab",
+      "created_ms": 1788810631049,
+      "deadline_ms": 1788810661049,
+      "delivery": "delivered",
+      "handoff": null,
+      "id": "prompt-3",
+      "receipt": {
+        "bytes_written": 46,
+        "expires_server_ms": 68044,
+        "input_sequence": 3,
+        "operation": 4,
+        "revision": 61
+      },
+      "released": false,
+      "report_binding": {
+        "bound_ms": 1788810631206,
+        "input_operation": 4,
+        "message": {
+          "id": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+          "session": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+        },
+        "producer": "9e579318a41f015deedc2ddebc605f44",
+        "sequence": 3
+      },
+      "report_token": "<PROMPT_TOKEN>",
+      "response": {
+        "input_operation": 4,
+        "kind": "needs-input",
+        "message": {
+          "id": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+          "session": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+        },
+        "producer": "9e579318a41f015deedc2ddebc605f44",
+        "received_ms": 1788810631246,
+        "sequence": 4
+      },
+      "text": "ZOR_QUESTION: ask which fixture option to use",
+      "wait": "needs-input",
+      "wait_exit_status": null,
+      "wait_problem": null
+    }
+  ],
+  "probe_sha256": "12104c04dcdd68a68bdab95481121bef4758e97c01bbee5f7682eaff02b6bad3",
+  "reload_plugin_sha256": "2976401550cb4e12427563624049095c7cef9660ab0b2e8423c9fbaf30dc5151",
+  "reload_exec_sha256": "6d2899f94df6978a152a747862bd01a98e88cabcdec6fa3075b8d96e562518ea",
+  "opencode_version": "1.18.29",
+  "registered": {
+    "artifact_captures": [],
+    "artifact_policy": {
+      "collected_count": 0,
+      "required_count": 0,
+      "sealed": false
+    },
+    "artifacts": [],
+    "attempt": {
+      "id": "5a1a1614abdd2260bea095ae1466fdab",
+      "session": "3cde8de6c609aa8e448d6e4d686d5523",
+      "state": "active",
+      "task": "integrated"
+    },
+    "check_policy": {
+      "passed_count": 0,
+      "required_count": 0,
+      "sealed": false
+    },
+    "checks": [],
+    "generation": 5,
+    "launch": {
+      "agent": null,
+      "argv": [
+        "/usr/bin/python3",
+        "<FIXTURE_ROOT>/reload.py",
+        "/private/tmp/opencode-fixture-bin-x4e3em_5/opencode"
+      ],
+      "created_ms": 1788810623141,
+      "cwd": "<FIXTURE_ROOT>/work",
+      "event_sequence": 2,
+      "final_evidence": null,
+      "id": "integrated",
+      "instance": "3b439697ecde4dd42732ed11fc82763a",
+      "integration": {
+        "binary": "/Users/kisaczka/Desktop/code/fux/zor/target/debug/zor",
+        "kind": "opencode",
+        "plugin": "<FIXTURE_ROOT>/state/zor/adapters/opencode-8f0bf62abbf52a99dfc7c97148c3fbca7a1ee15877a6e4a6e176d8cdbe570d49.mjs",
+        "producer": "1be065f312d5be784a5a58be797e8820",
+        "registered_ms": 1788810629129,
+        "retired": [],
+        "root": "<FIXTURE_ROOT>/state/zor",
+        "socket": "<FIXTURE_ROOT>/state/zor/adapters/b557cdb885107586dabd441c42387545.sock",
+        "storage_environment": {
+          "HOME": "<FIXTURE_ROOT>",
+          "XDG_CACHE_HOME": "<FIXTURE_ROOT>/cache",
+          "XDG_CONFIG_HOME": "<FIXTURE_ROOT>/config",
+          "XDG_DATA_HOME": "<FIXTURE_ROOT>/data",
+          "XDG_STATE_HOME": "<FIXTURE_ROOT>/state"
+        }
+      },
+      "marker": "b557cdb885107586dabd441c42387545",
+      "pane": 2,
+      "phase": "attached",
+      "problem": null,
+      "requested_cwd": "<FIXTURE_ROOT>/work",
+      "requested_runtime": "<FIXTURE_ROOT>/fux",
+      "resume": null,
+      "runtime": "<FIXTURE_ROOT>/fux",
+      "session": "3cde8de6c609aa8e448d6e4d686d5523",
+      "stop_requested": false,
+      "stream": 1,
+      "task": null,
+      "title": "OpenCode fixture",
+      "workspace": "default",
+      "worktree": null
+    },
+    "prompts": [],
+    "session": {
+      "agent": null,
+      "created_ms": 1788810623141,
+      "id": "3cde8de6c609aa8e448d6e4d686d5523",
+      "launch": "integrated",
+      "ownership": "managed",
+      "target": {
+        "instance": "3b439697ecde4dd42732ed11fc82763a",
+        "pane": 2,
+        "pid": 9747,
+        "runtime": "<FIXTURE_ROOT>/fux",
+        "stream": 1,
+        "workspace": "default"
+      }
+    },
+    "task": {
+      "attempt": "5a1a1614abdd2260bea095ae1466fdab",
+      "created_ms": 1788810623141,
+      "id": "integrated",
+      "outcome": "open",
+      "requested_runtime": "<FIXTURE_ROOT>/fux",
+      "required_artifacts": {},
+      "required_checks": {},
+      "title": "OpenCode fixture"
+    },
+    "verification": null
+  },
+  "adapter_status": [
+    {
+      "availability": "reachable",
+      "current_generation": 5,
+      "duration_ms": 162,
+      "finished_ms": 1788810629399,
+      "generation": 5,
+      "heartbeat": {
+        "age_ms": 225,
+        "input_sequence": null,
+        "observation": null,
+        "received_ms": 1788810629175,
+        "scope": "producer-freshness-only",
+        "sequence": 1,
+        "status": "current",
+        "ttl_ms": 6000
+      },
+      "kind": "opencode",
+      "problem": null,
+      "producer": "1be065f312d5be784a5a58be797e8820",
+      "registered_ms": 1788810629129,
+      "scope": "point-in-time-endpoint-probe",
+      "stage": "complete",
+      "started_ms": 1788810629237,
+      "task_id": "integrated",
+      "v": 1
+    },
+    {
+      "availability": "reachable",
+      "current_generation": 41,
+      "duration_ms": 4,
+      "finished_ms": 1788810632828,
+      "generation": 41,
+      "heartbeat": {
+        "age_ms": 115,
+        "input_sequence": 3,
+        "observation": {
+          "input_operation": 4,
+          "message": {
+            "id": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+            "session": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+          },
+          "operation": "prompt-3",
+          "state": "blocked"
+        },
+        "received_ms": 1788810632713,
+        "scope": "producer-freshness-only",
+        "sequence": 2,
+        "status": "current",
+        "ttl_ms": 6000
+      },
+      "kind": "opencode",
+      "problem": null,
+      "producer": "9e579318a41f015deedc2ddebc605f44",
+      "registered_ms": 1788810630691,
+      "scope": "point-in-time-endpoint-probe",
+      "stage": "complete",
+      "started_ms": 1788810632823,
+      "task_id": "integrated",
+      "v": 1
+    }
+  ],
+  "plugin_sha256": "8f0bf62abbf52a99dfc7c97148c3fbca7a1ee15877a6e4a6e176d8cdbe570d49",
+  "retirement": {
+    "injection": "Synthetic durable pre-submit crash: adapter arm accepted, acknowledgement not journaled.",
+    "arm_status": "armed",
+    "late_arm_status": "rejected",
+    "prompt": {
+      "arm": {
+        "acknowledged": false,
+        "disarm_requested": true,
+        "disarmed": true,
+        "input_operation": 1,
+        "input_started": false,
+        "producer": "1be065f312d5be784a5a58be797e8820"
+      },
+      "attempt": "5a1a1614abdd2260bea095ae1466fdab",
+      "created_ms": 1788810629512,
+      "deadline_ms": 1788810659512,
+      "delivery": "reserved",
+      "handoff": null,
+      "id": "retired-before-input",
+      "receipt": {
+        "bytes_written": 0,
+        "expires_server_ms": 66508,
+        "input_sequence": 0,
+        "operation": 1,
+        "revision": 28
+      },
+      "released": true,
+      "report_binding": null,
+      "report_token": "<PROMPT_TOKEN>",
+      "response": null,
+      "text": "NEVER SUBMIT THIS FIXTURE",
+      "wait": "cancelled",
+      "wait_exit_status": null,
+      "wait_problem": null
+    },
+    "input_before": 0,
+    "input_after": 0
+  },
+  "producer_reload": {
+    "before": {
+      "binary": "/Users/kisaczka/Desktop/code/fux/zor/target/debug/zor",
+      "kind": "opencode",
+      "plugin": "<FIXTURE_ROOT>/state/zor/adapters/opencode-8f0bf62abbf52a99dfc7c97148c3fbca7a1ee15877a6e4a6e176d8cdbe570d49.mjs",
+      "producer": "1be065f312d5be784a5a58be797e8820",
+      "registered_ms": 1788810629129,
+      "retired": [],
+      "root": "<FIXTURE_ROOT>/state/zor",
+      "socket": "<FIXTURE_ROOT>/state/zor/adapters/b557cdb885107586dabd441c42387545.sock",
+      "storage_environment": {
+        "HOME": "<FIXTURE_ROOT>",
+        "XDG_CACHE_HOME": "<FIXTURE_ROOT>/cache",
+        "XDG_CONFIG_HOME": "<FIXTURE_ROOT>/config",
+        "XDG_DATA_HOME": "<FIXTURE_ROOT>/data",
+        "XDG_STATE_HOME": "<FIXTURE_ROOT>/state"
+      }
+    },
+    "target_before": {
+      "instance": "3b439697ecde4dd42732ed11fc82763a",
+      "pane": 2,
+      "pid": 9747,
+      "runtime": "<FIXTURE_ROOT>/fux",
+      "stream": 1,
+      "workspace": "default"
+    },
+    "input_before": 1,
+    "hook_before": {
+      "generation": 1,
+      "pid": 9747
+    },
+    "hook_after": {
+      "generation": 2,
+      "pid": 9747
+    },
+    "after": {
+      "binary": "/Users/kisaczka/Desktop/code/fux/zor/target/debug/zor",
+      "kind": "opencode",
+      "plugin": "<FIXTURE_ROOT>/state/zor/adapters/opencode-8f0bf62abbf52a99dfc7c97148c3fbca7a1ee15877a6e4a6e176d8cdbe570d49.mjs",
+      "producer": "9e579318a41f015deedc2ddebc605f44",
+      "registered_ms": 1788810630691,
+      "retired": [
+        {
+          "producer": "1be065f312d5be784a5a58be797e8820",
+          "registered_ms": 1788810629129,
+          "retired_ms": 1788810630691
+        }
+      ],
+      "root": "<FIXTURE_ROOT>/state/zor",
+      "socket": "<FIXTURE_ROOT>/state/zor/adapters/b557cdb885107586dabd441c42387545.sock",
+      "storage_environment": {
+        "HOME": "<FIXTURE_ROOT>",
+        "XDG_CACHE_HOME": "<FIXTURE_ROOT>/cache",
+        "XDG_CONFIG_HOME": "<FIXTURE_ROOT>/config",
+        "XDG_DATA_HOME": "<FIXTURE_ROOT>/data",
+        "XDG_STATE_HOME": "<FIXTURE_ROOT>/state"
+      }
+    },
+    "target_after": {
+      "instance": "3b439697ecde4dd42732ed11fc82763a",
+      "pane": 2,
+      "pid": 9747,
+      "runtime": "<FIXTURE_ROOT>/fux",
+      "stream": 1,
+      "workspace": "default"
+    },
+    "input_after": 1,
+    "retained_response_after": {
+      "input_operation": 2,
+      "kind": "response-observed",
+      "message": {
+        "id": "msg_07d6c13d40016v49y2thwjn2Ld",
+        "session": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+      },
+      "producer": "1be065f312d5be784a5a58be797e8820",
+      "received_ms": 1788810630571,
+      "sequence": 2
+    }
+  },
+  "task_outcome": "open",
+  "capture": {
+    "input_sequence": 3,
+    "text": "  ┃  ZOR_QUESTION: ask which fixture    \n  ┃  option to use                      \n  ┃                                     \n                                        \n     → Asked 1 question                 \n                                        \n     ▣  Build · Fixture                 \n                                        \n  ┃                                     \n  ┃  Which fixture option?              \n  ┃                                     \n  ┃  1. Alpha                           \n  ┃     Use the first fixture           \n  ┃     option                          \n  ┃  2. Beta                            \n  ┃     Use the second fixture          \n  ┃     option                          \n  ┃  3. Type your own answer            \n  ┃                                     \n  ┃  ↑↓       enter       esc           \n  ┃  select   submit      dismiss       \n  ┃                                     \n                                        ",
+    "revision": 71,
+    "rows": 23,
+    "columns": 40,
+    "scrollback_offset": 0,
+    "title": "OC | FIXTURE RESPONSE",
+    "progress": null,
+    "unchanged": false,
+    "truncated": false
+  },
+  "dashboard": {
+    "service_instance": "a1e1ea00a36457220d5b84d51a4e53ef",
+    "observation_sequence": 1,
+    "task_generation": 41,
+    "state_directory": "<FIXTURE_ROOT>/state/zor",
+    "stale": false,
+    "rows": [
+      {
+        "key": "pane:3b439697ecde4dd42732ed11fc82763a:default:1:1",
+        "kind": "observation",
+        "label": "default / 1: unclassified",
+        "status": "unknown",
+        "task_outcome": null,
+        "attention": true,
+        "detail": "passive state unknown; age at fetch <= 612ms; passive rule none; no identified supported foreground agent",
+        "age_upper_bound_ms": 612,
+        "target": null,
+        "evidence": {
+          "rule": null,
+          "source": "passive"
+        }
+      },
+      {
+        "key": "pane:3b439697ecde4dd42732ed11fc82763a:default:1:2",
+        "kind": "observation",
+        "label": "default / 2: opencode",
+        "status": "blocked",
+        "task_outcome": null,
+        "attention": true,
+        "detail": "integration state blocked; age at fetch <= 1032ms; passive rule opencode-1.18.29-question; agent observation; not task completion",
+        "age_upper_bound_ms": 1032,
+        "target": {
+          "runtime": "<FIXTURE_ROOT>/fux",
+          "instance": "3b439697ecde4dd42732ed11fc82763a",
+          "workspace": "default",
+          "stream": 1,
+          "pane": 2,
+          "pid": 9747
+        },
+        "evidence": {
+          "claim": {
+            "input_operation": 4,
+            "message": {
+              "id": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+              "session": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+            },
+            "operation": "prompt-3",
+            "state": "blocked"
+          },
+          "correlated": true,
+          "fresh": true,
+          "heartbeat_age_upper_bound_ms": 1032,
+          "heartbeat_sequence": 2,
+          "heartbeat_status": "current",
+          "passive_state": "blocked",
+          "producer": "9e579318a41f015deedc2ddebc605f44",
+          "scope": "agent-observation; not-task-completion",
+          "source": "integration"
+        }
+      },
+      {
+        "key": "task:integrated",
+        "kind": "task",
+        "label": "integrated: OpenCode fixture",
+        "status": "needs-input",
+        "task_outcome": "open",
+        "attention": true,
+        "detail": "Recorded task outcome Open; coordination needs-input; attempt Active; agent unclassified",
+        "age_upper_bound_ms": null,
+        "target": {
+          "runtime": "<FIXTURE_ROOT>/fux",
+          "instance": "3b439697ecde4dd42732ed11fc82763a",
+          "workspace": "default",
+          "stream": 1,
+          "pane": 2,
+          "pid": 9747
+        },
+        "evidence": null
+      }
+    ],
+    "problems": []
+  },
+  "zor_service_exit": 0,
+  "observation_event_count": 57,
+  "fux_exit": 0,
+  "provider_thread_stopped": true,
+  "events": [
+    {
+      "hook": "loaded"
+    },
+    {
+      "hook": "chat.message",
+      "input": {
+        "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+        "agent": "build",
+        "model": {
+          "providerID": "fixture",
+          "modelID": "fixture"
+        }
+      },
+      "output": {
+        "message": {
+          "id": "msg_07d6c13d40016v49y2thwjn2Ld",
+          "role": "user",
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "time": {
+            "created": 1788810630100
+          },
+          "agent": "build",
+          "model": {
+            "providerID": "fixture",
+            "modelID": "fixture"
+          }
+        },
+        "parts": [
+          {
+            "type": "text",
+            "text": "Reply with FIXTURE RESPONSE",
+            "messageID": "msg_07d6c13d40016v49y2thwjn2Ld",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "id": "prt_07d6c13d5001gkX7pPGdNblWZ8"
+          }
+        ]
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c13ec001Otg2UiIGUkSbdo",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c13d40016v49y2thwjn2Ld",
+            "role": "user",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "time": {
+              "created": 1788810630100
+            },
+            "agent": "build",
+            "model": {
+              "providerID": "fixture",
+              "modelID": "fixture"
+            }
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c13ee001eCDkRqIRKkAO1M",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "type": "text",
+            "text": "Reply with FIXTURE RESPONSE",
+            "messageID": "msg_07d6c13d40016v49y2thwjn2Ld",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "id": "prt_07d6c13d5001gkX7pPGdNblWZ8"
+          },
+          "time": 1788810630126
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c13f3001QKyI8WAy16w9dR",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c13f4001ZXctaQ66leqV56",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c13f4001N2H76FaGbQ55mE",
+            "parentID": "msg_07d6c13d40016v49y2thwjn2Ld",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810630132
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c14080019Dkm8TaOYUXopb",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "role": "user",
+            "time": {
+              "created": 1788810630100
+            },
+            "agent": "build",
+            "model": {
+              "providerID": "fixture",
+              "modelID": "fixture"
+            },
+            "id": "msg_07d6c13d40016v49y2thwjn2Ld",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "summary": {
+              "diffs": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1597001Nj1tZY53aVJH0f",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c159c001Z29zBKHrMCYgfC",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c159c001kUjLsPz9VQb80V",
+            "messageID": "msg_07d6c13f4001N2H76FaGbQ55mE",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "step-start"
+          },
+          "time": 1788810630556
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c159d001SYyJ05325qso4H",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c159d0011E8mc1tfvXc7su",
+            "messageID": "msg_07d6c13f4001N2H76FaGbQ55mE",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "text",
+            "text": "",
+            "time": {
+              "start": 1788810630557
+            }
+          },
+          "time": 1788810630557
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c159e0021qIS4Gy70vT4aY",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c159d0011E8mc1tfvXc7su",
+            "messageID": "msg_07d6c13f4001N2H76FaGbQ55mE",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "text",
+            "text": "FIXTURE RESPONSE",
+            "time": {
+              "start": 1788810630557,
+              "end": 1788810630558
+            }
+          },
+          "time": 1788810630558
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c15a0001QM10es7KsmPHJC",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c15a0001xdfmU9xAlJ7XRO",
+            "reason": "stop",
+            "messageID": "msg_07d6c13f4001N2H76FaGbQ55mE",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "step-finish",
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "write": 0,
+                "read": 0
+              }
+            },
+            "cost": 0
+          },
+          "time": 1788810630560
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c15a1001U72RHivFAcC72a",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c13f4001N2H76FaGbQ55mE",
+            "parentID": "msg_07d6c13d40016v49y2thwjn2Ld",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "write": 0,
+                "read": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810630132
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "finish": "stop"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c15a2001tCOxzKyh1rkRRT",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c13f4001N2H76FaGbQ55mE",
+            "parentID": "msg_07d6c13d40016v49y2thwjn2Ld",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "write": 0,
+                "read": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810630132,
+              "completed": 1788810630562
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "finish": "stop"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c15a3001PyCS2XV9W8kpSk",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c15a40016sZmjhF9vkQDjd",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "idle"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c15a40029ozucGqkN4Ucm5",
+        "type": "session.idle",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c15aa001Auwa9u4eRpjLKy",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "role": "user",
+            "time": {
+              "created": 1788810630100
+            },
+            "agent": "build",
+            "model": {
+              "providerID": "fixture",
+              "modelID": "fixture"
+            },
+            "summary": {
+              "diffs": []
+            },
+            "id": "msg_07d6c13d40016v49y2thwjn2Ld",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+          }
+        }
+      }
+    },
+    {
+      "hook": "chat.message",
+      "input": {
+        "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+        "agent": "build",
+        "model": {
+          "providerID": "fixture",
+          "modelID": "fixture"
+        }
+      },
+      "output": {
+        "message": {
+          "id": "msg_07d6c1701001VIp1EpZsgLHSx0",
+          "role": "user",
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "time": {
+            "created": 1788810630913
+          },
+          "agent": "build",
+          "model": {
+            "providerID": "fixture",
+            "modelID": "fixture"
+          }
+        },
+        "parts": [
+          {
+            "type": "text",
+            "text": "ZOR_TOOL_STOP: inspect the fixture",
+            "messageID": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "id": "prt_07d6c1701002XsnpWvcb7DFWhO"
+          }
+        ]
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c171d001bbqmsoSJ3VBOmp",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "role": "user",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "time": {
+              "created": 1788810630913
+            },
+            "agent": "build",
+            "model": {
+              "providerID": "fixture",
+              "modelID": "fixture"
+            }
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c171e001M3bk6o6jyWKDqN",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "type": "text",
+            "text": "ZOR_TOOL_STOP: inspect the fixture",
+            "messageID": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "id": "prt_07d6c1701002XsnpWvcb7DFWhO"
+          },
+          "time": 1788810630942
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c17210012R54abU5lbsd3S",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c172200102EvJsSX3szrG9",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c1722001vp6FZjrSquCUnO",
+            "parentID": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810630946
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1724003PTsbeyJgAqmfvF",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "role": "user",
+            "time": {
+              "created": 1788810630913
+            },
+            "agent": "build",
+            "model": {
+              "providerID": "fixture",
+              "modelID": "fixture"
+            },
+            "id": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "summary": {
+              "diffs": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1726001IWR85C8XEwHmAw",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c172a001gVz05YoqnwG2IV",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c1729001DJ8VqbljOaKYO7",
+            "messageID": "msg_07d6c1722001vp6FZjrSquCUnO",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "step-start"
+          },
+          "time": 1788810630954
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c172b001nuyNHd7X22irOy",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c172b001EBarQGI62A944C",
+            "messageID": "msg_07d6c1722001vp6FZjrSquCUnO",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "tool",
+            "tool": "read",
+            "callID": "fixture-read",
+            "state": {
+              "status": "pending",
+              "input": {},
+              "raw": ""
+            }
+          },
+          "time": 1788810630955
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c172e001EPWIyPYWBTx0py",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "type": "tool",
+            "tool": "read",
+            "callID": "fixture-read",
+            "state": {
+              "status": "running",
+              "input": {
+                "filePath": "<FIXTURE_ROOT>/work/fixture.txt"
+              },
+              "time": {
+                "start": 1788810630958
+              }
+            },
+            "id": "prt_07d6c172b001EBarQGI62A944C",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "messageID": "msg_07d6c1722001vp6FZjrSquCUnO"
+          },
+          "time": 1788810630958
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c173a001CHbcPTAcT7Fn5i",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "type": "tool",
+            "tool": "read",
+            "callID": "fixture-read",
+            "state": {
+              "status": "completed",
+              "input": {
+                "filePath": "<FIXTURE_ROOT>/work/fixture.txt"
+              },
+              "output": "<path><FIXTURE_ROOT>/work/fixture.txt</path>\n<type>file</type>\n<content>\n1: Owned fixture.\n\n(End of file - total 1 lines)\n</content>",
+              "metadata": {
+                "preview": "Owned fixture.",
+                "truncated": false,
+                "loaded": [],
+                "display": {
+                  "type": "file",
+                  "path": "<FIXTURE_ROOT>/work/fixture.txt",
+                  "text": "Owned fixture.",
+                  "lineStart": 1,
+                  "lineEnd": 1,
+                  "totalLines": 1,
+                  "truncated": false
+                }
+              },
+              "title": "private/tmp/zoi-8yglinsr/work/fixture.txt",
+              "time": {
+                "start": 1788810630958,
+                "end": 1788810630970
+              }
+            },
+            "id": "prt_07d6c172b001EBarQGI62A944C",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "messageID": "msg_07d6c1722001vp6FZjrSquCUnO"
+          },
+          "time": 1788810630970
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c173b001x9LSG7ShisKbsk",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c173b001sisALGe0AMfLcU",
+            "reason": "stop",
+            "messageID": "msg_07d6c1722001vp6FZjrSquCUnO",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "step-finish",
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "write": 0,
+                "read": 0
+              }
+            },
+            "cost": 0
+          },
+          "time": 1788810630971
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c173c001iFHpqYeisN9i6d",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c1722001vp6FZjrSquCUnO",
+            "parentID": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "write": 0,
+                "read": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810630946
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "finish": "stop"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c173d001viCxOifojMIHLs",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c1722001vp6FZjrSquCUnO",
+            "parentID": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "write": 0,
+                "read": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810630946,
+              "completed": 1788810630973
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "finish": "stop"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c173e001IcpWYOg2KNEtE1",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c173e002B2VvspDoBk28N5",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c173e001JHCw0iq10dtxWP",
+            "parentID": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810630974
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1742001rvcz7bprEr4x0C",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "role": "user",
+            "time": {
+              "created": 1788810630913
+            },
+            "agent": "build",
+            "model": {
+              "providerID": "fixture",
+              "modelID": "fixture"
+            },
+            "summary": {
+              "diffs": []
+            },
+            "id": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1749001rvXQt3bGLYReL4",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c174d001oiT6dMJ2dhZlbY",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c174d001ctLBtFbLM3aofo",
+            "messageID": "msg_07d6c173e001JHCw0iq10dtxWP",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "step-start"
+          },
+          "time": 1788810630989
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c174e001uSiis4WmP165vG",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c174e0011SASPZH0enZ0kE",
+            "messageID": "msg_07d6c173e001JHCw0iq10dtxWP",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "text",
+            "text": "",
+            "time": {
+              "start": 1788810630990
+            }
+          },
+          "time": 1788810630990
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c174f002dCg000wTDgmiu1",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c174e0011SASPZH0enZ0kE",
+            "messageID": "msg_07d6c173e001JHCw0iq10dtxWP",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "text",
+            "text": "FIXTURE RESPONSE",
+            "time": {
+              "start": 1788810630990,
+              "end": 1788810630991
+            }
+          },
+          "time": 1788810630991
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1750001SG31GmZe5T4zaI",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c1750001oBq3G2yus85MiJ",
+            "reason": "stop",
+            "messageID": "msg_07d6c173e001JHCw0iq10dtxWP",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "step-finish",
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "write": 0,
+                "read": 0
+              }
+            },
+            "cost": 0
+          },
+          "time": 1788810630992
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1751001KsT9ZkZZEiCzGQ",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c173e001JHCw0iq10dtxWP",
+            "parentID": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "write": 0,
+                "read": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810630974
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "finish": "stop"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1751002hYPZCfemlOnz3O",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c173e001JHCw0iq10dtxWP",
+            "parentID": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "write": 0,
+                "read": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810630974,
+              "completed": 1788810630993
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "finish": "stop"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1752001EolPFH6ccImajj",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c17530019vBX7gaKQxAmuA",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "idle"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1753002utvjIwN3fz4Pc3",
+        "type": "session.idle",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1756002pp2ZGL3U5DxtZQ",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "role": "user",
+            "time": {
+              "created": 1788810630913
+            },
+            "agent": "build",
+            "model": {
+              "providerID": "fixture",
+              "modelID": "fixture"
+            },
+            "summary": {
+              "diffs": []
+            },
+            "id": "msg_07d6c1701001VIp1EpZsgLHSx0",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+          }
+        }
+      }
+    },
+    {
+      "hook": "chat.message",
+      "input": {
+        "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+        "agent": "build",
+        "model": {
+          "providerID": "fixture",
+          "modelID": "fixture"
+        }
+      },
+      "output": {
+        "message": {
+          "id": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+          "role": "user",
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "time": {
+            "created": 1788810631165
+          },
+          "agent": "build",
+          "model": {
+            "providerID": "fixture",
+            "modelID": "fixture"
+          }
+        },
+        "parts": [
+          {
+            "type": "text",
+            "text": "ZOR_QUESTION: ask which fixture option to use",
+            "messageID": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "id": "prt_07d6c17fe001yeXSZzHJLKK9VF"
+          }
+        ]
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1836001B2lPjIsEMg4t87",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+            "role": "user",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "time": {
+              "created": 1788810631165
+            },
+            "agent": "build",
+            "model": {
+              "providerID": "fixture",
+              "modelID": "fixture"
+            }
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1837001OFNAdpxijXpvDb",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "type": "text",
+            "text": "ZOR_QUESTION: ask which fixture option to use",
+            "messageID": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "id": "prt_07d6c17fe001yeXSZzHJLKK9VF"
+          },
+          "time": 1788810631223
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1839001IhEKXdj1aI2EZA",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c183a001msM5eOiRgRbqg0",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "id": "msg_07d6c183a001hghLPpkMIz4C7p",
+            "parentID": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+            "role": "assistant",
+            "mode": "build",
+            "agent": "build",
+            "path": {
+              "cwd": "<FIXTURE_ROOT>/work",
+              "root": "/"
+            },
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            },
+            "modelID": "fixture",
+            "providerID": "fixture",
+            "time": {
+              "created": 1788810631226
+            },
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1842001k6Oo8EtFp6o60g",
+        "type": "message.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "info": {
+            "role": "user",
+            "time": {
+              "created": 1788810631165
+            },
+            "agent": "build",
+            "model": {
+              "providerID": "fixture",
+              "modelID": "fixture"
+            },
+            "id": "msg_07d6c17fd001K5fEd5gVBJ6dOR",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "summary": {
+              "diffs": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c18430016LXu96NIZjBTp5",
+        "type": "session.status",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "status": {
+            "type": "busy"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c18470013Lxy9Lj0KMi7Aj",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c1847001MdLTM9htWmlehy",
+            "messageID": "msg_07d6c183a001hghLPpkMIz4C7p",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "step-start"
+          },
+          "time": 1788810631239
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c1848001AnEmvavjacugJu",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "id": "prt_07d6c1848001yoNWhjeuReRt8c",
+            "messageID": "msg_07d6c183a001hghLPpkMIz4C7p",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "type": "tool",
+            "tool": "question",
+            "callID": "fixture-question",
+            "state": {
+              "status": "pending",
+              "input": {},
+              "raw": ""
+            }
+          },
+          "time": 1788810631240
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c184a002dRuR85KrHZyK3o",
+        "type": "question.asked",
+        "properties": {
+          "id": "que_07d6c184a001xRGY0U3G3O160c",
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "questions": [
+            {
+              "question": "Which fixture option?",
+              "header": "Fixture",
+              "options": [
+                {
+                  "label": "Alpha",
+                  "description": "Use the first fixture option"
+                },
+                {
+                  "label": "Beta",
+                  "description": "Use the second fixture option"
+                }
+              ]
+            }
+          ],
+          "tool": {
+            "messageID": "msg_07d6c183a001hghLPpkMIz4C7p",
+            "callID": "fixture-question"
+          }
+        }
+      }
+    },
+    {
+      "hook": "event",
+      "event": {
+        "id": "evt_07d6c184b001UVebTbGFqRl6Bp",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+          "part": {
+            "type": "tool",
+            "tool": "question",
+            "callID": "fixture-question",
+            "state": {
+              "status": "running",
+              "input": {
+                "questions": [
+                  {
+                    "question": "Which fixture option?",
+                    "header": "Fixture",
+                    "options": [
+                      {
+                        "label": "Alpha",
+                        "description": "Use the first fixture option"
+                      },
+                      {
+                        "label": "Beta",
+                        "description": "Use the second fixture option"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "time": {
+                "start": 1788810631243
+              }
+            },
+            "id": "prt_07d6c1848001yoNWhjeuReRt8c",
+            "sessionID": "ses_f8293ec38ffeEBi1RmQc1BM09g",
+            "messageID": "msg_07d6c183a001hghLPpkMIz4C7p"
+          },
+          "time": 1788810631243
+        }
+      }
+    }
+  ]
+}

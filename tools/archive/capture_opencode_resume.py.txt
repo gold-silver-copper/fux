@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Probe real OpenCode TUI session resume across an owned fux restart.
+
+Fixed prompts and a loopback synthetic provider; no inherited user credentials.
+This establishes the application resume contract, not zor task resume policy.
+"""
+import argparse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import threading
+import time
+
+from capture_startup import rpc
+from capture_opencode_events import PLUGIN, read_events, sha256
+
+PROMPTS = ['RESUME_FIRST: reply briefly', 'RESUME_SECOND: reply briefly']
+
+
+def validate(evidence):
+    assert evidence['version'] == '1.18.29', 'unreviewed OpenCode version'
+    assert evidence['exits'] == [0, 0] and evidence['provider_stopped'], 'cleanup incomplete'
+    targets, submissions, captures = evidence['targets'], evidence['submissions'], evidence['captures']
+    assert len(targets) == len(submissions) == 2 and len(captures) == 4
+    assert targets[0]['instance'] != targets[1]['instance'], 'fux did not restart'
+    assert targets[0]['pane']['pid'] != targets[1]['pane']['pid'], 'agent process did not change'
+    session = evidence['session']
+    assert targets[1]['argv'][-2:] == ['--session', session]
+    assert submissions[0]['message']['id'] != submissions[1]['message']['id']
+    chats = [row for row in evidence['events'] if row.get('hook') == 'chat.message']
+    assert len(chats) == 2, 'native prompt replay or missing turn'
+    for index, submission in enumerate(submissions):
+        receipt, message = submission['receipt'], submission['message']
+        assert message['sessionID'] == session and message == chats[index]['output']['message']
+        assert [part['text'] for part in chats[index]['output']['parts'] if part['type'] == 'text'] == [PROMPTS[index]]
+        assert receipt['pane'] == targets[index]['pane']['id'] and receipt['operation'] > 0
+        assert receipt['state'] == 'delivered' and receipt['input_sequence'] == 1
+        assert receipt['bytes_written'] == len(PROMPTS[index].encode())+1 and receipt['error'] is None
+        assert captures[2*index]['input_sequence'] == 0
+        assert captures[2*index+1]['input_sequence'] == 1
+        assert f'RESUME_REPLY_{index+1}' in captures[2*index+1]['text']
+        assert any(row.get('event',{}).get('type') == 'message.updated'
+            and row['event']['properties']['info'].get('sessionID') == session
+            and row['event']['properties']['info'].get('parentID') == message['id']
+            and row['event']['properties']['info'].get('time',{}).get('completed')
+            and row['event']['properties']['info'].get('finish') == 'stop'
+            and not row['event']['properties']['info'].get('error') for row in evidence['events'])
+    assert 'RESUME_REPLY_1' in captures[2]['text'], 'prior history absent before resumed input'
+    assert any(any('RESUME_FIRST' in str(m.get('content')) for m in messages if m['role']=='user')
+        and any('RESUME_SECOND' in str(m.get('content')) for m in messages if m['role']=='user')
+        and any('RESUME_REPLY_1' in str(m.get('content')) for m in messages if m['role']=='assistant')
+        for messages in evidence['requests']), 'prior conversation absent from resumed request'
+    assert not any(row.get('event',{}).get('type') == 'session.error' for row in evidence['events'])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ['fux', 'opencode', 'output']:
+        parser.add_argument('--' + name, type=Path, required=True)
+    args = parser.parse_args()
+    fux, agent = args.fux.resolve(strict=True), args.opencode.resolve(strict=True)
+    args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    evidence = dict(fux_sha256=sha256(fux), opencode_sha256=sha256(agent),
+        harness_sha256=sha256(Path(__file__)), requests=[], captures=[], targets=[], submissions=[], exits=[],
+        limitation='Real OpenCode TUI and persisted session, synthetic provider; zor resume policy is not exercised.')
+    with tempfile.TemporaryDirectory(prefix='zresume-', dir='/tmp') as directory:
+        root = Path(directory).resolve()
+        for name in ['config/fux', 'work', 'data', 'cache', 'state']:
+            (root/name).mkdir(parents=True)
+        plugin = root/'probe.mjs'
+        plugin.write_text(PLUGIN)
+        class Provider(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_POST(self):
+                size = int(self.headers.get('Content-Length', '0'))
+                if self.path != '/v1/chat/completions' or not 0 < size <= 1048576 or len(evidence['requests']) >= 8:
+                    self.send_error(400); return
+                body = json.loads(self.rfile.read(size))
+                evidence['requests'].append(body['messages'])
+                second = any('RESUME_SECOND' in str(m.get('content')) for m in body['messages'] if m['role'] == 'user')
+                answer = 'RESUME_REPLY_2' if second else 'RESUME_REPLY_1'
+                base = dict(id='chatcmpl-fixture', object='chat.completion.chunk', created=1, model='fixture')
+                chunks = [dict(base, choices=[dict(index=0,delta=dict(role='assistant',content=answer),finish_reason=None)]),
+                          dict(base, choices=[dict(index=0,delta={},finish_reason='stop')])]
+                payload = (''.join('data: '+json.dumps(chunk)+'\n\n' for chunk in chunks)+'data: [DONE]\n\n').encode()
+                self.send_response(200); self.send_header('Content-Type','text/event-stream')
+                self.send_header('Content-Length',str(len(payload))); self.end_headers(); self.wfile.write(payload)
+        class BoundedServer(HTTPServer):
+            def get_request(self):
+                peer, address = super().get_request(); peer.settimeout(3); return peer, address
+        provider = BoundedServer(('127.0.0.1',0),Provider)
+        thread = threading.Thread(target=provider.serve_forever); thread.start()
+        process = None
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=str(root), TMPDIR=str(root),
+            XDG_RUNTIME_DIR=str(root), XDG_CONFIG_HOME=str(root/'config'), XDG_DATA_HOME=str(root/'data'),
+            XDG_CACHE_HOME=str(root/'cache'), XDG_STATE_HOME=str(root/'state'), TERM='xterm-256color',
+            SHELL='/bin/sh', LANG='en_US.UTF-8', OPENCODE_CONFIG=str(root/'work/opencode.json'),
+            ZOR_PROBE_LOG=str(root/'events.jsonl'), OPENCODE_DISABLE_DEFAULT_PLUGINS='true',
+            OPENCODE_DISABLE_MODELS_FETCH='true', OPENCODE_DISABLE_AUTOUPDATE='true')
+        config = dict(plugin=[plugin.as_uri()],model='fixture/fixture',small_model='fixture/fixture',
+            enabled_providers=['fixture'],permission={'*':'deny'},provider={'fixture':dict(
+                npm='@ai-sdk/openai-compatible',name='Local Fixture',
+                options=dict(baseURL=f'http://127.0.0.1:{provider.server_port}/v1',apiKey='fixture'),
+                models={'fixture':dict(name='Fixture',limit=dict(context=65536,output=1024))})})
+        (root/'work/opencode.json').write_text(json.dumps(config))
+        control = root/'fux/default.sock'
+        def until(check):
+            deadline = time.monotonic()+30
+            while time.monotonic() < deadline:
+                assert process.poll() is None, 'owned fux exited'
+                value = check()
+                if value: return value
+                time.sleep(.1)
+            raise TimeoutError('resume observation deadline')
+        def stop():
+            if process is not None:
+                if process.poll() is None: process.terminate()
+                try: code = process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill(); process.wait(timeout=5); raise
+                evidence['exits'].append(code)
+                assert code == 0, code
+        try:
+            evidence['version'] = subprocess.run([str(agent),'--version'],env=env,capture_output=True,
+                check=True,timeout=10).stdout.decode().strip()
+            evidence['help'] = subprocess.run([str(agent),'--help'],env=env,capture_output=True,
+                check=True,timeout=10).stdout.decode()
+            session = None
+            for turn, prompt in enumerate(PROMPTS):
+                argv = [str(agent), str(root/'work'), '--model','fixture/fixture']
+                if session: argv += ['--session',session]
+                (root/'config/fux/config.toml').write_text('default-command = { argv = '+json.dumps(argv)+' }\n')
+                with (root/f'stderr-{turn}').open('wb') as error:
+                    process = subprocess.Popen([str(fux),'serve'],env=env,cwd=root/'work',
+                        stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=error)
+                until(control.exists)
+                listing = rpc(control,dict(id=1,command='list'))
+                pane = listing['workspaces'][0]['tabs'][0]['panes'][0]
+                instance = listing['instance']
+                evidence['targets'].append(dict(instance=instance,pane=pane,argv=argv))
+                def value(command, **fields):
+                    return rpc(control,dict(id=1,command=command,instance=instance,**fields))
+                def capture(): return value('capture',pane=pane['id'],max_bytes=131072)
+                until(lambda: ('RESUME_REPLY_1' if turn else 'Ask anything') in capture()['text'])
+                before = capture(); evidence['captures'].append(before)
+                assert before['input_sequence'] == 0, 'resume must not replay terminal input'
+                receipt = value('input-reserve',pane=pane['id'])['receipt']
+                value('input-submit',operation=receipt['operation'],keys=prompt+'\r')
+                def finished():
+                    events = read_events(root/'events.jsonl')
+                    chats = [r for r in events if r.get('hook') == 'chat.message']
+                    if len(chats) != turn+1: return None
+                    message = chats[-1]['output']['message']
+                    return message if any(r.get('event',{}).get('type') == 'message.updated'
+                        and r['event']['properties']['info'].get('parentID') == message['id']
+                        and r['event']['properties']['info'].get('time',{}).get('completed')
+                        and r['event']['properties']['info'].get('finish') == 'stop' for r in events) else None
+                message = until(finished)
+                if session: assert message['sessionID'] == session
+                session = message['sessionID']
+                until(lambda: f'RESUME_REPLY_{turn+1}' in capture()['text'])
+                evidence['submissions'].append(dict(message=message,receipt=value('input-status',operation=receipt['operation'])['receipt']))
+                evidence['captures'].append(capture())
+                stop(); process = None
+            assert evidence['targets'][0]['instance'] != evidence['targets'][1]['instance']
+            assert evidence['targets'][0]['pane']['pid'] != evidence['targets'][1]['pane']['pid']
+            assert any(any('RESUME_FIRST' in str(m.get('content')) for m in messages if m['role']=='user')
+                and any('RESUME_SECOND' in str(m.get('content')) for m in messages if m['role']=='user')
+                and any('RESUME_REPLY_1' in str(m.get('content')) for m in messages if m['role']=='assistant')
+                for messages in evidence['requests']), 'resumed request did not retain prior conversation'
+            evidence['session'] = session
+        finally:
+            try: stop()
+            finally:
+                provider.shutdown(); provider.server_close(); thread.join(timeout=5)
+                evidence['provider_stopped'] = not thread.is_alive()
+                evidence['events'] = read_events(root/'events.jsonl')
+                encoded = json.dumps(evidence,indent=2).replace(str(root),'<FIXTURE_ROOT>')
+                (args.output/'resume.json').write_text(encoded+'\n')
+        validate(evidence)
+        evidence['passed'] = True
+        (args.output/'resume.json').write_text(json.dumps(evidence,indent=2).replace(str(root),'<FIXTURE_ROOT>')+'\n')
+    print(args.output/'resume.json')
+
+
+if __name__ == '__main__':
+    main()

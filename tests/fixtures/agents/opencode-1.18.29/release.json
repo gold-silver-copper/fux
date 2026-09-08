@@ -1,0 +1,8 @@
+{
+  "tag": "v1.18.29",
+  "release_url": "https://github.com/anomalyco/opencode/releases/tag/v1.18.29",
+  "asset_url": "https://github.com/anomalyco/opencode/releases/download/v1.18.29/opencode-darwin-arm64.zip",
+  "archive_size": 46205298,
+  "archive_digest": "sha256:fe764f7f360c584a83e18dd5f23fb1a6b2725f5ee8854b0252fe558f7798e946",
+  "binary_sha256": "2f24593f1b8e578d0b7ed7ca399440d4b6c125330eece20a69ad8d380190d669"
+}

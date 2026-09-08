@@ -1,0 +1,6 @@
+import os,json,sys
+config=json.loads(os.environ['OPENCODE_CONFIG_CONTENT'])
+os.environ['ZOR_FIXTURE_PLUGIN']=config['plugin'][-1]
+config['plugin'][-1]=os.environ['ZOR_FIXTURE_WRAPPER']
+os.environ['OPENCODE_CONFIG_CONTENT']=json.dumps(config)
+os.execv(sys.argv[1],sys.argv[1:])

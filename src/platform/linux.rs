@@ -19,6 +19,63 @@ pub fn foreground_pgid(child: Pid, master_fd: Option<i32>) -> Option<Pid> {
             })
         })
 }
+
+pub fn process_cwd(pid: Pid) -> io::Result<std::path::PathBuf> {
+    if pid <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid process ID",
+        ));
+    }
+    fs::read_link(format!("/proc/{pid}/cwd"))
+}
+
+pub(crate) fn process_identity(pid: Pid) -> io::Result<super::ProcessRef> {
+    let value = stat(pid).ok_or_else(|| io::Error::other("process identity unavailable"))?;
+    Ok(super::ProcessRef {
+        pid,
+        birth: (value.start_time, 0),
+    })
+}
+
+pub(crate) fn process_children(pid: Pid) -> io::Result<Vec<super::ProcessRef>> {
+    use std::io::Read;
+    if pid <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid process ID",
+        ));
+    }
+    let mut children = std::collections::BTreeSet::new();
+    for (index, task) in fs::read_dir(format!("/proc/{pid}/task"))?.enumerate() {
+        if index >= 256 {
+            return Err(io::Error::other("thread list exceeds bound"));
+        }
+        let mut bytes = Vec::new();
+        fs::File::open(task?.path().join("children"))?
+            .take(8193)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 8192 {
+            return Err(io::Error::other("child list exceeds bound"));
+        }
+        let text = std::str::from_utf8(&bytes).map_err(io::Error::other)?;
+        for child in text.split_whitespace() {
+            let child: Pid = child.parse().map_err(io::Error::other)?;
+            let entry = stat(child).ok_or_else(|| io::Error::other("child process unavailable"))?;
+            if child <= 0 || entry.ppid != pid {
+                return Err(io::Error::other("child process changed during inspection"));
+            }
+            children.insert(super::ProcessRef {
+                pid: child,
+                birth: (entry.start_time, 0),
+            });
+            if children.len() > 256 {
+                return Err(io::Error::other("child list exceeds bound"));
+            }
+        }
+    }
+    Ok(children.into_iter().collect())
+}
 pub fn leader(pgid: Pid) -> Option<Process> {
     process(pgid).filter(|_| stat(pgid).is_some_and(|value| value.pgrp == pgid))
 }
@@ -53,6 +110,7 @@ pub fn job(child: Pid, pgid: Pid) -> Job {
     }
 }
 struct Stat {
+    start_time: u64,
     ppid: Pid,
     pgrp: Pid,
     tpgid: Pid,
@@ -69,6 +127,7 @@ fn stat(pid: Pid) -> Option<Stat> {
         .split_whitespace()
         .collect();
     Some(Stat {
+        start_time: fields.get(19)?.parse().ok()?,
         ppid: fields.get(1)?.parse().ok()?,
         pgrp: fields.get(2)?.parse().ok()?,
         tpgid: fields.get(5)?.parse().ok()?,

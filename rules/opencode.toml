@@ -1,0 +1,75 @@
+# Evidence: tests/fixtures/agents/opencode-1.18.29/startup*.json
+# Recorded 80x23 fresh-home input screen only, not task completion.
+# The three placeholder examples are enumerated by the tagged upstream home route.
+id = 'opencode'
+process_names = ['opencode']
+
+[[rules]]
+id = 'opencode-1.18.29-startup-input'
+state = 'idle'
+visible_idle = true
+region = 'whole'
+# Conjoined fixed line offsets cover the whole normalized screen with no gaps.
+# Only the bounded cwd label and upstream placeholder choice vary.
+regex = [
+'''\A
+
+
+
+ {54}▄
+ {21}█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
+ {21}█  █ █  █ █▀▀▀ █  █ █ {4}█  █ █  █ █▀▀▀
+ {21}▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+''',
+'''\A(?:[^\n]*\n){8}
+
+ {3}┃
+ {3}┃  Ask anything… "(?:Fix broken tests|What is the tech stack of this project\?|Fix a TODO in the codebase)"
+ {3}┃
+ {3}┃  Build · Big Pickle OpenCode Zen
+ {3}╹▀{73}▀
+ {51}tab agents  ctrl\+p commands
+''',
+'''\A(?:[^\n]*\n){16}
+
+
+ {12}● Tip Run /connect to add an AI provider and start coding
+
+  (?:/|~)[^\p{C}\n]{0,65} +1\.18\.29\n\z'''
+]
+
+# Real 40-column managed-agent captures in integration.json (synthetic provider).
+# Match the complete visible dialog footer; a copied viewport can still spoof it.
+[[rules]]
+id = 'opencode-1.18.29-permission'
+state = 'blocked'
+priority = 900
+visible_blocker = true
+region = 'whole'
+regex = ['''\A(?:[^\n]*\n){22}\z''', '''\n  ┃
+  ┃  △ Permission required
+  ┃    # Shell command
+  ┃
+  ┃  \$ [^\r\n]{1,80}
+  ┃
+  ┃
+  ┃   Allow once   Allow always   Reject
+  ┃
+  ┃  ctrl\+f fullscreen  ⇆ select  enter
+  ┃
+\z''']
+
+# Real integration-storage.json: native question UI, synthetic provider.
+[[rules]]
+id = 'opencode-1.18.29-question'
+state = 'blocked'
+priority = 900
+visible_blocker = true
+region = 'whole'
+contains = ['     → Asked 1 question']
+regex = ['''\A(?:[^\n]*\n){22}\z''', '''\n  ┃  [1-9]\. Type your own answer
+  ┃
+  ┃  ↑↓       enter       esc
+  ┃  select   submit      dismiss
+  ┃
+\z''']

@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "captured_at": "2026-09-07T08:57:02.705082+00:00",
+  "agent_version": "1.18.29",
+  "fux_binary_sha256": "eefa921d22e0cc739dc8d19579dd62199bb380a79389487ae9ebd05382c6ff8a",
+  "binary_sha256": "2f24593f1b8e578d0b7ed7ca399440d4b6c125330eece20a69ad8d380190d669",
+  "platform": "Darwin",
+  "argv": [
+    "opencode"
+  ],
+  "input_sent": false,
+  "isolation": "Fresh HOME, XDG directories, CODEX_HOME and CLAUDE_CONFIG_DIR; environment allowlist.",
+  "limitation": "Startup only. No authenticated request, working, completion, exit or resize coverage.",
+  "redactions": {
+    "temporary_directory": "<CAPTURE_ROOT>"
+  },
+  "captures": [
+    {
+      "elapsed_ms": 0,
+      "capture": {
+        "input_sequence": 0,
+        "text": "",
+        "revision": 1,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 9,
+      "last_elapsed_ms": 843,
+      "last_revision": 4
+    },
+    {
+      "elapsed_ms": 955,
+      "capture": {
+        "input_sequence": 0,
+        "text": "                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                ",
+        "revision": 19,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 21,
+      "last_elapsed_ms": 3142,
+      "last_revision": 22
+    },
+    {
+      "elapsed_ms": 3251,
+      "capture": {
+        "input_sequence": 0,
+        "text": "                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                ",
+        "revision": 26,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "OpenCode",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 1,
+      "last_elapsed_ms": 3251,
+      "last_revision": 26
+    },
+    {
+      "elapsed_ms": 3355,
+      "capture": {
+        "input_sequence": 0,
+        "text": "                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                      ▄                         \n                     █▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█                    \n                     █  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀                    \n                     ▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀                    \n                                                                                \n                                                                                \n   ┃                                                                            \n   ┃  Ask anything… \"Fix broken tests\"                                          \n   ┃                                                                            \n   ┃  Build · Big Pickle OpenCode Zen                                           \n   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  \n                                                   tab agents  ctrl+p commands  \n                                                                                \n                                                                                \n                                                                                \n            ● Tip Run /connect to add an AI provider and start coding           \n                                                                                \n  /private<CAPTURE_ROOT>                                             1.18.29  \n                                                                                ",
+        "revision": 29,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "OpenCode",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 25,
+      "last_elapsed_ms": 5991,
+      "last_revision": 29
+    }
+  ]
+}

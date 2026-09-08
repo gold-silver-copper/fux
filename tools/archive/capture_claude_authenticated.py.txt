@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""Bounded real Claude response capture using an authorized exported Anthropic key.
+
+Uses a fresh HOME/config/work directory, bare mode with all tools disabled,
+and one short prompt. Never run in unattended CI: this consumes account usage.
+The output is viewport evidence, not proof of task completion or native binding.
+"""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import time
+
+from capture_startup import rpc
+from capture_opencode_events import sha256
+
+PROMPT = 'Reply with exactly FUX_CLAUDE_OBSERVATION_OK. Do not use tools.'
+
+
+def redact(value, root):
+    if isinstance(value, str):
+        value = re.sub(r'(?m)ANTHROPIC_API_KEY: [^\n]*', 'ANTHROPIC_API_KEY: <API_KEY_REDACTED>', value)
+        value = value.replace(str(root.resolve()), '<CAPTURE_ROOT>').replace(str(root), '<CAPTURE_ROOT>')
+        return re.sub(r'[\w.+-]+@[\w.-]+', '<EMAIL>', value)
+    if isinstance(value, dict):
+        return {key: redact(item, root) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact(item, root) for item in value]
+    return value
+
+
+def validate(value):
+    assert value['provider'] == 'real authenticated Anthropic; no synthetic provider'
+    assert value['server_exit'] == 0 and not value.get('forced_server_cleanup')
+    assert not value.get('failure')
+    assert value['exit_trigger'] == 'Claude /exit'
+    assert [item['keys'] for item in value['inputs']] == ['\r', '\x1b[A', '\r', '\r', '\x1b[B', '\r', '/exit', '\r']
+    final = value['final']
+    assert final['pane'] == value['pane'] and final['command'] == value['argv']
+    assert final['exit_status'] == 0 and final['input_sequence'] == 8
+    captures = value['captures']
+    assert 0 < len(captures) <= 600
+    assert all(item['capture']['rows'] == 23 and item['capture']['columns'] == 80 for item in captures)
+    assert any('esc to interrupt' in item['capture']['text'] for item in captures)
+    last = captures[-1]['capture']['text']
+    assert '⏺ FUX_CLAUDE_OBSERVATION_OK' in last and 'esc to interrupt' not in last
+    assert '? for shortcuts' in last
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ['fux', 'agent', 'output']:
+        parser.add_argument('--'+name, type=Path, required=True)
+    parser.add_argument('--model', required=True)
+    args = parser.parse_args()
+    fux, agent = args.fux.resolve(strict=True), args.agent.absolute()
+    agent.resolve(strict=True)
+    key = os.environ['ANTHROPIC_API_KEY']
+    if len(key) < 16:
+        raise RuntimeError('missing usable exported Anthropic key')
+    args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    evidence = dict(schema=1, captured_at=datetime.now(timezone.utc).isoformat(),
+        agent_version='', binary_sha256=sha256(agent), fux_sha256=sha256(fux),
+        harness_sha256=sha256(Path(__file__)), model=args.model, prompt=PROMPT,
+        provider='real authenticated Anthropic; no synthetic provider',
+        isolation='Fresh HOME/XDG/CLAUDE_CONFIG_DIR/work; only authorized ANTHROPIC_API_KEY inherited; bare mode with all tools disabled.',
+        limitation='Passive viewport observations; no native prompt binding or verified task outcome.',
+        captures=[], inputs=[], exit_trigger='Claude /exit', final=None)
+    with tempfile.TemporaryDirectory(prefix='zcla-', dir='/tmp') as directory:
+        root = Path(directory)
+        for name in ['config/fux', 'claude', 'work', 'state', 'cache', 'data']:
+            (root/name).mkdir(parents=True)
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin', HOME=directory,
+            XDG_RUNTIME_DIR=directory, XDG_CONFIG_HOME=str(root/'config'),
+            XDG_STATE_HOME=str(root/'state'), XDG_DATA_HOME=str(root/'data'),
+            XDG_CACHE_HOME=str(root/'cache'), CLAUDE_CONFIG_DIR=str(root/'claude'), ANTHROPIC_API_KEY=key,
+            SHELL='/bin/sh', TERM='xterm-256color', LANG='en_US.UTF-8')
+        argv = [str(agent), '--bare', '--model', args.model, '--tools', '', '--', PROMPT]
+        evidence['argv'] = argv
+        evidence['agent_version'] = subprocess.run([str(agent), '--version'], env=env,
+            cwd=root/'work', capture_output=True, check=True, timeout=10).stdout.decode().strip()
+        (root/'config/fux/config.toml').write_text('default-command = { argv = '+json.dumps(argv)+' }\n')
+        process = subprocess.Popen([str(fux), 'serve'], env=env, cwd=root/'work',
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        control = root/'fux/default.sock'
+        pane = instance = None
+        started = time.monotonic()
+        failed = None
+        try:
+            while not control.exists():
+                if process.poll() is not None or time.monotonic()-started > 10:
+                    raise RuntimeError('fux startup failed')
+                time.sleep(.1)
+            listing = rpc(control, dict(id=1, command='list'))
+            instance = listing['instance']
+            pane = listing['workspaces'][0]['tabs'][0]['panes'][0]['id']
+            evidence.update(instance=instance, pane=pane)
+            def command(name, **fields):
+                return rpc(control, dict(id=1, command=name, instance=instance, **fields))
+            def submit(keys, purpose):
+                receipt = command('input-reserve', pane=pane)['receipt']
+                result = command('input-submit', operation=receipt['operation'], keys=keys)
+                evidence['inputs'].append(dict(purpose=purpose, keys=keys, result=result))
+            response_at = None
+            actions = set()
+            while time.monotonic()-started < 60:
+                capture = command('capture', pane=pane, max_bytes=131072)
+                text = capture['text']
+                if not evidence['captures'] or text != evidence['captures'][-1]['capture']['text']:
+                    evidence['captures'].append(dict(elapsed_ms=int((time.monotonic()-started)*1000), capture=capture))
+                choices = [
+                    ('theme', 'Choose the text style that looks best', ['\r']),
+                    ('key', 'Detected a custom API key in your environment', ['\x1b[A', '\r']),
+                    ('security', 'Security notes:', ['\r']),
+                    ('directory', 'Yes, I trust this folder', ['\x1b[B', '\r']),
+                ]
+                for purpose, marker, keys in choices:
+                    if marker in text and purpose not in actions:
+                        time.sleep(.5)
+                        for item in keys:
+                            submit(item, purpose)
+                            time.sleep(.3)
+                        actions.add(purpose)
+                if '⏺ FUX_CLAUDE_OBSERVATION_OK' in text and 'esc to interrupt' not in text:
+                    if response_at is None:
+                        response_at = time.monotonic()
+                    if time.monotonic()-response_at > 2:
+                        break
+                time.sleep(.1)
+            else:
+                raise TimeoutError('no observed response within 60 seconds')
+            submit('/exit', 'type Claude exit command')
+            # Type the command and Enter separately to avoid paste coalescing.
+            time.sleep(.5)
+            submit('\r', 'submit Claude exit command')
+            deadline = time.monotonic()+10
+            while time.monotonic() < deadline:
+                result = subprocess.run([str(fux), 'final', '--instance', instance, str(pane)],
+                    env=env, cwd=root/'work', capture_output=True, timeout=3)
+                if result.returncode == 0:
+                    evidence['final'] = json.loads(result.stdout)['result']['value']['record']
+                    evidence.pop('final_problem', None)
+                    break
+                try:
+                    evidence['after_quit'] = command('capture', pane=pane, max_bytes=131072)
+                except (OSError, ValueError, EOFError):
+                    pass
+                evidence['final_problem'] = (result.stdout+result.stderr).decode(errors='replace')[:1024]
+                time.sleep(.1)
+            if evidence['final'] is None:
+                raise TimeoutError('natural exit final record missing')
+        except Exception as error:
+            failed = type(error).__name__
+            evidence['failure'] = failed
+        finally:
+            if evidence['final'] is None and pane is not None and process.poll() is None:
+                try:
+                    rpc(control, dict(id=1, command='kill', instance=instance, pane=pane))
+                except (OSError, ValueError, EOFError):
+                    pass
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+                evidence['forced_server_cleanup'] = True
+                failed = 'CleanupTimeout'
+            evidence['server_exit'] = process.returncode
+            if process.returncode != 0:
+                failed = 'ServerExit'
+            sanitized = redact(evidence, root)
+            encoded = json.dumps(sanitized, indent=2, ensure_ascii=False)
+            if any(secret in encoded for secret in [key, key[-16:], key[-8:]]):
+                raise RuntimeError('credential material detected; refusing publication')
+            if not failed:
+                try:
+                    validate(evidence)
+                except (AssertionError, KeyError):
+                    failed = 'EvidenceValidation'
+            destination = args.output/('diagnostic.json' if failed else 'authenticated.json')
+            destination.write_text(encoded+'\n')
+        if failed:
+            raise RuntimeError(f'{failed}; sanitized diagnostic retained')
+    print(destination)
+
+
+if __name__ == '__main__':
+    main()

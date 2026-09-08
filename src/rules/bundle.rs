@@ -15,15 +15,98 @@ pub const MAX_RULE_FILE_BYTES: usize = 1024 * 1024;
 pub const MAX_FIXTURE_BYTES: usize = 4 * 1024 * 1024;
 
 pub fn load_all(extra: &[PathBuf]) -> Result<Vec<RuleSet>> {
+    load_from(
+        config_root(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
+        )
+        .as_deref(),
+        extra,
+    )
+}
+
+fn config_root(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    xdg.map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            home.map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|home| home.join(".config"))
+        })
+}
+
+fn load_from(config: Option<&Path>, extra: &[PathBuf]) -> Result<Vec<RuleSet>> {
     let mut sets = BTreeMap::new();
+    let set = load(
+        Path::new("codex.toml"),
+        include_str!("../../rules/codex.toml"),
+    )?;
+    sets.insert(set.id.clone(), set);
+    let set = load(
+        Path::new("claude.toml"),
+        include_str!("../../rules/claude.toml"),
+    )?;
+    sets.insert(set.id.clone(), set);
+    let set = load(
+        Path::new("opencode.toml"),
+        include_str!("../../rules/opencode.toml"),
+    )?;
+    sets.insert(set.id.clone(), set);
     let mut files = 0usize;
-    if let Some(root) = std::env::var_os("XDG_CONFIG_HOME") {
-        load_dir(&Path::new(&root).join("zor/rules"), &mut sets, &mut files)?;
+    if let Some(root) = config {
+        load_dir(&root.join("zor/rules"), &mut sets, &mut files)?;
     }
     for directory in extra {
         load_dir(directory, &mut sets, &mut files)?;
     }
     Ok(sets.into_values().collect())
+}
+
+/// A reload either replaces the complete validated collection or leaves the old one intact.
+pub struct Catalog {
+    sets: Vec<RuleSet>,
+    generation: u64,
+}
+
+impl Catalog {
+    pub fn load(extra: &[PathBuf]) -> Result<Self> {
+        Ok(Self {
+            sets: load_all(extra)?,
+            generation: 1,
+        })
+    }
+
+    pub fn sets(&self) -> &[RuleSet] {
+        &self.sets
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn reload(&mut self, extra: &[PathBuf]) -> Result<()> {
+        self.reload_from(
+            config_root(
+                std::env::var_os("XDG_CONFIG_HOME"),
+                std::env::var_os("HOME"),
+            )
+            .as_deref(),
+            extra,
+        )
+    }
+
+    fn reload_from(&mut self, config: Option<&Path>, extra: &[PathBuf]) -> Result<()> {
+        let next = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("rule generation exhausted"))?;
+        let candidate = load_from(config, extra)?;
+        self.sets = candidate;
+        self.generation = next;
+        Ok(())
+    }
 }
 fn load_dir(
     directory: &Path,
@@ -82,6 +165,130 @@ pub fn read_bounded_utf8(path: &Path, limit: usize) -> Result<String> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_rules_load_without_configuration_and_allow_replacement() {
+        let sets = load_from(None, &[]).expect("bundled rules");
+        let codex = sets.iter().find(|set| set.id == "codex").expect("codex");
+        assert_eq!(codex.rules.len(), 5);
+        let claude = sets.iter().find(|set| set.id == "claude").expect("claude");
+        assert_eq!(claude.rules.len(), 3);
+        assert_eq!(claude.process_names, vec!["claude"]);
+        let opencode = sets
+            .iter()
+            .find(|set| set.id == "opencode")
+            .expect("opencode");
+        assert_eq!(opencode.rules.len(), 3);
+        assert_eq!(opencode.process_names, vec!["opencode"]);
+
+        let root = std::env::temp_dir().join(format!("zor-bundle-override-{}", std::process::id()));
+        std::fs::create_dir(&root).expect("private directory");
+        std::fs::write(root.join("codex.toml"), "id='codex'\nrules=[]").expect("override");
+        let sets = load_from(None, std::slice::from_ref(&root)).expect("replacement");
+        assert!(
+            sets.iter()
+                .find(|set| set.id == "codex")
+                .expect("codex")
+                .rules
+                .is_empty()
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn inherited_process_names_and_agent_ids_are_validated() {
+        let aliases: Vec<_> = (0..64).map(|n| format!("alias{n}")).collect();
+        let source = format!(
+            "id='fixture'\naliases={}\nrules=[]",
+            serde_json::to_string(&aliases).expect("aliases")
+        );
+        assert!(load(Path::new("fixture.toml"), &source).is_err());
+        let aliases: Vec<_> = aliases.into_iter().take(63).collect();
+        let source = format!(
+            "id='fixture'\naliases={}\nrules=[]",
+            serde_json::to_string(&aliases).expect("aliases")
+        );
+        assert_eq!(
+            load(Path::new("fixture.toml"), &source)
+                .expect("bounded inherited names")
+                .process_names
+                .len(),
+            64
+        );
+        assert!(load(Path::new("fixture.toml"), "id='invalid agent'\nrules=[]").is_err());
+    }
+
+    #[test]
+    fn standard_config_fallback_ignores_relative_xdg_paths() {
+        let home = Some(std::ffi::OsString::from("/example/home"));
+        assert_eq!(
+            config_root(None, home.clone()),
+            Some(PathBuf::from("/example/home/.config"))
+        );
+        assert_eq!(
+            config_root(Some("relative".into()), home.clone()),
+            Some(PathBuf::from("/example/home/.config"))
+        );
+        assert_eq!(
+            config_root(Some("/custom".into()), home),
+            Some(PathBuf::from("/custom"))
+        );
+        assert_eq!(config_root(Some("relative".into()), None), None);
+    }
+
+    #[test]
+    fn overrides_are_ordered_and_failed_reload_preserves_the_entire_catalog() {
+        let root = std::env::temp_dir().join(format!("zor-atomic-rules-{}", std::process::id()));
+        std::fs::create_dir(&root).expect("private test directory");
+        let config = root.join("config");
+        let defaults = config.join("zor/rules");
+        let overrides = root.join("override");
+        std::fs::create_dir_all(&defaults).expect("defaults");
+        std::fs::create_dir(&overrides).expect("overrides");
+        let rule = |name: &str| format!("id='fixture'\nprocess_names=['{name}']\nrules=[]\n");
+        std::fs::write(defaults.join("a.toml"), rule("default")).expect("default rule");
+        std::fs::write(overrides.join("a.toml"), rule("first")).expect("first override");
+        std::fs::write(overrides.join("z.toml"), rule("last")).expect("last override");
+        let extra = vec![overrides.clone()];
+        let mut catalog = Catalog {
+            sets: load_from(Some(&config), &extra).expect("load"),
+            generation: 1,
+        };
+        assert_eq!(
+            catalog
+                .sets()
+                .iter()
+                .find(|set| set.id == "fixture")
+                .expect("set")
+                .process_names,
+            vec!["last"]
+        );
+        std::fs::write(overrides.join("z.toml"), "malformed[").expect("broken update");
+        assert!(catalog.reload_from(Some(&config), &extra).is_err());
+        assert_eq!(catalog.generation(), 1);
+        assert_eq!(
+            catalog
+                .sets()
+                .iter()
+                .find(|set| set.id == "fixture")
+                .expect("retained set")
+                .process_names,
+            vec!["last"]
+        );
+        std::fs::write(overrides.join("z.toml"), rule("reloaded")).expect("valid update");
+        catalog.reload_from(Some(&config), &extra).expect("reload");
+        assert_eq!(catalog.generation(), 2);
+        assert_eq!(
+            catalog
+                .sets()
+                .iter()
+                .find(|set| set.id == "fixture")
+                .expect("new set")
+                .process_names,
+            vec!["reloaded"]
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
 
     #[test]
     fn bounded_reader_rejects_oversized_input() {

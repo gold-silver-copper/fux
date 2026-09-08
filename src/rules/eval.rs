@@ -46,7 +46,7 @@ pub fn evaluate(set: &RuleSet, view: &impl ScreenView) -> Verdict {
         };
     }
     Verdict {
-        state: RuleState::Idle,
+        state: RuleState::Unknown,
         visible: Flags::default(),
         rule: None,
         region: Region::Whole,
