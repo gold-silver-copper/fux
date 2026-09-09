@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Real signed-out Codex startup and pane-loss observation; no prompt or credentials."""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import time
+
+import prompt_boundary as common
+import resources
+
+ROOT=resources.ROOT
+
+
+def run_case(backend,binaries):
+    with tempfile.TemporaryDirectory(prefix='freshness-',dir='/tmp') as directory:
+        root=Path(directory);config=root/'config';(root/'codex').mkdir()
+        env=dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin',HOME=directory,
+            XDG_CONFIG_HOME=str(config),XDG_STATE_HOME=str(root/'state'),XDG_CACHE_HOME=str(root/'cache'),
+            XDG_RUNTIME_DIR=directory,CODEX_HOME=str(root/'codex'),SHELL='/bin/sh',TERM='xterm-256color',LANG='en_US.UTF-8')
+        owners={};samples=[];agent_pid=None
+        with (root/'owners.log').open('w+') as log:
+            def start(name,*args):
+                owners[name]=subprocess.Popen([str(binaries[name]),*args],env=env,cwd=root,
+                    stdin=subprocess.DEVNULL,stdout=log,stderr=log)
+            def cli(name,*args):
+                value=subprocess.run([str(binaries[name]),*args],env=env,cwd=root,capture_output=True,text=True,timeout=5)
+                assert value.returncode==0,value.stderr
+                return json.loads(value.stdout)
+            try:
+                if backend=='zor':
+                    path=config/'fux/config.toml';path.parent.mkdir(parents=True)
+                    path.write_text('default-command = { argv = '+json.dumps([str(binaries['codex'])])+' }\n')
+                    start('fux','serve');endpoint=root/'fux/default.sock';common.until(endpoint.exists)
+                    listing=common.rpc(endpoint,dict(id=1,command='list'),True)['result']['value']
+                    pane=listing['workspaces'][0]['tabs'][0]['panes'][0]['id']
+                    start('zor','serve');common.until(lambda:(root/'zor/control.sock').exists())
+                    def capture():return common.rpc(endpoint,dict(id=1,command='capture',pane=pane,max_bytes=131072),True)['result']['value']
+                    def observe():return cli('zor','status')['snapshot']
+                    def agent(value):return next((r for r in value['observations'] if r['handle']['pane']==pane),None)
+                    def state(value):return value.get('state') if value else None
+                    def close():
+                        reply=common.rpc(endpoint,dict(id=1,command='kill',pane=pane),True)
+                        assert reply['status']=='completed',reply
+                else:
+                    for name in ['herdr','herdr-dev']:
+                        path=config/name/'config.toml';path.parent.mkdir(parents=True)
+                        path.write_text('onboarding = false\n[terminal]\ndefault_shell = '+json.dumps(str(binaries['codex']))+
+                            '\nshell_mode = "non_login"\n[update]\nversion_check = false\nmanifest_check = false\n')
+                    start('herdr','server');endpoint=common.until(lambda:next(iter(config.glob('herdr*/herdr.sock')),None))
+                    def call(method,**params):
+                        value=common.rpc(endpoint,dict(id='freshness',method=method,params=params))
+                        assert 'error' not in value,value
+                        return value['result']
+                    pane=call('workspace.create',cwd=directory,focus=True)['root_pane']['pane_id']
+                    def capture():return call('pane.read',pane_id=pane,source='visible',strip_ansi=True)
+                    def observe():return call('agent.list')
+                    def agent(value):return next((r for r in value['agents'] if r['pane_id']==pane),None)
+                    def state(value):return value.get('agent_status') if value else None
+                    def close():return call('pane.close',pane_id=pane)
+                # Establish a real visible blocker independently of controller classification.
+                visible=common.until(lambda: (value if 'Sign in with ChatGPT' in json.dumps(value:=capture()) and 'Press enter to continue' in json.dumps(value) else None),seconds=12)
+                started=time.monotonic();first_blocked=None
+                while time.monotonic()-started<3:
+                    value=observe();row=agent(value);elapsed=(time.monotonic()-started)*1000
+                    samples.append(dict(elapsed_ms=elapsed,observation=value,state=state(row)))
+                    if state(row)=='blocked' and first_blocked is None:first_blocked=elapsed
+                    if backend=='zor' and row:agent_pid=row.get('detected_pid')
+                    time.sleep(.05)
+                assert any(sample['state'] is not None for sample in samples),'agent never discovered'
+                final_capture=capture()
+                assert 'Sign in with ChatGPT' in json.dumps(final_capture) and 'Press enter to continue' in json.dumps(final_capture)
+                if backend=='herdr':
+                    process_info=call('pane.process_info',pane_id=pane)['process_info']
+                    agent_pid=process_info['shell_pid']
+                assert agent_pid and agent_pid>1
+                close_started=time.monotonic();close()
+                removed=common.until(lambda: (value if agent(value:=observe()) is None else None))
+                removed_ms=(time.monotonic()-close_started)*1000
+                result=dict(backend=backend,expected='blocked',visible_capture=visible,samples=samples,
+                    first_blocked_ms=first_blocked,observation_window_ms=(close_started-started)*1000,
+                    close_to_absence_ms=removed_ms,after_close=removed,prompt_input_sent=False,
+                    final_capture=final_capture,agent_pid=agent_pid)
+            finally:
+                try:
+                    if 'zor' in owners and owners['zor'].poll() is None:cli('zor','shutdown')
+                finally:
+                    errors=[]
+                    for name,process in reversed(list(owners.items())):
+                        if process.poll() is None and name!='zor':process.terminate()
+                        try:process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            process.kill();process.wait(timeout=5);errors.append('forced '+name)
+                        if process.returncode!=0:errors.append((name,process.returncode))
+                    assert not errors,errors
+                if agent_pid:
+                    def gone():
+                        try:os.kill(agent_pid,0)
+                        except ProcessLookupError:return True
+                        return False
+                    common.until(gone)
+            result['owners_exit']={name:p.returncode for name,p in owners.items()}
+            result['agent_pid_exit_checked']=agent_pid is not None
+            return json.loads(json.dumps(result).replace(str(root.resolve()),'<RUN_ROOT>').replace(directory,'<RUN_ROOT>'))
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    for name in ['fux','zor','herdr','codex','herdr-provenance','output']:parser.add_argument('--'+name,type=Path,required=True)
+    parser.add_argument('--repetitions',type=int,default=3)
+    args=parser.parse_args();assert 1<=args.repetitions<=3 and not args.output.exists()
+    binaries={name:getattr(args,name).absolute() for name in ['fux','zor','herdr','codex']}
+    provenance=dict(binaries={name:dict(path=str(path),sha256=resources.digest(path)) for name,path in binaries.items()},
+        sources={str(p.relative_to(ROOT)):resources.digest(p) for p in [Path(__file__).resolve(),ROOT/'zor/src/watch.rs',ROOT/'zor/rules/codex.toml']},
+        herdr_build=json.loads(args.herdr_provenance.read_text()))
+    assert provenance['herdr_build']['binary_sha256']==provenance['binaries']['herdr']['sha256']
+    results=[]
+    for repetition in range(1,args.repetitions+1):
+        for backend in ['zor','herdr']:
+            row=run_case(backend,binaries);row['repetition']=repetition;results.append(row)
+            print(backend,repetition,'passed',flush=True)
+    args.output.write_text(json.dumps(dict(recorded_at=datetime.now(timezone.utc).isoformat(),provenance=provenance,results=results),indent=2)+'\n')
+
+
+if __name__=='__main__':main()

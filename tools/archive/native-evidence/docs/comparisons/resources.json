@@ -1,0 +1,3541 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-09-07T18:53:11.451275+00:00",
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "provenance": {
+    "binaries": {
+      "fux": {
+        "path": "/Users/kisaczka/Desktop/code/fux/target/debug/fux",
+        "sha256": "140303622814c8089252f20de6c9847487dcda5f1ef03906bfba45d6b60f62cb"
+      },
+      "zor": {
+        "path": "/Users/kisaczka/Desktop/code/fux/zor/target/debug/zor",
+        "sha256": "87c7b7a2df086df566523fd5f009f234817d3296795cecca0d3f9e9736655b3a"
+      },
+      "herdr": {
+        "path": "/Users/kisaczka/Desktop/code/fux/target/herdr-reference/build/debug/herdr",
+        "sha256": "fd13162540e986e9e8f2a651bbd08319d53a05adda3200659995729cd57a5a75"
+      }
+    },
+    "sources": {
+      "tools/comparisons/resources.py": "ea33ab75e5770f2234f02652e1bfea42f5c05a064adc2e943b8a72242d0c7209",
+      "tools/comparisons/resource_sampler.c": "f9fd441eef48829761b9ecb9019db88777f9b9c8df04b7b7e71c875e313b77e7",
+      "tools/comparisons/prompt_boundary.py": "3a29778f9717501d45edf8968e28e7124f913eb3df0d5e6d2c794eef057a2d89",
+      "zor/src/watch.rs": "f5de31720c0db955096b8a243e94bc48a481fda5f7e183ac94f3f70d43795c44",
+      "zor/src/service.rs": "363746ff787f56e7d3f33221a385857da972f49876e52c3b0567914ab6ea26ed",
+      "src/ecs/systems/output.rs": "466089d1672093a4db561cabf22bf94be39f16e63d05daae9de863bf3e45b4cb"
+    },
+    "herdr_build": {
+      "reference_commit": "94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0",
+      "tracked_source_files_verified": 2452,
+      "binary_sha256": "fd13162540e986e9e8f2a651bbd08319d53a05adda3200659995729cd57a5a75",
+      "source_archive_sha256": "c354a6d37564bdf2c6550e4a1201ed410c4ff90245a461c411e793c6bbcd2cfa",
+      "zig_archive_sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+      "build_log_sha256": "340f40258699514aa11a7962d47b81834ea9949f4c38c1b9264c5c989caaeb9e",
+      "rust_toolchain": "1.95.0",
+      "zig_version": "0.15.2",
+      "build_command": "cargo +1.95.0 build --manifest-path target/herdr-reference/source/Cargo.toml --locked --bin herdr"
+    }
+  },
+  "calibration": {
+    "clock_cpu_ns": 200010000,
+    "converted_cpu_ns": 200006667,
+    "ratio": 0.999983,
+    "timebase_numer": 125,
+    "timebase_denom": 3
+  },
+  "results": [
+    {
+      "backend": "zor",
+      "panes": 1,
+      "idle": {
+        "wall_ms": 3019.2308749828953,
+        "components": {
+          "fux": {
+            "cpu_ms": 1.41175,
+            "rss_bytes": 11730944,
+            "footprint_bytes": 2752848
+          },
+          "zor": {
+            "cpu_ms": 3.4363333333333337,
+            "rss_bytes": 32702464,
+            "footprint_bytes": 24723888
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1015.0547089870088,
+        "components": {
+          "fux": {
+            "cpu_ms": 10.837625,
+            "rss_bytes": 12648448,
+            "footprint_bytes": 3653968
+          },
+          "zor": {
+            "cpu_ms": 4.474708333333333,
+            "rss_bytes": 32800768,
+            "footprint_bytes": 24805808
+          }
+        }
+      },
+      "burst_all_visible_ms": 7.562166982097551,
+      "harness_capture_reads": 1,
+      "initial_captures": [
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161831.140518291,
+          "components": {
+            "fux": {
+              "pid": 32481,
+              "rss_bytes": 11714560,
+              "footprint_bytes": 2736464,
+              "user_ticks": 197288,
+              "system_ticks": 137403,
+              "start_abstime": 3883911200374,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 32483,
+              "rss_bytes": 32653312,
+              "footprint_bytes": 24707504,
+              "user_ticks": 7568836,
+              "system_ticks": 808918,
+              "start_abstime": 3883912050948,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161834.159749166,
+          "components": {
+            "fux": {
+              "pid": 32481,
+              "rss_bytes": 11730944,
+              "footprint_bytes": 2752848,
+              "user_ticks": 226175,
+              "system_ticks": 142398,
+              "start_abstime": 3883911200374,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 32483,
+              "rss_bytes": 32702464,
+              "footprint_bytes": 24723888,
+              "user_ticks": 7607479,
+              "system_ticks": 852747,
+              "start_abstime": 3883912050948,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161834.167288916,
+          "components": {
+            "fux": {
+              "pid": 32481,
+              "rss_bytes": 11730944,
+              "footprint_bytes": 2752848,
+              "user_ticks": 226175,
+              "system_ticks": 142398,
+              "start_abstime": 3883911200374,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 32483,
+              "rss_bytes": 32702464,
+              "footprint_bytes": 24723888,
+              "user_ticks": 7607479,
+              "system_ticks": 852747,
+              "start_abstime": 3883912050948,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161835.182343625,
+          "components": {
+            "fux": {
+              "pid": 32481,
+              "rss_bytes": 12648448,
+              "footprint_bytes": 3653968,
+              "user_ticks": 442951,
+              "system_ticks": 185725,
+              "start_abstime": 3883911200374,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 32483,
+              "rss_bytes": 32800768,
+              "footprint_bytes": 24805808,
+              "user_ticks": 7677909,
+              "system_ticks": 889710,
+              "start_abstime": 3883912050948,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          80,
+          23
+        ]
+      ],
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "backend": "herdr",
+      "panes": 1,
+      "idle": {
+        "wall_ms": 3013.8437499990687,
+        "components": {
+          "herdr": {
+            "cpu_ms": 4.32325,
+            "rss_bytes": 33685504,
+            "footprint_bytes": 9748984
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1165.6064999988303,
+        "components": {
+          "herdr": {
+            "cpu_ms": 10.654958333333333,
+            "rss_bytes": 34177024,
+            "footprint_bytes": 10043896
+          }
+        }
+      },
+      "burst_all_visible_ms": 155.6292500172276,
+      "harness_capture_reads": 2,
+      "initial_captures": [
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161838.592649541,
+          "components": {
+            "herdr": {
+              "pid": 32637,
+              "rss_bytes": 33603584,
+              "footprint_bytes": 9732600,
+              "user_ticks": 4965291,
+              "system_ticks": 681956,
+              "start_abstime": 3884080380635,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161841.606493291,
+          "components": {
+            "herdr": {
+              "pid": 32637,
+              "rss_bytes": 33685504,
+              "footprint_bytes": 9748984,
+              "user_ticks": 5048049,
+              "system_ticks": 702956,
+              "start_abstime": 3884080380635,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161841.610885125,
+          "components": {
+            "herdr": {
+              "pid": 32637,
+              "rss_bytes": 33685504,
+              "footprint_bytes": 9748984,
+              "user_ticks": 5048049,
+              "system_ticks": 702956,
+              "start_abstime": 3884080380635,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161842.776491625,
+          "components": {
+            "herdr": {
+              "pid": 32637,
+              "rss_bytes": 34177024,
+              "footprint_bytes": 10043896,
+              "user_ticks": 5253400,
+              "system_ticks": 753324,
+              "start_abstime": 3884080380635,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          120,
+          40
+        ]
+      ],
+      "owners_exit": {
+        "herdr": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "backend": "zor",
+      "panes": 4,
+      "idle": {
+        "wall_ms": 3007.2170000057667,
+        "components": {
+          "fux": {
+            "cpu_ms": 2.8004583333333333,
+            "rss_bytes": 12795904,
+            "footprint_bytes": 3834240
+          },
+          "zor": {
+            "cpu_ms": 3.53925,
+            "rss_bytes": 32817152,
+            "footprint_bytes": 24773040
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1036.5837079880293,
+        "components": {
+          "fux": {
+            "cpu_ms": 36.455416666666665,
+            "rss_bytes": 15761408,
+            "footprint_bytes": 6783360
+          },
+          "zor": {
+            "cpu_ms": 11.428,
+            "rss_bytes": 32915456,
+            "footprint_bytes": 24854960
+          }
+        }
+      },
+      "burst_all_visible_ms": 28.475500002969056,
+      "harness_capture_reads": 4,
+      "initial_captures": [
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161844.5095325,
+          "components": {
+            "fux": {
+              "pid": 32776,
+              "rss_bytes": 12779520,
+              "footprint_bytes": 3817856,
+              "user_ticks": 415342,
+              "system_ticks": 327436,
+              "start_abstime": 3884229948953,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 32784,
+              "rss_bytes": 32768000,
+              "footprint_bytes": 24740272,
+              "user_ticks": 7583621,
+              "system_ticks": 817322,
+              "start_abstime": 3884232226063,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161847.5167495,
+          "components": {
+            "fux": {
+              "pid": 32776,
+              "rss_bytes": 12795904,
+              "footprint_bytes": 3834240,
+              "user_ticks": 471031,
+              "system_ticks": 338958,
+              "start_abstime": 3884229948953,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 32784,
+              "rss_bytes": 32817152,
+              "footprint_bytes": 24773040,
+              "user_ticks": 7627126,
+              "system_ticks": 858759,
+              "start_abstime": 3884232226063,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161847.523671208,
+          "components": {
+            "fux": {
+              "pid": 32776,
+              "rss_bytes": 12795904,
+              "footprint_bytes": 3834240,
+              "user_ticks": 471031,
+              "system_ticks": 338958,
+              "start_abstime": 3884229948953,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 32784,
+              "rss_bytes": 32817152,
+              "footprint_bytes": 24773040,
+              "user_ticks": 7627126,
+              "system_ticks": 858759,
+              "start_abstime": 3884232226063,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161848.560254916,
+          "components": {
+            "fux": {
+              "pid": 32776,
+              "rss_bytes": 15761408,
+              "footprint_bytes": 6783360,
+              "user_ticks": 1228762,
+              "system_ticks": 456157,
+              "start_abstime": 3884229948953,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 32784,
+              "rss_bytes": 32915456,
+              "footprint_bytes": 24854960,
+              "user_ticks": 7833150,
+              "system_ticks": 927007,
+              "start_abstime": 3884232226063,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ]
+      ],
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "backend": "herdr",
+      "panes": 4,
+      "idle": {
+        "wall_ms": 3004.4571659818757,
+        "components": {
+          "herdr": {
+            "cpu_ms": 9.874291666666666,
+            "rss_bytes": 35143680,
+            "footprint_bytes": 11223568
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1420.1336249825545,
+        "components": {
+          "herdr": {
+            "cpu_ms": 29.86520833333333,
+            "rss_bytes": 36339712,
+            "footprint_bytes": 12222992
+          }
+        }
+      },
+      "burst_all_visible_ms": 412.22925001056865,
+      "harness_capture_reads": 4,
+      "initial_captures": [
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w2:p1",
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w3:p1",
+            "workspace_id": "w3",
+            "tab_id": "w3:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w4:p1",
+            "workspace_id": "w4",
+            "tab_id": "w4:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161852.226560375,
+          "components": {
+            "herdr": {
+              "pid": 32936,
+              "rss_bytes": 35028992,
+              "footprint_bytes": 11174416,
+              "user_ticks": 5257730,
+              "system_ticks": 922924,
+              "start_abstime": 3884401445971,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161855.231017541,
+          "components": {
+            "herdr": {
+              "pid": 32936,
+              "rss_bytes": 35143680,
+              "footprint_bytes": 11223568,
+              "user_ticks": 5451251,
+              "system_ticks": 966386,
+              "start_abstime": 3884401445971,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161855.235028791,
+          "components": {
+            "herdr": {
+              "pid": 32936,
+              "rss_bytes": 35143680,
+              "footprint_bytes": 11223568,
+              "user_ticks": 5451251,
+              "system_ticks": 966386,
+              "start_abstime": 3884401445971,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161856.655162416,
+          "components": {
+            "herdr": {
+              "pid": 32936,
+              "rss_bytes": 36339712,
+              "footprint_bytes": 12222992,
+              "user_ticks": 6054963,
+              "system_ticks": 1079439,
+              "start_abstime": 3884401445971,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ]
+      ],
+      "owners_exit": {
+        "herdr": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "backend": "zor",
+      "panes": 8,
+      "idle": {
+        "wall_ms": 3015.569167007925,
+        "components": {
+          "fux": {
+            "cpu_ms": 4.722541666666667,
+            "rss_bytes": 13893632,
+            "footprint_bytes": 4931968
+          },
+          "zor": {
+            "cpu_ms": 5.294958333333333,
+            "rss_bytes": 35258368,
+            "footprint_bytes": 27197848
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1076.9668330030981,
+        "components": {
+          "fux": {
+            "cpu_ms": 75.92433333333332,
+            "rss_bytes": 19595264,
+            "footprint_bytes": 10633624
+          },
+          "zor": {
+            "cpu_ms": 21.14304166666667,
+            "rss_bytes": 35405824,
+            "footprint_bytes": 27328920
+          }
+        }
+      },
+      "burst_all_visible_ms": 61.83391599915922,
+      "harness_capture_reads": 8,
+      "initial_captures": [
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161858.522072333,
+          "components": {
+            "fux": {
+              "pid": 33092,
+              "rss_bytes": 13893632,
+              "footprint_bytes": 4931968,
+              "user_ticks": 748992,
+              "system_ticks": 577306,
+              "start_abstime": 3884564561832,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33109,
+              "rss_bytes": 35176448,
+              "footprint_bytes": 27132312,
+              "user_ticks": 7632257,
+              "system_ticks": 891881,
+              "start_abstime": 3884568570652,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161861.5376415,
+          "components": {
+            "fux": {
+              "pid": 33092,
+              "rss_bytes": 13893632,
+              "footprint_bytes": 4931968,
+              "user_ticks": 844638,
+              "system_ticks": 595001,
+              "start_abstime": 3884564561832,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33109,
+              "rss_bytes": 35258368,
+              "footprint_bytes": 27197848,
+              "user_ticks": 7693011,
+              "system_ticks": 958206,
+              "start_abstime": 3884568570652,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161861.545314875,
+          "components": {
+            "fux": {
+              "pid": 33092,
+              "rss_bytes": 13893632,
+              "footprint_bytes": 4931968,
+              "user_ticks": 844638,
+              "system_ticks": 595001,
+              "start_abstime": 3884564561832,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33109,
+              "rss_bytes": 35258368,
+              "footprint_bytes": 27197848,
+              "user_ticks": 7693011,
+              "system_ticks": 958206,
+              "start_abstime": 3884568570652,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161862.622281708,
+          "components": {
+            "fux": {
+              "pid": 33092,
+              "rss_bytes": 19595264,
+              "footprint_bytes": 10633624,
+              "user_ticks": 2420356,
+              "system_ticks": 841467,
+              "start_abstime": 3884564561832,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33109,
+              "rss_bytes": 35405824,
+              "footprint_bytes": 27328920,
+              "user_ticks": 8076873,
+              "system_ticks": 1081777,
+              "start_abstime": 3884568570652,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ]
+      ],
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "backend": "herdr",
+      "panes": 8,
+      "idle": {
+        "wall_ms": 3009.636041999329,
+        "components": {
+          "herdr": {
+            "cpu_ms": 16.469708333333333,
+            "rss_bytes": 37814272,
+            "footprint_bytes": 13894160
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1137.9304160072934,
+        "components": {
+          "herdr": {
+            "cpu_ms": 55.630625,
+            "rss_bytes": 39911424,
+            "footprint_bytes": 15794704
+          }
+        }
+      },
+      "burst_all_visible_ms": 123.1860000116285,
+      "harness_capture_reads": 8,
+      "initial_captures": [
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w2:p1",
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w3:p1",
+            "workspace_id": "w3",
+            "tab_id": "w3:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w4:p1",
+            "workspace_id": "w4",
+            "tab_id": "w4:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w5:p1",
+            "workspace_id": "w5",
+            "tab_id": "w5:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w6:p1",
+            "workspace_id": "w6",
+            "tab_id": "w6:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w7:p1",
+            "workspace_id": "w7",
+            "tab_id": "w7:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w8:p1",
+            "workspace_id": "w8",
+            "tab_id": "w8:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161866.268579708,
+          "components": {
+            "herdr": {
+              "pid": 33314,
+              "rss_bytes": 37634048,
+              "footprint_bytes": 13779472,
+              "user_ticks": 5675588,
+              "system_ticks": 1209096,
+              "start_abstime": 3884737273718,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161869.27821575,
+          "components": {
+            "herdr": {
+              "pid": 33314,
+              "rss_bytes": 37814272,
+              "footprint_bytes": 13894160,
+              "user_ticks": 5998522,
+              "system_ticks": 1281435,
+              "start_abstime": 3884737273718,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161869.281900625,
+          "components": {
+            "herdr": {
+              "pid": 33314,
+              "rss_bytes": 37814272,
+              "footprint_bytes": 13894160,
+              "user_ticks": 5998522,
+              "system_ticks": 1281435,
+              "start_abstime": 3884737273718,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161870.419831041,
+          "components": {
+            "herdr": {
+              "pid": 33314,
+              "rss_bytes": 39911424,
+              "footprint_bytes": 15794704,
+              "user_ticks": 7137657,
+              "system_ticks": 1477435,
+              "start_abstime": 3884737273718,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ]
+      ],
+      "owners_exit": {
+        "herdr": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "backend": "zor",
+      "panes": 1,
+      "idle": {
+        "wall_ms": 3011.6487089835573,
+        "components": {
+          "fux": {
+            "cpu_ms": 1.1588333333333332,
+            "rss_bytes": 11714560,
+            "footprint_bytes": 2736464
+          },
+          "zor": {
+            "cpu_ms": 2.8077083333333337,
+            "rss_bytes": 32309248,
+            "footprint_bytes": 24330672
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1017.8020409948658,
+        "components": {
+          "fux": {
+            "cpu_ms": 10.300541666666666,
+            "rss_bytes": 12632064,
+            "footprint_bytes": 3637584
+          },
+          "zor": {
+            "cpu_ms": 4.084416666666667,
+            "rss_bytes": 32407552,
+            "footprint_bytes": 24412592
+          }
+        }
+      },
+      "burst_all_visible_ms": 7.94912499259226,
+      "harness_capture_reads": 1,
+      "initial_captures": [
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161872.164677916,
+          "components": {
+            "fux": {
+              "pid": 33468,
+              "rss_bytes": 11681792,
+              "footprint_bytes": 2703696,
+              "user_ticks": 184876,
+              "system_ticks": 136902,
+              "start_abstime": 3884896066342,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33471,
+              "rss_bytes": 32260096,
+              "footprint_bytes": 24314288,
+              "user_ticks": 7359119,
+              "system_ticks": 684954,
+              "start_abstime": 3884897054734,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161875.176326625,
+          "components": {
+            "fux": {
+              "pid": 33468,
+              "rss_bytes": 11714560,
+              "footprint_bytes": 2736464,
+              "user_ticks": 207585,
+              "system_ticks": 142005,
+              "start_abstime": 3884896066342,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33471,
+              "rss_bytes": 32309248,
+              "footprint_bytes": 24330672,
+              "user_ticks": 7390640,
+              "system_ticks": 720818,
+              "start_abstime": 3884897054734,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161875.18392425,
+          "components": {
+            "fux": {
+              "pid": 33468,
+              "rss_bytes": 11714560,
+              "footprint_bytes": 2736464,
+              "user_ticks": 207585,
+              "system_ticks": 142005,
+              "start_abstime": 3884896066342,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33471,
+              "rss_bytes": 32325632,
+              "footprint_bytes": 24347056,
+              "user_ticks": 7391528,
+              "system_ticks": 721324,
+              "start_abstime": 3884897054734,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161876.201726291,
+          "components": {
+            "fux": {
+              "pid": 33468,
+              "rss_bytes": 12632064,
+              "footprint_bytes": 3637584,
+              "user_ticks": 416951,
+              "system_ticks": 179852,
+              "start_abstime": 3884896066342,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33471,
+              "rss_bytes": 32407552,
+              "footprint_bytes": 24412592,
+              "user_ticks": 7458655,
+              "system_ticks": 752223,
+              "start_abstime": 3884897054734,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          80,
+          23
+        ]
+      ],
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "backend": "herdr",
+      "panes": 1,
+      "idle": {
+        "wall_ms": 3013.5943749919534,
+        "components": {
+          "herdr": {
+            "cpu_ms": 4.551083333333333,
+            "rss_bytes": 33439744,
+            "footprint_bytes": 9503224
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1056.0085420147516,
+        "components": {
+          "herdr": {
+            "cpu_ms": 10.125875,
+            "rss_bytes": 33882112,
+            "footprint_bytes": 9748984
+          }
+        }
+      },
+      "burst_all_visible_ms": 44.88654198939912,
+      "harness_capture_reads": 2,
+      "initial_captures": [
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161879.44827975,
+          "components": {
+            "herdr": {
+              "pid": 33606,
+              "rss_bytes": 33357824,
+              "footprint_bytes": 9486840,
+              "user_ticks": 4950582,
+              "system_ticks": 730678,
+              "start_abstime": 3885062529699,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161882.461874125,
+          "components": {
+            "herdr": {
+              "pid": 33606,
+              "rss_bytes": 33439744,
+              "footprint_bytes": 9503224,
+              "user_ticks": 5041333,
+              "system_ticks": 749153,
+              "start_abstime": 3885062529699,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161882.465538291,
+          "components": {
+            "herdr": {
+              "pid": 33606,
+              "rss_bytes": 33439744,
+              "footprint_bytes": 9503224,
+              "user_ticks": 5041333,
+              "system_ticks": 749153,
+              "start_abstime": 3885062529699,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161883.521546833,
+          "components": {
+            "herdr": {
+              "pid": 33606,
+              "rss_bytes": 33882112,
+              "footprint_bytes": 9748984,
+              "user_ticks": 5238755,
+              "system_ticks": 794752,
+              "start_abstime": 3885062529699,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          120,
+          40
+        ]
+      ],
+      "owners_exit": {
+        "herdr": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "backend": "zor",
+      "panes": 4,
+      "idle": {
+        "wall_ms": 3013.1147089996375,
+        "components": {
+          "fux": {
+            "cpu_ms": 2.5365,
+            "rss_bytes": 12795904,
+            "footprint_bytes": 3834240
+          },
+          "zor": {
+            "cpu_ms": 3.519,
+            "rss_bytes": 32423936,
+            "footprint_bytes": 24379824
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1039.5511249953415,
+        "components": {
+          "fux": {
+            "cpu_ms": 36.04175,
+            "rss_bytes": 15712256,
+            "footprint_bytes": 6734208
+          },
+          "zor": {
+            "cpu_ms": 11.260875,
+            "rss_bytes": 32489472,
+            "footprint_bytes": 24428976
+          }
+        }
+      },
+      "burst_all_visible_ms": 30.97745799459517,
+      "harness_capture_reads": 4,
+      "initial_captures": [
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161885.180065041,
+          "components": {
+            "fux": {
+              "pid": 33713,
+              "rss_bytes": 12746752,
+              "footprint_bytes": 3785088,
+              "user_ticks": 426409,
+              "system_ticks": 355451,
+              "start_abstime": 3885206278818,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33732,
+              "rss_bytes": 32374784,
+              "footprint_bytes": 24347056,
+              "user_ticks": 7562333,
+              "system_ticks": 812458,
+              "start_abstime": 3885208700385,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161888.19317975,
+          "components": {
+            "fux": {
+              "pid": 33713,
+              "rss_bytes": 12795904,
+              "footprint_bytes": 3834240,
+              "user_ticks": 478590,
+              "system_ticks": 364146,
+              "start_abstime": 3885206278818,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33732,
+              "rss_bytes": 32423936,
+              "footprint_bytes": 24379824,
+              "user_ticks": 7604639,
+              "system_ticks": 854608,
+              "start_abstime": 3885208700385,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161888.200110625,
+          "components": {
+            "fux": {
+              "pid": 33713,
+              "rss_bytes": 12795904,
+              "footprint_bytes": 3834240,
+              "user_ticks": 478590,
+              "system_ticks": 364146,
+              "start_abstime": 3885206278818,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33732,
+              "rss_bytes": 32423936,
+              "footprint_bytes": 24379824,
+              "user_ticks": 7604639,
+              "system_ticks": 854608,
+              "start_abstime": 3885208700385,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161889.23966175,
+          "components": {
+            "fux": {
+              "pid": 33713,
+              "rss_bytes": 15712256,
+              "footprint_bytes": 6734208,
+              "user_ticks": 1226228,
+              "system_ticks": 481510,
+              "start_abstime": 3885206278818,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 33732,
+              "rss_bytes": 32489472,
+              "footprint_bytes": 24428976,
+              "user_ticks": 7805929,
+              "system_ticks": 923579,
+              "start_abstime": 3885208700385,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ]
+      ],
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "backend": "herdr",
+      "panes": 4,
+      "idle": {
+        "wall_ms": 3004.49220900191,
+        "components": {
+          "herdr": {
+            "cpu_ms": 10.904416666666666,
+            "rss_bytes": 35422208,
+            "footprint_bytes": 11502096
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1052.6467500021681,
+        "components": {
+          "herdr": {
+            "cpu_ms": 30.421333333333333,
+            "rss_bytes": 36503552,
+            "footprint_bytes": 12386832
+          }
+        }
+      },
+      "burst_all_visible_ms": 44.61099999025464,
+      "harness_capture_reads": 5,
+      "initial_captures": [
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w2:p1",
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w3:p1",
+            "workspace_id": "w3",
+            "tab_id": "w3:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w4:p1",
+            "workspace_id": "w4",
+            "tab_id": "w4:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161892.909992916,
+          "components": {
+            "herdr": {
+              "pid": 33941,
+              "rss_bytes": 35340288,
+              "footprint_bytes": 11485712,
+              "user_ticks": 5402516,
+              "system_ticks": 905962,
+              "start_abstime": 3885377197510,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161895.914485125,
+          "components": {
+            "herdr": {
+              "pid": 33941,
+              "rss_bytes": 35422208,
+              "footprint_bytes": 11502096,
+              "user_ticks": 5628229,
+              "system_ticks": 941955,
+              "start_abstime": 3885377197510,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161895.918235625,
+          "components": {
+            "herdr": {
+              "pid": 33941,
+              "rss_bytes": 35422208,
+              "footprint_bytes": 11502096,
+              "user_ticks": 5628229,
+              "system_ticks": 941955,
+              "start_abstime": 3885377197510,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161896.970882375,
+          "components": {
+            "herdr": {
+              "pid": 33941,
+              "rss_bytes": 36503552,
+              "footprint_bytes": 12386832,
+              "user_ticks": 6252995,
+              "system_ticks": 1047301,
+              "start_abstime": 3885377197510,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ]
+      ],
+      "owners_exit": {
+        "herdr": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "backend": "zor",
+      "panes": 8,
+      "idle": {
+        "wall_ms": 3015.7072500151116,
+        "components": {
+          "fux": {
+            "cpu_ms": 5.354458333333333,
+            "rss_bytes": 13942784,
+            "footprint_bytes": 4981120
+          },
+          "zor": {
+            "cpu_ms": 5.962708333333333,
+            "rss_bytes": 33374208,
+            "footprint_bytes": 25330096
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1063.6125410092063,
+        "components": {
+          "fux": {
+            "cpu_ms": 74.007375,
+            "rss_bytes": 19726336,
+            "footprint_bytes": 10764696
+          },
+          "zor": {
+            "cpu_ms": 21.754291666666667,
+            "rss_bytes": 33505280,
+            "footprint_bytes": 25444784
+          }
+        }
+      },
+      "burst_all_visible_ms": 56.225125008495525,
+      "harness_capture_reads": 8,
+      "initial_captures": [
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 3,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161898.778308666,
+          "components": {
+            "fux": {
+              "pid": 34180,
+              "rss_bytes": 13942784,
+              "footprint_bytes": 4981120,
+              "user_ticks": 959277,
+              "system_ticks": 608439,
+              "start_abstime": 3885531366961,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 34197,
+              "rss_bytes": 33325056,
+              "footprint_bytes": 25297328,
+              "user_ticks": 7516023,
+              "system_ticks": 726543,
+              "start_abstime": 3885535585239,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161901.794015916,
+          "components": {
+            "fux": {
+              "pid": 34180,
+              "rss_bytes": 13942784,
+              "footprint_bytes": 4981120,
+              "user_ticks": 1065225,
+              "system_ticks": 630998,
+              "start_abstime": 3885531366961,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 34197,
+              "rss_bytes": 33374208,
+              "footprint_bytes": 25330096,
+              "user_ticks": 7591466,
+              "system_ticks": 794205,
+              "start_abstime": 3885535585239,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161901.80079275,
+          "components": {
+            "fux": {
+              "pid": 34180,
+              "rss_bytes": 13942784,
+              "footprint_bytes": 4981120,
+              "user_ticks": 1065225,
+              "system_ticks": 630998,
+              "start_abstime": 3885531366961,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 34197,
+              "rss_bytes": 33374208,
+              "footprint_bytes": 25330096,
+              "user_ticks": 7591466,
+              "system_ticks": 794205,
+              "start_abstime": 3885535585239,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161902.864405291,
+          "components": {
+            "fux": {
+              "pid": 34180,
+              "rss_bytes": 19726336,
+              "footprint_bytes": 10764696,
+              "user_ticks": 2600386,
+              "system_ticks": 872014,
+              "start_abstime": 3885531366961,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 34197,
+              "rss_bytes": 33505280,
+              "footprint_bytes": 25444784,
+              "user_ticks": 7973640,
+              "system_ticks": 934134,
+              "start_abstime": 3885535585239,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ]
+      ],
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "backend": "herdr",
+      "panes": 8,
+      "idle": {
+        "wall_ms": 3010.115749988472,
+        "components": {
+          "herdr": {
+            "cpu_ms": 25.870375,
+            "rss_bytes": 37584896,
+            "footprint_bytes": 13664784
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1042.6503339840565,
+        "components": {
+          "herdr": {
+            "cpu_ms": 81.73458333333333,
+            "rss_bytes": 39845888,
+            "footprint_bytes": 15729168
+          }
+        }
+      },
+      "burst_all_visible_ms": 29.962250002427027,
+      "harness_capture_reads": 8,
+      "initial_captures": [
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w2:p1",
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w3:p1",
+            "workspace_id": "w3",
+            "tab_id": "w3:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w4:p1",
+            "workspace_id": "w4",
+            "tab_id": "w4:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w5:p1",
+            "workspace_id": "w5",
+            "tab_id": "w5:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w6:p1",
+            "workspace_id": "w6",
+            "tab_id": "w6:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w7:p1",
+            "workspace_id": "w7",
+            "tab_id": "w7:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w8:p1",
+            "workspace_id": "w8",
+            "tab_id": "w8:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161906.253462666,
+          "components": {
+            "herdr": {
+              "pid": 34444,
+              "rss_bytes": 37437440,
+              "footprint_bytes": 13582864,
+              "user_ticks": 6009752,
+              "system_ticks": 1409892,
+              "start_abstime": 3885704105435,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161909.263578416,
+          "components": {
+            "herdr": {
+              "pid": 34444,
+              "rss_bytes": 37584896,
+              "footprint_bytes": 13664784,
+              "user_ticks": 6578229,
+              "system_ticks": 1462304,
+              "start_abstime": 3885704105435,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161909.267375916,
+          "components": {
+            "herdr": {
+              "pid": 34444,
+              "rss_bytes": 37584896,
+              "footprint_bytes": 13664784,
+              "user_ticks": 6578229,
+              "system_ticks": 1462304,
+              "start_abstime": 3885704105435,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161910.31002625,
+          "components": {
+            "herdr": {
+              "pid": 34444,
+              "rss_bytes": 39845888,
+              "footprint_bytes": 15729168,
+              "user_ticks": 8403402,
+              "system_ticks": 1598761,
+              "start_abstime": 3885704105435,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ]
+      ],
+      "owners_exit": {
+        "herdr": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "backend": "zor",
+      "panes": 1,
+      "idle": {
+        "wall_ms": 3011.3908750063274,
+        "components": {
+          "fux": {
+            "cpu_ms": 1.08075,
+            "rss_bytes": 11780096,
+            "footprint_bytes": 2818408
+          },
+          "zor": {
+            "cpu_ms": 3.599875,
+            "rss_bytes": 31866880,
+            "footprint_bytes": 23871896
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1024.9497079930734,
+        "components": {
+          "fux": {
+            "cpu_ms": 12.473708333333335,
+            "rss_bytes": 12713984,
+            "footprint_bytes": 3752320
+          },
+          "zor": {
+            "cpu_ms": 6.013291666666667,
+            "rss_bytes": 31997952,
+            "footprint_bytes": 23986584
+          }
+        }
+      },
+      "burst_all_visible_ms": 9.520292020170018,
+      "harness_capture_reads": 1,
+      "initial_captures": [
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161912.106299291,
+          "components": {
+            "fux": {
+              "pid": 37726,
+              "rss_bytes": 11714560,
+              "footprint_bytes": 2752872,
+              "user_ticks": 204615,
+              "system_ticks": 153970,
+              "start_abstime": 3885853434416,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 37741,
+              "rss_bytes": 31801344,
+              "footprint_bytes": 23839128,
+              "user_ticks": 7747954,
+              "system_ticks": 842347,
+              "start_abstime": 3885854772715,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161915.117690166,
+          "components": {
+            "fux": {
+              "pid": 37726,
+              "rss_bytes": 11780096,
+              "footprint_bytes": 2818408,
+              "user_ticks": 227812,
+              "system_ticks": 156711,
+              "start_abstime": 3885853434416,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 37741,
+              "rss_bytes": 31866880,
+              "footprint_bytes": 23871896,
+              "user_ticks": 7800357,
+              "system_ticks": 876341,
+              "start_abstime": 3885854772715,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161915.123582375,
+          "components": {
+            "fux": {
+              "pid": 37726,
+              "rss_bytes": 11780096,
+              "footprint_bytes": 2818408,
+              "user_ticks": 227812,
+              "system_ticks": 156711,
+              "start_abstime": 3885853434416,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 37741,
+              "rss_bytes": 31866880,
+              "footprint_bytes": 23871896,
+              "user_ticks": 7800357,
+              "system_ticks": 876341,
+              "start_abstime": 3885854772715,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161916.148532083,
+          "components": {
+            "fux": {
+              "pid": 37726,
+              "rss_bytes": 12713984,
+              "footprint_bytes": 3752320,
+              "user_ticks": 508464,
+              "system_ticks": 175428,
+              "start_abstime": 3885853434416,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 37741,
+              "rss_bytes": 31997952,
+              "footprint_bytes": 23986584,
+              "user_ticks": 7917056,
+              "system_ticks": 903961,
+              "start_abstime": 3885854772715,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          80,
+          23
+        ]
+      ],
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "backend": "herdr",
+      "panes": 1,
+      "idle": {
+        "wall_ms": 3015.1734170212876,
+        "components": {
+          "herdr": {
+            "cpu_ms": 4.363291666666667,
+            "rss_bytes": 33243136,
+            "footprint_bytes": 9290208
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1057.8274579893332,
+        "components": {
+          "herdr": {
+            "cpu_ms": 11.600541666666667,
+            "rss_bytes": 33685504,
+            "footprint_bytes": 9535968
+          }
+        }
+      },
+      "burst_all_visible_ms": 42.50641702674329,
+      "harness_capture_reads": 2,
+      "initial_captures": [
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161919.410299666,
+          "components": {
+            "herdr": {
+              "pid": 40196,
+              "rss_bytes": 33144832,
+              "footprint_bytes": 9257440,
+              "user_ticks": 4296818,
+              "system_ticks": 214365,
+              "start_abstime": 3886023487818,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161922.425473083,
+          "components": {
+            "herdr": {
+              "pid": 40196,
+              "rss_bytes": 33243136,
+              "footprint_bytes": 9290208,
+              "user_ticks": 4382701,
+              "system_ticks": 233201,
+              "start_abstime": 3886023487818,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161922.429481708,
+          "components": {
+            "herdr": {
+              "pid": 40196,
+              "rss_bytes": 33243136,
+              "footprint_bytes": 9290208,
+              "user_ticks": 4382701,
+              "system_ticks": 233201,
+              "start_abstime": 3886023487818,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161923.487309166,
+          "components": {
+            "herdr": {
+              "pid": 40196,
+              "rss_bytes": 33685504,
+              "footprint_bytes": 9535968,
+              "user_ticks": 4608146,
+              "system_ticks": 286169,
+              "start_abstime": 3886023487818,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          120,
+          40
+        ]
+      ],
+      "owners_exit": {
+        "herdr": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "backend": "zor",
+      "panes": 4,
+      "idle": {
+        "wall_ms": 3015.8112499921117,
+        "components": {
+          "fux": {
+            "cpu_ms": 2.8031666666666664,
+            "rss_bytes": 12763136,
+            "footprint_bytes": 3801472
+          },
+          "zor": {
+            "cpu_ms": 5.25725,
+            "rss_bytes": 30703616,
+            "footprint_bytes": 22643096
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1046.4532909973059,
+        "components": {
+          "fux": {
+            "cpu_ms": 39.435916666666664,
+            "rss_bytes": 15712256,
+            "footprint_bytes": 6734208
+          },
+          "zor": {
+            "cpu_ms": 14.019583333333333,
+            "rss_bytes": 30801920,
+            "footprint_bytes": 22725016
+          }
+        }
+      },
+      "burst_all_visible_ms": 28.584125015186146,
+      "harness_capture_reads": 4,
+      "initial_captures": [
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161925.19687725,
+          "components": {
+            "fux": {
+              "pid": 40622,
+              "rss_bytes": 12746752,
+              "footprint_bytes": 3785088,
+              "user_ticks": 534623,
+              "system_ticks": 394628,
+              "start_abstime": 3886167123182,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 40633,
+              "rss_bytes": 30654464,
+              "footprint_bytes": 22610328,
+              "user_ticks": 7652460,
+              "system_ticks": 598618,
+              "start_abstime": 3886169956495,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161928.2126885,
+          "components": {
+            "fux": {
+              "pid": 40622,
+              "rss_bytes": 12763136,
+              "footprint_bytes": 3801472,
+              "user_ticks": 592226,
+              "system_ticks": 404301,
+              "start_abstime": 3886167123182,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 40633,
+              "rss_bytes": 30703616,
+              "footprint_bytes": 22643096,
+              "user_ticks": 7723039,
+              "system_ticks": 654213,
+              "start_abstime": 3886169956495,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161928.2204265,
+          "components": {
+            "fux": {
+              "pid": 40622,
+              "rss_bytes": 12763136,
+              "footprint_bytes": 3801472,
+              "user_ticks": 592226,
+              "system_ticks": 404301,
+              "start_abstime": 3886167123182,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 40633,
+              "rss_bytes": 30703616,
+              "footprint_bytes": 22643096,
+              "user_ticks": 7723642,
+              "system_ticks": 654565,
+              "start_abstime": 3886169956495,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161929.266879791,
+          "components": {
+            "fux": {
+              "pid": 40622,
+              "rss_bytes": 15712256,
+              "footprint_bytes": 6734208,
+              "user_ticks": 1429694,
+              "system_ticks": 513295,
+              "start_abstime": 3886167123182,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 40633,
+              "rss_bytes": 30801920,
+              "footprint_bytes": 22725016,
+              "user_ticks": 7979293,
+              "system_ticks": 735384,
+              "start_abstime": 3886169956495,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ]
+      ],
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "backend": "herdr",
+      "panes": 4,
+      "idle": {
+        "wall_ms": 3006.723750004312,
+        "components": {
+          "herdr": {
+            "cpu_ms": 16.6695,
+            "rss_bytes": 35225600,
+            "footprint_bytes": 11305488
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1023.5665419895668,
+        "components": {
+          "herdr": {
+            "cpu_ms": 30.538958333333333,
+            "rss_bytes": 36519936,
+            "footprint_bytes": 12403216
+          }
+        }
+      },
+      "burst_all_visible_ms": 9.48562499252148,
+      "harness_capture_reads": 4,
+      "initial_captures": [
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w2:p1",
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w3:p1",
+            "workspace_id": "w3",
+            "tab_id": "w3:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w4:p1",
+            "workspace_id": "w4",
+            "tab_id": "w4:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161932.673861291,
+          "components": {
+            "herdr": {
+              "pid": 40894,
+              "rss_bytes": 35028992,
+              "footprint_bytes": 11174416,
+              "user_ticks": 5522721,
+              "system_ticks": 817933,
+              "start_abstime": 3886337086730,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161935.680585041,
+          "components": {
+            "herdr": {
+              "pid": 40894,
+              "rss_bytes": 35225600,
+              "footprint_bytes": 11305488,
+              "user_ticks": 5874286,
+              "system_ticks": 866436,
+              "start_abstime": 3886337086730,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161935.684091166,
+          "components": {
+            "herdr": {
+              "pid": 40894,
+              "rss_bytes": 35225600,
+              "footprint_bytes": 11305488,
+              "user_ticks": 5874286,
+              "system_ticks": 866436,
+              "start_abstime": 3886337086730,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161936.707657708,
+          "components": {
+            "herdr": {
+              "pid": 40894,
+              "rss_bytes": 36519936,
+              "footprint_bytes": 12403216,
+              "user_ticks": 6513155,
+              "system_ticks": 960502,
+              "start_abstime": 3886337086730,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ]
+      ],
+      "owners_exit": {
+        "herdr": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "backend": "zor",
+      "panes": 8,
+      "idle": {
+        "wall_ms": 3019.8186250054277,
+        "components": {
+          "fux": {
+            "cpu_ms": 7.38375,
+            "rss_bytes": 13926400,
+            "footprint_bytes": 4964736
+          },
+          "zor": {
+            "cpu_ms": 7.702041666666667,
+            "rss_bytes": 30818304,
+            "footprint_bytes": 22774192
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1094.3940829893108,
+        "components": {
+          "fux": {
+            "cpu_ms": 98.41433333333333,
+            "rss_bytes": 19578880,
+            "footprint_bytes": 10617240
+          },
+          "zor": {
+            "cpu_ms": 31.58825,
+            "rss_bytes": 30965760,
+            "footprint_bytes": 22905264
+          }
+        }
+      },
+      "burst_all_visible_ms": 74.97354198130779,
+      "harness_capture_reads": 8,
+      "initial_captures": [
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 3,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        },
+        {
+          "input_sequence": 0,
+          "text": "READY",
+          "revision": 2,
+          "rows": 23,
+          "columns": 80,
+          "scrollback_offset": 0,
+          "title": "",
+          "progress": null,
+          "unchanged": false,
+          "truncated": false
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161938.605073791,
+          "components": {
+            "fux": {
+              "pid": 41183,
+              "rss_bytes": 13926400,
+              "footprint_bytes": 4964736,
+              "user_ticks": 1311988,
+              "system_ticks": 707606,
+              "start_abstime": 3886486042613,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 41204,
+              "rss_bytes": 30752768,
+              "footprint_bytes": 22725040,
+              "user_ticks": 7907368,
+              "system_ticks": 485084,
+              "start_abstime": 3886491306436,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161941.624892416,
+          "components": {
+            "fux": {
+              "pid": 41183,
+              "rss_bytes": 13926400,
+              "footprint_bytes": 4964736,
+              "user_ticks": 1466478,
+              "system_ticks": 730326,
+              "start_abstime": 3886486042613,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 41204,
+              "rss_bytes": 30818304,
+              "footprint_bytes": 22774192,
+              "user_ticks": 8003665,
+              "system_ticks": 573636,
+              "start_abstime": 3886491306436,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161941.6340055,
+          "components": {
+            "fux": {
+              "pid": 41183,
+              "rss_bytes": 13926400,
+              "footprint_bytes": 4964736,
+              "user_ticks": 1466478,
+              "system_ticks": 730326,
+              "start_abstime": 3886486042613,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 41204,
+              "rss_bytes": 30818304,
+              "footprint_bytes": 22774192,
+              "user_ticks": 8003665,
+              "system_ticks": 573636,
+              "start_abstime": 3886491306436,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161942.728399583,
+          "components": {
+            "fux": {
+              "pid": 41183,
+              "rss_bytes": 19578880,
+              "footprint_bytes": 10617240,
+              "user_ticks": 3633129,
+              "system_ticks": 925619,
+              "start_abstime": 3886486042613,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            },
+            "zor": {
+              "pid": 41204,
+              "rss_bytes": 30965760,
+              "footprint_bytes": 22905264,
+              "user_ticks": 8598006,
+              "system_ticks": 737413,
+              "start_abstime": 3886491306436,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ],
+        [
+          80,
+          23
+        ]
+      ],
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "backend": "herdr",
+      "panes": 8,
+      "idle": {
+        "wall_ms": 3014.970832999097,
+        "components": {
+          "herdr": {
+            "cpu_ms": 23.685166666666667,
+            "rss_bytes": 37683200,
+            "footprint_bytes": 13779496
+          }
+        }
+      },
+      "burst": {
+        "wall_ms": 1054.8619169858284,
+        "components": {
+          "herdr": {
+            "cpu_ms": 73.13083333333333,
+            "rss_bytes": 39747584,
+            "footprint_bytes": 15647272
+          }
+        }
+      },
+      "burst_all_visible_ms": 35.10866599390283,
+      "harness_capture_reads": 8,
+      "initial_captures": [
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w1:p1",
+            "workspace_id": "w1",
+            "tab_id": "w1:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w2:p1",
+            "workspace_id": "w2",
+            "tab_id": "w2:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w3:p1",
+            "workspace_id": "w3",
+            "tab_id": "w3:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w4:p1",
+            "workspace_id": "w4",
+            "tab_id": "w4:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w5:p1",
+            "workspace_id": "w5",
+            "tab_id": "w5:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w6:p1",
+            "workspace_id": "w6",
+            "tab_id": "w6:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w7:p1",
+            "workspace_id": "w7",
+            "tab_id": "w7:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        },
+        {
+          "type": "pane_read",
+          "read": {
+            "pane_id": "w8:p1",
+            "workspace_id": "w8",
+            "tab_id": "w8:t1",
+            "source": "visible",
+            "format": "text",
+            "text": "READY\n",
+            "revision": 0,
+            "truncated": false
+          }
+        }
+      ],
+      "samples": [
+        {
+          "monotonic": 161946.556608333,
+          "components": {
+            "herdr": {
+              "pid": 41463,
+              "rss_bytes": 37552128,
+              "footprint_bytes": 13713960,
+              "user_ticks": 7334168,
+              "system_ticks": 1209413,
+              "start_abstime": 3886663945152,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161949.571579166,
+          "components": {
+            "herdr": {
+              "pid": 41463,
+              "rss_bytes": 37683200,
+              "footprint_bytes": 13779496,
+              "user_ticks": 7836911,
+              "system_ticks": 1275114,
+              "start_abstime": 3886663945152,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161949.575812166,
+          "components": {
+            "herdr": {
+              "pid": 41463,
+              "rss_bytes": 37683200,
+              "footprint_bytes": 13779496,
+              "user_ticks": 7836911,
+              "system_ticks": 1275114,
+              "start_abstime": 3886663945152,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        },
+        {
+          "monotonic": 161950.630674083,
+          "components": {
+            "herdr": {
+              "pid": 41463,
+              "rss_bytes": 39747584,
+              "footprint_bytes": 15647272,
+              "user_ticks": 9423790,
+              "system_ticks": 1443375,
+              "start_abstime": 3886663945152,
+              "timebase_numer": 125,
+              "timebase_denom": 3
+            }
+          }
+        }
+      ],
+      "worker_viewports": [
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ],
+        [
+          120,
+          40
+        ]
+      ],
+      "owners_exit": {
+        "herdr": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    }
+  ]
+}

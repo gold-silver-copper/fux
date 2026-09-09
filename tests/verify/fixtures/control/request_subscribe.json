@@ -2,7 +2,6 @@
   "command": "subscribe",
   "id": 10,
   "events": [
-    "pane.output",
-    "pane.agent"
+    "pane.output"
   ]
 }

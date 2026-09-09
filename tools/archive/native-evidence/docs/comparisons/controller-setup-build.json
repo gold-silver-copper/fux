@@ -1,0 +1,11 @@
+{
+  "reference_commit": "94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0",
+  "tracked_source_files_verified": 2452,
+  "binary_sha256": "fd13162540e986e9e8f2a651bbd08319d53a05adda3200659995729cd57a5a75",
+  "source_archive_sha256": "c354a6d37564bdf2c6550e4a1201ed410c4ff90245a461c411e793c6bbcd2cfa",
+  "zig_archive_sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+  "build_log_sha256": "340f40258699514aa11a7962d47b81834ea9949f4c38c1b9264c5c989caaeb9e",
+  "rust_toolchain": "1.95.0",
+  "zig_version": "0.15.2",
+  "build_command": "cargo +1.95.0 build --manifest-path target/herdr-reference/source/Cargo.toml --locked --bin herdr"
+}

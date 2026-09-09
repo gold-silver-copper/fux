@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""Run the existing zor workflow acceptance and herdr's corresponding worktree workload.
+
+External checks in the herdr branch remain harness checks, never herdr verification.
+"""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+import prompt_boundary as common
+import resources
+
+ROOT=resources.ROOT
+
+
+def herdr_case(binary):
+    with tempfile.TemporaryDirectory(prefix='workflow-pair-',dir='/tmp') as directory:
+        root=Path(directory);config=root/'config';repo=root/'repo';repo.mkdir()
+        env=dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin',HOME=directory,XDG_CONFIG_HOME=str(config),
+            XDG_STATE_HOME=str(root/'state'),XDG_CACHE_HOME=str(root/'cache'),XDG_RUNTIME_DIR=directory,
+            SHELL='/bin/sh',TERM='xterm-256color')
+        def git(path,*args):
+            return subprocess.run(['/usr/bin/git','-C',str(path),*args],env=env,capture_output=True,check=True,timeout=5).stdout
+        git(repo,'init','-b','main');git(repo,'config','user.name','Fixture');git(repo,'config','user.email','fixture@example.invalid')
+        (repo/'base').write_text('shared baseline');git(repo,'add','.');git(repo,'commit','-m','baseline')
+        worker=root/'claude'
+        worker.write_text('#!'+str(Path(sys.executable).resolve())+'\n'+'''import os, signal, sys, subprocess
+from pathlib import Path
+signal.alarm(90)
+Path(str(Path.cwd())+'.pid').write_text(str(os.getpid()))
+for line in sys.stdin:
+ text=line.strip()
+ if os.environ.get('WORKFLOW_LEAD')=='1':
+  print('HANDOFF_RECEIVED '+text,flush=True);continue
+ Path('output.txt').write_text(text)
+ subprocess.run(['/usr/bin/git','add','output.txt'],check=True)
+ subprocess.run(['/usr/bin/git','commit','--allow-empty','-m','worker output'],check=True)
+ print('RESPONSE '+text,flush=True)
+''');worker.chmod(0o700)
+        for name in ['herdr','herdr-dev']:
+            path=config/name/'config.toml';path.parent.mkdir(parents=True)
+            path.write_text('onboarding = false\n[terminal]\ndefault_shell = '+json.dumps(str(worker))+
+                '\nshell_mode = "non_login"\n[update]\nversion_check = false\nmanifest_check = false\n')
+        transcript=[];workers=[];trees={};panes={};workspaces={}
+        with (root/'server.log').open('w+') as log:
+            server=subprocess.Popen([str(binary),'server'],env=env,cwd=root,stdin=subprocess.DEVNULL,stdout=log,stderr=log)
+            try:
+                endpoint=common.until(lambda:next(iter(config.glob('herdr*/herdr.sock')),None))
+                def call(method,ok=True,**params):
+                    value=common.rpc(endpoint,dict(id='workflow',method=method,params=params))
+                    transcript.append(dict(method=method,params=params,reply=value))
+                    assert ('error' not in value)==ok,value
+                    return value.get('result',value)
+                lead_dir=root/'lead';lead_dir.mkdir()
+                lead=call('workspace.create',cwd=str(lead_dir),focus=True,env={'WORKFLOW_LEAD':'1'})
+                lead_pane=lead['root_pane']['pane_id']
+                lead_pid=Path(str(lead_dir)+'.pid')
+                common.until(lambda:lead_pid.exists() and lead_pid.read_text().isdigit())
+                workers.append(int(lead_pid.read_text()))
+                for name in ['alpha','beta']:
+                    tree=root/name
+                    created=call('worktree.create',cwd=str(repo),branch=name,path=str(tree),trust_repository=True,focus=True)
+                    # Record the full reply; resolve actual panes by their workspace cwd.
+                    trees[name]=tree
+                listing=call('pane.list')['panes']
+                for name,tree in trees.items():
+                    marker=Path(str(tree)+'.pid');common.until(lambda:marker.exists() and marker.read_text().isdigit())
+                    workers.append(int(marker.read_text()))
+                    matching=[p for p in listing if p.get('cwd') in [str(tree),str(tree.resolve())]]
+                    assert len(matching)==1,(name,listing)
+                    panes[name]=matching[0]['pane_id'];workspaces[name]=matching[0]['workspace_id']
+                assert trees['alpha']!=trees['beta'] and not (repo/'output.txt').exists()
+                for name,text in [('alpha','result-alpha'),('beta','incorrect-beta')]:
+                    call('pane.send_input',pane_id=panes[name],text=text+'\n')
+                def response(name,text):
+                    def ready():
+                        result=call('pane.read',pane_id=panes[name],source='visible',strip_ansi=True)
+                        return 'RESPONSE '+text in json.dumps(result)
+                    common.until(ready)
+                response('alpha','result-alpha');response('beta','incorrect-beta')
+                external_checks=[dict(worker=name,expected='result-'+name,actual=(tree/'output.txt').read_text(),
+                    passed=(tree/'output.txt').read_text()=='result-'+name) for name,tree in trees.items()]
+                assert external_checks[0]['passed'] and not external_checks[1]['passed']
+                call('pane.send_input',pane_id=panes['beta'],text='result-beta\n');response('beta','result-beta')
+                assert (trees['beta']/'output.txt').read_text()=='result-beta'
+                # These are explicit external evidence, not a built-in herdr result store.
+                collected={name:(tree/'output.txt').read_text() for name,tree in trees.items()}
+                assert collected=={'alpha':'result-alpha','beta':'result-beta'}
+                unsupported=call('task.verify',ok=False,task='alpha')
+                assert unsupported['error']['code']=='invalid_request' and 'unknown variant `task.verify`' in unsupported['error']['message'],unsupported
+                handoff='result-alpha result-beta'
+                call('pane.send_input',pane_id=lead_pane,text=handoff+'\n')
+                handoff_capture=common.until(lambda: (value if 'HANDOFF_RECEIVED '+handoff in json.dumps(value:=call('pane.read',pane_id=lead_pane,source='visible',strip_ansi=True)) else None))
+                dirty_errors={}
+                for name,tree in trees.items():
+                    (tree/'untracked').write_text('preserve unless explicitly forced')
+                    dirty_errors[name]=call('worktree.remove',ok=False,workspace_id=workspaces[name],force=False,trust_repository=True)
+                    assert (tree/'untracked').exists()
+                    call('worktree.remove',workspace_id=workspaces[name],force=True,trust_repository=True)
+                    assert not tree.exists()
+                assert (repo/'base').read_text()=='shared baseline' and not (repo/'output.txt').exists()
+                result=dict(external_checks=external_checks,external_collected=collected,
+                    verification_api=unsupported,dirty_errors=dirty_errors,main_preserved=True,owned_trees_removed=True,
+                    external_handoff_capture=handoff_capture,worker_count=len(workers))
+            finally:
+                if server.poll() is None:server.terminate()
+                try:server.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    server.kill();server.wait(timeout=5);raise AssertionError('forced herdr cleanup')
+                def gone():
+                    for pid in workers:
+                        try:os.kill(pid,0)
+                        except ProcessLookupError:continue
+                        return False
+                    return True
+                common.until(gone)
+            assert server.returncode==0,server.returncode
+            result.update(transcript=transcript,server_exit=server.returncode,worker_exit_confirmed=True)
+            return json.loads(json.dumps(result).replace(str(root.resolve()),'<RUN_ROOT>').replace(directory,'<RUN_ROOT>'))
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    for name in ['fux','zor','herdr','herdr-provenance','output']:parser.add_argument('--'+name,type=Path,required=True)
+    args=parser.parse_args();assert not args.output.exists()
+    binaries={name:getattr(args,name).resolve(strict=True) for name in ['fux','zor','herdr']}
+    provenance=dict(binaries={name:dict(path=str(p),sha256=resources.digest(p)) for name,p in binaries.items()},
+        sources={str(p.relative_to(ROOT)):resources.digest(p) for p in [Path(__file__).resolve(),ROOT/'tests/verify/zor_workflow.py',ROOT/'tests/verify/zor_contention.py']},
+        herdr_build=json.loads(args.herdr_provenance.read_text()))
+    assert provenance['herdr_build']['binary_sha256']==provenance['binaries']['herdr']['sha256']
+    # The existing fixture asserts the entire durable policy/handoff lifecycle, including rejection paths.
+    zor=subprocess.run([sys.executable,str(ROOT/'tests/verify/zor_workflow.py'),str(binaries['fux']),str(binaries['zor'])],
+        capture_output=True,text=True,timeout=180)
+    assert zor.returncode==0,(zor.stdout,zor.stderr)
+    print('zor workflow passed',flush=True)
+    herdr=herdr_case(binaries['herdr']);print('herdr workflow passed',flush=True)
+    args.output.write_text(json.dumps(dict(recorded_at=datetime.now(timezone.utc).isoformat(),provenance=provenance,
+        zor=dict(exit_code=zor.returncode,stdout=zor.stdout,stderr=zor.stderr),herdr=herdr),indent=2)+'\n')
+
+
+if __name__=='__main__':main()

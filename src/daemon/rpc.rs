@@ -1,6 +1,7 @@
 //! Manager socket contract: list, resolve and kill workspaces. Uses the control preface and
 //! newline-delimited JSON, one request per connection.
 
+#[cfg(test)]
 use crate::proto::control::write_frame;
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixStream;
@@ -10,6 +11,13 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "request", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ManagerRequest {
+    Create {
+        name: String,
+    },
+    Final {
+        instance: String,
+        pane: crate::ids::PaneId,
+    },
     /// Attach to `name`, creating it when missing. `None` applies the documented default rule.
     Resolve {
         name: Option<String>,
@@ -25,6 +33,9 @@ pub enum ManagerRequest {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reply", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ManagerReply {
+    Final {
+        result: crate::proto::control::Reply,
+    },
     Attach {
         descriptor: super::Descriptor,
     },
@@ -42,15 +53,29 @@ pub enum ManagerReply {
 pub const MANAGER_DEADLINE: Duration = Duration::from_secs(15);
 
 pub fn manager_request(path: &Path, request: &ManagerRequest) -> Result<ManagerReply> {
-    let mut stream = UnixStream::connect(path)
+    manager_request_until(path, request, Instant::now() + MANAGER_DEADLINE)
+}
+
+/// One absolute deadline covers negotiation, write and response, including slow peers.
+pub fn manager_request_until(
+    path: &Path,
+    request: &ManagerRequest,
+    deadline: Instant,
+) -> Result<ManagerReply> {
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| anyhow::anyhow!("manager request timed out"))
+    };
+    let mut stream = crate::proto::socket::connect_local(path, deadline)
         .with_context(|| format!("connecting to manager socket {}", path.display()))?;
-    stream.set_read_timeout(Some(MANAGER_DEADLINE))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    crate::proto::socket::negotiate_client(&mut stream)
+    crate::proto::socket::negotiate_client_with_timeout(&mut stream, remaining()?)
         .context("authenticating the manager socket and negotiating its control protocol")?;
-    write_frame(&mut stream, request).context("sending manager request")?;
-    let reply =
-        read_json_frame(&mut stream, MANAGER_DEADLINE).context("receiving manager reply")?;
+    crate::proto::control::write_frame_until(&mut stream, request, deadline)
+        .context("sending manager request")?;
+    stream.set_read_timeout(Some(remaining()?))?;
+    let reply = read_json_frame(&mut stream, remaining()?).context("receiving manager reply")?;
     serde_json::from_slice(&reply).context("decoding manager reply")
 }
 
@@ -100,7 +125,7 @@ pub fn workspace_names(path: &Path) -> Result<Vec<String>> {
             Ok(names)
         }
         ManagerReply::Failed { message } => bail!("{message}"),
-        ManagerReply::Attach { .. } | ManagerReply::Info { .. } => {
+        ManagerReply::Attach { .. } | ManagerReply::Info { .. } | ManagerReply::Final { .. } => {
             bail!("manager did not return a workspace list")
         }
     }

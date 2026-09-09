@@ -1,0 +1,26 @@
+{
+  "scope": "Shared immutable pane-view candidate; unchanged pinned zor baseline isolates fux",
+  "binaries": {
+    "fux": {
+      "sha256": "c313a7c2c2f035a378f1f4fd4410154f3ee4427f6b883596fa3037f54cd7a657",
+      "path_at_capture": "target/debug/fux",
+      "note": "Hash recorded by the harness at capture. Later test builds replaced target/debug/fux; the captured binary is not retained."
+    },
+    "zor": {
+      "path": "/tmp/fux-headless-pinned-baseline/zor",
+      "sha256": "47678b7745b0a15ddab83a12c7dccc2082d18c7d57cf21e42942f1874de701e8"
+    }
+  },
+  "sources": {
+    "Cargo.toml": "136ab18b22f5a8e472b4e24ffdd3c894a1786d2b8c11d5edcd157e97f99fb0a6",
+    "Cargo.lock": "db614a5d3971fb439fd19cf80efd174b747d58db951c08310f49074182e3bf94",
+    "src/view.rs": "e558e0e2d25d67445438b9fe287f65b2952e821d9889eb97e0458b61110a58ee",
+    "src/ecs/systems/snapshot.rs": "a1dd3b321ab706eb691229290d0e5fbc4aaebbd141e547cd0db1edd57d1681cb"
+  },
+  "explicit_build": {
+    "commands": [
+      "RUSTFLAGS='' CARGO_PROFILE_DEV_OPT_LEVEL=0 CARGO_PROFILE_DEV_DEBUG=2 cargo +1.95.0 build --locked --bin fux"
+    ]
+  },
+  "sources_note": "Recorded after capture with no intervening changes to these production source files."
+}

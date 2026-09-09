@@ -5,8 +5,8 @@
 
 use crate::proto::control::CaptureRow;
 use crate::view::{
-    AgentReport, AgentState, CellKind, CellStyle, Cursor, Line, MAX_AGENT_MESSAGE_BYTES,
-    MAX_CELL_TEXT_BYTES, PaneModes, PaneUpdate, classify, push_wire,
+    CellKind, CellStyle, Cursor, Line, MAX_CELL_TEXT_BYTES, PaneModes, PaneUpdate, classify,
+    push_wire,
 };
 use vt100::Screen;
 
@@ -51,87 +51,6 @@ fn parse_progress(params: &[&[u8]]) -> Option<Progress> {
     (percent <= 100).then_some(Progress { state, percent })
 }
 
-/// Decodes a percent-encoded OSC 7877 value (zor's encoding of optional messages).
-fn percent_decode(bytes: &[u8]) -> Option<String> {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while let Some(&byte) = bytes.get(index) {
-        if byte == b'%' {
-            let hi = bytes
-                .get(index + 1)
-                .and_then(|b| (*b as char).to_digit(16))?;
-            let lo = bytes
-                .get(index + 2)
-                .and_then(|b| (*b as char).to_digit(16))?;
-            out.push(u8::try_from((hi << 4) | lo).ok()?);
-            index += 3;
-        } else {
-            out.push(byte);
-            index += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-/// Parses an OSC 7877 agent report (zor's v1 schema). Returns `Some(None)` for `state=none`
-/// (clear the report), `Some(Some(report))` for a valid one, and `None` when the sequence is not
-/// a well-formed 7877 report (which leaves the current report untouched).
-fn parse_agent(params: &[&[u8]]) -> Option<Option<AgentReport>> {
-    // The whole payload is bounded like zor's producer contract (1 KiB).
-    let total: usize = params.iter().map(|part| part.len() + 1).sum();
-    if params.first().copied() != Some(b"7877".as_slice()) || total > 1024 {
-        return None;
-    }
-    let mut version = None;
-    let mut state = None;
-    let mut agent = None;
-    let mut message = None;
-    for part in params.iter().skip(1) {
-        let at = part.iter().position(|byte| *byte == b'=')?;
-        let (key, rest) = part.split_at(at);
-        let value = rest.get(1..)?;
-        match key {
-            b"v" if version.is_none() => version = Some(value.to_vec()),
-            b"state" if state.is_none() => {
-                state = Some(match value {
-                    b"working" => Some(AgentState::Working),
-                    b"blocked" => Some(AgentState::Blocked),
-                    b"idle" => Some(AgentState::Idle),
-                    b"none" => None,
-                    _ => return None,
-                });
-            }
-            b"agent" if agent.is_none() => {
-                agent = Some(std::str::from_utf8(value).ok()?.to_owned());
-            }
-            b"msg" | b"message" if message.is_none() => {
-                let decoded = percent_decode(value)?;
-                if decoded.len() > MAX_AGENT_MESSAGE_BYTES {
-                    return None;
-                }
-                message = Some(decoded);
-            }
-            // Unknown extension fields within v1 are ignored; duplicates of known fields fail.
-            b"v" | b"state" | b"agent" | b"msg" | b"message" => return None,
-            _ => {}
-        }
-    }
-    if version.as_deref() != Some(b"1") {
-        return None;
-    }
-    match state? {
-        None => Some(None),
-        Some(state) => {
-            let report = AgentReport {
-                state,
-                agent: agent?,
-                message,
-            };
-            report.within_bounds().then_some(Some(report))
-        }
-    }
-}
-
 fn title_from(bytes: &[u8]) -> String {
     crate::view::printable(&String::from_utf8_lossy(bytes), MAX_TITLE_CHARS)
 }
@@ -144,7 +63,6 @@ struct Callbacks {
     /// Query answers the application expects back on its input.
     host_replies: Vec<u8>,
     progress: Option<Progress>,
-    agent: Option<AgentReport>,
 }
 
 impl vt100::Callbacks for Callbacks {
@@ -165,9 +83,6 @@ impl vt100::Callbacks for Callbacks {
             Some(progress) if progress.state == 0 => self.progress = None,
             Some(progress) => self.progress = Some(progress),
             None => {}
-        }
-        if let Some(update) = parse_agent(params) {
-            self.agent = update;
         }
     }
     fn unhandled_csi(
@@ -240,6 +155,29 @@ struct ControlStringFilter {
     buffered: Vec<u8>,
 }
 
+/// Upper bound on continuation bytes still needed by the current UTF-8 prefix.
+fn utf8_remaining(remaining: u8, byte: u8) -> u8 {
+    if remaining > 0 && (0x80..=0xbf).contains(&byte) {
+        remaining - 1
+    } else {
+        match byte {
+            0xc2..=0xdf => 1,
+            0xe0..=0xef => 2,
+            0xf0..=0xf4 => 3,
+            _ => 0,
+        }
+    }
+}
+
+/// `utf8_remaining` folded over `bytes` from a zero state, without scanning them all: a
+/// non-continuation byte resets the state regardless of history, and any run of four or more
+/// continuation bytes ends at zero, so only the final four bytes can matter.
+fn utf8_remaining_after(bytes: &[u8]) -> u8 {
+    let tail = bytes.get(bytes.len().saturating_sub(4)..).unwrap_or(bytes);
+    tail.iter()
+        .fold(0, |remaining, &byte| utf8_remaining(remaining, byte))
+}
+
 impl ControlStringFilter {
     /// Filters `input` into `output` (cleared first); the buffer is the pane's scratch space so a
     /// chunk costs no allocation once it has grown to the chunk size.
@@ -247,16 +185,7 @@ impl ControlStringFilter {
         output.clear();
         for &byte in input {
             let continuation = self.utf8_remaining > 0 && (0x80..=0xbf).contains(&byte);
-            self.utf8_remaining = if continuation {
-                self.utf8_remaining - 1
-            } else {
-                match byte {
-                    0xc2..=0xdf => 1,
-                    0xe0..=0xef => 2,
-                    0xf0..=0xf4 => 3,
-                    _ => 0,
-                }
-            };
+            self.utf8_remaining = utf8_remaining(self.utf8_remaining, byte);
             if let Some(kind) = self.string {
                 let terminated = (byte == 0x9c && !continuation)
                     || (kind == ControlStringKind::Osc && byte == 0x07)
@@ -542,10 +471,29 @@ impl Grid {
     }
 }
 
+/// A bounded history viewport, not an append-only output transcript. Its first row is
+/// `scrollback_offset` rows above the live screen and its height is `rows`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureSnapshot {
+    pub text: String,
+    pub revision: u64,
+    pub rows: u16,
+    pub columns: u16,
+    pub scrollback_offset: u32,
+    pub title: String,
+    pub progress: Option<(u8, u8)>,
+    pub unchanged: bool,
+    /// Whether the returned text hit the byte limit. For unchanged responses consult the cache.
+    pub truncated: bool,
+}
+
 /// The authoritative emulator and bounded history for one pane.
 pub struct ServerTerminal {
     parser: vt100::Parser<Callbacks>,
     filter: ControlStringFilter,
+    parser_utf8_remaining: u8,
+    revision: u64,
     history_limit: usize,
     grid: Grid,
     /// Filtered output of the chunk being fed; reused across chunks.
@@ -564,6 +512,8 @@ impl ServerTerminal {
                 Callbacks::default(),
             ),
             filter: ControlStringFilter::default(),
+            parser_utf8_remaining: 0,
+            revision: 0,
             history_limit,
             grid: Grid::default(),
             scratch: Vec::new(),
@@ -584,9 +534,26 @@ impl ServerTerminal {
     /// Feeds application output. A `vt100` panic on hostile output is contained: the chunk is
     /// dropped and later output repaints.
     pub fn process(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.revision = self.revision.wrapping_add(1);
+        }
         self.filter.process_into(bytes, &mut self.scratch);
         let contained = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.parser.process(&self.scratch)
+            // Complete split UTF-8 characters separately: vte lookahead can otherwise
+            // consume bytes following the completed character. Keep the reusable buffer.
+            let mut rest = self.scratch.as_slice();
+            while self.parser_utf8_remaining > 0 && !rest.is_empty() {
+                let (next, suffix) = rest.split_at(1);
+                self.parser.process(next);
+                if let Some(&byte) = next.first() {
+                    self.parser_utf8_remaining = utf8_remaining(self.parser_utf8_remaining, byte);
+                }
+                rest = suffix;
+            }
+            if !rest.is_empty() {
+                self.parser.process(rest);
+                self.parser_utf8_remaining = utf8_remaining_after(rest);
+            }
         }));
         if contained.is_err() {
             tracing::error!("terminal emulator rejected application output; chunk dropped");
@@ -600,7 +567,16 @@ impl ServerTerminal {
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let (rows, cols) = clamp_dims(rows, cols);
-        self.parser.screen_mut().set_size(rows, cols);
+        if self.size() != (rows, cols) {
+            self.revision = self.revision.wrapping_add(1);
+            self.parser.screen_mut().set_size(rows, cols);
+        }
+    }
+
+    /// A change token scoped to this terminal lifetime; not a timestamp or byte count.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     #[must_use]
@@ -634,11 +610,6 @@ impl ServerTerminal {
     }
 
     #[must_use]
-    pub fn agent(&self) -> Option<&AgentReport> {
-        self.parser.callbacks().agent.as_ref()
-    }
-
-    #[must_use]
     pub fn history_limit(&self) -> usize {
         self.history_limit
     }
@@ -659,36 +630,168 @@ impl ServerTerminal {
         }
     }
 
-    /// Plain or attribute-preserving text of the visible screen preceded by up to `scrollback`
-    /// history rows, truncated to `max_bytes` on a character boundary.
+    /// Plain or attribute-preserving text of a viewport shifted up by at most `scrollback`
+    /// retained history rows, truncated to `max_bytes` on a character boundary.
     pub fn capture(&mut self, scrollback: usize, attrs: bool, max_bytes: usize) -> String {
-        let columns = usize::from(self.size().1).max(1);
+        self.capture_snapshot(scrollback, attrs, max_bytes, None)
+            .text
+    }
+
+    /// Text and metadata from one terminal revision. Conditional callers must reuse capture
+    /// options and invalidate cached revisions when the pane/server identity changes.
+    pub fn capture_snapshot(
+        &mut self,
+        scrollback: usize,
+        attrs: bool,
+        max_bytes: usize,
+        if_revision: Option<u64>,
+    ) -> CaptureSnapshot {
+        let (rows, columns) = self.size();
+        let progress = self.progress().map(|p| (p.state, p.percent));
+        let mut snapshot = CaptureSnapshot {
+            text: String::new(),
+            revision: self.revision,
+            rows,
+            columns,
+            scrollback_offset: 0,
+            title: self.title().to_owned(),
+            progress,
+            unchanged: if_revision == Some(self.revision),
+            truncated: false,
+        };
+        let columns = usize::from(columns).max(1);
         let bytes_per_row = if attrs {
             columns.saturating_mul(128)
         } else {
             columns.saturating_mul(4).saturating_add(1)
         };
         let bounded_rows = max_bytes.saturating_div(bytes_per_row).saturating_add(1);
-        let rows = scrollback.min(self.history_limit).min(bounded_rows);
-        let mut output = self.with_history_screen(rows, |screen| {
-            if attrs {
-                String::from_utf8_lossy(&screen.contents_formatted()).into_owned()
-            } else {
-                screen.contents()
+        let offset = scrollback.min(self.history_limit).min(bounded_rows);
+        self.with_history_screen(offset, |screen| {
+            snapshot.scrollback_offset = u32::try_from(screen.scrollback()).unwrap_or(u32::MAX);
+            if !snapshot.unchanged {
+                snapshot.text = if attrs {
+                    String::from_utf8_lossy(&screen.contents_formatted()).into_owned()
+                } else {
+                    screen.contents()
+                };
+                snapshot.truncated = snapshot.text.len() > max_bytes;
+                if snapshot.truncated {
+                    snapshot
+                        .text
+                        .truncate(snapshot.text.floor_char_boundary(max_bytes));
+                }
             }
         });
-        if output.len() > max_bytes {
-            output.truncate(output.floor_char_boundary(max_bytes));
-        }
-        output
+        snapshot
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_remaining_after_equals_full_fold() {
+        let full = |bytes: &[u8]| bytes.iter().fold(0, |r, &b| utf8_remaining(r, b));
+        let classes = [
+            0x41u8, 0x80, 0xbf, 0xc2, 0xdf, 0xe0, 0xef, 0xf0, 0xf4, 0xf5, 0xff,
+        ];
+        let mut sequence = Vec::new();
+        assert_eq!(utf8_remaining_after(&sequence), full(&sequence));
+        // Every sequence of up to six class representatives, including ones whose
+        // history a naive last-byte check would get wrong.
+        for length in 1..=6 {
+            let total = classes.len().pow(length);
+            for index in 0..total {
+                sequence.clear();
+                let mut rest = index;
+                for _ in 0..length {
+                    sequence.push(classes.get(rest % classes.len()).copied().unwrap_or(0));
+                    rest /= classes.len();
+                }
+                assert_eq!(
+                    utf8_remaining_after(&sequence),
+                    full(&sequence),
+                    "{sequence:x?}"
+                );
+            }
+        }
+    }
     use crate::view::PaneView;
     use proptest::prelude::*;
+
+    #[test]
+    fn capture_revision_is_distinct_from_grid_sequence() {
+        let mut terminal = ServerTerminal::new(4, 8, 20);
+        terminal.process(b"hello");
+        terminal.refresh_grid("", None);
+        let grid_sequence = terminal.grid().seq();
+        let first = terminal.capture_snapshot(0, false, 4096, None);
+
+        // Progress belongs to coherent capture metadata, but does not change grid cells.
+        terminal.process(b"\x1b]9;4;1;50\x07");
+        assert!(!terminal.refresh_grid("", None));
+        assert_eq!(terminal.grid().seq(), grid_sequence);
+        let changed = terminal.capture_snapshot(0, false, 4096, Some(first.revision));
+        assert!(!changed.unchanged);
+        assert_eq!(changed.progress, Some((1, 50)));
+        assert_eq!(changed.text, first.text);
+
+        // Grid refresh and temporary history selection must not themselves dirty captures.
+        terminal.with_history_screen(3, |_| ());
+        assert_eq!(terminal.revision(), changed.revision);
+        assert_eq!(terminal.screen().scrollback(), 0);
+        assert!(
+            terminal
+                .capture_snapshot(0, false, 4096, Some(changed.revision))
+                .unchanged
+        );
+    }
+
+    #[test]
+    fn history_changes_invalidate_capture_even_when_live_grid_is_identical() {
+        let mut terminal = ServerTerminal::new(2, 8, 20);
+        terminal.process(b"old\r\nscreen");
+        terminal.process(b"\x1b[2J\x1b[H");
+        terminal.refresh_grid("", None);
+        let before = terminal.capture_snapshot(1, false, 4096, None);
+        let seq = terminal.grid().seq();
+        terminal.process(b"new\r\nline\r\n\x1b[2J\x1b[H");
+        assert!(!terminal.refresh_grid("", None));
+        assert_eq!(terminal.grid().seq(), seq);
+        let after = terminal.capture_snapshot(1, false, 4096, Some(before.revision));
+        assert!(!after.unchanged);
+        assert_ne!(after.text, before.text);
+        assert_eq!(terminal.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn conditional_capture_tracks_output_resize_and_metadata_without_moving_history() {
+        let mut terminal = ServerTerminal::new(4, 8, 20);
+        terminal.process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\x1b]2;title\x07");
+        let first = terminal.capture_snapshot(1, false, 4096, None);
+        assert_eq!((first.rows, first.columns), (4, 8));
+        assert_eq!(first.scrollback_offset, 1);
+        assert_eq!(first.title, "title");
+        assert!(!first.unchanged);
+        assert_eq!(terminal.screen().scrollback(), 0);
+        let cached = terminal.capture_snapshot(1, false, 4096, Some(first.revision));
+        assert!(cached.unchanged);
+        assert!(cached.text.is_empty());
+        assert_eq!(cached.scrollback_offset, first.scrollback_offset);
+        terminal.resize(4, 8);
+        assert_eq!(terminal.revision(), first.revision);
+        terminal.resize(6, 10);
+        let resized = terminal.capture_snapshot(1, false, 4096, Some(first.revision));
+        assert!(!resized.unchanged);
+        assert_eq!((resized.rows, resized.columns), (6, 10));
+        terminal.process(b"\x1b]9;4;1;50\x07");
+        let progress = terminal.capture_snapshot(0, true, 4096, Some(resized.revision));
+        assert!(!progress.unchanged);
+        assert_eq!(progress.progress, Some((1, 50)));
+        assert!(terminal.capture_snapshot(0, true, 1, None).truncated);
+    }
 
     /// The rows of a view, as text plus wrap flags, for comparing deltas with the screen.
     fn rows_of(view: &PaneView) -> Vec<(String, bool)> {
@@ -750,46 +853,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn osc_7877_agent_reports_are_parsed_and_bounded() {
-        let mut terminal = ServerTerminal::new(4, 10, 0);
-        terminal.process(b"\x1b]7877;v=1;state=working;agent=claude;seq=3\x1b\\");
-        let report = terminal.agent().cloned();
-        assert_eq!(
-            report,
-            Some(AgentReport {
-                state: AgentState::Working,
-                agent: "claude".into(),
-                message: None,
-            })
-        );
-        // A message is percent-decoded and kept.
-        terminal.process(b"\x1b]7877;v=1;state=blocked;agent=claude;msg=needs%20input;seq=4\x1b\\");
-        assert_eq!(
-            terminal
-                .agent()
-                .and_then(|report| report.message.clone())
-                .as_deref(),
-            Some("needs input")
-        );
-        // state=none clears the report.
-        terminal.process(b"\x1b]7877;v=1;state=none;seq=5\x1b\\");
-        assert_eq!(terminal.agent(), None);
-        // A hostile id is rejected and leaves the (empty) state unchanged.
-        terminal.process(b"\x1b]7877;v=1;state=working;agent=has space;seq=6\x1b\\");
-        assert_eq!(terminal.agent(), None);
-        // An unknown version is ignored.
-        terminal.process(b"\x1b]7877;v=2;state=working;agent=x;seq=7\x1b\\");
-        assert_eq!(terminal.agent(), None);
-        // A non-7877 OSC (progress) does not disturb the agent state.
-        terminal.process(b"\x1b]7877;v=1;state=idle;agent=x;seq=8\x1b\\\x1b]9;4;1;50\x1b\\");
-        assert_eq!(
-            terminal.agent().map(|report| report.state),
-            Some(AgentState::Idle)
-        );
-        assert!(terminal.progress().is_some());
     }
 
     #[test]
@@ -939,7 +1002,7 @@ mod tests {
 
     #[test]
     fn utf8_continuations_do_not_open_or_terminate_control_strings() {
-        let text = "beforeАИМНОП😀after";
+        let text = "beforeАИМНОП😀 prefix Ü 🐝 end";
         for split in 0..=text.len() {
             let mut terminal = ServerTerminal::new(24, 80, 0);
             let (first, second) = text.as_bytes().split_at(split);

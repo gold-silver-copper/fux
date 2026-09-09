@@ -1,12 +1,12 @@
 diff --git a/src/gateway/sessions_real_fux.rs b/src/gateway/sessions_real_fux.rs
-index 1ee4dc6..d59f8e6 100644
+index 8828f51..2cf8f4f 100644
 --- a/src/gateway/sessions_real_fux.rs
 +++ b/src/gateway/sessions_real_fux.rs
-@@ -171,16 +171,11 @@ async fn frame(stream: &mut tokio::net::UnixStream) -> anyhow::Result<serde_json
+@@ -223,17 +223,11 @@ async fn frame(stream: &mut tokio::net::UnixStream) -> anyhow::Result<serde_json
  async fn hello(stream: &mut tokio::net::UnixStream) -> anyhow::Result<()> {
      message(
          stream,
--        serde_json::json!({"type":"hello","version":2,"rows":24,"columns":80}),
+-        serde_json::json!({"type":"hello","version":6,"rows":24,"columns":80}),
 +        serde_json::json!({"type":"hello","rows":24,"columns":80}),
      )
      .await?;
@@ -15,21 +15,22 @@ index 1ee4dc6..d59f8e6 100644
 -        value
 -            .pointer("/hello/version")
 -            .and_then(serde_json::Value::as_u64),
--        Some(2)
+-        Some(6),
+-        "{value}"
 -    );
-+    assert!(value.get("hello").is_some(), "{value}");
++    assert_eq!(value, serde_json::json!({"hello":{}}));
      Ok(())
  }
  #[cfg(feature = "cli")]
 diff --git a/tests/gateway.rs b/tests/gateway.rs
-index 9b0b50c..903fa5b 100644
+index aee8829..99df5cd 100644
 --- a/tests/gateway.rs
 +++ b/tests/gateway.rs
-@@ -177,16 +177,11 @@ async fn frame(stream: &mut tokio::net::UnixStream) -> anyhow::Result<serde_json
+@@ -177,17 +177,11 @@ async fn frame(stream: &mut tokio::net::UnixStream) -> anyhow::Result<serde_json
  async fn hello(stream: &mut tokio::net::UnixStream) -> anyhow::Result<()> {
      message(
          stream,
--        serde_json::json!({"type":"hello","version":2,"rows":24,"columns":80}),
+-        serde_json::json!({"type":"hello","version":6,"rows":24,"columns":80}),
 +        serde_json::json!({"type":"hello","rows":24,"columns":80}),
      )
      .await?;
@@ -38,9 +39,10 @@ index 9b0b50c..903fa5b 100644
 -        value
 -            .pointer("/hello/version")
 -            .and_then(serde_json::Value::as_u64),
--        Some(2)
+-        Some(6),
+-        "{value}"
 -    );
-+    assert!(value.get("hello").is_some(), "{value}");
++    assert_eq!(value, serde_json::json!({"hello":{}}));
      Ok(())
  }
  #[cfg(feature = "cli")]

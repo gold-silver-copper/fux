@@ -38,7 +38,8 @@ impl ViewerExit<'_, '_> {
         ids: &mut Ids,
         viewer: Entity,
         id: ViewerId,
-        workspace: &str,
+        workspace: Entity,
+        name: &str,
         effects: &mut Effects,
     ) {
         ids.viewers.remove(&id);
@@ -46,6 +47,7 @@ impl ViewerExit<'_, '_> {
         effects.emit(Effect::CloseViewer { viewer: id });
         effects.event(
             workspace,
+            name,
             control::Event::ClientDetached {
                 id: 0,
                 client: id.0,
@@ -57,20 +59,29 @@ impl ViewerExit<'_, '_> {
 /// The effect outlet of a typed system: effects and control events, the latter named by the
 /// workspace they concern.
 #[derive(SystemParam)]
-pub struct Effects<'w> {
+pub struct Effects<'w, 's> {
+    logs: Query<'w, 's, &'static mut super::events::EventLog>,
     writer: MessageWriter<'w, Effect>,
 }
 
-impl Effects<'_> {
+impl Effects<'_, '_> {
     pub fn emit(&mut self, effect: Effect) {
         self.writer.write(effect);
     }
 
     /// Publishes a control event for the workspace called `workspace`.
-    pub fn event(&mut self, workspace: &str, event: control::Event) {
+    pub fn event(&mut self, workspace: Entity, name: &str, event: control::Event) {
+        let Ok(mut log) = self.logs.get_mut(workspace) else {
+            return;
+        };
+        let Some((entry, size)) = log.push_sized(event) else {
+            return;
+        };
         self.writer.write(Effect::Event {
-            workspace: workspace.to_owned(),
-            event,
+            cursor: entry.cursor,
+            workspace: name.to_owned(),
+            event: entry.event,
+            size,
         });
     }
 }
@@ -82,11 +93,19 @@ pub fn event(world: &mut World, workspace: Entity, event: control::Event) {
     else {
         return;
     };
+    let Some((entry, size)) = world
+        .get_mut::<super::events::EventLog>(workspace)
+        .and_then(|mut log| log.push_sized(event))
+    else {
+        return;
+    };
     effect(
         world,
         Effect::Event {
+            cursor: entry.cursor,
             workspace: name,
-            event,
+            event: entry.event,
+            size,
         },
     );
 }
@@ -113,6 +132,10 @@ pub fn reply(world: &mut World, requester: Requester, reply: Reply) {
                     result: control::CommandResult::Workspace { name },
                     ..
                 } => super::messages::ManagerOutcome::Attach {
+                    stream: workspace_entity(world, &name)
+                        .and_then(|entity| world.get::<super::events::EventLog>(entity))
+                        .map(|log| log.cursor().stream)
+                        .unwrap_or(0),
                     name,
                     created: true,
                 },
@@ -206,16 +229,18 @@ pub fn pane_in_layout(world: &World, pane: Entity) -> bool {
         .is_some_and(|tab| tab.layout.contains(pane))
 }
 
-/// Every pane whose tab belongs to `workspace`, reservations included.
+/// Every pane reserved in this workspace lifetime, including panes whose tab already closed.
 pub fn panes_in_workspace(world: &mut World, workspace: Entity) -> Vec<Entity> {
+    let Some(stream) = world
+        .get::<super::events::EventLog>(workspace)
+        .map(|log| log.cursor().stream)
+    else {
+        return Vec::new();
+    };
     world
         .query::<(Entity, &Pane)>()
         .iter(world)
-        .filter(|(_, pane)| {
-            world
-                .get::<Tab>(pane.tab)
-                .is_some_and(|tab| tab.workspace == workspace)
-        })
+        .filter(|(_, pane)| pane.workspace_stream == stream)
         .map(|(entity, _)| entity)
         .collect()
 }
@@ -250,6 +275,7 @@ pub fn viewers_of_workspace(world: &mut World, workspace: Entity) -> Vec<Entity>
 }
 
 pub fn mark_workspace_dirty(world: &mut World, workspace: Entity) {
+    event(world, workspace, control::Event::WorkspaceChanged { id: 0 });
     each_viewer(
         world,
         |viewer| viewer.workspace == workspace && !viewer.detaching,
@@ -258,6 +284,9 @@ pub fn mark_workspace_dirty(world: &mut World, workspace: Entity) {
 }
 
 pub fn mark_tab_dirty(world: &mut World, tab: Entity) {
+    if let Some(workspace) = tab_workspace(world, tab) {
+        event(world, workspace, control::Event::WorkspaceChanged { id: 0 });
+    }
     each_viewer(
         world,
         |viewer| viewer.selection.tab == Some(tab) && !viewer.detaching,
@@ -371,6 +400,7 @@ pub fn remove_from_layout(world: &mut World, pane: Entity) -> Option<Option<Enti
 /// Despawns a pane and tells the adapter to drop its handles. The tab's layout must no longer
 /// reference it.
 pub fn despawn_pane(world: &mut World, pane: Entity) {
+    super::systems::final_records::remember(world, pane);
     let Some(id) = pane_id(world, pane) else {
         return;
     };
@@ -504,13 +534,24 @@ pub fn fail_creations(world: &mut World, panes: &[Entity], reason: &str, despawn
 
 /// Bounded pane input: chunks the bytes into attachment-sized writes.
 pub fn write_pane(world: &mut World, pane: Entity, bytes: &[u8]) -> bool {
-    let Some(component) = world.get::<Pane>(pane) else {
+    let Some(mut component) = world.get_mut::<Pane>(pane) else {
         return false;
     };
     if !component.state.accepts_input() {
         return false;
     }
+    if !bytes.is_empty() {
+        let Some(sequence) = component.input_sequence.checked_add(1) else {
+            return false;
+        };
+        component.input_sequence = sequence;
+    }
     let id = component.id;
+    if !bytes.is_empty()
+        && let Some(workspace) = pane_workspace(world, pane)
+    {
+        event(world, workspace, control::Event::WorkspaceChanged { id: 0 });
+    }
     for chunk in bytes.chunks(crate::proto::attach::MAX_INPUT_CHUNK) {
         effect(
             world,

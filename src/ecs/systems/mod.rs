@@ -7,3 +7,7 @@ pub mod lifecycle;
 pub mod output;
 pub mod requests;
 pub mod snapshot;
+
+pub mod input;
+
+pub mod final_records;

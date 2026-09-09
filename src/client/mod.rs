@@ -506,6 +506,8 @@ fn dispatch(
     match action {
         Action::Detach => Dispatch::Detach,
         Action::SplitSide | Action::SplitStack => Dispatch::Send(Request::Split {
+            stream: None,
+            instance: None,
             id: 0,
             axis: if action == Action::SplitSide {
                 crate::layout::Axis::Horizontal
@@ -521,6 +523,7 @@ fn dispatch(
         }),
         Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
             Dispatch::Send(Request::Focus {
+                instance: None,
                 id: 0,
                 target: match action {
                     Action::FocusLeft => FocusTarget::Left,
@@ -531,6 +534,7 @@ fn dispatch(
             })
         }
         Action::NewTab | Action::NextTab | Action::PreviousTab => Dispatch::Send(Request::Tab {
+            instance: None,
             id: 0,
             action: match action {
                 Action::NewTab => TabAction::New { name: None },

@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Paired production CLI screen matching on retained real and derived negative cases.
+
+No account usage, live agent launch, reference source modification or personal config.
+This is a screen-only comparison; OSC/title arbitration and freshness are unmeasured.
+"""
+import argparse
+from collections import Counter
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = ROOT/'zor/tests/fixtures/agents'
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def normalize(text):
+    lines = [line.rstrip() for line in text.splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    return '\n'.join(lines) + ('\n' if lines else '')
+
+
+def corpus():
+    cases = []
+    def add(name, agent, file, expected, select=None, note='real agent viewport'):
+        path = FIXTURES/file
+        value = json.loads(path.read_text())
+        if select == 'single':
+            capture, pointer = value['capture'], '/capture'
+        else:
+            entries = value['captures']
+            index = next((i for i, item in enumerate(entries) if select(item['capture']['text'])), None) if callable(select) else len(entries)-1
+            assert index is not None, f'missing selected screen: {file}'
+            capture, pointer = entries[index]['capture'], f'/captures/{index}/capture'
+        cases.append(dict(id=name, agent=agent, expected=expected, kind='real', source=str(path.relative_to(ROOT)),
+            source_sha256=digest(path), pointer=pointer, rows=capture['rows'], columns=capture['columns'],
+            text=normalize(capture['text']), note=note))
+    add('codex-sign-in', 'codex', 'codex-0.153.4/startup.json', 'blocked')
+    add('codex-trust', 'codex', 'codex-0.153.4/authenticated.json', 'blocked', lambda t: 'Do you trust the contents' in t)
+    add('codex-working', 'codex', 'codex-0.153.4/authenticated.json', 'working', lambda t: bool(re.search(r'^[•◦] Working \(', t, re.M)))
+    add('codex-response-input', 'codex', 'codex-0.153.4/authenticated.json', 'idle', note='response followed by empty composer; input readiness, not task completion')
+    add('codex-command-approval', 'codex', 'codex-0.153.4/approval.json', 'blocked')
+    add('claude-theme', 'claude', 'claude-2.1.263/startup.json', 'blocked')
+    add('claude-working', 'claude', 'claude-2.1.263/authenticated.json', 'working', lambda t: 'Sonnet 5 · API Usage Billing' in t and 'esc to interrupt' in t)
+    add('claude-response-input', 'claude', 'claude-2.1.263/authenticated.json', 'idle', note='response followed by empty composer and shortcut footer; input readiness, not task completion')
+    add('opencode-startup', 'opencode', 'opencode-1.18.29/startup.json', 'idle')
+    add('opencode-permission', 'opencode', 'opencode-1.18.29/integration.json', 'blocked', 'single', 'real agent with synthetic provider; unanswered native permission')
+    add('opencode-question', 'opencode', 'opencode-1.18.29/integration-storage.json', 'blocked', 'single', 'real agent with synthetic provider; unanswered native question')
+    for base in list(cases):
+        text = base['text']
+        mutations = {
+            'stale-transcript': text+'Current unrelated command finished.\n$ ',
+            'quoted-screen': '\n'.join('> '+line for line in text.splitlines())+'\n',
+            'shell-output': '$ cat saved-screen\n'+text,
+            'echoed-name': '$ printf '+base['agent']+'\n'+base['agent']+'\n$ \n',
+            'nested-tool-output': 'Tool output follows:\n'+text+'Tool returned. Waiting for a new request.\n',
+            'malformed-control': text+'\x1b]7877;malformed\x07',
+        }
+        for kind, mutated in mutations.items():
+            cases.append(dict(base, id=base['id']+'/'+kind, expected='unknown', kind=kind,
+                text=mutated, note='synthetic derived negative; detached text, not additional real-agent coverage'))
+    return cases
+
+
+def run(binary, backend, case, path, env):
+    path.write_text(case['text'])
+    # The same normalized text is sent to both file interfaces. Neither receives titles.
+    argv = ([str(binary), 'agent', 'explain', '--file', str(path), '--agent', case['agent'], '--json']
+            if backend == 'herdr' else [str(binary), 'check', str(path), '--agent', case['agent']])
+    result = subprocess.run(argv, env=env, cwd=path.parent, capture_output=True, text=True, timeout=10)
+    if backend == 'herdr':
+        assert result.returncode == 0, (backend, case['id'], result.stderr[:300])
+        value = json.loads(result.stdout)
+        assert value['manifest_source'] == 'bundled', value['manifest_source']
+        return dict(state=value['state'], rule=(value.get('matched_rule') or {}).get('id'),
+            visible_blocker=value['visible_blocker'], visible_working=value['visible_working'],
+            visible_idle=value['visible_idle'], manifest_version=value['manifest_version'],
+            fallback_reason=value['fallback_reason'], skip_state_update=value['skip_state_update'])
+    # zor check returns 1 when expected-state headers are absent. Treat only its exact
+    # normal verdict output as a measurement; an operational error still aborts the run.
+    assert result.returncode == 1 and not result.stderr, (backend, case['id'], result.stderr[:300])
+    match = re.fullmatch(r'(unknown|blocked|working|idle) ([^\s]+)\n', result.stdout)
+    assert match, (backend, case['id'], result.stdout[:300])
+    return dict(state=match[1], rule=None if match[2] == 'none' else match[2])
+
+
+def summarize(results):
+    summary = {}
+    for backend in ['zor', 'herdr']:
+        real = [r for r in results if r['kind'] == 'real']
+        negatives = [r for r in results if r['kind'] != 'real']
+        blockers = [r for r in real if r['expected'] == 'blocked']
+        summary[backend] = dict(real_screens=len(real), correct=sum(r[backend]['state'] == r['expected'] for r in real),
+            blockers=len(blockers), missed_blockers=sum(r[backend]['state'] != 'blocked' for r in blockers),
+            negative_screens=len(negatives), negative_nonunknown=sum(r[backend]['state'] != 'unknown' for r in negatives),
+            negative_matched_rule=sum(r[backend]['rule'] is not None for r in negatives),
+            real_correct_with_rule=sum(r[backend]['state'] == r['expected'] and r[backend]['rule'] is not None for r in real),
+            real_confusion=dict(Counter(r['expected']+' -> '+r[backend]['state'] for r in real)))
+    return summary
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ['zor', 'herdr', 'output']:
+        parser.add_argument('--'+name, type=Path, required=True)
+    args = parser.parse_args()
+    assert not args.output.exists(), 'use a new output file'
+    binaries = {name: getattr(args, name).resolve(strict=True) for name in ['zor', 'herdr']}
+    provenance = dict(harness_sha256=digest(Path(__file__)), binaries={name:dict(path=str(path),sha256=digest(path)) for name,path in binaries.items()})
+    paths = list((ROOT/'zor/rules').glob('*.toml')) + list((ROOT/'references/herdr/src/detect/manifests').glob('*.toml'))
+    paths += [ROOT/'zor/src/rules/eval.rs', ROOT/'zor/src/main.rs', ROOT/'references/herdr/src/detect/manifest.rs', ROOT/'references/herdr/src/cli/agent.rs']
+    provenance['source_hashes'] = {str(path.relative_to(ROOT)):digest(path) for path in paths}
+    results = []
+    with tempfile.TemporaryDirectory(prefix='detect-pair-', dir='/tmp') as directory:
+        root = Path(directory)
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=directory, XDG_CONFIG_HOME=str(root/'config'),
+            XDG_STATE_HOME=str(root/'state'), XDG_CACHE_HOME=str(root/'cache'), XDG_RUNTIME_DIR=directory)
+        for name, binary in binaries.items():
+            provenance['binaries'][name]['version'] = subprocess.run([str(binary), '--version'], env=env,
+                capture_output=True, check=True, text=True, timeout=5).stdout.strip()
+        for case in corpus():
+            result = dict(case, text_sha256=hashlib.sha256(case['text'].encode()).hexdigest())
+            result.pop('text')
+            for name, binary in binaries.items():
+                result[name] = run(binary, name, case, root/'screen.txt', env)
+            results.append(result)
+    value = dict(schema=1, captured_at=datetime.now(timezone.utc).isoformat(), provenance=provenance,
+        scope='Production CLI screen matching, identified agent supplied, default bundled rules, identical normalized viewport text.',
+        limitations=['No OSC/title input, runtime activity arbitration, identity discovery, hysteresis, freshness or live detection latency.',
+            'Eleven selected real screens and derived negatives; not a representative accuracy rate or universal agent coverage.',
+            'Zor rules were developed from these retained fixtures; this measures conformance, not held-out generalization.',
+            'Negative strings are detached text. Exact copied live viewports remain indistinguishable to passive screen matchers.',
+            'OpenCode permission/question screens use a synthetic provider. Codex response and approval use a real authenticated model.'],
+        results=results, summary=summarize(results))
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(value, indent=2, ensure_ascii=False)+'\n')
+    print(json.dumps(value['summary'], indent=2))
+
+
+if __name__ == '__main__':
+    main()

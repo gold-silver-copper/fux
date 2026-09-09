@@ -1,0 +1,663 @@
+{
+  "recorded_at": "2026-09-07T19:04:18.921307+00:00",
+  "provenance": {
+    "binaries": {
+      "fux": {
+        "path": "/Users/kisaczka/Desktop/code/fux/target/debug/fux",
+        "sha256": "140303622814c8089252f20de6c9847487dcda5f1ef03906bfba45d6b60f62cb"
+      },
+      "zor": {
+        "path": "/Users/kisaczka/Desktop/code/fux/zor/target/debug/zor",
+        "sha256": "87c7b7a2df086df566523fd5f009f234817d3296795cecca0d3f9e9736655b3a"
+      },
+      "herdr": {
+        "path": "/Users/kisaczka/Desktop/code/fux/target/herdr-reference/build/debug/herdr",
+        "sha256": "fd13162540e986e9e8f2a651bbd08319d53a05adda3200659995729cd57a5a75"
+      }
+    },
+    "sources": {
+      "tools/comparisons/workflow.py": "217b868447d056f43d705f23d35fa1897842f47d88a02f690e7ca0b25b82b87b",
+      "tests/verify/zor_workflow.py": "67d99545444086e875e49539884ed787443d625ccceaa336103fddc525c8700e",
+      "tests/verify/zor_contention.py": "2436494f573378559056bd43cf4b2ba6141873aa6ed62e41ac70d7c1f186a189"
+    },
+    "herdr_build": {
+      "reference_commit": "94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0",
+      "tracked_source_files_verified": 2452,
+      "binary_sha256": "fd13162540e986e9e8f2a651bbd08319d53a05adda3200659995729cd57a5a75",
+      "source_archive_sha256": "c354a6d37564bdf2c6550e4a1201ed410c4ff90245a461c411e793c6bbcd2cfa",
+      "zig_archive_sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+      "build_log_sha256": "340f40258699514aa11a7962d47b81834ea9949f4c38c1b9264c5c989caaeb9e",
+      "rust_toolchain": "1.95.0",
+      "zig_version": "0.15.2",
+      "build_command": "cargo +1.95.0 build --manifest-path target/herdr-reference/source/Cargo.toml --locked --bin herdr"
+    }
+  },
+  "zor": {
+    "exit_code": 0,
+    "stdout": "PASS two isolated workers, failed dependency repair, pinned handoff, receipt retry and owned cleanup\n",
+    "stderr": ""
+  },
+  "herdr": {
+    "external_checks": [
+      {
+        "worker": "alpha",
+        "expected": "result-alpha",
+        "actual": "result-alpha",
+        "passed": true
+      },
+      {
+        "worker": "beta",
+        "expected": "result-beta",
+        "actual": "incorrect-beta",
+        "passed": false
+      }
+    ],
+    "external_collected": {
+      "alpha": "result-alpha",
+      "beta": "result-beta"
+    },
+    "verification_api": {
+      "id": "",
+      "error": {
+        "code": "invalid_request",
+        "message": "invalid request: unknown variant `task.verify`, expected one of `ping`, `server.stop`, `server.live_handoff`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests`, `notification.show`, `product_announcement.dismiss`, `release_notes.dismiss`, `command.invoke`, `client.window_title.set`, `client.window_title.clear`, `session.snapshot`, `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close`, `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove`, `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close`, `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.rename`, `agent.view.set`, `agent.view.clear`, `agent.focus`, `agent.start`, `agent.prompt`, `agent.wait`, `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `layout.export`, `layout.apply`, `layout.set_split_ratio`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.scroll`, `pane.edit_scrollback`, `pane.selection.read`, `pane.copy_motion`, `pane.copy_search`, `pane.list`, `pane.current`, `pane.get`, `pane.focus`, `pane.input.set`, `pane.link.activate`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.graphics.set`, `pane.graphics.clear`, `pane.graphics.info`, `pane.graphics.stream`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `popup.close`, `events.subscribe`, `events.wait`, `pane.wait_for_output`, `integration.list`, `integration.install`, `integration.uninstall`, `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` at line 1 column 72"
+      }
+    },
+    "dirty_errors": {
+      "alpha": {
+        "id": "workflow",
+        "error": {
+          "code": "dirty_worktree_requires_force",
+          "message": "fatal: '<RUN_ROOT>/alpha' contains modified or untracked files, use --force to delete it"
+        }
+      },
+      "beta": {
+        "id": "workflow",
+        "error": {
+          "code": "dirty_worktree_requires_force",
+          "message": "fatal: '<RUN_ROOT>/beta' contains modified or untracked files, use --force to delete it"
+        }
+      }
+    },
+    "main_preserved": true,
+    "owned_trees_removed": true,
+    "external_handoff_capture": {
+      "type": "pane_read",
+      "read": {
+        "pane_id": "w1:p1",
+        "workspace_id": "w1",
+        "tab_id": "w1:t1",
+        "source": "visible",
+        "format": "text",
+        "text": "result-alpha result-beta\nHANDOFF_RECEIVED result-alpha result-beta\n",
+        "revision": 0,
+        "truncated": false
+      }
+    },
+    "worker_count": 3,
+    "transcript": [
+      {
+        "method": "workspace.create",
+        "params": {
+          "cwd": "<RUN_ROOT>/lead",
+          "focus": true,
+          "env": {
+            "WORKFLOW_LEAD": "1"
+          }
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "workspace_created",
+            "workspace": {
+              "workspace_id": "w1",
+              "number": 1,
+              "label": "lead",
+              "focused": true,
+              "pane_count": 1,
+              "tab_count": 1,
+              "active_tab_id": "w1:t1",
+              "agent_status": "unknown"
+            },
+            "tab": {
+              "tab_id": "w1:t1",
+              "workspace_id": "w1",
+              "number": 1,
+              "label": "1",
+              "focused": true,
+              "pane_count": 1,
+              "agent_status": "unknown"
+            },
+            "root_pane": {
+              "pane_id": "w1:p1",
+              "terminal_id": "term_65ae948f860761",
+              "workspace_id": "w1",
+              "tab_id": "w1:t1",
+              "focused": true,
+              "cwd": "<RUN_ROOT>/lead",
+              "foreground_cwd": "<RUN_ROOT>/lead",
+              "agent_status": "unknown",
+              "scroll": {
+                "offset_from_bottom": 0,
+                "max_offset_from_bottom": 0,
+                "viewport_rows": 40
+              },
+              "revision": 0
+            }
+          }
+        }
+      },
+      {
+        "method": "worktree.create",
+        "params": {
+          "cwd": "<RUN_ROOT>/repo",
+          "branch": "alpha",
+          "path": "<RUN_ROOT>/alpha",
+          "trust_repository": true,
+          "focus": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "worktree_created",
+            "workspace": {
+              "workspace_id": "w3",
+              "number": 3,
+              "label": "alpha",
+              "focused": true,
+              "pane_count": 1,
+              "tab_count": 1,
+              "active_tab_id": "w3:t1",
+              "agent_status": "unknown",
+              "worktree": {
+                "repo_key": "<RUN_ROOT>/repo/.git",
+                "repo_name": "repo",
+                "repo_root": "<RUN_ROOT>/repo",
+                "checkout_path": "<RUN_ROOT>/alpha",
+                "is_linked_worktree": true
+              }
+            },
+            "tab": {
+              "tab_id": "w3:t1",
+              "workspace_id": "w3",
+              "number": 1,
+              "label": "1",
+              "focused": true,
+              "pane_count": 1,
+              "agent_status": "unknown"
+            },
+            "root_pane": {
+              "pane_id": "w3:p1",
+              "terminal_id": "term_65ae948f9ae753",
+              "workspace_id": "w3",
+              "tab_id": "w3:t1",
+              "focused": true,
+              "cwd": "<RUN_ROOT>/alpha",
+              "foreground_cwd": "<RUN_ROOT>/alpha",
+              "agent_status": "unknown",
+              "scroll": {
+                "offset_from_bottom": 0,
+                "max_offset_from_bottom": 0,
+                "viewport_rows": 40
+              },
+              "revision": 0
+            },
+            "worktree": {
+              "path": "<RUN_ROOT>/alpha",
+              "branch": "alpha",
+              "is_bare": false,
+              "is_detached": false,
+              "is_prunable": false,
+              "is_linked_worktree": true,
+              "open_workspace_id": "w3",
+              "label": "repo"
+            }
+          }
+        }
+      },
+      {
+        "method": "worktree.create",
+        "params": {
+          "cwd": "<RUN_ROOT>/repo",
+          "branch": "beta",
+          "path": "<RUN_ROOT>/beta",
+          "trust_repository": true,
+          "focus": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "worktree_created",
+            "workspace": {
+              "workspace_id": "w4",
+              "number": 4,
+              "label": "beta",
+              "focused": true,
+              "pane_count": 1,
+              "tab_count": 1,
+              "active_tab_id": "w4:t1",
+              "agent_status": "unknown",
+              "worktree": {
+                "repo_key": "<RUN_ROOT>/repo/.git",
+                "repo_name": "repo",
+                "repo_root": "<RUN_ROOT>/repo",
+                "checkout_path": "<RUN_ROOT>/beta",
+                "is_linked_worktree": true
+              }
+            },
+            "tab": {
+              "tab_id": "w4:t1",
+              "workspace_id": "w4",
+              "number": 1,
+              "label": "1",
+              "focused": true,
+              "pane_count": 1,
+              "agent_status": "unknown"
+            },
+            "root_pane": {
+              "pane_id": "w4:p1",
+              "terminal_id": "term_65ae948fa54c84",
+              "workspace_id": "w4",
+              "tab_id": "w4:t1",
+              "focused": true,
+              "cwd": "<RUN_ROOT>/beta",
+              "foreground_cwd": "<RUN_ROOT>/beta",
+              "agent_status": "unknown",
+              "scroll": {
+                "offset_from_bottom": 0,
+                "max_offset_from_bottom": 0,
+                "viewport_rows": 40
+              },
+              "revision": 0
+            },
+            "worktree": {
+              "path": "<RUN_ROOT>/beta",
+              "branch": "beta",
+              "is_bare": false,
+              "is_detached": false,
+              "is_prunable": false,
+              "is_linked_worktree": true,
+              "open_workspace_id": "w4",
+              "label": "repo"
+            }
+          }
+        }
+      },
+      {
+        "method": "pane.list",
+        "params": {},
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "pane_list",
+            "panes": [
+              {
+                "pane_id": "w1:p1",
+                "terminal_id": "term_65ae948f860761",
+                "workspace_id": "w1",
+                "tab_id": "w1:t1",
+                "focused": false,
+                "cwd": "<RUN_ROOT>/lead",
+                "foreground_cwd": "<RUN_ROOT>/lead",
+                "agent_status": "unknown",
+                "scroll": {
+                  "offset_from_bottom": 0,
+                  "max_offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "revision": 0
+              },
+              {
+                "pane_id": "w2:p1",
+                "terminal_id": "term_65ae948f9a59d2",
+                "workspace_id": "w2",
+                "tab_id": "w2:t1",
+                "focused": false,
+                "cwd": "<RUN_ROOT>/repo",
+                "foreground_cwd": "<RUN_ROOT>/repo",
+                "agent_status": "unknown",
+                "scroll": {
+                  "offset_from_bottom": 0,
+                  "max_offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "revision": 0
+              },
+              {
+                "pane_id": "w3:p1",
+                "terminal_id": "term_65ae948f9ae753",
+                "workspace_id": "w3",
+                "tab_id": "w3:t1",
+                "focused": false,
+                "cwd": "<RUN_ROOT>/alpha",
+                "foreground_cwd": "<RUN_ROOT>/alpha",
+                "agent_status": "unknown",
+                "scroll": {
+                  "offset_from_bottom": 0,
+                  "max_offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "revision": 0
+              },
+              {
+                "pane_id": "w4:p1",
+                "terminal_id": "term_65ae948fa54c84",
+                "workspace_id": "w4",
+                "tab_id": "w4:t1",
+                "focused": true,
+                "cwd": "<RUN_ROOT>/beta",
+                "foreground_cwd": "<RUN_ROOT>/beta",
+                "agent_status": "unknown",
+                "scroll": {
+                  "offset_from_bottom": 0,
+                  "max_offset_from_bottom": 0,
+                  "viewport_rows": 40
+                },
+                "revision": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "method": "pane.send_input",
+        "params": {
+          "pane_id": "w3:p1",
+          "text": "result-alpha\n"
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "ok"
+          }
+        }
+      },
+      {
+        "method": "pane.send_input",
+        "params": {
+          "pane_id": "w4:p1",
+          "text": "incorrect-beta\n"
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "ok"
+          }
+        }
+      },
+      {
+        "method": "pane.read",
+        "params": {
+          "pane_id": "w3:p1",
+          "source": "visible",
+          "strip_ansi": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "pane_read",
+            "read": {
+              "pane_id": "w3:p1",
+              "workspace_id": "w3",
+              "tab_id": "w3:t1",
+              "source": "visible",
+              "format": "text",
+              "text": "result-alpha\n",
+              "revision": 0,
+              "truncated": false
+            }
+          }
+        }
+      },
+      {
+        "method": "pane.read",
+        "params": {
+          "pane_id": "w3:p1",
+          "source": "visible",
+          "strip_ansi": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "pane_read",
+            "read": {
+              "pane_id": "w3:p1",
+              "workspace_id": "w3",
+              "tab_id": "w3:t1",
+              "source": "visible",
+              "format": "text",
+              "text": "result-alpha\n",
+              "revision": 0,
+              "truncated": false
+            }
+          }
+        }
+      },
+      {
+        "method": "pane.read",
+        "params": {
+          "pane_id": "w3:p1",
+          "source": "visible",
+          "strip_ansi": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "pane_read",
+            "read": {
+              "pane_id": "w3:p1",
+              "workspace_id": "w3",
+              "tab_id": "w3:t1",
+              "source": "visible",
+              "format": "text",
+              "text": "result-alpha\n[alpha a606785] worker output\n 1 file changed, 1 insertion(+)\n create mode 100644 output.txt\nRESPONSE result-alpha\n",
+              "revision": 0,
+              "truncated": false
+            }
+          }
+        }
+      },
+      {
+        "method": "pane.read",
+        "params": {
+          "pane_id": "w4:p1",
+          "source": "visible",
+          "strip_ansi": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "pane_read",
+            "read": {
+              "pane_id": "w4:p1",
+              "workspace_id": "w4",
+              "tab_id": "w4:t1",
+              "source": "visible",
+              "format": "text",
+              "text": "incorrect-beta\n[beta 68aca0b] worker output\n 1 file changed, 1 insertion(+)\n create mode 100644 output.txt\nRESPONSE incorrect-beta\n",
+              "revision": 0,
+              "truncated": false
+            }
+          }
+        }
+      },
+      {
+        "method": "pane.send_input",
+        "params": {
+          "pane_id": "w4:p1",
+          "text": "result-beta\n"
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "ok"
+          }
+        }
+      },
+      {
+        "method": "pane.read",
+        "params": {
+          "pane_id": "w4:p1",
+          "source": "visible",
+          "strip_ansi": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "pane_read",
+            "read": {
+              "pane_id": "w4:p1",
+              "workspace_id": "w4",
+              "tab_id": "w4:t1",
+              "source": "visible",
+              "format": "text",
+              "text": "incorrect-beta\n[beta 68aca0b] worker output\n 1 file changed, 1 insertion(+)\n create mode 100644 output.txt\nRESPONSE incorrect-beta\nresult-beta\n",
+              "revision": 0,
+              "truncated": false
+            }
+          }
+        }
+      },
+      {
+        "method": "pane.read",
+        "params": {
+          "pane_id": "w4:p1",
+          "source": "visible",
+          "strip_ansi": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "pane_read",
+            "read": {
+              "pane_id": "w4:p1",
+              "workspace_id": "w4",
+              "tab_id": "w4:t1",
+              "source": "visible",
+              "format": "text",
+              "text": "incorrect-beta\n[beta 68aca0b] worker output\n 1 file changed, 1 insertion(+)\n create mode 100644 output.txt\nRESPONSE incorrect-beta\nresult-beta\n[beta 851eee3] worker output\n 1 file changed, 1 insertion(+), 1 deletion(-)\nRESPONSE result-beta\n",
+              "revision": 0,
+              "truncated": false
+            }
+          }
+        }
+      },
+      {
+        "method": "task.verify",
+        "params": {
+          "task": "alpha"
+        },
+        "reply": {
+          "id": "",
+          "error": {
+            "code": "invalid_request",
+            "message": "invalid request: unknown variant `task.verify`, expected one of `ping`, `server.stop`, `server.live_handoff`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests`, `notification.show`, `product_announcement.dismiss`, `release_notes.dismiss`, `command.invoke`, `client.window_title.set`, `client.window_title.clear`, `session.snapshot`, `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close`, `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove`, `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close`, `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.rename`, `agent.view.set`, `agent.view.clear`, `agent.focus`, `agent.start`, `agent.prompt`, `agent.wait`, `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `layout.export`, `layout.apply`, `layout.set_split_ratio`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.scroll`, `pane.edit_scrollback`, `pane.selection.read`, `pane.copy_motion`, `pane.copy_search`, `pane.list`, `pane.current`, `pane.get`, `pane.focus`, `pane.input.set`, `pane.link.activate`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.graphics.set`, `pane.graphics.clear`, `pane.graphics.info`, `pane.graphics.stream`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `popup.close`, `events.subscribe`, `events.wait`, `pane.wait_for_output`, `integration.list`, `integration.install`, `integration.uninstall`, `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` at line 1 column 72"
+          }
+        }
+      },
+      {
+        "method": "pane.send_input",
+        "params": {
+          "pane_id": "w1:p1",
+          "text": "result-alpha result-beta\n"
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "ok"
+          }
+        }
+      },
+      {
+        "method": "pane.read",
+        "params": {
+          "pane_id": "w1:p1",
+          "source": "visible",
+          "strip_ansi": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "pane_read",
+            "read": {
+              "pane_id": "w1:p1",
+              "workspace_id": "w1",
+              "tab_id": "w1:t1",
+              "source": "visible",
+              "format": "text",
+              "text": "result-alpha result-beta\nHANDOFF_RECEIVED result-alpha result-beta\n",
+              "revision": 0,
+              "truncated": false
+            }
+          }
+        }
+      },
+      {
+        "method": "worktree.remove",
+        "params": {
+          "workspace_id": "w3",
+          "force": false,
+          "trust_repository": true
+        },
+        "reply": {
+          "id": "workflow",
+          "error": {
+            "code": "dirty_worktree_requires_force",
+            "message": "fatal: '<RUN_ROOT>/alpha' contains modified or untracked files, use --force to delete it"
+          }
+        }
+      },
+      {
+        "method": "worktree.remove",
+        "params": {
+          "workspace_id": "w3",
+          "force": true,
+          "trust_repository": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "worktree_removed",
+            "workspace_id": "w3",
+            "path": "<RUN_ROOT>/alpha",
+            "forced": true
+          }
+        }
+      },
+      {
+        "method": "worktree.remove",
+        "params": {
+          "workspace_id": "w4",
+          "force": false,
+          "trust_repository": true
+        },
+        "reply": {
+          "id": "workflow",
+          "error": {
+            "code": "dirty_worktree_requires_force",
+            "message": "fatal: '<RUN_ROOT>/beta' contains modified or untracked files, use --force to delete it"
+          }
+        }
+      },
+      {
+        "method": "worktree.remove",
+        "params": {
+          "workspace_id": "w4",
+          "force": true,
+          "trust_repository": true
+        },
+        "reply": {
+          "id": "workflow",
+          "result": {
+            "type": "worktree_removed",
+            "workspace_id": "w4",
+            "path": "<RUN_ROOT>/beta",
+            "forced": true
+          }
+        }
+      }
+    ],
+    "server_exit": 0,
+    "worker_exit_confirmed": true
+  }
+}

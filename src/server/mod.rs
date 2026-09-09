@@ -117,8 +117,10 @@ async fn start(
         instance_nonce: identity.instance_nonce.clone(),
         runtime_dir: paths.runtime_dir.clone(),
     });
+    let instance = identity.instance_nonce.clone();
     let adapter = Adapter::new(paths.clone(), identity, pane_tx);
     let owner = Owner {
+        instance,
         inbound: ingress_tx,
         tokens: Arc::new(AtomicU64::new(1)),
         control_replies: control_reply_tx,
@@ -129,7 +131,9 @@ async fn start(
     let descriptors: connections::DescriptorHook = {
         let paths = paths.clone();
         let identity = adapter.identity.clone();
-        Arc::new(move |name: &str| adapter::descriptor(&paths, &identity, name).ok())
+        Arc::new(move |name: &str, stream: u64| {
+            adapter::descriptor(&paths, &identity, name, stream).ok()
+        })
     };
     connections::DESCRIPTOR_HOOK.install(descriptors);
     manager_lock.listener().set_nonblocking(true)?;
@@ -176,7 +180,7 @@ async fn start(
         match receiver.try_recv() {
             Ok(ManagerOutcome::Attach { .. }) => break,
             Ok(ManagerOutcome::Failed(message)) => anyhow::bail!("initial workspace: {message}"),
-            Ok(ManagerOutcome::Names(_) | ManagerOutcome::Info(_)) => {
+            Ok(ManagerOutcome::Names(_) | ManagerOutcome::Info(_) | ManagerOutcome::Final(_)) => {
                 anyhow::bail!("unexpected manager outcome")
             }
             Err(oneshot::error::TryRecvError::Closed) => {
@@ -270,8 +274,8 @@ impl ServerState {
         }
         let effects: Vec<Effect> = self.session.step(self.now_ms(), inbound);
         self.adapter.apply(effects);
-        for name in std::mem::take(&mut self.adapter.opened) {
-            self.open_workspace(&name).await?;
+        for (name, stream) in std::mem::take(&mut self.adapter.opened) {
+            self.open_workspace(&name, stream).await?;
         }
         for name in std::mem::take(&mut self.adapter.closed) {
             self.close_workspace(&name).await;
@@ -279,7 +283,7 @@ impl ServerState {
         Ok(())
     }
 
-    async fn open_workspace(&mut self, name: &str) -> anyhow::Result<()> {
+    async fn open_workspace(&mut self, name: &str, stream: u64) -> anyhow::Result<()> {
         let attach_path = self.adapter.paths.attach_socket(name)?;
         let control_path = self.adapter.paths.control_socket(name)?;
         let attach = bind_local_socket(&attach_path)?;
@@ -290,7 +294,7 @@ impl ServerState {
         let control_listener = tokio::net::UnixListener::from_std(control.listener().try_clone()?)?;
         let stop = Arc::new(Notify::new());
         let subscribers = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let descriptor = self.adapter.descriptor_for(name)?;
+        let descriptor = self.adapter.descriptor_for(name, stream)?;
         self.adapter.register_workspace(OpenWorkspace {
             name: name.to_owned(),
             descriptor,
@@ -416,6 +420,8 @@ async fn run_loop(mut state: ServerState) -> anyhow::Result<()> {
     for name in names {
         state.close_workspace(&name).await;
     }
+    // Cleanup pumps may be blocked reporting completion after the owner stops draining.
+    state.pane_rx.close();
     state.adapter.shutdown().await;
     Ok(())
 }

@@ -1,38 +1,44 @@
 # fux handoff
 
-Updated 2026-09-06 for 0.6.0. fux is a persistent terminal multiplexer whose authoritative model
-is a standalone `bevy_ecs` World; the architecture is in [docs/design.md](docs/design.md), the
-requirement audit and review record in [docs/ecs-acceptance.md](docs/ecs-acceptance.md),
-protocols in `docs/local-*.md`.
+Updated for the uncommitted main-based native integration. fux is a persistent terminal
+multiplexer whose authoritative model is a standalone `bevy_ecs` World. Current architecture
+is in [docs/design.md](docs/design.md), wire contracts in `docs/local-*.md`, and integration
+decisions, evidence and remaining work in [docs/native-integration.md](docs/native-integration.md).
+The older release and performance record in `docs/ecs-acceptance.md` is historical evidence.
 
 ## State
 
-- 0.6.0 is the protocol and agent-surface pass over 0.5.0: the local protocols carry no version
-  numbers (fixed `FUX\n` preface, unversioned `hello`); the control protocol gained a per-pane
-  output sequence, `capture {since, rows}`, `info`, `wait`, `env`/size on `new`/`split` and key
-  notation on `send-keys`; the pane `new` and `tab select-id` aliases folded away; fux reads OSC
-  7877 agent state into `list` and `pane.agent`; `fux run` and `tests/verify/agent_headless.py`
-  drive a full session with no pty; `tests/verify/fixtures/` pins every schema. Agent state in the
-  attachment frame and the viewer bar is the next pass.
-
-- 0.5.0 is the performance pass over the 0.4.0 refactor: attachment protocol v6 carries only
-  the rows that changed (retained grid per pane on the server, retained frame on the viewer,
-  merged updates in the outbox, bindings sent once); the emulator is fed from a reusable
-  buffer. Control `FUXCTL2`, keys, configuration and CLI are unchanged. The measurement method
-  is `tools/measure.py`, `tools/measure_frames.py`, `tools/measure_viewer.py` and
-  `tools/measure_memory.py`; the numbers are in docs/ecs-acceptance.md "Performance pass".
-- Four systems remain exclusive (`&mut World`): request execution, viewer queue draining, spawn
-  completion and the lifecycle cascade; each mutates entities it must observe again within the
-  same phase (see docs/design.md "Systems").
-- Owner checkouts `references/koh` and `zor/` stay at their pinned bases with the one-line
-  patches in `dependency-patches/`; `python3 tools/dependencies.py verify --build` reconstructs and
+- Main's typed ECS, retained grids, changed-row attachment frames, frame pacing and reusable
+  parsing buffers remain the implementation foundation. Local protocols use `FUX\n` and an
+  unversioned attachment hello; companion consumers are pinned and patched together.
+- fux owns generic terminal control. Server/workspace identity, coherent conditional captures,
+  tracked input receipts, bounded event replay and retained final records support unattended
+  consumers. `fux run` obtains final output and status from retained records.
+- Agent interpretation and provider/task/check/artifact policy belong to zor. fux ignores OSC
+  7877 agent reports and exposes no pane agent field or event. Generic title/progress remain.
+- Active verification and measurements use Rust xtask. The original main Python scripts and
+  native reports are explicitly archived with provenance. Current measurement commands are
+  `fux-xtask measure`, `measure-frames`, `measure-viewer` and `measure-memory`, each taking a
+  fux binary path, plus `measure-koh KOH_BINARY` for the two-process local gateway path. On
+  macOS the harness reads process CPU through `proc_pid_rusage` (microseconds); elsewhere it
+  keeps main's `ps` convention. `FUX_MICRO_TIMING=1 cargo test --release --test micro_timing
+  -- --nocapture` times the event-log and terminal hot paths in isolation. Historical passing gates do not validate this uncommitted integration.
+- Completion is not yet established: paired native measurements, final independent review
+  and a fresh complete mandatory headless gate remain outstanding. Live remote R6 and paid
+  provider acceptance remain deferred.
+- Six scheduled systems currently use `&mut World`: request execution, viewer queue draining,
+  spawn completion, wait resolution, input completion and the lifecycle cascade
+  (see docs/design.md "Systems").
+- Owner checkouts `references/koh` and `zor/` stay at their pinned bases with the reviewed
+  patches in `dependency-patches/`; `cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build` reconstructs and
   tests them.
 - Verification gate (all must pass before any publication): the commands in the README's
   "Verification" section plus the real koh and zor integrations with explicit binary paths.
 
 ## Limits
 
-Runtime evidence is macOS only; Linux and Android are configured CI targets without an executed
-run. Emulator-specific clipboard and mouse behaviour and koh relay/NAT scenarios remain manual. The
+Runtime evidence includes macOS and targeted Linux ARM64 tests and benchmarks, recorded in
+`docs/native-integration.md`. A complete final Linux gate and Android runtime acceptance are
+not established. Emulator-specific clipboard and mouse behaviour and koh relay/NAT scenarios remain manual. The
 protocols carry no version numbers; a server older than its client is reported as an error and
 restarted by the operator, never stopped by fux.

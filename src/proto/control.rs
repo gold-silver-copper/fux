@@ -37,7 +37,11 @@ pub type RequestId = u64;
 pub enum Request {
     /// Split the focused pane (or `target`) and start `argv` (default command when empty).
     Split {
+        #[serde(default)]
+        stream: Option<u64>,
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         axis: crate::layout::Axis,
         #[serde(default)]
         target: Option<PaneId>,
@@ -56,19 +60,27 @@ pub enum Request {
     },
     Focus {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         target: FocusTarget,
     },
     Kill {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         pane: PaneId,
     },
     Resize {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         pane: PaneId,
         delta: i16,
     },
     SendKeys {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         pane: PaneId,
         keys: String,
         /// `escapes` (default) reads `\n \e \xHH`; `keys` reads space-separated key names
@@ -76,10 +88,28 @@ pub enum Request {
         #[serde(default)]
         notation: KeyNotation,
     },
+    InputReserve {
+        id: RequestId,
+        instance: Option<String>,
+        pane: PaneId,
+    },
+    InputSubmit {
+        id: RequestId,
+        instance: Option<String>,
+        operation: u64,
+        keys: String,
+    },
+    InputStatus {
+        id: RequestId,
+        instance: Option<String>,
+        operation: u64,
+    },
     /// The pane's text. `format: "rows"` returns the visible rows one by one with the cursor and
     /// the output sequence; with `since` only the rows changed after that sequence.
     Capture {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         pane: PaneId,
         #[serde(default)]
         attrs: bool,
@@ -90,56 +120,137 @@ pub enum Request {
         format: CaptureFormat,
         #[serde(default)]
         since: Option<u64>,
+        #[serde(default)]
+        if_revision: Option<u64>,
     },
     List {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
     },
     /// The server's identity, version, runtime directory and limits.
     Info {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
     },
     /// Block until `pane` meets `until` or `timeout_ms` elapses; the reply says which fired.
     Wait {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         pane: PaneId,
         until: WaitUntil,
         timeout_ms: u64,
     },
     Tab {
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         action: TabAction,
     },
     Workspace {
+        #[serde(default)]
+        stream: Option<u64>,
         id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
         action: WorkspaceAction,
+    },
+    Events {
+        id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
+        after: EventCursor,
     },
     Subscribe {
         id: RequestId,
         #[serde(default)]
+        instance: Option<String>,
+        #[serde(default)]
         events: Vec<EventKind>,
+        #[serde(default)]
+        after: Option<EventCursor>,
     },
 }
 
 impl Request {
     pub fn id(&self) -> RequestId {
         match self {
-            Self::Split { id, .. }
+            Self::InputReserve { id, .. }
+            | Self::InputSubmit { id, .. }
+            | Self::InputStatus { id, .. }
+            | Self::Split { id, .. }
             | Self::Focus { id, .. }
             | Self::Kill { id, .. }
             | Self::Resize { id, .. }
             | Self::SendKeys { id, .. }
             | Self::Capture { id, .. }
-            | Self::List { id }
-            | Self::Info { id }
+            | Self::List { id, .. }
+            | Self::Info { id, .. }
             | Self::Wait { id, .. }
             | Self::Tab { id, .. }
             | Self::Workspace { id, .. }
+            | Self::Events { id, .. }
             | Self::Subscribe { id, .. } => *id,
+        }
+    }
+
+    /// Optional precondition scoped to the discovered server incarnation.
+    pub fn instance(&self) -> Option<&str> {
+        match self {
+            Self::InputReserve { instance, .. }
+            | Self::InputSubmit { instance, .. }
+            | Self::InputStatus { instance, .. }
+            | Self::Split { instance, .. }
+            | Self::Focus { instance, .. }
+            | Self::Kill { instance, .. }
+            | Self::Resize { instance, .. }
+            | Self::SendKeys { instance, .. }
+            | Self::Capture { instance, .. }
+            | Self::List { instance, .. }
+            | Self::Info { instance, .. }
+            | Self::Wait { instance, .. }
+            | Self::Tab { instance, .. }
+            | Self::Workspace { instance, .. }
+            | Self::Events { instance, .. }
+            | Self::Subscribe { instance, .. } => instance.as_deref(),
         }
     }
 
     pub fn validate(&self) -> Result<(), ControlError> {
         let id = Some(self.id());
+        if self.instance().is_some_and(|instance| {
+            instance.is_empty()
+                || instance.len() > 128
+                || !instance
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        }) {
+            return Err(ControlError::invalid(id, "invalid server instance"));
+        }
+        if matches!(
+            self,
+            Self::InputReserve { .. }
+                | Self::InputSubmit { .. }
+                | Self::InputStatus { .. }
+                | Self::Events { .. }
+                | Self::Split {
+                    stream: Some(_),
+                    ..
+                }
+                | Self::Workspace {
+                    stream: Some(_),
+                    ..
+                }
+                | Self::Subscribe { after: Some(_), .. }
+        ) && self.instance().is_none()
+        {
+            return Err(ControlError::invalid(
+                id,
+                "tracked operations require a server instance",
+            ));
+        }
         match self {
             Self::Split { argv, cwd, env, .. } => {
                 validate_argv(argv).map_err(|mut error| {
@@ -158,6 +269,18 @@ impl Request {
             Self::Resize { delta: 0, .. } => {
                 return Err(ControlError::invalid(id, "resize delta must not be zero"));
             }
+            Self::InputSubmit { keys, .. } => {
+                if keys.len() > MAX_KEY_BYTES {
+                    return Err(ControlError::invalid(
+                        id,
+                        "input payload exceeds byte limit",
+                    ));
+                }
+                decode_key_bytes(keys).map_err(|mut error| {
+                    error.id = id;
+                    error
+                })?;
+            }
             Self::SendKeys { keys, notation, .. } => {
                 if keys.len() > MAX_KEY_BYTES {
                     return Err(ControlError::invalid(
@@ -175,6 +298,7 @@ impl Request {
                 scrollback,
                 format,
                 since,
+                if_revision,
                 attrs,
                 ..
             } => {
@@ -188,6 +312,18 @@ impl Request {
                     return Err(ControlError::invalid(
                         id,
                         format!("scrollback must be at most {MAX_SCROLLBACK_LINES} lines"),
+                    ));
+                }
+                if if_revision.is_some() && *format != CaptureFormat::Text {
+                    return Err(ControlError::invalid(
+                        id,
+                        "if-revision requires text capture",
+                    ));
+                }
+                if if_revision.is_some() && self.instance().is_none() {
+                    return Err(ControlError::invalid(
+                        id,
+                        "conditional capture requires a server instance",
                     ));
                 }
                 if since.is_some() && (*format != CaptureFormat::Rows || *scrollback > 0) {
@@ -445,8 +581,23 @@ impl Reply {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "kebab-case")]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "kebab-case",
+    deny_unknown_fields
+)]
 pub enum CommandResult {
+    Final {
+        record: Box<FinalRecord>,
+    },
+    Events {
+        cursor: EventCursor,
+        events: Vec<SequencedEvent>,
+    },
+    Input {
+        receipt: InputReceipt,
+    },
     Unit,
     Pane {
         pane: PaneId,
@@ -457,10 +608,12 @@ pub enum CommandResult {
     Workspace {
         name: String,
     },
-    /// `text` plus the output sequence the text reflects.
+    /// Coherent text/metadata plus the separately refreshed grid sequence.
     Capture {
-        text: String,
         seq: u64,
+        input_sequence: u64,
+        #[serde(flatten)]
+        capture: Box<crate::terminal::CaptureSnapshot>,
     },
     /// The visible rows (only the changed ones when `since_applied`), the cursor and the output
     /// sequence they reflect.
@@ -471,6 +624,7 @@ pub enum CommandResult {
         since_applied: bool,
     },
     Listing {
+        instance: String,
         workspaces: Vec<WorkspaceSummary>,
     },
     Info {
@@ -484,9 +638,33 @@ pub enum CommandResult {
     },
 }
 
+/// Receipt retention is scoped to the server incarnation; expiry never cancels queued bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputReceipt {
+    pub operation: u64,
+    pub pane: PaneId,
+    pub state: InputState,
+    pub revision: u64,
+    pub input_sequence: u64,
+    pub expires_ms: u64,
+    pub bytes_written: usize,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputState {
+    Reserved,
+    Queued,
+    Delivered,
+    Failed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceSummary {
+    pub event_cursor: EventCursor,
     pub name: String,
     pub focused: bool,
     pub viewers: u32,
@@ -513,12 +691,12 @@ pub struct PaneSummary {
     pub title: String,
     #[serde(default)]
     pub progress: Option<(u8, u8)>,
-    /// The pane's self-reported agent state (OSC 7877), or `null` when none. Unverified.
-    #[serde(default)]
-    pub agent: Option<crate::view::AgentReport>,
     /// The output sequence: advances whenever the visible screen, cursor, modes, title or exit
     /// status changed; `capture` and `pane.output` report the same counter.
     pub seq: u64,
+    /// Terminal capture revision; independent of the grid sequence.
+    pub revision: u64,
+    pub input_sequence: u64,
     pub geometry: Rect,
     pub focused: bool,
     pub cursor: crate::view::Cursor,
@@ -536,6 +714,9 @@ pub struct ReplyError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorCode {
+    Pending,
+    Gap,
+    Expired,
     InvalidJson,
     UnknownCommand,
     InvalidRequest,
@@ -548,9 +729,26 @@ pub enum ErrorCode {
     Internal,
 }
 
+/// Scoped to one workspace lifetime within the required server instance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventCursor {
+    pub stream: u64,
+    pub sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SequencedEvent {
+    pub cursor: EventCursor,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Event {
+    #[serde(rename = "workspace.changed")]
+    WorkspaceChanged { id: RequestId },
     #[serde(rename = "pane.opened")]
     PaneOpened {
         id: RequestId,
@@ -569,13 +767,6 @@ pub enum Event {
         id: RequestId,
         pane: PaneId,
         title: String,
-    },
-    #[serde(rename = "pane.agent")]
-    PaneAgent {
-        id: RequestId,
-        pane: PaneId,
-        /// The new agent state, or `null` when the pane no longer reports one.
-        agent: Option<crate::view::AgentReport>,
     },
     #[serde(rename = "pane.output")]
     PaneOutput {
@@ -601,10 +792,10 @@ pub enum Event {
 impl Event {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::WorkspaceChanged { .. } => EventKind::WorkspaceChanged,
             Self::PaneOpened { .. } => EventKind::PaneOpened,
             Self::PaneClosed { .. } => EventKind::PaneClosed,
             Self::PaneTitle { .. } => EventKind::PaneTitle,
-            Self::PaneAgent { .. } => EventKind::PaneAgent,
             Self::PaneOutput { .. } => EventKind::PaneOutput,
             Self::TabOpened { .. } => EventKind::TabOpened,
             Self::TabClosed { .. } => EventKind::TabClosed,
@@ -616,10 +807,10 @@ impl Event {
     /// Stamps the subscriber's request id on a published copy.
     pub fn with_id(mut self, subscription: RequestId) -> Self {
         match &mut self {
-            Self::PaneOpened { id, .. }
+            Self::WorkspaceChanged { id }
+            | Self::PaneOpened { id, .. }
             | Self::PaneClosed { id, .. }
             | Self::PaneTitle { id, .. }
-            | Self::PaneAgent { id, .. }
             | Self::PaneOutput { id, .. }
             | Self::TabOpened { id, .. }
             | Self::TabClosed { id, .. }
@@ -633,14 +824,14 @@ impl Event {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
+    #[serde(rename = "workspace.changed")]
+    WorkspaceChanged,
     #[serde(rename = "pane.opened")]
     PaneOpened,
     #[serde(rename = "pane.closed")]
     PaneClosed,
     #[serde(rename = "pane.title")]
     PaneTitle,
-    #[serde(rename = "pane.agent")]
-    PaneAgent,
     #[serde(rename = "pane.output")]
     PaneOutput,
     #[serde(rename = "tab.opened")]
@@ -711,6 +902,23 @@ pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Res
     writer.write_all(&bytes)?;
     writer.write_all(b"\n")?;
     writer.flush()
+}
+
+/// A control frame with one absolute deadline covering every partial socket write.
+pub fn write_frame_until<T: Serialize>(
+    writer: &mut std::os::unix::net::UnixStream,
+    value: &T,
+    deadline: std::time::Instant,
+) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+    if bytes.len() > MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "serialized control frame exceeds limit",
+        ));
+    }
+    bytes.push(b'\n');
+    super::socket::write_all_until(writer, &bytes, deadline)
 }
 
 pub fn error_reply(error: &ControlError) -> Reply {
@@ -895,11 +1103,14 @@ fn validate_argv(argv: &[String]) -> Result<(), ControlError> {
         ));
     }
     let mut total = 0usize;
-    for argument in argv {
-        if argument.is_empty() || argument.len() > MAX_ARG_BYTES || argument.contains('\0') {
+    for (index, argument) in argv.iter().enumerate() {
+        if (index == 0 && argument.is_empty())
+            || argument.len() > MAX_ARG_BYTES
+            || argument.contains('\0')
+        {
             return Err(ControlError::invalid(
                 None,
-                "argv entries must be non-empty, bounded, and contain no NUL",
+                "executable must be non-empty; argv entries must be bounded and contain no NUL",
             ));
         }
         total = total.saturating_add(argument.len());
@@ -1030,6 +1241,8 @@ mod tests {
     #[test]
     fn capture_since_needs_rows_without_history_and_rows_carry_no_attrs() {
         let base = Request::Capture {
+            if_revision: None,
+            instance: None,
             id: 1,
             pane: PaneId(1),
             attrs: false,
@@ -1049,6 +1262,8 @@ mod tests {
                 since,
                 ..
             } => Request::Capture {
+                if_revision: None,
+                instance: None,
                 id,
                 pane,
                 attrs,
@@ -1070,6 +1285,8 @@ mod tests {
                 since,
                 ..
             } => Request::Capture {
+                if_revision: None,
+                instance: None,
                 id,
                 pane,
                 attrs,
@@ -1091,6 +1308,8 @@ mod tests {
                 since,
                 ..
             } => Request::Capture {
+                if_revision: None,
+                instance: None,
                 id,
                 pane,
                 scrollback,
@@ -1113,7 +1332,7 @@ mod tests {
         ));
         assert!(matches!(
             decode_request_frame(br#"{"command":"info","id":3}"#),
-            Ok(Request::Info { id: 3 })
+            Ok(Request::Info { id: 3, .. })
         ));
     }
 
@@ -1126,4 +1345,67 @@ mod tests {
         assert!(decode_key_bytes("\\x1").is_err());
         assert!(decode_key_bytes("\\").is_err());
     }
+
+    #[test]
+    fn conditional_capture_requires_a_valid_identity_and_text_format() {
+        for input in [
+            r#"{"command":"capture","id":1,"pane":1,"max_bytes":4096,"if_revision":1}"#,
+            r#"{"command":"capture","id":1,"pane":1,"max_bytes":4096,"instance":"","if_revision":1}"#,
+            r#"{"command":"capture","id":1,"pane":1,"max_bytes":4096,"instance":"valid","if_revision":1,"format":"rows"}"#,
+        ] {
+            assert!(decode_request_frame(input.as_bytes()).is_err());
+        }
+        assert!(decode_request_frame(br#"{"command":"capture","id":1,"pane":1,"max_bytes":4096,"instance":"valid","if_revision":1}"#).is_ok());
+    }
+
+    #[test]
+    fn coherent_capture_reply_roundtrips_and_rejects_malformed_metadata() {
+        let mut terminal = crate::terminal::ServerTerminal::new(4, 8, 10);
+        terminal.process(b"text\x1b]2;title\x07");
+        let reply = Reply::Completed {
+            id: 7,
+            result: CommandResult::Capture {
+                seq: 42,
+                input_sequence: 3,
+                capture: Box::new(terminal.capture_snapshot(0, false, 4096, None)),
+            },
+        };
+        let value = serde_json::to_value(&reply).unwrap();
+        assert_eq!(value["result"]["value"]["text"], "text");
+        assert_eq!(value["result"]["value"]["seq"], 42);
+        assert_eq!(value["result"]["value"]["input_sequence"], 3);
+        assert_eq!(
+            serde_json::from_value::<Reply>(value.clone()).unwrap(),
+            reply
+        );
+        let mut missing = value.clone();
+        missing["result"]["value"]
+            .as_object_mut()
+            .unwrap()
+            .remove("revision");
+        assert!(serde_json::from_value::<Reply>(missing).is_err());
+        let mut unknown = value.clone();
+        unknown["result"]["value"]["unknown"] = true.into();
+        assert!(serde_json::from_value::<Reply>(unknown).is_err());
+        let encoded = serde_json::to_string(&value).unwrap();
+        let duplicate = encoded.replace("\"revision\":1", "\"revision\":1,\"revision\":2");
+        assert_ne!(duplicate, encoded);
+        assert!(serde_json::from_str::<Reply>(&duplicate).is_err());
+    }
+}
+
+/// Bounded final screen evidence; a missing exit status means teardown preceded exit observation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FinalRecord {
+    pub pane: PaneId,
+    pub workspace: String,
+    pub stream: u64,
+    pub command: Vec<String>,
+    pub cwd: PathBuf,
+    pub exit_status: Option<u32>,
+    pub closed_ms: u64,
+    pub expires_ms: u64,
+    pub input_sequence: u64,
+    pub capture: crate::terminal::CaptureSnapshot,
 }

@@ -1,0 +1,445 @@
+{
+  "reference_revision": "01e52cc2f562e23157b0f6aa8585a2c64f569169",
+  "purpose": "Historical native evidence only; does not validate the integrated runtime or current sources.",
+  "reports": [
+    {
+      "original_path": "docs/comparisons/workflow.json",
+      "archive_path": "tools/archive/native-evidence/docs/comparisons/workflow.json",
+      "sha256": "c7f5238ec8fe0e85010acdf0f19bf7040e2e6704c9466bcf416ccf74448d34a8"
+    },
+    {
+      "original_path": "docs/comparisons/resources.json",
+      "archive_path": "tools/archive/native-evidence/docs/comparisons/resources.json",
+      "sha256": "c37ea097c1f71591f72ef283cffe20797a8479cff66bd55bfa32e924eb209112"
+    },
+    {
+      "original_path": "docs/comparisons/controller-setup.json",
+      "archive_path": "tools/archive/native-evidence/docs/comparisons/controller-setup.json",
+      "sha256": "b9e4d339c6c9a424d873dec95cf5b09cf2c2bb7f7f3dab0fe1e22afde5917177"
+    },
+    {
+      "original_path": "docs/comparisons/controller-setup-build.json",
+      "archive_path": "tools/archive/native-evidence/docs/comparisons/controller-setup-build.json",
+      "sha256": "c1adb8e525e412c8db4536edc49bbc022d560796ed2f15c774688367cc8a32f7"
+    },
+    {
+      "original_path": "docs/comparisons/capture-traffic.json",
+      "archive_path": "tools/archive/native-evidence/docs/comparisons/capture-traffic.json",
+      "sha256": "3a87cd0ba4abf1ddac1fb9764881b461d5ca0f2381037bfb39545c9d42cb8101"
+    },
+    {
+      "original_path": "docs/comparisons/detection-freshness.json",
+      "archive_path": "tools/archive/native-evidence/docs/comparisons/detection-freshness.json",
+      "sha256": "7378e8e18332ed2aa7c1b038baf2d75894caf84769f811d120134c8be74c17c8"
+    },
+    {
+      "original_path": "docs/comparisons/detection-screens.json",
+      "archive_path": "tools/archive/native-evidence/docs/comparisons/detection-screens.json",
+      "sha256": "85ab7d9d6192819fd5cc419d6c367c45740b0a901741a7dda78aa23a40a53e64"
+    },
+    {
+      "original_path": "docs/headless-performance/fux-before.json",
+      "archive_path": "tools/archive/native-evidence/docs/headless-performance/fux-before.json",
+      "sha256": "eb24752a131ed751997538eaff3d933aaa7f050588dd68e141918796b366badf"
+    },
+    {
+      "original_path": "docs/headless-performance/fux-after-sharing.json",
+      "archive_path": "tools/archive/native-evidence/docs/headless-performance/fux-after-sharing.json",
+      "sha256": "db2e852b54a0644d4dc9c748ad8034f6cc37683a00dbf0798a0530467d7d68e4"
+    },
+    {
+      "original_path": "docs/headless-performance/journal-baseline.json",
+      "archive_path": "tools/archive/native-evidence/docs/headless-performance/journal-baseline.json",
+      "sha256": "23e5d74ec50915f4a44f77762723560948d51dfb64f1ebe143c95bce5a427e13"
+    },
+    {
+      "original_path": "docs/headless-performance/baseline-build.json",
+      "archive_path": "tools/archive/native-evidence/docs/headless-performance/baseline-build.json",
+      "sha256": "4a4db34713d017a6557487bb5c71fac4fcd3d885af5dfb0738be5420b2a7f40e"
+    },
+    {
+      "original_path": "docs/headless-performance/sharing-build.json",
+      "archive_path": "tools/archive/native-evidence/docs/headless-performance/sharing-build.json",
+      "sha256": "d2969ef502336a963ce7c8bb44e9f0a8958e5dfb81443132dc5d4fc21a232e77"
+    }
+  ],
+  "sources": [
+    {
+      "original_path": "tools/comparisons/workflow.py",
+      "archive_path": "tools/archive/native-evidence/sources/tools/comparisons/workflow.py.txt",
+      "sha256": "217b868447d056f43d705f23d35fa1897842f47d88a02f690e7ca0b25b82b87b"
+    },
+    {
+      "original_path": "tests/verify/zor_workflow.py",
+      "archive_path": "tools/archive/native-evidence/sources/tests/verify/zor_workflow.py.txt",
+      "sha256": "67d99545444086e875e49539884ed787443d625ccceaa336103fddc525c8700e"
+    },
+    {
+      "original_path": "tests/verify/zor_contention.py",
+      "archive_path": "tools/archive/native-evidence/sources/tests/verify/zor_contention.py.txt",
+      "sha256": "2436494f573378559056bd43cf4b2ba6141873aa6ed62e41ac70d7c1f186a189"
+    },
+    {
+      "original_path": "tools/comparisons/resources.py",
+      "archive_path": "tools/archive/native-evidence/sources/tools/comparisons/resources.py.txt",
+      "sha256": "ea33ab75e5770f2234f02652e1bfea42f5c05a064adc2e943b8a72242d0c7209"
+    },
+    {
+      "original_path": "tools/comparisons/resource_sampler.c",
+      "archive_path": "tools/archive/native-evidence/sources/tools/comparisons/resource_sampler.c.txt",
+      "sha256": "f9fd441eef48829761b9ecb9019db88777f9b9c8df04b7b7e71c875e313b77e7"
+    },
+    {
+      "original_path": "tools/comparisons/prompt_boundary.py",
+      "archive_path": "tools/archive/native-evidence/sources/tools/comparisons/prompt_boundary.py.txt",
+      "sha256": "3a29778f9717501d45edf8968e28e7124f913eb3df0d5e6d2c794eef057a2d89"
+    },
+    {
+      "original_path": "zor/src/watch.rs",
+      "archive_path": "tools/archive/native-evidence/sources/zor/src/watch.rs.txt",
+      "sha256": "f5de31720c0db955096b8a243e94bc48a481fda5f7e183ac94f3f70d43795c44"
+    },
+    {
+      "original_path": "zor/src/service.rs",
+      "archive_path": "tools/archive/native-evidence/sources/zor/src/service.rs.txt",
+      "sha256": "363746ff787f56e7d3f33221a385857da972f49876e52c3b0567914ab6ea26ed"
+    },
+    {
+      "original_path": "src/ecs/systems/output.rs",
+      "archive_path": "tools/archive/native-evidence/sources/src/ecs/systems/output.rs.txt",
+      "sha256": "466089d1672093a4db561cabf22bf94be39f16e63d05daae9de863bf3e45b4cb"
+    },
+    {
+      "original_path": "src/config.rs",
+      "archive_path": "tools/archive/native-evidence/sources/c903eba3498c2916077c368090ef234db071fd9612adb9ef4efa10fe1816b4b3/src/config.rs.txt",
+      "sha256": "c903eba3498c2916077c368090ef234db071fd9612adb9ef4efa10fe1816b4b3"
+    },
+    {
+      "original_path": "src/proto/control.rs",
+      "archive_path": "tools/archive/native-evidence/sources/b9df4ee9521d19f336ea95d96d1bfaa44004d64279d48a3f4bca6f0b2b8211c7/src/proto/control.rs.txt",
+      "sha256": "b9df4ee9521d19f336ea95d96d1bfaa44004d64279d48a3f4bca6f0b2b8211c7"
+    },
+    {
+      "original_path": "zor/src/dashboard.rs",
+      "archive_path": "tools/archive/native-evidence/sources/db226f34fb83cc4b7f8076247522b88310a3cb7026f292669b354ebbc789eec6/zor/src/dashboard.rs.txt",
+      "sha256": "db226f34fb83cc4b7f8076247522b88310a3cb7026f292669b354ebbc789eec6"
+    },
+    {
+      "original_path": "tools/xtask/src/setup_capture.rs",
+      "archive_path": "tools/archive/native-evidence/sources/e8ac8d4c689e82afe18e52ecd3d324a6c0f07124efe2d532e9f2a8c12cf1b08a/tools/xtask/src/setup_capture.rs.txt",
+      "sha256": "e8ac8d4c689e82afe18e52ecd3d324a6c0f07124efe2d532e9f2a8c12cf1b08a"
+    },
+    {
+      "original_path": "tools/xtask/src/setup-worker.c",
+      "archive_path": "tools/archive/native-evidence/sources/b97c6d36df7481412a4fdf7b9be9e51d869270255ab335558b18265412341dcf/tools/xtask/src/setup-worker.c.txt",
+      "sha256": "b97c6d36df7481412a4fdf7b9be9e51d869270255ab335558b18265412341dcf"
+    },
+    {
+      "original_path": "tools/comparisons/capture_traffic.py",
+      "archive_path": "tools/archive/native-evidence/sources/020c831a57021cf88203dd301aae5815e41e141ade29d859d240e3683747dbb1/tools/comparisons/capture_traffic.py.txt",
+      "sha256": "020c831a57021cf88203dd301aae5815e41e141ade29d859d240e3683747dbb1"
+    },
+    {
+      "original_path": "zor/src/observe.rs",
+      "archive_path": "tools/archive/native-evidence/sources/894fb3eb51a8e9f4af1650e95d1c54ee5a8b2144af27efa1edec8464511355fe/zor/src/observe.rs.txt",
+      "sha256": "894fb3eb51a8e9f4af1650e95d1c54ee5a8b2144af27efa1edec8464511355fe"
+    },
+    {
+      "original_path": "references/herdr/src/pane.rs",
+      "archive_path": "tools/archive/native-evidence/sources/d4f7102b0c06b5d20c38bb37f1603d3e74d66bac5bc89a4f819cd8d28bb172a8/references/herdr/src/pane.rs.txt",
+      "sha256": "d4f7102b0c06b5d20c38bb37f1603d3e74d66bac5bc89a4f819cd8d28bb172a8"
+    },
+    {
+      "original_path": "tools/comparisons/detection_freshness.py",
+      "archive_path": "tools/archive/native-evidence/sources/f3b9e812a12a7e188587f2895ab5e48be435b3c9b6e797577600c1c7cca6971d/tools/comparisons/detection_freshness.py.txt",
+      "sha256": "f3b9e812a12a7e188587f2895ab5e48be435b3c9b6e797577600c1c7cca6971d"
+    },
+    {
+      "original_path": "zor/rules/codex.toml",
+      "archive_path": "tools/archive/native-evidence/sources/ee54c73fd85d469168132dadbe387a6729dd4f8725d4a19efbd231ed6a5cdfe1/zor/rules/codex.toml.txt",
+      "sha256": "ee54c73fd85d469168132dadbe387a6729dd4f8725d4a19efbd231ed6a5cdfe1"
+    },
+    {
+      "original_path": "zor/rules/opencode.toml",
+      "archive_path": "tools/archive/native-evidence/sources/ff2e9e9139812743883d33febaf2e29b3554225dd2261635d1e25b4b0927e8b7/zor/rules/opencode.toml.txt",
+      "sha256": "ff2e9e9139812743883d33febaf2e29b3554225dd2261635d1e25b4b0927e8b7"
+    },
+    {
+      "original_path": "zor/rules/claude.toml",
+      "archive_path": "tools/archive/native-evidence/sources/da86ee8911f0e4a977a7cf12d1b3519667b4f0e87d3fe81d9143d2c3252e2768/zor/rules/claude.toml.txt",
+      "sha256": "da86ee8911f0e4a977a7cf12d1b3519667b4f0e87d3fe81d9143d2c3252e2768"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/qwen.toml",
+      "archive_path": "tools/archive/native-evidence/sources/b27aa456af228e8a4ceac74f0dd431c33b21473b69314fc672a7fba474e2a7fe/references/herdr/src/detect/manifests/qwen.toml.txt",
+      "sha256": "b27aa456af228e8a4ceac74f0dd431c33b21473b69314fc672a7fba474e2a7fe"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/devin.toml",
+      "archive_path": "tools/archive/native-evidence/sources/250c9cea1d60bdb965dc6056f3066b785e941d60242756fbaca73b57ca6b0f85/references/herdr/src/detect/manifests/devin.toml.txt",
+      "sha256": "250c9cea1d60bdb965dc6056f3066b785e941d60242756fbaca73b57ca6b0f85"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/kiro.toml",
+      "archive_path": "tools/archive/native-evidence/sources/2b56fc18c478e2730acd9f8cbfecb69a2496258f8f20ef157813b09fa74c6e37/references/herdr/src/detect/manifests/kiro.toml.txt",
+      "sha256": "2b56fc18c478e2730acd9f8cbfecb69a2496258f8f20ef157813b09fa74c6e37"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/gemini.toml",
+      "archive_path": "tools/archive/native-evidence/sources/d7013b5e772852ecc595febf964f00b4f9edcbc6047a2a5421613a154d92520d/references/herdr/src/detect/manifests/gemini.toml.txt",
+      "sha256": "d7013b5e772852ecc595febf964f00b4f9edcbc6047a2a5421613a154d92520d"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/opencode.toml",
+      "archive_path": "tools/archive/native-evidence/sources/faa82aed2d76ad856528caae04232894594b74cc903aed3e522b3e725c5f2c95/references/herdr/src/detect/manifests/opencode.toml.txt",
+      "sha256": "faa82aed2d76ad856528caae04232894594b74cc903aed3e522b3e725c5f2c95"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/kimi.toml",
+      "archive_path": "tools/archive/native-evidence/sources/ede08c0d2d5024f7606dc0a1b2f7a9c6a0ebb99f3b6c58ca6757049856d06e05/references/herdr/src/detect/manifests/kimi.toml.txt",
+      "sha256": "ede08c0d2d5024f7606dc0a1b2f7a9c6a0ebb99f3b6c58ca6757049856d06e05"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/kilo.toml",
+      "archive_path": "tools/archive/native-evidence/sources/70f0ba4e58bc141fe69d7024013f973cd16e8616393079318914d70afeefef3b/references/herdr/src/detect/manifests/kilo.toml.txt",
+      "sha256": "70f0ba4e58bc141fe69d7024013f973cd16e8616393079318914d70afeefef3b"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/qodercli.toml",
+      "archive_path": "tools/archive/native-evidence/sources/2089f70fc78c6576fd7128a00f4e7eedb85be81bde9ed73301b3b88000048961/references/herdr/src/detect/manifests/qodercli.toml.txt",
+      "sha256": "2089f70fc78c6576fd7128a00f4e7eedb85be81bde9ed73301b3b88000048961"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/pi.toml",
+      "archive_path": "tools/archive/native-evidence/sources/d852f52d637040fad207a395928dc190d99d24b6c72d6e1b7fbbf4487a416e40/references/herdr/src/detect/manifests/pi.toml.txt",
+      "sha256": "d852f52d637040fad207a395928dc190d99d24b6c72d6e1b7fbbf4487a416e40"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/claude.toml",
+      "archive_path": "tools/archive/native-evidence/sources/89d4b381b3337f35dcc51c7c379898fcadb2a1152b9d0cf9cce950b3c4b8ae5b/references/herdr/src/detect/manifests/claude.toml.txt",
+      "sha256": "89d4b381b3337f35dcc51c7c379898fcadb2a1152b9d0cf9cce950b3c4b8ae5b"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/codex.toml",
+      "archive_path": "tools/archive/native-evidence/sources/1098233b6440bcfcfbf1b5ef93cb0356e96ad3f89ef8b25a217c0d47c0a8d373/references/herdr/src/detect/manifests/codex.toml.txt",
+      "sha256": "1098233b6440bcfcfbf1b5ef93cb0356e96ad3f89ef8b25a217c0d47c0a8d373"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/cursor.toml",
+      "archive_path": "tools/archive/native-evidence/sources/753b1f7f632d42fa21139c2767ecbb5e1078748aba2e59407ac4932d3ce36ad7/references/herdr/src/detect/manifests/cursor.toml.txt",
+      "sha256": "753b1f7f632d42fa21139c2767ecbb5e1078748aba2e59407ac4932d3ce36ad7"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/amp.toml",
+      "archive_path": "tools/archive/native-evidence/sources/b5806b0dd21e2f5e752d0eac7f084d5ce2e3f275638cfd1234c42cc88152dc8c/references/herdr/src/detect/manifests/amp.toml.txt",
+      "sha256": "b5806b0dd21e2f5e752d0eac7f084d5ce2e3f275638cfd1234c42cc88152dc8c"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/maki.toml",
+      "archive_path": "tools/archive/native-evidence/sources/3b392170ee3082051266509f575a4640bde8d693b2f37ecf52157a641bc75b28/references/herdr/src/detect/manifests/maki.toml.txt",
+      "sha256": "3b392170ee3082051266509f575a4640bde8d693b2f37ecf52157a641bc75b28"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/github-copilot.toml",
+      "archive_path": "tools/archive/native-evidence/sources/b70c652584326a1a98475a5fcef16207dee9f23b65f8e78300f4fc2bb578cb11/references/herdr/src/detect/manifests/github-copilot.toml.txt",
+      "sha256": "b70c652584326a1a98475a5fcef16207dee9f23b65f8e78300f4fc2bb578cb11"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/droid.toml",
+      "archive_path": "tools/archive/native-evidence/sources/d37e7c464177c0e8f3edce8d4fabc4bcc7a1874edf2c4c87a2f927888cf69ce9/references/herdr/src/detect/manifests/droid.toml.txt",
+      "sha256": "d37e7c464177c0e8f3edce8d4fabc4bcc7a1874edf2c4c87a2f927888cf69ce9"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/cline.toml",
+      "archive_path": "tools/archive/native-evidence/sources/577e2f1bd115a6ed3b5c38c661af175386fcdba269f7cd7447bf16d7c72521f0/references/herdr/src/detect/manifests/cline.toml.txt",
+      "sha256": "577e2f1bd115a6ed3b5c38c661af175386fcdba269f7cd7447bf16d7c72521f0"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/antigravity.toml",
+      "archive_path": "tools/archive/native-evidence/sources/11300b853130d037eb2c57d9c4b897893cc1f0a876e12eb54ff1b216177db9d7/references/herdr/src/detect/manifests/antigravity.toml.txt",
+      "sha256": "11300b853130d037eb2c57d9c4b897893cc1f0a876e12eb54ff1b216177db9d7"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/grok.toml",
+      "archive_path": "tools/archive/native-evidence/sources/618afc3d09d784343fc6c4bcee5801906df2c0fd62a65b447cf5f4b1bd215bb2/references/herdr/src/detect/manifests/grok.toml.txt",
+      "sha256": "618afc3d09d784343fc6c4bcee5801906df2c0fd62a65b447cf5f4b1bd215bb2"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/muse.toml",
+      "archive_path": "tools/archive/native-evidence/sources/b69c4d87fa9c19e3e6453b706fbe39c98a8b33ffbaa48e8cd5ae6751e9615074/references/herdr/src/detect/manifests/muse.toml.txt",
+      "sha256": "b69c4d87fa9c19e3e6453b706fbe39c98a8b33ffbaa48e8cd5ae6751e9615074"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifests/hermes.toml",
+      "archive_path": "tools/archive/native-evidence/sources/533d21b65dea3a0c60c25d0475c9c900d28a5712b6392669a7788f75de2b6e85/references/herdr/src/detect/manifests/hermes.toml.txt",
+      "sha256": "533d21b65dea3a0c60c25d0475c9c900d28a5712b6392669a7788f75de2b6e85"
+    },
+    {
+      "original_path": "zor/src/rules/eval.rs",
+      "archive_path": "tools/archive/native-evidence/sources/27c6735e47c5095ca9ed6f860c3c2461ded972412b1c8931897979c1e23645eb/zor/src/rules/eval.rs.txt",
+      "sha256": "27c6735e47c5095ca9ed6f860c3c2461ded972412b1c8931897979c1e23645eb"
+    },
+    {
+      "original_path": "zor/src/main.rs",
+      "archive_path": "tools/archive/native-evidence/sources/23b0a94f3ca7249425afc8ba95d64536e042b4da791370e328efc39c3191a534/zor/src/main.rs.txt",
+      "sha256": "23b0a94f3ca7249425afc8ba95d64536e042b4da791370e328efc39c3191a534"
+    },
+    {
+      "original_path": "references/herdr/src/detect/manifest.rs",
+      "archive_path": "tools/archive/native-evidence/sources/2b8eb92b688a018b51b3ab8d01e97c0888eb501d0c0ca90f0eec6c65f98cadf3/references/herdr/src/detect/manifest.rs.txt",
+      "sha256": "2b8eb92b688a018b51b3ab8d01e97c0888eb501d0c0ca90f0eec6c65f98cadf3"
+    },
+    {
+      "original_path": "references/herdr/src/cli/agent.rs",
+      "archive_path": "tools/archive/native-evidence/sources/c09dd6549b155c28f438463139a132dc88d74d49a528b566b73273ca0d018c1b/references/herdr/src/cli/agent.rs.txt",
+      "sha256": "c09dd6549b155c28f438463139a132dc88d74d49a528b566b73273ca0d018c1b"
+    },
+    {
+      "original_path": "tools/comparisons/detection_screens.py",
+      "archive_path": "tools/archive/native-evidence/sources/b6ba5464871932b881fff5832658eccd6bc1551d05b31afb31cb54c37be7500d/tools/comparisons/detection_screens.py.txt",
+      "sha256": "b6ba5464871932b881fff5832658eccd6bc1551d05b31afb31cb54c37be7500d"
+    },
+    {
+      "original_path": "zor/tests/fixtures/agents/codex-0.153.4/startup.json",
+      "archive_path": "tools/archive/native-evidence/sources/50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5/zor/tests/fixtures/agents/codex-0.153.4/startup.json.txt",
+      "sha256": "50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5"
+    },
+    {
+      "original_path": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "archive_path": "tools/archive/native-evidence/sources/66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a/zor/tests/fixtures/agents/codex-0.153.4/authenticated.json.txt",
+      "sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a"
+    },
+    {
+      "original_path": "zor/tests/fixtures/agents/codex-0.153.4/approval.json",
+      "archive_path": "tools/archive/native-evidence/sources/2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f/zor/tests/fixtures/agents/codex-0.153.4/approval.json.txt",
+      "sha256": "2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f"
+    },
+    {
+      "original_path": "zor/tests/fixtures/agents/claude-2.1.263/startup.json",
+      "archive_path": "tools/archive/native-evidence/sources/c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6/zor/tests/fixtures/agents/claude-2.1.263/startup.json.txt",
+      "sha256": "c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6"
+    },
+    {
+      "original_path": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "archive_path": "tools/archive/native-evidence/sources/dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039/zor/tests/fixtures/agents/claude-2.1.263/authenticated.json.txt",
+      "sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039"
+    },
+    {
+      "original_path": "zor/tests/fixtures/agents/opencode-1.18.29/startup.json",
+      "archive_path": "tools/archive/native-evidence/sources/6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242/zor/tests/fixtures/agents/opencode-1.18.29/startup.json.txt",
+      "sha256": "6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242"
+    },
+    {
+      "original_path": "zor/tests/fixtures/agents/opencode-1.18.29/integration.json",
+      "archive_path": "tools/archive/native-evidence/sources/7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa/zor/tests/fixtures/agents/opencode-1.18.29/integration.json.txt",
+      "sha256": "7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa"
+    },
+    {
+      "original_path": "zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json",
+      "archive_path": "tools/archive/native-evidence/sources/18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3/zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json.txt",
+      "sha256": "18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3"
+    },
+    {
+      "original_path": "tools/headless_performance.py",
+      "archive_path": "tools/archive/native-evidence/sources/a528eaa007ad7ccaf61b00a27028c72224399e8327843f3b902fdf9fff2e1e7f/tools/headless_performance.py.txt",
+      "sha256": "a528eaa007ad7ccaf61b00a27028c72224399e8327843f3b902fdf9fff2e1e7f",
+      "recovered_from": "tools/archive/tools/headless_performance.py.txt"
+    },
+    {
+      "original_path": "tools/headless_journal.py",
+      "archive_path": "tools/archive/native-evidence/sources/4e9740c242e34ba684fd887a7981abb97f8e407dd558773d6f5bda3475e80fa7/tools/headless_journal.py.txt",
+      "sha256": "4e9740c242e34ba684fd887a7981abb97f8e407dd558773d6f5bda3475e80fa7",
+      "recovered_from": "tools/archive/tools/headless_journal.py.txt"
+    },
+    {
+      "original_path": "src/ecs/systems/snapshot.rs",
+      "archive_path": "tools/archive/native-evidence/sources/90cd12170f67d0e615a8890a536f7de1eed27e4517f04f6c3cdbce4505bce14e/src/ecs/systems/snapshot.rs.txt",
+      "sha256": "90cd12170f67d0e615a8890a536f7de1eed27e4517f04f6c3cdbce4505bce14e",
+      "recovered_from": {
+        "repository": "/Users/kisaczka/Desktop/code/fux",
+        "revision": "4265ce5e63a1542182570c7fbe4e6ce353536fa1",
+        "path": "src/ecs/systems/snapshot.rs"
+      }
+    },
+    {
+      "original_path": "src/server/adapter.rs",
+      "archive_path": "tools/archive/native-evidence/sources/471ed8a2fcb032cade68b04acb757ced404cf5c03c020e26dcdca7d0ef017807/src/server/adapter.rs.txt",
+      "sha256": "471ed8a2fcb032cade68b04acb757ced404cf5c03c020e26dcdca7d0ef017807",
+      "recovered_from": "src/server/adapter.rs"
+    },
+    {
+      "original_path": "zor/src/tasks/store.rs",
+      "archive_path": "tools/archive/native-evidence/sources/d521efaff68bfb88a8c10dc9e0524959d94c22ee85b1769bb06e95bc464d956c/zor/src/tasks/store.rs.txt",
+      "sha256": "d521efaff68bfb88a8c10dc9e0524959d94c22ee85b1769bb06e95bc464d956c",
+      "recovered_from": "zor/src/tasks/store.rs"
+    },
+    {
+      "original_path": "references/koh/src/gateway/resume.rs",
+      "archive_path": "tools/archive/native-evidence/sources/d398d914a441861118045bfc6de1badb4560c9b85b6dadcb9279a1e7b4c2a606/references/koh/src/gateway/resume.rs.txt",
+      "sha256": "d398d914a441861118045bfc6de1badb4560c9b85b6dadcb9279a1e7b4c2a606",
+      "recovered_from": {
+        "repository": "/Users/kisaczka/Desktop/code/fux/references/koh",
+        "revision": "50a8270f48175c4a23e84c0ece008ff9ae49d918",
+        "path": "src/gateway/resume.rs"
+      }
+    },
+    {
+      "original_path": "Cargo.lock",
+      "archive_path": "tools/archive/native-evidence/sources/db614a5d3971fb439fd19cf80efd174b747d58db951c08310f49074182e3bf94/Cargo.lock.txt",
+      "sha256": "db614a5d3971fb439fd19cf80efd174b747d58db951c08310f49074182e3bf94",
+      "recovered_from": "Cargo.lock"
+    },
+    {
+      "original_path": "src/view.rs",
+      "archive_path": "tools/archive/native-evidence/sources/42a706b52d746a0d408a7ea04b826e331da2301d578cd6f7adb9bb5f50df9a8b/src/view.rs.txt",
+      "sha256": "42a706b52d746a0d408a7ea04b826e331da2301d578cd6f7adb9bb5f50df9a8b",
+      "recovered_from": {
+        "repository": "/Users/kisaczka/Desktop/code/fux",
+        "revision": "01dea8a94f90d436a36b4d7f023ec6599dc9716c",
+        "path": "src/view.rs"
+      }
+    },
+    {
+      "original_path": "zor/Cargo.toml",
+      "archive_path": "tools/archive/native-evidence/sources/00491867c399b0768aca109696388d72155bee3d4d8ccef4f8c7122f448d9d87/zor/Cargo.toml.txt",
+      "sha256": "00491867c399b0768aca109696388d72155bee3d4d8ccef4f8c7122f448d9d87",
+      "recovered_from": "zor/Cargo.toml"
+    },
+    {
+      "original_path": "zor/Cargo.lock",
+      "archive_path": "tools/archive/native-evidence/sources/537bd1afbdc7ba44737772c835ddd7fc62042a4a793c78e55cfa3bd5e0c460b5/zor/Cargo.lock.txt",
+      "sha256": "537bd1afbdc7ba44737772c835ddd7fc62042a4a793c78e55cfa3bd5e0c460b5",
+      "recovered_from": "zor/Cargo.lock"
+    },
+    {
+      "original_path": "Cargo.toml",
+      "archive_path": "tools/archive/native-evidence/sources/136ab18b22f5a8e472b4e24ffdd3c894a1786d2b8c11d5edcd157e97f99fb0a6/Cargo.toml.txt",
+      "sha256": "136ab18b22f5a8e472b4e24ffdd3c894a1786d2b8c11d5edcd157e97f99fb0a6",
+      "recovered_from": "Cargo.toml"
+    },
+    {
+      "original_path": "src/view.rs",
+      "archive_path": "tools/archive/native-evidence/sources/e558e0e2d25d67445438b9fe287f65b2952e821d9889eb97e0458b61110a58ee/src/view.rs.txt",
+      "sha256": "e558e0e2d25d67445438b9fe287f65b2952e821d9889eb97e0458b61110a58ee",
+      "recovered_from": "src/view.rs"
+    },
+    {
+      "original_path": "src/ecs/systems/snapshot.rs",
+      "archive_path": "tools/archive/native-evidence/sources/a1dd3b321ab706eb691229290d0e5fbc4aaebbd141e547cd0db1edd57d1681cb/src/ecs/systems/snapshot.rs.txt",
+      "sha256": "a1dd3b321ab706eb691229290d0e5fbc4aaebbd141e547cd0db1edd57d1681cb",
+      "recovered_from": "src/ecs/systems/snapshot.rs"
+    }
+  ],
+  "unresolved_historical_sources": [
+    {
+      "original_path": "zor/src/dashboard.rs",
+      "sha256": "818a3b0bf14782103a3da72a2578e05a5d5a24be2766aa94da1bf42569fe1411",
+      "reason": "Exact source not found in current reference, archived source copies, path history, or retained performance source tarballs."
+    },
+    {
+      "original_path": "Cargo.toml",
+      "sha256": "53e84a04e8be7cc4c281503b6361ac8cb8c7a7978aa097f5830f8fa7463c2fb9",
+      "reason": "Exact source not found in current reference, archived source copies, path history, or retained performance source tarballs."
+    }
+  ]
+}

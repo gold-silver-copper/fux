@@ -1,0 +1,41 @@
+{
+  "source_revision": "a48f839501af2bb317f559d96255013bd3f3eb33",
+  "purpose": "Historical main scenario sources; active coverage is migrated to Rust, not established by these archived scripts.",
+  "files": [
+    {
+      "original_path": "tests/verify/agent_headless.py",
+      "archive_path": "tools/archive/tests/verify/agent_headless.py.txt",
+      "sha256": "db13e2cfa6139784bac3a679672eca5c3b4c20b1d2f475d9b7f7a7e320645ff7"
+    },
+    {
+      "original_path": "tests/verify/local_attachment.py",
+      "archive_path": "tools/archive/tests/verify/local_attachment.py.txt",
+      "sha256": "d0d59b1af8ee106aa03cab083535b4a143a7e710fac77baf0844d2610bec2af2"
+    },
+    {
+      "original_path": "tests/verify/local_tty.py",
+      "archive_path": "tools/archive/tests/verify/local_tty.py.txt",
+      "sha256": "2b9919623edf5cbbd971cf11c6358896176dc57e1b2cad61166f4bd013b10b98"
+    },
+    {
+      "original_path": "tests/verify/protocol_rejection.py",
+      "archive_path": "tools/archive/tests/verify/protocol_rejection.py.txt",
+      "sha256": "27a7a3e22f25ced6be09ee8f55c3b65760ae8f6ac38fe67100b8807643e16cdc"
+    },
+    {
+      "original_path": "tests/verify/detach_drain.py",
+      "archive_path": "tools/archive/tests/verify/detach_drain.py.txt",
+      "sha256": "8444123db6515f887e2f3ab4641b655cf4fd97d2467d254e0fd3bf4598b5ced6"
+    },
+    {
+      "original_path": "tests/verify/viewer.py",
+      "archive_path": "tools/archive/tests/verify/viewer.py.txt",
+      "sha256": "49370c1cc2ce808c55e12ab3dcd60f4b8f41114aa1757d77fe984a8b5851889d"
+    },
+    {
+      "original_path": "tests/verify/observer.py",
+      "archive_path": "tools/archive/tests/verify/observer.py.txt",
+      "sha256": "1191f9bd85136a444d545141b1d15fde684794cd355f3fd9d863e37b599e8a50"
+    }
+  ]
+}

@@ -12,8 +12,8 @@ pub use descriptor::{
 };
 pub use paths::{DaemonPaths, PathError};
 pub use rpc::{
-    MANAGER_DEADLINE, ManagerReply, ManagerRequest, manager_request, read_json_frame,
-    workspace_names,
+    MANAGER_DEADLINE, ManagerReply, ManagerRequest, manager_request, manager_request_until,
+    read_json_frame, workspace_names,
 };
 pub use startup::{
     ManagerLock, STARTUP_TIMEOUT, ServerChild, StartupLock, report_startup, sanitized_environment,

@@ -1,0 +1,379 @@
+{
+  "schema": 1,
+  "captured_at": "2026-09-07T17:41:37.760437+00:00",
+  "agent_version": "codex-cli 0.153.4",
+  "binary_sha256": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+  "fux_sha256": "030717ff7206372d9345c7ed4583a39c0f8823f020ecc055997ac55109e48919",
+  "harness_sha256": "5e74f071e133add5251e4ae7a6e980820e57b9d08391bb3fe8d4d19eb3fa3992",
+  "model": "gpt-6-astra",
+  "prompt": "Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.",
+  "provider": "real authenticated OpenAI; no synthetic provider",
+  "isolation": "Fresh HOME/XDG/CODEX_HOME/work; only authorized auth.json copied; read-only sandbox, approval never.",
+  "limitation": "Passive viewport observations; no native prompt binding or verified task outcome.",
+  "captures": [
+    {
+      "elapsed_ms": 105,
+      "capture": {
+        "input_sequence": 0,
+        "text": "",
+        "revision": 4,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 210,
+      "capture": {
+        "input_sequence": 0,
+        "text": "> You are in <CAPTURE_ROOT>\n\n  Do you trust the contents of this directory? Working with untrusted contents\n  comes with higher risk of prompt injection. Trusting the directory allows\n  project-local config, hooks, and exec policies to load.\n\n› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue",
+        "revision": 26,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 316,
+      "capture": {
+        "input_sequence": 1,
+        "text": "╭───────────────────────────────────────╮\n│ >_ OpenAI Codex (v0.153.4)            │\n│                                       │\n│ model:     loading   /model to change │\n│ directory: <CAPTURE_ROOT>  │\n╰───────────────────────────────────────╯\n \n \n› Ask Codex to do anything\n \n  ? for shortcuts",
+        "revision": 33,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 740,
+      "capture": {
+        "input_sequence": 1,
+        "text": "╭───────────────────────────────────────────╮\n│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n \n• Booting MCP server: codex_apps (0s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 67,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 1366,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Booting MCP server: codex_apps (0s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 97,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠦ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 1788,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (1s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 119,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠙ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 1996,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (1s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 129,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠸ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 2520,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (1s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 154,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠇ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 2733,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (2s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 164,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 3150,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (2s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 181,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠼ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 3773,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (3s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 210,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 4407,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (3s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 238,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠧ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 4721,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (4s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 254,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 4934,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (4s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 262,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠹ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 5568,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (4s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 291,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠏ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 5779,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (5s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 299,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 5883,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n\n• FUX_OBSERVATION_OK\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 306,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠙ zca-erjsdvwk",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "purpose": "trust only the disposable fixture directory",
+      "keys": "\r",
+      "result": {
+        "receipt": {
+          "operation": 1,
+          "pane": 1,
+          "state": "queued",
+          "revision": 26,
+          "input_sequence": 1,
+          "expires_ms": 60206,
+          "bytes_written": 0,
+          "error": null
+        }
+      }
+    },
+    {
+      "purpose": "type Codex exit command",
+      "keys": "/quit",
+      "result": {
+        "receipt": {
+          "operation": 2,
+          "pane": 1,
+          "state": "queued",
+          "revision": 312,
+          "input_sequence": 2,
+          "expires_ms": 67889,
+          "bytes_written": 0,
+          "error": null
+        }
+      }
+    },
+    {
+      "purpose": "submit Codex exit command",
+      "keys": "\r",
+      "result": {
+        "receipt": {
+          "operation": 3,
+          "pane": 1,
+          "state": "queued",
+          "revision": 313,
+          "input_sequence": 3,
+          "expires_ms": 68391,
+          "bytes_written": 0,
+          "error": null
+        }
+      }
+    }
+  ],
+  "exit_trigger": "Codex /quit",
+  "final": {
+    "pane": 1,
+    "workspace": "default",
+    "stream": 1,
+    "command": [
+      "/opt/homebrew/bin/codex",
+      "-m",
+      "gpt-6-astra",
+      "-s",
+      "read-only",
+      "-a",
+      "never",
+      "--no-alt-screen",
+      "Reply with exactly FUX_OBSERVATION_OK. Do not use any tools."
+    ],
+    "cwd": "<CAPTURE_ROOT>/work",
+    "exit_status": 0,
+    "closed_ms": 13909,
+    "expires_ms": 73909,
+    "input_sequence": 3,
+    "capture": {
+      "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n\n• FUX_OBSERVATION_OK\nToken usage: total=1,806 input=1,796 (+ 11,904 cached) output=10\nTo continue this session, run:\n  codex resume 01a07cf6-1a7c-7081-8c58-3389b610c261\nOr run codex resume and select Reply with FUX_OBSERVATION_OK.",
+      "revision": 321,
+      "rows": 23,
+      "columns": 80,
+      "scrollback_offset": 0,
+      "title": "",
+      "progress": null,
+      "unchanged": false,
+      "truncated": false
+    }
+  },
+  "argv": [
+    "/opt/homebrew/bin/codex",
+    "-m",
+    "gpt-6-astra",
+    "-s",
+    "read-only",
+    "-a",
+    "never",
+    "--no-alt-screen",
+    "Reply with exactly FUX_OBSERVATION_OK. Do not use any tools."
+  ],
+  "instance": "270f96c04a5e33e8cc44b5af3ffb01f1",
+  "pane": 1,
+  "after_quit": {
+    "input_sequence": 3,
+    "text": "│ >_ OpenAI Codex (v0.153.4)                │\n│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› Reply with exactly FUX_OBSERVATION_OK. Do not use any tools.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n\n• FUX_OBSERVATION_OK",
+    "revision": 320,
+    "rows": 23,
+    "columns": 80,
+    "scrollback_offset": 0,
+    "title": "",
+    "progress": null,
+    "unchanged": false,
+    "truncated": false
+  },
+  "server_exit": 0
+}

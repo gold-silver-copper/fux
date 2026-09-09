@@ -552,6 +552,8 @@ impl Controller {
                     return None;
                 }
                 Some(Request::Workspace {
+                    stream: None,
+                    instance: None,
                     id: 0,
                     action: WorkspaceAction::Select { name },
                 })
@@ -567,6 +569,7 @@ impl Controller {
                 }
                 self.mode = Mode::Pane;
                 Some(Request::Tab {
+                    instance: None,
                     id: 0,
                     action: TabAction::Select {
                         target: crate::proto::control::TabTarget::Id(target),
@@ -580,7 +583,11 @@ impl Controller {
                         name: text.clone(),
                     };
                     self.mode = Mode::Pane;
-                    Some(Request::Tab { id: 0, action })
+                    Some(Request::Tab {
+                        instance: None,
+                        id: 0,
+                        action,
+                    })
                 }
                 _ => {
                     edit_text(text, key);
@@ -596,6 +603,8 @@ impl Controller {
                     }
                     self.mode = Mode::Pane;
                     Some(Request::Workspace {
+                        stream: None,
+                        instance: None,
                         id: 0,
                         action: WorkspaceAction::New {
                             name: (!name.is_empty()).then_some(name),
@@ -614,8 +623,13 @@ impl Controller {
                 match key {
                     'y' | 'Y' => {
                         let request = match &self.mode {
-                            Mode::ClosePane { pane } => Request::Kill { id: 0, pane: *pane },
+                            Mode::ClosePane { pane } => Request::Kill {
+                                instance: None,
+                                id: 0,
+                                pane: *pane,
+                            },
                             Mode::CloseTab { tab, .. } => Request::Tab {
+                                instance: None,
                                 id: 0,
                                 action: TabAction::Close { tab: *tab },
                             },
@@ -645,6 +659,7 @@ impl Controller {
                     _ => return None,
                 };
                 Some(Request::Resize {
+                    instance: None,
                     id: 0,
                     pane: *pane,
                     delta,
@@ -813,6 +828,7 @@ mod tests {
         assert_eq!(
             requests,
             vec![Request::Tab {
+                instance: None,
                 id: 0,
                 action: TabAction::Rename {
                     tab: TabId(1),
@@ -837,6 +853,7 @@ mod tests {
         assert_eq!(
             feed(&mut controller, b"y", &frame),
             vec![Request::Kill {
+                instance: None,
                 id: 0,
                 pane: PaneId(1)
             }]
@@ -845,6 +862,7 @@ mod tests {
         assert_eq!(
             feed(&mut controller, b"Y", &frame),
             vec![Request::Tab {
+                instance: None,
                 id: 0,
                 action: TabAction::Close { tab: TabId(1) }
             }]
@@ -884,6 +902,8 @@ mod tests {
         assert_eq!(
             feed(&mut controller, &replay, &frame),
             vec![Request::Workspace {
+                stream: None,
+                instance: None,
                 id: 0,
                 action: WorkspaceAction::Select {
                     name: "other".into()
@@ -899,6 +919,8 @@ mod tests {
         assert_eq!(
             feed(&mut controller, b"proj\r", &frame),
             vec![Request::Workspace {
+                stream: None,
+                instance: None,
                 id: 0,
                 action: WorkspaceAction::New {
                     name: Some("proj".into())

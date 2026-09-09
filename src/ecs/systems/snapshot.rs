@@ -104,25 +104,27 @@ pub fn refresh_grids(
         }
         pane.event_pending = false;
         let seq = pane.terminal.grid().seq();
-        // Bytes that changed nothing (a bell, a no-op escape) advance no sequence and owe no event.
-        if seq == pane.last_event_seq {
-            continue;
-        }
+        // Output can invalidate capture history/metadata without changing the grid.
+        // Keep pane.output's grid sequence semantics, but notify snapshot observers
+        // of the changed capture revision through the generic invalidation event.
+        let event = if seq == pane.last_event_seq {
+            Event::WorkspaceChanged { id: 0 }
+        } else {
+            Event::PaneOutput {
+                id: 0,
+                pane: pane.id,
+                seq,
+            }
+        };
         pane.last_event_seq = seq;
         pane.last_output_event_ms = Some(clock.now_ms);
-        let workspace = tabs
-            .get(pane.tab)
-            .and_then(|tab| workspaces.get(tab.workspace))
-            .map(|workspace| workspace.name.clone());
-        if let Ok(workspace) = workspace {
-            effects.event(
-                &workspace,
-                Event::PaneOutput {
-                    id: 0,
-                    pane: pane.id,
-                    seq,
-                },
-            );
+        let workspace = tabs.get(pane.tab).and_then(|tab| {
+            workspaces
+                .get(tab.workspace)
+                .map(|workspace| (tab.workspace, workspace.name.clone()))
+        });
+        if let Ok((entity, workspace)) = workspace {
+            effects.event(entity, &workspace, event);
         }
     }
 }
@@ -157,7 +159,7 @@ pub fn publish_frames(
                 .get(viewer.workspace)
                 .map(|workspace| workspace.name.clone())
                 .unwrap_or_default();
-            exit.despawn(&mut ids, entity, id, &name, &mut effects);
+            exit.despawn(&mut ids, entity, id, viewer.workspace, &name, &mut effects);
             continue;
         }
         let retiring = scene

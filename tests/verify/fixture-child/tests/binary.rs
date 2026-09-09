@@ -45,6 +45,75 @@ fn fux_binary() -> PathBuf {
     path
 }
 
+fn read_command_output(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(std::io::Error::other("fixture command output limit"));
+    }
+    Ok(bytes)
+}
+
+/// Capture to private files so pipe backpressure cannot block the deadline check.
+fn bounded_output(
+    command: &mut Command,
+    root: &Path,
+    timeout: Duration,
+) -> std::io::Result<Output> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stdout_path = root.join(format!("command-{nonce}-stdout"));
+    let stderr_path = root.join(format!("command-{nonce}-stderr"));
+    let stdout = fs::File::create_new(&stdout_path)?;
+    let stderr = fs::File::create_new(&stderr_path)?;
+    let mut child = command.stdout(stdout).stderr(stderr).spawn()?;
+    let deadline = Instant::now() + timeout;
+    let result = (|| {
+        loop {
+            if fs::metadata(&stdout_path)?.len() > 1024 * 1024
+                || fs::metadata(&stderr_path)?.len() > 1024 * 1024
+            {
+                return Err(std::io::Error::other("fixture command output limit"));
+            }
+            if let Some(status) = child.try_wait()? {
+                return Ok(Output {
+                    status,
+                    stdout: read_command_output(&stdout_path)?,
+                    stderr: read_command_output(&stderr_path)?,
+                });
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "fixture command deadline",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+        child.wait()?;
+    }
+    result
+}
+
+#[test]
+fn command_deadline_kills_and_reaps_a_stalled_child() {
+    let environment = Environment::new();
+    let mut command = Command::new("/bin/sleep");
+    command.arg("30");
+    let start = Instant::now();
+    let result = bounded_output(&mut command, &environment.root, Duration::from_millis(30));
+    assert_eq!(
+        result.expect_err("must time out").kind(),
+        std::io::ErrorKind::TimedOut
+    );
+    assert!(start.elapsed() < Duration::from_secs(5));
+}
+
 struct Environment {
     root: PathBuf,
     fixture_listener: UnixListener,
@@ -129,13 +198,13 @@ impl Environment {
     }
 
     fn run(&self, arguments: &[&str]) -> Output {
-        Command::new(fux_binary())
+        let mut command = Command::new(fux_binary());
+        command
             .args(arguments)
             .env_clear()
             .envs(self.variables())
-            .stdin(Stdio::null())
-            .output()
-            .expect("run fux binary")
+            .stdin(Stdio::null());
+        bounded_output(&mut command, &self.root, DEADLINE).expect("run fux binary")
     }
 
     fn daemon_log(&self) -> String {
@@ -195,6 +264,23 @@ impl Server {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    fn finish_retired(&mut self, environment: &Environment, workspace: &str) {
+        wait_for_absent(&environment.control_socket(workspace));
+        wait_for_absent(&environment.attach_socket(workspace));
+        assert!(
+            self.child
+                .as_mut()
+                .expect("server")
+                .try_wait()
+                .expect("manager liveness")
+                .is_none(),
+            "manager must retain final evidence after workspace retirement"
+        );
+        self.terminate();
+        assert!(self.wait().success(), "explicit manager shutdown");
+        wait_for_absent(&environment.manager_socket());
     }
 }
 
@@ -491,6 +577,15 @@ fn natural_last_pane_exit_is_observable_before_workspace_retirement() {
     let mut fixture = environment.accept_fixture();
     let ready = fixture.receive();
     assert_eq!(ready["event"], "ready");
+    let listing = environment.run(&["binary", "list"]);
+    assert!(listing.status.success());
+    let listing: Value = serde_json::from_slice(&listing.stdout).expect("listing");
+    let instance = listing["result"]["value"]["instance"]
+        .as_str()
+        .expect("instance");
+    let pane = listing["result"]["value"]["workspaces"][0]["tabs"][0]["panes"][0]["id"]
+        .as_u64()
+        .expect("pane");
     let mut viewer = TerminalViewer::spawn(&environment, "binary", 24, 80);
     viewer.wait_for_text("binary │");
     fixture.send(json!({"command":"write","chunks_hex":[hex(b"FINAL_BINARY")]}));
@@ -518,10 +613,28 @@ fn natural_last_pane_exit_is_observable_before_workspace_retirement() {
         viewer.final_screen().contains("(exit 29)"),
         "the bar shows the focused pane's exit status"
     );
+    let deadline = Instant::now() + DEADLINE;
+    let final_reply: Value = loop {
+        let output = environment.run(&["final", "--instance", instance, &pane.to_string()]);
+        let reply: Value = serde_json::from_slice(&output.stdout).expect("final reply");
+        if output.status.success() {
+            break reply;
+        }
+        assert!(
+            reply["error"]["code"] == "pending" && Instant::now() < deadline,
+            "retained final: {reply}; {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(final_reply["result"]["value"]["record"]["exit_status"], 29);
     assert!(
-        server.wait().success(),
-        "server exits once its last workspace retired"
+        final_reply["result"]["value"]["record"]["capture"]["text"]
+            .as_str()
+            .expect("final text")
+            .contains("FINAL_BINARY")
     );
+    server.finish_retired(&environment, "binary");
     wait_for_absent(&environment.manager_socket());
     wait_for_absent(&environment.control_socket("binary"));
     wait_for_absent(&environment.attach_socket("binary"));
@@ -574,7 +687,7 @@ fn detach_and_reattach_preserve_the_pane_process_and_its_history() {
     );
     fixture.send(json!({"command":"quit"}));
     assert_eq!(fixture.receive()["event"], "cleanup");
-    assert!(server.wait().success());
+    server.finish_retired(&environment, "binary");
 }
 
 #[test]
@@ -625,7 +738,7 @@ fn forced_close_terminates_descendants_and_reports_the_status() {
     subscriber.expect_silence(Duration::from_millis(200));
     second.send(json!({"command":"quit"}));
     assert_eq!(second.receive()["event"], "cleanup");
-    assert!(server.wait().success());
+    server.finish_retired(&environment, "binary");
 }
 
 #[test]
@@ -779,7 +892,7 @@ fn control_protocol_lists_captures_and_streams_events_without_touching_viewers()
     fixture.receive();
     second.send(json!({"command":"quit"}));
     second.receive();
-    assert!(server.wait().success());
+    server.finish_retired(&environment, "binary");
 }
 
 #[test]
@@ -836,7 +949,7 @@ fn tiny_viewer_and_resize_keep_the_pane_size_negotiated_over_the_smallest_viewer
     assert_eq!(large.detach(), 0);
     fixture.send(json!({"command":"quit"}));
     fixture.receive();
-    assert!(server.wait().success());
+    server.finish_retired(&environment, "binary");
 }
 
 #[test]
@@ -848,13 +961,7 @@ fn startup_failure_rolls_back_and_reports_an_error() {
         "default-command = { argv = [\"/nonexistent/fux-program\"] }\n",
     )
     .expect("config");
-    let output = Command::new(fux_binary())
-        .args(["serve", "--name", "broken"])
-        .env_clear()
-        .envs(environment.variables())
-        .stdin(Stdio::null())
-        .output()
-        .expect("run server");
+    let output = environment.run(&["serve", "--name", "broken"]);
     assert!(
         !output.status.success(),
         "server started without a runnable pane"

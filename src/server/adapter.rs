@@ -10,8 +10,9 @@ use crate::ids::{PaneId, ViewerId};
 use crate::os::lock;
 use crate::os::pty::PaneProcess;
 use crate::proto::attach::ServerMessage;
-use crate::proto::control::{Event, EventKind, Reply};
+use crate::proto::control::{Event, EventCursor, EventKind, Reply, SequencedEvent};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -89,11 +90,23 @@ impl ViewerOutbox {
     }
 }
 
-/// A control-event subscriber: bounded queue, drops `pane.output` first, disconnects when full.
+/// A control-event subscriber: bounded queue, disconnects on any overflow.
 pub struct Subscriber {
-    pub id: u64,
     pub filters: Vec<EventKind>,
-    pub sender: mpsc::Sender<Event>,
+    pub sender: mpsc::Sender<QueuedEvent>,
+    pub bytes: Arc<AtomicUsize>,
+}
+
+pub struct QueuedEvent {
+    pub entry: Arc<SequencedEvent>,
+    size: usize,
+    bytes: Arc<AtomicUsize>,
+}
+
+impl Drop for QueuedEvent {
+    fn drop(&mut self) {
+        self.bytes.fetch_sub(self.size, Ordering::AcqRel);
+    }
 }
 
 /// Sockets and descriptor for one open workspace; dropping it closes the listeners.
@@ -116,7 +129,7 @@ pub struct Adapter {
     pub spawns: tokio::task::JoinSet<(PaneId, Result<PaneProcess, String>)>,
     pub blocking: tokio::task::JoinSet<()>,
     pub idle: bool,
-    pub opened: Vec<String>,
+    pub opened: Vec<(String, u64)>,
     pub closed: Vec<String>,
 }
 
@@ -171,6 +184,33 @@ impl Adapter {
                         (pane, result)
                     });
                 }
+                Effect::WriteTrackedInput {
+                    pane,
+                    operation,
+                    bytes,
+                } => {
+                    let result = self
+                        .panes
+                        .get(&pane)
+                        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+                        .and_then(|process| process.write_tracked_input(operation, &bytes));
+                    if let Err(error) = result {
+                        let events = self.events.clone();
+                        let error = error.to_string().chars().take(256).collect();
+                        // Bounded by the receipt budget. Never drop an immediate queue rejection
+                        // just because the owner channel is momentarily full.
+                        self.blocking.spawn(async move {
+                            let _ = events
+                                .send(Inbound::InputCompleted {
+                                    pane,
+                                    operation,
+                                    bytes_written: 0,
+                                    error: Some(error),
+                                })
+                                .await;
+                        });
+                    }
+                }
                 Effect::WriteInput { pane, bytes } => {
                     if let Some(process) = self.panes.get(&pane)
                         && let Err(error) = process.write_input(&bytes)
@@ -219,12 +259,17 @@ impl Adapter {
                         let _ = sender.send(outcome);
                     }
                 }
-                Effect::Event { workspace, event } => {
+                Effect::Event {
+                    workspace,
+                    event,
+                    cursor,
+                    size,
+                } => {
                     if let Some(open) = self.workspaces.get(&workspace) {
-                        publish(&open.subscribers, &event);
+                        publish(&open.subscribers, &event, cursor, size);
                     }
                 }
-                Effect::WorkspaceOpened { name } => self.opened.push(name),
+                Effect::WorkspaceOpened { name, stream } => self.opened.push((name, stream)),
                 Effect::WorkspaceClosed { name } => self.closed.push(name),
                 Effect::Idle => self.idle = true,
             }
@@ -251,8 +296,12 @@ impl Adapter {
         }
     }
 
-    pub fn descriptor_for(&self, name: &str) -> Result<Descriptor, crate::daemon::PathError> {
-        descriptor(&self.paths, &self.identity, name)
+    pub fn descriptor_for(
+        &self,
+        name: &str,
+        stream: u64,
+    ) -> Result<Descriptor, crate::daemon::PathError> {
+        descriptor(&self.paths, &self.identity, name, stream)
     }
 
     pub fn register_workspace(&mut self, open: OpenWorkspace) -> anyhow::Result<()> {
@@ -301,8 +350,10 @@ pub fn descriptor(
     paths: &DaemonPaths,
     identity: &ManagerIdentity,
     name: &str,
+    stream: u64,
 ) -> Result<Descriptor, crate::daemon::PathError> {
     Ok(Descriptor {
+        stream,
         name: name.to_owned(),
         pid: identity.pid,
         instance_nonce: identity.instance_nonce.clone(),
@@ -310,25 +361,47 @@ pub fn descriptor(
     })
 }
 
-fn publish(subscribers: &Mutex<Vec<Subscriber>>, event: &Event) {
+/// `encoded` is the entry's exact JSON length as computed by the event log; each queued copy is
+/// charged that length plus a fixed 32-byte envelope allowance against the subscriber budget.
+pub(super) fn publish(
+    subscribers: &Mutex<Vec<Subscriber>>,
+    event: &Event,
+    cursor: EventCursor,
+    encoded: usize,
+) {
+    let mut subscribers = lock(subscribers);
+    if subscribers.is_empty() {
+        return;
+    }
     let kind = event.kind();
-    lock(subscribers).retain(|subscriber| {
+    let entry = Arc::new(SequencedEvent {
+        cursor,
+        event: event.clone(),
+    });
+    let size = encoded.saturating_add(32);
+    subscribers.retain(|subscriber| {
         if !subscriber.filters.is_empty() && !subscriber.filters.contains(&kind) {
             return true;
         }
-        match subscriber
-            .sender
-            .try_send(event.clone().with_id(subscriber.id))
+        if subscriber
+            .bytes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current
+                    .checked_add(size)
+                    .filter(|next| *next <= crate::ecs::events::MAX_EVENT_BYTES)
+            })
+            .is_err()
         {
+            return false;
+        }
+        let queued = QueuedEvent {
+            entry: Arc::clone(&entry),
+            size,
+            bytes: Arc::clone(&subscriber.bytes),
+        };
+        match subscriber.sender.try_send(queued) {
             Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                // High-frequency notifications are advisory and may be dropped; a full queue of
-                // structural events means the subscriber is too slow and is disconnected.
-                matches!(
-                    kind,
-                    EventKind::PaneOutput | EventKind::PaneTitle | EventKind::PaneAgent
-                )
-            }
+            Err(mpsc::error::TrySendError::Full(_)) => false,
             Err(mpsc::error::TrySendError::Closed(_)) => false,
         }
     });
@@ -339,6 +412,88 @@ fn publish(subscribers: &Mutex<Vec<Subscriber>>, event: &Event) {
 mod tests {
     use super::*;
     use crate::view::FrameUpdate;
+
+    fn sized(event: &Event, cursor: EventCursor) -> usize {
+        crate::ecs::events::encoded_len(&SequencedEvent {
+            cursor,
+            event: event.clone(),
+        })
+    }
+
+    #[test]
+    fn subscriber_overflow_disconnects_and_releases_queued_bytes() {
+        for byte_limit in [false, true] {
+            let (sender, mut receiver) = mpsc::channel(if byte_limit { 1024 } else { 1 });
+            let bytes = Arc::new(AtomicUsize::new(0));
+            let subscribers = Mutex::new(vec![Subscriber {
+                filters: Vec::new(),
+                sender,
+                bytes: Arc::clone(&bytes),
+            }]);
+            let event = if byte_limit {
+                Event::PaneTitle {
+                    id: 0,
+                    pane: PaneId(1),
+                    title: "x".repeat(64 * 1024),
+                }
+            } else {
+                Event::WorkspaceChanged { id: 0 }
+            };
+            for sequence in 1..=10 {
+                let cursor = EventCursor {
+                    stream: 1,
+                    sequence,
+                };
+                publish(&subscribers, &event, cursor, sized(&event, cursor));
+            }
+            assert!(lock(&subscribers).is_empty());
+            assert!(bytes.load(Ordering::Acquire) > 0);
+            assert!(bytes.load(Ordering::Acquire) <= crate::ecs::events::MAX_EVENT_BYTES);
+            while let Ok(event) = receiver.try_recv() {
+                drop(event);
+            }
+            assert_eq!(bytes.load(Ordering::Acquire), 0);
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(mpsc::error::TryRecvError::Disconnected)
+            ));
+        }
+    }
+
+    #[test]
+    fn subscriber_filters_do_not_consume_queue_budget() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let bytes = Arc::new(AtomicUsize::new(0));
+        let subscribers = Mutex::new(vec![Subscriber {
+            filters: vec![EventKind::PaneTitle],
+            sender,
+            bytes: Arc::clone(&bytes),
+        }]);
+        let cursor = EventCursor {
+            stream: 1,
+            sequence: 1,
+        };
+        let event = Event::WorkspaceChanged { id: 0 };
+        publish(&subscribers, &event, cursor, sized(&event, cursor));
+        assert_eq!(bytes.load(Ordering::Acquire), 0);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(receiver);
+        let cursor = EventCursor {
+            stream: 1,
+            sequence: 2,
+        };
+        let event = Event::PaneTitle {
+            id: 0,
+            pane: PaneId(1),
+            title: "t".into(),
+        };
+        publish(&subscribers, &event, cursor, sized(&event, cursor));
+        assert!(lock(&subscribers).is_empty());
+        assert_eq!(bytes.load(Ordering::Acquire), 0);
+    }
 
     fn frame(generation: u64) -> ServerMessage {
         ServerMessage::State {

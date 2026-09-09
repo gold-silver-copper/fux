@@ -1,0 +1,32 @@
+{
+  "scope": "Explicitly pinned dev builds before performance changes",
+  "binaries": {
+    "fux": {
+      "path": "/tmp/fux-headless-pinned-baseline/fux",
+      "sha256": "bd944bafbc9d9659ace23dd420e595eaeed538bea540a0fd10edac705be5ec9d"
+    },
+    "zor": {
+      "path": "/tmp/fux-headless-pinned-baseline/zor",
+      "sha256": "47678b7745b0a15ddab83a12c7dccc2082d18c7d57cf21e42942f1874de701e8"
+    }
+  },
+  "sources": {
+    "src/ecs/systems/snapshot.rs": "90cd12170f67d0e615a8890a536f7de1eed27e4517f04f6c3cdbce4505bce14e",
+    "src/server/adapter.rs": "471ed8a2fcb032cade68b04acb757ced404cf5c03c020e26dcdca7d0ef017807",
+    "zor/src/tasks/store.rs": "d521efaff68bfb88a8c10dc9e0524959d94c22ee85b1769bb06e95bc464d956c",
+    "zor/src/dashboard.rs": "818a3b0bf14782103a3da72a2578e05a5d5a24be2766aa94da1bf42569fe1411",
+    "references/koh/src/gateway/resume.rs": "d398d914a441861118045bfc6de1badb4560c9b85b6dadcb9279a1e7b4c2a606",
+    "Cargo.toml": "53e84a04e8be7cc4c281503b6361ac8cb8c7a7978aa097f5830f8fa7463c2fb9",
+    "Cargo.lock": "db614a5d3971fb439fd19cf80efd174b747d58db951c08310f49074182e3bf94",
+    "src/view.rs": "42a706b52d746a0d408a7ea04b826e331da2301d578cd6f7adb9bb5f50df9a8b",
+    "zor/Cargo.toml": "00491867c399b0768aca109696388d72155bee3d4d8ccef4f8c7122f448d9d87",
+    "zor/Cargo.lock": "537bd1afbdc7ba44737772c835ddd7fc62042a4a793c78e55cfa3bd5e0c460b5"
+  },
+  "explicit_build": {
+    "commands": [
+      "RUSTFLAGS='' CARGO_PROFILE_DEV_OPT_LEVEL=0 CARGO_PROFILE_DEV_DEBUG=2 cargo +1.95.0 build --locked --bin fux",
+      "RUSTFLAGS='' CARGO_PROFILE_DEV_OPT_LEVEL=0 CARGO_PROFILE_DEV_DEBUG=2 cargo +1.91.0 build --manifest-path zor/Cargo.toml --locked --bin zor"
+    ],
+    "matches_original_binary_hashes": false
+  }
+}

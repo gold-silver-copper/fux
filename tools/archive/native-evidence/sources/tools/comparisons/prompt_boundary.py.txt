@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Synthetic prompt-boundary comparison, with private real multiplexer processes.
+
+This tests explicit integration contracts, not real Claude detection or task correctness.
+The worker is named claude solely to satisfy herdr's foreground-process admission.
+"""
+import argparse
+import concurrent.futures
+import hashlib
+import json
+import os
+import platform
+from pathlib import Path
+import socket
+import subprocess
+import tempfile
+import time
+
+WORKER = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int main(void) {
+    char line[4096];
+    const char *path = getenv("WORKER_LOG");
+    if (!path) return 2;
+    FILE *pid = fopen(getenv("WORKER_PID"), "w");
+    if (!pid) return 5;
+    fprintf(pid, "%ld", (long)getpid());
+    if (fclose(pid)) return 6;
+    setbuf(stdout, NULL);
+    puts("READY idle");
+    while (fgets(line, sizeof line, stdin)) {
+        FILE *out = fopen(path, "a");
+        if (!out) return 3;
+        fputs(line, out);
+        if (fclose(out)) return 4;
+        if (strncmp(line, "silent", 6)) {
+            puts("RESPONSE");
+            FILE *response = fopen(getenv("WORKER_RESPONSE"), "a");
+            if (!response) return 7;
+            fputs("response\n", response);
+            if (fclose(response)) return 8;
+        }
+    }
+    return 0;
+}
+'''
+
+
+def until(predicate, seconds=8):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(.03)
+    raise AssertionError('fixture deadline')
+
+
+def rpc(path, request, fux=False):
+    with socket.socket(socket.AF_UNIX) as stream:
+        stream.settimeout(10)
+        stream.connect(str(path))
+        with stream.makefile('rb') as reader:
+            if fux:
+                stream.sendall(b'FUXCTL3\n')
+                assert reader.read(8) == b'FUXCTL3\n'
+            stream.sendall(json.dumps(request).encode() + b'\n')
+            raw = reader.readline(1024 * 1024 + 1)
+            assert raw.endswith(b'\n') and len(raw) <= 1024 * 1024
+            return json.loads(raw)
+
+
+def run_case(backend, case, binary, zor, worker):
+    with tempfile.TemporaryDirectory(prefix='prompt-comparison-', dir='/tmp') as directory:
+        root = Path(directory)
+        config = root / 'config'
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=directory,
+                   XDG_CONFIG_HOME=str(config), XDG_STATE_HOME=str(root / 'state'),
+                   XDG_RUNTIME_DIR=directory, SHELL='/bin/sh', TERM='xterm-256color',
+                   WORKER_LOG=str(root / 'received'), WORKER_PID=str(root / 'worker.pid'),
+                   WORKER_RESPONSE=str(root / 'responded'))
+        if backend == 'herdr':
+            # Debug and release builds use different application directories.
+            for name in ('herdr', 'herdr-dev'):
+                (config / name).mkdir(parents=True)
+                (config / name / 'config.toml').write_text(
+                    'onboarding = false\n[terminal]\ndefault_shell = ' + json.dumps(str(worker)) +
+                    '\nshell_mode = "non_login"\n[update]\nversion_check = false\nmanifest_check = false\n')
+            command = [str(binary), 'server']
+        else:
+            (config / 'fux').mkdir(parents=True)
+            (config / 'fux/config.toml').write_text(
+                'default-command = { argv = ' + json.dumps([str(worker)]) + ' }\n')
+            command = [str(binary), 'serve']
+        with (root / 'server.log').open('w+') as log:
+            server = subprocess.Popen(command, env=env, stdout=log, stderr=log)
+            try:
+                def socket_ready():
+                    assert server.poll() is None, 'server exited before readiness'
+                    paths = list(config.glob('herdr*/herdr.sock')) if backend == 'herdr' else [root / 'fux/default.sock']
+                    return next((p for p in paths if p.exists()), None)
+                control = until(socket_ready)
+                if backend == 'herdr':
+                    result = herdr_case(control, root, case)
+                else:
+                    result = zor_case(control, root, case, zor, env)
+            except BaseException:
+                log.seek(0)
+                print(log.read(16384), flush=True)
+                raise
+            finally:
+                # Only the server started here is signalled, in its private HOME/socket scope.
+                if server.poll() is None:
+                    server.terminate()
+                try:
+                    server.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    server.wait(timeout=3)
+                    raise AssertionError('server required forced termination; pane cleanup unproven')
+            assert server.returncode == 0, ('server cleanup failed', server.returncode)
+            pid = int((root / 'worker.pid').read_text())
+            assert pid > 1
+            def worker_gone():
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    return True
+                return False
+            until(worker_gone)
+            result['worker_exit_confirmed'] = True
+        result.update(backend=backend, case=case, server_exit=server.returncode)
+        return result
+
+
+def herdr_case(control, root, case):
+    def call(method, **params):
+        return rpc(control, dict(id='comparison', method=method, params=params))
+    created = call('workspace.create', cwd=str(root), focus=True)
+    assert 'error' not in created, created
+    panes = call('pane.list')['result']['panes']
+    assert len(panes) == 1
+    pane = panes[0]['pane_id']
+    seq = 0
+    reports = []
+    def report(state):
+        nonlocal seq
+        seq += 1
+        result = call('pane.report_agent', pane_id=pane, source='comparison:fixture',
+                      agent='claude', state=state, seq=seq)
+        assert 'error' not in result, result
+        observed = until(lambda: (info := call('agent.get', target=pane)).get('result', {}).get('agent', {}).get('agent_status') == state and info)
+        reports.append(dict(source_sequence=seq, state=state, state_change_seq=observed['result']['agent']['state_change_seq']))
+        return observed
+    before = report('blocked' if case == 'preblocked' else 'idle')
+    text = 'silent' if case in ('stale-idle', 'preblocked') else 'respond'
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(call, 'agent.prompt', target=pane, text=text,
+                              wait=dict(until=['idle', 'blocked'], timeout_ms=1500))
+        if case in ('immediate-response', 'working-response'):
+            until(lambda: (root / 'responded').exists())
+            if case == 'working-response':
+                report('working')
+                # Give the event waiter a chance to consume the explicit working transition.
+                time.sleep(.15)
+            report('idle')
+        response = pending.result(timeout=8)
+    received = (root / 'received').read_text() if (root / 'received').exists() else ''
+    assert received == ('' if case == 'preblocked' else text + '\n'), received
+    # Pin the observed baseline; an implementation change must trigger fresh analysis.
+    if case == 'working-response':
+        assert response.get('result', {}).get('type') == 'agent_prompted', response
+    else:
+        assert response.get('error', {}).get('code') == ('agent_blocked' if case == 'preblocked' else 'timeout'), response
+    return dict(before=before, response=response, received=received, reports=reports)
+
+
+def zor_case(control, root, case, zor, env):
+    listing = rpc(control, dict(id=1, command='list'), fux=True)['result']['value']
+    pane = listing['workspaces'][0]['tabs'][0]['panes'][0]['id']
+    def task(*args):
+        value = subprocess.run([str(zor), 'task', *args], env=env, capture_output=True, timeout=8)
+        assert value.returncode == 0, (args, value.stdout, value.stderr)
+        return json.loads(value.stdout)
+    task('adopt', 'worker', '--title', 'comparison', '--instance', listing['instance'],
+         '--workspace', 'default', '--pane', str(pane))
+    prior_wait = None
+    prior_input = ''
+    if case == 'stale-idle':
+        old = task('prepare', 'worker', '--operation', 'previous', '--text', 'seed', '--timeout-ms', '5000')
+        task('submit', 'previous')
+        old_receipt = until(lambda: (v := task('reconcile', 'previous'))['delivery'] == 'delivered' and v)
+        until(lambda: (root / 'responded').exists())
+        task('report', 'previous', '--token', old['report_token'], '--producer', 'fixture-1',
+             '--sequence', '1', '--input-operation', str(old_receipt['receipt']['operation']),
+             '--kind', 'response-observed')
+        prior_wait = task('wait', 'previous')['wait']
+        assert prior_wait == 'response-observed'
+        prior_input = 'seed\n'
+    text = 'silent' if case == 'stale-idle' else 'respond'
+    prepared = task('prepare', 'worker', '--operation', 'prompt', '--text', text, '--timeout-ms', '1500')
+    task('submit', 'prompt')
+    receipt = until(lambda: (v := task('reconcile', 'prompt'))['delivery'] == 'delivered' and v)
+    until(lambda: (root / 'received').exists() and (root / 'received').read_text() == prior_input + text + '\n')
+    if case in ('immediate-response', 'working-response'):
+        until(lambda: (root / 'responded').exists())
+        # Same simulated logical response as herdr's idle hook, using zor's prompt-scoped contract.
+        task('report', 'prompt', '--token', prepared['report_token'], '--producer', 'fixture-1',
+             '--sequence', '1', '--input-operation', str(receipt['receipt']['operation']),
+             '--kind', 'response-observed')
+    response = task('wait', 'prompt', '--follow', '--timeout-ms', '3000')['prompt']
+    assert response['wait'] == ('timed-out' if case == 'stale-idle' else 'response-observed'), response
+    assert (root / 'received').read_text() == prior_input + text + '\n'
+    # Public comparison output excludes report tokens and absolute private paths.
+    return dict(response={k: response[k] for k in ('delivery', 'wait')},
+                task_outcome=task('inspect', 'worker')['task']['outcome'], prior_prompt_wait=prior_wait,
+                received=(root / 'received').read_text().removeprefix(prior_input))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--herdr', type=Path, required=True)
+    parser.add_argument('--fux', type=Path, required=True)
+    parser.add_argument('--zor', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--repetitions', type=int, default=3)
+    parser.add_argument('--herdr-reference', type=Path, default=Path('references/herdr'))
+    args = parser.parse_args()
+    assert 1 <= args.repetitions <= 20
+    assert not args.output.exists(), 'output must be a new file'
+    binaries = {name: getattr(args, name).resolve(strict=True) for name in ('herdr', 'fux', 'zor')}
+    provenance = {name: dict(sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                            version=subprocess.check_output([str(path), '--version'], timeout=5, text=True).strip())
+                  for name, path in binaries.items()}
+    assert provenance['herdr']['version'].startswith('herdr 0.8.2'), 'use the 0.8.2 reference build'
+    provenance['reference_commit'] = subprocess.check_output(['git', '-C', str(args.herdr_reference), 'rev-parse', 'HEAD'], text=True).strip()
+    provenance['platform'] = platform.platform()
+    provenance['worker_source_sha256'] = hashlib.sha256(WORKER.encode()).hexdigest()
+    provenance['harness_sha256'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    results = []
+    with tempfile.TemporaryDirectory(prefix='prompt-worker-', dir='/tmp') as directory:
+        root = Path(directory)
+        source = root / 'worker.c'
+        source.write_text(WORKER)
+        worker = root / 'claude'
+        subprocess.run(['/usr/bin/clang', str(source), '-o', str(worker)], check=True, timeout=30)
+        for repetition in range(args.repetitions):
+            for case in ('stale-idle', 'immediate-response', 'working-response', 'preblocked'):
+                for backend in (('herdr',) if case == 'preblocked' else ('herdr', 'zor')):
+                    binary = binaries['herdr' if backend == 'herdr' else 'fux']
+                    result = run_case(backend, case, binary, binaries['zor'], worker)
+                    result['repetition'] = repetition + 1
+                    results.append(result)
+                    print(backend, case, repetition + 1, 'passed', flush=True)
+    with args.output.open('x') as out:
+        json.dump(dict(provenance=provenance, synthetic=True, results=results), out, indent=2)
+        out.write('\n')
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,36 @@
+{
+  "source_revision": "a48f839501af2bb317f559d96255013bd3f3eb33",
+  "purpose": "Superseded main development tooling, retained as historical source only.",
+  "files": [
+    {
+      "original_path": "tools/dependencies.py",
+      "archive_path": "tools/archive/tools/dependencies.py.txt",
+      "sha256": "02b189e90c01f74e73839cda72075ec5e780b6561b1888e462352207b72842c9",
+      "replacement": "cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies"
+    },
+    {
+      "original_path": "tools/measure.py",
+      "archive_path": "tools/archive/tools/measure.py.txt",
+      "sha256": "d4f6a9990162170b794aea7b2dc283acf4148b0ea11e96bf365d4fa45e3123ea",
+      "replacement": "cargo run --locked --manifest-path tools/xtask/Cargo.toml -- measure BINARY [--samples N]"
+    },
+    {
+      "original_path": "tools/measure_frames.py",
+      "archive_path": "tools/archive/tools/measure_frames.py.txt",
+      "sha256": "9bf1a3d74f0a2654549cfd8ba8b325acdded0709b7638dfab8ee03eb16a00718",
+      "replacement": "cargo run --locked --manifest-path tools/xtask/Cargo.toml -- measure-frames BINARY [--keystrokes N] [--config ROWSxCOLS[+...]]"
+    },
+    {
+      "original_path": "tools/measure_memory.py",
+      "archive_path": "tools/archive/tools/measure_memory.py.txt",
+      "sha256": "24d33c466d4bcca1cf4441bc0df1ba092fd0b6bd27a81ae5c42a148520aa296a",
+      "replacement": "cargo run --locked --manifest-path tools/xtask/Cargo.toml -- measure-memory BINARY [--scrollback N] [--rows N] [--columns N]"
+    },
+    {
+      "original_path": "tools/measure_viewer.py",
+      "archive_path": "tools/archive/tools/measure_viewer.py.txt",
+      "sha256": "a56259ca3b8edf038d976bf1de218854f1edbd6957f08c7d21337c84323c10e5",
+      "replacement": "cargo run --locked --manifest-path tools/xtask/Cargo.toml -- measure-viewer BINARY [--keystrokes N] [--rows N] [--columns N]"
+    }
+  ]
+}

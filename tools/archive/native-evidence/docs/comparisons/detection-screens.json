@@ -1,0 +1,2171 @@
+{
+  "schema": 1,
+  "captured_at": "2026-09-07T19:17:51.873428+00:00",
+  "provenance": {
+    "harness_sha256": "b6ba5464871932b881fff5832658eccd6bc1551d05b31afb31cb54c37be7500d",
+    "binaries": {
+      "zor": {
+        "path": "/Users/kisaczka/Desktop/code/fux/zor/target/debug/zor",
+        "sha256": "dd68453648e0a62a5bdcb2b9fb3446a7eb494d6459eb3883dde3e6169bfd4ad1",
+        "version": "zor 0.1.2"
+      },
+      "herdr": {
+        "path": "/Users/kisaczka/Desktop/code/fux/target/herdr-reference/build/debug/herdr",
+        "sha256": "fd13162540e986e9e8f2a651bbd08319d53a05adda3200659995729cd57a5a75",
+        "version": "herdr 0.8.2"
+      }
+    },
+    "source_hashes": {
+      "zor/rules/opencode.toml": "ff2e9e9139812743883d33febaf2e29b3554225dd2261635d1e25b4b0927e8b7",
+      "zor/rules/claude.toml": "da86ee8911f0e4a977a7cf12d1b3519667b4f0e87d3fe81d9143d2c3252e2768",
+      "zor/rules/codex.toml": "ee54c73fd85d469168132dadbe387a6729dd4f8725d4a19efbd231ed6a5cdfe1",
+      "references/herdr/src/detect/manifests/qwen.toml": "b27aa456af228e8a4ceac74f0dd431c33b21473b69314fc672a7fba474e2a7fe",
+      "references/herdr/src/detect/manifests/devin.toml": "250c9cea1d60bdb965dc6056f3066b785e941d60242756fbaca73b57ca6b0f85",
+      "references/herdr/src/detect/manifests/kiro.toml": "2b56fc18c478e2730acd9f8cbfecb69a2496258f8f20ef157813b09fa74c6e37",
+      "references/herdr/src/detect/manifests/gemini.toml": "d7013b5e772852ecc595febf964f00b4f9edcbc6047a2a5421613a154d92520d",
+      "references/herdr/src/detect/manifests/opencode.toml": "faa82aed2d76ad856528caae04232894594b74cc903aed3e522b3e725c5f2c95",
+      "references/herdr/src/detect/manifests/kimi.toml": "ede08c0d2d5024f7606dc0a1b2f7a9c6a0ebb99f3b6c58ca6757049856d06e05",
+      "references/herdr/src/detect/manifests/kilo.toml": "70f0ba4e58bc141fe69d7024013f973cd16e8616393079318914d70afeefef3b",
+      "references/herdr/src/detect/manifests/qodercli.toml": "2089f70fc78c6576fd7128a00f4e7eedb85be81bde9ed73301b3b88000048961",
+      "references/herdr/src/detect/manifests/pi.toml": "d852f52d637040fad207a395928dc190d99d24b6c72d6e1b7fbbf4487a416e40",
+      "references/herdr/src/detect/manifests/claude.toml": "89d4b381b3337f35dcc51c7c379898fcadb2a1152b9d0cf9cce950b3c4b8ae5b",
+      "references/herdr/src/detect/manifests/codex.toml": "1098233b6440bcfcfbf1b5ef93cb0356e96ad3f89ef8b25a217c0d47c0a8d373",
+      "references/herdr/src/detect/manifests/cursor.toml": "753b1f7f632d42fa21139c2767ecbb5e1078748aba2e59407ac4932d3ce36ad7",
+      "references/herdr/src/detect/manifests/amp.toml": "b5806b0dd21e2f5e752d0eac7f084d5ce2e3f275638cfd1234c42cc88152dc8c",
+      "references/herdr/src/detect/manifests/maki.toml": "3b392170ee3082051266509f575a4640bde8d693b2f37ecf52157a641bc75b28",
+      "references/herdr/src/detect/manifests/github-copilot.toml": "b70c652584326a1a98475a5fcef16207dee9f23b65f8e78300f4fc2bb578cb11",
+      "references/herdr/src/detect/manifests/droid.toml": "d37e7c464177c0e8f3edce8d4fabc4bcc7a1874edf2c4c87a2f927888cf69ce9",
+      "references/herdr/src/detect/manifests/cline.toml": "577e2f1bd115a6ed3b5c38c661af175386fcdba269f7cd7447bf16d7c72521f0",
+      "references/herdr/src/detect/manifests/antigravity.toml": "11300b853130d037eb2c57d9c4b897893cc1f0a876e12eb54ff1b216177db9d7",
+      "references/herdr/src/detect/manifests/grok.toml": "618afc3d09d784343fc6c4bcee5801906df2c0fd62a65b447cf5f4b1bd215bb2",
+      "references/herdr/src/detect/manifests/muse.toml": "b69c4d87fa9c19e3e6453b706fbe39c98a8b33ffbaa48e8cd5ae6751e9615074",
+      "references/herdr/src/detect/manifests/hermes.toml": "533d21b65dea3a0c60c25d0475c9c900d28a5712b6392669a7788f75de2b6e85",
+      "zor/src/rules/eval.rs": "27c6735e47c5095ca9ed6f860c3c2461ded972412b1c8931897979c1e23645eb",
+      "zor/src/main.rs": "23b0a94f3ca7249425afc8ba95d64536e042b4da791370e328efc39c3191a534",
+      "references/herdr/src/detect/manifest.rs": "2b8eb92b688a018b51b3ab8d01e97c0888eb501d0c0ca90f0eec6c65f98cadf3",
+      "references/herdr/src/cli/agent.rs": "c09dd6549b155c28f438463139a132dc88d74d49a528b566b73273ca0d018c1b"
+    }
+  },
+  "scope": "Production CLI screen matching, identified agent supplied, default bundled rules, identical normalized viewport text.",
+  "limitations": [
+    "No OSC/title input, runtime activity arbitration, identity discovery, hysteresis, freshness or live detection latency.",
+    "Eleven selected real screens and derived negatives; not a representative accuracy rate or universal agent coverage.",
+    "Zor rules were developed from these retained fixtures; this measures conformance, not held-out generalization.",
+    "Negative strings are detached text. Exact copied live viewports remain indistinguishable to passive screen matchers.",
+    "OpenCode permission/question screens use a synthetic provider. Codex response and approval use a real authenticated model."
+  ],
+  "results": [
+    {
+      "id": "codex-sign-in",
+      "agent": "codex",
+      "expected": "blocked",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/startup.json",
+      "source_sha256": "50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "real agent viewport",
+      "text_sha256": "9e5528f034af5f60c9679ba643b673a56c0373a16474e05c0d18b04a14a6a617",
+      "zor": {
+        "state": "blocked",
+        "rule": "codex-0.153.4-sign-in"
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-trust",
+      "agent": "codex",
+      "expected": "blocked",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "real agent viewport",
+      "text_sha256": "99eb1be7eecb2ee60805922c8decf9994e95d8c4f4d630dd08112a3955ee88db",
+      "zor": {
+        "state": "blocked",
+        "rule": "codex-0.153.4-directory-trust"
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "trust_directory",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-working",
+      "agent": "codex",
+      "expected": "working",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/5/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "real agent viewport",
+      "text_sha256": "9eff8aaa76185c1d675b356f927bb92622a50852b8bcef10ae70a26e27ca2143",
+      "zor": {
+        "state": "working",
+        "rule": "codex-0.153.4-working"
+      },
+      "herdr": {
+        "state": "working",
+        "rule": "screen_working_fallback",
+        "visible_blocker": false,
+        "visible_working": true,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-response-input",
+      "agent": "codex",
+      "expected": "idle",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/16/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "response followed by empty composer; input readiness, not task completion",
+      "text_sha256": "63455cb547f32059c51031453e54d1f322e5d531c95f86d6903bce7f1001899c",
+      "zor": {
+        "state": "idle",
+        "rule": "codex-0.153.4-input-ready"
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-command-approval",
+      "agent": "codex",
+      "expected": "blocked",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/approval.json",
+      "source_sha256": "2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f",
+      "pointer": "/captures/41/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "real agent viewport",
+      "text_sha256": "3a638dbfc96719f539469b8455f22cc611ce8fb518c20b823fd2fd1a8d9abafc",
+      "zor": {
+        "state": "blocked",
+        "rule": "codex-0.153.4-command-approval"
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "live_strong_blocker",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-theme",
+      "agent": "claude",
+      "expected": "blocked",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/startup.json",
+      "source_sha256": "c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6",
+      "pointer": "/captures/2/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "real agent viewport",
+      "text_sha256": "33938287301be9a69a9196921452e681c8a7ea7965e535b080c1cbe7a3a16492",
+      "zor": {
+        "state": "blocked",
+        "rule": "claude-2.1.263-theme-selection"
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-working",
+      "agent": "claude",
+      "expected": "working",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/6/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "real agent viewport",
+      "text_sha256": "9c74831f4054e32ad157958e61f3b235a2f9b4f0c9519a2083014e68eaf0bb1b",
+      "zor": {
+        "state": "working",
+        "rule": "claude-2.1.263-working"
+      },
+      "herdr": {
+        "state": "working",
+        "rule": "live_turn_working",
+        "visible_blocker": false,
+        "visible_working": true,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-response-input",
+      "agent": "claude",
+      "expected": "idle",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/13/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "response followed by empty composer and shortcut footer; input readiness, not task completion",
+      "text_sha256": "2af76cd56a25105b3e099a7d1dc090f7d855a2d9ef8cd6a2c1ece21371a63b69",
+      "zor": {
+        "state": "idle",
+        "rule": "claude-2.1.263-input-ready"
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": "live_prompt_box",
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": true,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-startup",
+      "agent": "opencode",
+      "expected": "idle",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/startup.json",
+      "source_sha256": "6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242",
+      "pointer": "/captures/3/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "real agent viewport",
+      "text_sha256": "33c72f7c4d2a7e36e916acef6704697f61a2cab528950ac155bcf42fa3b68bc0",
+      "zor": {
+        "state": "idle",
+        "rule": "opencode-1.18.29-startup-input"
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-permission",
+      "agent": "opencode",
+      "expected": "blocked",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration.json",
+      "source_sha256": "7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "real agent with synthetic provider; unanswered native permission",
+      "text_sha256": "e36d3ec8e283e824c7802c1d223d6b165bada55ce7413708fea829de2348d055",
+      "zor": {
+        "state": "blocked",
+        "rule": "opencode-1.18.29-permission"
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "permission_required",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-question",
+      "agent": "opencode",
+      "expected": "blocked",
+      "kind": "real",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json",
+      "source_sha256": "18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "real agent with synthetic provider; unanswered native question",
+      "text_sha256": "125e536eff34b4dd54b71283f15a54fa9cf9b0c2058f549496bbcec022a03cd3",
+      "zor": {
+        "state": "blocked",
+        "rule": "opencode-1.18.29-question"
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-sign-in/stale-transcript",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/startup.json",
+      "source_sha256": "50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "3eb0fe2f4c3f8aa709cddc62321725015d3aa2d521d79108f035b422d26ffa6b",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-sign-in/quoted-screen",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/startup.json",
+      "source_sha256": "50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "b3ab7c2c09e50fbd3707ae554dea328c060380cfe189559a0d83c1e567fdf104",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-sign-in/shell-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/startup.json",
+      "source_sha256": "50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "4e5accd64bf6c0394f1b7fb22b449d0b2c42d70ffec597ddd55d4fd44b4cd6dc",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-sign-in/echoed-name",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/startup.json",
+      "source_sha256": "50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "2f6a1d1094302653dfa58822e0e5eeeec0448cea1f809cb571d707943603f5cf",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-sign-in/nested-tool-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/startup.json",
+      "source_sha256": "50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "f0ee23aec3871e838fa63dad3730e73d66698b79fc0d9f83c032f4892bac2b0d",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-sign-in/malformed-control",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/startup.json",
+      "source_sha256": "50782bd470c33441efabae7937fc2c3ef642f5871f6f832c4216961b51d8a1a5",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "21c8de9f54d517042ff631287f2016e312b094bf2d26593e3e77bab321ff08cb",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-trust/stale-transcript",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "781794dcf7c9fb278c4cdd14356cbffc31b817e7619acacf47bd9b32d72b590f",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "trust_directory",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-trust/quoted-screen",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "9970500fc999024d3a861258939ee12b5a2561066f3ea7bcac68c45762af2916",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-trust/shell-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "47342563c30cc7b41fa438fbb164e39dc401c23f044b7ffc9a640b7101536759",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-trust/echoed-name",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "2f6a1d1094302653dfa58822e0e5eeeec0448cea1f809cb571d707943603f5cf",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-trust/nested-tool-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "c5be17c19afc8b7a1b44d1cce27f01c2531b3e9f85cddb376a92cbade07f1170",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-trust/malformed-control",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/1/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "cc9ec81fe19f11788408271b25f9774ab5c76d904bcdc48920b66d455f3568b5",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "trust_directory",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-working/stale-transcript",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/5/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "9417e3e811dfb4f1a412edad3aa171b996c64d34ccd45b4fabee7e340940c614",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-working/quoted-screen",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/5/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "022fc774620a168042f0c54bda442ba959caff586497cbe0a4d4fc1b9b4c5022",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-working/shell-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/5/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "e7584cd054caafa748acd90b81ec00c5b5853a1f731749e9d4ce0e502b3f74c7",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "working",
+        "rule": "screen_working_fallback",
+        "visible_blocker": false,
+        "visible_working": true,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-working/echoed-name",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/5/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "2f6a1d1094302653dfa58822e0e5eeeec0448cea1f809cb571d707943603f5cf",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-working/nested-tool-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/5/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "48a1b151d72d9694a8c3f2c17edb8c65125bb01965d82eab74c9d11c68ddf050",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-working/malformed-control",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/5/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "c91898240833d2c67652b731ea8bbf6d0604c244f7cf8f61a9d68bbdaddb9448",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-response-input/stale-transcript",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/16/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "b2ca5afadbcb42d7ddf570e0dfa01c0ab1e8495e72841452bb1797dfdf83cf49",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-response-input/quoted-screen",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/16/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "5ff8760e7e6f13ef157655a6e6976d04e572fe0fcf70faa129be24268b03bdfd",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-response-input/shell-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/16/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "7eba8a1b9ac5d561d3579de70beb908e9bdc6818dfbc6bb47b49ccce3569be2b",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-response-input/echoed-name",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/16/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "2f6a1d1094302653dfa58822e0e5eeeec0448cea1f809cb571d707943603f5cf",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-response-input/nested-tool-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/16/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "7875ce39df872c2693b63bb7f77b74f96854a656a5eb854c7e37429a466e2997",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-response-input/malformed-control",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/authenticated.json",
+      "source_sha256": "66b82e5a9bbab77424518e142a60a1bad654cc538149affbba552e76458d7e6a",
+      "pointer": "/captures/16/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "8595491bb1e656950a3e3ef65c2a6fca5c772d4eab441dd9c22d9090b13a66ec",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-command-approval/stale-transcript",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/approval.json",
+      "source_sha256": "2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f",
+      "pointer": "/captures/41/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "4da3bcf3bcd0eb3fd4b679aececea21dc971dc9dc1ce01d48638d7d715cd7ba7",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "live_strong_blocker",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-command-approval/quoted-screen",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/approval.json",
+      "source_sha256": "2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f",
+      "pointer": "/captures/41/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "d1a9f5098ab3983be9aebd770da530f913b32d5f8cc8354a8e269baa8ae54e5e",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "live_strong_blocker",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-command-approval/shell-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/approval.json",
+      "source_sha256": "2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f",
+      "pointer": "/captures/41/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "d47952e064f6258a72578b59ab92e1d8fd2b016560f2fc1c310c8872ba3c6182",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "live_strong_blocker",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-command-approval/echoed-name",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/approval.json",
+      "source_sha256": "2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f",
+      "pointer": "/captures/41/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "2f6a1d1094302653dfa58822e0e5eeeec0448cea1f809cb571d707943603f5cf",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-command-approval/nested-tool-output",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/approval.json",
+      "source_sha256": "2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f",
+      "pointer": "/captures/41/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "5680853d619f44699343501dec45bc323931ac168f2662dfff34fb6250bf9591",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "live_strong_blocker",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "codex-command-approval/malformed-control",
+      "agent": "codex",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/codex-0.153.4/approval.json",
+      "source_sha256": "2b955d3dd1ec3642a5003263e106330549459a23335d98a110ef59aa2699df0f",
+      "pointer": "/captures/41/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "73ec5f333f931d486f67c222ef854161c8b24040305c51a1f9165fe44ec13c98",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "live_strong_blocker",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.28.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-theme/stale-transcript",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/startup.json",
+      "source_sha256": "c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6",
+      "pointer": "/captures/2/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "c79c2b4df2c031455a1a2961a811140a60789a760049b17925aefba98a9eb9f8",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-theme/quoted-screen",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/startup.json",
+      "source_sha256": "c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6",
+      "pointer": "/captures/2/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "5805fa104f35ce0ac421e9c9a70df828b04e30835fcfa6a6a5b0401b51f62a91",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-theme/shell-output",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/startup.json",
+      "source_sha256": "c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6",
+      "pointer": "/captures/2/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "01b9fe65d8131818195578ebc080f8547ecce6e577db9bff88a0183b6453fff2",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-theme/echoed-name",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/startup.json",
+      "source_sha256": "c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6",
+      "pointer": "/captures/2/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "8bb1e66c011f219eb72af6e1bab06412380fa5d1a87835803ed523a5e448a135",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-theme/nested-tool-output",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/startup.json",
+      "source_sha256": "c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6",
+      "pointer": "/captures/2/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "d8ca989f0cbb04c87fe24766db1f361b487b06fa610ee6e8459cddf921388947",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-theme/malformed-control",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/startup.json",
+      "source_sha256": "c942d217457943a2d9483a79d443ab256a747d131d3279bcd9f6a90de6b48ae6",
+      "pointer": "/captures/2/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "869df20269ece3ade73b10baca23e82b1e2fb4a5d9611b0a0c6c6033746c38ff",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-working/stale-transcript",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/6/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "20cd04969556a8650cb21bcb56fa70232491cec7f4800cf1715d293d75cf5c06",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "working",
+        "rule": "live_turn_working",
+        "visible_blocker": false,
+        "visible_working": true,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-working/quoted-screen",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/6/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "f24b0e434e2e4eaaa954511ec639e73cff30d3ee15fffa287fa3a0eb9e3b930a",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-working/shell-output",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/6/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "f2db1e30f16bb0b8ea0c08a0d4e4d1e5f6ac35bcc03f36f9d8b7c49a37017140",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "working",
+        "rule": "live_turn_working",
+        "visible_blocker": false,
+        "visible_working": true,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-working/echoed-name",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/6/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "8bb1e66c011f219eb72af6e1bab06412380fa5d1a87835803ed523a5e448a135",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-working/nested-tool-output",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/6/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "dbd5e30b9683a80b6f3900b65d8ef32898be1e7af918b84833db36c60831afbd",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "working",
+        "rule": "live_turn_working",
+        "visible_blocker": false,
+        "visible_working": true,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-working/malformed-control",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/6/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "97429ebd712859b6d1be7304f90668d98c322d3beadfa740e0cde6426b836290",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "working",
+        "rule": "live_turn_working",
+        "visible_blocker": false,
+        "visible_working": true,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-response-input/stale-transcript",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/13/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "a056208ae9e106dd5c01b29e826d30b8cb0bfbb31cc038e634634e9c4959dd3d",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": "live_prompt_box",
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": true,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-response-input/quoted-screen",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/13/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "b3e7dc021d3c5b105f8d589ffcad760e6295330a2a8fab6cb4709b6d0dcc9d29",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-response-input/shell-output",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/13/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "0e17c498c53edb28aded414e13769cb2bf2d78f5d8edc3d2bbaea162c8dca216",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": "live_prompt_box",
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": true,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-response-input/echoed-name",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/13/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "8bb1e66c011f219eb72af6e1bab06412380fa5d1a87835803ed523a5e448a135",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-response-input/nested-tool-output",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/13/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "e4cf0a694952d198975ce9b84ea6768ed2aedf7cd7512b8d12ef4bcb64f1af13",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": "live_prompt_box",
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": true,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "claude-response-input/malformed-control",
+      "agent": "claude",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/claude-2.1.263/authenticated.json",
+      "source_sha256": "dc0d9ea7e2a39f7c82a79d522f8fe270a5bbf50bba26076ad32e1a5489d8c039",
+      "pointer": "/captures/13/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "eddee65e4c568247c9f7a23a4a9a5dcd632fb717abb53e5191a28df85be2d927",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": "live_prompt_box",
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": true,
+        "manifest_version": "2026.08.31.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-startup/stale-transcript",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/startup.json",
+      "source_sha256": "6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242",
+      "pointer": "/captures/3/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "975cd8f20d0c392af9242dea5ec5f27fea5b79903f757ed42f45c3216a8bc478",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-startup/quoted-screen",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/startup.json",
+      "source_sha256": "6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242",
+      "pointer": "/captures/3/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "f1c2c581292dcca44e436679137234872662f261fd2c1c6b8c7844f846cd4d67",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-startup/shell-output",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/startup.json",
+      "source_sha256": "6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242",
+      "pointer": "/captures/3/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "7c50998bb3306d2593bc63dddd8eb7e40883455455d717eedab350def32fdeda",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-startup/echoed-name",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/startup.json",
+      "source_sha256": "6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242",
+      "pointer": "/captures/3/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "50a6f793b5e8bdd12a1a8833ba7f805851ef0fa465df328629693980fa6a262c",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-startup/nested-tool-output",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/startup.json",
+      "source_sha256": "6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242",
+      "pointer": "/captures/3/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "3bbf2ab869accfbc6a91291e59c2df8202c96fe93c33ce26322ed26ddef43f5a",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-startup/malformed-control",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/startup.json",
+      "source_sha256": "6d05c443b6ace6b20eb770376962759af48023f99b63c8044de6c93fa6616242",
+      "pointer": "/captures/3/capture",
+      "rows": 23,
+      "columns": 80,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "490cd0fe45f3098d8c96be46a0a4d12c27d4f19a5c7346faace826962feae12a",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-permission/stale-transcript",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration.json",
+      "source_sha256": "7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "fcf96fdcb0e4d257661c716c6a251b752a572ebad38e05980a98a6ee6ea005d6",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "permission_required",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-permission/quoted-screen",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration.json",
+      "source_sha256": "7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "a034eb8a9432a7f99fa258a8b22ada7ccea64c2a2eb5ec07f3fc592509e11d51",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "permission_required",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-permission/shell-output",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration.json",
+      "source_sha256": "7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "07f32fc2ada33b513a46247a100e24ea3bc369a98d39fb65c6987fb1c28c67b9",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "permission_required",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-permission/echoed-name",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration.json",
+      "source_sha256": "7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "50a6f793b5e8bdd12a1a8833ba7f805851ef0fa465df328629693980fa6a262c",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-permission/nested-tool-output",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration.json",
+      "source_sha256": "7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "5f7de08f061febaf7a93029e4cd19ffd1c510bf669511fb8aa788957b61c37b0",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "permission_required",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-permission/malformed-control",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration.json",
+      "source_sha256": "7d1f69a9e0396575503646a7c133de9baca121b5aa8a67995011a8c3173ed0fa",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "2f2df9d62d35ecd080d9cc87da39e6792e99b9b2a99f0f86577e61a719a82830",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "blocked",
+        "rule": "permission_required",
+        "visible_blocker": true,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": null,
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-question/stale-transcript",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "stale-transcript",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json",
+      "source_sha256": "18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "3b34382cb24931d35dd9811811b2d52c1b98ac93857aea5ec27fe3e927f911ba",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-question/quoted-screen",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "quoted-screen",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json",
+      "source_sha256": "18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "1f01d52b288e3942e3a71d8c70a201548e0b75246d50d67c7a79be4aa9d9e971",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-question/shell-output",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "shell-output",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json",
+      "source_sha256": "18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "dbd1523891d561fc0f00f86f22acb31a734688cf93976c6433702518b3f3e8b8",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-question/echoed-name",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "echoed-name",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json",
+      "source_sha256": "18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "50a6f793b5e8bdd12a1a8833ba7f805851ef0fa465df328629693980fa6a262c",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-question/nested-tool-output",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "nested-tool-output",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json",
+      "source_sha256": "18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "b709b315d90990e68a8b6c3bdedb09989b37ddf5a418b2d1d1885618e2238a3e",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    },
+    {
+      "id": "opencode-question/malformed-control",
+      "agent": "opencode",
+      "expected": "unknown",
+      "kind": "malformed-control",
+      "source": "zor/tests/fixtures/agents/opencode-1.18.29/integration-storage.json",
+      "source_sha256": "18c644ffb4d3c4a37c21575aa64bfea5c3ff861ae70988a0521e5e0b8b08e7f3",
+      "pointer": "/capture",
+      "rows": 23,
+      "columns": 40,
+      "note": "synthetic derived negative; detached text, not additional real-agent coverage",
+      "text_sha256": "01ca08f3d72aa571fa45efdd7dd167dd36eabff6572708e17057db81ac493c18",
+      "zor": {
+        "state": "unknown",
+        "rule": null
+      },
+      "herdr": {
+        "state": "idle",
+        "rule": null,
+        "visible_blocker": false,
+        "visible_working": false,
+        "visible_idle": false,
+        "manifest_version": "2026.06.10.1",
+        "fallback_reason": "default_known_agent_idle_fallback",
+        "skip_state_update": false
+      }
+    }
+  ],
+  "summary": {
+    "zor": {
+      "real_screens": 11,
+      "correct": 11,
+      "blockers": 6,
+      "missed_blockers": 0,
+      "negative_screens": 66,
+      "negative_nonunknown": 0,
+      "negative_matched_rule": 0,
+      "real_correct_with_rule": 11,
+      "real_confusion": {
+        "blocked -> blocked": 6,
+        "working -> working": 2,
+        "idle -> idle": 3
+      }
+    },
+    "herdr": {
+      "real_screens": 11,
+      "correct": 8,
+      "blockers": 6,
+      "missed_blockers": 3,
+      "negative_screens": 66,
+      "negative_nonunknown": 66,
+      "negative_matched_rule": 21,
+      "real_correct_with_rule": 6,
+      "real_confusion": {
+        "blocked -> idle": 3,
+        "blocked -> blocked": 3,
+        "working -> working": 2,
+        "idle -> idle": 3
+      }
+    }
+  }
+}
