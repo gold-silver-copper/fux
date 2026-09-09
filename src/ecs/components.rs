@@ -151,6 +151,9 @@ impl PaneState {
 #[derive(Component)]
 pub struct Pane {
     pub id: PaneId,
+    /// Immutable attribution survives tab/workspace retirement and name reuse.
+    pub workspace_name: String,
+    pub workspace_stream: u64,
     pub tab: Entity,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
@@ -160,16 +163,15 @@ pub struct Pane {
     pub rect: Rect,
     /// The emulator, title or exit status changed since the retained grid was last refreshed.
     pub dirty: bool,
-    /// Application bytes arrived since the last `pane.output` event; one is due when the interval
-    /// allows. Set by the output phase, not by a refresh, so a resize or cursor move advances the
-    /// sequence without counting as output.
+    /// Nonempty application bytes arrived since the last paced invalidation. Publish pane.output
+    /// when the grid sequence changed, otherwise workspace.changed for capture-only changes.
     pub event_pending: bool,
-    /// The output sequence carried by the last `pane.output` event, so an event fires only when
-    /// the sequence has actually advanced (bytes that changed nothing produce none).
+    /// The grid sequence observed at the last paced invalidation. Capture-only changes do not
+    /// advance this counter or produce a pane.output event.
     pub last_event_seq: u64,
     pub published_title: String,
-    /// The agent state last announced in a `pane.agent` event, to detect changes.
-    pub published_agent: Option<crate::view::AgentReport>,
+    /// Nonempty controller/viewer writes; terminal query replies are excluded.
+    pub input_sequence: u64,
     pub last_output_event_ms: Option<u64>,
 }
 

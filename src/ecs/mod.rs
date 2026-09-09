@@ -6,6 +6,7 @@
 //! `Session` with injected events and time.
 
 pub mod components;
+pub mod events;
 pub mod messages;
 pub mod resources;
 pub mod support;
@@ -49,6 +50,8 @@ impl Session {
             default_command: config.default_command.argv.clone(),
         });
         world.init_resource::<Ids>();
+        world.init_resource::<resources::InputOperations>();
+        world.init_resource::<resources::FinalRecords>();
         world.init_resource::<Clock>();
         world.init_resource::<Deadlines>();
         world.init_resource::<resources::ShuttingDown>();
@@ -78,7 +81,12 @@ impl Session {
         // reaches the newly focused pane before this step publishes frames.
         schedule.add_systems((
             systems::requests::apply_attachments.in_set(Phase::Ingest),
-            systems::output::apply_pane_output.in_set(Phase::Output),
+            (
+                systems::output::apply_pane_output,
+                systems::input::apply_completions,
+            )
+                .chain()
+                .in_set(Phase::Output),
             (
                 systems::requests::apply_requests,
                 systems::requests::drain_viewer_queues,

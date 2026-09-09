@@ -32,6 +32,14 @@ pub enum ViewerRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagerAction {
+    /// Create only; an existing or reserved name is an error.
+    Create {
+        name: String,
+    },
+    Final {
+        instance: String,
+        pane: PaneId,
+    },
     List,
     /// Server identity and limits.
     Info,
@@ -47,14 +55,26 @@ pub enum ManagerAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagerOutcome {
+    Final(control::Reply),
     Names(Vec<String>),
-    Attach { name: String, created: bool },
+    Attach {
+        name: String,
+        created: bool,
+        stream: u64,
+    },
     Info(Box<crate::proto::control::ServerInfo>),
     Failed(String),
 }
 
 #[derive(Message, Clone, Debug, PartialEq, Eq)]
 pub enum Inbound {
+    InputCompleted {
+        pane: PaneId,
+        operation: u64,
+        bytes_written: usize,
+        error: Option<String>,
+    },
+
     PaneOutput {
         pane: PaneId,
         bytes: Vec<u8>,
@@ -97,6 +117,12 @@ pub enum Inbound {
 
 #[derive(Message, Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
+    WriteTrackedInput {
+        pane: PaneId,
+        operation: u64,
+        bytes: Vec<u8>,
+    },
+
     SpawnPane {
         pane: PaneId,
         argv: Vec<String>,
@@ -139,11 +165,15 @@ pub enum Effect {
         outcome: ManagerOutcome,
     },
     Event {
+        cursor: control::EventCursor,
         workspace: String,
         event: control::Event,
+        /// Exact encoded length of the sequenced entry, computed once by the event log.
+        size: usize,
     },
     /// Bind the workspace's sockets and publish its descriptor.
     WorkspaceOpened {
+        stream: u64,
         name: String,
     },
     /// Close the workspace's sockets and remove its descriptor.

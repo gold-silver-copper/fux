@@ -10,9 +10,10 @@ trap cleanup EXIT HUP INT TERM
 
 cd "$repository"
 # Extra package flags (for example --allow-dirty for a local worktree) are explicit.
-cargo package --locked "$@"
-version=$(cargo metadata --no-deps --format-version 1 --locked | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "fux"))')
-fux_package="$repository/target/package/fux-$version"
+package_target=${CARGO_TARGET_DIR:-"$repository/target"}
+cargo package --locked --target-dir "$package_target" "$@"
+version=$(cargo metadata --no-deps --format-version 1 --locked | cargo run --quiet --locked --manifest-path tools/xtask/Cargo.toml -- package-version)
+fux_package="$package_target/package/fux-$version"
 test -f "$fux_package/Cargo.toml"
 
 cargo install --path "$fux_package" --root "$scratch/install" --locked

@@ -1,0 +1,231 @@
+"""Two isolated scripted workers, verified dependency handoff and owned cleanup."""
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from zor_contention import api_busy, retry_busy
+
+FUX, ZOR = (str(Path(arg).resolve()) for arg in sys.argv[1:3])
+with tempfile.TemporaryDirectory(prefix='zflow-',dir='/tmp') as directory:
+    root = Path(directory)
+    (root / 'config/fux').mkdir(parents=True)
+    (root / 'config/fux/config.toml').write_text('default-command = { argv = ["/bin/cat"] }\n')
+    env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin',HOME=directory,XDG_RUNTIME_DIR=directory,
+        XDG_CONFIG_HOME=str(root/'config'),XDG_STATE_HOME=str(root/'state'),TERM='xterm-256color')
+    server = subprocess.Popen([FUX,'serve'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    service = None
+    try:
+        control = root / 'fux/default.sock'
+        end = time.monotonic()+8
+        while not control.exists():
+            assert time.monotonic() < end
+            time.sleep(.02)
+        with socket.socket(socket.AF_UNIX) as peer:
+            peer.settimeout(3)
+            peer.connect(str(control)); peer.sendall(b'FUXCTL3\n')
+            with peer.makefile('rb') as reader:
+                assert reader.read(8) == b'FUXCTL3\n'
+                peer.sendall(b'{"command":"list","id":1}\n')
+                instance = json.loads(reader.readline(1024*1024))['result']['value']['instance']
+        def cli(*args,ok=True):
+            reply = subprocess.run([ZOR,'--state-directory',str(root/'task-journal'),*args],env=env,capture_output=True,timeout=12)
+            assert (reply.returncode == 0) == ok, (args,reply.stdout,reply.stderr)
+            return json.loads(reply.stdout) if ok else reply.stderr
+        def git(path,*args):
+            return subprocess.run(['/usr/bin/git','-C',str(path),*args],env=env,capture_output=True,check=True,timeout=5).stdout
+        repo = root/'repo'; repo.mkdir()
+        git(repo,'init','-b','main')
+        git(repo,'config','user.name','Fixture'); git(repo,'config','user.email','fixture@example.invalid')
+        (repo/'base').write_text('shared baseline')
+        git(repo,'add','.'); git(repo,'commit','-m','baseline')
+        python = str(Path(sys.executable).resolve())
+        worker_code = ('import sys,subprocess; from pathlib import Path\n'
+            'for line in sys.stdin:\n'
+            ' text=line.strip(); Path("output.txt").write_text(text)\n'
+            ' subprocess.run(["/usr/bin/git","add","output.txt"],check=True)\n'
+            ' subprocess.run(["/usr/bin/git","commit","--allow-empty","-m","worker output"],check=True)\n'
+            ' Path(sys.argv[1]).write_text(text)\n')
+        trees = {}
+        for name in ['alpha','beta']:
+            tree = cli('worktree','create',name,'--repo',str(repo),'--branch',name)
+            trees[name] = Path(tree['worktree']['path'])
+            cli('task','start',name,'--title',name,'--instance',instance,'--workspace','default',
+                '--worktree',name,'--',python,'-u','-c',worker_code,str(root/(name+'-done')))
+            cli('task','require-check',name,'content','--',python,'-c',
+                'from pathlib import Path; import sys; assert Path("output.txt").read_text() == sys.argv[1]', 'result-'+name)
+            cli('task','require-artifact',name,'output','output.txt')
+        assert trees['alpha'] != trees['beta'] and not (repo/'output.txt').exists()
+        cli('task','start','lead','--title','lead','--instance',instance,'--workspace','default','--cwd',str(root),'--','/bin/cat')
+        journal = root/'task-journal/journal.json'
+        handoff = ['task','handoff','lead','--operation','merge-results','--from','alpha','--from','beta',
+            '--text','Review both retained outputs; do not treat worker claims as verification.','--timeout-ms','60000']
+        before = journal.read_bytes()
+        cli(*handoff,ok=False)
+        assert journal.read_bytes() == before
+        def send(name, operation, text):
+            cli('task','prepare',name,'--operation',operation,'--text',text,'--timeout-ms','60000')
+            cli('task','submit',operation)
+        # Both owned worker processes are live before either result is collected.
+        send('alpha','alpha-work','result-alpha')
+        send('beta','beta-work','incorrect-beta')
+        def response(name, operation, expected):
+            end = time.monotonic()+8
+            marker = root/(name+'-done')
+            while not marker.exists() or marker.read_text() != expected:
+                assert time.monotonic() < end
+                time.sleep(.02)
+            while True:
+                prompt = cli('task','reconcile',operation)
+                if prompt['delivery'] == 'delivered': break
+                assert time.monotonic() < end
+                time.sleep(.02)
+            # This is an attributed fixture report, not an actual-agent adapter guarantee.
+            cli('task','report',operation,'--token',prompt['report_token'],'--producer',name+'-fixture',
+                '--sequence','1','--input-operation',str(prompt['receipt']['operation']),'--kind','response-observed')
+            assert cli('task','wait',operation)['wait'] == 'response-observed'
+        response('alpha','alpha-work','result-alpha')
+        response('beta','beta-work','incorrect-beta')
+        def check(name, source, execution):
+            cli('task','source-collect',name,source)
+            return cli('task','check',name,execution,'--source',source,'--requirement','content',
+                '--artifact','output='+execution+'-output','--',python,'-c',
+                'from pathlib import Path; import sys; assert Path("output.txt").read_text() == sys.argv[1]', 'result-'+name)
+        assert check('alpha','alpha-source','alpha-check')['passed']
+        cli('task','verify','alpha','alpha-source')
+        assert not check('beta','beta-bad-source','beta-bad-check')['passed']
+        before = journal.read_bytes()
+        cli(*handoff,ok=False)
+        cli('task','verify','beta','beta-bad-source',ok=False)
+        assert journal.read_bytes() == before
+        send('beta','beta-repair','result-beta')
+        response('beta','beta-repair','result-beta')
+        assert check('beta','beta-source','beta-check')['passed']
+        cli('task','verify','beta','beta-source')
+        service = subprocess.Popen([ZOR,'--state-directory',str(journal.parent),'serve'],env=env,
+            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        endpoint = root/'zor/control.sock'
+        end = time.monotonic()+8
+        while not endpoint.exists():
+            assert time.monotonic() < end and service.poll() is None
+            time.sleep(.02)
+        def exchange(request, timeout=5):
+            with socket.socket(socket.AF_UNIX) as peer:
+                peer.settimeout(timeout); peer.connect(str(endpoint))
+                peer.sendall(json.dumps(request).encode()+b'\n')
+                with peer.makefile('rb') as reader:
+                    return json.loads(reader.readline(512*1024))
+        service_instance = exchange({'v':1,'id':1,'op':'ping'})['service_instance']
+        api_request = {'v':1,'id':2,'op':'task','service_instance':service_instance,'task':{
+            'action':'handoff','id':'lead','operation':'merge-results','predecessors':['alpha','beta'],
+            'text':handoff[10],'timeout_ms':60000}}
+        # Same durable handoff operation and exact predecessor plan on every call.
+        api_reply = retry_busy(lambda remaining: exchange(api_request, timeout=min(5, remaining)),
+            lambda reply: api_busy(reply, api_request), deadline=time.monotonic()+12, replay=True)
+        assert api_reply['status'] == 'completed', api_reply
+        prepared = api_reply['value']
+        assert cli(*handoff) == prepared
+        assert prepared['delivery'] == 'prepared' and prepared['receipt'] is None
+        payload = json.loads(prepared['text'])
+        assert payload['kind'] == 'zor-verified-handoff' and payload['destination'] == 'lead'
+        assert payload['evidence_cli_prefix'] == ['zor','--state-directory',str(journal.parent.resolve()),'task']
+        prefix = payload['evidence_cli_prefix']
+        accessed = subprocess.run([ZOR,*prefix[1:],'artifact-inspect','beta-check-output'],env=env,
+            capture_output=True,check=True,timeout=5)
+        assert bytes(json.loads(accessed.stdout)['artifact']['bytes']) == b'result-beta'
+        assert [item['task'] for item in payload['predecessors']] == ['alpha','beta']
+        assert payload['predecessors'][1]['source'] == 'beta-source'
+        assert prepared['handoff']['predecessors'] == {
+            item['task']:item['created_generation'] for item in payload['predecessors']}
+        before = journal.read_bytes()
+        assert cli(*handoff) == prepared
+        reordered = handoff.copy(); reordered[6],reordered[8] = reordered[8],reordered[6]
+        assert cli(*reordered) == prepared
+        assert journal.read_bytes() == before
+        for args in [handoff[:-3]+['changed','--timeout-ms','60000'],
+            ['task','handoff','lead','--operation','duplicate','--from','alpha','--from','alpha','--text','x'],
+            ['task','handoff','alpha','--operation','self','--from','alpha','--text','x'],
+            ['task','handoff','lead','--operation','too-many',*sum((['--from','alpha'] for _ in range(9)),[]),'--text','x'],
+            ['task','prepare','lead','--operation','merge-results','--text',prepared['text'],'--timeout-ms','60000']]:
+            cli(*args,ok=False)
+            assert journal.read_bytes() == before
+        # Sealed references and their exact delivered payload remain tied on journal load.
+        for mutation in ['generation','text','instruction','destination']:
+            invalid = json.loads(before); prompt = invalid['prompts']['merge-results']
+            if mutation == 'generation': prompt['handoff']['predecessors']['alpha'] += 1
+            if mutation == 'text': prompt['text'] += ' changed'
+            if mutation == 'instruction': prompt['handoff']['instruction'] += ' changed'
+            if mutation == 'destination': prompt['attempt'] = invalid['tasks']['alpha']['attempt']
+            encoded = json.dumps(invalid).encode(); journal.write_bytes(encoded)
+            try:
+                cli('task','inspect','lead',ok=False)
+                assert journal.read_bytes() == encoded
+            finally: journal.write_bytes(before)
+        cli('task','submit','merge-results')
+        deadline = time.monotonic()+5
+        while True:
+            delivered = cli('task','reconcile','merge-results')
+            if delivered['delivery'] == 'delivered': break
+            assert time.monotonic() < deadline
+            time.sleep(.02)
+        assert cli(*handoff) == delivered  # Retry reads delivery; it does not prepare or send again.
+        cli('task','report','merge-results','--token',prepared['report_token'],'--producer','lead-fixture',
+            '--sequence','1','--input-operation',str(delivered['receipt']['operation']),'--kind','response-observed')
+        assert cli('task','wait','merge-results')['wait'] == 'response-observed'
+        assert cli('task','result','lead')['verification']['status'] == 'unverified'
+        # Simulate interruption after persisting a verified worker's stop intent.
+        saved = json.loads(journal.read_bytes())
+        saved['launches']['alpha']['stop_requested'] = True
+        candidate = journal.with_suffix('.fixture')
+        with candidate.open('wb') as stream:
+            os.chmod(candidate,0o600)
+            stream.write(json.dumps(saved).encode()); stream.flush(); os.fsync(stream.fileno())
+        os.replace(candidate,journal)
+        end = time.monotonic()+12
+        while True:
+            response = subprocess.run([ZOR,'--state-directory',str(journal.parent),'task','inspect','alpha'],
+                env=env,capture_output=True,timeout=5)
+            if response.returncode == 0 and json.loads(response.stdout)['launch']['phase'] == 'closed': break
+            assert time.monotonic() < end
+            if response.returncode: assert b'journal is busy' in response.stderr, response.stderr
+            time.sleep(.05)
+        assert json.loads(response.stdout)['task']['outcome'] == 'verified'
+        service.terminate(); service.wait(timeout=10)
+        for name in ['alpha','beta','lead']:
+            end = time.monotonic()+8
+            while True:
+                stopped = subprocess.run([ZOR,'--state-directory',str(journal.parent),'task','stop',name],env=env,capture_output=True,timeout=5)
+                if stopped.returncode == 0: break
+                assert time.monotonic() < end and (b'stop requested' in stopped.stderr or b'managed process lifecycle uncertain' in stopped.stderr), stopped.stderr
+                time.sleep(.05)
+        for name in ['alpha','beta']:
+            (trees[name]/'untracked').write_text('preserve unless explicitly forced')
+            cli('worktree','remove',name,ok=False)
+            assert (trees[name]/'untracked').exists()
+            cli('worktree','remove',name,'--force')
+            result = cli('task','result',name)
+            assert result['verification']['status'] == 'verified'
+            artifact = result['verification']['record']['artifacts']['output']
+            assert bytes(cli('task','artifact-inspect',artifact)['artifact']['bytes']) == ('result-'+name).encode()
+        assert (repo/'base').read_text() == 'shared baseline' and not (repo/'output.txt').exists()
+        retry = cli(*handoff)
+        assert retry['released'] and retry['wait'] == 'cancelled'
+        assert retry['handoff'] == prepared['handoff']
+        print('PASS two isolated workers, failed dependency repair, pinned handoff, receipt retry and owned cleanup')
+    finally:
+        try:
+            if service is not None:
+                service.terminate()
+                try: service.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    service.kill(); service.wait(timeout=3)
+                    raise
+        finally:
+            server.terminate()
+            try: server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.kill(); server.wait(timeout=3)
+                raise

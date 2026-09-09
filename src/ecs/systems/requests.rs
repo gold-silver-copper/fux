@@ -149,6 +149,7 @@ pub fn apply_attachments(
                     },
                 });
                 effects.event(
+                    entity,
                     workspace,
                     Event::ClientAttached {
                         id: 0,
@@ -160,22 +161,28 @@ pub fn apply_attachments(
                 let Some(entity) = ids.viewer(*id) else {
                     continue;
                 };
-                let name = match viewers.get(entity) {
+                let (workspace, name) = match viewers.get(entity) {
                     Ok(viewer) => {
                         departed.push(entity);
-                        workspaces
-                            .get(viewer.workspace)
-                            .map(|workspace| workspace.name.clone())
-                            .unwrap_or_default()
+                        (
+                            viewer.workspace,
+                            workspaces
+                                .get(viewer.workspace)
+                                .map(|workspace| workspace.name.clone())
+                                .unwrap_or_default(),
+                        )
                     }
                     // Arrived in this batch: the spawn is still queued and the despawn queues
                     // behind it.
                     Err(_) => match arrived.iter().position(|(arrived, ..)| arrived == id) {
-                        Some(index) => arrived.swap_remove(index).3,
+                        Some(index) => {
+                            let (_, _, workspace, name) = arrived.swap_remove(index);
+                            (workspace, name)
+                        }
                         None => continue,
                     },
                 };
-                exit.despawn(ids, entity, *id, &name, &mut effects);
+                exit.despawn(ids, entity, *id, workspace, &name, &mut effects);
             }
             Inbound::Shutdown => shutting_down.0 = true,
             _ => {}
@@ -557,6 +564,20 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
     if let Err(error) = request.validate() {
         return reply(world, requester, control::error_reply(&error));
     }
+    if request
+        .instance()
+        .is_some_and(|instance| instance != world.resource::<ServerIdentity>().instance_nonce)
+    {
+        return reply(
+            world,
+            requester,
+            failed(
+                id,
+                ErrorCode::Conflict,
+                "server instance changed; rediscover before retrying",
+            ),
+        );
+    }
     let context = match target {
         Target::Viewer(viewer) => {
             let Some(workspace) = world.get::<Viewer>(viewer).map(|viewer| viewer.workspace) else {
@@ -583,6 +604,28 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             world,
             requester,
             failed(id, ErrorCode::Conflict, "workspace is shutting down"),
+        );
+    }
+    if let Request::Split {
+        stream: Some(expected),
+        ..
+    }
+    | Request::Workspace {
+        stream: Some(expected),
+        ..
+    } = &request
+        && world
+            .get::<crate::ecs::events::EventLog>(context.workspace)
+            .is_none_or(|log| log.cursor().stream != *expected)
+    {
+        return reply(
+            world,
+            requester,
+            failed(
+                id,
+                ErrorCode::Conflict,
+                "workspace lifetime changed; relist before launching",
+            ),
         );
     }
     let result = match request {
@@ -623,6 +666,19 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
                 }
             })
         }
+        Request::InputReserve { pane, .. } => {
+            let entity = pane_in_workspace(world, &context, pane)
+                .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"));
+            entity.and_then(|entity| super::input::reserve(world, context.workspace, entity, id))
+        }
+        Request::InputSubmit {
+            operation, keys, ..
+        } => control::decode_key_bytes(&keys)
+            .map_err(|error| control::error_reply(&error))
+            .and_then(|bytes| super::input::submit(world, context.workspace, operation, bytes, id)),
+        Request::InputStatus { operation, .. } => {
+            super::input::status(world, context.workspace, operation, id)
+        }
         Request::Capture {
             pane,
             attrs,
@@ -630,6 +686,7 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             max_bytes,
             format,
             since,
+            if_revision,
             ..
         } => {
             let entity = pane_in_workspace(world, &context, pane);
@@ -640,12 +697,17 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
                     let seq = component.terminal.grid().seq();
                     match format {
                         control::CaptureFormat::Text => {
-                            let text = component.terminal.capture(
+                            let capture = component.terminal.capture_snapshot(
                                 usize::try_from(scrollback).unwrap_or(usize::MAX),
                                 attrs,
                                 max_bytes,
+                                if_revision,
                             );
-                            Ok(CommandResult::Capture { text, seq })
+                            Ok(CommandResult::Capture {
+                                capture: Box::new(capture),
+                                seq,
+                                input_sequence: component.input_sequence,
+                            })
                         }
                         control::CaptureFormat::Rows => {
                             let grid = component.terminal.grid();
@@ -669,6 +731,7 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             }
         }
         Request::List { .. } => Ok(CommandResult::Listing {
+            instance: world.resource::<ServerIdentity>().instance_nonce.clone(),
             workspaces: vec![summarize(world, &context)],
         }),
         Request::Info { .. } => Ok(CommandResult::Info {
@@ -682,6 +745,19 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         } => register_wait(world, &context, requester, id, pane, until, timeout_ms),
         Request::Tab { action, .. } => tab_action(world, &context, id, action),
         Request::Workspace { action, .. } => workspace_action(world, &context, id, action),
+        Request::Events { after, .. } => {
+            match world
+                .get::<crate::ecs::events::EventLog>(context.workspace)
+                .and_then(|log| log.replay(after).map(|events| (log.cursor(), events)))
+            {
+                Some((cursor, events)) => Ok(CommandResult::Events { cursor, events }),
+                None => Err(failed(
+                    id,
+                    ErrorCode::Gap,
+                    "event cursor is no longer replayable; relist",
+                )),
+            }
+        }
         Request::Subscribe { .. } => Err(failed(
             id,
             ErrorCode::InvalidRequest,
@@ -1118,6 +1194,7 @@ fn workspace_action(
 ) -> Result<CommandResult, Reply> {
     match action {
         WorkspaceAction::List => Ok(CommandResult::Listing {
+            instance: world.resource::<ServerIdentity>().instance_nonce.clone(),
             workspaces: list_workspaces(world),
         }),
         WorkspaceAction::New { name } => {
@@ -1260,6 +1337,26 @@ fn manager(world: &mut World, token: u64, outcome: ManagerOutcome) {
 
 fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
     match action {
+        ManagerAction::Final { instance, pane } => {
+            let result = super::final_records::read(world, &instance, pane);
+            manager(world, token, ManagerOutcome::Final(result));
+        }
+        ManagerAction::Create { name } => {
+            if world.resource::<ShuttingDown>().0 {
+                return manager(
+                    world,
+                    token,
+                    ManagerOutcome::Failed("server is shutting down".into()),
+                );
+            }
+            if let Err(reply) = reserve_workspace(world, name, Requester::Manager(token), 0) {
+                let message = match reply {
+                    Reply::Failed { error, .. } => error.message,
+                    _ => "workspace creation failed".into(),
+                };
+                manager(world, token, ManagerOutcome::Failed(message));
+            }
+        }
         ManagerAction::List => {
             let names = open_workspace_names(world);
             manager(world, token, ManagerOutcome::Names(names));
@@ -1309,6 +1406,10 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
                     .map(|workspace| workspace.name.clone());
                 let outcome = match open {
                     Some(name) => ManagerOutcome::Attach {
+                        stream: world
+                            .get::<crate::ecs::events::EventLog>(entity)
+                            .map(|log| log.cursor().stream)
+                            .unwrap_or(0),
                         name,
                         created: false,
                     },
@@ -1441,6 +1542,8 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
                     let (row, column) = screen.cursor_position();
                     Some(PaneSummary {
                         seq: component.terminal.grid().seq(),
+                        revision: component.terminal.revision(),
+                        input_sequence: component.input_sequence,
                         id: component.id,
                         command: component.argv.clone(),
                         pid: component.state.pid(),
@@ -1450,7 +1553,6 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
                             .terminal
                             .progress()
                             .map(|progress| (progress.state, progress.percent)),
-                        agent: component.terminal.agent().cloned(),
                         geometry: component.rect,
                         focused: focused_pane == Some(pane),
                         cursor: crate::view::Cursor {
@@ -1473,6 +1575,10 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
         })
         .collect();
     WorkspaceSummary {
+        event_cursor: world
+            .get::<crate::ecs::events::EventLog>(context.workspace)
+            .map(crate::ecs::events::EventLog::cursor)
+            .unwrap_or_default(),
         name,
         focused: true,
         viewers,

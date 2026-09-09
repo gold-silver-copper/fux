@@ -17,6 +17,8 @@ use bevy_ecs::prelude::*;
 pub const TERMINATE_GRACE_MS: u64 = 1_000;
 
 pub fn resolve_lifecycle(world: &mut World) {
+    super::input::expire(world);
+    super::final_records::expire(world);
     let now = world.resource::<Clock>().now_ms;
     let limits = world.resource::<Limits>().clone();
     if world.resource::<ShuttingDown>().0 {
@@ -163,7 +165,14 @@ fn finalize_retirements(world: &mut World, now: u64, grace_ms: u64) {
         finalize(world, workspace, now);
     }
     let remaining = world.query::<&Workspace>().iter(world).count();
-    if remaining == 0 && world.resource::<Ids>().workspaces.is_empty() {
+    if remaining == 0
+        && world.resource::<Ids>().workspaces.is_empty()
+        && (world.resource::<ShuttingDown>().0
+            || world
+                .resource::<crate::ecs::resources::FinalRecords>()
+                .0
+                .is_empty())
+    {
         effect(world, Effect::Idle);
     }
 }

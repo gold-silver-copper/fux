@@ -48,6 +48,7 @@ impl Limits {
 #[derive(Resource, Clone, Debug, Default)]
 pub struct Ids {
     next_pane: u32,
+    next_stream: u64,
     next_tab: u32,
     pub panes: BTreeMap<PaneId, Entity>,
     pub tabs: BTreeMap<TabId, Entity>,
@@ -56,6 +57,10 @@ pub struct Ids {
 }
 
 impl Ids {
+    pub fn next_stream(&mut self) -> Option<u64> {
+        self.next_stream = self.next_stream.checked_add(1)?;
+        Some(self.next_stream)
+    }
     pub fn next_pane(&mut self) -> Option<PaneId> {
         self.next_pane = self.next_pane.checked_add(1)?;
         Some(PaneId(self.next_pane))
@@ -147,3 +152,26 @@ pub struct PendingWait {
 pub struct Waits {
     pub pending: Vec<PendingWait>,
 }
+
+/// Fixed, global receipt budget. Unexpired operations are never evicted to admit new ones.
+pub const MAX_INPUT_OPERATIONS: usize = 128;
+pub const INPUT_RETENTION_MS: u64 = 60_000;
+
+pub struct InputRecord {
+    pub workspace: Entity,
+    pub receipt: crate::proto::control::InputReceipt,
+    /// Exact decoded payload, retained only after submission to detect conflicting retries.
+    pub bytes: Option<Vec<u8>>,
+}
+
+#[derive(Resource, Default)]
+pub struct InputOperations {
+    pub next: u64,
+    pub records: BTreeMap<u64, InputRecord>,
+}
+
+pub const MAX_FINAL_RECORDS: usize = 128;
+pub const FINAL_RETENTION_MS: u64 = 60_000;
+
+#[derive(Resource, Default)]
+pub struct FinalRecords(pub BTreeMap<PaneId, crate::proto::control::FinalRecord>);

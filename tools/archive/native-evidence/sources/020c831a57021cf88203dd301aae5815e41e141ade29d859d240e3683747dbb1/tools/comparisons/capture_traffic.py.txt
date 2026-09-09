@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""Count zor's actual workspace IPC through owned transparent proxies.
+
+Herdr's in-process detection reads have no equivalent IPC counter here; see report.
+"""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import tempfile
+import threading
+import time
+
+import prompt_boundary as common
+import resources
+
+ROOT = resources.ROOT
+
+
+def line(peer, maximum=1048576):
+    data = bytearray()
+    while not data.endswith(b'\n'):
+        byte = peer.recv(1)
+        if not byte: raise EOFError('peer closed before frame')
+        data.extend(byte)
+        assert len(data) <= maximum
+    return bytes(data)
+
+
+class Proxy:
+    def __init__(self, front, upstream):
+        self.front, self.upstream = front, upstream
+        self.stop = threading.Event(); self.lock = threading.Lock()
+        self.records = []; self.errors = []; self.handlers = []
+        front.rename(upstream)
+        self.listener = socket.socket(socket.AF_UNIX)
+        self.listener.bind(str(front)); self.listener.listen(32); self.listener.settimeout(.1)
+        self.thread = threading.Thread(target=self.accept)
+        self.thread.start()
+
+    def accept(self):
+        try:
+            while not self.stop.is_set():
+                try: peer, _ = self.listener.accept()
+                except socket.timeout: continue
+                assert len(self.handlers) < 512, 'connection budget'
+                thread = threading.Thread(target=self.handle, args=(peer,))
+                self.handlers.append(thread); thread.start()
+        except BaseException as error:
+            self.errors.append(repr(error))
+
+    def handle(self, peer):
+        try:
+            with peer, socket.socket(socket.AF_UNIX) as backend:
+                peer.settimeout(3); backend.settimeout(3)
+                assert line(peer, 8) == b'FUXCTL3\n'
+                peer.sendall(b'FUXCTL3\n')
+                request = line(peer, 65536); command = json.loads(request)['command']
+                backend.connect(str(self.upstream)); backend.sendall(b'FUXCTL3\n')
+                assert line(backend, 8) == b'FUXCTL3\n'
+                started = time.monotonic(); backend.sendall(request)
+                reply = line(backend); value = json.loads(reply)
+                assert value['status'] == ('accepted' if command == 'subscribe' else 'completed'), value
+                peer.sendall(reply)
+                capture = value.get('result', {}).get('value', {}) if command == 'capture' else {}
+                with self.lock:
+                    self.records.append(dict(started=started, finished=time.monotonic(), command=command,
+                        request_bytes=len(request), reply_bytes=len(reply),
+                        text_bytes=len(capture.get('text', '').encode()),
+                        burst_done='BURST_DONE' in capture.get('text', ''), revision=capture.get('revision')))
+                if command != 'subscribe': return
+                backend.settimeout(.1); data = bytearray()
+                while not self.stop.is_set():
+                    try: chunk = backend.recv(8192)
+                    except socket.timeout: continue
+                    if not chunk: return
+                    data.extend(chunk); assert len(data) <= 1048576
+                    while b'\n' in data:
+                        end = data.index(10)+1; frame = bytes(data[:end]); del data[:end]
+                        peer.sendall(frame)
+                        with self.lock:
+                            self.records.append(dict(command='event', finished=time.monotonic(), bytes=len(frame)))
+        except (BrokenPipeError, ConnectionResetError, EOFError) as error:
+            if not self.stop.is_set(): self.errors.append(repr(error))
+        except BaseException as error:
+            self.errors.append(repr(error))
+
+    def snapshot(self):
+        with self.lock: return list(self.records)
+
+    def close(self):
+        self.stop.set(); self.thread.join(timeout=5); self.listener.close()
+        for thread in self.handlers: thread.join(timeout=5)
+        assert not self.thread.is_alive() and not any(t.is_alive() for t in self.handlers)
+        assert not self.errors, self.errors
+
+
+def summarize(records, start, end):
+    selected = [r for r in records if start <= r['finished'] < end]
+    return dict(duration_ms=(end-start)*1000, captures=sum(r['command']=='capture' for r in selected),
+        capture_request_bytes=sum(r['request_bytes'] for r in selected if r['command']=='capture'),
+        capture_reply_bytes=sum(r['reply_bytes'] for r in selected if r['command']=='capture'),
+        capture_text_bytes=sum(r['text_bytes'] for r in selected if r['command']=='capture'),
+        lists=sum(r['command']=='list' for r in selected),
+        events=sum(r['command']=='event' for r in selected),
+        event_bytes=sum(r['bytes'] for r in selected if r['command']=='event'))
+
+
+def validate_case(row):
+    assert row['panes'] == row['worker_count'] and row['panes'] in [1, 4, 8]
+    assert row['owners_exit'] == {'fux': 0, 'zor': 0} and row['worker_exit_confirmed'] is True
+    bounds = row['boundaries']
+    assert bounds['idle_start'] < bounds['idle_end'] <= bounds['burst_start'] < bounds['burst_end']
+    for phase in ['idle', 'burst']:
+        assert row[phase] == summarize(row['records'], bounds[phase+'_start'], bounds[phase+'_end'])
+    assert row['idle']['duration_ms'] >= 4200 and row['idle']['captures'] == 0
+    assert row['burst']['captures'] >= row['panes']
+    assert row['burst']['capture_reply_bytes'] >= row['burst']['capture_text_bytes'] > 0
+    assert 0 < row['all_burst_captured_ms'] < row['burst']['duration_ms']
+    assert all(r['command'] in ['list', 'capture', 'subscribe', 'event'] for r in row['records'])
+    for workspace in range(row['panes']):
+        assert any(r['workspace'] == workspace and r.get('burst_done') and
+            bounds['burst_start'] <= r['finished'] < bounds['burst_end'] for r in row['records'])
+
+
+def run_case(count, binaries, worker):
+    with tempfile.TemporaryDirectory(prefix='traffic-', dir='/tmp') as directory:
+        root=Path(directory); config=root/'config'; (root/'workers').mkdir()
+        path=config/'fux/config.toml'; path.parent.mkdir(parents=True)
+        path.write_text('default-command = { argv = '+json.dumps([str(worker)])+' }\n')
+        env=dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=directory, XDG_CONFIG_HOME=str(config),
+            XDG_STATE_HOME=str(root/'state'), XDG_CACHE_HOME=str(root/'cache'), XDG_RUNTIME_DIR=directory,
+            SHELL='/bin/sh', TERM='xterm-256color', WORKER_DIR=str(root/'workers'))
+        processes={}; proxies=[]; panes=[]
+        def cli(name,*args):
+            value=subprocess.run([str(binaries[name]),*args],env=env,cwd=root,capture_output=True,text=True,timeout=10)
+            assert value.returncode==0, value.stderr
+            return value.stdout
+        with (root/'owners.log').open('w+') as log:
+            def start(name,*args):
+                processes[name]=subprocess.Popen([str(binaries[name]),*args],env=env,cwd=root,
+                    stdin=subprocess.DEVNULL,stdout=log,stderr=log)
+            try:
+                start('fux','serve'); common.until(lambda:(root/'fux/default.sock').exists())
+                for i in range(1,count): cli('fux','workspace','new','pane'+str(i))
+                for i,name in enumerate(['default']+['pane'+str(i) for i in range(1,count)]):
+                    front=root/'fux'/(name+'.sock'); upstream=root/('up'+str(i)+'.sock')
+                    proxy=Proxy(front,upstream); proxies.append(proxy)
+                    listing=common.rpc(upstream,dict(id=1,command='list'),True)['result']['value']
+                    pane=listing['workspaces'][0]['tabs'][0]['panes'][0]['id']; panes.append((upstream,pane))
+                start('zor','serve'); common.until(lambda:(root/'zor/control.sock').exists())
+                def snapshot(): return json.loads(cli('zor','status'))['snapshot']
+                common.until(lambda:(s:=snapshot())['event_streams']==count and len(s['observations'])==count)
+                common.until(lambda:all(any(r['command']=='capture' for r in p.snapshot()) for p in proxies))
+                time.sleep(1)
+                idle_start=time.monotonic(); time.sleep(4.2); idle_end=time.monotonic()
+                burst_start=time.monotonic()
+                for upstream,pane in panes:
+                    value=common.rpc(upstream,dict(id=1,command='send-keys',pane=pane,keys='burst\\n'),True)
+                    assert value['status']=='completed',value
+                common.until(lambda:all(any(r.get('burst_done') and r['finished']>=burst_start for r in p.snapshot()) for p in proxies))
+                all_captured=time.monotonic(); time.sleep(1); burst_end=time.monotonic()
+                records=[dict(workspace=i,**r) for i,p in enumerate(proxies) for r in p.snapshot()]
+                result=dict(panes=count,idle=summarize(records,idle_start,idle_end),
+                    burst=summarize(records,burst_start,burst_end),
+                    all_burst_captured_ms=(all_captured-burst_start)*1000,
+                    boundaries=dict(idle_start=idle_start,idle_end=idle_end,burst_start=burst_start,burst_end=burst_end),
+                    records=records)
+                assert result['idle']['captures']==0,result['idle']
+                assert result['burst']['captures']>=count,result['burst']
+            finally:
+                # Mark intentional stream shutdown before the consumer disconnects.
+                for proxy in proxies: proxy.stop.set()
+                try:
+                    if 'zor' in processes and processes['zor'].poll() is None: cli('zor','shutdown')
+                finally:
+                    errors=[]
+                    for name,process in reversed(list(processes.items())):
+                        if process.poll() is None and name!='zor': process.terminate()
+                        try: process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            process.kill();process.wait(timeout=5);errors.append('forced '+name)
+                        if process.returncode!=0:errors.append((name,process.returncode))
+                    for proxy in proxies:
+                        try:proxy.close()
+                        except BaseException as error:errors.append(repr(error))
+                    assert not errors,errors
+                def gone():
+                    for path in (root/'workers').iterdir():
+                        try:os.kill(int(path.name),0)
+                        except ProcessLookupError:continue
+                        return False
+                    return True
+                common.until(gone)
+            result['worker_count']=len(list((root/'workers').iterdir()))
+            assert result['worker_count']==count
+            result['owners_exit']={name:p.returncode for name,p in processes.items()}
+            result['worker_exit_confirmed']=True
+            validate_case(result)
+            return result
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    for name in ['fux','zor','output']:parser.add_argument('--'+name,type=Path,required=True)
+    parser.add_argument('--repetitions',type=int,default=3)
+    args=parser.parse_args();assert 1<=args.repetitions<=3 and not args.output.exists()
+    binaries={name:getattr(args,name).resolve(strict=True) for name in ['fux','zor']}
+    paths=[Path(__file__).resolve(),ROOT/'tools/comparisons/resources.py',ROOT/'zor/src/watch.rs',ROOT/'zor/src/observe.rs',ROOT/'references/herdr/src/pane.rs']
+    provenance=dict(sources={str(p.relative_to(ROOT)):resources.digest(p) for p in paths},
+        binaries={name:dict(path=str(p),sha256=resources.digest(p)) for name,p in binaries.items()})
+    results=[]
+    with tempfile.TemporaryDirectory(prefix='traffic-worker-',dir='/tmp') as directory:
+        root=Path(directory);source=root/'worker.c';source.write_text(resources.WORKER);worker=root/'claude'
+        subprocess.run(['/usr/bin/clang','-Wall','-Wextra','-Werror',str(source),'-o',str(worker)],check=True,timeout=30)
+        for repetition in range(1,args.repetitions+1):
+            for count in [1,4,8]:
+                row=run_case(count,binaries,worker);row['repetition']=repetition;results.append(row)
+                print(count,repetition,'passed',flush=True)
+    args.output.write_text(json.dumps(dict(recorded_at=datetime.now(timezone.utc).isoformat(),provenance=provenance,
+        herdr_internal_reads=None,herdr_measurement='not exposed by equivalent workspace IPC; source uses in-process detection_text()',results=results),indent=2)+'\n')
+
+
+if __name__=='__main__':main()

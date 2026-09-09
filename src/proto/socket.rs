@@ -208,16 +208,119 @@ pub fn check_private_socket_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Connect without letting a saturated local listener outlive the caller's deadline.
+pub fn connect_local(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
+    use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
+    use nix::sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, sockopt};
+    use std::os::fd::{AsFd, AsRawFd};
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|duration| !duration.is_zero())
+            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
+    };
+    remaining()?;
+    let fd = nix::sys::socket::socket(
+        AddressFamily::Unix,
+        SockType::Stream,
+        SockFlag::empty(),
+        None,
+    )?;
+    fcntl(&fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
+    fcntl(&fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
+    match nix::sys::socket::connect(fd.as_raw_fd(), &UnixAddr::new(path)?) {
+        Ok(()) => {}
+        Err(nix::errno::Errno::EINPROGRESS) => loop {
+            let timeout =
+                u16::try_from(remaining()?.as_millis().clamp(1, 2000)).map_err(io::Error::other)?;
+            let mut polls = [nix::poll::PollFd::new(
+                fd.as_fd(),
+                nix::poll::PollFlags::POLLOUT,
+            )];
+            match nix::poll::poll(&mut polls, timeout) {
+                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
+                Ok(_) => {}
+                Err(error) => return Err(error.into()),
+            }
+            let error = nix::sys::socket::getsockopt(&fd, sockopt::SocketError)?;
+            if error != 0 {
+                return Err(io::Error::from_raw_os_error(error));
+            }
+            break;
+        },
+        Err(error) => return Err(error.into()),
+    }
+    remaining()?;
+    let stream = UnixStream::from(fd);
+    stream.set_nonblocking(false)?;
+    Ok(stream)
+}
+
+/// Write with one wall-clock deadline, even when a peer drains only a few bytes at a time.
+/// Restore the descriptor's original status flags before returning.
+pub fn write_all_until(
+    stream: &mut UnixStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+    use std::os::fd::AsFd;
+    let flags = OFlag::from_bits_truncate(fcntl(&*stream, FcntlArg::F_GETFL)?);
+    fcntl(&*stream, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+    let result = (|| {
+        while !bytes.is_empty() {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|duration| !duration.is_zero())
+                .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
+            match stream.write(bytes) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(count) => {
+                    bytes = bytes
+                        .get(count..)
+                        .ok_or_else(|| io::Error::other("invalid socket write count"))?
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let mut polls = [nix::poll::PollFd::new(
+                        stream.as_fd(),
+                        nix::poll::PollFlags::POLLOUT,
+                    )];
+                    let timeout = u16::try_from(remaining.as_millis().clamp(1, 2000))
+                        .map_err(io::Error::other)?;
+                    match nix::poll::poll(&mut polls, timeout) {
+                        Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    })();
+    let restored = fcntl(&*stream, FcntlArg::F_SETFL(flags))
+        .map(|_| ())
+        .map_err(io::Error::from);
+    result.and(restored)
+}
+
 /// Client half of control negotiation: authorize the peer, send the preface, expect it back
 /// (the server half lives with the async socket tasks).
 pub fn negotiate_client(stream: &mut UnixStream) -> io::Result<()> {
+    negotiate_client_with_timeout(stream, HANDSHAKE_DEADLINE)
+}
+
+pub fn negotiate_client_with_timeout(stream: &mut UnixStream, timeout: Duration) -> io::Result<()> {
+    let timeout = timeout.min(HANDSHAKE_DEADLINE);
+    if timeout.is_zero() {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
     authorize_peer(stream)?;
     let read_timeout = stream.read_timeout()?;
     let write_timeout = stream.write_timeout()?;
     let result = (|| {
-        stream.set_write_timeout(Some(HANDSHAKE_DEADLINE))?;
-        stream.write_all(CONTROL_PREFACE)?;
-        let deadline = Instant::now() + HANDSHAKE_DEADLINE;
+        let deadline = Instant::now() + timeout;
+        write_all_until(stream, CONTROL_PREFACE, deadline)?;
         let mut received = [0; CONTROL_PREFACE.len()];
         let mut used = 0;
         while used < received.len() {
@@ -257,6 +360,48 @@ pub fn negotiate_client(stream: &mut UnixStream) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_partial_socket_writes_obey_one_deadline_and_restore_flags() -> io::Result<()> {
+        use nix::fcntl::{FcntlArg, OFlag, fcntl};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let (mut writer, mut reader) = UnixStream::pair()?;
+        nix::sys::socket::setsockopt(&writer, nix::sys::socket::sockopt::SndBuf, &4096)?;
+        reader.set_read_timeout(Some(Duration::from_secs(1)))?;
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&finished);
+        let (ready, started) = std::sync::mpsc::channel();
+        let peer = std::thread::spawn(move || {
+            let _ = ready.send(());
+            let mut buffer = [0_u8; 4096];
+            while !done.load(Ordering::Acquire) {
+                match reader.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        started
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(io::Error::other)?;
+        let start = Instant::now();
+        let result = write_all_until(
+            &mut writer,
+            &vec![b'x'; 1024 * 1024],
+            start + Duration::from_millis(100),
+        );
+        finished.store(true, Ordering::Release);
+        let flags = OFlag::from_bits_truncate(fcntl(&writer, FcntlArg::F_GETFL)?);
+        drop(writer);
+        peer.join().map_err(|_| io::Error::other("peer panicked"))?;
+        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(!flags.contains(OFlag::O_NONBLOCK));
+        Ok(())
+    }
 
     #[test]
     fn foreign_uid_is_rejected_and_current_kernel_peer_is_accepted() -> io::Result<()> {

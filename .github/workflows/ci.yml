@@ -63,18 +63,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/koh
-          path: references/koh
-          ref: 50a8270f48175c4a23e84c0ece008ff9ae49d918
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: gold-silver-copper/zor
-          path: zor
-          ref: fb6a1ef18c043ecf9dc94a10a18719e820bee685
+      # Companion repositories and exact bases come only from the manifest.
+      # Assembly checks each checkout's HEAD before applying its reviewed patch.
       - name: Assemble reviewed dependency sources
-        run: python3 tools/dependencies.py apply
+        run: cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies apply
       - name: Build zor and expose its exact path to tests
         run: |
           cargo build --manifest-path zor/Cargo.toml --locked

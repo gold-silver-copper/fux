@@ -1,0 +1,4511 @@
+{
+  "recorded_at": "2026-09-07T18:59:27.614452+00:00",
+  "provenance": {
+    "sources": {
+      "tools/comparisons/capture_traffic.py": "020c831a57021cf88203dd301aae5815e41e141ade29d859d240e3683747dbb1",
+      "tools/comparisons/resources.py": "ea33ab75e5770f2234f02652e1bfea42f5c05a064adc2e943b8a72242d0c7209",
+      "zor/src/watch.rs": "f5de31720c0db955096b8a243e94bc48a481fda5f7e183ac94f3f70d43795c44",
+      "zor/src/observe.rs": "894fb3eb51a8e9f4af1650e95d1c54ee5a8b2144af27efa1edec8464511355fe",
+      "references/herdr/src/pane.rs": "d4f7102b0c06b5d20c38bb37f1603d3e74d66bac5bc89a4f819cd8d28bb172a8"
+    },
+    "binaries": {
+      "fux": {
+        "path": "/Users/kisaczka/Desktop/code/fux/target/debug/fux",
+        "sha256": "140303622814c8089252f20de6c9847487dcda5f1ef03906bfba45d6b60f62cb"
+      },
+      "zor": {
+        "path": "/Users/kisaczka/Desktop/code/fux/zor/target/debug/zor",
+        "sha256": "87c7b7a2df086df566523fd5f009f234817d3296795cecca0d3f9e9736655b3a"
+      }
+    }
+  },
+  "herdr_internal_reads": null,
+  "herdr_measurement": "not exposed by equivalent workspace IPC; source uses in-process detection_text()",
+  "results": [
+    {
+      "panes": 1,
+      "idle": {
+        "duration_ms": 4209.153749980032,
+        "captures": 0,
+        "capture_request_bytes": 0,
+        "capture_reply_bytes": 0,
+        "capture_text_bytes": 0,
+        "lists": 1,
+        "events": 0,
+        "event_bytes": 0
+      },
+      "burst": {
+        "duration_ms": 1157.2609160211869,
+        "captures": 2,
+        "capture_request_bytes": 262,
+        "capture_reply_bytes": 3436,
+        "capture_text_bytes": 2868,
+        "lists": 2,
+        "events": 3,
+        "event_bytes": 222
+      },
+      "all_burst_captured_ms": 147.20241600298323,
+      "boundaries": {
+        "idle_start": 162252.605178916,
+        "idle_end": 162256.814332666,
+        "burst_start": 162256.814333,
+        "burst_end": 162257.971593916
+      },
+      "records": [
+        {
+          "workspace": 0,
+          "started": 162251.553992583,
+          "finished": 162251.555213958,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162251.555798625,
+          "finished": 162251.556399833,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 0,
+          "started": 162251.557013666,
+          "finished": 162251.557236333,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162254.555462125,
+          "finished": 162254.556793458,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162256.8149575,
+          "bytes": 72
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162256.81948975,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162256.91749975,
+          "finished": 162256.919285083,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162256.920021458,
+          "finished": 162256.923466875,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 172
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162257.067161708,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162257.168486791,
+          "finished": 162257.170115458,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162257.170821416,
+          "finished": 162257.174197458,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 172
+        }
+      ],
+      "worker_count": 1,
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "panes": 4,
+      "idle": {
+        "duration_ms": 4207.330250006635,
+        "captures": 0,
+        "capture_request_bytes": 0,
+        "capture_reply_bytes": 0,
+        "capture_text_bytes": 0,
+        "lists": 4,
+        "events": 0,
+        "event_bytes": 0
+      },
+      "burst": {
+        "duration_ms": 1150.8290409983601,
+        "captures": 8,
+        "capture_request_bytes": 1048,
+        "capture_reply_bytes": 13742,
+        "capture_text_bytes": 11472,
+        "lists": 8,
+        "events": 12,
+        "event_bytes": 888
+      },
+      "all_burst_captured_ms": 148.81220800452866,
+      "boundaries": {
+        "idle_start": 162260.8770095,
+        "idle_end": 162265.08433975,
+        "burst_start": 162265.08434025,
+        "burst_end": 162266.235169291
+      },
+      "records": [
+        {
+          "workspace": 0,
+          "started": 162259.83051125,
+          "finished": 162259.831944958,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162259.832513291,
+          "finished": 162259.833189458,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 0,
+          "started": 162259.843049125,
+          "finished": 162259.843343583,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162262.8378365,
+          "finished": 162262.839791541,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162265.085155208,
+          "bytes": 72
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162265.089354041,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162265.200771875,
+          "finished": 162265.20206975,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162265.202547958,
+          "finished": 162265.205435458,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 166
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162265.3378925,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162265.45731025,
+          "finished": 162265.460204166,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162265.461278,
+          "finished": 162265.4663715,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 166
+        },
+        {
+          "workspace": 1,
+          "started": 162259.8337995,
+          "finished": 162259.834987666,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162259.83542975,
+          "finished": 162259.83603975,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 1,
+          "started": 162259.8437505,
+          "finished": 162259.844073625,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162262.831686166,
+          "finished": 162262.833288125,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162265.089827125,
+          "bytes": 72
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162265.09392275,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162265.206672125,
+          "finished": 162265.208341,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162265.208846416,
+          "finished": 162265.211520041,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 60
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162265.341946375,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162265.467905916,
+          "finished": 162265.469845875,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162265.470623083,
+          "finished": 162265.474789833,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 60
+        },
+        {
+          "workspace": 2,
+          "started": 162259.836572333,
+          "finished": 162259.837796083,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162259.838278875,
+          "finished": 162259.838928083,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 2,
+          "started": 162259.844435625,
+          "finished": 162259.844747625,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162262.833978083,
+          "finished": 162262.835452916,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162265.094284458,
+          "bytes": 72
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162265.098555083,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162265.187891291,
+          "finished": 162265.189431041,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162265.190136166,
+          "finished": 162265.193223958,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 179
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162265.346006375,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162265.476206291,
+          "finished": 162265.47807175,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162265.4787025,
+          "finished": 162265.48239825,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 179
+        },
+        {
+          "workspace": 3,
+          "started": 162259.83946575,
+          "finished": 162259.84086525,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162259.841472041,
+          "finished": 162259.84226675,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 3,
+          "started": 162259.84509175,
+          "finished": 162259.845369625,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162262.83595175,
+          "finished": 162262.83737825,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162265.098855125,
+          "bytes": 72
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162265.102934666,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162265.1946545,
+          "finished": 162265.196057791,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162265.196633916,
+          "finished": 162265.199643125,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 175
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162265.350063791,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162265.442677541,
+          "finished": 162265.445952083,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162265.447344125,
+          "finished": 162265.454771708,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 175
+        }
+      ],
+      "worker_count": 4,
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "panes": 8,
+      "idle": {
+        "duration_ms": 4202.94470799854,
+        "captures": 0,
+        "capture_request_bytes": 0,
+        "capture_reply_bytes": 0,
+        "capture_text_bytes": 0,
+        "lists": 8,
+        "events": 0,
+        "event_bytes": 0
+      },
+      "burst": {
+        "duration_ms": 1161.5880410245154,
+        "captures": 16,
+        "capture_request_bytes": 2096,
+        "capture_reply_bytes": 27488,
+        "capture_text_bytes": 22944,
+        "lists": 16,
+        "events": 24,
+        "event_bytes": 1776
+      },
+      "all_burst_captured_ms": 151.5715830028057,
+      "boundaries": {
+        "idle_start": 162269.240959083,
+        "idle_end": 162273.443903791,
+        "burst_start": 162273.44390425,
+        "burst_end": 162274.605492291
+      },
+      "records": [
+        {
+          "workspace": 0,
+          "started": 162268.197126125,
+          "finished": 162268.198382875,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162268.198969958,
+          "finished": 162268.199640583,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 0,
+          "started": 162268.2202505,
+          "finished": 162268.220517125,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162271.212204708,
+          "finished": 162271.213478916,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162273.444716708,
+          "bytes": 72
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162273.449360416,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162273.58162625,
+          "finished": 162273.582802625,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162273.583205708,
+          "finished": 162273.58630825,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 163
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162273.696830291,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162273.82672875,
+          "finished": 162273.827899625,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162273.828315708,
+          "finished": 162273.830805916,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 163
+        },
+        {
+          "workspace": 1,
+          "started": 162268.200308291,
+          "finished": 162268.201522166,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162268.201983833,
+          "finished": 162268.202619666,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 1,
+          "started": 162268.2208075,
+          "finished": 162268.221055291,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162271.198930208,
+          "finished": 162271.200430708,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162273.449751,
+          "bytes": 72
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162273.454365875,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162273.587195041,
+          "finished": 162273.588313,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162273.588723666,
+          "finished": 162273.591440708,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 187
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162273.700791583,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162273.831741166,
+          "finished": 162273.832905166,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162273.833328166,
+          "finished": 162273.83584725,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 187
+        },
+        {
+          "workspace": 2,
+          "started": 162268.203175083,
+          "finished": 162268.204521208,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162268.204941666,
+          "finished": 162268.205548916,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 2,
+          "started": 162268.221346583,
+          "finished": 162268.221585375,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162271.200981166,
+          "finished": 162271.202393875,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162273.454715041,
+          "bytes": 72
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162273.459397166,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162273.546303416,
+          "finished": 162273.547706958,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162273.548466416,
+          "finished": 162273.551556875,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 182
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162273.705997541,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162273.8368425,
+          "finished": 162273.837970333,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162273.838384291,
+          "finished": 162273.840781291,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 182
+        },
+        {
+          "workspace": 3,
+          "started": 162268.206068291,
+          "finished": 162268.207232666,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162268.207663541,
+          "finished": 162268.208296541,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 3,
+          "started": 162268.221882875,
+          "finished": 162268.22212,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162271.202849791,
+          "finished": 162271.204196958,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162273.459709375,
+          "bytes": 72
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162273.464121666,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162273.552806125,
+          "finished": 162273.554101333,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162273.55459075,
+          "finished": 162273.557460625,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 182
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162273.711199625,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162273.799369208,
+          "finished": 162273.80063775,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162273.801237041,
+          "finished": 162273.804586,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 182
+        },
+        {
+          "workspace": 4,
+          "started": 162268.208847416,
+          "finished": 162268.210054958,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162268.2104805,
+          "finished": 162268.211111958,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 4,
+          "started": 162268.222485541,
+          "finished": 162268.222733666,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162271.204646833,
+          "finished": 162271.206054791,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "command": "event",
+          "finished": 162273.464565791,
+          "bytes": 72
+        },
+        {
+          "workspace": 4,
+          "command": "event",
+          "finished": 162273.468800458,
+          "bytes": 75
+        },
+        {
+          "workspace": 4,
+          "started": 162273.558486,
+          "finished": 162273.559782583,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162273.560441458,
+          "finished": 162273.563132083,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 159
+        },
+        {
+          "workspace": 4,
+          "command": "event",
+          "finished": 162273.716381,
+          "bytes": 75
+        },
+        {
+          "workspace": 4,
+          "started": 162273.805553541,
+          "finished": 162273.806735458,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162273.807218958,
+          "finished": 162273.809718208,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 159
+        },
+        {
+          "workspace": 5,
+          "started": 162268.211629541,
+          "finished": 162268.213100416,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162268.213537,
+          "finished": 162268.21415825,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 5,
+          "started": 162268.223011041,
+          "finished": 162268.223251083,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162271.206451416,
+          "finished": 162271.208471333,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "command": "event",
+          "finished": 162273.469289125,
+          "bytes": 72
+        },
+        {
+          "workspace": 5,
+          "command": "event",
+          "finished": 162273.473551291,
+          "bytes": 75
+        },
+        {
+          "workspace": 5,
+          "started": 162273.56409075,
+          "finished": 162273.565346958,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162273.565791875,
+          "finished": 162273.569056083,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 175
+        },
+        {
+          "workspace": 5,
+          "command": "event",
+          "finished": 162273.720432833,
+          "bytes": 75
+        },
+        {
+          "workspace": 5,
+          "started": 162273.810625583,
+          "finished": 162273.812014583,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162273.81246325,
+          "finished": 162273.815067083,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 175
+        },
+        {
+          "workspace": 6,
+          "started": 162268.214658125,
+          "finished": 162268.215821458,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162268.216264541,
+          "finished": 162268.216878416,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 6,
+          "started": 162268.223515916,
+          "finished": 162268.223772875,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162271.208870916,
+          "finished": 162271.210144875,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "command": "event",
+          "finished": 162273.474034708,
+          "bytes": 72
+        },
+        {
+          "workspace": 6,
+          "command": "event",
+          "finished": 162273.478172958,
+          "bytes": 75
+        },
+        {
+          "workspace": 6,
+          "started": 162273.570020708,
+          "finished": 162273.571254375,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162273.571673708,
+          "finished": 162273.575240708,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 184
+        },
+        {
+          "workspace": 6,
+          "command": "event",
+          "finished": 162273.7256195,
+          "bytes": 75
+        },
+        {
+          "workspace": 6,
+          "started": 162273.815965625,
+          "finished": 162273.817151791,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162273.817562125,
+          "finished": 162273.820696208,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 184
+        },
+        {
+          "workspace": 7,
+          "started": 162268.217486833,
+          "finished": 162268.21864075,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162268.219056541,
+          "finished": 162268.219664625,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 7,
+          "started": 162268.224058166,
+          "finished": 162268.224300708,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162271.210529625,
+          "finished": 162271.211822416,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "command": "event",
+          "finished": 162273.478461625,
+          "bytes": 72
+        },
+        {
+          "workspace": 7,
+          "command": "event",
+          "finished": 162273.482853541,
+          "bytes": 75
+        },
+        {
+          "workspace": 7,
+          "started": 162273.57613175,
+          "finished": 162273.577296541,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162273.577704458,
+          "finished": 162273.5807375,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 178
+        },
+        {
+          "workspace": 7,
+          "command": "event",
+          "finished": 162273.729555583,
+          "bytes": 75
+        },
+        {
+          "workspace": 7,
+          "started": 162273.821605041,
+          "finished": 162273.822774166,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162273.823281583,
+          "finished": 162273.825739375,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 178
+        }
+      ],
+      "worker_count": 8,
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 1
+    },
+    {
+      "panes": 1,
+      "idle": {
+        "duration_ms": 4210.025958018377,
+        "captures": 0,
+        "capture_request_bytes": 0,
+        "capture_reply_bytes": 0,
+        "capture_text_bytes": 0,
+        "lists": 1,
+        "events": 0,
+        "event_bytes": 0
+      },
+      "burst": {
+        "duration_ms": 1146.621874999255,
+        "captures": 2,
+        "capture_request_bytes": 262,
+        "capture_reply_bytes": 3434,
+        "capture_text_bytes": 2868,
+        "lists": 2,
+        "events": 3,
+        "event_bytes": 222
+      },
+      "all_burst_captured_ms": 143.26591699500568,
+      "boundaries": {
+        "idle_start": 162277.585610708,
+        "idle_end": 162281.795636666,
+        "burst_start": 162281.795637083,
+        "burst_end": 162282.942258958
+      },
+      "records": [
+        {
+          "workspace": 0,
+          "started": 162276.540454083,
+          "finished": 162276.542981666,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162276.544183666,
+          "finished": 162276.545203333,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 0,
+          "started": 162276.546191166,
+          "finished": 162276.546665083,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162279.542008916,
+          "finished": 162279.544260416,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162281.79672325,
+          "bytes": 72
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162281.802166208,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162281.899633,
+          "finished": 162281.901627125,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 740,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162281.902510291,
+          "finished": 162281.907186833,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 91
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162282.049956333,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162282.152768125,
+          "finished": 162282.155040666,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 740,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162282.15615925,
+          "finished": 162282.159842875,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 91
+        }
+      ],
+      "worker_count": 1,
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "panes": 4,
+      "idle": {
+        "duration_ms": 4210.054832976311,
+        "captures": 0,
+        "capture_request_bytes": 0,
+        "capture_reply_bytes": 0,
+        "capture_text_bytes": 0,
+        "lists": 4,
+        "events": 0,
+        "event_bytes": 0
+      },
+      "burst": {
+        "duration_ms": 1170.4219999955967,
+        "captures": 8,
+        "capture_request_bytes": 1048,
+        "capture_reply_bytes": 13740,
+        "capture_text_bytes": 11472,
+        "lists": 8,
+        "events": 12,
+        "event_bytes": 888
+      },
+      "all_burst_captured_ms": 160.40566601441242,
+      "boundaries": {
+        "idle_start": 162286.189458083,
+        "idle_end": 162290.399512916,
+        "burst_start": 162290.3995145,
+        "burst_end": 162291.5699365
+      },
+      "records": [
+        {
+          "workspace": 0,
+          "started": 162285.126845166,
+          "finished": 162285.12986225,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162285.131383375,
+          "finished": 162285.132905583,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 0,
+          "started": 162285.154874541,
+          "finished": 162285.155492875,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162288.13909875,
+          "finished": 162288.1416825,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162290.401019791,
+          "bytes": 72
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162290.40821275,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162290.522275666,
+          "finished": 162290.524679125,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 740,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162290.525704541,
+          "finished": 162290.53032575,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 59
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162290.654517291,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162290.768987958,
+          "finished": 162290.77144125,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 740,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162290.772501208,
+          "finished": 162290.776477291,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 59
+        },
+        {
+          "workspace": 1,
+          "started": 162285.134370375,
+          "finished": 162285.137296791,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162285.138411875,
+          "finished": 162285.140178291,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 1,
+          "started": 162285.156203833,
+          "finished": 162285.156943041,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162288.128692041,
+          "finished": 162288.130837875,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162290.409261916,
+          "bytes": 72
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162290.415624458,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162290.531571916,
+          "finished": 162290.533392625,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162290.53452225,
+          "finished": 162290.53872225,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 102
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162290.66118025,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162290.778057208,
+          "finished": 162290.780312166,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162290.781266791,
+          "finished": 162290.784961333,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 102
+        },
+        {
+          "workspace": 2,
+          "started": 162285.141298291,
+          "finished": 162285.143844875,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162285.144973916,
+          "finished": 162285.14675175,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 3
+        },
+        {
+          "workspace": 2,
+          "started": 162285.157578916,
+          "finished": 162285.158064583,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162288.132031625,
+          "finished": 162288.134023291,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162290.416407291,
+          "bytes": 72
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162290.421864125,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162290.504057583,
+          "finished": 162290.50607925,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162290.507787375,
+          "finished": 162290.511365958,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 123
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162290.669099375,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162290.786515083,
+          "finished": 162290.788386208,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162290.789227458,
+          "finished": 162290.793480541,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 123
+        },
+        {
+          "workspace": 3,
+          "started": 162285.147966791,
+          "finished": 162285.150772625,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162285.152366916,
+          "finished": 162285.153313,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 3,
+          "started": 162285.158949791,
+          "finished": 162285.159885791,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162288.13530125,
+          "finished": 162288.13699,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162290.422505375,
+          "bytes": 72
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162290.428192625,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162290.513697291,
+          "finished": 162290.51591075,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162290.516791333,
+          "finished": 162290.520507333,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 99
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162290.673306791,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162290.7578555,
+          "finished": 162290.760121416,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162290.761149875,
+          "finished": 162290.76653425,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 99
+        }
+      ],
+      "worker_count": 4,
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "panes": 8,
+      "idle": {
+        "duration_ms": 4208.993750013178,
+        "captures": 0,
+        "capture_request_bytes": 0,
+        "capture_reply_bytes": 0,
+        "capture_text_bytes": 0,
+        "lists": 8,
+        "events": 0,
+        "event_bytes": 0
+      },
+      "burst": {
+        "duration_ms": 1201.7681249999441,
+        "captures": 16,
+        "capture_request_bytes": 2096,
+        "capture_reply_bytes": 27480,
+        "capture_text_bytes": 22944,
+        "lists": 16,
+        "events": 24,
+        "event_bytes": 1776
+      },
+      "all_burst_captured_ms": 194.23174997791648,
+      "boundaries": {
+        "idle_start": 162294.798307083,
+        "idle_end": 162299.007300833,
+        "burst_start": 162299.00730175,
+        "burst_end": 162300.209069875
+      },
+      "records": [
+        {
+          "workspace": 0,
+          "started": 162293.699144833,
+          "finished": 162293.701367416,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162293.702468833,
+          "finished": 162293.703592583,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 0,
+          "started": 162293.74143525,
+          "finished": 162293.741850458,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162296.720955958,
+          "finished": 162296.72303325,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162299.008377583,
+          "bytes": 72
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162299.013888166,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162299.166976458,
+          "finished": 162299.169450583,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162299.170666333,
+          "finished": 162299.174410458,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 144
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162299.261070958,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162299.415416541,
+          "finished": 162299.418116833,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162299.4194205,
+          "finished": 162299.424993541,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 144
+        },
+        {
+          "workspace": 1,
+          "started": 162293.70461925,
+          "finished": 162293.706658541,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162293.707544541,
+          "finished": 162293.708970458,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 1,
+          "started": 162293.742511833,
+          "finished": 162293.742836666,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162296.7007025,
+          "finished": 162296.703053625,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162299.014350541,
+          "bytes": 72
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162299.019358083,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162299.17576225,
+          "finished": 162299.177263,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162299.178576708,
+          "finished": 162299.182086541,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 67
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162299.266659083,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162299.428328916,
+          "finished": 162299.4306415,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162299.431743375,
+          "finished": 162299.436681916,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 67
+        },
+        {
+          "workspace": 2,
+          "started": 162293.709944583,
+          "finished": 162293.711911291,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162293.71291225,
+          "finished": 162293.7138905,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 2,
+          "started": 162293.743441666,
+          "finished": 162293.743936208,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162296.70387675,
+          "finished": 162296.705875708,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162299.02001225,
+          "bytes": 72
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162299.025058125,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162299.111734208,
+          "finished": 162299.113347458,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162299.114640958,
+          "finished": 162299.120523291,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 109
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162299.270896625,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162299.439501166,
+          "finished": 162299.441242833,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162299.442693375,
+          "finished": 162299.446472375,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 109
+        },
+        {
+          "workspace": 3,
+          "started": 162293.714773166,
+          "finished": 162293.716627583,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162293.717546041,
+          "finished": 162293.718698083,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 3,
+          "started": 162293.744452208,
+          "finished": 162293.744891916,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162296.706591708,
+          "finished": 162296.708713,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162299.025516166,
+          "bytes": 72
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162299.030608625,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162299.122063375,
+          "finished": 162299.12492875,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162299.126225916,
+          "finished": 162299.129955416,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 104
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162299.277773375,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162299.365037208,
+          "finished": 162299.367988833,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162299.36932925,
+          "finished": 162299.374534,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 104
+        },
+        {
+          "workspace": 4,
+          "started": 162293.719687791,
+          "finished": 162293.721844875,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162293.722979041,
+          "finished": 162293.724054625,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 4,
+          "started": 162293.745386583,
+          "finished": 162293.745697125,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162296.709431208,
+          "finished": 162296.711555458,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "command": "event",
+          "finished": 162299.031104458,
+          "bytes": 72
+        },
+        {
+          "workspace": 4,
+          "command": "event",
+          "finished": 162299.035909208,
+          "bytes": 75
+        },
+        {
+          "workspace": 4,
+          "started": 162299.131458208,
+          "finished": 162299.133888958,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162299.135206291,
+          "finished": 162299.138863291,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 57
+        },
+        {
+          "workspace": 4,
+          "command": "event",
+          "finished": 162299.283368541,
+          "bytes": 75
+        },
+        {
+          "workspace": 4,
+          "started": 162299.376026166,
+          "finished": 162299.37771525,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162299.378841666,
+          "finished": 162299.382252916,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 57
+        },
+        {
+          "workspace": 5,
+          "started": 162293.724984708,
+          "finished": 162293.726920833,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162293.727707791,
+          "finished": 162293.72861175,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 5,
+          "started": 162293.746115583,
+          "finished": 162293.746588791,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162296.712194166,
+          "finished": 162296.714550166,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "command": "event",
+          "finished": 162299.036927333,
+          "bytes": 72
+        },
+        {
+          "workspace": 5,
+          "command": "event",
+          "finished": 162299.042585458,
+          "bytes": 75
+        },
+        {
+          "workspace": 5,
+          "started": 162299.140398583,
+          "finished": 162299.143244208,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162299.144372666,
+          "finished": 162299.148279583,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 117
+        },
+        {
+          "workspace": 5,
+          "command": "event",
+          "finished": 162299.287770583,
+          "bytes": 75
+        },
+        {
+          "workspace": 5,
+          "started": 162299.383652666,
+          "finished": 162299.385888791,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162299.386948958,
+          "finished": 162299.392305541,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 117
+        },
+        {
+          "workspace": 6,
+          "started": 162293.729416166,
+          "finished": 162293.731603375,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162293.732469875,
+          "finished": 162293.7335025,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 6,
+          "started": 162293.747068375,
+          "finished": 162293.747488375,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162296.715087416,
+          "finished": 162296.717157541,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "command": "event",
+          "finished": 162299.043383041,
+          "bytes": 72
+        },
+        {
+          "workspace": 6,
+          "command": "event",
+          "finished": 162299.049135375,
+          "bytes": 75
+        },
+        {
+          "workspace": 6,
+          "started": 162299.149491916,
+          "finished": 162299.151103208,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162299.152141375,
+          "finished": 162299.156110791,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 74
+        },
+        {
+          "workspace": 6,
+          "command": "event",
+          "finished": 162299.295132458,
+          "bytes": 75
+        },
+        {
+          "workspace": 6,
+          "started": 162299.393961875,
+          "finished": 162299.396717708,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162299.397771,
+          "finished": 162299.402956166,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 74
+        },
+        {
+          "workspace": 7,
+          "started": 162293.734499291,
+          "finished": 162293.736654541,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162293.737631416,
+          "finished": 162293.740007708,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 7,
+          "started": 162293.748017583,
+          "finished": 162293.748476333,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162296.717907916,
+          "finished": 162296.720259291,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "command": "event",
+          "finished": 162299.050208708,
+          "bytes": 72
+        },
+        {
+          "workspace": 7,
+          "command": "event",
+          "finished": 162299.056436875,
+          "bytes": 75
+        },
+        {
+          "workspace": 7,
+          "started": 162299.157904416,
+          "finished": 162299.159711416,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162299.16110575,
+          "finished": 162299.165560083,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 67
+        },
+        {
+          "workspace": 7,
+          "command": "event",
+          "finished": 162299.303319708,
+          "bytes": 75
+        },
+        {
+          "workspace": 7,
+          "started": 162299.404509166,
+          "finished": 162299.407074083,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162299.4085725,
+          "finished": 162299.413739208,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 67
+        }
+      ],
+      "worker_count": 8,
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 2
+    },
+    {
+      "panes": 1,
+      "idle": {
+        "duration_ms": 4210.019707999891,
+        "captures": 0,
+        "capture_request_bytes": 0,
+        "capture_reply_bytes": 0,
+        "capture_text_bytes": 0,
+        "lists": 1,
+        "events": 0,
+        "event_bytes": 0
+      },
+      "burst": {
+        "duration_ms": 1166.5109999885317,
+        "captures": 2,
+        "capture_request_bytes": 262,
+        "capture_reply_bytes": 3436,
+        "capture_text_bytes": 2868,
+        "lists": 2,
+        "events": 3,
+        "event_bytes": 222
+      },
+      "all_burst_captured_ms": 156.47824999177828,
+      "boundaries": {
+        "idle_start": 162303.158410833,
+        "idle_end": 162307.368430541,
+        "burst_start": 162307.368430875,
+        "burst_end": 162308.534941875
+      },
+      "records": [
+        {
+          "workspace": 0,
+          "started": 162302.116708416,
+          "finished": 162302.118542041,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162302.119417708,
+          "finished": 162302.120387708,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 0,
+          "started": 162302.121668458,
+          "finished": 162302.1221745,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162305.118212583,
+          "finished": 162305.120339875,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162307.375819833,
+          "bytes": 72
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162307.375828958,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162307.478362083,
+          "finished": 162307.480388416,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162307.481572833,
+          "finished": 162307.485828208,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 134
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162307.62145775,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162307.724321833,
+          "finished": 162307.726560791,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 741,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162307.727819833,
+          "finished": 162307.731119708,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 134
+        }
+      ],
+      "worker_count": 1,
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "panes": 4,
+      "idle": {
+        "duration_ms": 4203.986667009303,
+        "captures": 0,
+        "capture_request_bytes": 0,
+        "capture_reply_bytes": 0,
+        "capture_text_bytes": 0,
+        "lists": 4,
+        "events": 0,
+        "event_bytes": 0
+      },
+      "burst": {
+        "duration_ms": 1184.0709999960382,
+        "captures": 8,
+        "capture_request_bytes": 1048,
+        "capture_reply_bytes": 13736,
+        "capture_text_bytes": 11472,
+        "lists": 8,
+        "events": 12,
+        "event_bytes": 888
+      },
+      "all_burst_captured_ms": 174.00483301025815,
+      "boundaries": {
+        "idle_start": 162311.667394666,
+        "idle_end": 162315.871381333,
+        "burst_start": 162315.8713835,
+        "burst_end": 162317.0554545
+      },
+      "records": [
+        {
+          "workspace": 0,
+          "started": 162310.61359175,
+          "finished": 162310.616295791,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162310.617343791,
+          "finished": 162310.618390708,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 0,
+          "started": 162310.634839791,
+          "finished": 162310.635353208,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162313.627805583,
+          "finished": 162313.62916975,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162315.872772541,
+          "bytes": 72
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162315.873094875,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162315.99661825,
+          "finished": 162315.998250958,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 740,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162315.999512833,
+          "finished": 162316.002576416,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 40
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162316.126025875,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162316.24730575,
+          "finished": 162316.249445958,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 740,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162316.251378875,
+          "finished": 162316.255857083,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 40
+        },
+        {
+          "workspace": 1,
+          "started": 162310.61924875,
+          "finished": 162310.62104175,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162310.622105166,
+          "finished": 162310.62314775,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 1,
+          "started": 162310.636080791,
+          "finished": 162310.636627208,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162313.615384416,
+          "finished": 162313.617545041,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162315.878166666,
+          "bytes": 72
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162315.878598083,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162316.004311375,
+          "finished": 162316.007277958,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162316.008423875,
+          "finished": 162316.012090708,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 38
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162316.130258583,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162316.259853916,
+          "finished": 162316.262809708,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162316.264215166,
+          "finished": 162316.269208,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 38
+        },
+        {
+          "workspace": 2,
+          "started": 162310.62409225,
+          "finished": 162310.6260825,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162310.627059541,
+          "finished": 162310.628248291,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 2,
+          "started": 162310.637207125,
+          "finished": 162310.637653,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162313.619440541,
+          "finished": 162313.622366833,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162315.886948791,
+          "bytes": 72
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162315.895790833,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162315.976832375,
+          "finished": 162315.97906825,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162315.980233458,
+          "finished": 162315.985401583,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 73
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162316.139655958,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162316.271671916,
+          "finished": 162316.273584416,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162316.274432833,
+          "finished": 162316.280085,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 73
+        },
+        {
+          "workspace": 3,
+          "started": 162310.629287875,
+          "finished": 162310.631032708,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162310.632059708,
+          "finished": 162310.633439208,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 3,
+          "started": 162310.638489083,
+          "finished": 162310.639062333,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162313.624608,
+          "finished": 162313.626192416,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162315.896375291,
+          "bytes": 72
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162315.90240625,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162315.987653083,
+          "finished": 162315.989793416,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162315.991407291,
+          "finished": 162315.994533583,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 88
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162316.150343291,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162316.229647625,
+          "finished": 162316.231535625,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162316.236955125,
+          "finished": 162316.244433875,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 88
+        }
+      ],
+      "worker_count": 4,
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    },
+    {
+      "panes": 8,
+      "idle": {
+        "duration_ms": 4202.489332994446,
+        "captures": 0,
+        "capture_request_bytes": 0,
+        "capture_reply_bytes": 0,
+        "capture_text_bytes": 0,
+        "lists": 8,
+        "events": 0,
+        "event_bytes": 0
+      },
+      "burst": {
+        "duration_ms": 1208.3714999898802,
+        "captures": 16,
+        "capture_request_bytes": 2096,
+        "capture_reply_bytes": 27484,
+        "capture_text_bytes": 22944,
+        "lists": 16,
+        "events": 24,
+        "event_bytes": 1776
+      },
+      "all_burst_captured_ms": 198.35670798784122,
+      "boundaries": {
+        "idle_start": 162320.232659708,
+        "idle_end": 162324.435149041,
+        "burst_start": 162324.43515075,
+        "burst_end": 162325.64352225
+      },
+      "records": [
+        {
+          "workspace": 0,
+          "started": 162319.144253458,
+          "finished": 162319.146302958,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162319.147596541,
+          "finished": 162319.148550875,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 0,
+          "started": 162319.187777333,
+          "finished": 162319.188512041,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162322.1640415,
+          "finished": 162322.166414208,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162324.436138333,
+          "bytes": 72
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162324.440618708,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162324.599230958,
+          "finished": 162324.600859291,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 740,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162324.60181575,
+          "finished": 162324.6080705,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 60
+        },
+        {
+          "workspace": 0,
+          "command": "event",
+          "finished": 162324.688011416,
+          "bytes": 75
+        },
+        {
+          "workspace": 0,
+          "started": 162324.835551666,
+          "finished": 162324.838193208,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 740,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 0,
+          "started": 162324.839080416,
+          "finished": 162324.843161333,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 60
+        },
+        {
+          "workspace": 1,
+          "started": 162319.150068083,
+          "finished": 162319.152473916,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162319.153442666,
+          "finished": 162319.154595833,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 1,
+          "started": 162319.189211666,
+          "finished": 162319.190124791,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162322.144084083,
+          "finished": 162322.146287625,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162324.441581166,
+          "bytes": 72
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162324.452547541,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162324.609650666,
+          "finished": 162324.611618625,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162324.612859833,
+          "finished": 162324.616543,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 100
+        },
+        {
+          "workspace": 1,
+          "command": "event",
+          "finished": 162324.69365175,
+          "bytes": 75
+        },
+        {
+          "workspace": 1,
+          "started": 162324.844930625,
+          "finished": 162324.847019333,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 1,
+          "started": 162324.847756041,
+          "finished": 162324.851757416,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 100
+        },
+        {
+          "workspace": 2,
+          "started": 162319.155484083,
+          "finished": 162319.157360541,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162319.158078625,
+          "finished": 162319.158975375,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 2,
+          "started": 162319.19081075,
+          "finished": 162319.191537125,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162322.147277708,
+          "finished": 162322.149458708,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162324.453745333,
+          "bytes": 72
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162324.459947583,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162324.540033333,
+          "finished": 162324.541641625,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162324.542707875,
+          "finished": 162324.547211541,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 82
+        },
+        {
+          "workspace": 2,
+          "command": "event",
+          "finished": 162324.706514166,
+          "bytes": 75
+        },
+        {
+          "workspace": 2,
+          "started": 162324.853419625,
+          "finished": 162324.855509916,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 738,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 2,
+          "started": 162324.856345083,
+          "finished": 162324.860003041,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1717,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 82
+        },
+        {
+          "workspace": 3,
+          "started": 162319.16014275,
+          "finished": 162319.162196875,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162319.163194208,
+          "finished": 162319.164224708,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 3,
+          "started": 162319.192436958,
+          "finished": 162319.193105291,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162322.15033925,
+          "finished": 162322.152481166,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162324.460739041,
+          "bytes": 72
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162324.469819916,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162324.548929208,
+          "finished": 162324.5512485,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162324.552292041,
+          "finished": 162324.556965375,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 145
+        },
+        {
+          "workspace": 3,
+          "command": "event",
+          "finished": 162324.712306166,
+          "bytes": 75
+        },
+        {
+          "workspace": 3,
+          "started": 162324.791005416,
+          "finished": 162324.792943041,
+          "command": "list",
+          "request_bytes": 42,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 3,
+          "started": 162324.793909166,
+          "finished": 162324.7981015,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 145
+        },
+        {
+          "workspace": 4,
+          "started": 162319.165233583,
+          "finished": 162319.16695725,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162319.167942875,
+          "finished": 162319.169113375,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 4,
+          "started": 162319.193739166,
+          "finished": 162319.194252041,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162322.153382041,
+          "finished": 162322.155563625,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "command": "event",
+          "finished": 162324.470788333,
+          "bytes": 72
+        },
+        {
+          "workspace": 4,
+          "command": "event",
+          "finished": 162324.476749375,
+          "bytes": 75
+        },
+        {
+          "workspace": 4,
+          "started": 162324.558651916,
+          "finished": 162324.560663208,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162324.56190275,
+          "finished": 162324.565557083,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 115
+        },
+        {
+          "workspace": 4,
+          "command": "event",
+          "finished": 162324.721784458,
+          "bytes": 75
+        },
+        {
+          "workspace": 4,
+          "started": 162324.799685666,
+          "finished": 162324.80238025,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 4,
+          "started": 162324.803234875,
+          "finished": 162324.807422291,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 115
+        },
+        {
+          "workspace": 5,
+          "started": 162319.170415,
+          "finished": 162319.172551,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162319.173332666,
+          "finished": 162319.174412958,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 5,
+          "started": 162319.194824291,
+          "finished": 162319.195462375,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162322.156274166,
+          "finished": 162322.158195333,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "command": "event",
+          "finished": 162324.477477541,
+          "bytes": 72
+        },
+        {
+          "workspace": 5,
+          "command": "event",
+          "finished": 162324.482225916,
+          "bytes": 75
+        },
+        {
+          "workspace": 5,
+          "started": 162324.568226375,
+          "finished": 162324.572483,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162324.573962833,
+          "finished": 162324.578715958,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 105
+        },
+        {
+          "workspace": 5,
+          "command": "event",
+          "finished": 162324.728723625,
+          "bytes": 75
+        },
+        {
+          "workspace": 5,
+          "started": 162324.80906475,
+          "finished": 162324.8112515,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 5,
+          "started": 162324.81217525,
+          "finished": 162324.816671041,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 105
+        },
+        {
+          "workspace": 6,
+          "started": 162319.175426083,
+          "finished": 162319.176925208,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162319.177912875,
+          "finished": 162319.180487958,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 6,
+          "started": 162319.196047708,
+          "finished": 162319.196554791,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162322.15901825,
+          "finished": 162322.16064075,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "command": "event",
+          "finished": 162324.48293025,
+          "bytes": 72
+        },
+        {
+          "workspace": 6,
+          "command": "event",
+          "finished": 162324.491343833,
+          "bytes": 75
+        },
+        {
+          "workspace": 6,
+          "started": 162324.580688,
+          "finished": 162324.583060333,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162324.583917416,
+          "finished": 162324.588996208,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 141
+        },
+        {
+          "workspace": 6,
+          "command": "event",
+          "finished": 162324.735558833,
+          "bytes": 75
+        },
+        {
+          "workspace": 6,
+          "started": 162324.818416291,
+          "finished": 162324.820420833,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 6,
+          "started": 162324.821204916,
+          "finished": 162324.82528025,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 141
+        },
+        {
+          "workspace": 7,
+          "started": 162319.181917125,
+          "finished": 162319.183943208,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162319.185057708,
+          "finished": 162319.186347,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 262,
+          "text_bytes": 22,
+          "burst_done": false,
+          "revision": 2
+        },
+        {
+          "workspace": 7,
+          "started": 162319.197305458,
+          "finished": 162319.197887833,
+          "command": "subscribe",
+          "request_bytes": 111,
+          "reply_bytes": 29,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162322.161524083,
+          "finished": 162322.162950666,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 736,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "command": "event",
+          "finished": 162324.492188541,
+          "bytes": 72
+        },
+        {
+          "workspace": 7,
+          "command": "event",
+          "finished": 162324.496987291,
+          "bytes": 75
+        },
+        {
+          "workspace": 7,
+          "started": 162324.590532875,
+          "finished": 162324.592389083,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162324.593360833,
+          "finished": 162324.597618333,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 119
+        },
+        {
+          "workspace": 7,
+          "command": "event",
+          "finished": 162324.745426791,
+          "bytes": 75
+        },
+        {
+          "workspace": 7,
+          "started": 162324.82677125,
+          "finished": 162324.828849875,
+          "command": "list",
+          "request_bytes": 72,
+          "reply_bytes": 739,
+          "text_bytes": 0,
+          "burst_done": false,
+          "revision": null
+        },
+        {
+          "workspace": 7,
+          "started": 162324.829842791,
+          "finished": 162324.833782291,
+          "command": "capture",
+          "request_bytes": 131,
+          "reply_bytes": 1718,
+          "text_bytes": 1434,
+          "burst_done": true,
+          "revision": 119
+        }
+      ],
+      "worker_count": 8,
+      "owners_exit": {
+        "fux": 0,
+        "zor": 0
+      },
+      "worker_exit_confirmed": true,
+      "repetition": 3
+    }
+  ]
+}

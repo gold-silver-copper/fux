@@ -20,23 +20,21 @@ pub fn apply_pane_output(
     for message in inbound.read() {
         match message {
             Inbound::PaneOutput { pane, bytes } => {
+                if bytes.is_empty() {
+                    continue;
+                }
                 let Some(mut component) = ids.pane(*pane).and_then(|e| panes.get_mut(e).ok())
                 else {
                     continue;
                 };
                 component.terminal.process(bytes);
                 component.dirty = true;
-                // Bytes arrived: a `pane.output` event is owed (the snapshot paces it).
+                // Capture revision changed: an invalidation is owed (the snapshot paces it).
                 component.event_pending = true;
                 let replies = component.terminal.take_host_replies();
                 let title_changed = component.terminal.title() != component.published_title;
                 if title_changed {
                     component.published_title = component.terminal.title().to_owned();
-                }
-                let agent_changed =
-                    component.terminal.agent() != component.published_agent.as_ref();
-                if agent_changed {
-                    component.published_agent = component.terminal.agent().cloned();
                 }
                 if !replies.is_empty() && component.state.accepts_input() {
                     effects.emit(Effect::WriteInput {
@@ -44,35 +42,24 @@ pub fn apply_pane_output(
                         bytes: replies,
                     });
                 }
-                if !title_changed && !agent_changed {
+                if !title_changed {
                     continue;
                 }
-                let agent = component.published_agent.clone();
-                let workspace = tabs
-                    .get(component.tab)
-                    .and_then(|tab| workspaces.get(tab.workspace))
-                    .map(|workspace| workspace.name.clone());
-                if let Ok(workspace) = workspace {
-                    if title_changed {
-                        effects.event(
-                            &workspace,
-                            Event::PaneTitle {
-                                id: 0,
-                                pane: *pane,
-                                title: component.published_title.clone(),
-                            },
-                        );
-                    }
-                    if agent_changed {
-                        effects.event(
-                            &workspace,
-                            Event::PaneAgent {
-                                id: 0,
-                                pane: *pane,
-                                agent,
-                            },
-                        );
-                    }
+                let workspace = tabs.get(component.tab).and_then(|tab| {
+                    workspaces
+                        .get(tab.workspace)
+                        .map(|workspace| (tab.workspace, workspace.name.clone()))
+                });
+                if let Ok((entity, workspace)) = workspace {
+                    effects.event(
+                        entity,
+                        &workspace,
+                        Event::PaneTitle {
+                            id: 0,
+                            pane: *pane,
+                            title: component.published_title.clone(),
+                        },
+                    );
                 }
             }
             Inbound::PaneEof { pane } => {

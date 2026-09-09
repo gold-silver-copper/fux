@@ -17,6 +17,550 @@ use fux::proto::control::{
 use fux::view::{Frame, PaneView};
 use std::collections::BTreeMap;
 
+fn input_request(harness: &mut Harness, workspace: &str, request: Request) -> Reply {
+    harness.step(vec![Inbound::ControlRequest {
+        workspace: workspace.into(),
+        request,
+        token: 900,
+    }]);
+    harness.control.last().expect("input reply").1.clone()
+}
+
+fn final_reply(h: &mut Harness, pane: PaneId, instance: &str) -> Reply {
+    h.step(vec![Inbound::Manager {
+        action: ManagerAction::Final {
+            instance: instance.into(),
+            pane,
+        },
+        token: 402,
+    }]);
+    match &h.manager.last().expect("final reply").1 {
+        ManagerOutcome::Final(reply) => reply.clone(),
+        other => panic!("unexpected final reply: {other:?}"),
+    }
+}
+
+#[test]
+fn explicit_last_pane_kill_retains_final_identity_and_output() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"BEFORE_KILL".to_vec(),
+    }]);
+    input_request(
+        &mut h,
+        "default",
+        Request::Kill {
+            id: 1,
+            instance: None,
+            pane: PaneId(1),
+        },
+    );
+    let Reply::Completed {
+        result: CommandResult::Final { record },
+        ..
+    } = final_reply(&mut h, PaneId(1), "test-instance")
+    else {
+        panic!("explicit kill lost final evidence");
+    };
+    assert_eq!(record.workspace, "default");
+    assert!(record.capture.text.contains("BEFORE_KILL"));
+    assert_eq!(
+        record.exit_status, None,
+        "release before exit report must remain unknown"
+    );
+    assert_eq!(h.session.entity_counts(), Default::default());
+}
+
+#[test]
+fn closed_tab_keeps_exit_evidence_then_releases_its_internal_identity() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let viewer = h.attach("default", 24, 80);
+    h.control(
+        viewer,
+        Request::Tab {
+            id: 1,
+            instance: None,
+            action: TabAction::New { name: None },
+        },
+    );
+    h.complete_spawns();
+    h.control(
+        viewer,
+        Request::Kill {
+            id: 2,
+            instance: None,
+            pane: PaneId(2),
+        },
+    );
+    assert_eq!(h.last_frame(viewer).tabs.len(), 1);
+    assert_eq!(
+        h.session.entity_counts().tabs,
+        1,
+        "main retires the tab while the pane retains immutable workspace identity"
+    );
+    let reply = input_request(
+        &mut h,
+        "default",
+        Request::SendKeys {
+            id: 3,
+            instance: None,
+            pane: PaneId(2),
+            keys: "must not arrive".into(),
+            notation: Default::default(),
+        },
+    );
+    assert!(matches!(reply, Reply::Failed { error, .. } if error.code == ErrorCode::NotFound));
+    let reply = input_request(
+        &mut h,
+        "default",
+        Request::Tab {
+            id: 4,
+            instance: None,
+            action: TabAction::Rename {
+                tab: TabId(2),
+                name: "closed".into(),
+            },
+        },
+    );
+    assert!(matches!(reply, Reply::Failed { error, .. } if error.code == ErrorCode::NotFound));
+    h.step(vec![
+        Inbound::PaneOutput {
+            pane: PaneId(2),
+            bytes: b"DRAINED_EXIT".to_vec(),
+        },
+        Inbound::PaneExited {
+            pane: PaneId(2),
+            code: 19,
+        },
+    ]);
+    let Reply::Completed {
+        result: CommandResult::Final { record },
+        ..
+    } = final_reply(&mut h, PaneId(2), "test-instance")
+    else {
+        panic!("closed tab lost exit evidence");
+    };
+    assert_eq!(record.exit_status, Some(19));
+    assert!(record.capture.text.contains("DRAINED_EXIT"));
+    assert_eq!(h.session.entity_counts().tabs, 1);
+    assert_eq!(h.pane_ids(viewer), vec![PaneId(1)]);
+}
+
+#[test]
+fn closing_last_tab_explicitly_retains_orphan_pane_before_manager_idle() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"BEFORE_TAB_CLOSE".to_vec(),
+    }]);
+    input_request(
+        &mut h,
+        "default",
+        Request::Tab {
+            id: 8,
+            instance: None,
+            action: TabAction::Close { tab: TabId(1) },
+        },
+    );
+    assert_eq!(h.session.entity_counts(), Default::default());
+    assert!(!h.idle);
+    assert!(h.released.contains(&PaneId(1)));
+    let before = final_reply(&mut h, PaneId(1), "test-instance");
+    assert!(
+        matches!(&before, Reply::Completed { result: CommandResult::Final { record }, .. }
+        if record.capture.text.contains("BEFORE_TAB_CLOSE") && record.exit_status.is_none())
+    );
+    h.step(vec![
+        Inbound::PaneOutput {
+            pane: PaneId(1),
+            bytes: b"AFTER_RELEASE".to_vec(),
+        },
+        Inbound::PaneExited {
+            pane: PaneId(1),
+            code: 23,
+        },
+    ]);
+    assert_eq!(final_reply(&mut h, PaneId(1), "test-instance"), before);
+    assert!(!h.idle);
+    h.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    h.step(Vec::new());
+    assert!(h.idle);
+}
+
+#[test]
+fn final_evidence_survives_workspace_release_and_expires_explicitly() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    assert!(
+        matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Pending)
+    );
+    h.step(vec![
+        Inbound::PaneOutput {
+            pane: PaneId(1),
+            bytes: b"FINAL_MARKER".to_vec(),
+        },
+        Inbound::PaneEof { pane: PaneId(1) },
+        Inbound::PaneExited {
+            pane: PaneId(1),
+            code: 23,
+        },
+    ]);
+    assert_eq!(h.session.entity_counts(), Default::default());
+    assert!(!h.idle);
+    let record = match final_reply(&mut h, PaneId(1), "test-instance") {
+        Reply::Completed {
+            result: CommandResult::Final { record },
+            ..
+        } => record,
+        other => panic!("final evidence: {other:?}"),
+    };
+    assert!(record.capture.text.contains("FINAL_MARKER"));
+    assert_eq!(record.exit_status, Some(23));
+    assert_eq!(record.workspace, "default");
+    assert!(!record.capture.truncated);
+    assert!(
+        matches!(final_reply(&mut h, PaneId(1), "replacement"), Reply::Failed { error, .. } if error.code == ErrorCode::Conflict)
+    );
+    h.create_workspace("default");
+    let listing = input_request(
+        &mut h,
+        "default",
+        Request::List {
+            id: 1,
+            instance: None,
+        },
+    );
+    assert!(
+        matches!(listing, Reply::Completed { result: CommandResult::Listing { workspaces, .. }, .. }
+        if workspaces[0].event_cursor.stream != record.stream)
+    );
+    assert!(matches!(
+        final_reply(&mut h, PaneId(1), "test-instance"),
+        Reply::Completed { .. }
+    ));
+    h.now = record.expires_ms;
+    assert!(
+        matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    assert!(
+        matches!(final_reply(&mut h, PaneId(999), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+}
+
+#[test]
+fn final_record_capacity_evicts_oldest_and_idle_waits_only_until_expiry() {
+    let mut h = Harness::new();
+    for id in 1..=fux::ecs::resources::MAX_FINAL_RECORDS + 1 {
+        h.create_workspace("default");
+        h.step(vec![Inbound::PaneExited {
+            pane: PaneId(id as u32),
+            code: 0,
+        }]);
+    }
+    assert!(
+        matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    assert!(matches!(
+        final_reply(&mut h, PaneId(2), "test-instance"),
+        Reply::Completed { .. }
+    ));
+    assert!(!h.idle);
+    h.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    h.step(vec![]);
+    assert!(h.idle);
+}
+
+#[test]
+fn forced_release_keeps_unknown_exit_and_final_captures_stay_bounded() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"LAST_OBSERVED".to_vec(),
+    }]);
+    h.step(vec![Inbound::Manager {
+        action: ManagerAction::Kill {
+            name: "default".into(),
+        },
+        token: 10,
+    }]);
+    match final_reply(&mut h, PaneId(1), "test-instance") {
+        Reply::Completed {
+            result: CommandResult::Final { record },
+            ..
+        } => {
+            assert_eq!(record.exit_status, None);
+            assert!(record.capture.text.contains("LAST_OBSERVED"));
+        }
+        other => panic!("forced evidence: {other:?}"),
+    }
+    h.create_workspace("default");
+    let viewer = h.attach("default", 512, 512);
+    h.step(vec![
+        Inbound::PaneOutput {
+            pane: PaneId(2),
+            bytes: vec![b'x'; 512 * 512],
+        },
+        Inbound::PaneExited {
+            pane: PaneId(2),
+            code: 0,
+        },
+    ]);
+    h.step(vec![Inbound::ViewerGone { viewer }]);
+    match final_reply(&mut h, PaneId(2), "test-instance") {
+        Reply::Completed {
+            result: CommandResult::Final { record },
+            ..
+        } => {
+            assert!(record.capture.truncated);
+            assert!(record.capture.text.len() <= 131_072);
+            assert_eq!(record.exit_status, Some(0));
+        }
+        other => panic!("bounded evidence: {other:?}"),
+    }
+}
+
+fn input_receipt(reply: Reply) -> fux::proto::control::InputReceipt {
+    match reply {
+        Reply::Completed {
+            result: CommandResult::Input { receipt },
+            ..
+        } => receipt,
+        other => panic!("expected input receipt, got {other:?}"),
+    }
+}
+
+#[test]
+fn manager_create_rejects_reserved_and_existing_names_without_borrowing() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    h.step(vec![
+        Inbound::Manager {
+            action: ManagerAction::Create {
+                name: "owned".into(),
+            },
+            token: 600,
+        },
+        Inbound::Manager {
+            action: ManagerAction::Create {
+                name: "owned".into(),
+            },
+            token: 601,
+        },
+    ]);
+    assert_eq!(h.pending_spawns.len(), 1);
+    assert!(
+        h.manager
+            .iter()
+            .any(|(token, result)| *token == 601 && matches!(result, ManagerOutcome::Failed(_)))
+    );
+    h.complete_spawns();
+    assert!(h.manager.iter().any(|(token, result)| *token == 600
+        && matches!(
+            result,
+            ManagerOutcome::Attach {
+                created: true,
+                stream: 2,
+                ..
+            }
+        )));
+    h.step(vec![Inbound::Manager {
+        action: ManagerAction::Create {
+            name: "owned".into(),
+        },
+        token: 602,
+    }]);
+    assert!(matches!(
+        h.manager.last(),
+        Some((602, ManagerOutcome::Failed(_)))
+    ));
+    assert!(h.pending_spawns.is_empty());
+    assert_eq!(h.session.entity_counts().workspaces, 2);
+}
+
+#[test]
+fn input_operations_deduplicate_and_report_actual_completion() {
+    use fux::proto::control::InputState;
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let reserved = input_receipt(input_request(
+        &mut h,
+        "default",
+        Request::InputReserve {
+            id: 1,
+            instance: Some("test-instance".into()),
+            pane: PaneId(1),
+        },
+    ));
+    assert_eq!(reserved.state, InputState::Reserved);
+    assert!(h.written.is_empty());
+    let submit = |keys: &str| Request::InputSubmit {
+        id: 2,
+        instance: Some("test-instance".into()),
+        operation: reserved.operation,
+        keys: keys.into(),
+    };
+    let queued = input_receipt(input_request(&mut h, "default", submit("abc")));
+    assert_eq!(queued.state, InputState::Queued);
+    assert_eq!(queued.input_sequence, reserved.input_sequence + 1);
+    assert_eq!(queued.bytes_written, 0);
+    assert_eq!(h.written, vec![(PaneId(1), b"abc".to_vec())]);
+    assert_eq!(
+        input_receipt(input_request(&mut h, "default", submit("abc"))),
+        queued
+    );
+    assert_eq!(h.written.len(), 1, "retry must never type twice");
+    assert!(
+        matches!(input_request(&mut h, "default", submit("xyz")), Reply::Failed { error, .. } if error.code == ErrorCode::Conflict)
+    );
+    h.step(vec![Inbound::InputCompleted {
+        pane: PaneId(1),
+        operation: reserved.operation,
+        bytes_written: 3,
+        error: None,
+    }]);
+    let delivered = input_receipt(input_request(&mut h, "default", submit("abc")));
+    assert_eq!(delivered.state, InputState::Delivered);
+    assert_eq!(delivered.bytes_written, 3);
+    assert_eq!(h.written.len(), 1);
+    // A delayed duplicate/forged completion cannot overwrite the established result.
+    h.step(vec![Inbound::InputCompleted {
+        pane: PaneId(2),
+        operation: reserved.operation,
+        bytes_written: 0,
+        error: Some("wrong pane".into()),
+    }]);
+    assert_eq!(
+        input_receipt(input_request(&mut h, "default", submit("abc"))),
+        delivered
+    );
+}
+
+#[test]
+fn terminal_query_replies_do_not_invalidate_controller_input_reservations() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let reserved = input_receipt(input_request(
+        &mut h,
+        "default",
+        Request::InputReserve {
+            id: 1,
+            instance: Some("test-instance".into()),
+            pane: PaneId(1),
+        },
+    ));
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"\x1b[6n".to_vec(),
+    }]);
+    assert!(!h.written.is_empty(), "terminal query must produce a reply");
+    let queued = input_receipt(input_request(
+        &mut h,
+        "default",
+        Request::InputSubmit {
+            id: 2,
+            instance: Some("test-instance".into()),
+            operation: reserved.operation,
+            keys: "abc".into(),
+        },
+    ));
+    assert_eq!(queued.input_sequence, reserved.input_sequence + 1);
+    assert_eq!(h.written.last(), Some(&(PaneId(1), b"abc".to_vec())));
+}
+
+#[test]
+fn reservations_detect_intervening_input_and_receipts_expire_without_reusing_ids() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    h.create_workspace("other");
+    let reserve = || Request::InputReserve {
+        id: 1,
+        instance: Some("test-instance".into()),
+        pane: PaneId(1),
+    };
+    let first = input_receipt(input_request(&mut h, "default", reserve()));
+    input_request(
+        &mut h,
+        "default",
+        Request::SendKeys {
+            notation: Default::default(),
+            id: 2,
+            instance: None,
+            pane: PaneId(1),
+            keys: "human".into(),
+        },
+    );
+    let submit = Request::InputSubmit {
+        id: 3,
+        instance: Some("test-instance".into()),
+        operation: first.operation,
+        keys: "stale".into(),
+    };
+    assert!(
+        matches!(input_request(&mut h, "default", submit.clone()), Reply::Failed { error, .. } if error.code == ErrorCode::Conflict)
+    );
+    assert_eq!(h.written.len(), 1);
+    let status = || Request::InputStatus {
+        id: 4,
+        instance: Some("test-instance".into()),
+        operation: first.operation,
+    };
+    assert!(
+        matches!(input_request(&mut h, "other", status()), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    assert!(h.session.next_deadline_ms().is_some());
+    h.now = first.expires_ms;
+    h.step(vec![]);
+    assert!(
+        matches!(input_request(&mut h, "default", submit), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    let next = input_receipt(input_request(&mut h, "default", reserve()));
+    assert!(next.operation > first.operation);
+    assert!(
+        matches!(input_request(&mut h, "default", status()), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+}
+
+#[test]
+fn input_receipt_capacity_and_partial_failure_are_explicit() {
+    use fux::proto::control::InputState;
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let reserve = || Request::InputReserve {
+        id: 1,
+        instance: Some("test-instance".into()),
+        pane: PaneId(1),
+    };
+    let first = input_receipt(input_request(&mut h, "default", reserve()));
+    for _ in 1..fux::ecs::resources::MAX_INPUT_OPERATIONS {
+        input_receipt(input_request(&mut h, "default", reserve()));
+    }
+    assert!(
+        matches!(input_request(&mut h, "default", reserve()), Reply::Failed { error, .. } if error.code == ErrorCode::Limit)
+    );
+    let submit = || Request::InputSubmit {
+        id: 2,
+        instance: Some("test-instance".into()),
+        operation: first.operation,
+        keys: "abc".into(),
+    };
+    input_receipt(input_request(&mut h, "default", submit()));
+    h.step(vec![Inbound::InputCompleted {
+        pane: PaneId(1),
+        operation: first.operation,
+        bytes_written: 1,
+        error: Some("broken pipe".into()),
+    }]);
+    let failed = input_receipt(input_request(&mut h, "default", submit()));
+    assert_eq!(failed.state, InputState::Failed);
+    assert_eq!(failed.bytes_written, 1);
+    assert_eq!(h.written.len(), 1, "a partial write must not be retried");
+}
+
 /// A fake operating system: records effects and completes spawns on demand.
 struct Harness {
     session: Session,
@@ -40,11 +584,305 @@ struct Harness {
     next_viewer: u64,
 }
 
+#[test]
+fn server_incarnation_guards_reused_pane_ids_before_mutation_or_capture() {
+    let mut first = Harness::new();
+    first.session.set_identity(fux::ecs::ServerIdentity {
+        instance_nonce: "server-old".into(),
+        ..Default::default()
+    });
+    first.create_workspace("default");
+    let mut current = Harness::new();
+    current.session.set_identity(fux::ecs::ServerIdentity {
+        instance_nonce: "server-new".into(),
+        ..Default::default()
+    });
+    current.create_workspace("default");
+    let viewer = current.attach("default", 24, 80);
+    for mut value in [
+        serde_json::json!({"command":"send-keys","pane":1,"keys":"must-not-arrive"}),
+        serde_json::json!({"command":"kill","pane":1}),
+        serde_json::json!({"command":"capture","pane":1,"max_bytes":4096}),
+        serde_json::json!({"command":"wait","pane":1,"until":{"kind":"exit"},"timeout_ms":100}),
+    ] {
+        value["id"] = 950.into();
+        value["instance"] = "server-old".into();
+        current.control(viewer, serde_json::from_value(value).unwrap());
+        assert!(
+            matches!(current.replies(viewer).last(), Some(Reply::Failed { error, .. }) if error.code == ErrorCode::Conflict)
+        );
+    }
+    assert!(current.written.is_empty());
+    assert!(current.terminated.is_empty());
+    current.control(
+        viewer,
+        Request::List {
+            id: 951,
+            instance: Some("server-new".into()),
+        },
+    );
+    assert!(
+        matches!(current.replies(viewer).last(), Some(Reply::Completed { result: fux::proto::control::CommandResult::Listing {instance, ..}, .. }) if instance == "server-new")
+    );
+}
+
+#[test]
+fn control_capture_returns_coherent_metadata_and_separate_grid_sequence() {
+    use fux::proto::control::CommandResult;
+    let mut harness = Harness::new();
+    harness.session.set_identity(fux::ecs::ServerIdentity {
+        instance_nonce: "capture-server".into(),
+        ..Default::default()
+    });
+    harness.create_workspace("default");
+    let viewer = harness.attach("default", 24, 80);
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"hello".to_vec(),
+    }]);
+    let request = |revision: Option<u64>| {
+        serde_json::from_value(serde_json::json!({
+            "command":"capture", "id":960, "instance":"capture-server", "pane":1,
+            "max_bytes":4096, "if_revision":revision
+        }))
+        .unwrap()
+    };
+    let capture = |harness: &Harness| match harness.replies(viewer).last() {
+        Some(Reply::Completed {
+            result: CommandResult::Capture { seq, capture, .. },
+            ..
+        }) => (*seq, capture.clone()),
+        other => panic!("unexpected capture reply: {other:?}"),
+    };
+    harness.control(viewer, request(None));
+    let (seq, initial) = capture(&harness);
+    assert_eq!(initial.text, "hello");
+    assert!(!initial.unchanged);
+    harness.control(viewer, request(Some(initial.revision)));
+    let (_, unchanged) = capture(&harness);
+    assert!(unchanged.unchanged);
+    assert!(unchanged.text.is_empty());
+    harness.events.clear();
+    harness.now += 300;
+    harness.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"\x1b]9;4;1;50\x07".to_vec(),
+    }]);
+    harness.control(viewer, request(Some(initial.revision)));
+    let (after_seq, changed) = capture(&harness);
+    assert_eq!(seq, after_seq);
+    assert!(!changed.unchanged);
+    assert_eq!(changed.text, initial.text);
+    assert_eq!(changed.progress, Some((1, 50)));
+    assert!(
+        harness
+            .events
+            .iter()
+            .any(|(_, event)| matches!(event, Event::WorkspaceChanged { .. })),
+        "metadata invalidation must be observable without a grid change"
+    );
+
+    // Input can advance without terminal output. Even a cached screen must carry
+    // the current writer sequence, not a value from an earlier listing/capture.
+    harness.control(
+        viewer,
+        Request::SendKeys {
+            notation: Default::default(),
+            id: 961,
+            instance: Some("capture-server".into()),
+            pane: PaneId(1),
+            keys: "human".into(),
+        },
+    );
+    harness.control(viewer, request(Some(changed.revision)));
+    assert!(matches!(
+        harness.replies(viewer).last(),
+        Some(Reply::Completed {
+            result: CommandResult::Capture { input_sequence: 1, capture, .. }, ..
+        }) if capture.unchanged && capture.revision == changed.revision
+    ));
+}
+
+#[test]
+fn event_replay_orders_typed_and_request_events_and_round_trips() {
+    use fux::proto::control::EventCursor;
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let cursor = match input_request(
+        &mut h,
+        "default",
+        Request::List {
+            id: 970,
+            instance: Some("test-instance".into()),
+        },
+    ) {
+        Reply::Completed {
+            result: CommandResult::Listing { workspaces, .. },
+            ..
+        } => workspaces[0].event_cursor,
+        other => panic!("listing: {other:?}"),
+    };
+    let effects = h.step(vec![
+        Inbound::ViewerAttached {
+            viewer: ViewerId(500),
+            workspace: "default".into(),
+            rows: 24,
+            cols: 80,
+        },
+        Inbound::ViewerGone {
+            viewer: ViewerId(500),
+        },
+        Inbound::PaneOutput {
+            pane: PaneId(1),
+            bytes: b"\x1b]2;replayed-title\x07".to_vec(),
+        },
+    ]);
+    let published: Vec<_> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::Event { cursor, event, .. } => Some((*cursor, event.clone())),
+            _ => None,
+        })
+        .collect();
+    let request = |after: EventCursor| Request::Events {
+        id: 971,
+        instance: Some("test-instance".into()),
+        after,
+    };
+    let reply = input_request(&mut h, "default", request(cursor));
+    assert_eq!(
+        serde_json::from_slice::<Reply>(&serde_json::to_vec(&reply).unwrap()).unwrap(),
+        reply
+    );
+    let Reply::Completed {
+        result: CommandResult::Events {
+            cursor: latest,
+            events,
+        },
+        ..
+    } = reply
+    else {
+        panic!("replay failed")
+    };
+    assert_eq!(
+        events
+            .iter()
+            .map(|entry| (entry.cursor, entry.event.clone()))
+            .collect::<Vec<_>>(),
+        published
+    );
+    assert!(matches!(
+        events[0].event,
+        Event::ClientAttached { client: 500, .. }
+    ));
+    assert!(matches!(
+        events[1].event,
+        Event::ClientDetached { client: 500, .. }
+    ));
+    assert!(events.iter().any(
+        |entry| matches!(&entry.event, Event::PaneTitle { title, .. } if title == "replayed-title")
+    ));
+    assert!(
+        events
+            .windows(2)
+            .all(|pair| pair[1].cursor.sequence == pair[0].cursor.sequence + 1)
+    );
+    assert!(
+        events
+            .iter()
+            .all(|entry| entry.cursor.stream == cursor.stream)
+    );
+    assert!(
+        matches!(input_request(&mut h, "default", request(latest)), Reply::Completed {
+        result: CommandResult::Events { events, .. }, .. } if events.is_empty())
+    );
+    assert!(
+        matches!(input_request(&mut h, "default", request(EventCursor { sequence: latest.sequence + 1, ..latest })),
+        Reply::Failed { error, .. } if error.code == ErrorCode::Gap)
+    );
+}
+
+#[test]
+fn recreated_workspace_rejects_old_stream_and_ignores_delayed_pane_output() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let listing_cursor = |h: &mut Harness| match input_request(
+        h,
+        "default",
+        Request::List {
+            id: 980,
+            instance: Some("test-instance".into()),
+        },
+    ) {
+        Reply::Completed {
+            result: CommandResult::Listing { workspaces, .. },
+            ..
+        } => workspaces[0].event_cursor,
+        other => panic!("listing: {other:?}"),
+    };
+    let old = listing_cursor(&mut h);
+    h.step(vec![Inbound::PaneExited {
+        pane: PaneId(1),
+        code: 0,
+    }]);
+    h.now += 10_000;
+    h.step(Vec::new());
+    assert!(
+        h.session
+            .world()
+            .resource::<fux::ecs::Ids>()
+            .workspace("default")
+            .is_none()
+    );
+    h.create_workspace("default");
+    let new = listing_cursor(&mut h);
+    assert_ne!(old.stream, new.stream);
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"\x1b]2;old-output\x07".to_vec(),
+    }]);
+    assert_eq!(listing_cursor(&mut h), new);
+    assert!(matches!(input_request(&mut h, "default", Request::Events {
+        id: 981, instance: Some("test-instance".into()), after: old,
+    }), Reply::Failed { error, .. } if error.code == ErrorCode::Gap));
+    assert!(
+        matches!(input_request(&mut h, "default", Request::Workspace {
+        id: 983, instance: Some("test-instance".into()), stream: Some(old.stream),
+        action: WorkspaceAction::Kill { name: "default".into() },
+    }), Reply::Failed { error, .. } if error.code == ErrorCode::Conflict)
+    );
+    assert_eq!(
+        listing_cursor(&mut h),
+        new,
+        "old run cleanup must not kill replacement"
+    );
+    let mut launch = split(982, Axis::Horizontal);
+    if let Request::Split {
+        instance, stream, ..
+    } = &mut launch
+    {
+        *instance = Some("test-instance".into());
+        *stream = Some(old.stream);
+    }
+    assert!(
+        matches!(input_request(&mut h, "default", launch), Reply::Failed { error, .. } if error.code == ErrorCode::Conflict)
+    );
+    assert!(h.pending_spawns.is_empty());
+    assert_eq!(listing_cursor(&mut h), new);
+}
+
 impl Harness {
     fn new() -> Self {
         let config = Config::from_toml("default-command = { argv = [\"/bin/sh\"] }").unwrap();
         Self {
-            session: Session::new(&config).unwrap(),
+            session: {
+                let mut session = Session::new(&config).unwrap();
+                session.set_identity(fux::ecs::ServerIdentity {
+                    instance_nonce: "test-instance".into(),
+                    ..Default::default()
+                });
+                session
+            },
             now: 1_000,
             pending_spawns: Vec::new(),
             next_pid: 100,
@@ -91,15 +929,18 @@ impl Harness {
                         .or_default()
                         .push(message.clone());
                 }
-                Effect::Event { workspace, event } => {
+                Effect::Event {
+                    workspace, event, ..
+                } => {
                     self.events.push((workspace.clone(), event.clone()));
                 }
                 Effect::ReleasePane { pane } => self.released.push(*pane),
                 Effect::Terminate { pane, .. } => self.terminated.push(*pane),
-                Effect::WriteInput { pane, bytes } => self.written.push((*pane, bytes.clone())),
+                Effect::WriteTrackedInput { pane, bytes, .. }
+                | Effect::WriteInput { pane, bytes } => self.written.push((*pane, bytes.clone())),
                 Effect::Manager { token, outcome } => self.manager.push((*token, outcome.clone())),
                 Effect::ControlReply { token, reply } => self.control.push((*token, reply.clone())),
-                Effect::WorkspaceOpened { name } => self.opened.push(name.clone()),
+                Effect::WorkspaceOpened { name, .. } => self.opened.push(name.clone()),
                 Effect::WorkspaceClosed { name } => self.closed.push(name.clone()),
                 Effect::Idle => self.idle = true,
                 Effect::ResizePty { .. } | Effect::CloseViewer { .. } => {}
@@ -206,6 +1047,8 @@ impl Harness {
 
 fn split(id: u64, axis: Axis) -> Request {
     Request::Split {
+        stream: None,
+        instance: None,
         id,
         axis,
         target: None,
@@ -348,6 +1191,7 @@ fn stale_targets_fail_without_hitting_replacements() {
     harness.control(
         viewer,
         Request::Kill {
+            instance: None,
             id: 2,
             pane: PaneId(2),
         },
@@ -366,6 +1210,7 @@ fn stale_targets_fail_without_hitting_replacements() {
     harness.control(
         viewer,
         Request::Kill {
+            instance: None,
             id: 4,
             pane: PaneId(2),
         },
@@ -392,6 +1237,7 @@ fn stale_targets_fail_without_hitting_replacements() {
     harness.control(
         viewer,
         Request::Tab {
+            instance: None,
             id: 8,
             action: TabAction::Rename {
                 tab: TabId(99),
@@ -451,8 +1297,11 @@ fn output_eof_and_exit_keep_final_output_and_retire_the_workspace() {
     harness.step(vec![Inbound::ViewerGone { viewer }]);
     assert_eq!(harness.closed, vec!["default".to_owned()]);
     assert!(harness.released.contains(&PaneId(1)));
-    assert!(harness.idle);
+    assert!(!harness.idle, "final evidence keeps the manager alive");
     assert_eq!(harness.session.entity_counts(), Default::default());
+    harness.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    harness.step(Vec::new());
+    assert!(harness.idle);
 }
 
 #[test]
@@ -473,6 +1322,9 @@ fn retirement_grace_expires_without_viewer_acknowledgement() {
     harness.now = deadline;
     harness.step(Vec::new());
     assert_eq!(harness.closed, vec!["default".to_owned()]);
+    assert!(!harness.idle);
+    harness.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    harness.step(Vec::new());
     assert!(harness.idle);
 }
 
@@ -494,6 +1346,7 @@ fn natural_exit_of_one_pane_closes_it_and_of_a_tab_moves_viewers() {
     harness.control(
         viewer,
         Request::Tab {
+            instance: None,
             id: 2,
             action: TabAction::New { name: None },
         },
@@ -540,6 +1393,7 @@ fn viewers_keep_private_tabs_and_focus_while_sharing_layout_edits() {
     harness.control(
         alice,
         Request::Tab {
+            instance: None,
             id: 2,
             action: TabAction::New {
                 name: Some("work".into()),
@@ -559,6 +1413,7 @@ fn viewers_keep_private_tabs_and_focus_while_sharing_layout_edits() {
     harness.control(
         bob,
         Request::Focus {
+            instance: None,
             id: 9,
             target: FocusTarget::Right,
         },
@@ -584,6 +1439,7 @@ fn detach_applies_preceding_input_and_drops_the_suffix() {
         Inbound::ViewerRequest {
             viewer,
             request: ViewerRequest::Control(Request::Tab {
+                instance: None,
                 id: 1,
                 action: TabAction::New { name: None },
             }),
@@ -622,6 +1478,8 @@ fn workspace_switch_sends_the_suffix_to_the_destination() {
         Inbound::ViewerRequest {
             viewer,
             request: ViewerRequest::Control(Request::Workspace {
+                stream: None,
+                instance: None,
                 id: 1,
                 action: WorkspaceAction::Select {
                     name: "other".into(),
@@ -649,15 +1507,21 @@ fn workspace_switch_sends_the_suffix_to_the_destination() {
     }]);
     assert!(matches!(
         harness.manager.last(),
-        Some((11, ManagerOutcome::Attach { name, created: false })) if name == "other"
+        Some((11, ManagerOutcome::Attach { name, created: false, .. })) if name == "other"
     ));
 }
 
 fn pane_seq(harness: &mut Harness, viewer: ViewerId, pane: PaneId) -> u64 {
-    harness.control(viewer, Request::List { id: 900 });
+    harness.control(
+        viewer,
+        Request::List {
+            instance: None,
+            id: 900,
+        },
+    );
     match harness.replies(viewer).last() {
         Some(Reply::Completed {
-            result: CommandResult::Listing { workspaces },
+            result: CommandResult::Listing { workspaces, .. },
             ..
         }) => workspaces
             .iter()
@@ -679,6 +1543,8 @@ fn rows_capture(
     harness.control(
         viewer,
         Request::Capture {
+            if_revision: None,
+            instance: None,
             id: 901,
             pane,
             attrs: false,
@@ -721,72 +1587,13 @@ fn send_wait(
     harness.control(
         viewer,
         Request::Wait {
+            instance: None,
             id,
             pane,
             until,
             timeout_ms,
         },
     );
-}
-
-#[test]
-fn osc_7877_agent_state_reaches_list_and_a_pane_agent_event() {
-    use fux::proto::control::{CommandResult, Event};
-    use fux::view::{AgentReport, AgentState};
-    let mut harness = Harness::new();
-    harness.create_workspace("default");
-    let viewer = harness.attach("default", 24, 80);
-    harness.events.clear();
-    harness.step(vec![Inbound::PaneOutput {
-        pane: PaneId(1),
-        bytes: b"\x1b]7877;v=1;state=working;agent=claude;seq=1\x1b\\".to_vec(),
-    }]);
-    // The listing carries the agent state.
-    harness.control(viewer, Request::List { id: 950 });
-    let agent = match harness.replies(viewer).last() {
-        Some(Reply::Completed {
-            result: CommandResult::Listing { workspaces },
-            ..
-        }) => workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.tabs)
-            .flat_map(|tab| &tab.panes)
-            .find(|pane| pane.id == PaneId(1))
-            .and_then(|pane| pane.agent.clone()),
-        other => panic!("unexpected reply {other:?}"),
-    };
-    assert_eq!(
-        agent,
-        Some(AgentReport {
-            state: AgentState::Working,
-            agent: "claude".into(),
-            message: None
-        })
-    );
-    // A pane.agent event announced the change.
-    assert!(
-        harness.events.iter().any(|(_, event)| matches!(
-            event,
-            Event::PaneAgent { pane: PaneId(1), agent: Some(report), .. }
-                if report.agent == "claude" && report.state == AgentState::Working
-        )),
-        "a pane.agent event fired: {:?}",
-        harness.events
-    );
-    // Clearing it fires an event with a null agent.
-    harness.events.clear();
-    harness.step(vec![Inbound::PaneOutput {
-        pane: PaneId(1),
-        bytes: b"\x1b]7877;v=1;state=none;seq=2\x1b\\".to_vec(),
-    }]);
-    assert!(harness.events.iter().any(|(_, event)| matches!(
-        event,
-        Event::PaneAgent {
-            pane: PaneId(1),
-            agent: None,
-            ..
-        }
-    )));
 }
 
 #[test]
@@ -797,6 +1604,8 @@ fn split_carries_env_and_a_requested_headless_size_to_the_spawn() {
     harness.step(vec![Inbound::ControlRequest {
         workspace: "default".into(),
         request: Request::Split {
+            stream: None,
+            instance: None,
             id: 5,
             axis: Axis::Horizontal,
             target: Some(PaneId(1)),
@@ -984,6 +1793,159 @@ fn waits_fire_on_output_pattern_exit_and_timeout_and_never_hang() {
 }
 
 #[test]
+fn workspace_snapshot_changes_are_replayable_without_terminal_output() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let viewer = h.attach("default", 24, 80);
+    h.control(viewer, split(1, Axis::Horizontal));
+    h.complete_spawns();
+    let snapshot = input_request(
+        &mut h,
+        "default",
+        Request::List {
+            id: 2,
+            instance: None,
+        },
+    );
+    let cursor = match snapshot {
+        Reply::Completed {
+            result: CommandResult::Listing { workspaces, .. },
+            ..
+        } => workspaces[0].event_cursor,
+        other => panic!("listing: {other:?}"),
+    };
+    for request in [
+        Request::Resize {
+            id: 3,
+            instance: None,
+            pane: PaneId(1),
+            delta: 100,
+        },
+        Request::Focus {
+            id: 4,
+            instance: None,
+            target: FocusTarget::Pane(PaneId(1)),
+        },
+        Request::Tab {
+            id: 5,
+            instance: None,
+            action: TabAction::Rename {
+                tab: TabId(1),
+                name: "renamed".into(),
+            },
+        },
+    ] {
+        h.events.clear();
+        let reply = input_request(&mut h, "default", request.clone());
+        assert!(
+            matches!(reply, Reply::Completed { .. }),
+            "{request:?}: {reply:?}"
+        );
+        assert!(
+            h.events
+                .iter()
+                .any(|(_, event)| matches!(event, Event::WorkspaceChanged { .. })),
+            "missing invalidation for {request:?}: {:?}",
+            h.events
+        );
+    }
+    let replay = input_request(
+        &mut h,
+        "default",
+        Request::Events {
+            id: 6,
+            instance: Some("test-instance".into()),
+            after: cursor,
+        },
+    );
+    assert!(
+        matches!(replay, Reply::Completed { result: CommandResult::Events { events, .. }, .. } if events.len() >= 3)
+    );
+    h.events.clear();
+    h.request(
+        viewer,
+        ViewerRequest::Resize {
+            rows: 30,
+            cols: 120,
+        },
+    );
+    assert!(
+        h.events
+            .iter()
+            .any(|(_, event)| matches!(event, Event::WorkspaceChanged { .. }))
+    );
+    h.events.clear();
+    h.request(
+        viewer,
+        ViewerRequest::Resize {
+            rows: 30,
+            cols: 120,
+        },
+    );
+    assert!(
+        h.events.is_empty(),
+        "unchanged geometry needs no invalidation"
+    );
+}
+
+#[test]
+fn metadata_only_output_is_coalesced_and_publishes_a_final_invalidation() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    h.now = 1000;
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"fixed".to_vec(),
+    }]);
+    h.events.clear();
+    h.now = 1300;
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"\x1b]9;4;1;10\x07".to_vec(),
+    }]);
+    assert_eq!(h.events.len(), 1);
+    assert!(matches!(h.events[0].1, Event::WorkspaceChanged { .. }));
+    h.events.clear();
+    for percent in [20, 30] {
+        h.step(vec![Inbound::PaneOutput {
+            pane: PaneId(1),
+            bytes: format!("\x1b]9;4;1;{percent}\x07").into_bytes(),
+        }]);
+    }
+    assert!(h.events.is_empty(), "metadata notifications must be paced");
+    assert!(
+        h.session
+            .next_deadline_ms()
+            .is_some_and(|deadline| deadline <= 1560)
+    );
+    h.now = 1600;
+    h.step(vec![]);
+    assert_eq!(h.events.len(), 1);
+    assert!(matches!(h.events[0].1, Event::WorkspaceChanged { .. }));
+    h.events.clear();
+    h.now = 2000;
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: vec![],
+    }]);
+    assert!(
+        h.events.is_empty(),
+        "idle/empty input owes no periodic invalidation"
+    );
+    // Scroll content into history, then restore the exact live grid and cursor.
+    h.now = 2300;
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: format!("{}\x1b[2J\x1b[Hfixed", "history\r\n".repeat(30)).into_bytes(),
+    }]);
+    assert_eq!(h.events.len(), 1);
+    assert!(
+        matches!(h.events[0].1, Event::WorkspaceChanged { .. }),
+        "history-only capture changes need invalidation without a new grid sequence"
+    );
+}
+
+#[test]
 fn output_sequences_are_reported_by_list_capture_and_paced_events() {
     let mut harness = Harness::new();
     harness.create_workspace("default");
@@ -1023,6 +1985,8 @@ fn output_sequences_are_reported_by_list_capture_and_paced_events() {
     harness.control(
         viewer,
         Request::Capture {
+            if_revision: None,
+            instance: None,
             id: 902,
             pane: PaneId(1),
             attrs: false,
@@ -1088,6 +2052,7 @@ fn output_sequences_are_reported_by_list_capture_and_paced_events() {
     harness.control(
         viewer,
         Request::Tab {
+            instance: None,
             id: 903,
             action: TabAction::New { name: None },
         },
@@ -1110,7 +2075,13 @@ fn output_sequences_are_reported_by_list_capture_and_paced_events() {
     assert_eq!(rows[0].row, 1);
     assert_eq!(rows[0].text, "hidden");
     // `info` names the workspace, the crate version and the limits.
-    harness.control(viewer, Request::Info { id: 904 });
+    harness.control(
+        viewer,
+        Request::Info {
+            instance: None,
+            id: 904,
+        },
+    );
     match harness.replies(viewer).last() {
         Some(Reply::Completed {
             result: CommandResult::Info { info },
@@ -1191,14 +2162,17 @@ fn control_requests_and_mouse_hit_tests_respect_stale_generations() {
     let viewer = harness.attach("default", 24, 80);
     harness.step(vec![Inbound::ControlRequest {
         workspace: "default".into(),
-        request: Request::List { id: 3 },
+        request: Request::List {
+            instance: None,
+            id: 3,
+        },
         token: 42,
     }]);
     let (token, reply) = harness.control.last().cloned().unwrap();
     assert_eq!(token, 42);
     match reply {
         Reply::Completed {
-            result: CommandResult::Listing { workspaces },
+            result: CommandResult::Listing { workspaces, .. },
             ..
         } => {
             assert_eq!(workspaces[0].name, "default");
@@ -1241,7 +2215,10 @@ fn control_requests_and_mouse_hit_tests_respect_stale_generations() {
     assert_eq!(harness.written, vec![(PaneId(1), b"\x1b[<0;5;4M".to_vec())]);
     harness.step(vec![Inbound::ControlRequest {
         workspace: "missing".into(),
-        request: Request::List { id: 4 },
+        request: Request::List {
+            instance: None,
+            id: 4,
+        },
         token: 43,
     }]);
     assert!(matches!(
@@ -1297,6 +2274,7 @@ fn limits_and_queue_overflow_are_enforced() {
     harness.control(
         viewer,
         Request::Tab {
+            instance: None,
             id: 3,
             action: TabAction::New { name: None },
         },
@@ -1440,7 +2418,13 @@ fn output_frames_are_paced_but_replies_are_not() {
     assert!(text.contains("onetwo"), "{text}");
     // A reply never waits: its frame goes out in the same step.
     harness.now -= 9;
-    harness.control(viewer, Request::List { id: 7 });
+    harness.control(
+        viewer,
+        Request::List {
+            instance: None,
+            id: 7,
+        },
+    );
     assert_eq!(harness.frames[&viewer].len(), frames + 3);
     // Neither does the echo of the viewer's own input, even when it arrives in fragments.
     harness.now -= 9;
@@ -1515,7 +2499,11 @@ mod randomized {
                     Axis::Horizontal
                 }
             )),
-            pane().prop_map(|pane| Request::Kill { id: 1, pane }),
+            pane().prop_map(|pane| Request::Kill {
+                instance: None,
+                id: 1,
+                pane
+            }),
             prop_oneof![
                 Just(FocusTarget::Left),
                 Just(FocusTarget::Right),
@@ -1523,10 +2511,21 @@ mod randomized {
                 Just(FocusTarget::Down),
                 pane().prop_map(FocusTarget::Pane),
             ]
-            .prop_map(|target| Request::Focus { id: 1, target }),
-            (pane(), prop_oneof![Just(-3i16), Just(2), Just(40)])
-                .prop_map(|(pane, delta)| Request::Resize { id: 1, pane, delta }),
+            .prop_map(|target| Request::Focus {
+                instance: None,
+                id: 1,
+                target
+            }),
+            (pane(), prop_oneof![Just(-3i16), Just(2), Just(40)]).prop_map(|(pane, delta)| {
+                Request::Resize {
+                    instance: None,
+                    id: 1,
+                    pane,
+                    delta,
+                }
+            }),
             pane().prop_map(|pane| Request::SendKeys {
+                instance: None,
                 id: 1,
                 pane,
                 keys: "x\\n".into(),
@@ -1534,6 +2533,8 @@ mod randomized {
             }),
             (pane(), any::<bool>(), proptest::option::of(0..4u64)).prop_map(
                 |(pane, rows, since)| Request::Capture {
+                    if_revision: None,
+                    instance: None,
                     id: 1,
                     pane,
                     attrs: false,
@@ -1547,7 +2548,10 @@ mod randomized {
                     since: if rows { since } else { None },
                 }
             ),
-            Just(Request::List { id: 1 }),
+            Just(Request::List {
+                instance: None,
+                id: 1
+            }),
             prop_oneof![
                 Just(TabAction::New { name: None }),
                 Just(TabAction::Next),
@@ -1564,7 +2568,11 @@ mod randomized {
                 }),
                 tab().prop_map(|tab| TabAction::Close { tab }),
             ]
-            .prop_map(|action| Request::Tab { id: 1, action }),
+            .prop_map(|action| Request::Tab {
+                instance: None,
+                id: 1,
+                action
+            }),
             prop_oneof![
                 Just(WorkspaceAction::List),
                 Just(WorkspaceAction::New { name: None }),
@@ -1572,7 +2580,12 @@ mod randomized {
                 name().prop_map(|name| WorkspaceAction::Kill { name }),
                 name().prop_map(|name| WorkspaceAction::Select { name }),
             ]
-            .prop_map(|action| Request::Workspace { id: 1, action }),
+            .prop_map(|action| Request::Workspace {
+                stream: None,
+                instance: None,
+                id: 1,
+                action
+            }),
         ]
     }
 
@@ -1841,8 +2854,11 @@ fn a_workspace_whose_first_pane_exits_at_once_retires_with_its_status() {
             ..
         }
     )));
-    // Nobody is watching, so the workspace finalizes at once and the server goes idle.
+    // Nobody is watching, so the workspace finalizes at once; final evidence retains the manager.
     assert!(harness.closed.contains(&"default".to_owned()));
+    assert!(!harness.idle);
+    harness.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    harness.step(Vec::new());
     assert!(harness.idle);
     let counts = harness.session.entity_counts();
     assert_eq!((counts.workspaces, counts.panes), (0, 0));
@@ -1911,6 +2927,8 @@ fn viewer_requests_never_reach_other_workspaces() {
     harness.control(
         viewer,
         Request::Workspace {
+            stream: None,
+            instance: None,
             id: 5,
             action: WorkspaceAction::Kill {
                 name: "other".into(),
@@ -1926,6 +2944,8 @@ fn viewer_requests_never_reach_other_workspaces() {
     harness.control(
         viewer,
         Request::Workspace {
+            stream: None,
+            instance: None,
             id: 6,
             action: WorkspaceAction::Select {
                 name: "other".into(),

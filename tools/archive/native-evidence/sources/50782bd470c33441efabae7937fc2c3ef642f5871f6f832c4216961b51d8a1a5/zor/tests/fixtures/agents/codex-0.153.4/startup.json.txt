@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "captured_at": "2026-09-06T23:54:03.255892+00:00",
+  "agent_version": "codex-cli 0.153.4",
+  "fux_binary_sha256": "cc5b983a8a7389fe21b7950d32bf73ea920b16dcb3e78e8ecfefecc2f0462087",
+  "binary_sha256": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+  "platform": "Darwin",
+  "argv": [
+    "codex"
+  ],
+  "input_sent": false,
+  "isolation": "Fresh HOME, XDG directories, CODEX_HOME and CLAUDE_CONFIG_DIR; environment allowlist.",
+  "limitation": "Startup only. No authenticated request, working, completion, exit or resize coverage.",
+  "redactions": {
+    "temporary_directory": "<CAPTURE_ROOT>"
+  },
+  "captures": [
+    {
+      "elapsed_ms": 0,
+      "capture": {
+        "input_sequence": 0,
+        "text": "",
+        "revision": 4,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 2,
+      "last_elapsed_ms": 110,
+      "last_revision": 4
+    },
+    {
+      "elapsed_ms": 216,
+      "capture": {
+        "input_sequence": 0,
+        "text": "  Welcome to Codex, OpenAI's command-line coding agent\n\n  Sign in with ChatGPT to use Codex as part of your paid plan\n  or connect an API key for usage-based billing\n\n> 1. Sign in with ChatGPT\n     Usage included with Plus, Pro, Business, and Enterprise plans\n\n  2. Sign in with Device Code\n     Sign in from another device with a one-time code\n\n  3. Provide your own API key\n     Pay for what you use\n\n  Press enter to continue",
+        "revision": 9,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 55,
+      "last_elapsed_ms": 6000,
+      "last_revision": 107
+    }
+  ]
+}

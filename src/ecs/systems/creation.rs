@@ -67,9 +67,26 @@ pub fn reserve_pane(
         .cwd
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+    let workspace_name = world
+        .get::<Workspace>(workspace)
+        .map(|workspace| workspace.name.clone())
+        .ok_or_else(|| failed(new.request_id, ErrorCode::NotFound, "workspace disappeared"))?;
+    let workspace_stream = world
+        .get::<crate::ecs::events::EventLog>(workspace)
+        .map(crate::ecs::events::EventLog::cursor)
+        .ok_or_else(|| {
+            failed(
+                new.request_id,
+                ErrorCode::Internal,
+                "workspace stream missing",
+            )
+        })?
+        .stream;
     let entity = world
         .spawn((
             Pane {
+                workspace_name,
+                workspace_stream,
                 id,
                 tab,
                 argv: argv.clone(),
@@ -86,7 +103,7 @@ pub fn reserve_pane(
                 event_pending: false,
                 last_event_seq: 0,
                 published_title: String::new(),
-                published_agent: None,
+                input_sequence: 0,
                 last_output_event_ms: None,
             },
             Creation {
@@ -177,6 +194,13 @@ pub fn reserve_workspace(
             format!("workspace {name} already exists"),
         ));
     }
+    let stream = world.resource_mut::<Ids>().next_stream().ok_or_else(|| {
+        failed(
+            request_id,
+            ErrorCode::Limit,
+            "workspace stream IDs exhausted",
+        )
+    })?;
     let step = world.resource::<Clock>().step;
     let workspace = world
         .spawn(Workspace {
@@ -188,6 +212,9 @@ pub fn reserve_workspace(
             tab_counter: 0,
         })
         .id();
+    world
+        .entity_mut(workspace)
+        .insert(crate::ecs::events::EventLog::new(stream));
     world
         .resource_mut::<Ids>()
         .workspaces
@@ -380,7 +407,17 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                     component.name.clone()
                 })
                 .unwrap_or_default();
-            effect(world, Effect::WorkspaceOpened { name: name.clone() });
+            let stream = world
+                .get::<crate::ecs::events::EventLog>(workspace)
+                .map(|log| log.cursor().stream)
+                .unwrap_or(0);
+            effect(
+                world,
+                Effect::WorkspaceOpened {
+                    name: name.clone(),
+                    stream,
+                },
+            );
             announce_pane(world, workspace, tab, entity, id);
             // A manager requester receives the attach outcome through the reply routing.
             for (requester, request_id) in requesters {

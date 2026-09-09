@@ -128,8 +128,9 @@ evicted first. Closing a pane, closing a tab or killing a workspace frees the hi
 merged output log.
 
 When the only pane of the only tab exits by itself the workspace retires with that exit status:
-attached viewers see the final screen, then exit with the code; the server finalizes once the
-viewers have seen it (or after five seconds). Other natural exits close the pane, and an emptied
+attached viewers see the final screen, then exit with the code; the workspace finalizes once the
+viewers have seen it (or after five seconds). The manager retains bounded final records for up
+to 60 seconds after pane retirement, even after the workspace sockets disappear. Other natural exits close the pane, and an emptied
 tab closes. Confirmed close and `kill` send SIGHUP to the pane's process group, SIGKILL after one
 second, and reap it. Workspace kill and server shutdown do the same for every pane.
 
@@ -145,8 +146,9 @@ server-side until the condition holds instead of polling. `fux [NAME] new --env 
 --keys "C-c Enter"` sends named keys.
 
 `fux run -- COMMAND` is the one-shot convenience: it creates an ephemeral workspace, runs the
-command in a pane of a given size and environment, streams its screen, waits for it to exit,
-prints the final screen and exits with the command's status.
+command in a pane of a given size and environment, waits for retained final evidence,
+prints the final screen and exits with the command's status. It creates its workspace atomically
+and never takes over or cleans up a pre-existing workspace.
 
 ```sh
 fux run --rows 24 --columns 80 --env CI=1 -- pytest -q
@@ -205,7 +207,7 @@ tests/verify/release-package.sh
 Deterministic ECS tests inject events and time (`tests/ecs.rs`, including randomized command
 sequences); real-process scenarios use disposable HOME/XDG directories and owned processes only
 (`tests/local_cli.rs`, the fixture-child suite). The optional cross-repository job and
-`python3 tools/dependencies.py verify --build` rebuild koh and zor from pinned bases plus the
+`cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build` rebuild koh and zor from pinned bases plus the
 patches in `dependency-patches/` and run the required real koh and real zor integrations with
 explicit binary paths; set `ZOR_BIN` and `FUX_REQUIRE_ZOR_BIN=1`, or `FUX_BIN` and
 `KOH_REQUIRE_FUX_BIN=1`, so they can never silently skip.

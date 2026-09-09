@@ -1,0 +1,43 @@
+"""Fixture-only journal contention policy; never retries transport or semantic errors.
+
+Callers explicitly authorize replay only for reads or an unchanged retained operation.
+group-step must inspect admission instead; group-cancel can also advance retirement.
+Freshness-sensitive callers use the predicates under their existing outer deadline.
+"""
+import time
+
+
+BUSY_STDERR = b'zor: zor journal is busy; retry the operation ID\n'
+
+
+def cli_busy(reply):
+    return reply.returncode == 1 and reply.stderr == BUSY_STDERR
+
+
+def api_busy(reply, request):
+    if reply.get('error') != 'task-busy':
+        return False
+    assert request.get('op') == 'task', (request, reply)
+    assert reply.get('v') == 1 and reply.get('id') == request['id'], reply
+    assert reply.get('status') == 'failed', reply
+    assert reply.get('service_instance') == request['service_instance'], reply
+    return True
+
+
+def retry_busy(call, is_busy, *, deadline, replay):
+    """Preserve one deadline; pass remaining time to the bounded call.
+
+    replay is mandatory: no inference of idempotency from an error code or request ID.
+    False fails on Busy, including in tests expecting a different rejection.
+    Exceptions and every other response pass straight back to the caller.
+    """
+    while True:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, 'journal contention deadline'
+        reply = call(remaining)
+        if not is_busy(reply):
+            return reply
+        assert replay, ('operation requires reconciliation after Busy', reply)
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, ('journal contention deadline', reply)
+        time.sleep(min(.03, remaining))

@@ -599,6 +599,7 @@ dependencies = [
  "base64",
  "bevy_ecs",
  "clap",
+ "filedescriptor",
  "nix 0.30.1",
  "portable-pty",
  "ratatui-core",

@@ -22,6 +22,7 @@ use tokio::task::JoinSet;
 /// Shared by every accept loop: how to reach the owner and how to hand it reply channels.
 #[derive(Clone)]
 pub struct Owner {
+    pub instance: String,
     pub inbound: mpsc::Sender<Inbound>,
     pub tokens: Arc<AtomicU64>,
     pub control_replies: mpsc::Sender<(u64, oneshot::Sender<Reply>)>,
@@ -310,23 +311,86 @@ async fn serve_control_connection(
                 continue;
             }
         };
-        if let Request::Subscribe { id, events } = request {
+        if request
+            .instance()
+            .is_some_and(|instance| instance != owner.instance)
+        {
+            write_line(
+                &mut writer,
+                &Reply::failed(
+                    request.id(),
+                    control::ErrorCode::Conflict,
+                    "server instance changed; rediscover before retrying",
+                ),
+            )
+            .await?;
+            continue;
+        }
+        if let Request::Subscribe {
+            id, events, after, ..
+        } = request
+        {
             let (sender, mut receiver) = mpsc::channel(MAX_SUBSCRIBER_QUEUE);
-            subscribers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(Subscriber {
-                    id,
-                    filters: events,
+            {
+                let mut active = subscribers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                active.retain(|subscriber| !subscriber.sender.is_closed());
+                active.push(Subscriber {
+                    filters: events.clone(),
                     sender,
+                    bytes: Arc::new(AtomicUsize::new(0)),
                 });
+            }
+            // Register first, then replay through the authoritative ECS boundary. Events that
+            // race this read are either in the replay or in the queue (possibly both).
+            let mut boundary = after;
+            let mut replay = Vec::new();
+            if let Some(after) = after {
+                let reply = dispatch_control(
+                    &owner,
+                    &workspace,
+                    Request::Events {
+                        id,
+                        instance: Some(owner.instance.clone()),
+                        after,
+                    },
+                )
+                .await?;
+                match reply {
+                    Reply::Completed {
+                        result:
+                            control::CommandResult::Events {
+                                cursor,
+                                events: entries,
+                            },
+                        ..
+                    } => {
+                        boundary = Some(cursor);
+                        replay = entries;
+                    }
+                    other => {
+                        write_line(&mut writer, &bounded(other)).await?;
+                        return Ok(());
+                    }
+                }
+            }
             write_line(&mut writer, &Reply::Accepted { id }).await?;
+            for entry in replay {
+                if events.is_empty() || events.contains(&entry.event.kind()) {
+                    write_event(&mut writer, entry, id).await?;
+                }
+            }
             let mut probe = [0_u8; 1];
             loop {
                 tokio::select! {
                     event = receiver.recv() => {
                         let Some(event) = event else { break };
-                        write_line(&mut writer, &event).await?;
+                        if boundary.is_some_and(|cursor| cursor.stream == event.entry.cursor.stream
+                            && event.entry.cursor.sequence <= cursor.sequence) {
+                            continue;
+                        }
+                        write_event(&mut writer, (*event.entry).clone(), id).await?;
                     }
                     read = reader.read(&mut probe) => {
                         // Any further byte or EOF ends the subscription.
@@ -337,36 +401,59 @@ async fn serve_control_connection(
             }
             return Ok(());
         }
-        let request_id = request.id();
-        // A `wait` replies only when its condition or its own timeout fires, so the reply window
-        // must outlast the requested timeout; every other request keeps the fixed 30 s answer cap.
-        let answer_window = match &request {
-            Request::Wait { timeout_ms, .. } => {
-                Duration::from_millis(*timeout_ms).saturating_add(Duration::from_secs(5))
-            }
-            _ => Duration::from_secs(30),
-        };
-        let token = owner.token();
-        let (sender, receiver) = oneshot::channel();
-        owner.control_replies.send((token, sender)).await?;
-        owner
-            .inbound
-            .send(Inbound::ControlRequest {
-                workspace: workspace.clone(),
-                request,
-                token,
-            })
-            .await?;
-        let reply = match tokio::time::timeout(answer_window, receiver).await {
-            Ok(Ok(reply)) => reply,
-            _ => Reply::failed(
-                request_id,
-                ErrorCode::Internal,
-                "control request was not answered",
-            ),
-        };
+        let reply = dispatch_control(&owner, &workspace, request).await?;
         write_line(&mut writer, &bounded(reply)).await?;
     }
+    Ok(())
+}
+
+async fn dispatch_control(
+    owner: &Owner,
+    workspace: &str,
+    request: Request,
+) -> anyhow::Result<Reply> {
+    let request_id = request.id();
+    // A `wait` replies only when its condition or its own timeout fires, so the reply window
+    // must outlast the requested timeout; every other request keeps the fixed 30 s answer cap.
+    let answer_window = match &request {
+        Request::Wait { timeout_ms, .. } => {
+            Duration::from_millis(*timeout_ms).saturating_add(Duration::from_secs(5))
+        }
+        _ => Duration::from_secs(30),
+    };
+    let token = owner.token();
+    let (sender, receiver) = oneshot::channel();
+    owner.control_replies.send((token, sender)).await?;
+    owner
+        .inbound
+        .send(Inbound::ControlRequest {
+            workspace: workspace.to_owned(),
+            request,
+            token,
+        })
+        .await?;
+    let reply = match tokio::time::timeout(answer_window, receiver).await {
+        Ok(Ok(reply)) => reply,
+        _ => Reply::failed(
+            request_id,
+            ErrorCode::Internal,
+            "control request was not answered",
+        ),
+    };
+
+    Ok(reply)
+}
+
+async fn write_event(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    mut event: control::SequencedEvent,
+    id: u64,
+) -> anyhow::Result<()> {
+    event.event = event.event.with_id(id);
+    let mut bytes = serde_json::to_vec(&event)?;
+    anyhow::ensure!(bytes.len() <= MAX_FRAME_BYTES, "event exceeds frame limit");
+    bytes.push(b'\n');
+    tokio::time::timeout(FRAME_TIMEOUT, writer.write_all(&bytes)).await??;
     Ok(())
 }
 
@@ -414,7 +501,7 @@ pub async fn serve_manager(listener: UnixListener, owner: Owner, stop: Arc<Notif
 
 /// Answers one manager request. The descriptor for an attach reply is built by the caller-side
 /// hook so the manager task never touches the World.
-pub type DescriptorHook = Arc<dyn Fn(&str) -> Option<crate::daemon::Descriptor> + Send + Sync>;
+pub type DescriptorHook = Arc<dyn Fn(&str, u64) -> Option<crate::daemon::Descriptor> + Send + Sync>;
 
 async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyhow::Result<()> {
     negotiate(&mut stream).await?;
@@ -433,12 +520,18 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
         }
     };
     let action = match request {
+        crate::daemon::ManagerRequest::Final { instance, pane } => {
+            ManagerAction::Final { instance, pane }
+        }
+        crate::daemon::ManagerRequest::Create { name } => ManagerAction::Create { name },
         crate::daemon::ManagerRequest::List => ManagerAction::List,
         crate::daemon::ManagerRequest::Info => ManagerAction::Info,
         crate::daemon::ManagerRequest::Resolve { name } => ManagerAction::Resolve { name },
         crate::daemon::ManagerRequest::Kill { name } => ManagerAction::Kill { name },
     };
-    if let ManagerAction::Resolve { name: Some(name) } | ManagerAction::Kill { name } = &action
+    if let ManagerAction::Resolve { name: Some(name) }
+    | ManagerAction::Kill { name }
+    | ManagerAction::Create { name } = &action
         && let Err(error) = crate::ids::validate_workspace_name(name)
     {
         let reply = crate::daemon::ManagerReply::Failed {
@@ -458,10 +551,12 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
         _ => ManagerOutcome::Failed("manager request was not answered".into()),
     };
     let reply = match outcome {
+        ManagerOutcome::Final(result) => crate::daemon::ManagerReply::Final { result },
         ManagerOutcome::Names(names) => crate::daemon::ManagerReply::Names { names },
         ManagerOutcome::Info(info) => crate::daemon::ManagerReply::Info { info },
         ManagerOutcome::Failed(message) => crate::daemon::ManagerReply::Failed { message },
-        ManagerOutcome::Attach { name, .. } => match (DESCRIPTOR_HOOK.get())(&name) {
+        ManagerOutcome::Attach { name, stream, .. } => match (DESCRIPTOR_HOOK.get())(&name, stream)
+        {
             Some(descriptor) => crate::daemon::ManagerReply::Attach { descriptor },
             None => crate::daemon::ManagerReply::Failed {
                 message: "workspace descriptor unavailable".into(),
@@ -479,8 +574,159 @@ impl DescriptorLookup {
         let _ = self.0.set(hook);
     }
     fn get(&self) -> DescriptorHook {
-        self.0.get().cloned().unwrap_or_else(|| Arc::new(|_| None))
+        self.0
+            .get()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(|_, _| None))
     }
 }
 
 pub static DESCRIPTOR_HOOK: DescriptorLookup = DescriptorLookup(std::sync::OnceLock::new());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn subscription_replay_deduplicates_queued_overlap_and_filters_both_sides()
+    -> anyhow::Result<()> {
+        use control::{CommandResult, Event, EventCursor, EventKind, SequencedEvent};
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (server, mut client) = UnixStream::pair()?;
+            let (inbound, mut inbound_rx) = mpsc::channel(1);
+            let (control_replies, mut control_rx) = mpsc::channel(1);
+            let (manager_replies, _manager_rx) = mpsc::channel(1);
+            let (viewer_outboxes, _viewer_rx) = mpsc::channel(1);
+            let owner = Owner {
+                instance: "current-server".into(), inbound,
+                tokens: Arc::new(AtomicU64::new(1)), control_replies,
+                manager_replies, viewer_outboxes,
+                viewer_ids: Arc::new(AtomicU64::new(1)),
+            };
+            let subscribers = Arc::new(Mutex::new(Vec::new()));
+            let serving = tokio::spawn(serve_control_connection(server, "default".into(), owner, subscribers.clone()));
+            client.write_all(CONTROL_PREFACE).await?;
+            let mut preface = [0; CONTROL_PREFACE.len()];
+            client.read_exact(&mut preface).await?;
+            let (client, mut writer) = client.into_split();
+            let mut client = BufReader::new(client);
+            let cursor = |sequence| EventCursor { stream: 7, sequence };
+            write_line(&mut writer, &Request::Subscribe {
+                id: 42, instance: Some("current-server".into()),
+                events: vec![EventKind::PaneTitle], after: Some(cursor(0)),
+            }).await?;
+            let (token, reply) = control_rx.recv().await.ok_or_else(|| anyhow::anyhow!("missing reply channel"))?;
+            let request = inbound_rx.recv().await.ok_or_else(|| anyhow::anyhow!("missing replay request"))?;
+            assert!(matches!(request, Inbound::ControlRequest { token: actual, request: Request::Events { after, .. }, .. } if actual == token && after == cursor(0)));
+            // Registration must already exist before the authoritative replay is answered.
+            assert_eq!(crate::os::lock(&subscribers).len(), 1);
+            let title = |value: &str| Event::PaneTitle { id: 0, pane: crate::ids::PaneId(1), title: value.into() };
+            let publish = |event: Event, cursor: EventCursor| {
+                let size = crate::ecs::events::encoded_len(&SequencedEvent { cursor, event: event.clone() });
+                super::super::adapter::publish(&subscribers, &event, cursor, size);
+            };
+            publish(title("overlap"), cursor(2));
+            reply.send(Reply::Completed { id: 42, result: CommandResult::Events {
+                cursor: cursor(2), events: vec![
+                    SequencedEvent { cursor: cursor(1), event: Event::WorkspaceChanged { id: 0 } },
+                    SequencedEvent { cursor: cursor(2), event: title("overlap") },
+                ],
+            }}).map_err(|_| anyhow::anyhow!("replay receiver closed"))?;
+            // Queue later filtered and matching events before reading the acceptance/replay.
+            publish(Event::WorkspaceChanged { id: 0 }, cursor(3));
+            publish(title("later"), cursor(4));
+            let accepted = read_line(&mut client).await?.ok_or_else(|| anyhow::anyhow!("accept EOF"))?;
+            assert_eq!(serde_json::from_slice::<Reply>(&accepted)?, Reply::Accepted { id: 42 });
+            for (sequence, value) in [(2, "overlap"), (4, "later")] {
+                let line = read_line(&mut client).await?.ok_or_else(|| anyhow::anyhow!("event EOF"))?;
+                let entry: SequencedEvent = serde_json::from_slice(&line)?;
+                assert_eq!(entry.cursor, cursor(sequence));
+                assert_eq!(entry.event, title(value).with_id(42));
+            }
+            drop(client);
+            drop(writer);
+            serving.await??;
+            Ok::<_, anyhow::Error>(())
+        }).await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subscription_checks_incarnation_before_registering() -> anyhow::Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (server, client) = UnixStream::pair()?;
+            let (inbound, _inbound_rx) = mpsc::channel(1);
+            let (control_replies, _control_rx) = mpsc::channel(1);
+            let (manager_replies, _manager_rx) = mpsc::channel(1);
+            let (viewer_outboxes, _viewer_rx) = mpsc::channel(1);
+            let owner = Owner {
+                instance: "current-server".into(),
+                inbound,
+                tokens: Arc::new(AtomicU64::new(1)),
+                control_replies,
+                manager_replies,
+                viewer_outboxes,
+                viewer_ids: Arc::new(AtomicU64::new(1)),
+            };
+            let subscribers = Arc::new(Mutex::new(Vec::new()));
+            let serving = tokio::spawn(serve_control_connection(
+                server,
+                "default".into(),
+                owner,
+                subscribers.clone(),
+            ));
+            let mut client = client;
+            client.write_all(CONTROL_PREFACE).await?;
+            let mut preface = [0; CONTROL_PREFACE.len()];
+            client.read_exact(&mut preface).await?;
+            assert_eq!(&preface, CONTROL_PREFACE);
+            let (client, mut writer) = client.into_split();
+            let mut client = BufReader::new(client);
+            for (instance, expected) in [
+                ("old-server", ErrorCode::Conflict),
+                ("bad instance", ErrorCode::InvalidRequest),
+            ] {
+                write_line(
+                    &mut writer,
+                    &Request::Subscribe {
+                        after: None,
+                        id: 1,
+                        instance: Some(instance.into()),
+                        events: Vec::new(),
+                    },
+                )
+                .await?;
+                let line = read_line(&mut client)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("reply EOF"))?;
+                let response: Reply = serde_json::from_slice(&line)?;
+                assert!(matches!(response, Reply::Failed { error, .. } if error.code == expected));
+                assert!(crate::os::lock(&subscribers).is_empty());
+            }
+            write_line(
+                &mut writer,
+                &Request::Subscribe {
+                    after: None,
+                    id: 2,
+                    instance: Some("current-server".into()),
+                    events: Vec::new(),
+                },
+            )
+            .await?;
+            let line = read_line(&mut client)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("reply EOF"))?;
+            assert_eq!(
+                serde_json::from_slice::<Reply>(&line)?,
+                Reply::Accepted { id: 2 }
+            );
+            assert_eq!(crate::os::lock(&subscribers).len(), 1);
+            drop(client);
+            drop(writer);
+            serving.await??;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        Ok(())
+    }
+}

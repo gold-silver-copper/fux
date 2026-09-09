@@ -12,6 +12,7 @@ pub const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
+    pub stream: u64,
     pub name: String,
     pub pid: u32,
     pub instance_nonce: String,
@@ -37,7 +38,8 @@ impl Descriptor {
     pub fn validate(&self) -> Result<(), DescriptorError> {
         crate::ids::validate_workspace_name(&self.name)
             .map_err(|_| DescriptorError::Path(PathError::UnsafeName))?;
-        if self.pid == 0
+        if self.stream == 0
+            || self.pid == 0
             || !safe_token(&self.instance_nonce, 128)
             || !self.socket_path.is_absolute()
         {

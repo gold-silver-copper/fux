@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "captured_at": "2026-09-07T07:53:01.762018+00:00",
+  "agent_version": "2.1.263 (Claude Code)",
+  "fux_binary_sha256": "5eae97c53553e18563b06f286c7753993a809af5aff4d846760b4de0e5806968",
+  "binary_sha256": "ef5d2909c8af49f31ab6d5487e90316777bc2fac170adfe8160716caa8aaf4f9",
+  "platform": "Darwin",
+  "argv": [
+    "claude"
+  ],
+  "input_sent": false,
+  "isolation": "Fresh HOME, XDG directories, CODEX_HOME and CLAUDE_CONFIG_DIR; environment allowlist.",
+  "limitation": "Startup only. No authenticated request, working, completion, exit or resize coverage.",
+  "redactions": {
+    "temporary_directory": "<CAPTURE_ROOT>"
+  },
+  "captures": [
+    {
+      "elapsed_ms": 0,
+      "capture": {
+        "input_sequence": 0,
+        "text": "",
+        "revision": 1,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 2,
+      "last_elapsed_ms": 101,
+      "last_revision": 1
+    },
+    {
+      "elapsed_ms": 207,
+      "capture": {
+        "input_sequence": 0,
+        "text": "Welcome to Claude Code v2.1.263",
+        "revision": 6,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 1,
+      "last_elapsed_ms": 207,
+      "last_revision": 6
+    },
+    {
+      "elapsed_ms": 316,
+      "capture": {
+        "input_sequence": 0,
+        "text": "Welcome to Claude Code v2.1.263\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");                                       \n  2 +  console.log(\"Hello, Claude!\");                                      \n  3  }\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  Syntax theme: Monokai Extended (ctrl+t to disable)",
+        "revision": 8,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 54,
+      "last_elapsed_ms": 5909,
+      "last_revision": 8
+    }
+  ]
+}

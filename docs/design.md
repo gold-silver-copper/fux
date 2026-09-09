@@ -1,6 +1,6 @@
 # Architecture
 
-fux 0.4 is a minimal persistent terminal multiplexer. One session server per user owns the
+fux is a persistent terminal multiplexer. One session server per user owns the
 authoritative model in a standalone `bevy_ecs` 0.19.1 World; viewers are separate processes that
 paint per-viewer frames with a small ratatui-core compositor. Koh (remote access) and zor
 (observation) are independent programs that speak fux's local protocols, which carry no version
@@ -82,21 +82,24 @@ Phases are chained system sets; deferred mutations become visible at the sync po
 
 1. **Ingest**: record the clock, spawn/despawn viewer entities, queue viewer requests.
 2. **Output**: feed pane bytes into each pane's emulator in per-pane FIFO order, collect host
-   replies as `WriteInput` effects, apply EOF and exit reports after every earlier chunk.
+   replies as `WriteInput` effects, apply EOF and exit reports after every earlier chunk, then
+   apply tracked-input write completions.
 3. **Requests**: drain each viewer's queue in order until it reaches a barrier, apply control and
    manager requests, validate ids/liveness/limits, reserve `Starting` panes for creations and
    emit `SpawnPane`.
 4. **Completions**: apply `SpawnCompleted`: place the pane, move the requester's focus, release the
    barrier and drain the queue again, or roll the reservation back and reply `failed`.
-5. **Lifecycle**: natural exits (close the pane, close an emptied tab, retire the last pane's
+5. **Waits**: resolve conditions after output, requests and spawn completion, before lifecycle
+   removes exited panes.
+6. **Lifecycle**: natural exits (close the pane, close an emptied tab, retire the last pane's
    workspace with its status), confirmed closes and kills, retirement grace, workspace kills,
    shutdown, idle detection.
-6. **Layout**: recompute geometry for tabs whose layout or displaying viewers changed, over the
+7. **Layout**: recompute geometry for tabs whose layout or displaying viewers changed, over the
    smallest viewer showing the tab (hidden tabs keep their last area; viewer-less tabs use 80×24).
    The last row of every viewer is the bar, so the pane area is `rows - 1` starting at row 0; siblings in a split are
    separated by exactly one cell, and leaf rectangles are the panes' content areas. Emulators are
    resized and `ResizePty` emitted.
-7. **Snapshot**: `refresh_grids` decides which viewers publish this step and reads the changed
+8. **Snapshot**: `refresh_grids` decides which viewers publish this step and reads the changed
    panes they show once into the panes' retained grids (a copy of the visible cells with the
    step each row last changed in); output-driven frames are paced to one per 8 ms per viewer
    (`Limits.frame_interval_ms`, a deadline wakes the loop for the pending rows), while a frame
@@ -108,7 +111,7 @@ Phases are chained system sets; deferred mutations become visible at the sync po
    holds of each pane (`Viewer.sent`); updates are queued before the replies they promise. Cells
    the frame cannot carry (zero-width or multi-grapheme sequences, control characters) are shown
    as blanks of their style.
-8. **Publish**: control events, deadlines, message clearing, `clear_trackers`.
+9. **Publish**: control events, deadlines, message clearing, `clear_trackers`.
 
 No observers or component hooks drive core commands; process cleanup is explicit.
 
@@ -119,13 +122,16 @@ Ingest (`apply_attachments`), output (`apply_pane_output`), layout (`resolve_lay
 `MessageReader` and `Commands`, with `SystemParam` bundles for what they share: `Step` (clock,
 limits, ids), `Effects` (effect and event writer), `ViewerExit` (deferred viewer despawn),
 `Arrivals`, `Scene`. Viewer queues are drained by `drain_viewer_queues` scheduled after the request
-phase and again after completions, not by tail calls. Four systems keep `&mut World` because each
-mutates entities it must observe again within the same phase: `apply_requests` (a request may
+phase and again after completions, not by tail calls. Six scheduled systems currently take
+`&mut World`. Four mutate entities they must observe again within the same phase: `apply_requests` (a request may
 spawn reservations, edit layouts or despawn tabs that the next request in the batch addresses),
 `drain_viewer_queues` (a request may despawn the viewer whose queue is being drained),
 `apply_spawn_completions` (a completion inserts the `TabOf` membership and places a pane that a
 later completion in the batch splits) and `resolve_lifecycle` (closing a tab may retire the
-workspace, which finalizes in the same pass). Shared mutations live in `ecs::support` (viewer
+workspace, which finalizes in the same pass). `resolve_waits` refreshes pane grids and emits
+replies while updating pending waits. `input::apply_completions` reads the current inbound
+batch and updates bounded receipt records. These describe the current implementation, not a
+requirement that all six remain exclusive. Shared mutations live in `ecs::support` (viewer
 scans, cascades, retirement, replies); dirty flags stay explicit because change ticks would fire
 on `get_mut` reads such as history views and captures.
 
@@ -161,6 +167,29 @@ before the SIGKILL. Releasing a pane whose process still runs (workspace kill, f
 same grace. A completion for a reservation released meanwhile is stopped and reaped as well. Server shutdown moves every workspace to retiring, sends final frames and
 `exited`, then the adapter terminates and joins everything before the process exits (five-second
 deadline). Persistence is surviving viewer loss; nothing is resurrected after a restart.
+
+## Generic reliability state
+
+Each workspace has a bounded `EventLog` and a unique lifetime stream. Events are sequenced
+before their delivery effects; replay and live subscriptions use the same cursor space and
+report gaps when retention or workspace replacement prevents continuity. Server identity
+is checked independently of the unversioned wire preface.
+
+`InputOperations` retains bounded reservation/submission receipts. Pane input sequence detects
+intervening writers; PTY write completions report delivered bytes or partial failures back to
+ECS. The writer uses nonblocking I/O with cancellable waits, so a stalled PTY cannot hold up
+shutdown indefinitely. Terminal host replies are excluded from application input sequence.
+
+`FinalRecords` outlives pane and workspace entities. Before release, the lifecycle code retains
+a bounded capture with the pane's original workspace name/stream, command/cwd and observed
+exit status. An unobserved exit remains unknown. Retention is bounded by count and time;
+the manager serves records after workspace sockets close, and `fux run` consumes them.
+
+Terminal revision invalidates coherent conditional text captures across output and actual
+resize. It is separate from the retained grid sequence, input sequence and event cursor.
+Main's retained grid and changed-row viewer architecture remains authoritative; captures do
+not introduce a second rendering model. See [local-control-protocol.md](local-control-protocol.md)
+for consumer contracts and [native-integration.md](native-integration.md) for verification state.
 
 ## Viewer
 

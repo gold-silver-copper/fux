@@ -41,20 +41,24 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 | `kill` | `pane` | unit (the pane leaves the layout now; `pane.closed` follows the exit report) |
 | `resize` | `pane`, `delta` (non-zero) | unit |
 | `send-keys` | `pane`, `keys` (at most 64 KiB), `notation?` (`escapes` default, or `keys`) | unit |
-| `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows), `max_bytes` (1–131072), `format?` (`text` default, `rows`), `since?` (an output sequence; `rows` only, no scrollback) | `text` + `seq`, or `rows` (below) |
+| `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows), `max_bytes` (1–131072), `format?` (`text` default, `rows`), `since?` (grid sequence; `rows` only, no scrollback), `if_revision?` (text only) | coherent `capture`, or `rows` (below) |
 | `list` | | `workspaces[]` |
 | `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{…}` |
 | `wait` | `pane`, `until`, `timeout_ms` (1–300000) | `waited`: `fired`, `seq`, `exit_status` |
 | `tab` | `action`: `new{name?}`, `next`, `previous`, `select{target}` (`{index:N}` or `{id:TAB}`), `rename{tab,name}`, `close{tab}` | `tab` |
 | `workspace` | `action`: `list`, `new{name?}`, `kill{name}` (only the connection's own workspace; other workspaces are killed through the manager or `fux workspace kill`), `select{name}` (viewer attachments only) | `workspace`/`workspaces[]` |
-| `subscribe` | `events?` (≤32 filters) | `accepted`, then events |
+| `input-reserve` | `instance`, `pane` | input receipt |
+| `input-submit` | `instance`, `operation`, `keys` (escape notation) | input receipt |
+| `input-status` | `instance`, `operation` | input receipt |
+| `events` | `instance`, `after` | current cursor and retained events |
+| `subscribe` | `events?` (≤32 filters), `after?` (requires `instance`) | `accepted`, replay, then live events |
 
 Replies are `{"status":"completed","id":N,"result":{...}}`, `{"status":"failed","id":N,"error":
 {"code":"not-found"|"invalid-request"|"limit"|"unknown-command"|…,"message":"…"}}` or
 `{"status":"accepted","id":N}` for subscriptions.
 
-Listings carry stable identities: `workspaces[].{name,focused,viewers,tabs[]}`, `tabs[].{id,index,
-name,focused,panes[]}`, `panes[].{id,command,pid,cwd,title,progress,agent,seq,geometry,focused,
+Listings carry stable identities: `instance`, `workspaces[].{event_cursor,name,focused,viewers,tabs[]}`, `tabs[].{id,index,
+name,focused,panes[]}`, `panes[].{id,command,pid,cwd,title,progress,seq,revision,input_sequence,geometry,focused,
 cursor,modes,exit_status}`. Pane and tab ids are never reused during a server's lifetime; a request naming a
 closed id fails with `not-found` even if a replacement exists. Control clients act on the
 workspace's own selection, not on any viewer's, and `list`/`capture` never change focus,
@@ -64,13 +68,41 @@ Ordering: requests on one connection execute in order and are applied in the sam
 viewer input. A creation reply is sent only after the pane process was started (or failed).
 Events are published after the step that produced them, in step order.
 
+## Identity, captures and tracked input
+
+Every workspace request accepts `instance`, the server incarnation from `list` or `info`.
+A supplied identity must match before the operation executes. Tracked input, replay and
+conditional text capture require it. Workspace `event_cursor.stream` identifies a workspace
+lifetime independently of its reusable name; scoped `split` and workspace `kill` accept
+`stream` with `instance` to reject a replacement workspace.
+
+Text capture returns `seq`, `input_sequence`, `text`, `revision`, `rows`, `columns`,
+`scrollback_offset`, `title`, `progress`, `unchanged` and `truncated` from one coherent read.
+`scrollback` selects a viewport shifted into retained history; it does not append a transcript.
+`if_revision` with matching revision returns metadata and empty text with `unchanged: true`.
+Reuse the cached text only with the same pane/server identity and capture options. For an
+unchanged response retain the cached truncation flag. Nonempty output conservatively advances
+terminal revision even when the refreshed grid sequence does not change; actual resize also
+advances revision. Grid sequence, terminal revision, input sequence and replay cursor are
+separate contracts.
+
+Reserve input to obtain an operation and the pane's input sequence, then submit escaped keys
+using that operation. Intervening application input causes a conflict before first submission.
+Submitting identical bytes again returns the existing receipt without repeating the input;
+different bytes conflict. Terminal host replies do not count as intervening application input.
+Receipts contain `state` (`reserved`, `queued`, `delivered`, `failed`), `bytes_written`, `error`,
+`revision`, `input_sequence` and server-clock `expires_ms`. Delivery means PTY write completion,
+not application acknowledgement. A failed write may have delivered a prefix. An expired or
+unavailable receipt leaves the outcome unknown; do not automatically replay the input.
+At most 128 receipts are retained for 60 seconds; expiry does not cancel queued bytes.
+
 ## Creating panes and sending keys
 
-`new` and `split` accept `env` (an array of `[name, value]` pairs, at most 64 entries and 16 KiB
+Pane `split` accepts `env` (an array of `[name, value]` pairs, at most 64 entries and 16 KiB
 total, applied on top of the sanitized inherited environment) and `rows`/`columns` for the pane's
-initial size. The size is honored only where no viewer sizes the tab (a headless workspace); an
-attached viewer's terminal always wins. The first pane of a workspace is 24x80 until a viewer
-attaches or a later `split` sets a size.
+initial spawn size. Subsequent layout can resize the pane, including without a viewer;
+attached viewers determine the tab's available area. Workspace creation does not accept these
+fields in either the manager or workspace control schema.
 
 `send-keys` reads its payload in one of two notations. `escapes` (the default) is byte-exact with
 `\n \r \t \e \\ \0 \xHH`. `keys` reads space-separated key names: `Enter`, `Tab`, `Escape`,
@@ -125,25 +157,31 @@ is bounded by its own timeout (there is no separate close signal on the control 
 
 ## Events
 
-`pane.opened`, `pane.closed` (`exit_status`), `pane.title`, `pane.agent` (self-reported agent
-state, below), `pane.output` (`seq`; at most one per pane per 250 ms, the last change of a burst
-always produces one),
-`tab.opened`, `tab.closed`, `client.attached`, `client.detached`. Each event carries the
-subscription's `id`. A subscriber whose queue exceeds 1024 events is disconnected rather than
-buffered without bound; it may resubscribe and re-`list`.
+Generic events are `workspace.changed`, `pane.opened`, `pane.closed` (`exit_status`),
+`pane.title`, `pane.output` (`seq`), `tab.opened`, `tab.closed`, `client.attached`, and
+`client.detached`. Each event carries a cursor containing workspace-lifetime `stream`
+and replay `sequence`. Subscription delivery uses the subscription's `id`; records
+returned by the `events` RPC retain their stored IDs.
 
-## Agent state
+`pane.output` retains the grid sequence semantics. Output that changes only capture
+history or metadata emits `workspace.changed` instead. These output invalidations share
+one per-pane pacing interval (250 ms), including the last pending update after a burst.
+Nonempty no-op output may conservatively invalidate capture revision; it does not advance
+the grid sequence. Empty output and idle panes generate no periodic invalidations.
+Actual geometry changes, focus and tab changes also invalidate workspace snapshots.
 
-fux reads OSC 7877 agent reports (zor's observation schema v1) from pane output the way it reads
-progress: `ESC ] 7877 ; v=1 ; state=working ; agent=claude ; seq=N ST`. The `state` is `working`,
-`blocked`, `idle`, or `none` (which clears it); `agent` is an id of at most 64 ASCII letters,
-digits, `.`, `_` or `-`; an optional percent-encoded `msg` of at most 128 bytes is kept; the whole
-report is bounded to 1 KiB. The parsed state appears as `agent` in `list` and in a `pane.agent`
-event. This means `zor -- COMMAND` as a pane's command, or an agent that emits the OSC itself,
-lights up fux with no observer socket; `zor observe` stays available. The report is unverified
-terminal output: any program can write it, so it is presentation only and never an authorization
-signal. It does not yet travel in the attachment frame or the viewer's bar; that display is a
-later pass.
+Each workspace retains at most 1024 events and 512 KiB of event data. `events` and
+`subscribe` with `after` require the server `instance` and reject evicted cursors or
+replaced workspace streams with an explicit `gap`. Rediscover the listing and its
+`event_cursor` after a gap. Subscriber count/byte overflow disconnects the slow client;
+reconnect with the last accepted cursor to replay, subject to the same retention limits.
+
+## Terminal metadata and ownership
+
+fux exposes generic terminal title and progress metadata. Agent interpretation, provider
+integration, task state, checks and verified results belong to zor. fux ignores OSC 7877
+agent reports and exposes no pane agent state or `pane.agent` event. Terminal output,
+input delivery and process exit are observations, not verified task completion.
 
 ## Manager requests
 
@@ -153,6 +191,8 @@ Same preface, separate strict schema selected by the socket:
 {"request":"list"}
 {"request":"resolve","name":"default"}
 {"request":"resolve","name":null}
+{"request":"create","name":"new-workspace"}
+{"request":"final","instance":"SERVER_NONCE","pane":1}
 {"request":"kill","name":"default"}
 {"request":"info"}
 ```
@@ -160,14 +200,25 @@ Same preface, separate strict schema selected by the socket:
 Replies: `{"reply":"names","names":[…]}`, `{"reply":"attach","descriptor":{…}}` (name, pid,
 instance nonce, attachment socket path), `{"reply":"info","info":{…}}` (the same `info` the
 workspace socket returns, with `workspace` null) and `{"reply":"failed","message":"…"}`. The
-manager stays a small bootstrap RPC rather than folding into `FUXCTL`, because its attach reply
+manager uses a separate bootstrap schema because its attach reply
 carries a descriptor (socket paths) the shared control schema deliberately does not.
 `resolve` with `null` applies the default rule: create `default` when nothing exists, otherwise the
 most recently attached workspace. `kill` deliberately terminates that workspace's panes; nothing else does.
+
+`create` creates only when the name is absent; it never attaches to an existing workspace.
+`final` returns a `final` manager envelope containing a control reply. A live pane returns
+`pending`; a retained record supplies immutable final capture, original workspace identity,
+command/cwd and exit evidence. Records are bounded to 128 entries and up to 60 seconds (capacity pressure evicts older records), with at
+most 128 KiB of capture text each. Forced retirement may leave exit status unknown; late
+reports do not rewrite published records. The manager can remain alive after workspace
+sockets disappear to serve these records. The CLI exposes `fux final --instance NONCE PANE`;
+`fux run` uses this evidence and never claims task success from PTY delivery alone.
 
 ## Consumers
 
 The fux CLI (`fux [NAME] list`, `fux ctl JSON`, …) sends the preface itself and takes plain JSON.
 zor's `observe` command sends the preface before each sampling request and consumes `list` and
-`capture` directly. The fixture-child suite and `tests/verify/protocol_rejection.py` prove wrong,
-missing and partial prefaces reach no handler while a valid client keeps working.
+`capture` directly. The fixture-child suite covers bounded control framing; the Rust
+`observer` scenario checks that malformed control clients leave panes and valid clients
+working. The Rust `protocol-rejection` scenario separately verifies that a rejected
+attachment hello leaves terminal settings and screen mode untouched.

@@ -1,0 +1,711 @@
+{
+  "captured_at": "2026-09-08T08:04:05.818856Z",
+  "limitation": "Prepared installed binaries and fixture configs; headless setup path only, not installation/onboarding, agent accuracy or a universal usability score.",
+  "provenance": {
+    "binaries": {
+      "fux": {
+        "path": "/Users/kisaczka/Desktop/code/fux/target/debug/fux",
+        "sha256": "166bec18ad1ecaad7ff9cc821d34a280bbf33b86dc20895535108f5d15d1193b",
+        "version": "fux 0.3.3"
+      },
+      "herdr": {
+        "path": "/Users/kisaczka/Desktop/code/fux/target/herdr-reference/build/debug/herdr",
+        "sha256": "fd13162540e986e9e8f2a651bbd08319d53a05adda3200659995729cd57a5a75",
+        "version": "herdr 0.8.2"
+      },
+      "zor": {
+        "path": "/Users/kisaczka/Desktop/code/fux/zor/target/debug/zor",
+        "sha256": "2fc25695890bb0d319c358b30b7741c4c4eb80afb672857fb714822ea350cc88",
+        "version": "zor 0.1.2"
+      }
+    },
+    "harness_kind": "rust-controller-setup",
+    "harness_sha256": "e8ac8d4c689e82afe18e52ecd3d324a6c0f07124efe2d532e9f2a8c12cf1b08a",
+    "herdr_build": {
+      "binary_sha256": "fd13162540e986e9e8f2a651bbd08319d53a05adda3200659995729cd57a5a75",
+      "build_command": "cargo +1.95.0 build --manifest-path target/herdr-reference/source/Cargo.toml --locked --bin herdr",
+      "build_log_sha256": "340f40258699514aa11a7962d47b81834ea9949f4c38c1b9264c5c989caaeb9e",
+      "reference_commit": "94f6d9c0d9bb9cf9ffae99d8bbfb09e9bf2fc9e0",
+      "rust_toolchain": "1.95.0",
+      "source_archive_sha256": "c354a6d37564bdf2c6550e4a1201ed410c4ff90245a461c411e793c6bbcd2cfa",
+      "tracked_source_files_verified": 2452,
+      "zig_archive_sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+      "zig_version": "0.15.2"
+    },
+    "source_hashes": {
+      "src/config.rs": "c903eba3498c2916077c368090ef234db071fd9612adb9ef4efa10fe1816b4b3",
+      "src/proto/control.rs": "b9df4ee9521d19f336ea95d96d1bfaa44004d64279d48a3f4bca6f0b2b8211c7",
+      "zor/src/dashboard.rs": "db226f34fb83cc4b7f8076247522b88310a3cb7026f292669b354ebbc789eec6",
+      "zor/src/service.rs": "363746ff787f56e7d3f33221a385857da972f49876e52c3b0567914ab6ea26ed"
+    },
+    "worker_sha256": "b97c6d36df7481412a4fdf7b9be9e51d869270255ab335558b18265412341dcf"
+  },
+  "results": [
+    {
+      "backend": "zor",
+      "calls": [
+        {
+          "argv": [
+            "status"
+          ],
+          "exit_code": 1,
+          "purpose": "unavailable-service diagnostic",
+          "stderr": "zor: zor service unavailable; start `zor serve` with the same --directory: ENOENT: No such file or directory\n",
+          "stdout": "",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "dashboard",
+            "--once"
+          ],
+          "exit_code": 0,
+          "purpose": "start controller and show overview",
+          "stderr": "",
+          "stdout": "{\"service_instance\":\"6ad80039a688c7ce6e11f6646e3e51f7\",\"observation_sequence\":0,\"task_generation\":null,\"state_directory\":\"<RUN_ROOT>/state/zor\",\"stale\":true,\"rows\":[],\"problems\":[\"service: \\\"initial scan pending\\\"\"]}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "dashboard",
+            "--once"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"service_instance\":\"6ad80039a688c7ce6e11f6646e3e51f7\",\"observation_sequence\":1,\"task_generation\":null,\"state_directory\":\"<RUN_ROOT>/state/zor\",\"stale\":false,\"rows\":[{\"key\":\"pane:9e7c48e8fab08eaf02f6f3d74eb1f626:default:1:1\",\"kind\":\"observation\",\"label\":\"default / 1: claude\",\"status\":\"unknown\",\"task_outcome\":null,\"attention\":false,\"detail\":\"passive state unknown; age at fetch <= 586ms; passive rule none; agent observation; not task completion\",\"age_upper_bound_ms\":586,\"target\":{\"runtime\":\"<RUN_ROOT>/fux\",\"instance\":\"9e7c48e8fab08eaf02f6f3d74eb1f626\",\"workspace\":\"default\",\"stream\":1,\"pane\":1,\"pid\":23393},\"evidence\":{\"rule\":null,\"source\":\"passive\"}}],\"problems\":[]}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "status"
+          ],
+          "exit_code": 0,
+          "purpose": "check shared service identity",
+          "stderr": "",
+          "stdout": "{\"id\":1,\"published_age_ms\":590,\"sequence\":1,\"service_instance\":\"6ad80039a688c7ce6e11f6646e3e51f7\",\"snapshot\":{\"event_failures\":0,\"event_streams\":1,\"observations\":[{\"age_upper_bound_ms\":593,\"agent\":\"claude\",\"detected_pid\":23393,\"handle\":{\"instance\":\"9e7c48e8fab08eaf02f6f3d74eb1f626\",\"pane\":1,\"pid\":23393,\"stream\":1,\"workspace\":\"default\"},\"input_sequence\":0,\"problem\":null,\"revision\":2,\"rule\":null,\"state\":\"unknown\"}],\"problems\":{},\"removed\":[],\"rules_generation\":1,\"scan_duration_ms\":3},\"stale\":false,\"status\":\"completed\",\"v\":1}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "dashboard",
+            "--once"
+          ],
+          "exit_code": 0,
+          "purpose": "reuse controller and show overview",
+          "stderr": "",
+          "stdout": "{\"service_instance\":\"6ad80039a688c7ce6e11f6646e3e51f7\",\"observation_sequence\":1,\"task_generation\":null,\"state_directory\":\"<RUN_ROOT>/state/zor\",\"stale\":false,\"rows\":[{\"key\":\"pane:9e7c48e8fab08eaf02f6f3d74eb1f626:default:1:1\",\"kind\":\"observation\",\"label\":\"default / 1: claude\",\"status\":\"unknown\",\"task_outcome\":null,\"attention\":false,\"detail\":\"passive state unknown; age at fetch <= 859ms; passive rule none; agent observation; not task completion\",\"age_upper_bound_ms\":859,\"target\":{\"runtime\":\"<RUN_ROOT>/fux\",\"instance\":\"9e7c48e8fab08eaf02f6f3d74eb1f626\",\"workspace\":\"default\",\"stream\":1,\"pane\":1,\"pid\":23393},\"evidence\":{\"rule\":null,\"source\":\"passive\"}}],\"problems\":[]}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "shutdown"
+          ],
+          "exit_code": 0,
+          "purpose": "stop only controller",
+          "stderr": "",
+          "stdout": "{\"id\":1,\"service_instance\":\"6ad80039a688c7ce6e11f6646e3e51f7\",\"status\":\"completed\",\"stopping\":true,\"v\":1}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "status"
+          ],
+          "exit_code": 1,
+          "purpose": "stopped-service diagnostic",
+          "stderr": "zor: zor service unavailable; start `zor serve` with the same --directory: ENOENT: No such file or directory\n",
+          "stdout": "",
+          "tool": "zor"
+        }
+      ],
+      "commands_to_visible_overview": 3,
+      "configuration": [
+        {
+          "contents": "default-command = { argv = [\"<WORKER_ROOT>/claude\"] }\n",
+          "path": "<RUN_ROOT>/config/fux/config.toml"
+        }
+      ],
+      "controller_reused": true,
+      "initial_overview_polls": 1,
+      "prompt_input_sent": false,
+      "repetition": 1,
+      "server_exit": 0,
+      "startup": [
+        {
+          "argv": [
+            "serve"
+          ],
+          "tool": "fux"
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "worker_pid": 23393,
+      "worker_survives_controller_stop": true
+    },
+    {
+      "backend": "herdr",
+      "calls": [
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 1,
+          "purpose": "unavailable-service diagnostic",
+          "stderr": "{\"id\":\"cli:agent:list\",\"error\":{\"code\":\"server_not_running\",\"message\":\"no herdr server is running at <RUN_ROOT>/config/herdr-dev/herdr.sock; run `herdr` to start or attach it\"}}\n",
+          "stdout": "",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "workspace",
+            "create",
+            "--cwd",
+            "<RUN_ROOT>",
+            "--focus"
+          ],
+          "exit_code": 0,
+          "purpose": "create fixture workspace",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:workspace:create\",\"result\":{\"root_pane\":{\"agent_status\":\"unknown\",\"cwd\":\"<RUN_ROOT>\",\"focused\":true,\"foreground_cwd\":\"<RUN_ROOT>\",\"pane_id\":\"w1:p1\",\"revision\":0,\"scroll\":{\"max_offset_from_bottom\":0,\"offset_from_bottom\":0,\"viewport_rows\":40},\"tab_id\":\"w1:t1\",\"terminal_id\":\"term_65af42d340e711\",\"workspace_id\":\"w1\"},\"tab\":{\"agent_status\":\"unknown\",\"focused\":true,\"label\":\"1\",\"number\":1,\"pane_count\":1,\"tab_id\":\"w1:t1\",\"workspace_id\":\"w1\"},\"type\":\"workspace_created\",\"workspace\":{\"active_tab_id\":\"w1:t1\",\"agent_status\":\"unknown\",\"focused\":true,\"label\":\"setup-pair-rs-dVNEWj\",\"number\":1,\"pane_count\":1,\"tab_count\":1,\"workspace_id\":\"w1\"}}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "show overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"unknown\",\"cwd\":\"<RUN_ROOT>\",\"focused\":true,\"foreground_cwd\":\"<RUN_ROOT>\",\"pane_id\":\"w1:p1\",\"revision\":0,\"state_change_seq\":0,\"tab_id\":\"w1:t1\",\"terminal_id\":\"term_65af42d340e711\",\"workspace_id\":\"w1\"}],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "reuse controller and show overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"unknown\",\"cwd\":\"<RUN_ROOT>\",\"focused\":true,\"foreground_cwd\":\"<RUN_ROOT>\",\"pane_id\":\"w1:p1\",\"revision\":0,\"state_change_seq\":0,\"tab_id\":\"w1:t1\",\"terminal_id\":\"term_65af42d340e711\",\"workspace_id\":\"w1\"}],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        }
+      ],
+      "commands_to_visible_overview": 6,
+      "configuration": [
+        {
+          "contents": "onboarding = false\n[terminal]\ndefault_shell = \"<WORKER_ROOT>/claude\"\nshell_mode = \"non_login\"\n[update]\nversion_check = false\nmanifest_check = false\n",
+          "path": "<RUN_ROOT>/config/herdr/config.toml"
+        },
+        {
+          "contents": "onboarding = false\n[terminal]\ndefault_shell = \"<WORKER_ROOT>/claude\"\nshell_mode = \"non_login\"\n[update]\nversion_check = false\nmanifest_check = false\n",
+          "path": "<RUN_ROOT>/config/herdr-dev/config.toml"
+        }
+      ],
+      "controller_reused": true,
+      "controller_stop_scope": "separate agent-controller stop is unsupported; server owns PTYs",
+      "initial_overview_polls": 3,
+      "prompt_input_sent": false,
+      "repetition": 1,
+      "server_exit": 0,
+      "startup": [
+        {
+          "argv": [
+            "server"
+          ],
+          "tool": "herdr"
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "worker_pid": 23448,
+      "worker_survives_controller_stop": null
+    },
+    {
+      "backend": "zor",
+      "calls": [
+        {
+          "argv": [
+            "status"
+          ],
+          "exit_code": 1,
+          "purpose": "unavailable-service diagnostic",
+          "stderr": "zor: zor service unavailable; start `zor serve` with the same --directory: ENOENT: No such file or directory\n",
+          "stdout": "",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "dashboard",
+            "--once"
+          ],
+          "exit_code": 0,
+          "purpose": "start controller and show overview",
+          "stderr": "",
+          "stdout": "{\"service_instance\":\"40129577bb60074a37a5a6b19909baf9\",\"observation_sequence\":0,\"task_generation\":null,\"state_directory\":\"<RUN_ROOT>/state/zor\",\"stale\":true,\"rows\":[],\"problems\":[\"service: \\\"initial scan pending\\\"\"]}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "dashboard",
+            "--once"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"service_instance\":\"40129577bb60074a37a5a6b19909baf9\",\"observation_sequence\":1,\"task_generation\":null,\"state_directory\":\"<RUN_ROOT>/state/zor\",\"stale\":false,\"rows\":[{\"key\":\"pane:c8643cb3bca084ceff7d3097ca108c96:default:1:1\",\"kind\":\"observation\",\"label\":\"default / 1: claude\",\"status\":\"unknown\",\"task_outcome\":null,\"attention\":false,\"detail\":\"passive state unknown; age at fetch <= 572ms; passive rule none; agent observation; not task completion\",\"age_upper_bound_ms\":572,\"target\":{\"runtime\":\"<RUN_ROOT>/fux\",\"instance\":\"c8643cb3bca084ceff7d3097ca108c96\",\"workspace\":\"default\",\"stream\":1,\"pane\":1,\"pid\":23475},\"evidence\":{\"rule\":null,\"source\":\"passive\"}}],\"problems\":[]}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "status"
+          ],
+          "exit_code": 0,
+          "purpose": "check shared service identity",
+          "stderr": "",
+          "stdout": "{\"id\":1,\"published_age_ms\":581,\"sequence\":1,\"service_instance\":\"40129577bb60074a37a5a6b19909baf9\",\"snapshot\":{\"event_failures\":0,\"event_streams\":1,\"observations\":[{\"age_upper_bound_ms\":583,\"agent\":\"claude\",\"detected_pid\":23475,\"handle\":{\"instance\":\"c8643cb3bca084ceff7d3097ca108c96\",\"pane\":1,\"pid\":23475,\"stream\":1,\"workspace\":\"default\"},\"input_sequence\":0,\"problem\":null,\"revision\":2,\"rule\":null,\"state\":\"unknown\"}],\"problems\":{},\"removed\":[],\"rules_generation\":1,\"scan_duration_ms\":2},\"stale\":false,\"status\":\"completed\",\"v\":1}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "dashboard",
+            "--once"
+          ],
+          "exit_code": 0,
+          "purpose": "reuse controller and show overview",
+          "stderr": "",
+          "stdout": "{\"service_instance\":\"40129577bb60074a37a5a6b19909baf9\",\"observation_sequence\":1,\"task_generation\":null,\"state_directory\":\"<RUN_ROOT>/state/zor\",\"stale\":false,\"rows\":[{\"key\":\"pane:c8643cb3bca084ceff7d3097ca108c96:default:1:1\",\"kind\":\"observation\",\"label\":\"default / 1: claude\",\"status\":\"unknown\",\"task_outcome\":null,\"attention\":false,\"detail\":\"passive state unknown; age at fetch <= 851ms; passive rule none; agent observation; not task completion\",\"age_upper_bound_ms\":851,\"target\":{\"runtime\":\"<RUN_ROOT>/fux\",\"instance\":\"c8643cb3bca084ceff7d3097ca108c96\",\"workspace\":\"default\",\"stream\":1,\"pane\":1,\"pid\":23475},\"evidence\":{\"rule\":null,\"source\":\"passive\"}}],\"problems\":[]}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "shutdown"
+          ],
+          "exit_code": 0,
+          "purpose": "stop only controller",
+          "stderr": "",
+          "stdout": "{\"id\":1,\"service_instance\":\"40129577bb60074a37a5a6b19909baf9\",\"status\":\"completed\",\"stopping\":true,\"v\":1}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "status"
+          ],
+          "exit_code": 1,
+          "purpose": "stopped-service diagnostic",
+          "stderr": "zor: zor service unavailable; start `zor serve` with the same --directory: ENOENT: No such file or directory\n",
+          "stdout": "",
+          "tool": "zor"
+        }
+      ],
+      "commands_to_visible_overview": 3,
+      "configuration": [
+        {
+          "contents": "default-command = { argv = [\"<WORKER_ROOT>/claude\"] }\n",
+          "path": "<RUN_ROOT>/config/fux/config.toml"
+        }
+      ],
+      "controller_reused": true,
+      "initial_overview_polls": 1,
+      "prompt_input_sent": false,
+      "repetition": 2,
+      "server_exit": 0,
+      "startup": [
+        {
+          "argv": [
+            "serve"
+          ],
+          "tool": "fux"
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "worker_pid": 23475,
+      "worker_survives_controller_stop": true
+    },
+    {
+      "backend": "herdr",
+      "calls": [
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 1,
+          "purpose": "unavailable-service diagnostic",
+          "stderr": "{\"id\":\"cli:agent:list\",\"error\":{\"code\":\"server_not_running\",\"message\":\"no herdr server is running at <RUN_ROOT>/config/herdr-dev/herdr.sock; run `herdr` to start or attach it\"}}\n",
+          "stdout": "",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "workspace",
+            "create",
+            "--cwd",
+            "<RUN_ROOT>",
+            "--focus"
+          ],
+          "exit_code": 0,
+          "purpose": "create fixture workspace",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:workspace:create\",\"result\":{\"root_pane\":{\"agent_status\":\"unknown\",\"cwd\":\"<RUN_ROOT>\",\"focused\":true,\"foreground_cwd\":\"<RUN_ROOT>\",\"pane_id\":\"w1:p1\",\"revision\":0,\"scroll\":{\"max_offset_from_bottom\":0,\"offset_from_bottom\":0,\"viewport_rows\":40},\"tab_id\":\"w1:t1\",\"terminal_id\":\"term_65af42d6f8eed1\",\"workspace_id\":\"w1\"},\"tab\":{\"agent_status\":\"unknown\",\"focused\":true,\"label\":\"1\",\"number\":1,\"pane_count\":1,\"tab_id\":\"w1:t1\",\"workspace_id\":\"w1\"},\"type\":\"workspace_created\",\"workspace\":{\"active_tab_id\":\"w1:t1\",\"agent_status\":\"unknown\",\"focused\":true,\"label\":\"setup-pair-rs-pTbs4O\",\"number\":1,\"pane_count\":1,\"tab_count\":1,\"workspace_id\":\"w1\"}}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "show overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"unknown\",\"cwd\":\"<RUN_ROOT>\",\"focused\":true,\"foreground_cwd\":\"<RUN_ROOT>\",\"pane_id\":\"w1:p1\",\"revision\":0,\"state_change_seq\":0,\"tab_id\":\"w1:t1\",\"terminal_id\":\"term_65af42d6f8eed1\",\"workspace_id\":\"w1\"}],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "reuse controller and show overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"unknown\",\"cwd\":\"<RUN_ROOT>\",\"focused\":true,\"foreground_cwd\":\"<RUN_ROOT>\",\"pane_id\":\"w1:p1\",\"revision\":0,\"state_change_seq\":0,\"tab_id\":\"w1:t1\",\"terminal_id\":\"term_65af42d6f8eed1\",\"workspace_id\":\"w1\"}],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        }
+      ],
+      "commands_to_visible_overview": 6,
+      "configuration": [
+        {
+          "contents": "onboarding = false\n[terminal]\ndefault_shell = \"<WORKER_ROOT>/claude\"\nshell_mode = \"non_login\"\n[update]\nversion_check = false\nmanifest_check = false\n",
+          "path": "<RUN_ROOT>/config/herdr/config.toml"
+        },
+        {
+          "contents": "onboarding = false\n[terminal]\ndefault_shell = \"<WORKER_ROOT>/claude\"\nshell_mode = \"non_login\"\n[update]\nversion_check = false\nmanifest_check = false\n",
+          "path": "<RUN_ROOT>/config/herdr-dev/config.toml"
+        }
+      ],
+      "controller_reused": true,
+      "controller_stop_scope": "separate agent-controller stop is unsupported; server owns PTYs",
+      "initial_overview_polls": 3,
+      "prompt_input_sent": false,
+      "repetition": 2,
+      "server_exit": 0,
+      "startup": [
+        {
+          "argv": [
+            "server"
+          ],
+          "tool": "herdr"
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "worker_pid": 23534,
+      "worker_survives_controller_stop": null
+    },
+    {
+      "backend": "zor",
+      "calls": [
+        {
+          "argv": [
+            "status"
+          ],
+          "exit_code": 1,
+          "purpose": "unavailable-service diagnostic",
+          "stderr": "zor: zor service unavailable; start `zor serve` with the same --directory: ENOENT: No such file or directory\n",
+          "stdout": "",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "dashboard",
+            "--once"
+          ],
+          "exit_code": 0,
+          "purpose": "start controller and show overview",
+          "stderr": "",
+          "stdout": "{\"service_instance\":\"63c79bb99cba1a3a5d29a81ce4ddc688\",\"observation_sequence\":0,\"task_generation\":null,\"state_directory\":\"<RUN_ROOT>/state/zor\",\"stale\":true,\"rows\":[],\"problems\":[\"service: \\\"initial scan pending\\\"\"]}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "dashboard",
+            "--once"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"service_instance\":\"63c79bb99cba1a3a5d29a81ce4ddc688\",\"observation_sequence\":1,\"task_generation\":null,\"state_directory\":\"<RUN_ROOT>/state/zor\",\"stale\":false,\"rows\":[{\"key\":\"pane:e0f3785b4698b047fa63292f8fd927d4:default:1:1\",\"kind\":\"observation\",\"label\":\"default / 1: claude\",\"status\":\"unknown\",\"task_outcome\":null,\"attention\":false,\"detail\":\"passive state unknown; age at fetch <= 579ms; passive rule none; agent observation; not task completion\",\"age_upper_bound_ms\":579,\"target\":{\"runtime\":\"<RUN_ROOT>/fux\",\"instance\":\"e0f3785b4698b047fa63292f8fd927d4\",\"workspace\":\"default\",\"stream\":1,\"pane\":1,\"pid\":23556},\"evidence\":{\"rule\":null,\"source\":\"passive\"}}],\"problems\":[]}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "status"
+          ],
+          "exit_code": 0,
+          "purpose": "check shared service identity",
+          "stderr": "",
+          "stdout": "{\"id\":1,\"published_age_ms\":589,\"sequence\":1,\"service_instance\":\"63c79bb99cba1a3a5d29a81ce4ddc688\",\"snapshot\":{\"event_failures\":0,\"event_streams\":1,\"observations\":[{\"age_upper_bound_ms\":591,\"agent\":\"claude\",\"detected_pid\":23556,\"handle\":{\"instance\":\"e0f3785b4698b047fa63292f8fd927d4\",\"pane\":1,\"pid\":23556,\"stream\":1,\"workspace\":\"default\"},\"input_sequence\":0,\"problem\":null,\"revision\":2,\"rule\":null,\"state\":\"unknown\"}],\"problems\":{},\"removed\":[],\"rules_generation\":1,\"scan_duration_ms\":2},\"stale\":false,\"status\":\"completed\",\"v\":1}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "dashboard",
+            "--once"
+          ],
+          "exit_code": 0,
+          "purpose": "reuse controller and show overview",
+          "stderr": "",
+          "stdout": "{\"service_instance\":\"63c79bb99cba1a3a5d29a81ce4ddc688\",\"observation_sequence\":1,\"task_generation\":null,\"state_directory\":\"<RUN_ROOT>/state/zor\",\"stale\":false,\"rows\":[{\"key\":\"pane:e0f3785b4698b047fa63292f8fd927d4:default:1:1\",\"kind\":\"observation\",\"label\":\"default / 1: claude\",\"status\":\"unknown\",\"task_outcome\":null,\"attention\":false,\"detail\":\"passive state unknown; age at fetch <= 858ms; passive rule none; agent observation; not task completion\",\"age_upper_bound_ms\":858,\"target\":{\"runtime\":\"<RUN_ROOT>/fux\",\"instance\":\"e0f3785b4698b047fa63292f8fd927d4\",\"workspace\":\"default\",\"stream\":1,\"pane\":1,\"pid\":23556},\"evidence\":{\"rule\":null,\"source\":\"passive\"}}],\"problems\":[]}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "shutdown"
+          ],
+          "exit_code": 0,
+          "purpose": "stop only controller",
+          "stderr": "",
+          "stdout": "{\"id\":1,\"service_instance\":\"63c79bb99cba1a3a5d29a81ce4ddc688\",\"status\":\"completed\",\"stopping\":true,\"v\":1}\n",
+          "tool": "zor"
+        },
+        {
+          "argv": [
+            "status"
+          ],
+          "exit_code": 1,
+          "purpose": "stopped-service diagnostic",
+          "stderr": "zor: zor service unavailable; start `zor serve` with the same --directory: ENOENT: No such file or directory\n",
+          "stdout": "",
+          "tool": "zor"
+        }
+      ],
+      "commands_to_visible_overview": 3,
+      "configuration": [
+        {
+          "contents": "default-command = { argv = [\"<WORKER_ROOT>/claude\"] }\n",
+          "path": "<RUN_ROOT>/config/fux/config.toml"
+        }
+      ],
+      "controller_reused": true,
+      "initial_overview_polls": 1,
+      "prompt_input_sent": false,
+      "repetition": 3,
+      "server_exit": 0,
+      "startup": [
+        {
+          "argv": [
+            "serve"
+          ],
+          "tool": "fux"
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "worker_pid": 23556,
+      "worker_survives_controller_stop": true
+    },
+    {
+      "backend": "herdr",
+      "calls": [
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 1,
+          "purpose": "unavailable-service diagnostic",
+          "stderr": "{\"id\":\"cli:agent:list\",\"error\":{\"code\":\"server_not_running\",\"message\":\"no herdr server is running at <RUN_ROOT>/config/herdr-dev/herdr.sock; run `herdr` to start or attach it\"}}\n",
+          "stdout": "",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "workspace",
+            "create",
+            "--cwd",
+            "<RUN_ROOT>",
+            "--focus"
+          ],
+          "exit_code": 0,
+          "purpose": "create fixture workspace",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:workspace:create\",\"result\":{\"root_pane\":{\"agent_status\":\"unknown\",\"cwd\":\"<RUN_ROOT>\",\"focused\":true,\"foreground_cwd\":\"<RUN_ROOT>\",\"pane_id\":\"w1:p1\",\"revision\":0,\"scroll\":{\"max_offset_from_bottom\":0,\"offset_from_bottom\":0,\"viewport_rows\":40},\"tab_id\":\"w1:t1\",\"terminal_id\":\"term_65af42daafbc31\",\"workspace_id\":\"w1\"},\"tab\":{\"agent_status\":\"unknown\",\"focused\":true,\"label\":\"1\",\"number\":1,\"pane_count\":1,\"tab_id\":\"w1:t1\",\"workspace_id\":\"w1\"},\"type\":\"workspace_created\",\"workspace\":{\"active_tab_id\":\"w1:t1\",\"agent_status\":\"unknown\",\"focused\":true,\"label\":\"setup-pair-rs-s276xc\",\"number\":1,\"pane_count\":1,\"tab_count\":1,\"workspace_id\":\"w1\"}}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "show overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "wait for initial overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"unknown\",\"cwd\":\"<RUN_ROOT>\",\"focused\":true,\"foreground_cwd\":\"<RUN_ROOT>\",\"pane_id\":\"w1:p1\",\"revision\":0,\"state_change_seq\":0,\"tab_id\":\"w1:t1\",\"terminal_id\":\"term_65af42daafbc31\",\"workspace_id\":\"w1\"}],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        },
+        {
+          "argv": [
+            "agent",
+            "list"
+          ],
+          "exit_code": 0,
+          "purpose": "reuse controller and show overview",
+          "stderr": "",
+          "stdout": "{\"id\":\"cli:agent:list\",\"result\":{\"agents\":[{\"agent\":\"claude\",\"agent_status\":\"unknown\",\"cwd\":\"<RUN_ROOT>\",\"focused\":true,\"foreground_cwd\":\"<RUN_ROOT>\",\"pane_id\":\"w1:p1\",\"revision\":0,\"state_change_seq\":0,\"tab_id\":\"w1:t1\",\"terminal_id\":\"term_65af42daafbc31\",\"workspace_id\":\"w1\"}],\"type\":\"agent_list\"}}\n",
+          "tool": "herdr"
+        }
+      ],
+      "commands_to_visible_overview": 8,
+      "configuration": [
+        {
+          "contents": "onboarding = false\n[terminal]\ndefault_shell = \"<WORKER_ROOT>/claude\"\nshell_mode = \"non_login\"\n[update]\nversion_check = false\nmanifest_check = false\n",
+          "path": "<RUN_ROOT>/config/herdr/config.toml"
+        },
+        {
+          "contents": "onboarding = false\n[terminal]\ndefault_shell = \"<WORKER_ROOT>/claude\"\nshell_mode = \"non_login\"\n[update]\nversion_check = false\nmanifest_check = false\n",
+          "path": "<RUN_ROOT>/config/herdr-dev/config.toml"
+        }
+      ],
+      "controller_reused": true,
+      "controller_stop_scope": "separate agent-controller stop is unsupported; server owns PTYs",
+      "initial_overview_polls": 5,
+      "prompt_input_sent": false,
+      "repetition": 3,
+      "server_exit": 0,
+      "startup": [
+        {
+          "argv": [
+            "server"
+          ],
+          "tool": "herdr"
+        }
+      ],
+      "worker_exit_confirmed": true,
+      "worker_pid": 23617,
+      "worker_survives_controller_stop": null
+    }
+  ],
+  "schema": 1,
+  "synthetic": true
+}
