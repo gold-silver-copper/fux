@@ -106,6 +106,14 @@ pub fn kind_of(cell: &vt100::Cell) -> CellKind {
 /// emulator's) shows as a blank of the same style instead of invalidating the frame.
 #[must_use]
 pub fn classify(cell: &vt100::Cell) -> (&str, CellKind) {
+    if !cell.has_contents() {
+        // Empty text cannot carry, so the general path below would yield this exact result;
+        // skipping it avoids validating the (empty) contents for every blank cell.
+        return match kind_of(cell) {
+            CellKind::WideContinuation => ("", CellKind::WideContinuation),
+            CellKind::Blank | CellKind::Text | CellKind::WideLeading => ("", CellKind::Blank),
+        };
+    }
     let text = cell.contents();
     let kind = kind_of(cell);
     let carried = match kind {
