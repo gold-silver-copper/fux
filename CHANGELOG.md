@@ -20,11 +20,12 @@ Native capabilities on main, a release performance pass, and zor in the same rep
   serialization; UTF-8 continuation state from the last four bytes instead of a full rescan; a
   non-exclusive input-completion system; retained grid cells compared in place and empty cells
   classified without validation. Release micro-timings: `EventLog::push` 136 to 77 ns,
-  `ServerTerminal::process` 20 to 10 ns per byte versus 0.6.0, `Grid::refresh` 12 to 19 percent
-  faster on typical rows, ECS keystroke step 34 to 30 microseconds.
+  `ServerTerminal::process` 20 to 10 ns per byte versus 0.6.0, `Grid::refresh` 18 to 19 percent
+  faster on typical rows (3 to 11 percent on full-width rows), ECS keystroke step 34 to 30
+  microseconds.
 - Repository layout (#6): a virtual Cargo workspace with `crates/fux` and `crates/zor`. zor was
   imported with its history and its fux integration patch; the zor pin and patch workflow are
-  gone. koh remains a pinned, patched companion. Default CI runs the real zor integration on
+  gone. koh remains a separately pinned companion. Default CI runs the real zor integration on
   Linux; `cargo install --path crates/fux` replaces `--path .`.
 
 ## 0.6.0 - 2026-09-06
