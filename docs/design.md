@@ -5,7 +5,7 @@ authoritative model in a standalone `bevy_ecs` 0.19.1 World; viewers are separat
 paint per-viewer frames with a small ratatui-core compositor. Koh (remote access) and zor
 (observation) are independent programs that speak fux's local protocols, which carry no version
 numbers: zor is built from the same workspace (`crates/zor` beside `crates/fux`), koh from a
-pinned base plus a patch, and the fixtures under `crates/fux/tests/verify/fixtures/` pin the
+pinned, unpatched commit, and the fixtures under `crates/fux/tests/verify/fixtures/` pin the
 schemas.
 
 ## Ownership

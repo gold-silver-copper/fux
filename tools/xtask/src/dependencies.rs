@@ -1,4 +1,4 @@
-//! Byte-exact companion patch reconstruction and mandatory verification planning.
+//! Pinned companion checkouts (exact commit, no local changes) and mandatory verification planning.
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::{
@@ -9,12 +9,19 @@ use std::{
     process::Command,
 };
 
+/// One companion pinned at an exact commit of its owning repository. Companions carry no
+/// patches: a needed change goes upstream first, then the pin moves.
 #[derive(Deserialize)]
 struct Spec {
     path: PathBuf,
     repository: String,
-    base: String,
-    patch: PathBuf,
+    commit: String,
+}
+
+const COMPANIONS: &str = "tools/xtask/companions.json";
+
+fn companions(root: &Path) -> Result<BTreeMap<String, Spec>> {
+    Ok(serde_json::from_slice(&fs::read(root.join(COMPANIONS))?)?)
 }
 #[derive(Deserialize)]
 struct Checks {
@@ -51,7 +58,8 @@ fn head(repo: &Path) -> Result<String> {
         .to_owned())
 }
 
-fn snapshot_patch(repo: &Path, base: &str) -> Result<Vec<u8>> {
+/// Every difference between the working tree (tracked and untracked) and `base`, as a diff.
+fn local_changes(repo: &Path, base: &str) -> Result<Vec<u8>> {
     let mut patch = command(repo, &["diff", "--binary", base, "--"])?;
     for name in command(repo, &["ls-files", "--others", "--exclude-standard", "-z"])?
         .split(|b| *b == 0)
@@ -76,55 +84,20 @@ fn snapshot_patch(repo: &Path, base: &str) -> Result<Vec<u8>> {
 fn check_base(repo: &Path, spec: &Spec) -> Result<()> {
     let actual = head(repo)?;
     ensure!(
-        actual == spec.base,
-        "{}: expected base {}, found {actual}; update the manifest deliberately",
+        actual == spec.commit,
+        "{}: expected commit {}, found {actual}; move the pin deliberately",
         repo.display(),
-        spec.base
+        spec.commit
     );
     Ok(())
 }
-fn apply(repo: &Path, patch: &Path) -> Result<()> {
-    let bytes = fs::read(patch)?;
-    let dirty = || -> Result<bool> { Ok(!command(repo, &["status", "--porcelain"])?.is_empty()) };
-    if bytes.is_empty() {
-        ensure!(
-            !dirty()?,
-            "{}: unexpected changes with an empty dependency patch",
-            repo.display()
-        );
-        return Ok(());
-    }
-    let already = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["apply", "--reverse", "--check"])
-        .arg(patch)
-        .output()?
-        .status
-        .success();
-    if already {
-        ensure!(
-            snapshot_patch(repo, &head(repo)?)? == bytes,
-            "{}: patch is present but additional local changes diverge from it",
-            repo.display()
-        );
-        return Ok(());
-    }
+/// A pinned companion must be exactly its commit: no tracked or untracked changes.
+fn check_clean(repo: &Path, spec: &Spec) -> Result<()> {
     ensure!(
-        !dirty()?,
-        "{}: divergent local changes; export or reconcile them before applying",
+        local_changes(repo, &spec.commit)?.is_empty(),
+        "{}: local changes present; companions are pinned unpatched, upstream the change and move the pin",
         repo.display()
     );
-    git(
-        repo,
-        &[
-            OsStr::new("apply"),
-            OsStr::new("--check"),
-            patch.as_os_str(),
-        ],
-        &[0],
-    )?;
-    git(repo, &[OsStr::new("apply"), patch.as_os_str()], &[0])?;
     Ok(())
 }
 fn source_files(repo: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
@@ -218,8 +191,7 @@ fn gate_inputs(
 ) -> Result<crate::gate_record::Inputs> {
     use crate::gate_record::{Inputs, hash, tree_hash};
     use std::os::unix::fs::PermissionsExt;
-    let specs: BTreeMap<String, Spec> =
-        serde_json::from_slice(&fs::read(root.join("dependency-patches/manifest.json"))?)?;
+    let specs = companions(root)?;
     let mut repositories = vec![PathBuf::new(), PathBuf::from("references/herdr")];
     repositories.extend(specs.values().map(|spec| spec.path.clone()));
     let copied_paths = serde_json::from_slice(&fs::read(
@@ -412,11 +384,7 @@ fn verify_build(
         }
         for spec in manifest.values() {
             let dependency = reconstructed.join(&spec.path);
-            clone_at(root, &root.join(&spec.path), &dependency, &spec.base)?;
-            apply(
-                &dependency,
-                &reconstructed.join("dependency-patches").join(&spec.patch),
-            )?;
+            clone_at(root, &root.join(&spec.path), &dependency, &spec.commit)?;
         }
         let reference = root.join("references/herdr");
         let reference_pin: serde_json::Value =
@@ -472,8 +440,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
         bail!("missing dependency action")
     };
     ensure!(
-        ["export", "apply", "verify"].contains(&action),
-        "unknown dependency action: {action}"
+        ["apply", "verify"].contains(&action),
+        "unknown dependency action: {action} (companions are pinned commits; there is no export)"
     );
     ensure!(
         args.iter()
@@ -499,12 +467,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()?;
-    let patches = root.join("dependency-patches");
-    let manifest: BTreeMap<String, Spec> =
-        serde_json::from_slice(&fs::read(patches.join("manifest.json"))?)?;
+    let manifest = companions(&root)?;
     for (name, spec) in &manifest {
         let repo = root.join(&spec.path);
-        let patch = patches.join(&spec.patch);
         if action == "apply" && !repo.join(".git").exists() {
             fs::create_dir_all(repo.parent().context("repository parent")?)?;
             git(
@@ -518,29 +483,25 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 ],
                 &[0],
             )?;
-            command(&repo, &["checkout", "--detach", &spec.base])?;
+            // A pin may point at a commit that is not on a branch (for example a merged
+            // pull request's head); GitHub serves such commits when fetched by hash.
+            if command(&repo, &["checkout", "--detach", &spec.commit]).is_err() {
+                command(&repo, &["fetch", "--quiet", "origin", &spec.commit])?;
+                command(&repo, &["checkout", "--detach", &spec.commit])?;
+            }
         }
         check_base(&repo, spec)?;
-        match action {
-            "export" => fs::write(&patch, snapshot_patch(&repo, &spec.base)?)?,
-            "apply" => apply(&repo, &patch)?,
-            "verify" => {
-                ensure!(
-                    snapshot_patch(&repo, &spec.base)? == fs::read(&patch)?,
-                    "{name}: patch is stale; run fux-xtask dependencies export"
-                );
-                let temporary = tempfile::Builder::new()
-                    .prefix(&format!("fux-{name}-reconstruct-"))
-                    .tempdir()?;
-                let reconstructed = temporary.path().join(name);
-                clone_at(&root, &repo, &reconstructed, &spec.base)?;
-                apply(&reconstructed, &patch)?;
-                ensure!(
-                    source_files(&reconstructed)? == source_files(&repo)?,
-                    "{name}: reconstructed source differs from its owning repository"
-                );
-            }
-            _ => unreachable!(),
+        check_clean(&repo, spec)?;
+        if action == "verify" {
+            let temporary = tempfile::Builder::new()
+                .prefix(&format!("fux-{name}-reconstruct-"))
+                .tempdir()?;
+            let reconstructed = temporary.path().join(name);
+            clone_at(&root, &repo, &reconstructed, &spec.commit)?;
+            ensure!(
+                source_files(&reconstructed)? == source_files(&repo)?,
+                "{name}: pinned checkout differs from a fresh clone of its commit"
+            );
         }
         println!("{name}: {action} complete");
     }
@@ -726,14 +687,12 @@ mod tests {
     }
 
     #[test]
-    fn real_git_patch_reconstructs_new_deleted_and_modified_files_without_overwriting_divergence()
-    -> Result<()> {
+    fn real_git_pin_rejects_other_commits_and_local_changes() -> Result<()> {
         let temporary = tempfile::tempdir()?;
         let owner = temporary.path().join("owner");
         fs::create_dir(&owner)?;
         command(&owner, &["init", "-q"])?;
-        fs::write(owner.join("changed"), "before\n")?;
-        fs::write(owner.join("deleted"), "remove me\n")?;
+        fs::write(owner.join("tracked"), "before\n")?;
         command(&owner, &["add", "."])?;
         command(
             &owner,
@@ -749,34 +708,30 @@ mod tests {
                 "fixture baseline",
             ],
         )?;
-        let base = head(&owner)?;
+        let commit = head(&owner)?;
         let mut spec = Spec {
             path: owner.clone(),
             repository: owner.to_string_lossy().into_owned(),
-            base: base.clone(),
-            patch: "source.patch".into(),
+            commit: commit.clone(),
         };
         check_base(&owner, &spec)?;
-        // A checkout at a different revision must fail before patch assembly,
-        // including when CI supplies the checkout rather than the manifest cloner.
-        spec.base = "0000000000000000000000000000000000000000".into();
+        check_clean(&owner, &spec)?;
+        // A checkout at a different revision must fail before anything else, including when
+        // CI supplies the checkout rather than the cloner.
+        spec.commit = "0000000000000000000000000000000000000000".into();
         assert!(check_base(&owner, &spec).is_err());
-        fs::write(owner.join("changed"), "after\n")?;
-        fs::remove_file(owner.join("deleted"))?;
-        fs::write(owner.join("new-file"), [0, 1, 2, 255])?;
-        let patch = temporary.path().join("source.patch");
-        fs::write(&patch, snapshot_patch(&owner, &base)?)?;
+        spec.commit = commit.clone();
+        // Tracked and untracked local changes are both rejected: pins are unpatched.
+        fs::write(owner.join("tracked"), "after\n")?;
+        assert!(check_clean(&owner, &spec).is_err());
+        fs::write(owner.join("tracked"), "before\n")?;
+        check_clean(&owner, &spec)?;
+        fs::write(owner.join("untracked"), [0, 1, 2, 255])?;
+        assert!(check_clean(&owner, &spec).is_err());
+        fs::remove_file(owner.join("untracked"))?;
         let reconstructed = temporary.path().join("reconstructed");
-        clone_at(&owner, &owner, &reconstructed, &base)?;
-        apply(&reconstructed, &patch)?;
+        clone_at(&owner, &owner, &reconstructed, &commit)?;
         assert_eq!(source_files(&owner)?, source_files(&reconstructed)?);
-        apply(&reconstructed, &patch)?;
-        fs::write(reconstructed.join("unrelated"), "user change")?;
-        assert!(apply(&reconstructed, &patch).is_err());
-        assert_eq!(
-            fs::read_to_string(reconstructed.join("unrelated"))?,
-            "user change"
-        );
         Ok(())
     }
 }

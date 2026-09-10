@@ -105,9 +105,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      # The koh repository and exact base come only from the manifest.
-      # Assembly checks the checkout's HEAD before applying its reviewed patch.
-      - name: Assemble reviewed dependency sources
+      # The koh repository and exact commit come only from tools/xtask/companions.json; the
+      # checkout must be that commit with no local changes.
+      - name: Check out the pinned companion
         run: cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies apply
       - run: cargo build --locked --bin fux --bin zor
       - name: Verify koh gateway against the exact fux and zor binaries
