@@ -483,7 +483,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 ],
                 &[0],
             )?;
-            command(&repo, &["checkout", "--detach", &spec.commit])?;
+            // A pin may point at a commit that is not on a branch (for example a merged
+            // pull request's head); GitHub serves such commits when fetched by hash.
+            if command(&repo, &["checkout", "--detach", &spec.commit]).is_err() {
+                command(&repo, &["fetch", "--quiet", "origin", &spec.commit])?;
+                command(&repo, &["checkout", "--detach", &spec.commit])?;
+            }
         }
         check_base(&repo, spec)?;
         check_clean(&repo, spec)?;

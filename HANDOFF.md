@@ -12,7 +12,7 @@ The older release and performance record in `docs/ecs-acceptance.md` is historic
   parsing buffers remain the implementation foundation. Local protocols use `FUX\n` and an
   unversioned attachment hello. The repository is a virtual workspace: `crates/fux` and
   `crates/zor` are separate crates and binaries sharing one lockfile, CI and gate; koh is the
-  remaining pinned and patched companion.
+  remaining companion, pinned at an exact commit.
 - fux owns generic terminal control. Server/workspace identity, coherent conditional captures,
   tracked input receipts, bounded event replay and retained final records support unattended
   consumers. `fux run` obtains final output and status from retained records.
