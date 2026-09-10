@@ -10,7 +10,9 @@ The older release and performance record in `docs/ecs-acceptance.md` is historic
 
 - Main's typed ECS, retained grids, changed-row attachment frames, frame pacing and reusable
   parsing buffers remain the implementation foundation. Local protocols use `FUX\n` and an
-  unversioned attachment hello; companion consumers are pinned and patched together.
+  unversioned attachment hello. The repository is a virtual workspace: `crates/fux` and
+  `crates/zor` are separate crates and binaries sharing one lockfile, CI and gate; koh is the
+  remaining pinned and patched companion.
 - fux owns generic terminal control. Server/workspace identity, coherent conditional captures,
   tracked input receipts, bounded event replay and retained final records support unattended
   consumers. `fux run` obtains final output and status from retained records.
@@ -29,9 +31,10 @@ The older release and performance record in `docs/ecs-acceptance.md` is historic
 - Six scheduled systems currently use `&mut World`: request execution, viewer queue draining,
   spawn completion, wait resolution, input completion and the lifecycle cascade
   (see docs/design.md "Systems").
-- Owner checkouts `references/koh` and `zor/` stay at their pinned bases with the reviewed
-  patches in `dependency-patches/`; `cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build` reconstructs and
-  tests them.
+- The koh checkout `references/koh` stays at its pinned base with the reviewed patch in
+  `dependency-patches/`; `cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build` reconstructs and
+  tests it. zor was imported from `2a8769e` plus its reviewed patch into `crates/zor`
+  (byte-identical to the previously verified tree); the standalone zor repository is historical.
 - Verification gate (all must pass before any publication): the commands in the README's
   "Verification" section plus the real koh and zor integrations with explicit binary paths.
 

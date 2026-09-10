@@ -856,3 +856,14 @@ handling is a plain system that returns immediately when nothing is tracked. In 
 `EventLog::push` fell from 136 ns to 77 ns and `ServerTerminal::process` from 14.9 to 10.4
 ns/byte (main: 20 ns/byte). No zor or koh runtime change was justified by measurement; the
 harness gained `measure-koh` and microsecond CPU sampling.
+
+### zor merged into the fux repository (2026-09-09)
+
+zor now lives at `crates/zor` of a virtual workspace whose other member is `crates/fux`; both
+remain separate crates and binaries with their own tests and lints, sharing one lockfile, CI
+matrix and gate. The import carries zor's history (`2a8769e`) with the reviewed
+`dependency-patches/zor.patch` applied as its own commit; the resulting tree is byte-identical
+to the previously verified base-plus-patch checkout. The zor pin, patch and reconstruction are
+gone from the manifest, the xtask runner and CI; the real zor integration now builds
+`crates/zor` from the checkout (`ZOR_BIN` remains an override). koh stays a pinned and patched
+external repository until fux publishes a release it can depend on.

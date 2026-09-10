@@ -156,8 +156,11 @@ fux run --rows 24 --columns 80 --env CI=1 -- pytest -q
 
 ## Working with koh and zor
 
-fux composes with the independently built koh and zor programs through process protocols
-pinned by the fixtures in `tests/verify/fixtures/`; it never links, spawns or supervises them.
+fux composes with the koh and zor programs through process protocols pinned by the fixtures in
+`crates/fux/tests/verify/fixtures/`; it never links, spawns or supervises them. zor lives in
+this repository as the separate crate `crates/zor` (its own binary, tests, lints and ownership
+boundary: agent, task, check and artifact policy stay there), so a protocol change is one PR and
+one gate. koh remains an independent repository pinned through `dependency-patches/`.
 
 Remote access is koh's job. On the machine running fux:
 
@@ -188,7 +191,7 @@ identities and events zor consumes are documented in the [control protocol](docs
 
 ## Protocol fixtures
 
-`tests/verify/fixtures/` holds one golden JSON frame per schema and direction (control requests,
+`crates/fux/tests/verify/fixtures/` holds one golden JSON frame per schema and direction (control requests,
 replies and events, manager frames, attachment messages). `cargo test --test fixtures` round-trips
 each through its Rust type with `deny_unknown_fields`, so a schema change is a visible diff. These
 files are the shape koh and zor consume; the real-binary integration suites remain the final check.
@@ -197,20 +200,23 @@ files are the shape koh and zor consume; the real-binary integration suites rema
 
 ```sh
 cargo fmt --all --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked -- --test-threads=1
-cargo doc --no-deps --locked
-cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
-tests/verify/release-package.sh
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked -- --test-threads=1
+cargo doc --workspace --no-deps --locked
+cargo test --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --locked
+crates/fux/tests/verify/release-package.sh
 ```
 
-Deterministic ECS tests inject events and time (`tests/ecs.rs`, including randomized command
-sequences); real-process scenarios use disposable HOME/XDG directories and owned processes only
-(`tests/local_cli.rs`, the fixture-child suite). The optional cross-repository job and
-`cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build` rebuild koh and zor from pinned bases plus the
-patches in `dependency-patches/` and run the required real koh and real zor integrations with
-explicit binary paths; set `ZOR_BIN` and `FUX_REQUIRE_ZOR_BIN=1`, or `FUX_BIN` and
-`KOH_REQUIRE_FUX_BIN=1`, so they can never silently skip.
+Deterministic ECS tests inject events and time (`crates/fux/tests/ecs.rs`, including randomized
+command sequences); real-process scenarios use disposable HOME/XDG directories and owned
+processes only (`crates/fux/tests/local_cli.rs`, the fixture-child suite). The real zor
+integration (`cargo test -p fux --test zor_integration`) builds `crates/zor` from this
+checkout; `ZOR_BIN` overrides it with another build, and `FUX_REQUIRE_ZOR_BIN=1` makes a
+missing binary a failure. The optional cross-repository job and
+`cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build`
+rebuild koh from its pinned base plus the patch in `dependency-patches/` and run the required
+real koh integration with explicit binary paths (`FUX_BIN`, `KOH_REQUIRE_FUX_BIN=1`), so it can
+never silently skip.
 
 ## Documents
 

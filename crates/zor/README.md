@@ -1,3 +1,6 @@
+> zor now lives in the fux repository as `crates/zor` (one workspace, one CI and gate with fux).
+> The standalone repository at https://github.com/gold-silver-copper/zor is historical.
+
 # zor
 
 `zor` owns agent observation and task coordination over fux's generic multiplexer API. It also
