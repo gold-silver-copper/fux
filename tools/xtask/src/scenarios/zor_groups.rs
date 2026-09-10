@@ -286,10 +286,13 @@ impl Harness<'_> {
         until(Duration::from_secs(12), || {
             let r = self.raw(&["task", "stop", name], Duration::from_secs(5))?;
             let err = String::from_utf8_lossy(&r.stderr);
+            // A Busy admission (background journal activity) is retried like the other
+            // transient outcomes; zor defines the operation as safely retriable.
             ensure!(
                 r.status.success()
                     || err.contains("stop requested")
-                    || err.contains("lifecycle uncertain"),
+                    || err.contains("lifecycle uncertain")
+                    || cli_busy(r.status.code(), &r.stderr),
                 "task stop: {err}"
             );
             Ok(r.status.success().then_some(()))
