@@ -107,7 +107,7 @@ fn tree_hash(tree: &BTreeMap<String, Node>, width: usize) -> Result<String> {
         bytes.push(b' ');
         bytes.extend_from_slice(name.as_bytes());
         bytes.push(0);
-        for pair in hash.as_bytes().chunks_exact(2) {
+        for pair in hash.as_bytes().as_chunks::<2>().0 {
             bytes.push(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?);
         }
     }

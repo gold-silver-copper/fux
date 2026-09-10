@@ -897,7 +897,7 @@ fn startup_frame(channel: &mut UnixStream, deadline: Instant) -> Result<Value> {
             .context("zor child closed its startup channel")?;
         bytes.extend_from_slice(&byte);
         anyhow::ensure!(bytes.len() <= 4096, "zor startup response exceeds limit");
-        if byte == [b'\n'] {
+        if byte == *b"\n" {
             return serde_json::from_slice(&bytes).context("invalid zor startup response");
         }
     }
