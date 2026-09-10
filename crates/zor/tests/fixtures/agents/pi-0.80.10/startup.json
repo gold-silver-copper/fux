@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "captured_at": "2026-09-07T17:13:31.433950+00:00",
+  "agent_version": "0.80.10",
+  "observation_window_seconds": 10,
+  "fux_binary_sha256": "10086cec71295a77906c9f5c18f8b337d1809b3c87139defdb1918b28cac92b9",
+  "binary_sha256": "af302f231437eaf6f37691bce4b34234fcb626bcb5eb3910d4fc3f6519bf78ca",
+  "platform": "Darwin",
+  "argv": [
+    "pi"
+  ],
+  "input_sent": false,
+  "isolation": "Fresh HOME, XDG directories, CODEX_HOME and CLAUDE_CONFIG_DIR; environment allowlist.",
+  "limitation": "Startup only. No authenticated request, working, completion, exit or resize coverage.",
+  "redactions": {
+    "temporary_directory": "<CAPTURE_ROOT>"
+  },
+  "captures": [
+    {
+      "elapsed_ms": 0,
+      "capture": {
+        "input_sequence": 0,
+        "text": "",
+        "revision": 1,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 5,
+      "last_elapsed_ms": 414,
+      "last_revision": 1
+    },
+    {
+      "elapsed_ms": 519,
+      "capture": {
+        "input_sequence": 0,
+        "text": "\n────────────────────────────────────────────────────────────────────────────────\n                                                                                \n────────────────────────────────────────────────────────────────────────────────\n/private<CAPTURE_ROOT>\n0.0%/0 (auto)                                                            unknown",
+        "revision": 12,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 1,
+      "last_elapsed_ms": 519,
+      "last_revision": 12
+    },
+    {
+      "elapsed_ms": 625,
+      "capture": {
+        "input_sequence": 0,
+        "text": "\n pi v0.80.10                                                                    \n escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o     \n more                                                                           \n Press ctrl+o to show full startup help and loaded resources.                   \n                                                                                \n Pi can explain its own features and look up its docs. Ask it how to use or     \n extend Pi.                                                                     \n\n\n Warning: No models available. Use /login to log into a provider via OAuth or   \n API key. See:                                                                  \n                                                                                \n /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers. \n md                                                                             \n                                                                                \n /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md  \n\n────────────────────────────────────────────────────────────────────────────────\n                                                                                \n────────────────────────────────────────────────────────────────────────────────\n/private<CAPTURE_ROOT>\n0.0%/0 (auto)                                                            unknown",
+        "revision": 26,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "π - zs-qkdmnudm",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 4,
+      "last_elapsed_ms": 939,
+      "last_revision": 26
+    },
+    {
+      "elapsed_ms": 1045,
+      "capture": {
+        "input_sequence": 0,
+        "text": " Pi can explain its own features and look up its docs. Ask it how to use or     \n extend Pi.                                                                     \n\n\n Warning: No models available. Use /login to log into a provider via OAuth or   \n API key. See:                                                                  \n                                                                                \n /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers. \n md                                                                             \n                                                                                \n /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md  \n\n────────────────────────────────────────────────────────────────────────────────\n Update Available                                                               \n New version 0.85.1 is available. Run pi update                                 \n Changelog: https://pi.dev/changelog                                            \n────────────────────────────────────────────────────────────────────────────────\n\n────────────────────────────────────────────────────────────────────────────────\n                                                                                \n────────────────────────────────────────────────────────────────────────────────\n/private<CAPTURE_ROOT>\n0.0%/0 (auto)                                                            unknown",
+        "revision": 32,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "π - zs-qkdmnudm",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 86,
+      "last_elapsed_ms": 9997,
+      "last_revision": 32
+    }
+  ]
+}

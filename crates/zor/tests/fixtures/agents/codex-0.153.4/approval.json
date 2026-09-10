@@ -1,0 +1,710 @@
+{
+  "schema": 1,
+  "captured_at": "2026-09-07T17:50:24.526374+00:00",
+  "agent_version": "codex-cli 0.153.4",
+  "binary_sha256": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+  "fux_sha256": "030717ff7206372d9345c7ed4583a39c0f8823f020ecc055997ac55109e48919",
+  "harness_sha256": "7f8e8f989acdd537253672bd83ff812c3dccb6c54f4db8a3d93647c51be02c2d",
+  "model": "gpt-6-astra",
+  "prompt": "This is an approval UI test. Request approval to run /usr/bin/true outside the sandbox, with justification: May I run the harmless approval fixture? Do not execute any other command or tool. Wait for the user to approve; do not bypass approval.",
+  "provider": "real authenticated OpenAI; no synthetic provider",
+  "isolation": "Fresh HOME/XDG/CODEX_HOME/work; only authorized auth.json copied; read-only sandbox, approval on-request; approval is not answered.",
+  "limitation": "Passive viewport observations; no native prompt binding or verified task outcome.",
+  "captures": [
+    {
+      "elapsed_ms": 107,
+      "capture": {
+        "input_sequence": 0,
+        "text": "",
+        "revision": 4,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 212,
+      "capture": {
+        "input_sequence": 0,
+        "text": "> You are in <CAPTURE_ROOT>\n\n  Do you trust the contents of this directory? Working with untrusted contents\n  comes with higher risk of prompt injection. Trusting the directory allows\n  project-local config, hooks, and exec policies to load.\n\n› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue",
+        "revision": 31,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 822,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│                                           │\n│ model:     gpt-6-astra   /model to change │\n│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n \n• Booting MCP server: codex_apps (0s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 71,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 1235,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Booting MCP server: codex_apps (0s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 93,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠼ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 1447,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Booting MCP server: codex_apps (0s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 101,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠦ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 1872,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Booting MCP server: codex_apps (1s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 120,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠙ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 1973,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (1s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 124,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠹ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 2078,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (1s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 129,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠸ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 2596,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (1s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 156,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠇ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 2802,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (2s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 167,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 3223,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (2s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 190,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠼ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 3841,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (3s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 220,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 4368,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (3s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 247,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠦ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 4778,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (4s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 266,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 4986,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (4s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 277,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠹ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 5613,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (4s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 309,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠇ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 5821,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (5s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 320,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 6234,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (5s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 345,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠼ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 6854,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (6s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 377,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 7486,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (6s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 405,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠧ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 7796,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (7s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 420,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 8008,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (7s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 430,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠹ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 8632,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (7s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 461,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠇ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 8841,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (8s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 469,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 9252,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (8s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 490,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠴ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 9780,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (9s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 514,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 10412,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (9s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 546,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠦ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 10831,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (10s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 567,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 11038,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (10s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 579,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠸ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 11669,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (10s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 611,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠏ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 11880,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (11s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 622,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠙ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 12188,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (11s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 639,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠼ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 12819,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (12s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 674,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 13440,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (12s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 703,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠦ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 13852,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (13s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 725,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠙ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 14061,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n• Working (13s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 738,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠸ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 14691,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (13s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 775,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠏ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 14793,
+      "capture": {
+        "input_sequence": 1,
+        "text": "│ directory: <CAPTURE_ROOT>      │\n╰───────────────────────────────────────────╯\n\n  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n \n◦ Working (14s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 781,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠋ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 15108,
+      "capture": {
+        "input_sequence": 1,
+        "text": "  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n\n• I’ll request approval for /usr/bin/true outside the sandbox using your exact\n  justification.\n \n◦ Working (14s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 798,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠸ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 15210,
+      "capture": {
+        "input_sequence": 1,
+        "text": "  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n\n• I’ll request approval for /usr/bin/true outside the sandbox using your exact\n  justification.\n \n• Working (14s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 802,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠼ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 15833,
+      "capture": {
+        "input_sequence": 1,
+        "text": "  Tip: This is GPT-6, a new generation of intelligence. Astra is state-of-the-\n  art in coding, computer use, science, and professional work. Give it a hard\n  problem, a half-formed idea, or anything you've been meaning to build. See\n  where it takes you.\n\n\n› This is an approval UI test. Request approval to run /usr/bin/true outside\n  the sandbox, with justification: May I run the harmless approval fixture? Do\n  not execute any other command or tool. Wait for the user to approve; do not\n  bypass approval.\n\n\n• You have 1 usage limit reset available. Run /usage to use one.\n\n• I’ll request approval for /usr/bin/true outside the sandbox using your exact\n  justification.\n \n◦ Working (15s • esc to interrupt)\n \n \n› Ask Codex to do anything\n \n  gpt-6-astra default · <CAPTURE_ROOT>",
+        "revision": 836,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "⠙ zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    },
+    {
+      "elapsed_ms": 16458,
+      "capture": {
+        "input_sequence": 1,
+        "text": "\n\n• You have 1 usage limit reset available. Run /usage to use one.\n\n• I’ll request approval for /usr/bin/true outside the sandbox using your exact\n  justification.\n \n• Running /usr/bin/true\n \n \n  Would you like to run the following command?\n \n  Environment: local\n \n  Reason: May I run the harmless approval fixture?\n \n  $ /usr/bin/true\n \n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `/usr/bin/true` (p)\n  3. No, and tell Codex what to do differently (esc)\n \n  Press enter to confirm or esc to cancel                                       ",
+        "revision": 873,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "[ . ] Action Required | zca-46txqt29",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "purpose": "trust only the disposable fixture directory",
+      "keys": "\r",
+      "result": {
+        "receipt": {
+          "operation": 1,
+          "pane": 1,
+          "state": "queued",
+          "revision": 31,
+          "input_sequence": 1,
+          "expires_ms": 60713,
+          "bytes_written": 0,
+          "error": null
+        }
+      }
+    }
+  ],
+  "exit_trigger": "explicit fux kill; approval unanswered",
+  "final": {
+    "pane": 1,
+    "workspace": "default",
+    "stream": 1,
+    "command": [
+      "/opt/homebrew/bin/codex",
+      "-m",
+      "gpt-6-astra",
+      "-s",
+      "read-only",
+      "-a",
+      "on-request",
+      "--no-alt-screen",
+      "This is an approval UI test. Request approval to run /usr/bin/true outside the sandbox, with justification: May I run the harmless approval fixture? Do not execute any other command or tool. Wait for the user to approve; do not bypass approval."
+    ],
+    "cwd": "<CAPTURE_ROOT>/work",
+    "exit_status": null,
+    "closed_ms": 18540,
+    "expires_ms": 78540,
+    "input_sequence": 1,
+    "capture": {
+      "text": "\n\n• You have 1 usage limit reset available. Run /usage to use one.\n\n• I’ll request approval for /usr/bin/true outside the sandbox using your exact\n  justification.\n \n• Running /usr/bin/true\n \n \n  Would you like to run the following command?\n \n  Environment: local\n \n  Reason: May I run the harmless approval fixture?\n \n  $ /usr/bin/true\n \n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `/usr/bin/true` (p)\n  3. No, and tell Codex what to do differently (esc)\n \n  Press enter to confirm or esc to cancel                                       ",
+      "revision": 877,
+      "rows": 23,
+      "columns": 80,
+      "scrollback_offset": 0,
+      "title": "[ . ] Action Required | zca-46txqt29",
+      "progress": null,
+      "unchanged": false,
+      "truncated": false
+    }
+  },
+  "argv": [
+    "/opt/homebrew/bin/codex",
+    "-m",
+    "gpt-6-astra",
+    "-s",
+    "read-only",
+    "-a",
+    "on-request",
+    "--no-alt-screen",
+    "This is an approval UI test. Request approval to run /usr/bin/true outside the sandbox, with justification: May I run the harmless approval fixture? Do not execute any other command or tool. Wait for the user to approve; do not bypass approval."
+  ],
+  "instance": "bcb871165400e7a4c6492c9fe089c34c",
+  "pane": 1,
+  "server_exit": 0
+}

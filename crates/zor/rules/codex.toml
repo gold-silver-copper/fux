@@ -1,0 +1,87 @@
+# Evidence: tests/fixtures/agents/codex-0.153.4/startup.json
+# Recorded sign-in, directory trust and narrow working coverage; unmatched screens remain unknown.
+id = 'codex'
+process_names = ['codex']
+
+[[rules]]
+id = 'codex-0.153.4-sign-in'
+state = 'blocked'
+visible_blocker = true
+region = 'whole'
+regex = ['''\A  Welcome to Codex, OpenAI's command-line coding agent
+
+  Sign in with ChatGPT to use Codex as part of your paid plan
+  or connect an API key for usage-based billing
+
+> 1\. Sign in with ChatGPT
+     Usage included with Plus, Pro, Business, and Enterprise plans
+
+  2\. Sign in with Device Code
+     Sign in from another device with a one-time code
+
+  3\. Provide your own API key
+     Pay for what you use
+
+  Press enter to continue
+\z''']
+
+# Evidence: codex-0.153.4/authenticated.json; 80-column English CLI 0.153.4.
+[[rules]]
+id = 'codex-0.153.4-directory-trust'
+state = 'blocked'
+visible_blocker = true
+region = 'whole'
+regex = ['''\A> You are in [^\r\n]{1,160}
+
+  Do you trust the contents of this directory\? Working with untrusted contents
+  comes with higher risk of prompt injection\. Trusting the directory allows
+  project-local config, hooks, and exec policies to load\.
+
+› 1\. Yes, continue
+  2\. No, quit
+
+  Press enter to continue
+\z''']
+
+[[rules]]
+id = 'codex-0.153.4-working'
+state = 'working'
+visible_working = true
+region = 'whole'
+regex = ['''\A(?:╭[─]+╮\n)?│ >_ OpenAI Codex \(v0\.153\.4\) *│\n''', '''\n[•◦] Working \([0-9]+s • esc to interrupt\)\n\n\n› Ask Codex to do anything\n\n  gpt-6-astra default · [^\r\n]{1,160}\n\z''']
+
+# Evidence: codex-0.153.4/approval.json. A 23-row viewport with the live dialog
+# footer. Passive screen evidence cannot distinguish an exact copied viewport.
+[[rules]]
+id = 'codex-0.153.4-command-approval'
+state = 'blocked'
+priority = 900
+visible_blocker = true
+region = 'whole'
+regex = ['''\A(?:[^\n]*\n){23}\z''', '''\n  Would you like to run the following command\?
+
+  Environment: local
+
+  Reason: [^\r\n]{1,160}
+
+  \$ [^\r\n]{1,160}
+
+› 1\. Yes, proceed \(y\)
+  2\. Yes, and don't ask again for commands that start with `[^\r\n]{1,120}` \(p\)
+  3\. No, and tell Codex what to do differently \(esc\)
+
+  Press enter to confirm or esc to cancel
+\z''']
+
+# Real authenticated.json: recorded empty composer after the response.
+# Input readiness does not establish completion, verification or prompt correlation.
+[[rules]]
+id = 'codex-0.153.4-input-ready'
+state = 'idle'
+visible_idle = true
+region = 'whole'
+regex = ['''\A(?:╭[─]+╮\n)?│ >_ OpenAI Codex \(v0\.153\.4\) *│\n''', '''\n\n\n› Ask Codex to do anything\n\n  gpt-6-astra default · [^\r\n]{1,160}\n\z''']
+not = [
+  { contains = ['esc to interrupt',] },
+  { regex = ['(?m)^[•◦] (?:Working \(|Booting MCP server:)'] },
+]

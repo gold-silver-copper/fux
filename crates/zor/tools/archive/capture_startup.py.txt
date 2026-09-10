@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Capture an installed agent's no-input startup through a disposable fux server.
+
+No inherited credentials/configuration or prompt input. Review captures before committing.
+This records startup evidence only, never working/idle/completion coverage.
+"""
+import argparse
+import hashlib
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import tempfile
+import time
+
+
+def rpc(path, request):
+    with socket.socket(socket.AF_UNIX) as stream:
+        stream.settimeout(2)
+        stream.connect(str(path))
+        stream.sendall(b'FUXCTL3\n')
+        preface = bytearray()
+        while len(preface) < 8:
+            chunk = stream.recv(8 - len(preface))
+            if not chunk:
+                raise EOFError('preface')
+            preface.extend(chunk)
+        if preface != b'FUXCTL3\n':
+            raise ValueError('incompatible fux')
+        stream.sendall(json.dumps(request).encode() + b'\n')
+        data = bytearray()
+        while b'\n' not in data:
+            chunk = stream.recv(8192)
+            if not chunk:
+                raise EOFError('response')
+            data.extend(chunk)
+            if len(data) > 1024 * 1024:
+                raise ValueError('response limit')
+        response = json.loads(data.split(b'\n')[0])
+        if response.get('status') != 'completed':
+            raise ValueError(response)
+        return response['result'].get('value')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--fux', type=Path, required=True)
+    parser.add_argument('--agent', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--duration', type=int, default=6, metavar='SECONDS',
+                        help='startup observation window, 1 through 30 seconds (default 6)')
+    args = parser.parse_args()
+    if not 1 <= args.duration <= 30:
+        parser.error('--duration must be 1 through 30 seconds')
+    fux = args.fux.resolve(strict=True)
+    # Preserve the invoked name (versioned installations often expose a stable symlink).
+    agent = args.agent.absolute()
+    agent.resolve(strict=True)
+    args.output.mkdir(parents=True, exist_ok=False)
+    with tempfile.TemporaryDirectory(prefix='zs-', dir='/tmp') as directory:
+        root = Path(directory)
+        for name in ['config/fux', 'state', 'cache', 'codex', 'claude', 'work']:
+            (root / name).mkdir(parents=True)
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin',
+                   HOME=directory, XDG_RUNTIME_DIR=directory,
+                   XDG_CONFIG_HOME=str(root / 'config'), XDG_STATE_HOME=str(root / 'state'),
+                   XDG_CACHE_HOME=str(root / 'cache'), CODEX_HOME=str(root / 'codex'),
+                   CLAUDE_CONFIG_DIR=str(root / 'claude'), SHELL='/bin/sh',
+                   TERM='xterm-256color', LANG='en_US.UTF-8')
+        version = subprocess.run([str(agent), '--version'], env=env, cwd=root / 'work',
+                                 capture_output=True, timeout=10, check=True)
+        version_text = version.stdout.decode().strip()
+        (root / 'config/fux/config.toml').write_text(
+            'default-command = { argv = ' + json.dumps([str(agent)]) + ' }\n')
+        server = subprocess.Popen([str(fux), 'serve'], env=env, cwd=root / 'work',
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL)
+        captures = []
+        pane = instance = None
+        try:
+            deadline = time.monotonic() + 10
+            control = root / 'fux/default.sock'
+            while not control.exists():
+                if server.poll() is not None or time.monotonic() > deadline:
+                    raise RuntimeError('fux startup failed')
+                time.sleep(.05)
+            listing = rpc(control, {'id': 1, 'command': 'list'})
+            pane = listing['workspaces'][0]['tabs'][0]['panes'][0]['id']
+            instance = listing['instance']
+            started = time.monotonic()
+            while time.monotonic() - started < args.duration:
+                capture = rpc(control, dict(id=2, command='capture', pane=pane,
+                    instance=instance, attrs=False, scrollback=0, max_bytes=131072))
+                elapsed = int((time.monotonic() - started) * 1000)
+                keys = ('text', 'rows', 'columns', 'title', 'progress', 'truncated')
+                if not captures or any(capture[key] != captures[-1]['capture'][key] for key in keys):
+                    captures.append(dict(elapsed_ms=elapsed, capture=capture, samples=1,
+                                         last_elapsed_ms=elapsed, last_revision=capture['revision']))
+                else:
+                    captures[-1]['samples'] += 1
+                    captures[-1]['last_elapsed_ms'] = elapsed
+                    captures[-1]['last_revision'] = capture['revision']
+                time.sleep(.1)
+        finally:
+            # Diagnostic publication must never prevent cleanup of the owned server.
+            diagnostic = dict(agent_version=version_text, captures=captures,
+                cleanup='pending', server_pid=server.pid, input_sent=False)
+            diagnostic_path = args.output / 'diagnostic.json'
+            def write_diagnostic():
+                diagnostic_path.write_text(json.dumps(diagnostic, indent=2, ensure_ascii=False)
+                    .replace(directory, '<CAPTURE_ROOT>') + '\n')
+            try:
+                write_diagnostic()
+            finally:
+                try:
+                    if pane is not None and instance is not None and server.poll() is None:
+                        try:
+                            # Close only the pane created in this private capture server.
+                            rpc(control, dict(id=3, command='kill', instance=instance, pane=pane))
+                        except (OSError, ValueError, EOFError, KeyError) as error:
+                            diagnostic['close_error'] = str(error).replace(directory, '<CAPTURE_ROOT>')
+                finally:
+                    try:
+                        if server.poll() is None:
+                            try:
+                                server.terminate()
+                            except ProcessLookupError:
+                                pass
+                        try:
+                            server.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                server.kill()
+                            except ProcessLookupError:
+                                pass
+                            server.wait(timeout=5)
+                            diagnostic['cleanup'] = 'server force-killed and reaped after timeout; pane reaping unconfirmed'
+                            raise RuntimeError('fux cleanup exceeded deadline')
+                        diagnostic['cleanup'] = f'server reaped with exit code {server.returncode}'
+                        if server.returncode != 0:
+                            raise RuntimeError(f'fux exited unsuccessfully: {server.returncode}')
+                    except BaseException as error:
+                        diagnostic['cleanup_error'] = f'{type(error).__name__}: {error}'
+                        try:
+                            write_diagnostic()
+                        except OSError:
+                            pass
+                        raise
+                    write_diagnostic()
+        if not any(item['capture']['text'].strip() for item in captures):
+            raise RuntimeError('no startup screen captured')
+        with agent.open('rb') as binary:
+            digest = hashlib.file_digest(binary, 'sha256').hexdigest()
+        with fux.open('rb') as binary:
+            fux_digest = hashlib.file_digest(binary, 'sha256').hexdigest()
+        evidence = dict(schema=1, captured_at=datetime.now(timezone.utc).isoformat(),
+            agent_version=version_text, observation_window_seconds=args.duration, fux_binary_sha256=fux_digest,
+            binary_sha256=digest,
+            platform=os.uname().sysname, argv=[agent.name], input_sent=False,
+            isolation='Fresh HOME, XDG directories, CODEX_HOME and CLAUDE_CONFIG_DIR; environment allowlist.',
+            limitation='Startup only. No authenticated request, working, completion, exit or resize coverage.',
+            redactions={'temporary_directory': '<CAPTURE_ROOT>'}, captures=captures)
+        encoded = json.dumps(evidence, indent=2, ensure_ascii=False).replace(directory, '<CAPTURE_ROOT>')
+        (args.output / 'startup.json').write_text(encoded + '\n')
+        print(args.output / 'startup.json')
+
+
+if __name__ == '__main__':
+    main()

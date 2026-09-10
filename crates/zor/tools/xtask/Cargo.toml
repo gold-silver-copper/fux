@@ -1,0 +1,41 @@
+[package]
+name = "zor-xtask"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+serde_json = "1.0"
+sha2 = "0.10"
+tempfile = "3"
+nix = { version = "0.30", features = ["fs", "poll", "socket", "process", "signal", "term"] }
+time = { version = "0.3", features = ["formatting"] }
+regex = "1.11"
+
+[[bin]]
+name = "zor-adapter-fixture"
+path = "src/adapter_fixture.rs"
+
+[[bin]]
+name = "zor-argv-fixture"
+path = "src/argv_fixture.rs"
+
+[workspace]
+
+[[bin]]
+name = "zor-codex-fixture"
+path = "src/codex_fixture.rs"
+
+[[bin]]
+name = "zor-lifecycle-fixture"
+path = "src/lifecycle_fixture.rs"
+
+[[bin]]
+name = "zor-provider-capture-fixture"
+path = "src/provider_capture_fixture.rs"
+
+[[bin]]
+name = "zor-notifier-fixture"
+path = "src/notifier_fixture.rs"
