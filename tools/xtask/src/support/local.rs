@@ -15,8 +15,19 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Multiplier for harness-side observation deadlines (`FUX_SCENARIO_DEADLINE_SCALE`, default 1).
+/// Hosted runners can be several times slower than a workstation; product timeouts are not
+/// affected, only how long a scenario is willing to wait for an observation.
+pub fn deadline_scale() -> u32 {
+    std::env::var("FUX_SCENARIO_DEADLINE_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|scale| (1..=20).contains(scale))
+        .unwrap_or(1)
+}
+
 pub fn until<T>(timeout: Duration, mut check: impl FnMut() -> Result<Option<T>>) -> Result<T> {
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now() + timeout * deadline_scale();
     loop {
         if let Some(value) = check()? {
             return Ok(value);
