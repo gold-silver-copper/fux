@@ -8,6 +8,9 @@ exclude = [
     "tools/xtask",
     "crates/fux/tests/verify/fixture-child",
     "crates/zor/tools/xtask",
+    # Pinned companion checkouts (gitignored) build as their own packages, not as members.
+    "references/koh",
+    "references/herdr",
 ]
 
 [workspace.package]
