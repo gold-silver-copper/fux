@@ -33,8 +33,9 @@ fn fux_binary() -> PathBuf {
     let path = std::env::var_os("FUX_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
+            // The workspace root is five levels up from crates/fux/tests/verify/fixture-child.
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../..")
+                .join("../../../../..")
                 .join("target/debug/fux")
         });
     assert!(

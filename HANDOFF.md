@@ -23,7 +23,7 @@ The older release and performance record in `docs/ecs-acceptance.md` is historic
   `fux-xtask measure`, `measure-frames`, `measure-viewer` and `measure-memory`, each taking a
   fux binary path, plus `measure-koh KOH_BINARY` for the two-process local gateway path. On
   macOS the harness reads process CPU through `proc_pid_rusage` (microseconds); elsewhere it
-  keeps main's `ps` convention. `FUX_MICRO_TIMING=1 cargo test --release --test micro_timing
+  keeps main's `ps` convention. `FUX_MICRO_TIMING=1 cargo test -p fux --release --test micro_timing
   -- --nocapture` times the event-log and terminal hot paths in isolation. Historical passing gates do not validate this uncommitted integration.
 - Completion is not yet established: paired native measurements, final independent review
   and a fresh complete mandatory headless gate remain outstanding. Live remote R6 and paid

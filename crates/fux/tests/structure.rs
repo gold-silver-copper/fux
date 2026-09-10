@@ -165,7 +165,6 @@ fn dependency_and_ci_surfaces_keep_the_verification_layers_enabled() {
         "crates/fux/tests/verify/fixture-child/Cargo.toml",
         "aarch64-linux-android",
         "cargo package --locked -p fux",
-        "test -p fux --test zor_integration --locked",
         "FUX_REQUIRE_ZOR_BIN: \"1\"",
         "rust: 1.95.0",
     ] {

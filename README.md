@@ -10,7 +10,7 @@ present, opens no network listeners and needs no keys.
 ## Use
 
 ```sh
-cargo build --release --locked
+cargo build --release --locked -p fux
 ./target/release/fux
 ```
 
@@ -192,7 +192,7 @@ identities and events zor consumes are documented in the [control protocol](docs
 ## Protocol fixtures
 
 `crates/fux/tests/verify/fixtures/` holds one golden JSON frame per schema and direction (control requests,
-replies and events, manager frames, attachment messages). `cargo test --test fixtures` round-trips
+replies and events, manager frames, attachment messages). `cargo test -p fux --test fixtures` round-trips
 each through its Rust type with `deny_unknown_fields`, so a schema change is a visible diff. These
 files are the shape koh and zor consume; the real-binary integration suites remain the final check.
 
