@@ -3,7 +3,7 @@
 # crates keep their own workspaces so the root lockfile carries only the shipped crates.
 [workspace]
 resolver = "3"
-members = ["crates/fux"]
+members = ["crates/fux", "crates/zor"]
 exclude = [
     "tools/xtask",
     "crates/fux/tests/verify/fixture-child",

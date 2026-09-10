@@ -1,9 +1,9 @@
 [package]
 name = "zor"
 version = "0.1.2"
-edition = "2024"
+edition.workspace = true
 rust-version = "1.91"
-license = "MIT"
+license.workspace = true
 description = "Portable agent-state wrapper and OSC 7877 protocol"
 repository = "https://github.com/gold-silver-copper/zor"
 homepage = "https://github.com/gold-silver-copper/zor"
