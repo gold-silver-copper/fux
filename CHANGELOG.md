@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.0 - 2026-09-09
+
+Native capabilities on main, a release performance pass, and zor in the same repository.
+
+- Generic reliability for unattended consumers (#4): server and workspace incarnation identity
+  with stale-instance rejection; coherent conditional `capture` with a terminal revision separate
+  from the grid sequence; tracked input reservation, submission and status with exact
+  partial-delivery accounting, idempotent duplicate submission and intervening-writer detection;
+  bounded event replay with cursors, gaps and reconnect semantics; retained final output and
+  exit records that `fux run` consumes; cancellable stalled PTY writes on Linux and macOS; split
+  UTF-8 handling in the reusable parser; empty child arguments accepted. Agent policy stays in
+  zor: OSC 7877 parsing and pane agent state/events are removed from fux.
+- Verification and measurement tooling is Rust (`tools/xtask`): the durable gate, real-process
+  scenarios, evidence validators and the `measure`, `measure-frames`, `measure-viewer`,
+  `measure-memory` and `measure-koh` benchmarks; the original Python scripts are archived with
+  provenance.
+- Performance (#4, #5): exact event size accounting without a temporary encoding or second
+  serialization; UTF-8 continuation state from the last four bytes instead of a full rescan; a
+  non-exclusive input-completion system; retained grid cells compared in place and empty cells
+  classified without validation. Release micro-timings: `EventLog::push` 136 to 77 ns,
+  `ServerTerminal::process` 20 to 10 ns per byte versus 0.6.0, `Grid::refresh` 12 to 19 percent
+  faster on typical rows, ECS keystroke step 34 to 30 microseconds.
+- Repository layout (#6): a virtual Cargo workspace with `crates/fux` and `crates/zor`. zor was
+  imported with its history and its fux integration patch; the zor pin and patch workflow are
+  gone. koh remains a pinned, patched companion. Default CI runs the real zor integration on
+  Linux; `cargo install --path crates/fux` replaces `--path .`.
+
 ## 0.6.0 - 2026-09-06
 
 Protocol and agent-surface pass. fux is now a first-class headless target and the local protocols
