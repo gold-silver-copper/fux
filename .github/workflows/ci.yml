@@ -41,12 +41,20 @@ jobs:
       - run: cargo +${{ matrix.rust }} clippy -p zor --all-targets --no-default-features --locked -- -D warnings
       - name: Build the exact binaries for real-process scenarios
         run: cargo +${{ matrix.rust }} build --locked --bin fux --bin zor
-      # The real zor integration pairs the exact binaries built above; it cannot silently skip.
+      # The real zor integration pairs the exact binaries built above and cannot silently skip.
+      # Its 21 real-process scenarios run on Linux, as the former companion job did; hosted
+      # macOS runners time out their process startups under that load.
       - name: Workspace tests, including the real zor integration
+        if: runner.os == 'Linux'
         env:
           FUX_REQUIRE_ZOR_BIN: "1"
           ZOR_BIN: ${{ github.workspace }}/target/debug/zor
         run: cargo +${{ matrix.rust }} test --workspace --locked -- --test-threads=1
+      - name: Workspace tests without the real zor integration
+        if: runner.os != 'Linux'
+        run: |
+          cargo +${{ matrix.rust }} test -p zor --locked -- --test-threads=1
+          cargo +${{ matrix.rust }} test -p fux --locked --lib --bins --test ecs --test agent_boundary --test structure --test fixtures --test micro_timing --test local_cli -- --test-threads=1
       - run: cargo +${{ matrix.rust }} test -p zor --all-features --locked
       - run: cargo +${{ matrix.rust }} test -p zor --no-default-features --locked
       - run: cargo +${{ matrix.rust }} check -p zor --no-default-features --all-targets --locked
