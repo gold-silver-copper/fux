@@ -160,7 +160,9 @@ fux composes with the koh and zor programs through process protocols pinned by t
 `crates/fux/tests/verify/fixtures/`; it never links, spawns or supervises them. zor lives in
 this repository as the separate crate `crates/zor` (its own binary, tests, lints and ownership
 boundary: agent, task, check and artifact policy stay there), so a protocol change is one PR and
-one gate. koh remains an independent repository pinned through `dependency-patches/`.
+one gate. koh remains an independent repository, pinned at an exact commit in
+`tools/xtask/companions.json` and never patched locally: a needed koh change goes upstream
+first, then the pin moves.
 
 Remote access is koh's job. On the machine running fux:
 
@@ -214,9 +216,9 @@ integration (`cargo test -p fux --test zor_integration`) builds `crates/zor` fro
 checkout; `ZOR_BIN` overrides it with another build, and `FUX_REQUIRE_ZOR_BIN=1` makes a
 missing binary a failure. The optional cross-repository job and
 `cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build`
-rebuild koh from its pinned base plus the patch in `dependency-patches/` and run the required
-real koh integration with explicit binary paths (`FUX_BIN`, `KOH_REQUIRE_FUX_BIN=1`), so it can
-never silently skip.
+check out koh at its pinned commit (`dependencies apply` clones it; `verify` requires the exact
+commit with no local changes) and run the required real koh integration with explicit binary
+paths (`FUX_BIN`, `KOH_REQUIRE_FUX_BIN=1`), so it can never silently skip.
 
 ## Documents
 

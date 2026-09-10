@@ -31,9 +31,9 @@ The older release and performance record in `docs/ecs-acceptance.md` is historic
 - Six scheduled systems currently use `&mut World`: request execution, viewer queue draining,
   spawn completion, wait resolution, input completion and the lifecycle cascade
   (see docs/design.md "Systems").
-- The koh checkout `references/koh` stays at its pinned base with the reviewed patch in
-  `dependency-patches/`; `cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build` reconstructs and
-  tests it. zor was imported from `2a8769e` plus its reviewed patch into `crates/zor`
+- The koh checkout `references/koh` is pinned at an exact commit in
+  `tools/xtask/companions.json` with no local patch; `cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build`
+  checks the pin and tests it. zor was imported from `2a8769e` plus its reviewed patch into `crates/zor`
   (byte-identical to the previously verified tree); the standalone zor repository is historical.
 - Verification gate (all must pass before any publication): the commands in the README's
   "Verification" section plus the real koh and zor integrations with explicit binary paths.

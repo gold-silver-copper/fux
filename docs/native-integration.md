@@ -867,3 +867,12 @@ to the previously verified base-plus-patch checkout. The zor pin, patch and reco
 gone from the manifest, the xtask runner and CI; the real zor integration now builds
 `crates/zor` from the checkout (`ZOR_BIN` remains an override). koh stays a pinned and patched
 external repository until fux publishes a release it can depend on.
+
+### koh patch workflow retired (2026-09-09)
+
+koh's two-fixture hello change was upstreamed (koh PR #18, branch `fux-unversioned-hello`),
+so fux no longer carries `dependency-patches/`. Companions are pinned at an exact commit in
+`tools/xtask/companions.json`; `dependencies apply` clones at that commit and `verify` requires
+the exact commit with no tracked or untracked changes, then compares the checkout with a fresh
+clone. There is no `export`. The manual CI job and the gate reconstruction use the same pin.
+koh's own CI now runs its real-fux integration against a pinned fux commit.
