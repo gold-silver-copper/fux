@@ -242,7 +242,7 @@ pub(super) fn submit_prepared(root: &Path, store: &mut Store, id: &str) -> Resul
         })?;
         let response = crate::fux::completed_until(
             &launch.runtime.join(format!("{}.sock", launch.workspace)),
-            json!({"command":"new","id":1,"instance":launch.instance,"stream":launch.stream,"cwd":launch.cwd,"argv":command(&launch)}),
+            json!({"command":"split","axis":"horizontal","id":1,"instance":launch.instance,"stream":launch.stream,"cwd":launch.cwd,"argv":command(&launch)}),
             Instant::now() + Duration::from_secs(6),
         );
         match response {

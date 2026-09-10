@@ -432,9 +432,9 @@ mod tests {
             peer.set_nonblocking(false)?;
             peer.set_read_timeout(Some(Duration::from_secs(2)))?;
             peer.set_write_timeout(Some(Duration::from_secs(2)))?;
-            let mut preface = [0; 8];
+            let mut preface = [0; 4];
             peer.read_exact(&mut preface)?;
-            anyhow::ensure!(&preface == b"FUXCTL3\n", "preface");
+            anyhow::ensure!(&preface == b"FUX\n", "preface");
             peer.write_all(&preface)?;
             let mut line = Vec::new();
             while !line.ends_with(b"\n") {
@@ -514,7 +514,7 @@ mod overdue_tests {
                 socket.set_nonblocking(false)?;
                 socket.set_read_timeout(Some(Duration::from_secs(1)))?;
                 socket.set_write_timeout(Some(Duration::from_secs(1)))?;
-                let mut preface = [0; 8];
+                let mut preface = [0; 4];
                 socket.read_exact(&mut preface)?;
                 socket.write_all(&preface)?;
                 // Read and discard request bytes until client deadline closes the stream.

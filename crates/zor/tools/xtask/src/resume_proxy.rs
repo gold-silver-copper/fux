@@ -66,11 +66,11 @@ impl Proxy {
                 };
                 peer.set_nonblocking(false)?;
                 peer.set_write_timeout(Some(Duration::from_secs(3)))?;
-                ensure!(line(&mut peer, 8)? == b"FUXCTL3\n", "proxy preface");
-                peer.write_all(b"FUXCTL3\n")?;
+                ensure!(line(&mut peer, 4)? == b"FUX\n", "proxy preface");
+                peer.write_all(b"FUX\n")?;
                 let request: Value = serde_json::from_slice(&line(&mut peer, 1048576)?)?;
                 let reply = crate::runtime::raw_rpc(&upstream, request.clone())?;
-                if request["command"] == "new" {
+                if request["command"] == "split" {
                     requests.fetch_add(1, Ordering::AcqRel);
                     continue;
                 }
@@ -128,7 +128,7 @@ mod tests {
         let listener = UnixListener::bind(&front)?;
         listener.set_nonblocking(true)?;
         let backend = thread::spawn(move || -> Result<()> {
-            for command in ["new", "list"] {
+            for command in ["split", "list"] {
                 let end = Instant::now() + Duration::from_secs(5);
                 let mut peer = loop {
                     match listener.accept() {
@@ -141,8 +141,8 @@ mod tests {
                 };
                 peer.set_nonblocking(false)?;
                 peer.set_write_timeout(Some(Duration::from_secs(3)))?;
-                ensure!(line(&mut peer, 8)? == b"FUXCTL3\n", "upstream preface");
-                peer.write_all(b"FUXCTL3\n")?;
+                ensure!(line(&mut peer, 4)? == b"FUX\n", "upstream preface");
+                peer.write_all(b"FUX\n")?;
                 let request: Value = serde_json::from_slice(&line(&mut peer, 1048576)?)?;
                 ensure!(request["command"] == command, "forwarded request");
                 let reply = json!({"id":request["id"],"status":"completed","result":{"value":{"command":command}}});
@@ -153,7 +153,11 @@ mod tests {
         let mut proxy = Proxy::start(&front)?;
         let result = (|| -> Result<()> {
             ensure!(
-                crate::runtime::raw_rpc(&front, json!({"id":1,"command":"new"})).is_err(),
+                crate::runtime::raw_rpc(
+                    &front,
+                    json!({"id":1,"command":"split","axis":"horizontal"})
+                )
+                .is_err(),
                 "creation reply not dropped"
             );
             ensure!(proxy.count() == 1, "creation not forwarded/count mismatch");

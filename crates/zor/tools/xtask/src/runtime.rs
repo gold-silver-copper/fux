@@ -240,12 +240,12 @@ pub fn raw_rpc(path: &Path, value: Value) -> Result<Value> {
         }
         Ok(())
     };
-    write(&mut peer, b"FUXCTL3\n")?;
+    write(&mut peer, b"FUX\n")?;
     let mut preface = Vec::new();
-    while preface.len() < 8 {
+    while preface.len() < 4 {
         poll(peer.as_fd(), nix::poll::PollFlags::POLLIN)?;
-        let mut bytes = [0; 8];
-        match peer.read(&mut bytes[..8 - preface.len()]) {
+        let mut bytes = [0; 4];
+        match peer.read(&mut bytes[..4 - preface.len()]) {
             Ok(0) => anyhow::bail!("fux preface EOF"),
             Ok(n) => preface.extend_from_slice(&bytes[..n]),
             Err(e)
@@ -256,7 +256,7 @@ pub fn raw_rpc(path: &Path, value: Value) -> Result<Value> {
             Err(e) => return Err(e.into()),
         }
     }
-    ensure!(preface == b"FUXCTL3\n", "incompatible fux");
+    ensure!(preface == b"FUX\n", "incompatible fux");
     let mut bytes = serde_json::to_vec(&value)?;
     bytes.push(b'\n');
     write(&mut peer, &bytes)?;

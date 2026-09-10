@@ -59,7 +59,7 @@ reuse a pane/PID to continue an old observation. Title, progress, and dimensions
 
 Detection and the existing state machine remain in zor. Reports use the OSC v1 schema above, one report per newline on stdout. A consumer must apply a report-size limit before parsing, reject malformed output, and keep observer backpressure independent of pane input/output. Closing or killing the observer must not terminate the observed command.
 
-The fux control adapter sends and verifies the eight-byte `FUXCTL3\n` preface before each RPC. A mismatch or stalled preface ends that sampling attempt without sending a command. Preface reads use an absolute two-second deadline. This is an independent wire consumer, not a fux library dependency.
+The fux control adapter sends and verifies the four-byte `FUX\n` preface before each RPC. A mismatch or stalled preface ends that sampling attempt without sending a command. Preface reads use an absolute two-second deadline. This is an independent wire consumer, not a fux library dependency.
 
 Listing revisions are cache-invalidation hints. Capture supplies coherent text, dimensions,
 title and progress; the observer never subtracts borders or joins an old listing's geometry
@@ -137,7 +137,7 @@ interruption, and draining a healthy stream after repeated stalled subscription 
 are local correctness checks, not a herdr comparison or a broad latency/scaling benchmark.
 
 The shared fux client bounds connect, protocol negotiation, and response reads, checks peer UID,
-and rejects incompatible FUXCTL3 servers. On macOS process arguments/environment come from native
+and rejects incompatible control prefaces. On macOS process arguments/environment come from native
 inspection; there is no subprocess `ps` fallback. Inaccessible native environment data therefore
 cannot supply an override. Built-in rules cover only the recorded Codex sign-in, Claude theme-selection and OpenCode startup input screens. See
 [fixture provenance](tests/fixtures/agents/README.md) for versions and missing coverage; custom

@@ -17,14 +17,14 @@ pub(crate) fn control(socket: &Path, limit: Instant) -> anyhow::Result<UnixStrea
     let mut stream = connect(socket, limit).context("connect control socket")?;
     same_user(&stream).context("authenticate control socket")?;
     stream.set_write_timeout(Some(remaining(limit)?.min(Duration::from_secs(2))))?;
-    stream.write_all(b"FUXCTL3\n")?;
+    stream.write_all(b"FUX\n")?;
     let deadline = limit.min(Instant::now() + Duration::from_secs(2));
-    let mut preface = [0; 8];
+    let mut preface = [0; 4];
     let mut used = 0;
     while used < preface.len() {
         let remaining = deadline
             .checked_duration_since(Instant::now())
-            .ok_or_else(|| anyhow::anyhow!("control version negotiation timed out"))?;
+            .ok_or_else(|| anyhow::anyhow!("control negotiation timed out"))?;
         stream
             .set_read_timeout(Some(remaining))
             .context("set control read timeout")?;
@@ -36,10 +36,7 @@ pub(crate) fn control(socket: &Path, limit: Instant) -> anyhow::Result<UnixStrea
         anyhow::ensure!(n != 0, "control server closed during negotiation");
         used += n;
     }
-    anyhow::ensure!(
-        &preface == b"FUXCTL3\n",
-        "incompatible fux control protocol"
-    );
+    anyhow::ensure!(&preface == b"FUX\n", "incompatible fux control protocol");
     Ok(stream)
 }
 
@@ -211,7 +208,7 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .expect("timeout");
-            let mut preface = [0; 8];
+            let mut preface = [0; 4];
             stream.read_exact(&mut preface).expect("preface");
             let mut byte = [0];
             assert_eq!(stream.read(&mut byte).expect("client closes"), 0);
