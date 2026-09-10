@@ -21,7 +21,7 @@ fn run(script: &str) {
         return;
     };
     if matches!(script, "test_zor_contention" | "test_owned_processes") {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = support::workspace_root();
         let filter = if script == "test_zor_contention" {
             "support::contention::tests"
         } else {

@@ -1,0 +1,75 @@
+[package]
+name = "fux"
+version = "0.6.0"
+edition.workspace = true
+description = "Minimal persistent terminal multiplexer built on bevy_ecs"
+license.workspace = true
+rust-version = "1.95"
+repository = "https://github.com/gold-silver-copper/fux"
+homepage = "https://github.com/gold-silver-copper/fux"
+documentation = "https://docs.rs/fux"
+readme = "../../README.md"
+
+[dependencies]
+# Application error context and top-level error propagation.
+anyhow = "1.0"
+# Encoding OSC 52 clipboard payloads.
+base64 = "0.22"
+# Authoritative multiplexer model: entities, components, resources, ordered schedules.
+# Standalone ECS only: no reflection, no async executor, no multi-threaded scheduler.
+bevy_ecs = { version = "=0.19.1", default-features = false, features = ["std"] }
+# Derive-based parsing for fux's command surface.
+clap = { version = "4.5", features = ["derive"] }
+# Safe Unix signal, process-group, peer-credential and flock operations.
+nix = { version = "0.30", features = ["fs", "poll", "signal", "socket", "term", "user"] }
+# Safe duplication of portable-pty master descriptors for cancellable I/O.
+filedescriptor = "=0.8.3"
+# Pane PTYs and application-owned process lifecycle.
+portable-pty = "=0.9.0"
+# Local terminal mode control and output.
+termina = "0.3.3"
+thiserror = "2"
+# Terminal rendering primitives without ratatui's umbrella crate.
+ratatui-core = "=0.1.0"
+# Serialization for viewer frames and the control protocol.
+serde = { version = "1.0", features = ["derive"] }
+# Newline-delimited JSON control protocol, length-prefixed attachment frames, descriptors.
+serde_json = "1.0"
+# Owner loop wake-ups, Unix sockets, signals and bounded channels.
+tokio = { version = "1.47", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+# User configuration decoding.
+toml = "0.9"
+# Structured diagnostics that do not corrupt terminal output.
+tracing = "0.1"
+# Bounded daemon diagnostics and foreground stderr formatting.
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+# Authoritative terminal emulation and bounded pane history.
+vt100 = "=0.16.2"
+# Linear-time (no catastrophic backtracking) regex for server-side `wait` patterns; pure Rust,
+# no transitive dependencies.
+regex-lite = "0.1"
+# Validate frame cells before rendering.
+unicode-segmentation = "1.12.0"
+unicode-width = "0.2.0"
+
+[dev-dependencies]
+# Randomized command sequences for domain-invariant tests.
+proptest = "1.7"
+# Review production declarations and ownership without runtime dependencies.
+syn = { version = "=2.0.119", features = ["full", "visit"] }
+quote = "=1.0.47"
+proc-macro2 = "=1.0.107"
+
+[lints.rust]
+dead_code = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
