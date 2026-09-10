@@ -1,0 +1,88 @@
+[package]
+name = "zor"
+version = "0.1.2"
+edition.workspace = true
+rust-version = "1.91"
+license.workspace = true
+description = "Portable agent-state wrapper and OSC 7877 protocol"
+repository = "https://github.com/gold-silver-copper/zor"
+homepage = "https://github.com/gold-silver-copper/zor"
+documentation = "https://docs.rs/zor"
+readme = "README.md"
+
+[features]
+default = ["cli"]
+cli = [
+    "dep:anyhow",
+    "dep:clap",
+    "dep:libc",
+    "dep:nix",
+    "dep:portable-pty",
+    "dep:regex",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:sha1",
+    "dep:sha2",
+    "dep:signal-hook",
+    "dep:toml",
+    "dep:vt100",
+]
+
+[dependencies]
+# Context-rich wrapper runtime errors.
+anyhow = { version = "1.0", optional = true }
+# Command-line parsing for the feature-gated wrapper binary.
+clap = { version = "4.5", features = ["derive"], optional = true }
+# Unix terminal and process primitives used only by platform adapters.
+libc = { version = "0.2", optional = true }
+# Safe termios operations for raw-mode guards.
+nix = { version = "0.28", features = ["fs", "poll", "term", "socket", "user", "process", "signal", "time"], optional = true }
+# Cross-platform pseudoterminal spawning and resizing.
+portable-pty = { version = "=0.9.0", optional = true }
+# Compiled screen-rule matchers.
+regex = { version = "1.11", optional = true }
+# Rule and event serialization.
+serde = { version = "1.0", features = ["derive"], optional = true }
+# JSON-lines event encoding.
+serde_json = { version = "1.0", optional = true }
+# Git object integrity for retained source snapshots.
+sha1 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
+# Portable signal registration for the wrapper runtime.
+signal-hook = { version = "0.3", optional = true }
+# Rule-file decoding.
+toml = { version = "0.9", optional = true }
+# Terminal emulation for detection without changing passthrough bytes.
+vt100 = { version = "=0.16.2", optional = true }
+
+[lib]
+doctest = false
+
+[dev-dependencies]
+tempfile = "3"
+# Property testing proves the byte parser is total.
+proptest = "1.7"
+# JSON contract assertions for the feature-gated event integration tests.
+serde_json = "1.0"
+# Terminal-emulator callback integration tests the joined OSC payload contract.
+vt100 = "=0.16.2"
+
+[[bin]]
+name = "zor"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[lints.rust]
+dead_code = "deny"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"

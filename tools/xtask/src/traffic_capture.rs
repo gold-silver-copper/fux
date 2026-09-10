@@ -247,8 +247,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "tools/xtask/src/traffic_capture.rs",
         "tools/xtask/src/traffic-worker.c",
         "tools/xtask/src/support/traffic_proxy.rs",
-        "zor/src/watch.rs",
-        "zor/src/observe.rs",
+        "crates/zor/src/watch.rs",
+        "crates/zor/src/observe.rs",
         "references/herdr/src/pane.rs",
     ] {
         provenance["sources"][p] = digest(&repository.join(p))?.into();

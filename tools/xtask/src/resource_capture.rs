@@ -388,8 +388,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "tools/xtask/src/support/service.rs",
         "tools/xtask/src/support/process.rs",
         "tools/comparisons/resource_sampler.c",
-        "zor/src/watch.rs",
-        "zor/src/service.rs",
+        "crates/zor/src/watch.rs",
+        "crates/zor/src/service.rs",
         "src/ecs/systems/output.rs",
     ] {
         provenance["sources"][path] = digest(&repository.join(path))?.into();

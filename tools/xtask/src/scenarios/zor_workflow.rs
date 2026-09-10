@@ -34,8 +34,23 @@ pub(super) fn run(fux: &Path, zor: &Path, native_fixture: &Path) -> Result<()> {
             command.args(["--state-directory", state]).args(args);
             process::output(command, timeout, 1024 * 1024)
         };
+        // Background journal activity (the service scan) can reject admission with Busy.
+        // zor's own contract says an operation ID may be retried; only such commands and
+        // read-only inspections are replayed, with the identical arguments, for a bounded time.
         let cli = |args: &[&str], ok: bool| -> Result<Value> {
-            let reply = raw(args, Duration::from_secs(12))?;
+            let replayable = ok
+                && (args.contains(&"--operation")
+                    || matches!(
+                        args.get(1).copied(),
+                        Some("inspect" | "artifact-inspect" | "adapter-capabilities")
+                    ));
+            let reply = retry_busy(
+                |_| raw(args, Duration::from_secs(12)),
+                |reply| Ok(cli_busy(reply.status.code(), &reply.stderr)),
+                Instant::now() + Duration::from_secs(5),
+                replayable,
+                &RealClock,
+            )?;
             ensure!(
                 reply.status.success() == ok,
                 "CLI {args:?}: {} {}",

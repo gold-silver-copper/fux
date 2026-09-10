@@ -21,7 +21,7 @@ open until the subscriber sends any byte or closes.
 ## Compatibility
 
 There is no protocol versioning. The schemas are whatever the current tree defines, pinned by the
-fixtures in `tests/verify/fixtures/`, and every consumer (the CLI, the viewer, koh, zor, the
+fixtures in `crates/fux/tests/verify/fixtures/`, and every consumer (the CLI, the viewer, koh, zor, the
 harnesses) ships from the same tree or from a pinned base plus a patch in `dependency-patches/`.
 A request the server does not know fails with `unknown-command`; a field it does not know fails
 with `invalid-request`; a reply the client does not understand is reported as an error naming

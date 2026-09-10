@@ -21,10 +21,10 @@ jobs:
       - name: Repeat deterministic ECS, structural and real-process checks
         run: |
           for pass in 1 2 3; do
-            cargo test --test ecs --test structure --test local_cli --locked -- --test-threads=1
-            cargo test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
+            cargo test -p fux --test ecs --test structure --test local_cli --locked -- --test-threads=1
+            cargo test --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --locked
           done
       - name: Extended randomized command sequences
         env:
           PROPTEST_CASES: 2048
-        run: cargo test --test ecs --locked
+        run: cargo test -p fux --test ecs --locked

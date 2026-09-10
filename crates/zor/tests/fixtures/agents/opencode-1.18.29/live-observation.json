@@ -1,0 +1,25 @@
+{
+  "rules_generation": 1,
+  "scan_duration_ms": 10,
+  "observations": [
+    {
+      "handle": {
+        "instance": "89d5203959a6d3feca30d246cc9a270b",
+        "workspace": "default",
+        "stream": 1,
+        "pane": 1,
+        "pid": 94212
+      },
+      "age_upper_bound_ms": 10,
+      "revision": 32,
+      "input_sequence": 0,
+      "agent": "opencode",
+      "detected_pid": 94212,
+      "state": "idle",
+      "rule": "opencode-1.18.29-startup-input",
+      "problem": null
+    }
+  ],
+  "removed": [],
+  "problems": {}
+}

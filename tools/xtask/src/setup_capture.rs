@@ -378,8 +378,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
     );
     provenance["herdr_build"] = build;
     for p in [
-        "zor/src/service.rs",
-        "zor/src/dashboard.rs",
+        "crates/zor/src/service.rs",
+        "crates/zor/src/dashboard.rs",
         "src/config.rs",
         "src/proto/control.rs",
     ] {

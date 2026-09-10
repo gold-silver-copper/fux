@@ -337,8 +337,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
         .context("root")?;
     for p in [
         "tools/xtask/src/freshness_capture.rs",
-        "zor/src/watch.rs",
-        "zor/rules/codex.toml",
+        "crates/zor/src/watch.rs",
+        "crates/zor/rules/codex.toml",
     ] {
         provenance["sources"][p] = digest(&root.join(p))?.into();
     }

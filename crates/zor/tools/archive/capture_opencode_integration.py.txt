@@ -1,0 +1,513 @@
+#!/usr/bin/env python3
+"""Exercise installed OpenCode hooks and zor prompt waits using a local fixture provider."""
+import argparse
+import hashlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+import socket
+from pathlib import Path
+import subprocess
+import tempfile
+import threading
+import time
+
+from capture_startup import rpc
+from capture_opencode_events import PLUGIN, PROMPTS, read_events, sha256, validate as validate_responses
+
+REQUESTS = [*PROMPTS, 'ZOR_APPROVAL: request a harmless command']
+QUESTION = 'ZOR_QUESTION: ask which fixture option to use'
+QUESTIONS = [dict(question='Which fixture option?', header='Fixture',
+                  options=[dict(label='Alpha', description='Use the first fixture option'),
+                           dict(label='Beta', description='Use the second fixture option')])]
+
+# Test-only plugin lifecycle control. The real bundled adapter receives the real
+# OpenCode SDK and hooks; no production recovery/debug endpoint is added.
+RELOAD_PLUGIN = r'''
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
+const { ZorOpenCode } = await import(process.env.ZOR_FIXTURE_PLUGIN);
+export const ReloadFixture = async options => {
+  let hooks = await ZorOpenCode(options), generation = 1, pending = false;
+  const path = process.env.ZOR_FIXTURE_RELOAD;
+  const record = () => writeFileSync(path + '.json', JSON.stringify({ generation, pid: process.pid }));
+  record();
+  const timer = setInterval(async () => {
+    if (pending || !existsSync(path)) return;
+    pending = true; unlinkSync(path);
+    try { await hooks.dispose(); hooks = await ZorOpenCode(options); generation++; record(); }
+    catch (error) { writeFileSync(path + '.error', String(error.stack)); }
+    finally { pending = false; }
+  }, 25);
+  return {
+    'chat.message': (...args) => hooks['chat.message'](...args),
+    event: (...args) => hooks.event(...args),
+    dispose: async () => { clearInterval(timer); await hooks.dispose(); },
+  };
+};
+'''
+RELOAD_EXEC = '''import os,json,sys
+config=json.loads(os.environ['OPENCODE_CONFIG_CONTENT'])
+os.environ['ZOR_FIXTURE_PLUGIN']=config['plugin'][-1]
+config['plugin'][-1]=os.environ['ZOR_FIXTURE_WRAPPER']
+os.environ['OPENCODE_CONFIG_CONTENT']=json.dumps(config)
+os.execv(sys.argv[1],sys.argv[1:])
+'''
+
+
+def requests_for(blocker):
+    assert blocker in ['permission', 'question'], 'unknown blocker fixture'
+    return [*PROMPTS, QUESTION] if blocker == 'question' else REQUESTS
+
+
+
+def validate(evidence, fixture_path='<FIXTURE_ROOT>/work/fixture.txt'):
+    all_events, outcomes = evidence['events'], evidence['outcomes']
+    if evidence.get('storage_metadata'):
+        root = fixture_path.removesuffix('/work/fixture.txt')
+        assert evidence['registered']['launch']['integration']['storage_environment'] == dict(
+            HOME=root, XDG_CONFIG_HOME=root+'/config', XDG_DATA_HOME=root+'/data',
+            XDG_STATE_HOME=root+'/state', XDG_CACHE_HOME=root+'/cache')
+
+    blocker = evidence.get('blocker', 'permission')
+    prompts = requests_for(blocker)
+    boundary = evidence.get('observation_event_count', len(all_events))
+    assert type(boundary) is int and 0 < boundary <= len(all_events)
+    if blocker == 'question':
+        assert 'observation_event_count' in evidence, 'missing pre-cleanup observation boundary'
+    events = all_events[:boundary]
+    assert not any(row.get('event', {}).get('type') in ['permission.replied', 'question.replied']
+                   for row in all_events), 'fixture unexpectedly answered a blocker'
+    retirement = evidence['retirement']
+    retired = retirement['prompt']
+    assert retirement['arm_status'] == 'armed' and retirement['late_arm_status'] == 'rejected'
+    assert retirement['input_before'] == retirement['input_after'] == 0
+    assert retired['id'] == 'retired-before-input' and retired['released'] and retired['wait'] == 'cancelled'
+    assert retired['delivery'] == 'reserved' and retired['receipt']['bytes_written'] == 0
+    assert not retired['arm']['acknowledged'] and not retired['arm']['input_started']
+    assert retired['arm']['disarm_requested'] and retired['arm']['disarmed']
+    assert retired['response'] is None and retired['report_binding'] is None
+    assert retired['arm']['input_operation'] == retired['receipt']['operation']
+    assert retired['arm']['producer'] == evidence['registered']['launch']['integration']['producer']
+    chats = [(i, row) for i, row in enumerate(events) if row['hook'] == 'chat.message']
+    assert len(chats) == len(outcomes) == 3, 'expected three consumed managed prompts'
+    assert evidence['fux_exit'] == 0 and evidence['provider_thread_stopped'], 'cleanup failed'
+    assert evidence['task_outcome'] == 'open', 'response is not verified task success'
+    producer = evidence['registered']['launch']['integration']['producer']
+    producers = [producer] * 3
+    reload = evidence.get('producer_reload')
+    if reload:
+        assert evidence['reload_plugin_sha256'] == hashlib.sha256(RELOAD_PLUGIN.encode()).hexdigest()
+        assert evidence['reload_exec_sha256'] == hashlib.sha256(RELOAD_EXEC.encode()).hexdigest()
+        assert blocker == 'question'
+        assert reload['before']['producer'] == producer
+        assert reload['after']['producer'] != producer
+        assert reload['after']['retired'] == [dict(producer=producer,
+            registered_ms=reload['before']['registered_ms'], retired_ms=reload['after']['registered_ms'])]
+        assert reload['input_before'] == reload['input_after'] == 1
+        assert reload['target_before'] == reload['target_after'] == evidence['registered']['session']['target']
+        if evidence.get('storage_metadata'):
+            assert reload['after']['storage_environment'] == reload['before']['storage_environment'] == evidence['registered']['launch']['integration']['storage_environment']
+        assert reload['hook_before']['generation'] == 1 and reload['hook_after']['generation'] == 2
+        assert reload['hook_before']['pid'] == reload['hook_after']['pid']
+        assert reload['retained_response_after'] == outcomes[0]['response']
+        producers = [producer, reload['after']['producer'], reload['after']['producer']]
+    if blocker == 'question':
+        assert all('heartbeat' in probe for probe in evidence['adapter_status'])
+    if 'adapter_status' in evidence:
+        assert len(evidence['adapter_status']) == 2
+        for probe_index, probe in enumerate(evidence['adapter_status']):
+            assert probe['availability'] == 'reachable' and probe['stage'] == 'complete'
+            assert probe['scope'] == 'point-in-time-endpoint-probe'
+            assert probe['producer'] == producers[0 if probe_index == 0 else 2] and probe['task_id'] == 'integrated'
+            assert probe['generation'] == probe['current_generation']
+            if 'heartbeat' in probe:
+                heartbeat = probe['heartbeat']
+                assert heartbeat['status'] == 'current' and heartbeat['sequence'] > 0
+                assert heartbeat['scope'] == 'producer-freshness-only' and heartbeat['ttl_ms'] == 6000
+                assert 0 <= heartbeat['age_ms'] < heartbeat['ttl_ms']
+                assert heartbeat['received_ms'] >= probe['registered_ms']
+        if 'heartbeat' in evidence['adapter_status'][-1]:
+            assert evidence['adapter_status'][-1]['heartbeat']['received_ms'] > outcomes[-1]['response']['received_ms']
+    operations, messages = set(), set()
+    for index, (_, chat) in enumerate(chats):
+        outcome = outcomes[index]
+        binding, report, receipt = (outcome[k] for k in ['report_binding', 'response', 'receipt'])
+        native = {'session': chat['output']['message']['sessionID'], 'id': chat['output']['message']['id']}
+        assert chat['input']['sessionID'] == native['session']
+        assert chat['output']['parts'][0]['text'] == prompts[index] and len(chat['output']['parts']) == 1
+        assert binding['message'] == report['message'] == native, 'report/native ancestry mismatch'
+        assert binding['producer'] == report['producer'] == outcome['arm']['producer'] == producers[index]
+        assert outcome['arm']['acknowledged'] and outcome['arm']['input_started'], 'input was not durably armed/submitted'
+        assert not outcome['arm']['disarm_requested'] and not outcome['arm']['disarmed'], 'retired prompt submitted'
+        assert binding['input_operation'] == report['input_operation'] == outcome['arm']['input_operation'] == receipt['operation']
+        offset = index - 1 if reload and index > 0 else index
+        assert binding['sequence'] == 2 * offset + 1 and report['sequence'] == 2 * offset + 2
+        assert outcome['delivery'] == 'delivered' and receipt['input_sequence'] == index + 1
+        assert receipt['bytes_written'] == len((prompts[index] + '\r').encode()), 'partial delivery'
+        expected = 'needs-input' if index == 2 else 'response-observed'
+        assert outcome['wait'] == report['kind'] == expected
+        operations.add(receipt['operation'])
+        messages.add(native['id'])
+    assert len(operations) == len(messages) == 3, 'identity reused'
+    assert evidence['capture']['input_sequence'] == 3, 'unexpected terminal input'
+    if blocker == 'question':
+        heartbeat = evidence['adapter_status'][-1]['heartbeat']
+        last = outcomes[-1]
+        claim = dict(state='blocked', operation=last['id'],
+                     input_operation=last['receipt']['operation'], message=last['report_binding']['message'])
+        assert heartbeat['observation'] == claim and heartbeat['input_sequence'] == 3
+        dashboard = evidence['dashboard']
+        assert evidence['zor_service_exit'] == 0 and not dashboard['stale']
+        target = evidence['registered']['session']['target']
+        rows = [row for row in dashboard['rows'] if row['kind'] == 'observation' and row['target'] == target]
+        assert len(rows) == 1, 'missing or ambiguous native dashboard target'
+        row = rows[0]
+        assert row['status'] == 'blocked' and row['attention'] and row['task_outcome'] is None
+        assert 0 <= row['age_upper_bound_ms'] <= 5000
+        observed = row['evidence']
+        assert observed['source'] == 'integration' and observed['producer'] == producers[-1]
+        assert observed['claim'] == claim and observed['fresh'] and observed['correlated']
+        assert observed['heartbeat_status'] == 'current'
+        assert observed['heartbeat_sequence'] >= heartbeat['sequence']
+        assert 0 <= observed['heartbeat_age_upper_bound_ms'] < 6000
+        assert observed['scope'] == 'agent-observation; not-task-completion'
+        tasks = [row for row in dashboard['rows'] if row['key'] == 'task:integrated']
+        assert len(tasks) == 1 and tasks[0]['task_outcome'] == 'open' and tasks[0]['status'] == 'needs-input'
+    # Reuse the independently tested event contract for the first two responses.
+    submissions = [{'receipt': x['receipt'], 'final_receipt': dict(x['receipt'], state=x['delivery'])} for x in outcomes[:2]]
+    validate_responses(events[:chats[2][0]], submissions, evidence['requests'], fixture_path)
+    native = outcomes[2]['report_binding']['message']
+    assistant_ids = {row['event']['properties']['info']['id'] for row in events[chats[2][0] + 1:]
+        if row.get('event', {}).get('type') == 'message.updated'
+        and row['event']['properties']['info'].get('role') == 'assistant'
+        and row['event']['properties']['info'].get('parentID') == native['id']
+        and row['event']['properties']['info'].get('sessionID') == native['session']}
+    blockers = [row['event']['properties'] for row in events[chats[2][0] + 1:]
+        if row.get('event', {}).get('type') == blocker + '.asked']
+    assert len(blockers) == 1, 'expected one root blocker'
+    request = blockers[0]
+    assert request['sessionID'] == native['session'] and request['tool']['messageID'] in assistant_ids
+    if blocker == 'permission':
+        assert request['permission'] == 'bash' and request['metadata']['command'] == 'printf harmless'
+        assert request['tool']['callID'] == 'fixture-approval'
+    else:
+        assert request['tool']['callID'] == 'fixture-question'
+        assert request['questions'] == QUESTIONS
+        assert any(row['response'] == 'question' for row in evidence['requests']), 'provider did not ask question'
+        assert any(row.get('event', {}).get('type') == 'message.part.updated'
+            and (part := row['event']['properties']['part']).get('type') == 'tool'
+            and part.get('tool') == 'question' and part.get('callID') == request['tool']['callID']
+            and part.get('messageID') == request['tool']['messageID'] and part.get('sessionID') == native['session']
+            and part.get('state', {}).get('status') == 'running'
+            and part['state'].get('input') == {'questions': QUESTIONS}
+            for row in events[chats[2][0] + 1:]), 'missing running question tool evidence'
+    assert not any(row.get('event', {}).get('type') in [
+        'permission.replied', 'question.replied', 'question.rejected', 'session.error'] for row in events)
+    assert not any(row.get('event', {}).get('type') == 'message.part.updated'
+        and row['event']['properties']['part'].get('messageID') in assistant_ids
+        and row['event']['properties']['part'].get('type') == 'tool'
+        and row['event']['properties']['part'].get('state', {}).get('status') in ['completed', 'error']
+        for row in events), 'blocked tool unexpectedly ended'
+    visible = 'Permission required' if blocker == 'permission' else 'Which fixture option?'
+    assert visible in evidence['capture']['text'], 'missing blocker UI'
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--fux', type=Path, required=True)
+    parser.add_argument('--zor', type=Path, required=True)
+    parser.add_argument('--opencode', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--blocker', choices=['permission', 'question'], default='permission')
+    parser.add_argument('--reload-adapter', action='store_true', help='test-only clean adapter reload after first response')
+    args = parser.parse_args()
+    assert not args.reload_adapter or args.blocker == 'question', 'reload fixture requires question blocker'
+    fux, zor, opencode = [p.resolve(strict=True) for p in (args.fux, args.zor, args.opencode)]
+    args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
+    evidence = dict(schema=1, storage_metadata=True, fux_sha256=sha256(fux), zor_sha256=sha256(zor),
+                    opencode_sha256=sha256(opencode), harness_sha256=sha256(Path(__file__)),
+                    limitation='Real local OpenCode integration with a synthetic provider; not model quality, authenticated cloud or verified task success.',
+                    blocker=args.blocker, requests=[], outcomes=[])
+    with tempfile.TemporaryDirectory(prefix='zoi-', dir='/tmp') as directory:
+        root = Path(directory).resolve()
+        for name in ['config/fux', 'work', 'cache', 'data', 'state']:
+            (root / name).mkdir(parents=True)
+        (root / 'work/fixture.txt').write_text('Owned fixture.\n')
+        probe = root / 'probe.mjs'
+        probe.write_text(PLUGIN.replace('"permission.replied"',
+            '"permission.replied", "question.asked", "question.replied", "question.rejected"'))
+        evidence['probe_sha256'] = sha256(probe)
+        if args.reload_adapter:
+            (root / 'reload.mjs').write_text(RELOAD_PLUGIN)
+            (root / 'reload.py').write_text(RELOAD_EXEC)
+            evidence['reload_plugin_sha256'] = sha256(root / 'reload.mjs')
+            evidence['reload_exec_sha256'] = sha256(root / 'reload.py')
+
+        class Provider(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                size = int(self.headers.get('Content-Length', '0'))
+                if self.path != '/v1/chat/completions' or not 0 < size <= 1048576 or len(evidence['requests']) >= 8:
+                    self.send_error(400)
+                    return
+                body = json.loads(self.rfile.read(size))
+                messages = body['messages']
+                tool_turn = any('ZOR_TOOL_STOP' in str(m.get('content')) for m in messages if m['role'] == 'user')
+                tool_result = any(m['role'] == 'tool' for m in messages)
+                approval = any('ZOR_APPROVAL' in str(m.get('content')) for m in messages if m['role'] == 'user')
+                question = any('ZOR_QUESTION' in str(m.get('content')) for m in messages if m['role'] == 'user')
+                label = 'question' if question else 'approval' if approval else 'after-tool' if tool_result else 'tool-stop' if tool_turn else 'text'
+                delta = {'role': 'assistant', 'content': 'FIXTURE RESPONSE'}
+                if label == 'tool-stop':
+                    delta = {'role': 'assistant', 'tool_calls': [dict(index=0, id='fixture-read', type='function',
+                        function=dict(name='read', arguments=json.dumps({'filePath': str(root / 'work/fixture.txt')})))]}
+                elif label == 'approval':
+                    delta = {'role': 'assistant', 'tool_calls': [dict(index=0, id='fixture-approval', type='function',
+                        function=dict(name='bash', arguments=json.dumps({'command': 'printf harmless', 'description': 'Fixture permission request'})))]}
+                elif label == 'question':
+                    delta = {'role': 'assistant', 'tool_calls': [dict(index=0, id='fixture-question', type='function',
+                        function=dict(name='question', arguments=json.dumps({'questions': QUESTIONS})))]}
+                evidence['requests'].append(dict(response=label, roles=[m['role'] for m in messages]))
+                base = dict(id='chatcmpl-fixture', object='chat.completion.chunk', created=1, model='fixture')
+                chunks = [dict(base, choices=[dict(index=0, delta=delta, finish_reason=None)]),
+                          dict(base, choices=[dict(index=0, delta={}, finish_reason='stop')])]
+                payload = (''.join('data: ' + json.dumps(c) + '\n\n' for c in chunks) + 'data: [DONE]\n\n').encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        class BoundedServer(HTTPServer):
+            def get_request(self):
+                peer, address = super().get_request()
+                peer.settimeout(3)
+                return peer, address
+
+        provider = BoundedServer(('127.0.0.1', 0), Provider)
+        thread = threading.Thread(target=provider.serve_forever)
+        thread.start()
+        process = None
+        pane = instance = None
+        control = root / 'fux/default.sock'
+        env = dict(PATH='/usr/bin:/bin:/usr/sbin:/sbin', HOME=str(root), TMPDIR=str(root),
+                   XDG_RUNTIME_DIR=str(root), XDG_CONFIG_HOME=str(root / 'config'),
+                   XDG_CACHE_HOME=str(root / 'cache'), XDG_DATA_HOME=str(root / 'data'),
+                   XDG_STATE_HOME=str(root / 'state'), TERM='xterm-256color', SHELL='/bin/sh', LANG='en_US.UTF-8',
+                   OPENCODE_CONFIG=str(root / 'work/opencode.json'), ZOR_PROBE_LOG=str(root / 'events.jsonl'),
+                   OPENCODE_CONFIG_CONTENT=json.dumps({'plugin': [str(probe)]}),
+                   OPENCODE_DISABLE_DEFAULT_PLUGINS='true', OPENCODE_DISABLE_MODELS_FETCH='true',
+                   OPENCODE_DISABLE_AUTOUPDATE='true')
+        if args.reload_adapter:
+            env.update(ZOR_FIXTURE_WRAPPER=str(root / 'reload.mjs'), ZOR_FIXTURE_RELOAD=str(root / 'reload'))
+
+        def task(*fields, ok=True):
+            until = time.monotonic() + 12
+            while True:
+                result = subprocess.run([str(zor), 'task', *fields], env=env, capture_output=True, timeout=12)
+                if b'journal is busy' not in result.stderr or time.monotonic() >= until:
+                    break
+                time.sleep(.05)
+            assert (result.returncode == 0) == ok, (fields, result.stdout, result.stderr)
+            return json.loads(result.stdout) if ok else result.stderr.decode()
+
+        def until(check):
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                assert not (root / 'reload.error').exists(), (root / 'reload.error').read_text() if (root / 'reload.error').exists() else ''
+                value = check()
+                if value:
+                    return value
+                assert process.poll() is None, 'fux exited'
+                time.sleep(.1)
+            raise TimeoutError('integration observation deadline')
+
+        def capture():
+            return rpc(control, dict(id=1, command='capture', instance=instance, pane=pane, max_bytes=131072))
+
+        try:
+            config = dict(model='fixture/fixture', small_model='fixture/fixture', enabled_providers=['fixture'],
+                          permission={'*': 'deny', 'read': 'allow', 'bash': 'ask', 'question': 'allow'}, provider={'fixture': dict(
+                npm='@ai-sdk/openai-compatible', name='Local Fixture',
+                options=dict(baseURL=f'http://127.0.0.1:{provider.server_port}/v1', apiKey='fixture'),
+                models={'fixture': dict(name='Fixture', limit=dict(context=65536, output=1024))})})
+            (root / 'work/opencode.json').write_text(json.dumps(config))
+            evidence['opencode_version'] = subprocess.run([str(opencode), '--version'], env=env,
+                capture_output=True, timeout=10, check=True).stdout.decode().strip()
+            (root / 'config/fux/config.toml').write_text('default-command = { argv = ["/bin/cat"] }\n')
+            with (root / 'stderr').open('wb') as error:
+                process = subprocess.Popen([str(fux), 'serve'], env=env, cwd=root / 'work',
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=error)
+            until(control.exists)
+            listing = rpc(control, dict(id=1, command='list'))
+            instance = listing['instance']
+            launched = task('start', 'integrated', '--integration', 'opencode', '--title', 'OpenCode fixture',
+                '--instance', instance, '--workspace', 'default', '--cwd', str(root / 'work'), '--',
+                *(['/usr/bin/python3', str(root / 'reload.py')] if args.reload_adapter else []), str(opencode))
+            pane = launched['session']['target']['pane']
+
+            def registered():
+                value = task('inspect', 'integrated')
+                return value if value['launch']['integration']['producer'] else None
+
+            evidence['registered'] = until(registered)
+            def healthy_adapter():
+                value = task('adapter-status', 'integrated')
+                return value if value['availability'] == 'reachable' and value['heartbeat']['status'] == 'current' else None
+            evidence['adapter_status'] = [until(healthy_adapter)]
+            profile = evidence['registered']['launch']['integration']
+            evidence['plugin_sha256'] = sha256(Path(profile['plugin']))
+            until(lambda: 'Ask anything' in capture()['text'])
+            # Inject the durable pre-submit crash boundary in this private fixture journal.
+            # The real adapter acknowledges an arm, but that acknowledgement is deliberately
+            # not journaled: this models caller loss before any input-submit was attempted.
+            operation = 'retired-before-input'
+            task('prepare', 'integrated', '--operation', operation, '--text', 'NEVER SUBMIT THIS FIXTURE', '--timeout-ms', '30000')
+            reserved = task('reserve', operation)
+            journal_path = Path(profile['root']) / 'journal.json'
+            state = json.loads(journal_path.read_text())
+            state['prompts'][operation]['arm'] = dict(producer=profile['producer'],
+                input_operation=reserved['receipt']['operation'], acknowledged=False,
+                input_started=False, disarm_requested=False, disarmed=False)
+            temporary = journal_path.with_name('fixture-crash.tmp')
+            with temporary.open('x') as stream:
+                temporary.chmod(0o600)
+                json.dump(state, stream)
+            temporary.replace(journal_path)
+            arm = dict(v=1, marker=evidence['registered']['launch']['marker'], op='arm', producer=profile['producer'],
+                prompt=dict(operation=operation, token=reserved['report_token'],
+                    input_operation=reserved['receipt']['operation'], text=reserved['text'], deadline_ms=reserved['deadline_ms']))
+
+            def adapter_request():
+                with socket.socket(socket.AF_UNIX) as peer:
+                    peer.settimeout(3)
+                    peer.connect(profile['socket'])
+                    peer.sendall(json.dumps(arm).encode() + b'\n')
+                    data = b''
+                    while b'\n' not in data:
+                        chunk = peer.recv(4096)
+                        assert chunk and len(data) + len(chunk) <= 4096
+                        data += chunk
+                    return json.loads(data)
+
+            ack = adapter_request()
+            assert ack['status'] == 'armed' and ack['token'] == reserved['report_token']
+            assert ack['operation'] == operation and ack['producer'] == profile['producer']
+            before = capture()['input_sequence']
+            retired = task('abandon', operation)
+            assert task('abandon', operation) == retired
+            late = adapter_request()
+            evidence['retirement'] = dict(
+                injection='Synthetic durable pre-submit crash: adapter arm accepted, acknowledgement not journaled.',
+                arm_status=ack['status'], late_arm_status=late['status'], prompt=retired,
+                input_before=before, input_after=capture()['input_sequence'])
+            for index, text in enumerate(requests_for(args.blocker)):
+                operation = f'prompt-{index + 1}'
+                task('prepare', 'integrated', '--operation', operation, '--text', text, '--timeout-ms', '30000')
+                submitted = task('submit', operation)
+                assert submitted['arm']['acknowledged'] and submitted['arm']['producer'] == profile['producer']
+
+                def response():
+                    value = task('wait', operation)
+                    if value['wait'] == 'pending':
+                        return None
+                    assert value['wait'] == ('needs-input' if index == 2 else 'response-observed'), value
+                    return value
+
+                outcome = until(response)
+                assert outcome['report_binding']['message'] == outcome['response']['message']
+                assert outcome['response']['sequence'] > outcome['report_binding']['sequence']
+                assert outcome['receipt']['input_sequence'] == index + 1
+                assert capture()['input_sequence'] == index + 1
+                evidence['outcomes'].append(outcome)
+                if args.reload_adapter and index == 0:
+                    before = task('inspect', 'integrated')
+                    def hook_state():
+                        try:
+                            return json.loads((root / 'reload.json').read_text())
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            return {}
+                    recovered = dict(before=profile, target_before=before['session']['target'],
+                        input_before=capture()['input_sequence'], hook_before=hook_state())
+                    (root / 'reload').write_text('reload')
+                    recovered['hook_after'] = until(lambda: value if (value := hook_state()).get('generation') == 2 else None)
+                    after = task('inspect', 'integrated')
+                    profile = after['launch']['integration']
+                    recovered.update(after=profile, target_after=after['session']['target'],
+                        input_after=capture()['input_sequence'], retained_response_after=task('wait', operation)['response'])
+                    evidence['producer_reload'] = recovered
+            current = task('inspect', 'integrated')
+            assert current['task']['outcome'] == 'open'
+            evidence['task_outcome'] = current['task']['outcome']
+            visible = 'Permission required' if args.blocker == 'permission' else 'Which fixture option?'
+            evidence['capture'] = until(lambda: value if visible in (value := capture())['text'] else None)
+            def blocked_heartbeat():
+                value = healthy_adapter()
+                return value if value and value['heartbeat']['received_ms'] > evidence['outcomes'][-1]['response']['received_ms'] and (value['heartbeat'].get('observation') or {}).get('state') == 'blocked' else None
+            evidence['adapter_status'].append(until(blocked_heartbeat))
+            service = subprocess.Popen([str(zor), 'serve'], env=env, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                until(lambda: (root / 'zor/control.sock').exists())
+                def dashboard():
+                    assert service.poll() is None, 'zor service exited'
+                    result = subprocess.run([str(zor), 'dashboard', '--once'], env=env,
+                                            capture_output=True, timeout=8)
+                    if result.returncode and b'journal is busy' in result.stderr:
+                        return None
+                    assert result.returncode == 0, result.stderr
+                    view = json.loads(result.stdout)
+                    found = next((row for row in view['rows'] if row['kind'] == 'observation'
+                                  and (row.get('target') or {}).get('pane') == pane), None)
+                    return view if found and found['status'] == 'blocked' and found['evidence']['source'] == 'integration' else None
+                evidence['dashboard'] = until(dashboard)
+            finally:
+                service.terminate()
+                try:
+                    assert service.wait(timeout=10) == 0
+                except subprocess.TimeoutExpired:
+                    service.kill()
+                    service.wait(timeout=5)
+                    raise
+                evidence['zor_service_exit'] = service.returncode
+            # Shutdown may reject pending questions and emit tool errors. Retain those
+            # events, but distinguish them from evidence observed before owned cleanup.
+            evidence['observation_event_count'] = len(read_events(root / 'events.jsonl'))
+        finally:
+            try:
+                if process is not None:
+                    try:
+                        if pane is not None and process.poll() is None:
+                            rpc(control, dict(id=1, command='kill', instance=instance, pane=pane))
+                    finally:
+                        if process.poll() is None:
+                            process.terminate()
+                        try:
+                            process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=5)
+                            raise
+                        evidence['fux_exit'] = process.returncode
+            finally:
+                provider.shutdown()
+                provider.server_close()
+                thread.join(timeout=5)
+                evidence['provider_thread_stopped'] = not thread.is_alive()
+                evidence['events'] = read_events(root / 'events.jsonl')
+                # Redact retained prompt capabilities as well as disposable paths.
+                encoded = json.dumps(evidence, indent=2, ensure_ascii=False).replace(str(root), '<FIXTURE_ROOT>')
+                retained = [*evidence['outcomes']]
+                if 'retirement' in evidence:
+                    retained.append(evidence['retirement']['prompt'])
+                for outcome in retained:
+                    encoded = encoded.replace(outcome['report_token'], '<PROMPT_TOKEN>')
+                (args.output / 'diagnostic.json').write_text(encoded + '\n')
+        validate(evidence, str(root / 'work/fixture.txt'))
+        (args.output / 'integration.json').write_text(encoded + '\n')
+        print(args.output / 'integration.json')
+
+
+if __name__ == '__main__':
+    main()

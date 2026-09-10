@@ -1,0 +1,44 @@
+{
+  "agent_version": "1.18.29",
+  "captures": [
+    {
+      "elapsed_ms": 1,
+      "capture": {
+        "input_sequence": 0,
+        "text": "",
+        "revision": 1,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 14,
+      "last_elapsed_ms": 1422,
+      "last_revision": 1
+    },
+    {
+      "elapsed_ms": 1530,
+      "capture": {
+        "input_sequence": 0,
+        "text": "                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                \n                                                                                ",
+        "revision": 20,
+        "rows": 23,
+        "columns": 80,
+        "scrollback_offset": 0,
+        "title": "",
+        "progress": null,
+        "unchanged": false,
+        "truncated": false
+      },
+      "samples": 41,
+      "last_elapsed_ms": 5903,
+      "last_revision": 23
+    }
+  ],
+  "cleanup": "server reaped with exit code 0",
+  "server_pid": 85021,
+  "input_sent": false
+}

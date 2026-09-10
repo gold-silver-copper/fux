@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       integrations:
-        description: Verify optional koh and zor process integrations
+        description: Verify the optional koh process integration
         type: boolean
         default: false
 
@@ -36,13 +36,43 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install "${{ matrix.rust }}" --profile minimal --component rustfmt,clippy
       - run: cargo +${{ matrix.rust }} fmt --all --check
-      - run: cargo +${{ matrix.rust }} clippy --all-targets --locked -- -D warnings
-      - run: cargo +${{ matrix.rust }} test --locked -- --test-threads=1
-      - run: cargo +${{ matrix.rust }} doc --no-deps --locked
-      - name: Build the exact binary for real-process scenarios
-        run: cargo +${{ matrix.rust }} build --locked --bin fux
-      - run: cargo +${{ matrix.rust }} clippy --manifest-path tests/verify/fixture-child/Cargo.toml --locked -- -D warnings
-      - run: cargo +${{ matrix.rust }} test --manifest-path tests/verify/fixture-child/Cargo.toml --locked
+      - run: cargo +${{ matrix.rust }} clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo +${{ matrix.rust }} clippy -p zor --all-targets --all-features --locked -- -D warnings
+      - run: cargo +${{ matrix.rust }} clippy -p zor --all-targets --no-default-features --locked -- -D warnings
+      - name: Build the exact binaries for real-process scenarios
+        run: cargo +${{ matrix.rust }} build --locked --bin fux --bin zor
+      # The real zor integration pairs the exact binaries built above and cannot silently skip.
+      # Its 21 real-process scenarios run on Linux, as the former companion job did; hosted
+      # macOS runners time out their process startups under that load.
+      - name: Workspace tests, including the real zor integration
+        if: runner.os == 'Linux'
+        env:
+          FUX_REQUIRE_ZOR_BIN: "1"
+          ZOR_BIN: ${{ github.workspace }}/target/debug/zor
+        run: cargo +${{ matrix.rust }} test --workspace --locked -- --test-threads=1
+      # zor's test suites keep their historical Linux-only execution: several bound
+      # subprocess deadlines against wall-clock and race on hosted macOS runners.
+      - name: fux tests without the real zor integration
+        if: runner.os != 'Linux'
+        run: cargo +${{ matrix.rust }} test -p fux --locked --lib --bins --test ecs --test agent_boundary --test structure --test fixtures --test micro_timing --test local_cli -- --test-threads=1
+      - if: runner.os == 'Linux'
+        run: cargo +${{ matrix.rust }} test -p zor --all-features --locked
+      - if: runner.os == 'Linux'
+        run: cargo +${{ matrix.rust }} test -p zor --no-default-features --locked
+      - run: cargo +${{ matrix.rust }} check -p zor --no-default-features --all-targets --locked
+      - run: cargo +${{ matrix.rust }} doc --workspace --no-deps --locked
+      - run: cargo +${{ matrix.rust }} doc -p zor --no-deps --all-features --locked
+      - name: Check zor protocol-layer isolation
+        run: '! grep -rE "crate::(emit|platform|pty|rules|screen|state)" crates/zor/src/osc.rs'
+      - name: Check zor rules and state layering
+        run: |
+          ! grep -rE 'crate::(pty|platform|emit)' crates/zor/src/rules
+          ! grep -rE 'crate::(pty|platform|emit|screen|rules)' crates/zor/src/state.rs
+      - run: cargo +${{ matrix.rust }} clippy --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --locked -- -D warnings
+      - run: cargo +${{ matrix.rust }} test --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --locked
+      - run: cargo +${{ matrix.rust }} clippy --manifest-path crates/zor/tools/xtask/Cargo.toml --all-targets --locked -- -D warnings
+      - if: runner.os == 'Linux'
+        run: cargo +${{ matrix.rust }} test --manifest-path crates/zor/tools/xtask/Cargo.toml --locked
 
   android-cross-check:
     name: Android aarch64 cross-check (not runtime coverage)
@@ -55,29 +85,26 @@ jobs:
           test -x "$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
           echo "CC_aarch64_linux_android=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
           echo "AR_aarch64_linux_android=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> "$GITHUB_ENV"
-      - run: cargo check --target aarch64-linux-android --locked
+      - run: cargo check -p fux --target aarch64-linux-android --locked
+      - run: cargo check -p zor --no-default-features --target aarch64-linux-android --locked
 
   cross-repository:
-    name: Optional koh and zor integrations
+    name: Optional koh integration
     if: github.event_name == 'workflow_dispatch' && inputs.integrations
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      # Companion repositories and exact bases come only from the manifest.
-      # Assembly checks each checkout's HEAD before applying its reviewed patch.
+      # The koh repository and exact base come only from the manifest.
+      # Assembly checks the checkout's HEAD before applying its reviewed patch.
       - name: Assemble reviewed dependency sources
         run: cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies apply
-      - name: Build zor and expose its exact path to tests
-        run: |
-          cargo build --manifest-path zor/Cargo.toml --locked
-          echo "ZOR_BIN=$GITHUB_WORKSPACE/zor/target/debug/zor" >> "$GITHUB_ENV"
-          echo "FUX_REQUIRE_ZOR_BIN=1" >> "$GITHUB_ENV"
-      - run: cargo build --locked --bin fux
-      - run: cargo test --test zor_integration --locked
-      - name: Verify koh gateway against the exact fux binary
+      - run: cargo build --locked --bin fux --bin zor
+      - name: Verify koh gateway against the exact fux and zor binaries
         env:
           FUX_BIN: ${{ github.workspace }}/target/debug/fux
+          ZOR_BIN: ${{ github.workspace }}/target/debug/zor
           KOH_REQUIRE_FUX_BIN: "1"
+          KOH_REQUIRE_ZOR_BIN: "1"
         run: cargo test --manifest-path references/koh/Cargo.toml --test gateway --locked
       - name: Verify gateway reconnect with the exact fux binary
         env:
@@ -85,12 +112,11 @@ jobs:
           KOH_REQUIRE_FUX_BIN: "1"
         run: |
           cargo test --manifest-path references/koh/Cargo.toml --lib gateway:: --locked
-      - run: cargo test --manifest-path zor/Cargo.toml --all-features --locked
-      - run: cargo check --manifest-path zor/Cargo.toml --no-default-features --all-targets --locked
 
   package:
     name: Standalone package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - run: cargo package --locked
+      - run: cargo package --locked -p fux
+      - run: cargo package --locked -p zor

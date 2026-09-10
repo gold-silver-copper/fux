@@ -75,7 +75,7 @@ fn collect(root: &Path, overrides: &BTreeMap<String, String>) -> Result<(Value, 
             found.insert(id.to_owned(), Path::new(path).canonicalize()?);
         }
         orders.push(order);
-        let zor_path = root.join("zor/rules").join(format!("{id}.toml"));
+        let zor_path = root.join("crates/zor/rules").join(format!("{id}.toml"));
         let zor = if zor_path.exists() {
             Some(read(&zor_path)?)
         } else {

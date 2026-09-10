@@ -4,11 +4,5 @@
     "repository": "https://github.com/gold-silver-copper/koh",
     "base": "af776a39ddea8826fe0915e712c787e303d5dbf0",
     "patch": "koh.patch"
-  },
-  "zor": {
-    "path": "zor",
-    "repository": "https://github.com/gold-silver-copper/zor",
-    "base": "2a8769ede679211f81624823247c8494f046d869",
-    "patch": "zor.patch"
   }
 }

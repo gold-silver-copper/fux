@@ -4,8 +4,9 @@ fux is a persistent terminal multiplexer. One session server per user owns the
 authoritative model in a standalone `bevy_ecs` 0.19.1 World; viewers are separate processes that
 paint per-viewer frames with a small ratatui-core compositor. Koh (remote access) and zor
 (observation) are independent programs that speak fux's local protocols, which carry no version
-numbers: every peer is built from the same tree or a pinned base plus a patch, and the fixtures
-under `tests/verify/fixtures/` pin the schemas.
+numbers: zor is built from the same workspace (`crates/zor` beside `crates/fux`), koh from a
+pinned base plus a patch, and the fixtures under `crates/fux/tests/verify/fixtures/` pin the
+schemas.
 
 ## Ownership
 
