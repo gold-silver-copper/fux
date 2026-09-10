@@ -32,7 +32,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "usage: capture-opencode-resume --fux PATH --opencode PATH --output NEW_DIRECTORY"
     );
     let mut flags = BTreeMap::new();
-    for p in args.chunks_exact(2) {
+    for p in args.as_chunks::<2>().0 {
         ensure!(
             ["--fux", "--opencode", "--output"].contains(&p[0].as_str()),
             "unknown flag"
