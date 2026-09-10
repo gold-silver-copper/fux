@@ -118,7 +118,8 @@ impl Harness {
         label: &str,
         seconds: u64,
     ) -> Result<()> {
-        let end = Instant::now() + Duration::from_secs(seconds);
+        let end =
+            Instant::now() + Duration::from_secs(seconds) * crate::support::local::deadline_scale();
         loop {
             self.pump(0.03)?;
             if check(self)? {
