@@ -9,14 +9,18 @@ fn run(script: &str) {
     let _serial = SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let zor = std::env::var_os("ZOR_BIN");
+    // ZOR_BIN overrides (for measuring another build); otherwise the workspace's own zor
+    // crate is built next to the fux binary under test.
+    let zor = std::env::var_os("ZOR_BIN")
+        .map(std::path::PathBuf::from)
+        .or_else(support::workspace_zor);
     assert!(
         zor.is_some() || std::env::var_os("FUX_REQUIRE_ZOR_BIN").is_none(),
-        "ZOR_BIN is required for this integration run"
+        "ZOR_BIN is required for this integration run and the workspace zor binary could not be built"
     );
     let Some(zor) = zor else {
         eprintln!(
-            "skipping: ZOR_BIN is not set (set FUX_REQUIRE_ZOR_BIN=1 to make this a failure)"
+            "skipping: no ZOR_BIN and the workspace zor build failed (set FUX_REQUIRE_ZOR_BIN=1 to make this a failure)"
         );
         return;
     };

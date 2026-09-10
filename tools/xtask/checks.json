@@ -10,7 +10,7 @@
       "cargo",
       "clean",
       "--manifest-path",
-      "zor/Cargo.toml",
+      "crates/zor/Cargo.toml",
       "-p",
       "zor"
     ],
@@ -59,7 +59,7 @@
       "cargo",
       "clean",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "-p",
       "zor-xtask"
     ],
@@ -67,14 +67,14 @@
       "cargo",
       "fmt",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--check"
     ],
     [
       "cargo",
       "clippy",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--all-targets",
       "--locked",
       "--",
@@ -85,18 +85,21 @@
       "cargo",
       "test",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked"
     ],
     [
       "cargo",
       "check",
+      "--workspace",
       "--all-targets",
       "--locked"
     ],
     [
       "cargo",
       "build",
+      "-p",
+      "fux",
       "--locked",
       "--bin",
       "fux"
@@ -105,20 +108,20 @@
       "cargo",
       "build",
       "--manifest-path",
-      "zor/Cargo.toml",
+      "crates/zor/Cargo.toml",
       "--locked",
       "--bin",
       "zor"
     ],
     [
       "node",
-      "zor/tools/test_opencode_adapter.mjs"
+      "crates/zor/tools/test_opencode_adapter.mjs"
     ],
     [
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -129,7 +132,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -140,7 +143,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -151,7 +154,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -162,7 +165,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -173,7 +176,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -237,6 +240,8 @@
     [
       "cargo",
       "test",
+      "-p",
+      "fux",
       "--locked",
       "--test",
       "ecs",
@@ -253,7 +258,7 @@
     ],
     [
       "sh",
-      "tests/verify/release-package.sh",
+      "crates/fux/tests/verify/release-package.sh",
       "--allow-dirty"
     ],
     [
@@ -286,7 +291,7 @@
       "cargo",
       "clean",
       "--manifest-path",
-      "zor/Cargo.toml",
+      "crates/zor/Cargo.toml",
       "-p",
       "zor"
     ],
@@ -335,7 +340,7 @@
       "cargo",
       "clean",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "-p",
       "zor-xtask"
     ],
@@ -343,14 +348,14 @@
       "cargo",
       "fmt",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--check"
     ],
     [
       "cargo",
       "clippy",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--all-targets",
       "--locked",
       "--",
@@ -361,18 +366,21 @@
       "cargo",
       "test",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked"
     ],
     [
       "cargo",
       "check",
+      "--workspace",
       "--all-targets",
       "--locked"
     ],
     [
       "cargo",
       "build",
+      "-p",
+      "fux",
       "--locked",
       "--bin",
       "fux"
@@ -381,20 +389,20 @@
       "cargo",
       "build",
       "--manifest-path",
-      "zor/Cargo.toml",
+      "crates/zor/Cargo.toml",
       "--locked",
       "--bin",
       "zor"
     ],
     [
       "node",
-      "zor/tools/test_opencode_adapter.mjs"
+      "crates/zor/tools/test_opencode_adapter.mjs"
     ],
     [
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -405,7 +413,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -416,7 +424,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -427,7 +435,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -438,7 +446,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -449,7 +457,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -513,6 +521,8 @@
     [
       "cargo",
       "test",
+      "-p",
+      "fux",
       "--locked",
       "--test",
       "ecs",
@@ -540,7 +550,7 @@
       "cargo",
       "test",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -550,7 +560,7 @@
       "cargo",
       "run",
       "--manifest-path",
-      "zor/tools/xtask/Cargo.toml",
+      "crates/zor/tools/xtask/Cargo.toml",
       "--locked",
       "--bin",
       "zor-xtask",
@@ -566,6 +576,7 @@
     [
       "cargo",
       "clippy",
+      "--workspace",
       "--all-targets",
       "--locked",
       "--",
@@ -575,6 +586,8 @@
     [
       "cargo",
       "test",
+      "-p",
+      "fux",
       "--locked",
       "--lib",
       "--bins"
@@ -582,6 +595,7 @@
     [
       "cargo",
       "doc",
+      "--workspace",
       "--no-deps",
       "--locked"
     ],
@@ -589,7 +603,7 @@
       "cargo",
       "clippy",
       "--manifest-path",
-      "tests/verify/fixture-child/Cargo.toml",
+      "crates/fux/tests/verify/fixture-child/Cargo.toml",
       "--locked",
       "--",
       "-D",
@@ -599,21 +613,21 @@
       "cargo",
       "test",
       "--manifest-path",
-      "tests/verify/fixture-child/Cargo.toml",
+      "crates/fux/tests/verify/fixture-child/Cargo.toml",
       "--locked"
     ],
     [
       "cargo",
       "fmt",
       "--manifest-path",
-      "zor/Cargo.toml",
+      "crates/zor/Cargo.toml",
       "--check"
     ],
     [
       "cargo",
       "clippy",
       "--manifest-path",
-      "zor/Cargo.toml",
+      "crates/zor/Cargo.toml",
       "--all-targets",
       "--locked",
       "--",
@@ -624,7 +638,7 @@
       "cargo",
       "test",
       "--manifest-path",
-      "zor/Cargo.toml",
+      "crates/zor/Cargo.toml",
       "--all-features",
       "--locked"
     ],
@@ -632,7 +646,7 @@
       "cargo",
       "check",
       "--manifest-path",
-      "zor/Cargo.toml",
+      "crates/zor/Cargo.toml",
       "--no-default-features",
       "--all-targets",
       "--locked"
@@ -673,7 +687,7 @@
     ],
     [
       "sh",
-      "tests/verify/release-package.sh",
+      "crates/fux/tests/verify/release-package.sh",
       "--allow-dirty"
     ]
   ],

@@ -609,12 +609,12 @@ mod tests {
         assert_eq!(command[delimiter + 1..], expected);
         assert_eq!(plan.deferred_r6_tests.len(), 3);
         for required in [
-            vec!["cargo", "test", "--locked", "--lib", "--bins"],
+            vec!["cargo", "test", "-p", "fux", "--locked", "--lib", "--bins"],
             vec![
                 "cargo",
                 "test",
                 "--manifest-path",
-                "zor/Cargo.toml",
+                "crates/zor/Cargo.toml",
                 "--all-features",
                 "--locked",
             ],
@@ -622,12 +622,16 @@ mod tests {
                 "cargo",
                 "check",
                 "--manifest-path",
-                "zor/Cargo.toml",
+                "crates/zor/Cargo.toml",
                 "--no-default-features",
                 "--all-targets",
                 "--locked",
             ],
-            vec!["sh", "tests/verify/release-package.sh", "--allow-dirty"],
+            vec![
+                "sh",
+                "crates/fux/tests/verify/release-package.sh",
+                "--allow-dirty",
+            ],
             vec![
                 "cargo",
                 "fmt",
@@ -671,7 +675,7 @@ mod tests {
                     "cargo",
                     "test",
                     "--manifest-path",
-                    "zor/tools/xtask/Cargo.toml",
+                    "crates/zor/tools/xtask/Cargo.toml",
                     "--locked",
                     "--bin",
                     "zor-xtask",
@@ -685,14 +689,17 @@ mod tests {
             "cargo".into(),
             "run".into(),
             "--manifest-path".into(),
-            "zor/tools/xtask/Cargo.toml".into(),
+            "crates/zor/tools/xtask/Cargo.toml".into(),
             "--locked".into(),
             "--bin".into(),
             "zor-xtask".into(),
             "--".into(),
             "verify-opencode-events".into()
         ]));
-        for owner in ["tools/xtask/Cargo.toml", "zor/tools/xtask/Cargo.toml"] {
+        for owner in [
+            "tools/xtask/Cargo.toml",
+            "crates/zor/tools/xtask/Cargo.toml",
+        ] {
             for check in ["fmt", "clippy", "test"] {
                 ensure!(
                     plan.headless

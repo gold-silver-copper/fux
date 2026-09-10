@@ -156,15 +156,17 @@ fn no_placeholder_escape_hatches_in_source_or_tests() {
 
 #[test]
 fn dependency_and_ci_surfaces_keep_the_verification_layers_enabled() {
-    let workflow = read(Path::new(".github/workflows/ci.yml"));
+    let workflow = read(&root(".github/workflows/ci.yml"));
     for command in [
         "fmt --all --check",
-        "clippy --all-targets --locked -- -D warnings",
-        "test --locked",
-        "doc --no-deps --locked",
-        "tests/verify/fixture-child/Cargo.toml",
+        "clippy --workspace --all-targets --locked -- -D warnings",
+        "test --workspace --locked",
+        "doc --workspace --no-deps --locked",
+        "crates/fux/tests/verify/fixture-child/Cargo.toml",
         "aarch64-linux-android",
-        "cargo package --locked",
+        "cargo package --locked -p fux",
+        "test -p fux --test zor_integration --locked",
+        "FUX_REQUIRE_ZOR_BIN: \"1\"",
         "rust: 1.95.0",
     ] {
         assert!(
@@ -176,6 +178,13 @@ fn dependency_and_ci_surfaces_keep_the_verification_layers_enabled() {
     assert!(manifest.contains("rust-version = \"1.95\""));
 }
 
+/// Repository root: the fux crate lives at `crates/fux` of a virtual workspace.
+fn root(path: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(path)
+}
+
 #[test]
 fn default_ci_and_release_verification_require_only_fux() {
     for path in [
@@ -183,16 +192,16 @@ fn default_ci_and_release_verification_require_only_fux() {
         ".github/workflows/nightly.yml",
         ".github/workflows/release-verify.yml",
     ] {
-        let source = read(Path::new(path));
+        let source = read(&root(path));
         let mut optional_job = false;
         for line in source.lines() {
             if line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':') {
                 optional_job = line == "  cross-repository:";
             }
             if !optional_job {
+                // zor is a crate of this workspace; koh is the only external repository.
                 for forbidden in [
                     "references/koh",
-                    "zor/Cargo.toml",
                     "gold-silver-copper/koh",
                     "gold-silver-copper/zor",
                     "tools/dependencies.py",
@@ -207,6 +216,7 @@ fn default_ci_and_release_verification_require_only_fux() {
     }
     let release = read(Path::new("tests/verify/release-package.sh"));
     assert!(!release.contains("zor") && !release.contains("koh"));
+    assert!(release.contains("cargo package --locked -p fux"));
     let fixture = "tests/verify/fixture-child/Cargo.toml";
     let document = toml::from_str(&read(Path::new(fixture))).expect("fixture manifest");
     check_dependency_tables(&document, &["koh", "zor"], fixture);
@@ -229,13 +239,20 @@ fn project_dependencies_and_application_imports_respect_ownership() {
                 "bevy_render",
             ][..],
         ),
-        ("references/koh/Cargo.toml", &["fux", "zor", "bevy_ecs"][..]),
-        ("zor/Cargo.toml", &["fux", "koh", "bevy_ecs"][..]),
+        (
+            "../../references/koh/Cargo.toml",
+            &["fux", "zor", "bevy_ecs"][..],
+        ),
+        ("../zor/Cargo.toml", &["fux", "koh", "bevy_ecs"][..]),
     ] {
-        // Optional owner checkouts are checked when present; standalone tests require only fux.
+        // The optional koh checkout is checked when present; zor is always present.
         if manifest != "Cargo.toml" && !Path::new(manifest).exists() {
             continue;
         }
+        assert!(
+            manifest == "Cargo.toml" || manifest.contains("koh") || Path::new(manifest).exists(),
+            "zor crate manifest missing"
+        );
         let source = read(Path::new(manifest));
         let document: toml::Value = toml::from_str(&source).expect("dependency manifest");
         check_dependency_tables(&document, forbidden, manifest);

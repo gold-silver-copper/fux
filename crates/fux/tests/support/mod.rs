@@ -6,6 +6,36 @@ pub fn workspace_root() -> PathBuf {
 
 use std::{path::PathBuf, process::Command, sync::OnceLock};
 
+/// The zor binary built from this workspace's `crates/zor`, so the integration always pairs
+/// the two crates of one checkout. It shares the harness target directory, outside Cargo's
+/// active target lock, like the harness itself.
+#[allow(dead_code)] // used by the zor integration test crate only
+pub fn workspace_zor() -> Option<PathBuf> {
+    static BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
+    BINARY
+        .get_or_init(|| {
+            let root = workspace_root();
+            let target = root.join("target/rust-harness");
+            let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+                .args([
+                    "build",
+                    "--locked",
+                    "-p",
+                    "zor",
+                    "--bin",
+                    "zor",
+                    "--target-dir",
+                ])
+                .arg(&target)
+                .current_dir(&root)
+                .status()
+                .ok()?;
+            let zor = target.join("debug/zor");
+            (status.success() && zor.is_file()).then_some(zor)
+        })
+        .clone()
+}
+
 pub fn rust_harness() -> &'static PathBuf {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     BINARY.get_or_init(|| {
