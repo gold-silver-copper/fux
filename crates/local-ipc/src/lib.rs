@@ -379,6 +379,10 @@ impl FrameReader {
     ) -> Result<Vec<u8>, FrameError> {
         loop {
             if let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
+                // The payload is judged by its own length, whatever chunk size delivered it.
+                if newline > self.max_frame {
+                    return Err(FrameError::Oversize);
+                }
                 let mut frame = self.buffer.split_off(newline);
                 std::mem::swap(&mut frame, &mut self.buffer);
                 self.buffer.drain(..1);
@@ -458,8 +462,30 @@ fn macos_fallback(_: &str, _: Option<PathBuf>) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn chunked_reader_rejects_an_oversize_payload_that_arrives_with_its_newline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut client, mut server) = UnixStream::pair()?;
+        let mut reader = FrameReader::new(16);
+        let mut payload = vec![b'x'; 17];
+        payload.push(b'\n');
+        client.write_all(&payload)?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        assert!(matches!(
+            reader.next_frame(&mut server, deadline),
+            Err(FrameError::Oversize)
+        ));
+        let mut exact = vec![b'y'; 16];
+        exact.push(b'\n');
+        let mut reader = FrameReader::new(16);
+        client.write_all(&exact)?;
+        assert_eq!(reader.next_frame(&mut server, deadline)?, vec![b'y'; 16]);
+        Ok(())
+    }
 
     /// Short enough for a socket path below the platform temporary directory.
     fn scratch(name: &str) -> io::Result<PathBuf> {
