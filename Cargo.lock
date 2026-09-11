@@ -2084,5 +2084,6 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "vt100",
  "zor",
 ]

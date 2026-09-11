@@ -29,9 +29,10 @@ It also isolates the part of the system that changes most. Agents update their U
 weeks; the rule set will churn. Releasing that churn on its own cadence keeps fux releases about
 fux.
 
-The cost is one extra process and one extra `vt100::Screen` per pane. vt100 is a few hundred
-kilobytes of state at 200×50 and parses at memory speed; the process is a pty passthrough that
-sleeps on two fds. Both are cheap enough that fux wraps every pane, not only agent panes, so
+The cost is one extra process per pane, a pty passthrough that sleeps on two fds. Standalone,
+the wrapper also keeps one `vt100::Screen` per pane, a few hundred kilobytes of state at 200×50
+that parses at memory speed. Under fux there is no second emulator: zor asks fux for the pane's
+cells (`capture` with `format:"cells"`) and evaluates rules on the grid fux already keeps, so
 detection is a property of the pane and not of how the user typed the command.
 
 ---
@@ -85,13 +86,14 @@ Four modules, each with one job and a test suite that does not need the others:
 | Module | Job | Depends on |
 |---|---|---|
 | `pty` | spawn, passthrough, resize, exit status | portable-pty, libc |
-| `screen` | one `vt100::Screen` plus title, bell count, OSC 9;4, per-drain change flag | vt100 |
-| `rules` | region extraction over a `ScreenView`, rule evaluation, agent identification | regex, serde, toml |
+| `screen` (in `zor-wrap`) | one `vt100::Screen` plus title, bell count, OSC 9;4, per-drain change flag | vt100 |
+| `rules` | region extraction over a `ScreenView` (the wrapper's screen, or `Captured` built from a fux cells capture), rule evaluation, agent identification | regex, serde, toml |
 | `state` | hysteresis machine, emitters | nothing |
 
 koh's `terminal::ServerTerminal` already does what `screen` needs (callbacks for title, bell,
 progress, unhandled OSC), but it is not on koh's stable surface and pulling koh pulls iroh. The
-wrapper depends on vt100 directly and reimplements the eighty lines of callbacks. The
+wrapper depends on vt100 directly and reimplements the eighty lines of callbacks; the `zor`
+crate itself has no terminal emulator and never re-parses fux's captures. The
 `ScreenView` trait is the same shape as koh's `predict::ScreenView` so a future shared crate is a
 move, not a rewrite.
 
@@ -370,11 +372,13 @@ in ways the user blames on the program. **Mitigation:** the wrapper never buffer
 first, parse a copy), never answers queries, and inserts its own bytes only when vt100 reports the
 parser is in ground state. The passthrough test runs the vttest-style corpus through it.
 
-### Double emulation cost — *bounded*
+### Double emulation cost — *removed*
 
-Two vt100 screens per pane under fux. **Mitigation:** measured with fux's chaos harness at 40
-panes before v1. The screen cannot be shrunk below the pane's rows plus an equal scrollback, since
-the detection window reaches into scrollback; a 200×50 vt100 screen is under a megabyte.
+Under fux, zor observes through `capture` with `format:"cells"`: fux's retained grid arrives as
+run-length wire cells with cursor, title, progress and revision, and `rules::view::Captured`
+expands them into the same right-trimmed window the wrapper derives from its own screen. No
+vt100 parser runs on fux captures, and OSC 9;4 progress is parsed once, in fux. The wrapper's
+`vt100::Screen` exists only standalone, where nothing else has emulated the bytes.
 
 ### Process-tree lookup on macOS — *reimplemented, not copied*
 
@@ -431,8 +435,8 @@ agent, zor accepts 21337 as a self-report alongside 7877 and the contract docume
 
 ## Decisions
 
-- One binary, one crate, pure Rust, MIT. Depends on vt100, portable-pty, regex, serde, toml,
-  libc. Not on koh.
+- Pure Rust, MIT. `zor` depends on portable-pty, regex, serde, toml, libc; only `zor-wrap`
+  depends on vt100. Not on koh.
 - Passthrough first: write before parse, never answer queries, insert only in ground state.
 - Wrap the shell, identify by process tree with herdr's normalisation and scoring; `ZOR_AGENT`
   in a process environment and `--agent` short-circuit it.

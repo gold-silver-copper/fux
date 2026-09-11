@@ -23,8 +23,8 @@ pub fn run(
     let mut active_agent = forced.clone();
     // The observer may start immediately before its parent's control accept loop.
     let startup = Instant::now() + Duration::from_secs(3);
-    // The pane's screen and the output sequence it reflects are kept between samples, so an idle
-    // pane costs one `list` and no capture or re-emulation until fux reports a new sequence.
+    // The pane's captured cells and the revision they reflect are kept between samples, so an
+    // idle pane costs one `list` and no capture until fux reports a new revision.
     let mut cache = CaptureCache::default();
     let mut instance: Option<String> = None;
     loop {
@@ -76,7 +76,7 @@ pub fn run(
         }
         cache.refresh(pane.get("revision").and_then(Value::as_u64), |revision| {
             let response = request(socket,
-                json!({"command":"capture","id":2,"pane":pane_id,"attrs":true,"scrollback":0,"max_bytes":131072,"if_revision":revision,"instance":instance}))?;
+                json!({"command":"capture","id":2,"pane":pane_id,"format":"cells","max_bytes":131072,"if_revision":revision,"instance":instance}))?;
             response.pointer("/result/value").cloned()
                 .ok_or_else(|| anyhow::anyhow!("invalid capture response"))
         })?;
@@ -158,7 +158,7 @@ pub fn run(
 #[derive(Default)]
 struct CaptureCache {
     revision: Option<u64>,
-    screen: Option<crate::screen::Screen>,
+    screen: Option<crate::rules::view::Captured>,
 }
 
 impl CaptureCache {
@@ -187,51 +187,11 @@ impl CaptureCache {
             // the revision to avoid repeatedly recapturing it, and recover on new output/size.
             self.screen = None;
         } else {
-            self.screen = Some(captured_screen(&value)?);
+            self.screen = Some(crate::rules::view::Captured::from_capture(&value)?);
         }
         self.revision = Some(revision);
         Ok(())
     }
-}
-
-/// Interpret one coherent capture, never metadata from an earlier listing.
-pub(crate) fn captured_screen(value: &Value) -> anyhow::Result<crate::screen::Screen> {
-    let dimension = |name| -> anyhow::Result<u16> {
-        let n = value
-            .get(name)
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("capture is missing {name}"))?;
-        anyhow::ensure!((2..=512).contains(&n), "invalid capture dimension");
-        Ok(u16::try_from(n)?)
-    };
-    anyhow::ensure!(
-        value.get("truncated").and_then(Value::as_bool) == Some(false),
-        "cannot classify a truncated capture"
-    );
-    let text = value
-        .get("text")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("capture is missing text"))?;
-    anyhow::ensure!(text.len() <= 131072, "capture text exceeds limit");
-    let mut screen = crate::screen::Screen::new(dimension("rows")?, dimension("columns")?);
-    screen.process(text.as_bytes());
-    screen.set_observed_title(
-        value
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    );
-    let progress = value
-        .get("progress")
-        .and_then(Value::as_array)
-        .and_then(|values| {
-            let state = u8::try_from(values.first()?.as_u64()?).ok()?;
-            let percent = u8::try_from(values.get(1)?.as_u64()?).ok()?;
-            (state <= 4 && percent <= 100)
-                .then_some(crate::rules::view::Progress { state, percent })
-        });
-    screen.set_observed_progress(progress);
-    Ok(screen)
 }
 
 #[cfg(test)]
@@ -240,14 +200,23 @@ mod tests {
     use super::*;
     use crate::rules::view::ScreenView;
 
+    fn complete(revision: u64, rows: u16, columns: u16) -> Value {
+        let mut cells: Vec<Value> = "ready".chars().map(|c| json!({"text":c})).collect();
+        cells.push(json!({"run":columns - 5}));
+        let lines: Vec<Value> = (0..rows)
+            .map(|row| match row {
+                0 => json!({"row":0,"wrapped":false,"cells":cells}),
+                _ => json!({"row":row,"wrapped":false,"cells":[{"run":columns}]}),
+            })
+            .collect();
+        json!({"revision":revision,"input_sequence":1,"seq":1,
+            "rows":rows,"columns":columns,"cursor":{"row":0,"column":5,"hidden":false},
+            "title":"","progress":null,"truncated":false,"unchanged":false,"lines":lines})
+    }
+
     #[test]
     fn cache_uses_capture_revision_and_recovers_after_incomplete_evidence() {
         let mut cache = CaptureCache::default();
-        let complete = |revision, rows, columns| {
-            json!({"revision":revision,
-            "rows":rows,"columns":columns,"text":"ready","title":"",
-            "progress":null,"truncated":false,"unchanged":false})
-        };
         // Output and resize raced a listing at revision 1. The capture at 2 wins.
         cache
             .refresh(Some(1), |seen| {
@@ -257,6 +226,7 @@ mod tests {
             .expect("capture after race");
         assert_eq!(cache.revision, Some(2));
         assert_eq!(cache.screen.as_ref().expect("screen").size(), (8, 20));
+        assert_eq!(cache.screen.as_ref().expect("screen").text(), "ready\n");
         let mut calls = 0;
         cache
             .refresh(Some(2), |_| {
@@ -267,7 +237,7 @@ mod tests {
         assert_eq!(calls, 0, "idle panes must not request capture");
         cache
             .refresh(Some(3), |_| {
-                Ok(json!({"revision":3,"truncated":true,"unchanged":false}))
+                Ok(json!({"revision":3,"truncated":true,"unchanged":false,"lines":[]}))
             })
             .expect("truncation is recoverable");
         assert!(cache.screen.is_none(), "old evidence must be invalidated");
@@ -291,36 +261,6 @@ mod tests {
         assert!(
             CaptureCache::default()
                 .refresh(None, |_| Ok(json!({"revision":1,"unchanged":true})))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn captures_preserve_bottom_right_evidence_across_resize() {
-        for (rows, columns) in [(24, 80), (8, 20), (2, 2)] {
-            let value = json!({"rows":rows,"columns":columns,
-                "text":format!("\u{1b}[{rows};{columns}HX"),
-                "title":"captured title","progress":[1,50],"truncated":false});
-            let screen = captured_screen(&value).expect("valid capture");
-            assert_eq!(screen.size(), (rows, columns));
-            assert_eq!(
-                screen.lines().last().expect("last line").chars().last(),
-                Some('X')
-            );
-            assert_eq!(screen.title(), "captured title");
-            assert_eq!(screen.progress().expect("progress").percent, 50);
-        }
-    }
-
-    #[test]
-    fn incomplete_or_oversized_captures_are_not_classified() {
-        assert!(captured_screen(&json!({"text":"blocked"})).is_err());
-        assert!(
-            captured_screen(&json!({"text":"blocked","rows":24,"columns":80,"truncated":true}))
-                .is_err()
-        );
-        assert!(
-            captured_screen(&json!({"text":"blocked","rows":24,"columns":513,"truncated":false}))
                 .is_err()
         );
     }

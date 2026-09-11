@@ -61,9 +61,11 @@ Detection and the existing state machine remain in zor. Reports use the OSC v1 s
 
 The fux control adapter sends and verifies the four-byte `FUX\n` preface before each RPC. A mismatch or stalled preface ends that sampling attempt without sending a command. Preface reads use an absolute two-second deadline. This is an independent wire consumer, not a fux library dependency.
 
-Listing revisions are cache-invalidation hints. Capture supplies coherent text, dimensions,
-title and progress; the observer never subtracts borders or joins an old listing's geometry
-with newer text. Unchanged revisions skip capture/re-emulation. Truncated captures clear the observation to
+Listing revisions are cache-invalidation hints. Capture (`format:"cells"`, `max_bytes`
+131072) supplies coherent cells, dimensions, cursor, title and progress from fux's own grid;
+zor expands the run-length cells into rows without emulating a terminal, and never subtracts
+borders or joins an old listing's geometry with newer cells. Unchanged revisions (`if_revision`)
+skip capture. Truncated captures clear the observation to
 `none` without stopping the observer; later complete captures restore detection. No report is ingested or displayed as agent
 state by fux; zor and its consumers own agent presentation.
 

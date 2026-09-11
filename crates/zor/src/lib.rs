@@ -8,8 +8,6 @@ pub mod platform;
 #[cfg(feature = "cli")]
 pub mod rules;
 #[cfg(feature = "cli")]
-pub mod screen;
-#[cfg(feature = "cli")]
 pub mod state;
 
 #[cfg(feature = "cli")]

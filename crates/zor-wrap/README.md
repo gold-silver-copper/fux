@@ -4,7 +4,8 @@
 every byte, resize, signal and exit status unchanged, and publishes the agent state it observes
 as OSC 7877 into the passthrough stream. It needs no fux; a terminal, tmux, or koh sees the
 state in the window title, and an optional event stream carries the same observations as JSON
-lines. Detection reuses zor's rule sets, screen emulation and hysteresis over the wrapped bytes.
+lines. Detection reuses zor's rule sets and hysteresis over the wrapper's own screen emulation
+of the wrapped bytes; zor itself emulates nothing.
 
 ## Usage
 

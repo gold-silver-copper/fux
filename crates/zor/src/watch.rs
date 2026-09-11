@@ -323,7 +323,7 @@ impl Registry {
                                 .get("input_sequence")
                                 .and_then(Value::as_u64)
                                 .ok_or_else(|| anyhow::anyhow!("capture missing input sequence"))?;
-                            let screen = crate::observe::captured_screen(&value)?;
+                            let screen = crate::rules::view::Captured::from_capture(&value)?;
                             Ok((crate::rules::evaluate(set, &screen), actual, input))
                         }) {
                             Ok((verdict, actual, input)) => {
@@ -420,7 +420,7 @@ fn capture(socket: &Path, handle: &Handle, deadline: Instant) -> anyhow::Result<
     crate::fux::completed_until(
         socket,
         json!({"command":"capture","id":2,"instance":handle.instance,
-        "pane":handle.pane,"attrs":true,"scrollback":0,"max_bytes":131072}),
+        "pane":handle.pane,"format":"cells","max_bytes":131072}),
         deadline,
     )?
     .pointer("/result/value")

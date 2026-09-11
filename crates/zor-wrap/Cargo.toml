@@ -25,7 +25,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # Portable signal registration for the wrapper runtime.
 signal-hook = "0.3"
-# Observation: rules, screen emulation, hysteresis, OSC 7877 wire format and process helpers.
+# Terminal emulation of the wrapped child's bytes for rule evaluation.
+vt100 = "=0.16.2"
+# Observation: rules, hysteresis, OSC 7877 wire format and process helpers.
 zor = { path = "../zor", version = "0.2.0", default-features = false, features = ["cli"] }
 
 [[bin]]

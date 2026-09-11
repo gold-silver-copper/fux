@@ -53,10 +53,10 @@ use crate::emit::{
     events::{AgentLine, EventLine, ExitLine, Sink, encode, timestamp},
     title::{Mode as TitleMode, Titles},
 };
+use crate::screen::Screen;
 use zor::{
     osc::Report,
     rules::{RuleSet, evaluate, view::ScreenView},
-    screen::Screen,
     state::{Config, Event, Machine},
 };
 

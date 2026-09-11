@@ -9,6 +9,7 @@ mod cli;
 mod emit;
 mod platform;
 mod pty;
+mod screen;
 
 fn main() -> ExitCode {
     match run(cli::Cli::parse()) {
