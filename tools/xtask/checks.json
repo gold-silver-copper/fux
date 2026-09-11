@@ -255,6 +255,8 @@
       "--test",
       "structure",
       "--test",
+      "protocol_consumers",
+      "--test",
       "automation_integration",
       "--",
       "--test-threads=1"
@@ -538,6 +540,8 @@
       "agent_boundary",
       "--test",
       "structure",
+      "--test",
+      "protocol_consumers",
       "--test",
       "automation_integration",
       "--",
