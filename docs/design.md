@@ -203,7 +203,7 @@ by the duration the launcher set on the pane; the manager serves records after w
 sockets close; `zor run` and zor's managed launches consume them. A missing record is
 explained rather than guessed: `ForgottenFinals` keeps two rings of pane ids per server
 instance, the ids the cap evicted before their `expires_ms` and the ids whose retention
-elapsed, each bounded to the most recent `MAX_EVICTED_FINAL_IDS` = 1024 (4 KiB per ring), so
+elapsed, each bounded to the most recent `MAX_FORGOTTEN_FINAL_IDS` = 1024 (4 KiB per ring), so
 `final` answers `evicted`, `expired` or `unknown` (never recorded, or forgotten by the ring)
 next to `pending` and `conflict`. zor treats `evicted` as a hard failure that names the
 server-side loss; nothing retries it.

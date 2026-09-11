@@ -170,7 +170,7 @@ pub struct RetainedFinal {
 /// How many pane ids each ring of [`ForgottenFinals`] remembers. 1024 ids (4 KiB per ring) is
 /// eight times the record cap: even a burst that turns the whole record set over several times
 /// keeps the recently forgotten ids distinguishable, while nothing here grows with the load.
-pub const MAX_EVICTED_FINAL_IDS: usize = 1024;
+pub const MAX_FORGOTTEN_FINAL_IDS: usize = 1024;
 
 /// Pane ids whose final records are gone, so `final` can say why instead of guessing. Two
 /// bounded rings, per server instance, oldest id dropped first: `evicted` holds ids the record
@@ -184,7 +184,7 @@ pub struct ForgottenFinals {
 
 impl ForgottenFinals {
     fn push(ring: &mut VecDeque<PaneId>, pane: PaneId) {
-        if ring.len() >= MAX_EVICTED_FINAL_IDS {
+        if ring.len() >= MAX_FORGOTTEN_FINAL_IDS {
             ring.pop_front();
         }
         ring.push_back(pane);

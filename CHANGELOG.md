@@ -36,7 +36,7 @@ request shapes is kept.
   record under load before its `expires_ms`) and `unknown` (this server never retained a record
   for the id, or has forgotten that it did); `expired` now means only that a record existed and
   its retention elapsed. fux remembers, per server instance, the most recent 1024 evicted ids
-  and the most recent 1024 expired ids (`MAX_EVICTED_FINAL_IDS`; two rings, 4 KiB each), and an
+  and the most recent 1024 expired ids (`MAX_FORGOTTEN_FINAL_IDS`; two rings, 4 KiB each), and an
   id that falls off its ring answers `unknown`. The rule is exact: no id is reported `evicted`
   or `expired` without a record having been made for it. Capacity eviction now sweeps expired
   records first, so it only ever drops a record that was still valid. `pending` and `conflict`

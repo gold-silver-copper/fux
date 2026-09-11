@@ -278,7 +278,7 @@ fn final_record_capacity_evicts_oldest_and_idle_waits_only_until_expiry() {
 /// from an id that never had a record; the rings remembering the first two are bounded.
 #[test]
 fn final_outcomes_distinguish_evicted_expired_and_unknown_within_bounded_rings() {
-    use fux::ecs::resources::{MAX_EVICTED_FINAL_IDS, MAX_FINAL_RECORDS};
+    use fux::ecs::resources::{MAX_FINAL_RECORDS, MAX_FORGOTTEN_FINAL_IDS};
     let code = |h: &mut Harness, pane: u32| match final_reply(h, PaneId(pane), "test-instance") {
         Reply::Failed { error, .. } => Some(error.code),
         Reply::Completed { .. } => None,
@@ -312,7 +312,7 @@ fn final_outcomes_distinguish_evicted_expired_and_unknown_within_bounded_rings()
     );
     assert_eq!(code(&mut h, 1), Some(ErrorCode::Evicted));
     assert_eq!(code(&mut h, 9_999), Some(ErrorCode::Unknown));
-    // The eviction ring is bounded: once more than MAX_EVICTED_FINAL_IDS records have been
+    // The eviction ring is bounded: once more than MAX_FORGOTTEN_FINAL_IDS records have been
     // evicted, the oldest evicted id is forgotten and answers `unknown`.
     let first_evicted = MAX_FINAL_RECORDS as u32 + 2;
     for _ in 0..MAX_FINAL_RECORDS {
@@ -320,7 +320,7 @@ fn final_outcomes_distinguish_evicted_expired_and_unknown_within_bounded_rings()
     }
     // The cap is full again; every further close evicts one record early.
     let mut last_closed = 0;
-    for _ in 0..MAX_EVICTED_FINAL_IDS {
+    for _ in 0..MAX_FORGOTTEN_FINAL_IDS {
         last_closed = close_one(&mut h);
     }
     let last_evicted = last_closed - MAX_FINAL_RECORDS as u32;

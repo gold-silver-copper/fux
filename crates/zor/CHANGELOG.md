@@ -11,6 +11,8 @@
   reconcile round (10 s): zor reads the receipt through `input-status` on every reconcile until
   delivery is settled, on a late binding and on arm retirement, all bounded by the prompt
   deadline.
+  Prompts whose window exceeds fux's 10-minute receipt ceiling lose their receipt after that
+  ceiling; a later reconcile reports `expired` and the arm cannot be proven unsent.
 - `zor run` splits with `final_retain_ms` = `--timeout` plus a 5 s poll margin: the run polls
   `final` every 25 ms until its deadline and never reads the record after it.
 - A managed launch splits with `final_retain_ms` = fux's ceiling (four hours): its exit is read

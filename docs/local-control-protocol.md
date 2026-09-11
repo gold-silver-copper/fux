@@ -135,7 +135,7 @@ readable after the pane closes: the record is created at exit, when no client ne
 so the launcher states its retention when it creates the pane. `0` is `invalid-request`; a value
 above `info.limits.final_retention_ms` (14 400 000, four hours) is clamped to it. fux's own
 panes (a workspace's initial pane, a new tab's pane, the viewer's and CLI's splits) use the
-configured `[final] retain-ms` (default 60 000). `split` also accepts `env` (an array of
+configured `[final] retain-ms` (default 60 000; for a viewer's split action, the attaching client's configuration). `split` also accepts `env` (an array of
 `[name, value]` pairs, at most 64 entries and 16 KiB total, applied on top of the sanitized
 inherited environment) and `rows`/`columns` for the pane's initial spawn size. Subsequent layout can resize the pane, including without a viewer;
 attached viewers determine the tab's available area. Workspace creation does not accept these
@@ -232,7 +232,7 @@ A `final` without a record fails with one of five codes, and only the first is w
 
 fux distinguishes the last three without retaining more evidence: per server instance it keeps
 two bounded rings of pane ids, the ids evicted by the cap and the ids whose retention elapsed,
-each holding the most recent 1024 ids (`MAX_EVICTED_FINAL_IDS`); the oldest id is dropped when a
+each holding the most recent 1024 ids (`MAX_FORGOTTEN_FINAL_IDS`); the oldest id is dropped when a
 ring is full. The exact rule: `evicted` while the id is in the eviction ring; `expired` while the
 record is still present past its `expires_ms` or the id is in the expiry ring; `unknown`
 otherwise. An id is never reported `expired` or `evicted` unless a record was made for it;
