@@ -242,7 +242,7 @@ fn final_evidence_survives_workspace_release_and_expires_explicitly() {
         final_reply(&mut h, PaneId(1), "test-instance"),
         Reply::Completed { .. }
     ));
-    h.now = record.expires_ms;
+    h.now += fux::ecs::resources::FINAL_RETENTION_MS;
     assert!(
         matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
     );

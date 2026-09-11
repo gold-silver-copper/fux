@@ -1217,8 +1217,6 @@ pub struct FinalRecord {
     pub command: Vec<String>,
     pub cwd: PathBuf,
     pub exit_status: Option<u32>,
-    pub closed_ms: u64,
-    pub expires_ms: u64,
     pub input_sequence: u64,
     pub capture: crate::terminal::CaptureSnapshot,
 }

@@ -127,8 +127,6 @@
     "command": {"consumers": ["zor:tasks/launch.rs"], "kind": "primitive", "why": "Launch correlation matches the record by argv."},
     "cwd": {"consumers": ["zor:tasks/launch.rs"], "kind": "primitive", "why": "Launch correlation matches the record by directory."},
     "exit_status": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "The exit status only the process owner observed."},
-    "closed_ms": {"consumers": ["cli"], "kind": "primitive", "why": "Exit timestamp; no wire consumer today (fux orders retained records by it internally), recorded as cli pending the caller's decision."},
-    "expires_ms": {"consumers": ["cli"], "kind": "primitive", "why": "Record retention deadline; no wire consumer today (fux prunes retained records by it internally), recorded as cli pending the caller's decision."},
     "input_sequence": {"consumers": ["zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Input counter at exit, correlated with the last receipt."},
     "capture": {"consumers": ["zor:run.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "The final screen."}
   },

@@ -1,7 +1,8 @@
 //! Bounded terminal evidence, independent of the lifetime of pane and workspace entities.
 use crate::ecs::components::{Pane, PaneState};
 use crate::ecs::resources::{
-    Clock, Deadlines, FINAL_RETENTION_MS, FinalRecords, Ids, MAX_FINAL_RECORDS, ServerIdentity,
+    Clock, Deadlines, FINAL_RETENTION_MS, FinalRecords, Ids, MAX_FINAL_RECORDS, RetainedFinal,
+    ServerIdentity,
 };
 use crate::proto::control::{CommandResult, ErrorCode, FinalRecord, Reply};
 use bevy_ecs::prelude::*;
@@ -21,23 +22,26 @@ pub fn remember(world: &mut World, pane: Entity) {
         command: component.argv.clone(),
         cwd: component.cwd.clone(),
         exit_status: component.state.exit_code(),
-        closed_ms: now,
-        expires_ms: now.saturating_add(FINAL_RETENTION_MS),
         input_sequence: component.input_sequence,
         capture: component.terminal.capture_snapshot(0, false, 131_072, None),
+    };
+    let record = RetainedFinal {
+        record,
+        closed_ms: now,
+        expires_ms: now.saturating_add(FINAL_RETENTION_MS),
     };
     let mut records = world.resource_mut::<FinalRecords>();
     if records.0.len() >= MAX_FINAL_RECORDS {
         let oldest = records
             .0
             .values()
-            .min_by_key(|record| (record.closed_ms, record.pane))
-            .map(|record| record.pane);
+            .min_by_key(|retained| (retained.closed_ms, retained.record.pane))
+            .map(|retained| retained.record.pane);
         if let Some(oldest) = oldest {
             records.0.remove(&oldest);
         }
     }
-    records.0.insert(record.pane, record);
+    records.0.insert(record.record.pane, record);
     expire(world);
 }
 
@@ -60,12 +64,12 @@ pub fn read(world: &World, instance: &str, pane: crate::ids::PaneId) -> Reply {
         .resource::<FinalRecords>()
         .0
         .get(&pane)
-        .filter(|record| record.expires_ms > world.resource::<Clock>().now_ms)
+        .filter(|retained| retained.expires_ms > world.resource::<Clock>().now_ms)
     {
-        Some(record) => Reply::Completed {
+        Some(retained) => Reply::Completed {
             id: 0,
             result: CommandResult::Final {
-                record: Box::new(record.clone()),
+                record: Box::new(retained.record.clone()),
             },
         },
         None => Reply::failed(
@@ -81,12 +85,12 @@ pub fn expire(world: &mut World) {
     world
         .resource_mut::<FinalRecords>()
         .0
-        .retain(|_, record| record.expires_ms > now);
+        .retain(|_, retained| retained.expires_ms > now);
     if let Some(next) = world
         .resource::<FinalRecords>()
         .0
         .values()
-        .map(|record| record.expires_ms)
+        .map(|retained| retained.expires_ms)
         .min()
     {
         world.resource_mut::<Deadlines>().propose(next);

@@ -151,4 +151,11 @@ pub const MAX_FINAL_RECORDS: usize = 128;
 pub const FINAL_RETENTION_MS: u64 = 60_000;
 
 #[derive(Resource, Default)]
-pub struct FinalRecords(pub BTreeMap<PaneId, crate::proto::control::FinalRecord>);
+pub struct FinalRecords(pub BTreeMap<PaneId, RetainedFinal>);
+
+/// A retained final record with the server-side bookkeeping that never crosses the wire.
+pub struct RetainedFinal {
+    pub record: crate::proto::control::FinalRecord,
+    pub closed_ms: u64,
+    pub expires_ms: u64,
+}

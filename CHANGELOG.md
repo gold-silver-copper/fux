@@ -27,6 +27,8 @@ log. No compatibility with 0.8.0 consumers is kept.
   retained final records and their bounds stay in fux as the primitive zor reads.
 - `progress` stays on both capture forms (zor's rules read it).
 - zor 0.4.0 ships from this workspace; see `crates/zor/CHANGELOG.md`.
+- `FinalRecord` no longer carries `closed_ms` and `expires_ms`; they were server-side
+  retention bookkeeping with no consumer, and stay internal.
 - Socket plumbing now comes from local-ipc 0.2.0: `connect_local`, `write_all_until`, the
   manager frame reader and runtime-directory discovery are the shared `connect_until`,
   `write_all_until`, `FrameReader` and `runtime_directory_from`; behavior, limits and error
