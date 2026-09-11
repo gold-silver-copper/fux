@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 - 2026-09-11
+
+- `wrap` is a default feature again: `cargo install zor` includes `zor wrap <command>`. fux
+  builds zor for its own use with `--no-default-features --features cli`, which has no
+  wrapper, no `vt100`, and no `wrap` subcommand.
+
 ## 0.3.0 - 2026-09-11
 
 Breaking release: zor is the agent layer only; it no longer emulates terminals or wraps PTYs.

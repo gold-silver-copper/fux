@@ -109,6 +109,9 @@
       "build",
       "--manifest-path",
       "crates/zor/Cargo.toml",
+      "--no-default-features",
+      "--features",
+      "cli",
       "--locked",
       "--bin",
       "zor"
@@ -390,6 +393,9 @@
       "build",
       "--manifest-path",
       "crates/zor/Cargo.toml",
+      "--no-default-features",
+      "--features",
+      "cli",
       "--locked",
       "--bin",
       "zor"
@@ -656,8 +662,9 @@
       "clippy",
       "--manifest-path",
       "crates/zor/Cargo.toml",
+      "--no-default-features",
       "--features",
-      "wrap",
+      "cli",
       "--all-targets",
       "--locked",
       "--",
@@ -669,8 +676,9 @@
       "test",
       "--manifest-path",
       "crates/zor/Cargo.toml",
+      "--no-default-features",
       "--features",
-      "wrap",
+      "cli",
       "--locked"
     ],
     [

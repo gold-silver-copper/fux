@@ -41,10 +41,12 @@ jobs:
       - run: cargo +${{ matrix.rust }} clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} clippy -p zor --all-targets --all-features --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} clippy -p zor --all-targets --no-default-features --locked -- -D warnings
-      - run: cargo +${{ matrix.rust }} clippy -p zor --features wrap --all-targets --locked -- -D warnings
+      - run: cargo +${{ matrix.rust }} clippy -p zor --no-default-features --features cli --all-targets --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} clippy -p local-ipc --all-targets --locked -- -D warnings
       - name: Build the exact binaries for real-process scenarios
-        run: cargo +${{ matrix.rust }} build --locked --bin fux --bin zor
+        run: |
+          cargo +${{ matrix.rust }} build --locked -p fux --bin fux
+          cargo +${{ matrix.rust }} build --locked -p zor --no-default-features --features cli --bin zor
       # The real zor integration pairs the exact binaries built above and cannot silently skip.
       # Its 21 real-process scenarios run on Linux, as the former companion job did; hosted
       # macOS runners time out their process startups under that load.
@@ -70,7 +72,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: cargo +${{ matrix.rust }} test -p zor --no-default-features --locked
       - if: runner.os == 'Linux'
-        run: cargo +${{ matrix.rust }} test -p zor --features wrap --locked
+        run: cargo +${{ matrix.rust }} test -p zor --no-default-features --features cli --locked
       - run: cargo +${{ matrix.rust }} test -p local-ipc --locked
       - run: cargo +${{ matrix.rust }} check -p zor --no-default-features --all-targets --locked
       - run: cargo +${{ matrix.rust }} doc --workspace --no-deps --locked
@@ -119,7 +121,9 @@ jobs:
       # checkout must be that commit with no local changes.
       - name: Check out the pinned companion
         run: cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies apply
-      - run: cargo build --locked --bin fux --bin zor
+      - run: |
+          cargo build --locked -p fux --bin fux
+          cargo build --locked -p zor --no-default-features --features cli --bin zor
       - name: Verify koh gateway against the exact fux and zor binaries
         env:
           FUX_BIN: ${{ github.workspace }}/target/debug/fux
