@@ -57,7 +57,7 @@ fn main() -> std::process::ExitCode {
             Some("measure-memory") => measure_memory::run(args.collect()),
             Some("measure-viewer") => measure_viewer::run(args.collect()),
             Some("measure-koh") => measure_koh::run(args.collect()),
-            Some("package-version") => package::run(),
+            Some("package-version") => package::run(args.collect()),
             _ => anyhow::bail!(
                 "usage: fux-xtask dependencies <export|apply|verify> [--build] [--headless]\n       fux-xtask scenario NAME FUX_BINARY\n       fux-xtask fixture-worker NAME [ARGS]\n       fux-xtask package-version < cargo-metadata.json"
             ),

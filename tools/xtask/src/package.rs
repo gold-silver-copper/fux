@@ -3,16 +3,23 @@ use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 use std::io::Read;
 
+#[cfg(test)]
 fn version(bytes: &[u8]) -> Result<String> {
+    version_of(bytes, "fux")
+}
+fn version_of(bytes: &[u8], name: &str) -> Result<String> {
     let metadata: Value = serde_json::from_slice(bytes)?;
     let packages = metadata["packages"]
         .as_array()
         .context("metadata packages")?;
-    let mut matching = packages.iter().filter(|package| package["name"] == "fux");
+    let mut matching = packages.iter().filter(|package| package["name"] == name);
     let package = matching
         .next()
-        .context("fux package absent from metadata")?;
-    ensure!(matching.next().is_none(), "ambiguous fux package metadata");
+        .with_context(|| format!("{name} package absent from metadata"))?;
+    ensure!(
+        matching.next().is_none(),
+        "ambiguous {name} package metadata"
+    );
     let version = package["version"].as_str().context("package version")?;
     ensure!(
         !version.is_empty()
@@ -23,13 +30,27 @@ fn version(bytes: &[u8]) -> Result<String> {
     );
     Ok(version.into())
 }
-pub fn run() -> Result<()> {
+/// `package-version [NAME]` prints the workspace version of `NAME` (default `fux`) from
+/// `cargo metadata --no-deps` JSON on stdin.
+pub fn run(args: Vec<String>) -> Result<()> {
+    ensure!(
+        args.len() <= 1,
+        "package-version takes at most one package name"
+    );
+    let name = args.first().map_or("fux", String::as_str);
+    ensure!(
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+        "unsafe package name"
+    );
     let mut bytes = Vec::new();
     std::io::stdin()
         .take(16 * 1024 * 1024 + 1)
         .read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 16 * 1024 * 1024, "metadata size limit");
-    println!("{}", version(&bytes)?);
+    println!("{}", version_of(&bytes, name)?);
     Ok(())
 }
 #[cfg(test)]

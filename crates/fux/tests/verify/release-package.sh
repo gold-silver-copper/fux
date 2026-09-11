@@ -17,7 +17,13 @@ version=$(cargo metadata --no-deps --format-version 1 --locked | cargo run --qui
 fux_package="$package_target/package/fux-$version"
 test -f "$fux_package/Cargo.toml"
 
-cargo install --path "$fux_package" --root "$scratch/install" --locked
+# The packaged fux is installed against the packaged local-ipc (both from this run's package
+# output), so the check does not depend on crates.io having local-ipc yet.
+ipc_version=$(cargo metadata --no-deps --format-version 1 --locked | cargo run --quiet --locked --manifest-path tools/xtask/Cargo.toml -- package-version local-ipc)
+ipc_package="$package_target/package/local-ipc-$ipc_version"
+test -f "$ipc_package/Cargo.toml"
+cargo install --path "$fux_package" --root "$scratch/install" --locked \
+  --config "patch.crates-io.local-ipc.path='$ipc_package'"
 "$scratch/install/bin/fux" --version
 FUX_BIN="$scratch/install/bin/fux" \
 cargo test --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --locked --test binary
