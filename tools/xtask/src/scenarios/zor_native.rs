@@ -37,7 +37,7 @@ fn cli(root: &Root, zor: &Path, args: &[&str]) -> Result<Value> {
             && args.first() == Some(&"stop")
             && (error.contains(
                 "stop requested; pane release is not yet confirmed; retry the same launch ID",
-            ) || error.contains("final launch evidence unavailable or expired"))
+            ) || error.contains("final launch evidence unavailable"))
         {
             return Ok(None);
         }
