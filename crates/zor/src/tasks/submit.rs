@@ -17,7 +17,10 @@ const RECONCILE_GRACE_MS: u64 = 10_000;
 /// (`run_until`, `wait::check_until`, the service's 1 s recovery loop), a late binding
 /// (`binding.rs`) and the arm retirement (`integration.rs`). So the receipt must outlive the
 /// prompt's remaining window plus one reconcile round; anything longer is waste, anything
-/// beyond fux's ceiling would be clamped there anyway, so zor clamps first.
+/// beyond fux's ceiling would be clamped there anyway, so zor clamps first. Consequence: a
+/// prompt whose window exceeds fux's ceiling (10 minutes) loses its receipt after that ceiling;
+/// a later reconcile then sees `expired` ("delivery outcome is unknown") and the arm cannot be
+/// proven unsent. That is the ceiling's documented trade-off, not a zor bug.
 pub(super) fn input_retain_ms(prompt: &Prompt, now_ms: u64) -> u64 {
     prompt
         .deadline_ms
