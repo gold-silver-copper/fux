@@ -91,25 +91,10 @@ pub enum Action {
         #[arg(long)]
         pid: u32,
     },
-    /// Run a command in a pseudoterminal and publish its observed agent state as OSC 7877.
-    #[cfg(feature = "wrap")]
-    Wrap {
-        /// Also write event lines to a unix socket or fifo (`-` selects fd 3).
-        #[arg(long)]
-        events: Option<PathBuf>,
-        /// How to touch the child's OSC 0/2 window title.
-        #[arg(long, value_enum, default_value_t = TitleMode::Prefix)]
-        title: TitleMode,
-        /// Never emit the state OSC; title updates only.
-        #[arg(long)]
-        no_osc: bool,
-        /// Dump matched rules and machine events to stderr.
-        #[arg(long)]
-        debug: bool,
-        /// Command and arguments to wrap (default: `$SHELL -l`).
-        #[arg(allow_hyphen_values = true)]
-        command: Vec<String>,
-    },
+    /// Any other first word is a program to run in a pseudoterminal with its observed agent
+    /// state published as OSC 7877 (`zor claude`, `zor -- status`); see the top-level flags.
+    #[command(external_subcommand)]
+    Command(Vec<String>),
 }
 
 #[cfg(feature = "wrap")]
@@ -508,8 +493,11 @@ pub enum ReportKind {
     ResponseObserved,
 }
 
+/// `zor [FLAGS] <program> [args...]` wraps a program; `zor [FLAGS] <subcommand> ...` runs one
+/// of zor's own commands; `zor [FLAGS] -- <program> [args...]` always wraps, even when the
+/// program is named like a subcommand; bare `zor` wraps `$SHELL -l`.
 #[derive(Debug, Parser)]
-#[command(version, about, trailing_var_arg = true)]
+#[command(version, about, trailing_var_arg = true, subcommand_required = false)]
 pub struct Cli {
     /// Private durable task state (defaults to XDG_STATE_HOME/zor or HOME/.local/state/zor).
     #[arg(long)]
@@ -518,6 +506,52 @@ pub struct Cli {
     pub rules: Vec<PathBuf>,
     #[arg(long)]
     pub agent: Option<String>,
+    /// Wrapper: also write event lines to a unix socket or fifo (`-` selects fd 3).
+    #[cfg(feature = "wrap")]
+    #[arg(long)]
+    pub events: Option<PathBuf>,
+    /// Wrapper: how to touch the wrapped program's OSC 0/2 window title.
+    #[cfg(feature = "wrap")]
+    #[arg(long, value_enum, default_value_t = TitleMode::Prefix)]
+    pub title: TitleMode,
+    /// Wrapper: never emit the state OSC; title updates only.
+    #[cfg(feature = "wrap")]
+    #[arg(long)]
+    pub no_osc: bool,
+    /// Wrapper: dump matched rules and machine events to stderr.
+    #[cfg(feature = "wrap")]
+    #[arg(long)]
+    pub debug: bool,
     #[command(subcommand)]
-    pub action: Action,
+    pub action: Option<Action>,
+}
+
+impl Cli {
+    /// Parses the process arguments. A standalone `--` before the first non-flag token forces
+    /// everything after it to be the wrapped program, so `zor -- status` wraps a program named
+    /// `status` instead of running zor's `status` command.
+    pub fn parse_args() -> Self {
+        let args: Vec<String> = std::env::args().collect();
+        let mut index = 1;
+        while let Some(arg) = args.get(index) {
+            if arg == "--" {
+                let mut cli = Self::parse_from(args.iter().take(index));
+                let command: Vec<String> = args.iter().skip(index + 1).cloned().collect();
+                if cli.action.is_none() && !command.is_empty() {
+                    cli.action = Some(Action::Command(command));
+                }
+                return cli;
+            }
+            if !arg.starts_with('-') {
+                break;
+            }
+            // Long flags that take a value consume the next token unless written as --flag=value.
+            let takes_value = matches!(
+                arg.as_str(),
+                "--state-directory" | "--rules" | "--agent" | "--events" | "--title"
+            );
+            index += if takes_value { 2 } else { 1 };
+        }
+        Self::parse()
+    }
 }

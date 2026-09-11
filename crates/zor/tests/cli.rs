@@ -84,7 +84,7 @@ fn check_evaluates_fixture_expectation_and_rule() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-// `zor wrap` (feature `wrap`): SIGUSR1 fixtures and state clearing through the real binary.
+// The wrapper (feature `wrap`): SIGUSR1 fixtures and state clearing through the real binary.
 #[cfg(feature = "wrap")]
 #[test]
 fn sigusr1_writes_the_detection_window_fixture() -> Result<(), Box<dyn std::error::Error>> {
@@ -99,7 +99,6 @@ fn sigusr1_writes_the_detection_window_fixture() -> Result<(), Box<dyn std::erro
         .env("XDG_RUNTIME_DIR", &root)
         .env("TMPDIR", &root)
         .args([
-            "wrap",
             "--title",
             "never",
             "--",
@@ -166,7 +165,7 @@ fn sigusr1_writes_the_detection_window_fixture() -> Result<(), Box<dyn std::erro
     let stderr = String::from_utf8(output.stderr)?;
     let path = stderr
         .lines()
-        .find_map(|line| line.strip_prefix("zor wrap: fixture written to "))
+        .find_map(|line| line.strip_prefix("zor: fixture written to "))
         .map(std::path::PathBuf::from);
     assert!(path.as_ref().is_some_and(|path| path.exists()));
     assert_eq!(
@@ -202,7 +201,6 @@ fn wrapper_clears_an_earlier_state_by_publishing_none() -> Result<(), Box<dyn st
         .args([
             "--agent",
             "test",
-            "wrap",
             "--title",
             "never",
             "--",
