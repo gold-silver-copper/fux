@@ -154,12 +154,7 @@ pub fn publish_frames(
                     message: ServerMessage::Exited { code: None },
                 });
             }
-            let name = scene
-                .workspaces
-                .get(viewer.workspace)
-                .map(|workspace| workspace.name.clone())
-                .unwrap_or_default();
-            exit.despawn(&mut ids, entity, id, viewer.workspace, &name, &mut effects);
+            exit.despawn(&mut ids, entity, id, &mut effects);
             continue;
         }
         let retiring = scene

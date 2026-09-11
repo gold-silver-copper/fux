@@ -326,10 +326,7 @@ async fn serve_control_connection(
             .await?;
             continue;
         }
-        if let Request::Subscribe {
-            id, events, after, ..
-        } = request
-        {
+        if let Request::Subscribe { id, after, .. } = request {
             let (sender, mut receiver) = mpsc::channel(MAX_SUBSCRIBER_QUEUE);
             {
                 let mut active = subscribers
@@ -337,7 +334,6 @@ async fn serve_control_connection(
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 active.retain(|subscriber| !subscriber.sender.is_closed());
                 active.push(Subscriber {
-                    filters: events.clone(),
                     sender,
                     bytes: Arc::new(AtomicUsize::new(0)),
                 });
@@ -377,9 +373,7 @@ async fn serve_control_connection(
             }
             write_line(&mut writer, &Reply::Accepted { id }).await?;
             for entry in replay {
-                if events.is_empty() || events.contains(&entry.event.kind()) {
-                    write_event(&mut writer, entry, id).await?;
-                }
+                write_event(&mut writer, entry, id).await?;
             }
             let mut probe = [0_u8; 1];
             loop {
@@ -413,14 +407,8 @@ async fn dispatch_control(
     request: Request,
 ) -> anyhow::Result<Reply> {
     let request_id = request.id();
-    // A `wait` replies only when its condition or its own timeout fires, so the reply window
-    // must outlast the requested timeout; every other request keeps the fixed 30 s answer cap.
-    let answer_window = match &request {
-        Request::Wait { timeout_ms, .. } => {
-            Duration::from_millis(*timeout_ms).saturating_add(Duration::from_secs(5))
-        }
-        _ => Duration::from_secs(30),
-    };
+    // Every request is answered within the fixed 30 s window or failed with its own id.
+    let answer_window = Duration::from_secs(30);
     let token = owner.token();
     let (sender, receiver) = oneshot::channel();
     owner.control_replies.send((token, sender)).await?;
@@ -588,9 +576,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn subscription_replay_deduplicates_queued_overlap_and_filters_both_sides()
-    -> anyhow::Result<()> {
-        use control::{CommandResult, Event, EventCursor, EventKind, SequencedEvent};
+    async fn subscription_replay_deduplicates_queued_overlap() -> anyhow::Result<()> {
+        use control::{CommandResult, Event, EventCursor, SequencedEvent};
         tokio::time::timeout(Duration::from_secs(5), async {
             let (server, mut client) = UnixStream::pair()?;
             let (inbound, mut inbound_rx) = mpsc::channel(1);
@@ -613,14 +600,14 @@ mod tests {
             let cursor = |sequence| EventCursor { stream: 7, sequence };
             write_line(&mut writer, &Request::Subscribe {
                 id: 42, instance: Some("current-server".into()),
-                events: vec![EventKind::PaneTitle], after: Some(cursor(0)),
+                after: Some(cursor(0)),
             }).await?;
             let (token, reply) = control_rx.recv().await.ok_or_else(|| anyhow::anyhow!("missing reply channel"))?;
             let request = inbound_rx.recv().await.ok_or_else(|| anyhow::anyhow!("missing replay request"))?;
             assert!(matches!(request, Inbound::ControlRequest { token: actual, request: Request::Events { after, .. }, .. } if actual == token && after == cursor(0)));
             // Registration must already exist before the authoritative replay is answered.
             assert_eq!(crate::os::lock(&subscribers).len(), 1);
-            let title = |value: &str| Event::PaneTitle { id: 0, pane: crate::ids::PaneId(1), title: value.into() };
+            let title = |value: &str| Event::TabOpened { id: 0, tab: crate::ids::TabId(1), name: value.into() };
             let publish = |event: Event, cursor: EventCursor| {
                 let size = crate::ecs::events::encoded_len(&SequencedEvent { cursor, event: event.clone() });
                 super::super::adapter::publish(&subscribers, &event, cursor, size);
@@ -632,16 +619,15 @@ mod tests {
                     SequencedEvent { cursor: cursor(2), event: title("overlap") },
                 ],
             }}).map_err(|_| anyhow::anyhow!("replay receiver closed"))?;
-            // Queue later filtered and matching events before reading the acceptance/replay.
-            publish(Event::WorkspaceChanged { id: 0 }, cursor(3));
-            publish(title("later"), cursor(4));
+            // Queue a later event before reading the acceptance/replay.
+            publish(title("later"), cursor(3));
             let accepted = read_line(&mut client).await?.ok_or_else(|| anyhow::anyhow!("accept EOF"))?;
             assert_eq!(serde_json::from_slice::<Reply>(&accepted)?, Reply::Accepted { id: 42 });
-            for (sequence, value) in [(2, "overlap"), (4, "later")] {
+            for (sequence, event) in [(1, Event::WorkspaceChanged { id: 0 }), (2, title("overlap")), (3, title("later"))] {
                 let line = read_line(&mut client).await?.ok_or_else(|| anyhow::anyhow!("event EOF"))?;
                 let entry: SequencedEvent = serde_json::from_slice(&line)?;
                 assert_eq!(entry.cursor, cursor(sequence));
-                assert_eq!(entry.event, title(value).with_id(42));
+                assert_eq!(entry.event, event.with_id(42));
             }
             drop(client);
             drop(writer);
@@ -692,7 +678,6 @@ mod tests {
                         after: None,
                         id: 1,
                         instance: Some(instance.into()),
-                        events: Vec::new(),
                     },
                 )
                 .await?;
@@ -709,7 +694,6 @@ mod tests {
                     after: None,
                     id: 2,
                     instance: Some("current-server".into()),
-                    events: Vec::new(),
                 },
             )
             .await?;

@@ -114,10 +114,10 @@ mod tests {
     fn encoded_len_matches_allocating_encoding_exactly() {
         for event in [
             Event::WorkspaceChanged { id: 0 },
-            Event::PaneTitle {
+            Event::TabOpened {
                 id: 7,
-                pane: crate::ids::PaneId(3),
-                title: "ünïcode \"quoted\" \u{1F600} \\ title".repeat(40),
+                tab: crate::ids::TabId(3),
+                name: "ünïcode \"quoted\" \u{1F600} \\ title".repeat(40),
             },
         ] {
             let entry = SequencedEvent {
@@ -170,19 +170,19 @@ mod tests {
         let mut log = EventLog::new(1);
         let start = log.cursor();
         for _ in 0..10 {
-            let _ = log.push(Event::PaneTitle {
+            let _ = log.push(Event::TabOpened {
                 id: 0,
-                pane: crate::ids::PaneId(1),
-                title: "t".repeat(64 * 1024),
+                tab: crate::ids::TabId(1),
+                name: "t".repeat(64 * 1024),
             });
         }
         assert!(log.bytes <= MAX_EVENT_BYTES);
         assert!(log.replay(start).is_none());
         let before_large = log.cursor();
-        let _ = log.push(Event::PaneTitle {
+        let _ = log.push(Event::TabOpened {
             id: 0,
-            pane: crate::ids::PaneId(1),
-            title: "t".repeat(MAX_EVENT_BYTES + 1),
+            tab: crate::ids::TabId(1),
+            name: "t".repeat(MAX_EVENT_BYTES + 1),
         });
         assert!(log.replay(before_large).is_none());
         assert_eq!(log.replay(log.cursor()), Some(Vec::new()));

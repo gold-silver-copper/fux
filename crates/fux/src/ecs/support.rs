@@ -33,26 +33,10 @@ pub struct ViewerExit<'w, 's> {
 }
 
 impl ViewerExit<'_, '_> {
-    pub fn despawn(
-        &mut self,
-        ids: &mut Ids,
-        viewer: Entity,
-        id: ViewerId,
-        workspace: Entity,
-        name: &str,
-        effects: &mut Effects,
-    ) {
+    pub fn despawn(&mut self, ids: &mut Ids, viewer: Entity, id: ViewerId, effects: &mut Effects) {
         ids.viewers.remove(&id);
         self.commands.entity(viewer).despawn();
         effects.emit(Effect::CloseViewer { viewer: id });
-        effects.event(
-            workspace,
-            name,
-            control::Event::ClientDetached {
-                id: 0,
-                client: id.0,
-            },
-        );
     }
 }
 

@@ -26,8 +26,11 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         })?;
         let info = completed(&socket, json!({"command":"info","id":1}))?["info"].clone();
         ensure!(
-            info["limits"]["panes"] == 128 && info["limits"]["viewers"] == 64,
-            "info limits changed"
+            info["limits"]["capture_bytes"] == 131072
+                && info["limits"]["key_bytes"] == 65536
+                && info["limits"]["frame_bytes"] == 1_048_576
+                && info["limits"]["scrollback_lines"].is_u64(),
+            "info request bounds changed: {info}"
         );
         let pane = completed(&socket, json!({"command":"split","id":2,"axis":"horizontal",
             "argv":["/bin/sh","-c","printf \"%s\\n\" \"$ROLE\"; read x; printf \"got:%s\\n\" \"$x\"; exit 7"],
@@ -41,12 +44,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
             .find(|summary| summary["id"] == pane)
             .map(|summary| summary["seq"].clone())
             .context("split pane listed")?;
-        let waited = completed(
-            &socket,
-            json!({"command":"wait","id":4,"pane":pane,
-            "until":{"kind":"seq","value":seen},"timeout_ms":10000}),
-        )?;
-        ensure!(waited["fired"] == "seq", "wait seq");
+        ensure!(seen.is_u64(), "listed pane carries an output sequence");
         until(Duration::from_secs(10), || {
             let cells = completed(
                 &socket,
@@ -71,7 +69,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         // rows/columns specify the initial PTY size; main's layout may resize it after spawn.
         // The ECS spawn regression verifies the initial dimensions independently.
         let mut events = Peer::connect(&socket)?;
-        events.send(&json!({"command":"subscribe","id":7,"events":["pane.closed"]}))?;
+        events.send(&json!({"command":"subscribe","id":7}))?;
         ensure!(events.read()?["status"] == "accepted", "subscription");
         completed(
             &socket,

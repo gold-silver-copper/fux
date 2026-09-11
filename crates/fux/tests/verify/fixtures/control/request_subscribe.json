@@ -1,7 +1,4 @@
 {
   "command": "subscribe",
-  "id": 10,
-  "events": [
-    "pane.output"
-  ]
+  "id": 10
 }

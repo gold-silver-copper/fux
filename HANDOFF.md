@@ -15,7 +15,8 @@ The older release and performance record in `docs/ecs-acceptance.md` is historic
   remaining companion, pinned at an exact commit.
 - fux owns generic terminal control. Server/workspace identity, coherent conditional captures,
   tracked input receipts, bounded event replay and retained final records support unattended
-  consumers. `fux run` obtains final output and status from retained records.
+  consumers. Workflows over those primitives live in zor: `zor run` obtains final output and
+  status from retained records; fux has no `wait`, `run` or `final` command.
 - Agent interpretation and provider/task/check/artifact policy belong to zor. fux ignores OSC
   7877 agent reports and exposes no pane agent field or event. Generic titles remain in `list`
   and captures; OSC 9;4 progress is exposed only through the `text` and `cells` captures.

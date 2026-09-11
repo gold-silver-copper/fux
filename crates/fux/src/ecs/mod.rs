@@ -13,7 +13,7 @@ pub mod support;
 pub mod systems;
 
 pub use messages::{Effect, Inbound, ManagerAction, ManagerOutcome, Requester, ViewerRequest};
-pub use resources::{Clock, Deadlines, Ids, Limits, Registry, ServerIdentity, Waits};
+pub use resources::{Clock, Deadlines, Ids, Limits, Registry, ServerIdentity};
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::{ScheduleLabel, SingleThreadedExecutor};
@@ -28,7 +28,6 @@ pub enum Phase {
     Output,
     Requests,
     Completions,
-    Waits,
     Lifecycle,
     Layout,
     Snapshot,
@@ -56,7 +55,6 @@ impl Session {
         world.init_resource::<Deadlines>();
         world.init_resource::<resources::ShuttingDown>();
         world.init_resource::<ServerIdentity>();
-        world.init_resource::<Waits>();
         world.init_resource::<resources::WorkspaceCounter>();
         world.init_resource::<Messages<Inbound>>();
         world.init_resource::<Messages<Effect>>();
@@ -68,7 +66,6 @@ impl Session {
                 Phase::Output,
                 Phase::Requests,
                 Phase::Completions,
-                Phase::Waits,
                 Phase::Lifecycle,
                 Phase::Layout,
                 Phase::Snapshot,
@@ -99,7 +96,6 @@ impl Session {
             )
                 .chain()
                 .in_set(Phase::Completions),
-            systems::requests::resolve_waits.in_set(Phase::Waits),
             systems::lifecycle::resolve_lifecycle.in_set(Phase::Lifecycle),
             systems::layout::resolve_layout.in_set(Phase::Layout),
             (

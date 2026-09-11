@@ -490,22 +490,15 @@ impl Jsonl {
         assert!(!line.is_empty(), "peer closed before a response");
         serde_json::from_str(&line).expect("response JSON")
     }
-    fn expect_silence(&mut self, timeout: Duration) {
-        let stream = self.reader.get_mut();
-        let _ = stream.set_read_timeout(Some(timeout));
-        let mut probe = [0_u8; 1];
-        match stream.read(&mut probe) {
-            Ok(0) => panic!("peer closed while checking for silence"),
-            Ok(_) => panic!("unexpected bytes while expecting silence"),
-            Err(error) => assert!(
-                matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ),
-                "silence probe: {error}"
-            ),
+    /// Reads live events until one of `kind` arrives (at most 64 frames).
+    fn receive_event(&mut self, kind: &str) -> Value {
+        for _ in 0..64 {
+            let event = self.receive();
+            if event["event"] == kind {
+                return event;
+            }
         }
-        let _ = stream.set_read_timeout(Some(DEADLINE));
+        panic!("no {kind} event within 64 frames");
     }
 }
 
@@ -593,12 +586,11 @@ fn natural_last_pane_exit_is_observable_before_workspace_retirement() {
     assert_eq!(fixture.receive()["bytes"], 12);
     viewer.wait_for_text("FINAL_BINARY");
     let mut subscriber = control(&environment, "binary");
-    subscriber.send(json!({"command":"subscribe","id":93,"events":["pane.closed"]}));
+    subscriber.send(json!({"command":"subscribe","id":93}));
     assert_eq!(subscriber.receive()["status"], "accepted");
     fixture.send(json!({"command":"exit","status":29}));
     assert_eq!(fixture.receive()["event"], "cleanup");
-    let event = subscriber.receive();
-    assert_eq!(event["event"], "pane.closed");
+    let event = subscriber.receive_event("pane.closed");
     assert_eq!(event["exit_status"], 29);
     assert_eq!(event["id"], 93);
     assert_eq!(
@@ -615,16 +607,26 @@ fn natural_last_pane_exit_is_observable_before_workspace_retirement() {
         "the bar shows the focused pane's exit status"
     );
     let deadline = Instant::now() + DEADLINE;
+    // Final evidence is a manager primitive; no CLI subcommand wraps it.
     let final_reply: Value = loop {
-        let output = environment.run(&["final", "--instance", instance, &pane.to_string()]);
-        let reply: Value = serde_json::from_slice(&output.stdout).expect("final reply");
-        if output.status.success() {
+        let reply = fux::daemon::manager_request(
+            &environment.manager_socket(),
+            &fux::daemon::ManagerRequest::Final {
+                instance: instance.to_owned(),
+                pane: fux::ids::PaneId(u32::try_from(pane).expect("pane id")),
+            },
+        )
+        .expect("final request");
+        let fux::daemon::ManagerReply::Final { result } = reply else {
+            panic!("unexpected manager reply {reply:?}");
+        };
+        let reply = serde_json::to_value(&result).expect("final reply JSON");
+        if reply["status"] == "completed" {
             break reply;
         }
         assert!(
             reply["error"]["code"] == "pending" && Instant::now() < deadline,
-            "retained final: {reply}; {}",
-            String::from_utf8_lossy(&output.stderr)
+            "retained final: {reply}"
         );
         std::thread::sleep(Duration::from_millis(5));
     };
@@ -715,7 +717,7 @@ fn forced_close_terminates_descendants_and_reports_the_status() {
     let mut second = environment.accept_fixture();
     assert_eq!(second.receive()["event"], "ready");
     let mut subscriber = control(&environment, "binary");
-    subscriber.send(json!({"command":"subscribe","id":95,"events":["pane.closed"]}));
+    subscriber.send(json!({"command":"subscribe","id":95}));
     assert_eq!(subscriber.receive()["status"], "accepted");
     let killed = environment.run(&["binary", "kill", "1"]);
     assert!(
@@ -723,8 +725,7 @@ fn forced_close_terminates_descendants_and_reports_the_status() {
         "{}",
         String::from_utf8_lossy(&killed.stdout)
     );
-    let event = subscriber.receive();
-    assert_eq!(event["event"], "pane.closed");
+    let event = subscriber.receive_event("pane.closed");
     assert_eq!(event["pane"], 1);
     assert!(event["exit_status"].as_i64().is_some(), "{event}");
     wait_for_process_absent(primary);
@@ -736,7 +737,6 @@ fn forced_close_terminates_descendants_and_reports_the_status() {
         .expect("panes");
     assert_eq!(panes.len(), 1);
     assert_eq!(panes[0]["id"], 2);
-    subscriber.expect_silence(Duration::from_millis(200));
     second.send(json!({"command":"quit"}));
     assert_eq!(second.receive()["event"], "cleanup");
     server.finish_retired(&environment, "binary");
@@ -824,16 +824,11 @@ fn control_protocol_lists_captures_and_streams_events_without_touching_viewers()
     let mut viewer = TerminalViewer::spawn(&environment, "binary", 24, 80);
     viewer.wait_for_text("binary │");
     let mut subscriber = control(&environment, "binary");
-    subscriber.send(
-        json!({"command":"subscribe","id":7,"events":["pane.opened","tab.opened","pane.title"]}),
-    );
+    subscriber.send(json!({"command":"subscribe","id":7}));
     assert_eq!(subscriber.receive()["status"], "accepted");
     fixture.send(json!({"command":"title","value":"fixture title"}));
     fixture.send(json!({"command":"write","chunks_hex":[hex(b"CAPTURE_ME")]}));
     fixture.receive();
-    let title = subscriber.receive();
-    assert_eq!(title["event"], "pane.title");
-    assert_eq!(title["title"], "fixture title");
     viewer.wait_for_text("CAPTURE_ME");
     let before = viewer.raw().len();
     let capture = environment.run(&["binary", "capture", "1"]);
@@ -865,17 +860,10 @@ fn control_protocol_lists_captures_and_streams_events_without_touching_viewers()
     );
     let mut second = environment.accept_fixture();
     assert_eq!(second.receive()["event"], "ready");
-    let mut kinds = Vec::new();
-    for _ in 0..2 {
-        kinds.push(
-            subscriber.receive()["event"]
-                .as_str()
-                .expect("event")
-                .to_owned(),
-        );
-    }
-    kinds.sort();
-    assert_eq!(kinds, vec!["pane.opened", "tab.opened"]);
+    // Every workspace event is streamed; the tab creation's own two arrive among them.
+    let tab_event = subscriber.receive_event("tab.opened");
+    assert_eq!(tab_event["name"], "work");
+    assert_eq!(subscriber.receive_event("pane.opened")["id"], 7);
     viewer.wait_for_text(" main ");
     viewer.wait_for_text("work");
     // Removed commands fail clearly instead of doing something else.

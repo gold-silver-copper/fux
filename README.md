@@ -138,21 +138,24 @@ second, and reap it. Workspace kill and server shutdown do the same for every pa
 
 Everything works without a terminal. `fux workspace new NAME` starts the server and a workspace;
 `fux [NAME] <command>` drives it over the control protocol (`new`, `split`, `focus`, `kill`,
-`resize`, `send-keys`, `capture`, `list`, `tab`, `subscribe`, `info`, `wait`). Panes carry a
+`resize`, `send-keys`, `capture`, `list`, `tab`, `subscribe`, `info`). Panes carry a
 monotonic output sequence reported by `list`, `capture` and `pane.output` events;
 `fux [NAME] capture PANE --cells` returns the visible grid cell by cell with the same coherent
-metadata as the text form. `fux [NAME] wait PANE exit` (or `seq N`) blocks server-side until
-the condition holds instead of polling. `fux [NAME] new --env K=V --rows R
+metadata as the text form. `fux [NAME] new --env K=V --rows R
 --columns C -- CMD` sets a pane's environment and headless size, and `fux [NAME] send-keys PANE
---keys "C-c Enter"` sends named keys.
+--keys "C-c Enter"` sends named keys. `fux [NAME] subscribe` streams every event of the
+workspace as JSON lines.
 
-`fux run -- COMMAND` is the one-shot convenience: it creates an ephemeral workspace, runs the
-command in a pane of a given size and environment, waits for retained final evidence,
-prints the final screen and exits with the command's status. It creates its workspace atomically
-and never takes over or cleans up a pre-existing workspace.
+fux is the minimal layer: it owns the PTYs, the retained grids, the exit evidence and the
+event log, and exposes them as primitives. Workflows built on those primitives (waiting for a
+condition, running one command to completion, agent and task policy) live in zor. The
+one-shot convenience is `zor run -- COMMAND`: it creates an ephemeral workspace (starting a
+session server when none is running), runs the command in a pane of a given size and
+environment, waits for retained final evidence, prints the final screen and exits with the
+command's status; it never takes over or cleans up a pre-existing workspace.
 
 ```sh
-fux run --rows 24 --columns 80 --env CI=1 -- pytest -q
+zor run --rows 24 --columns 80 --env CI=1 -- pytest -q
 ```
 
 ## Working with koh and zor

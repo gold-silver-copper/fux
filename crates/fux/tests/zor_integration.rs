@@ -81,6 +81,7 @@ scenarios!(
     test_zor_contention,
     test_owned_processes,
     zor_service,
+    zor_run,
     zor_events,
     zor_tasks,
     zor_bindings,

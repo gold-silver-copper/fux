@@ -128,12 +128,9 @@ impl Peer {
             kind,
             "pane.opened"
                 | "pane.closed"
-                | "pane.title"
                 | "pane.output"
                 | "tab.opened"
                 | "tab.closed"
-                | "client.attached"
-                | "client.detached"
                 | "workspace.changed"
         );
         let cursor: Cursor =

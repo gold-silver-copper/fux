@@ -472,6 +472,23 @@ fn run(mut cli: cli::Cli) -> anyhow::Result<u8> {
             println!("{}", zor::service::shutdown(directory)?);
             Ok(0)
         }
+        cli::Action::Run {
+            timeout,
+            rows,
+            columns,
+            env,
+            cwd,
+            workspace,
+            argv,
+        } => zor::run::run(zor::run::Run {
+            timeout_ms: timeout,
+            rows,
+            columns,
+            env: zor::run::env_pairs(env)?,
+            cwd,
+            workspace,
+            argv,
+        }),
         cli::Action::Watch { runtime, once } => {
             zor::watch::run(runtime, once, &cli.rules, cli.agent.as_deref())
         }

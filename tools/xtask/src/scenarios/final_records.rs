@@ -70,17 +70,10 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         server.child.try_wait()?.is_none(),
         "manager exited before final retention"
     );
-    let mut command = root.command(binary);
-    command.args([
-        "final",
-        "--instance",
-        instance.as_str().context("instance")?,
-        &pane.to_string(),
-    ]);
-    let cli = process::output(command, Duration::from_secs(5), 1024 * 1024)?;
+    // `final` is a manager primitive with no CLI subcommand; a second read is the same record.
     ensure!(
-        cli.status.success() && serde_json::from_slice::<Value>(&cli.stdout)? == result,
-        "CLI final differs"
+        final_record()? == result,
+        "final record changed between reads"
     );
     ensure!(
         rpc(

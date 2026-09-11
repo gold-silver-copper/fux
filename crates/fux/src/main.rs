@@ -47,24 +47,13 @@ enum Command {
     SendKeys(PassthroughArgs),
     /// Capture a pane's screen: PANE [--attrs] [--scrollback LINES] [--cells]
     Capture(PassthroughArgs),
-    /// Read retained final screen and exit evidence for an incarnation-scoped pane.
-    Final {
-        #[arg(long)]
-        instance: String,
-        pane: u32,
-    },
     /// List the workspace's tabs and panes as JSON.
     List(PassthroughArgs),
-    /// Show the session server's pid, version, runtime directory and limits as JSON.
+    /// Show the session server's pid, version, runtime directory and request bounds as JSON.
     Info(PassthroughArgs),
-    /// Wait on a pane: PANE exit | seq N [--timeout MS]
-    Wait(PassthroughArgs),
-    /// Run a command in a pane, wait for it to exit, print its final screen, exit with its status:
-    /// [--workspace NAME] [--cwd DIR] [--env K=V] [--rows R] [--columns C] [--timeout MS] -- CMD...
-    Run(PassthroughArgs),
     /// Tab commands: new [NAME] | next | previous | select INDEX | select-id TAB | rename TAB NAME | close TAB
     Tab(PassthroughArgs),
-    /// Stream lifecycle events as JSON lines: [EVENT...]
+    /// Stream the workspace's lifecycle events as JSON lines.
     Subscribe(PassthroughArgs),
 }
 
@@ -230,29 +219,6 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Some(Command::Final { instance, pane }) => {
-            let paths = fux::daemon::DaemonPaths::discover()?;
-            let response = fux::daemon::manager_request(
-                &paths.manager_socket,
-                &fux::daemon::ManagerRequest::Final {
-                    instance,
-                    pane: fux::ids::PaneId(pane),
-                },
-            )?;
-            match response {
-                fux::daemon::ManagerReply::Final { result } => {
-                    println!("{}", serde_json::to_string(&result)?);
-                    Ok(
-                        if matches!(result, fux::proto::control::Reply::Completed { .. }) {
-                            ExitCode::SUCCESS
-                        } else {
-                            ExitCode::FAILURE
-                        },
-                    )
-                }
-                _ => bail!("manager did not return final evidence"),
-            }
-        }
         Some(Command::Workspace(args)) => workspace_command(args.arguments),
         Some(Command::Ctl(args)) => ctl_json(cli.name.as_deref(), args.arguments),
         Some(Command::New(args)) => ctl_alias(cli.name.as_deref(), "new", args.arguments),
@@ -266,8 +232,6 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Capture(args)) => ctl_alias(cli.name.as_deref(), "capture", args.arguments),
         Some(Command::List(args)) => ctl_alias(cli.name.as_deref(), "list", args.arguments),
         Some(Command::Info(args)) => ctl_alias(cli.name.as_deref(), "info", args.arguments),
-        Some(Command::Wait(args)) => ctl_alias(cli.name.as_deref(), "wait", args.arguments),
-        Some(Command::Run(args)) => run_command(cli.name.as_deref(), args.arguments),
         Some(Command::Tab(args)) => ctl_alias(cli.name.as_deref(), "tab", args.arguments),
         Some(Command::Subscribe(args)) => {
             ctl_alias(cli.name.as_deref(), "subscribe", args.arguments)
@@ -458,14 +422,7 @@ fn send_control(
 ) -> Result<ExitCode> {
     use std::io::Write as _;
     use std::os::unix::net::UnixStream;
-    // A `wait` reply arrives only when its condition or timeout fires, so its read window must
-    // outlast the requested timeout; everything else keeps the 30 s answer window.
-    let answer_window = match &request {
-        fux::proto::control::Request::Wait { timeout_ms, .. } => {
-            std::time::Duration::from_millis(*timeout_ms) + std::time::Duration::from_secs(5)
-        }
-        _ => std::time::Duration::from_secs(30),
-    };
+    let answer_window = std::time::Duration::from_secs(30);
     let socket = control_path(workspace)?;
     let mut stream = UnixStream::connect(&socket)
         .map_err(|error| anyhow::anyhow!("connecting to {}: {error}", socket.display()))?;
@@ -504,271 +461,10 @@ fn send_control(
     )))
 }
 
-/// Sends one control request on `stream` and reads its reply, honoring a long read window for
-/// `wait`. The connection must already be negotiated.
-fn request_reply(
-    stream: &mut std::os::unix::net::UnixStream,
-    request: &fux::proto::control::Request,
-    deadline: std::time::Instant,
-) -> Result<fux::proto::control::Reply> {
-    let remaining = || {
-        deadline
-            .checked_duration_since(std::time::Instant::now())
-            .filter(|duration| !duration.is_zero())
-            .ok_or_else(|| anyhow::anyhow!("control request timed out"))
-    };
-    fux::proto::control::write_frame_until(stream, request, deadline)?;
-    stream.set_read_timeout(Some(remaining()?))?;
-    let frame = fux::daemon::read_json_frame(stream, remaining()?)?;
-    Ok(serde_json::from_slice(&frame)?)
-}
-
-fn run_open_control(socket: &std::path::Path) -> Result<std::os::unix::net::UnixStream> {
-    run_open_control_with_timeout(socket, std::time::Duration::from_secs(5))
-}
-
-fn run_open_control_with_timeout(
-    socket: &std::path::Path,
-    timeout: std::time::Duration,
-) -> Result<std::os::unix::net::UnixStream> {
-    let deadline = std::time::Instant::now()
-        .checked_add(timeout)
-        .ok_or_else(|| anyhow::anyhow!("control deadline overflow"))?;
-    let remaining = || {
-        deadline
-            .checked_duration_since(std::time::Instant::now())
-            .filter(|duration| !duration.is_zero())
-            .ok_or_else(|| anyhow::anyhow!("control deadline elapsed"))
-    };
-    let mut stream = fux::proto::socket::connect_local(socket, deadline)?;
-    fux::proto::socket::negotiate_client_with_timeout(&mut stream, remaining()?)?;
-    stream.set_write_timeout(Some(remaining()?))?;
-    Ok(stream)
-}
-
-fn run_command(name: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
-    let mut timeout_ms: u64 = 300_000;
-    let mut rest = arguments;
-    let mut named = name.map(str::to_owned);
-    let mut position = 0;
-    while let Some(argument) = rest.get(position) {
-        match argument.as_str() {
-            "--timeout" => {
-                timeout_ms = rest
-                    .get(position + 1)
-                    .ok_or_else(|| anyhow::anyhow!("--timeout requires milliseconds"))?
-                    .parse()?;
-                rest.drain(position..=position + 1);
-            }
-            "--workspace" => {
-                named = Some(
-                    rest.get(position + 1)
-                        .ok_or_else(|| anyhow::anyhow!("--workspace requires a name"))?
-                        .clone(),
-                );
-                rest.drain(position..=position + 1);
-            }
-            "--cwd" | "--env" | "--rows" | "--columns" => position += 2,
-            _ => break, // `--` or the command begins: every remaining argument belongs to it.
-        }
-    }
-    let (cwd, env, rows, columns, argv) = parse_pane_options(&rest)?;
-    if argv.is_empty() {
-        bail!("run requires a command after `--`");
-    }
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_nanos())
-        .unwrap_or(0);
-    let workspace = named.unwrap_or_else(|| format!("run-{}-{elapsed}", std::process::id()));
-    fux::ids::validate_workspace_name(&workspace)?;
-    let paths = fux::daemon::DaemonPaths::discover()?;
-    paths.prepare()?;
-    // Create-only is atomic in the owner: resolving a missing name would create it while
-    // falsely reporting that we borrowed an existing workspace.
-    let descriptor = {
-        let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
-        match fux::daemon::manager_request(
-            &paths.manager_socket,
-            &fux::daemon::ManagerRequest::Create {
-                name: workspace.clone(),
-            },
-        ) {
-            Ok(fux::daemon::ManagerReply::Attach { descriptor }) => descriptor,
-            Ok(fux::daemon::ManagerReply::Failed { message }) => {
-                bail!("run requires a fresh workspace: {message}")
-            }
-            Ok(_) => bail!("manager did not confirm workspace creation"),
-            Err(error) if no_server(&error) => {
-                let descriptor = start_server(&paths, &workspace)?;
-                anyhow::ensure!(
-                    descriptor.stream == 1,
-                    "initial workspace was replaced during startup"
-                );
-                descriptor
-            }
-            Err(error) => return Err(error),
-        }
-    };
-    descriptor.validate()?;
-    let socket = paths.control_socket(&workspace)?;
-    let result = run_in_workspace(
-        &paths.manager_socket,
-        &socket,
-        &descriptor,
-        cwd,
-        env,
-        rows,
-        columns,
-        argv,
-        timeout_ms,
-    );
-    // A reused name or replacement server must never receive this run's cleanup request.
-    let cleanup = cleanup_run_workspace(&socket, &descriptor);
-    match (result, cleanup) {
-        (Ok(code), Ok(())) => Ok(exit_code(code)),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(_), Err(error)) => Err(error.context("run workspace cleanup failed")),
-        (Err(error), Err(cleanup)) => {
-            Err(error.context(format!("run workspace cleanup also failed: {cleanup:#}")))
-        }
-    }
-}
-
-fn cleanup_run_workspace(
-    socket: &std::path::Path,
-    descriptor: &fux::daemon::Descriptor,
-) -> Result<()> {
-    use fux::proto::control::{ErrorCode, Reply, Request, WorkspaceAction};
-    let mut control = match run_open_control(socket) {
-        Ok(control) => control,
-        // These mean the owned listener is gone; a future replacement remains protected by stream/instance.
-        Err(error) if no_server(&error) => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    match request_reply(
-        &mut control,
-        &Request::Workspace {
-            id: 3,
-            instance: Some(descriptor.instance_nonce.clone()),
-            stream: Some(descriptor.stream),
-            action: WorkspaceAction::Kill {
-                name: descriptor.name.clone(),
-            },
-        },
-        std::time::Instant::now() + std::time::Duration::from_secs(5),
-    )? {
-        Reply::Completed { .. } => Ok(()),
-        Reply::Failed { error, .. }
-            if matches!(error.code, ErrorCode::Conflict | ErrorCode::NotFound) =>
-        {
-            Ok(())
-        }
-        other => bail!("owned workspace was not released: {other:?}"),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_in_workspace(
-    manager: &std::path::Path,
-    socket: &std::path::Path,
-    descriptor: &fux::daemon::Descriptor,
-    cwd: Option<PathBuf>,
-    env: Vec<(String, String)>,
-    rows: Option<u16>,
-    columns: Option<u16>,
-    argv: Vec<String>,
-    timeout_ms: u64,
-) -> Result<u32> {
-    use fux::proto::control::{CommandResult, ErrorCode, Reply, Request};
-    use std::time::{Duration, Instant};
-    let deadline = Instant::now()
-        .checked_add(Duration::from_millis(timeout_ms))
-        .ok_or_else(|| anyhow::anyhow!("run timeout is too large"))?;
-    let remaining = || {
-        deadline
-            .checked_duration_since(Instant::now())
-            .filter(|duration| !duration.is_zero())
-            .ok_or_else(|| anyhow::anyhow!("run command did not finish within {timeout_ms} ms"))
-    };
-    let mut control = run_open_control_with_timeout(socket, remaining()?)?;
-    let split = request_reply(
-        &mut control,
-        &Request::Split {
-            id: 2,
-            instance: Some(descriptor.instance_nonce.clone()),
-            stream: Some(descriptor.stream),
-            axis: fux::layout::Axis::Horizontal,
-            target: None,
-            cwd,
-            argv,
-            env,
-            rows,
-            columns,
-        },
-        deadline,
-    )?;
-    let pane = match split {
-        Reply::Completed {
-            result: CommandResult::Pane { pane },
-            ..
-        } => pane,
-        Reply::Failed { error, .. } => bail!("run could not start the command: {}", error.message),
-        other => bail!("unexpected split reply: {other:?}"),
-    };
-    // The manager retains authoritative evidence even when a pane exits before its launch
-    // reply or its workspace socket disappears. No sampling thread or event connection is needed.
-    let record = loop {
-        remaining()?;
-        match fux::daemon::manager_request_until(
-            manager,
-            &fux::daemon::ManagerRequest::Final {
-                instance: descriptor.instance_nonce.clone(),
-                pane,
-            },
-            deadline,
-        )? {
-            fux::daemon::ManagerReply::Final {
-                result:
-                    Reply::Completed {
-                        result: CommandResult::Final { record },
-                        ..
-                    },
-            } => break record,
-            fux::daemon::ManagerReply::Final {
-                result: Reply::Failed { error, .. },
-            } if error.code == ErrorCode::Pending => {
-                std::thread::sleep(remaining()?.min(Duration::from_millis(25)));
-            }
-            fux::daemon::ManagerReply::Final {
-                result: Reply::Failed { error, .. },
-            } => bail!("run final evidence unavailable: {}", error.message),
-            other => bail!("unexpected final evidence reply: {other:?}"),
-        }
-    };
-    anyhow::ensure!(
-        record.pane == pane
-            && record.workspace == descriptor.name
-            && record.stream == descriptor.stream,
-        "run final evidence identity mismatch"
-    );
-    anyhow::ensure!(
-        !record.capture.truncated,
-        "run final screen exceeded the retained capture limit"
-    );
-    if !record.capture.text.is_empty() {
-        use std::io::Write as _;
-        writeln!(std::io::stdout().lock(), "{}", record.capture.text)?;
-    }
-    record
-        .exit_status
-        .ok_or_else(|| anyhow::anyhow!("run was released before its exit status was observed"))
-}
-
 fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::Request> {
     use fux::ids::{PaneId, TabId};
     use fux::layout::Axis;
-    use fux::proto::control::{EventKind, FocusTarget, Request, TabAction};
+    use fux::proto::control::{FocusTarget, Request, TabAction};
     let id = 1;
     let get = |index: usize, name: &str| {
         args.get(index)
@@ -883,36 +579,6 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
         }
         "list" => Request::List { instance: None, id },
         "info" => Request::Info { instance: None, id },
-        "wait" => {
-            use fux::proto::control::WaitUntil;
-            let pane = PaneId(number(0, "a pane id")?);
-            let mut timeout_ms = 30_000;
-            let mut rest = args.get(1..).unwrap_or_default().to_vec();
-            if let Some(position) = rest.iter().position(|a| a == "--timeout") {
-                timeout_ms = rest
-                    .get(position + 1)
-                    .ok_or_else(|| anyhow::anyhow!("--timeout requires milliseconds"))?
-                    .parse()?;
-                rest.drain(position..=position + 1);
-            }
-            let until = match rest.first().map(String::as_str) {
-                Some("exit") => WaitUntil::Exit,
-                Some("seq") => WaitUntil::Seq {
-                    value: rest
-                        .get(1)
-                        .ok_or_else(|| anyhow::anyhow!("seq requires a value"))?
-                        .parse()?,
-                },
-                _ => bail!("wait requires exit | seq N"),
-            };
-            Request::Wait {
-                instance: None,
-                id,
-                pane,
-                until,
-                timeout_ms,
-            }
-        }
         "tab" => {
             let action = match get(0, "an action")?.as_str() {
                 "new" => TabAction::New {
@@ -942,17 +608,13 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
             }
         }
         "subscribe" => {
-            let events = args
-                .iter()
-                .map(|value| {
-                    serde_json::from_value::<EventKind>(serde_json::Value::String(value.clone()))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            if !args.is_empty() {
+                bail!("subscribe takes no arguments; every workspace event is streamed");
+            }
             Request::Subscribe {
                 after: None,
                 instance: None,
                 id,
-                events,
             }
         }
         _ => bail!("unknown control command {command}"),
@@ -1103,8 +765,10 @@ mod tests {
         assert!(alias_request("resize", &["1".into(), "0".into()]).is_err());
         assert!(alias_request("popup", &[]).is_err());
         assert!(alias_request("tab", &["close".into(), "2".into()]).is_ok());
-        assert!(alias_request("subscribe", &["pane.closed".into()]).is_ok());
-        assert!(alias_request("subscribe", &["agent.state".into()]).is_err());
+        assert!(alias_request("subscribe", &[]).is_ok());
+        assert!(alias_request("subscribe", &["pane.closed".into()]).is_err());
+        assert!(alias_request("wait", &["1".into(), "exit".into()]).is_err());
+        assert!(alias_request("run", &[]).is_err());
     }
 
     #[test]

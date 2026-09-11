@@ -19,15 +19,9 @@ pub const MAX_KEY_BYTES: usize = 64 * 1024;
 pub const MAX_ENV_ENTRIES: usize = 64;
 pub const MAX_ENV_BYTES: usize = 16 * 1024;
 pub const MAX_SCROLLBACK_LINES: u32 = 100_000;
-pub const MAX_EVENT_FILTERS: usize = 32;
 pub const MAX_SUBSCRIBER_QUEUE: usize = 1024;
 pub const MAX_NAME_BYTES: usize = 128;
 pub const MAX_CONTROL_CONNECTIONS: usize = 64;
-pub const MAX_WAIT_MS: u64 = 300_000;
-/// A server holds at most this many pending waits across every connection.
-pub const MAX_PENDING_WAITS: usize = 1024;
-/// And at most this many on one pane, so one client cannot fill the table against a pane.
-pub const MAX_WAITS_PER_PANE: usize = 64;
 
 pub type RequestId = u64;
 
@@ -132,15 +126,6 @@ pub enum Request {
         #[serde(default)]
         instance: Option<String>,
     },
-    /// Block until `pane` meets `until` or `timeout_ms` elapses; the reply says which fired.
-    Wait {
-        id: RequestId,
-        #[serde(default)]
-        instance: Option<String>,
-        pane: PaneId,
-        until: WaitUntil,
-        timeout_ms: u64,
-    },
     Tab {
         id: RequestId,
         #[serde(default)]
@@ -166,8 +151,6 @@ pub enum Request {
         #[serde(default)]
         instance: Option<String>,
         #[serde(default)]
-        events: Vec<EventKind>,
-        #[serde(default)]
         after: Option<EventCursor>,
     },
 }
@@ -186,7 +169,6 @@ impl Request {
             | Self::Capture { id, .. }
             | Self::List { id, .. }
             | Self::Info { id, .. }
-            | Self::Wait { id, .. }
             | Self::Tab { id, .. }
             | Self::Workspace { id, .. }
             | Self::Events { id, .. }
@@ -208,7 +190,6 @@ impl Request {
             | Self::Capture { instance, .. }
             | Self::List { instance, .. }
             | Self::Info { instance, .. }
-            | Self::Wait { instance, .. }
             | Self::Tab { instance, .. }
             | Self::Workspace { instance, .. }
             | Self::Events { instance, .. }
@@ -344,18 +325,6 @@ impl Request {
                 crate::ids::validate_workspace_name(name)
                     .map_err(|error| ControlError::invalid(id, error.to_string()))?;
             }
-            Self::Wait { timeout_ms, .. } if *timeout_ms == 0 || *timeout_ms > MAX_WAIT_MS => {
-                return Err(ControlError::invalid(
-                    id,
-                    format!("wait timeout must be 1-{MAX_WAIT_MS} ms"),
-                ));
-            }
-            Self::Subscribe { events, .. } if events.len() > MAX_EVENT_FILTERS => {
-                return Err(ControlError::invalid(
-                    id,
-                    format!("at most {MAX_EVENT_FILTERS} event filters are allowed"),
-                ));
-            }
             _ => {}
         }
         Ok(())
@@ -407,44 +376,15 @@ pub struct ServerInfo {
     pub limits: InfoLimits,
 }
 
-/// The configured and fixed limits a client may plan against.
+/// The bounds a client must honor when it sizes a request: the frame limit, the capture text
+/// limit, the `send-keys`/`input-submit` payload limit and the configured scrollback depth.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InfoLimits {
-    pub workspaces: usize,
-    pub tabs: usize,
-    pub panes: usize,
-    pub viewers: usize,
     pub scrollback_lines: usize,
-    pub control_connections: usize,
     pub frame_bytes: usize,
     pub capture_bytes: usize,
     pub key_bytes: usize,
-    pub event_filters: usize,
-    pub subscriber_queue: usize,
-    pub viewer_queue: usize,
-    pub retire_grace_ms: u64,
-    pub terminate_deadline_ms: u64,
-    pub output_event_interval_ms: u64,
-    pub frame_interval_ms: u64,
-}
-
-/// What a `wait` blocks for.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum WaitUntil {
-    /// The pane's process exits.
-    Exit,
-    /// The pane's output sequence reaches `value`.
-    Seq { value: u64 },
-}
-
-/// Which `wait` condition fired.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum WaitFired {
-    Exit,
-    Seq,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -596,12 +536,6 @@ pub enum CommandResult {
     Info {
         info: Box<ServerInfo>,
     },
-    /// A `wait` fired: which condition, the pane's current sequence and its exit status.
-    Waited {
-        fired: WaitFired,
-        seq: u64,
-        exit_status: Option<u32>,
-    },
 }
 
 /// Receipt retention is scoped to the server incarnation; expiry never cancels queued bytes.
@@ -726,12 +660,6 @@ pub enum Event {
         pane: PaneId,
         exit_status: Option<i32>,
     },
-    #[serde(rename = "pane.title")]
-    PaneTitle {
-        id: RequestId,
-        pane: PaneId,
-        title: String,
-    },
     #[serde(rename = "pane.output")]
     PaneOutput {
         id: RequestId,
@@ -747,10 +675,6 @@ pub enum Event {
     },
     #[serde(rename = "tab.closed")]
     TabClosed { id: RequestId, tab: TabId },
-    #[serde(rename = "client.attached")]
-    ClientAttached { id: RequestId, client: u64 },
-    #[serde(rename = "client.detached")]
-    ClientDetached { id: RequestId, client: u64 },
 }
 
 impl Event {
@@ -759,12 +683,9 @@ impl Event {
             Self::WorkspaceChanged { .. } => EventKind::WorkspaceChanged,
             Self::PaneOpened { .. } => EventKind::PaneOpened,
             Self::PaneClosed { .. } => EventKind::PaneClosed,
-            Self::PaneTitle { .. } => EventKind::PaneTitle,
             Self::PaneOutput { .. } => EventKind::PaneOutput,
             Self::TabOpened { .. } => EventKind::TabOpened,
             Self::TabClosed { .. } => EventKind::TabClosed,
-            Self::ClientAttached { .. } => EventKind::ClientAttached,
-            Self::ClientDetached { .. } => EventKind::ClientDetached,
         }
     }
 
@@ -774,12 +695,9 @@ impl Event {
             Self::WorkspaceChanged { id }
             | Self::PaneOpened { id, .. }
             | Self::PaneClosed { id, .. }
-            | Self::PaneTitle { id, .. }
             | Self::PaneOutput { id, .. }
             | Self::TabOpened { id, .. }
-            | Self::TabClosed { id, .. }
-            | Self::ClientAttached { id, .. }
-            | Self::ClientDetached { id, .. } => *id = subscription,
+            | Self::TabClosed { id, .. } => *id = subscription,
         }
         self
     }
@@ -794,18 +712,12 @@ pub enum EventKind {
     PaneOpened,
     #[serde(rename = "pane.closed")]
     PaneClosed,
-    #[serde(rename = "pane.title")]
-    PaneTitle,
     #[serde(rename = "pane.output")]
     PaneOutput,
     #[serde(rename = "tab.opened")]
     TabOpened,
     #[serde(rename = "tab.closed")]
     TabClosed,
-    #[serde(rename = "client.attached")]
-    ClientAttached,
-    #[serde(rename = "client.detached")]
-    ClientDetached,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1126,6 +1038,8 @@ mod tests {
             b"{\"command\":\"capture\",\"id\":1,\"pane\":1,\"max_bytes\":0}",
             b"{\"command\":\"workspace\",\"id\":1,\"action\":{\"kill\":{\"name\":\"../x\"}}}",
             b"{\"command\":\"send-keys\",\"id\":1,\"pane\":1,\"keys\":\"\\\\q\"}",
+            b"{\"command\":\"wait\",\"id\":1,\"pane\":1,\"until\":{\"kind\":\"exit\"},\"timeout_ms\":100}",
+            b"{\"command\":\"subscribe\",\"id\":1,\"events\":[\"pane.output\"]}",
         ] {
             assert!(decode_request_frame(frame).is_err(), "{frame:?}");
         }
@@ -1150,6 +1064,9 @@ mod tests {
             serde_json::from_str::<EventKind>("\"pane.output\"").ok(),
             Some(EventKind::PaneOutput)
         );
+        for removed in ["pane.title", "client.attached", "client.detached"] {
+            assert!(serde_json::from_str::<EventKind>(&format!("\"{removed}\"")).is_err());
+        }
     }
 
     #[test]

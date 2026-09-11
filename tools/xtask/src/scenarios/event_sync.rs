@@ -1,4 +1,6 @@
-//! Snapshot/replay/live synchronization against a disposable real server.
+//! Snapshot/replay/live synchronization against a disposable real server. Every workspace
+//! event is delivered (there is no subscription filter); `tab.opened` carries a name, so it is
+//! the marker the checks look for.
 use crate::support::{
     control::Peer,
     local::{Root, until},
@@ -28,6 +30,25 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         let reply = rpc(peer, instance, command, fields)?;
         ensure!(reply["status"] == "completed", "control failed: {reply}");
         Ok(reply["result"]["value"].clone())
+    }
+    /// Reads live events until a `tab.opened` arrives, checking that every frame is a sequenced
+    /// event of the subscription with a cursor strictly after `after`.
+    fn next_tab(peer: &mut Peer, after: &mut u64) -> Result<Value> {
+        for _ in 0..64 {
+            let event = peer.read()?;
+            let sequence = event["cursor"]["sequence"]
+                .as_u64()
+                .with_context(|| format!("unsequenced frame: {event}"))?;
+            ensure!(
+                sequence > *after && event["id"] == 7,
+                "duplicated, reordered or foreign event: {event}"
+            );
+            *after = sequence;
+            if event["event"] == "tab.opened" {
+                return Ok(event);
+            }
+        }
+        anyhow::bail!("no tab.opened event within 64 frames")
     }
     let instance = value(&mut control, &Value::Null, "list", json!({}))?["instance"].clone();
     until(Duration::from_secs(10), || {
@@ -65,27 +86,22 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     value(
         &mut control,
         &instance,
-        "send-keys",
-        json!({"pane":1,"keys":"a"}),
+        "tab",
+        json!({"action":{"new":{"name":"title-a"}}}),
     )?;
-    until(Duration::from_secs(10), || {
-        Ok((value(
-            &mut control,
-            &instance,
-            "capture",
-            json!({"pane":1,"max_bytes":131072}),
-        )?["title"]
-            == "title-a")
-            .then_some(()))
+    let replay = until(Duration::from_secs(10), || {
+        let replay = value(&mut control, &instance, "events", json!({"after":cursor}))?;
+        let names: Vec<_> = replay["events"]
+            .as_array()
+            .context("replay events")?
+            .iter()
+            .filter(|event| event["event"] == "tab.opened")
+            .map(|event| event["name"].clone())
+            .collect();
+        ensure!(names.len() <= 1, "duplicated replay: {replay}");
+        Ok((names == vec![json!("title-a")]).then_some(replay))
     })?;
-    let replay = value(&mut control, &instance, "events", json!({"after":cursor}))?;
     let events = replay["events"].as_array().context("replay events")?;
-    let titles: Vec<_> = events
-        .iter()
-        .filter(|event| event["event"] == "pane.title")
-        .map(|event| event["title"].clone())
-        .collect();
-    ensure!(titles == vec![json!("title-a")], "wrong replay: {replay}");
     ensure!(
         events
             .iter()
@@ -103,62 +119,49 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         "replay duplicated events"
     );
     let mut subscriber = Peer::connect(&path)?;
-    subscriber.send(&json!({"id":7,"command":"subscribe","instance":instance,"after":cursor,"events":["pane.title"]}))?;
+    subscriber.send(&json!({"id":7,"command":"subscribe","instance":instance,"after":cursor}))?;
     ensure!(
         subscriber.read()?["status"] == "accepted",
         "subscription rejected"
     );
-    let first = subscriber.read()?;
-    ensure!(
-        first["event"] == "pane.title" && first["title"] == "title-a" && first["id"] == 7,
-        "wrong first: {first}"
-    );
+    let mut seen = cursor["sequence"].as_u64().context("cursor sequence")?;
+    let first = next_tab(&mut subscriber, &mut seen)?;
+    ensure!(first["name"] == "title-a", "wrong first: {first}");
     value(
         &mut control,
         &instance,
-        "send-keys",
-        json!({"pane":1,"keys":"b"}),
+        "tab",
+        json!({"action":{"new":{"name":"title-b"}}}),
     )?;
-    let second = subscriber.read()?;
-    ensure!(
-        second["event"] == "pane.title" && second["title"] == "title-b",
-        "wrong second: {second}"
-    );
-    ensure!(
-        second["cursor"]["sequence"]
-            .as_u64()
-            .context("second sequence")?
-            > first["cursor"]["sequence"]
-                .as_u64()
-                .context("first sequence")?,
-        "sequence did not advance"
-    );
+    let second = next_tab(&mut subscriber, &mut seen)?;
+    ensure!(second["name"] == "title-b", "wrong second: {second}");
     let mut racing = Peer::connect(&path)?;
     let current =
         value(&mut control, &instance, "list", json!({}))?["workspaces"][0]["event_cursor"].clone();
-    racing.send(&json!({"id":7,"command":"subscribe","instance":instance,"after":current,"events":["pane.title"]}))?;
+    racing.send(&json!({"id":7,"command":"subscribe","instance":instance,"after":current}))?;
     value(
         &mut control,
         &instance,
-        "send-keys",
-        json!({"pane":1,"keys":"c"}),
+        "tab",
+        json!({"action":{"new":{"name":"title-c"}}}),
     )?;
     ensure!(
         racing.read()?["status"] == "accepted",
         "racing subscription rejected"
     );
+    let mut raced = current["sequence"].as_u64().context("current sequence")?;
     ensure!(
-        racing.read()?["title"] == "title-c",
+        next_tab(&mut racing, &mut raced)?["name"] == "title-c",
         "race lost or duplicated title-c"
     );
     value(
         &mut control,
         &instance,
-        "send-keys",
-        json!({"pane":1,"keys":"d"}),
+        "tab",
+        json!({"action":{"new":{"name":"title-d"}}}),
     )?;
     ensure!(
-        racing.read()?["title"] == "title-d",
+        next_tab(&mut racing, &mut raced)?["name"] == "title-d",
         "race lost or duplicated title-d"
     );
     for _ in 0..1030 {
@@ -195,6 +198,6 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     }
     drop((control, subscriber, racing, gap));
     server.finish()?;
-    println!("PASS snapshot replay, filtered live delivery, race deduplication, gap and resync");
+    println!("PASS snapshot replay, live delivery, race deduplication, gap and resync");
     Ok(())
 }
