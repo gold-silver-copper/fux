@@ -11,7 +11,6 @@ mod local_tty;
 mod migration;
 mod observer;
 mod rejection;
-mod run_command;
 mod service_fixture;
 mod service_tasks;
 mod service_worktrees;
@@ -29,22 +28,19 @@ mod zor_launch;
 mod zor_native;
 mod zor_producers;
 mod zor_recovery;
+mod zor_run;
 mod zor_service;
 mod zor_sources;
 mod zor_tasks;
 mod zor_workflow;
 mod zor_worktree;
-use crate::support::{
-    local::{Root, completed, rpc, until},
-    process::wait,
-};
+use crate::support::local::{Root, completed, rpc, until};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
     fs,
     io::{Read, Write},
     path::Path,
-    process::Stdio,
     time::Duration,
 };
 
@@ -59,7 +55,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "local-tty" => local_tty::run(&binary),
         "detach-drain" => detach_drain::run(&binary),
         "control-workflow" => control_workflow::run(&binary),
-        "run-command" => run_command::run(&binary),
         "final-records" => final_records::run(&binary),
         "event-sync" => event_sync::run(&binary),
         "input-receipts" => input_receipts::run(&binary),
@@ -104,6 +99,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
             &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
         ),
         "zor-launch" => zor_launch::run(
+            &binary,
+            &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
+        ),
+        "zor-run" => zor_run::run(
             &binary,
             &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
         ),
@@ -366,36 +365,18 @@ fn empty_arguments(binary: &Path) -> Result<()> {
             json!({"id":1,"command":"kill","instance":instance,"pane":pane}),
         )?;
     }
+    // Final evidence is a manager primitive with no CLI subcommand.
+    let manager = root.path().join("fux/manager.sock");
     for pane in panes {
         let record = until(Duration::from_secs(10), || {
-            let mut output = tempfile::tempfile()?;
-            let mut child = root
-                .command(binary)
-                .args([
-                    "final",
-                    "--instance",
-                    instance.as_str().context("instance")?,
-                    &pane.to_string(),
-                ])
-                .stdin(Stdio::null())
-                .stdout(output.try_clone()?)
-                .stderr(Stdio::null())
-                .spawn()?;
-            let result = wait(&mut child, Duration::from_secs(3));
-            if result.is_err() {
-                let _ = child.kill();
-                let _ = wait(&mut child, Duration::from_secs(3));
-            }
-            if !result?.success() {
+            let reply = rpc(
+                &manager,
+                json!({"request":"final","instance":instance,"pane":pane}),
+            )?;
+            if reply["result"]["status"] != "completed" {
                 return Ok(None);
             }
-            use std::io::{Seek, SeekFrom};
-            output.seek(SeekFrom::Start(0))?;
-            let mut bytes = Vec::new();
-            output.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
-            ensure!(bytes.len() <= 1024 * 1024, "final reply byte limit");
-            let reply: Value = serde_json::from_slice(&bytes)?;
-            Ok(Some(reply["result"]["value"]["record"].clone()))
+            Ok(Some(reply["result"]["result"]["value"]["record"].clone()))
         })?;
         ensure!(record["command"] == json!(argv), "final argv changed");
         ensure!(

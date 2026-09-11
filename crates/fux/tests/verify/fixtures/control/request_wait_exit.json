@@ -1,9 +1,0 @@
-{
-  "command": "wait",
-  "id": 5,
-  "pane": 1,
-  "until": {
-    "kind": "exit"
-  },
-  "timeout_ms": 30000
-}

@@ -40,6 +40,8 @@ zor status [--start] [--directory path]       # read, optionally starting the sh
 zor shutdown [--directory path]              # stop zor, preserving fux panes
 zor dashboard [--once] [--bell] [--notify] [--directory path] # task/group attention and agent evidence
 zor watch [--once] [--runtime path]     # discover fux panes, emit JSON observations
+zor run [--timeout ms] [--rows r] [--columns c] [--env K=V] [--cwd dir] [--workspace name] -- cmd...
+                                        # one command in a throwaway fux workspace: final screen, exit status
 ```
 
 The local [service API](SERVICE-API.md) shares observations across controllers without taking

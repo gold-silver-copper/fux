@@ -10,7 +10,7 @@ use crate::ids::{PaneId, ViewerId};
 use crate::os::lock;
 use crate::os::pty::PaneProcess;
 use crate::proto::attach::ServerMessage;
-use crate::proto::control::{Event, EventCursor, EventKind, Reply, SequencedEvent};
+use crate::proto::control::{Event, EventCursor, Reply, SequencedEvent};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -92,7 +92,6 @@ impl ViewerOutbox {
 
 /// A control-event subscriber: bounded queue, disconnects on any overflow.
 pub struct Subscriber {
-    pub filters: Vec<EventKind>,
     pub sender: mpsc::Sender<QueuedEvent>,
     pub bytes: Arc<AtomicUsize>,
 }
@@ -373,16 +372,12 @@ pub(super) fn publish(
     if subscribers.is_empty() {
         return;
     }
-    let kind = event.kind();
     let entry = Arc::new(SequencedEvent {
         cursor,
         event: event.clone(),
     });
     let size = encoded.saturating_add(32);
     subscribers.retain(|subscriber| {
-        if !subscriber.filters.is_empty() && !subscriber.filters.contains(&kind) {
-            return true;
-        }
         if subscriber
             .bytes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
@@ -426,15 +421,14 @@ mod tests {
             let (sender, mut receiver) = mpsc::channel(if byte_limit { 1024 } else { 1 });
             let bytes = Arc::new(AtomicUsize::new(0));
             let subscribers = Mutex::new(vec![Subscriber {
-                filters: Vec::new(),
                 sender,
                 bytes: Arc::clone(&bytes),
             }]);
             let event = if byte_limit {
-                Event::PaneTitle {
+                Event::TabOpened {
                     id: 0,
-                    pane: PaneId(1),
-                    title: "x".repeat(64 * 1024),
+                    tab: crate::ids::TabId(1),
+                    name: "x".repeat(64 * 1024),
                 }
             } else {
                 Event::WorkspaceChanged { id: 0 }
@@ -458,41 +452,6 @@ mod tests {
                 Err(mpsc::error::TryRecvError::Disconnected)
             ));
         }
-    }
-
-    #[test]
-    fn subscriber_filters_do_not_consume_queue_budget() {
-        let (sender, mut receiver) = mpsc::channel(1);
-        let bytes = Arc::new(AtomicUsize::new(0));
-        let subscribers = Mutex::new(vec![Subscriber {
-            filters: vec![EventKind::PaneTitle],
-            sender,
-            bytes: Arc::clone(&bytes),
-        }]);
-        let cursor = EventCursor {
-            stream: 1,
-            sequence: 1,
-        };
-        let event = Event::WorkspaceChanged { id: 0 };
-        publish(&subscribers, &event, cursor, sized(&event, cursor));
-        assert_eq!(bytes.load(Ordering::Acquire), 0);
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-        drop(receiver);
-        let cursor = EventCursor {
-            stream: 1,
-            sequence: 2,
-        };
-        let event = Event::PaneTitle {
-            id: 0,
-            pane: PaneId(1),
-            title: "t".into(),
-        };
-        publish(&subscribers, &event, cursor, sized(&event, cursor));
-        assert!(lock(&subscribers).is_empty());
-        assert_eq!(bytes.load(Ordering::Acquire), 0);
     }
 
     fn frame(generation: u64) -> ServerMessage {

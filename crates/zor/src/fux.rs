@@ -42,55 +42,30 @@ pub(crate) fn control(socket: &Path, limit: Instant) -> anyhow::Result<UnixStrea
 
 pub fn request_until(socket: &Path, value: Value, limit: Instant) -> anyhow::Result<Value> {
     let mut stream = control(socket, limit)?;
-    stream.set_write_timeout(Some(remaining(limit)?.min(Duration::from_secs(2))))?;
-    serde_json::to_writer(&mut stream, &value)?;
-    stream.write_all(b"\n")?;
+    let mut bytes = serde_json::to_vec(&value)?;
+    bytes.push(b'\n');
+    local_ipc::write_all_until(
+        &mut stream,
+        &bytes,
+        limit.min(Instant::now() + Duration::from_secs(2)),
+    )?;
     let deadline = limit.min(Instant::now() + Duration::from_secs(2));
     // A peer may close after buffering a multi-read response. On some Unix systems,
     // changing socket timeouts after closure fails even while unread bytes remain.
     // Poll the fixed deadline and drain nonblocking reads instead.
-    use std::os::fd::AsFd;
     stream.set_nonblocking(true)?;
-    let mut output = Vec::new();
-    loop {
-        let remaining = remaining(deadline)?;
-        let timeout = u16::try_from(remaining.as_millis().clamp(1, 2000))?;
-        let mut polls = [nix::poll::PollFd::new(
-            stream.as_fd(),
-            nix::poll::PollFlags::POLLIN,
-        )];
-        match nix::poll::poll(&mut polls, timeout) {
-            Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
-            Ok(_) => {}
-            Err(error) => return Err(error.into()),
-        }
-        let mut chunk = [0; 8192];
-        let n = match stream.read(&mut chunk) {
-            Ok(n) => n,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
-                ) =>
-            {
-                continue;
+    let output = local_ipc::FrameReader::new(MAX_REPLY)
+        .next_frame(&mut stream, deadline)
+        .map_err(|error| match error {
+            local_ipc::FrameError::TimedOut => anyhow::anyhow!("fux request deadline exceeded"),
+            local_ipc::FrameError::Closed => {
+                anyhow::anyhow!("control socket closed before a response")
             }
-            Err(error) => return Err(error).context("read control response"),
-        };
-        anyhow::ensure!(n != 0, "control socket closed before a response");
-        anyhow::ensure!(
-            output.len() + n <= MAX_REPLY,
-            "control response exceeds limit"
-        );
-        output.extend_from_slice(
-            chunk
-                .get(..n)
-                .ok_or_else(|| anyhow::anyhow!("invalid socket read length"))?,
-        );
-        if output.contains(&b'\n') {
-            break;
-        }
-    }
+            local_ipc::FrameError::Oversize => anyhow::anyhow!("control response exceeds limit"),
+            local_ipc::FrameError::Io(error) => {
+                anyhow::Error::from(error).context("read control response")
+            }
+        })?;
     let response: Value = serde_json::from_slice(&output)?;
     Ok(response)
 }
@@ -111,23 +86,13 @@ fn remaining(limit: Instant) -> anyhow::Result<Duration> {
 }
 
 pub(crate) fn connect(path: &Path, limit: Instant) -> anyhow::Result<UnixStream> {
-    let timeout = u16::try_from(remaining(limit)?.as_millis().clamp(1, 2000))?;
-    use std::os::fd::AsFd;
-    let connecting = local_ipc::Connecting::start(path)?;
-    if connecting.pending() {
-        let mut polls = [nix::poll::PollFd::new(
-            connecting.as_fd(),
-            nix::poll::PollFlags::POLLOUT,
-        )];
-        anyhow::ensure!(
-            nix::poll::poll(&mut polls, timeout)? > 0,
-            "fux connect timed out"
-        );
-        connecting
-            .confirm()
-            .map_err(|error| anyhow::anyhow!("fux connect failed: {error}"))?;
-    }
-    Ok(connecting.finish()?)
+    local_ipc::connect_until(path, limit).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::TimedOut {
+            anyhow::anyhow!("fux connect timed out")
+        } else {
+            error.into()
+        }
+    })
 }
 
 pub fn completed(socket: &Path, request: Value) -> anyhow::Result<Value> {
@@ -139,21 +104,10 @@ pub fn completed(socket: &Path, request: Value) -> anyhow::Result<Value> {
     Ok(response)
 }
 
+/// fux's runtime directory, discovered exactly as fux discovers it.
 pub fn runtime() -> anyhow::Result<PathBuf> {
-    if let Some(root) = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-    {
-        return Ok(root.join("fux"));
-    }
-    #[cfg(target_os = "macos")]
-    if let Some(home) = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-    {
-        return Ok(home.join("Library/Caches/fux-runtime/fux"));
-    }
-    anyhow::bail!("set XDG_RUNTIME_DIR to the directory used by fux")
+    local_ipc::runtime_directory("fux")
+        .ok_or_else(|| anyhow::anyhow!("set XDG_RUNTIME_DIR to the directory used by fux"))
 }
 
 pub fn completed_until(socket: &Path, request: Value, limit: Instant) -> anyhow::Result<Value> {

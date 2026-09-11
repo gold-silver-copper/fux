@@ -242,7 +242,7 @@ fn final_evidence_survives_workspace_release_and_expires_explicitly() {
         final_reply(&mut h, PaneId(1), "test-instance"),
         Reply::Completed { .. }
     ));
-    h.now = record.expires_ms;
+    h.now += fux::ecs::resources::FINAL_RETENTION_MS;
     assert!(
         matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
     );
@@ -603,7 +603,6 @@ fn server_incarnation_guards_reused_pane_ids_before_mutation_or_capture() {
         serde_json::json!({"command":"send-keys","pane":1,"keys":"must-not-arrive"}),
         serde_json::json!({"command":"kill","pane":1}),
         serde_json::json!({"command":"capture","pane":1,"max_bytes":4096}),
-        serde_json::json!({"command":"wait","pane":1,"until":{"kind":"exit"},"timeout_ms":100}),
     ] {
         value["id"] = 950.into();
         value["instance"] = "server-old".into();
@@ -882,20 +881,25 @@ fn event_replay_orders_typed_and_request_events_and_round_trips() {
         other => panic!("listing: {other:?}"),
     };
     let effects = h.step(vec![
-        Inbound::ViewerAttached {
-            viewer: ViewerId(500),
+        Inbound::ControlRequest {
             workspace: "default".into(),
-            rows: 24,
-            cols: 80,
-        },
-        Inbound::ViewerGone {
-            viewer: ViewerId(500),
+            request: Request::Tab {
+                instance: Some("test-instance".into()),
+                id: 972,
+                action: fux::proto::control::TabAction::New {
+                    name: Some("replayed-tab".into()),
+                },
+            },
+            token: 972,
         },
         Inbound::PaneOutput {
             pane: PaneId(1),
             bytes: b"\x1b]2;replayed-title\x07".to_vec(),
         },
     ]);
+    // The tab's pane is created behind a spawn barrier; its events publish on completion.
+    let mut effects = effects;
+    effects.extend(h.complete_spawns());
     let published: Vec<_> = effects
         .iter()
         .filter_map(|effect| match effect {
@@ -930,17 +934,16 @@ fn event_replay_orders_typed_and_request_events_and_round_trips() {
             .collect::<Vec<_>>(),
         published
     );
-    assert!(matches!(
-        events[0].event,
-        Event::ClientAttached { client: 500, .. }
-    ));
-    assert!(matches!(
-        events[1].event,
-        Event::ClientDetached { client: 500, .. }
-    ));
+    assert!(!events.is_empty(), "the tab request published events");
     assert!(events.iter().any(
-        |entry| matches!(&entry.event, Event::PaneTitle { title, .. } if title == "replayed-title")
+        |entry| matches!(&entry.event, Event::TabOpened { name, .. } if name == "replayed-tab")
     ));
+    // Title changes are metadata: they advance the output sequence, not the event log.
+    assert!(
+        !serde_json::to_string(&events)
+            .unwrap()
+            .contains("replayed-title")
+    );
     assert!(
         events
             .windows(2)
@@ -1244,12 +1247,6 @@ fn fresh_workspace_has_one_tab_and_pane_below_the_bar() {
             ..
         }
     )));
-    assert!(
-        harness
-            .events
-            .iter()
-            .any(|(_, event)| matches!(event, Event::ClientAttached { client: 1, .. }))
-    );
 }
 
 #[test]
@@ -1619,12 +1616,6 @@ fn detach_applies_preceding_input_and_drops_the_suffix() {
         1,
         "panes survive viewer loss"
     );
-    assert!(
-        harness
-            .events
-            .iter()
-            .any(|(_, event)| matches!(event, Event::ClientDetached { client: 1, .. }))
-    );
 }
 
 #[test]
@@ -1652,13 +1643,6 @@ fn workspace_switch_sends_the_suffix_to_the_destination() {
     ]);
     assert_eq!(harness.last_frame(viewer).workspace, "other");
     assert_eq!(harness.written, vec![(PaneId(2), b"there".to_vec())]);
-    assert!(harness.events.iter().any(|(name, event)| name == "default" && matches!(event, Event::ClientDetached { .. })));
-    assert!(
-        harness
-            .events
-            .iter()
-            .any(|(name, event)| name == "other" && matches!(event, Event::ClientAttached { .. }))
-    );
     // The no-name attach rule now prefers the most recently attached workspace.
     harness.step(vec![Inbound::Manager {
         action: ManagerAction::Resolve { name: None },
@@ -1734,33 +1718,6 @@ fn line_text(line: &fux::proto::control::CaptureLine) -> String {
     text.trim_end_matches(' ').to_owned()
 }
 
-fn wait_reply(harness: &mut Harness, viewer: ViewerId) -> Option<Reply> {
-    harness
-        .replies(viewer)
-        .into_iter()
-        .find(|reply| matches!(reply.id(), 800..=899))
-}
-
-fn send_wait(
-    harness: &mut Harness,
-    viewer: ViewerId,
-    id: u64,
-    pane: PaneId,
-    until: fux::proto::control::WaitUntil,
-    timeout_ms: u64,
-) {
-    harness.control(
-        viewer,
-        Request::Wait {
-            instance: None,
-            id,
-            pane,
-            until,
-            timeout_ms,
-        },
-    );
-}
-
 #[test]
 fn split_carries_env_and_a_requested_headless_size_to_the_spawn() {
     let mut harness = Harness::new();
@@ -1799,98 +1756,6 @@ fn split_carries_env_and_a_requested_headless_size_to_the_spawn() {
         .expect("a spawn for the new pane");
     assert_eq!(spawn.0, vec![("AGENT".to_owned(), "1".to_owned())]);
     assert_eq!((spawn.1, spawn.2), (30, 100), "the requested headless size");
-}
-
-#[test]
-fn waits_fire_on_seq_exit_and_timeout_and_never_hang() {
-    use fux::proto::control::{CommandResult, WaitFired, WaitUntil};
-    let mut harness = Harness::new();
-    harness.create_workspace("default");
-    let viewer = harness.attach("default", 24, 80);
-    // A seq wait fires when the pane's output sequence reaches the target; no reply before that.
-    let target = pane_seq(&mut harness, viewer, PaneId(1)) + 1;
-    send_wait(
-        &mut harness,
-        viewer,
-        800,
-        PaneId(1),
-        WaitUntil::Seq { value: target },
-        60_000,
-    );
-    assert!(wait_reply(&mut harness, viewer).is_none(), "seq wait waits");
-    harness.step(vec![Inbound::PaneOutput {
-        pane: PaneId(1),
-        bytes: b"progress\n".to_vec(),
-    }]);
-    assert!(matches!(
-        wait_reply(&mut harness, viewer),
-        Some(Reply::Completed {
-            result: CommandResult::Waited {
-                fired: WaitFired::Seq,
-                ..
-            },
-            ..
-        })
-    ));
-    harness.messages.get_mut(&viewer).map(Vec::clear);
-    // A timeout is a failed reply with the timeout code, never a hang.
-    send_wait(
-        &mut harness,
-        viewer,
-        803,
-        PaneId(1),
-        WaitUntil::Seq { value: u64::MAX },
-        100,
-    );
-    harness.now += 200;
-    harness.step(Vec::new());
-    assert!(matches!(
-        wait_reply(&mut harness, viewer),
-        Some(Reply::Failed { error, .. }) if error.code == ErrorCode::Timeout
-    ));
-    harness.messages.get_mut(&viewer).map(Vec::clear);
-    // An exit wait fires when the pane's process exits, carrying the status.
-    harness.control(viewer, split(1, Axis::Horizontal));
-    harness.complete_spawns();
-    assert!(harness.pane_ids(viewer).contains(&PaneId(2)));
-    send_wait(
-        &mut harness,
-        viewer,
-        804,
-        PaneId(2),
-        WaitUntil::Exit,
-        60_000,
-    );
-    assert!(wait_reply(&mut harness, viewer).is_none());
-    harness.step(vec![Inbound::PaneExited {
-        pane: PaneId(2),
-        code: 7,
-    }]);
-    assert!(matches!(
-        wait_reply(&mut harness, viewer),
-        Some(Reply::Completed {
-            result: CommandResult::Waited {
-                fired: WaitFired::Exit,
-                exit_status: Some(7),
-                ..
-            },
-            ..
-        })
-    ));
-    harness.messages.get_mut(&viewer).map(Vec::clear);
-    // A wait on a pane that never existed fails not-found at once.
-    send_wait(
-        &mut harness,
-        viewer,
-        805,
-        PaneId(999),
-        WaitUntil::Exit,
-        60_000,
-    );
-    assert!(matches!(
-        wait_reply(&mut harness, viewer),
-        Some(Reply::Failed { error, .. }) if error.code == ErrorCode::NotFound
-    ));
 }
 
 #[test]
@@ -2185,9 +2050,16 @@ fn output_sequences_are_reported_by_list_capture_and_paced_events() {
         }) => {
             assert_eq!(info.workspace.as_deref(), Some("default"));
             assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
-            assert_eq!(info.limits.panes, 128);
-            assert_eq!(info.limits.viewers, 64);
-            assert_eq!(info.limits.frame_interval_ms, 8);
+            assert_eq!(
+                info.limits.capture_bytes,
+                fux::proto::control::MAX_CAPTURE_BYTES
+            );
+            assert_eq!(info.limits.key_bytes, fux::proto::control::MAX_KEY_BYTES);
+            assert_eq!(
+                info.limits.frame_bytes,
+                fux::proto::control::MAX_FRAME_BYTES
+            );
+            assert_eq!(info.limits.scrollback_lines, 10_000);
         }
         other => panic!("unexpected info reply {other:?}"),
     }
@@ -2570,7 +2442,7 @@ mod randomized {
         Eof { pane: u8 },
         Exited { pane: u8, code: u32 },
         Complete { index: u8, ok: bool },
-        Wait(u64),
+        Advance(u64),
     }
 
     fn pane() -> impl Strategy<Value = PaneId> {
@@ -2729,7 +2601,7 @@ mod randomized {
             1 => (0..13u8).prop_map(|pane| Op::Eof { pane }),
             2 => (0..13u8, 0..3u32).prop_map(|(pane, code)| Op::Exited { pane, code }),
             5 => (0..4u8, prop::bool::weighted(0.8)).prop_map(|(index, ok)| Op::Complete { index, ok }),
-            1 => prop_oneof![Just(100u64), Just(4_000), Just(6_000)].prop_map(Op::Wait),
+            1 => prop_oneof![Just(100u64), Just(4_000), Just(6_000)].prop_map(Op::Advance),
         ]
     }
 
@@ -2826,7 +2698,7 @@ mod randomized {
                         };
                         harness.step(vec![Inbound::SpawnCompleted { pane, result }]);
                     }
-                    Op::Wait(ms) => {
+                    Op::Advance(ms) => {
                         harness.now += ms;
                         harness.step(Vec::new());
                     }

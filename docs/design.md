@@ -12,9 +12,9 @@ schemas.
 
 | Project | Responsibility | Boundary |
 |---|---|---|
-| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment and control protocols over private Unix sockets. To automation consumers fux promises: coherent conditional capture (`text` and `cells` forms from one read, with `revision`, `seq`, `input_sequence`, title and OSC 9;4 progress), input reservation with receipts (`input-reserve`/`input-submit`/`input-status`), an event log with cursors and explicit gaps (`events`, `subscribe`), `wait` on `exit`/`seq`, and retained final records (manager `final`, which `fux run` reads) |
+| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration. fux is minimal: it keeps only what requires owning the PTY, the process, the retained grid or the event log; every policy, convenience or workflow built on those primitives belongs to zor | attachment and control protocols over private Unix sockets. To automation consumers fux promises: coherent conditional capture (`text` and `cells` forms from one read, with `revision`, `seq`, `input_sequence`, title and OSC 9;4 progress, which zor's rules read), input reservation with receipts (`input-reserve`/`input-submit`/`input-status`), an event log with cursors and explicit gaps (`events`, `subscribe`; every event of the workspace, no server-side filter), and retained final records (manager `final`). There is no `wait`: a consumer polls `seq`/`revision` or follows `pane.output` |
 | koh | identities, authorization, encryption, discovery, relays, reconnect | authenticated gateway carrying the opaque attachment stream to a private local socket |
-| zor | agent detection, rules, state machine, presentation, task/check policy | consumes `list`, `capture` (`cells`), `split`, `kill`, `focus`, `subscribe`/`events`, `input-reserve`/`input-submit`/`input-status` over the control socket and `final` over the manager socket; screen rules (patterns, quiet windows, progress interpretation) are evaluated in zor on captured cells |
+| zor | agent detection, rules, state machine, presentation, task/check policy, and the workflows over fux primitives (`zor run`: a throwaway workspace, one command, its final screen and status) | consumes `list`, `capture` (`cells`), `split`, `kill`, `focus`, `subscribe`/`events`, `input-reserve`/`input-submit`/`input-status` over the control socket and `create`/`final` over the manager socket; screen rules (patterns, quiet windows, progress interpretation) are evaluated in zor on captured cells |
 
 ## Processes and sockets
 
@@ -184,7 +184,8 @@ shutdown indefinitely. Terminal host replies are excluded from application input
 `FinalRecords` outlives pane and workspace entities. Before release, the lifecycle code retains
 a bounded capture with the pane's original workspace name/stream, command/cwd and observed
 exit status. An unobserved exit remains unknown. Retention is bounded by count and time;
-the manager serves records after workspace sockets close, and `fux run` consumes them.
+the manager serves records after workspace sockets close; `zor run` and zor's managed launches
+consume them.
 
 Terminal revision invalidates coherent conditional text captures across output and actual
 resize. It is separate from the retained grid sequence, input sequence and event cursor.

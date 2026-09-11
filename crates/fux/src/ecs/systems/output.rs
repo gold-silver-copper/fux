@@ -1,10 +1,9 @@
 //! Output phase: pane bytes into emulators, host query replies back out, EOF/exit records.
 //! `pane.output` events are published by the snapshot phase, which knows the output sequence.
 
-use crate::ecs::components::{Pane, PaneState, Tab, Workspace};
+use crate::ecs::components::{Pane, PaneState};
 use crate::ecs::messages::{Effect, Inbound};
 use crate::ecs::support::{Effects, Step};
-use crate::proto::control::Event;
 use bevy_ecs::prelude::*;
 
 /// Applies this step's pane events in arrival order: bytes, then EOF, then the exit status.
@@ -12,8 +11,6 @@ pub fn apply_pane_output(
     mut inbound: MessageReader<Inbound>,
     step: Step,
     mut panes: Query<&mut Pane>,
-    tabs: Query<&Tab>,
-    workspaces: Query<&Workspace>,
     mut effects: Effects,
 ) {
     let ids = &step.ids;
@@ -32,8 +29,7 @@ pub fn apply_pane_output(
                 // Capture revision changed: an invalidation is owed (the snapshot paces it).
                 component.event_pending = true;
                 let replies = component.terminal.take_host_replies();
-                let title_changed = component.terminal.title() != component.published_title;
-                if title_changed {
+                if component.terminal.title() != component.published_title {
                     component.published_title = component.terminal.title().to_owned();
                 }
                 if !replies.is_empty() && component.state.accepts_input() {
@@ -41,25 +37,6 @@ pub fn apply_pane_output(
                         pane: *pane,
                         bytes: replies,
                     });
-                }
-                if !title_changed {
-                    continue;
-                }
-                let workspace = tabs.get(component.tab).and_then(|tab| {
-                    workspaces
-                        .get(tab.workspace)
-                        .map(|workspace| (tab.workspace, workspace.name.clone()))
-                });
-                if let Ok((entity, workspace)) = workspace {
-                    effects.event(
-                        entity,
-                        &workspace,
-                        Event::PaneTitle {
-                            id: 0,
-                            pane: *pane,
-                            title: component.published_title.clone(),
-                        },
-                    );
                 }
             }
             Inbound::PaneEof { pane } => {

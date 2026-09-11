@@ -1,0 +1,148 @@
+{
+  "_comment": "Every control-protocol and manager-protocol surface item with its consumers. Consumers: \"viewer\" (crates/fux/src/client), \"cli\" (crates/fux/src/main.rs subcommand or verbatim reply printing), \"zor:<path under crates/zor/src>\", or \"none\". A cli-only consumer is acceptable for a primitive, never for a workflow. Reviewed by tests/protocol_consumers.rs.",
+  "request": {
+    "split": {"consumers": ["viewer", "cli", "zor:run.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Creates a pane and starts its process; only the PTY owner can."},
+    "focus": {"consumers": ["viewer", "cli", "zor:tasks/focus.rs"], "kind": "primitive", "why": "Moves the retained focus that the viewer renders."},
+    "kill": {"consumers": ["viewer", "cli", "zor:tasks/stop.rs"], "kind": "primitive", "why": "Terminates a pane's process; only the process owner can."},
+    "resize": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Changes the retained layout the server owns."},
+    "send-keys": {"consumers": ["cli"], "kind": "primitive", "why": "Unsequenced write to the PTY, the CLI's debugging input; zor delivers input through the receipted input-* requests."},
+    "input-reserve": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Reserves a sequenced input operation with a receipt."},
+    "input-submit": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Writes the reserved operation's bytes to the PTY."},
+    "input-status": {"consumers": ["zor:tasks/submit.rs", "zor:tasks/binding.rs", "zor:tasks/integration.rs"], "kind": "primitive", "why": "Reads the retained receipt of an input operation."},
+    "capture": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/wait.rs", "zor:tasks/heartbeat.rs"], "kind": "primitive", "why": "Coherent snapshot of the retained grid."},
+    "list": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Enumerates the server's workspaces, tabs and panes with their identity and counters."},
+    "info": {"consumers": ["cli"], "kind": "primitive", "why": "Server identity and limits over the control socket; the CLI prints it for debugging, zor reads identity from the manager descriptor instead."},
+    "tab": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Tab lifecycle inside a workspace the server owns."},
+    "workspace": {"consumers": ["viewer", "zor:run.rs"], "kind": "primitive", "why": "Workspace lifecycle from a control connection; zor run releases its throwaway workspace with it."},
+    "events": {"consumers": ["zor:tasks/launch.rs"], "kind": "primitive", "why": "Bounded replay of the event log after a cursor."},
+    "subscribe": {"consumers": ["cli", "zor:watch/events.rs"], "kind": "primitive", "why": "Live sequenced event stream after a cursor."}
+  },
+  "command-result": {
+    "final": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Carries the retained final record inside the manager's final reply."},
+    "events": {"consumers": ["zor:tasks/launch.rs"], "kind": "primitive", "why": "Replayed events and the cursor to continue from."},
+    "input": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Receipt of an input-* request."},
+    "unit": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Completion without a value (focus, resize, kill, send-keys, tab actions); the viewer clears its outstanding request on it."},
+    "pane": {"consumers": ["viewer", "cli", "zor:run.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "The pane a split created."},
+    "tab": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "The tab a tab action created or selected."},
+    "workspace": {"consumers": ["viewer", "zor:run.rs"], "kind": "primitive", "why": "The workspace a workspace action created, selected or killed."},
+    "capture": {"consumers": ["cli", "zor:tasks/wait.rs", "zor:tasks/heartbeat.rs"], "kind": "primitive", "why": "Text capture with its sequence counters; zor reads input_sequence from a one-byte capture."},
+    "cells": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:rules/view.rs"], "kind": "primitive", "why": "Cell-level capture zor's rules classify."},
+    "listing": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Reply of list."},
+    "info": {"consumers": ["cli"], "kind": "primitive", "why": "Reply of the control-socket info request, printed verbatim by the CLI."}
+  },
+  "event": {
+    "workspace.changed": {"consumers": ["cli", "zor:watch/events.rs"], "kind": "primitive", "why": "Layout or focus changed; zor counts it toward cursor continuity."},
+    "pane.opened": {"consumers": ["cli", "zor:watch/events.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Launch correlation reads the pane and command of the event."},
+    "pane.closed": {"consumers": ["cli", "zor:watch/events.rs"], "kind": "primitive", "why": "Exit evidence on the event stream."},
+    "pane.output": {"consumers": ["cli", "zor:watch/events.rs"], "kind": "primitive", "why": "Output arrived; zor re-captures on the next scan."},
+    "tab.opened": {"consumers": ["cli", "zor:watch/events.rs"], "kind": "primitive", "why": "Tab lifecycle on the event stream."},
+    "tab.closed": {"consumers": ["cli", "zor:watch/events.rs"], "kind": "primitive", "why": "Tab lifecycle on the event stream."}
+  },
+  "pane-summary": {
+    "id": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Pane identity."},
+    "command": {"consumers": ["cli", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Launch correlation matches the pane by its argv."},
+    "pid": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Process identity zor probes and pins targets to."},
+    "cwd": {"consumers": ["cli", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Launch and worktree correlation match the pane by its directory."},
+    "title": {"consumers": ["cli"], "kind": "primitive", "why": "Retained pane title in the listing; zor reads the title from the capture instead."},
+    "seq": {"consumers": ["cli"], "kind": "primitive", "why": "Output sequence counter in the listing; zor reads revision instead."},
+    "revision": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs"], "kind": "primitive", "why": "Grid revision zor uses to skip unchanged captures."},
+    "input_sequence": {"consumers": ["cli", "zor:watch.rs", "zor:tasks/binding.rs"], "kind": "primitive", "why": "Input counter zor correlates receipts with."},
+    "geometry": {"consumers": ["cli"], "kind": "primitive", "why": "Retained layout rectangle, printed for debugging."},
+    "focused": {"consumers": ["cli"], "kind": "primitive", "why": "Retained focus, printed for debugging."},
+    "cursor": {"consumers": ["cli"], "kind": "primitive", "why": "Retained cursor, printed for debugging."},
+    "modes": {"consumers": ["cli"], "kind": "primitive", "why": "Retained terminal modes, printed for debugging."},
+    "exit_status": {"consumers": ["cli"], "kind": "primitive", "why": "Exit evidence in the listing; zor reads it from the final record."}
+  },
+  "tab-summary": {
+    "id": {"consumers": ["cli"], "kind": "primitive", "why": "Tab identity, the argument of tab select-id, rename and close."},
+    "index": {"consumers": ["cli"], "kind": "primitive", "why": "Tab position, the argument of tab select."},
+    "name": {"consumers": ["cli"], "kind": "primitive", "why": "Retained tab name, printed for debugging."},
+    "focused": {"consumers": ["cli"], "kind": "primitive", "why": "Retained tab focus, printed for debugging."},
+    "panes": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "The panes zor enumerates."}
+  },
+  "workspace-summary": {
+    "event_cursor": {"consumers": ["cli", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs", "zor:tasks/resume.rs"], "kind": "primitive", "why": "Stream and sequence zor subscribes and replays from."},
+    "name": {"consumers": ["cli", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Workspace identity."},
+    "focused": {"consumers": ["cli"], "kind": "primitive", "why": "Retained workspace focus, printed for debugging."},
+    "viewers": {"consumers": ["cli"], "kind": "primitive", "why": "Attached viewer count, printed for debugging."},
+    "tabs": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "The tabs zor enumerates."}
+  },
+  "server-info": {
+    "pid": {"consumers": ["cli"], "kind": "primitive", "why": "fux workspace new confirms the server it started won startup."},
+    "instance_nonce": {"consumers": ["cli"], "kind": "primitive", "why": "fux workspace new pins the descriptor it reads to the server's identity."},
+    "version": {"consumers": ["cli"], "kind": "primitive", "why": "Server version, printed by fux info / fux workspace info."},
+    "runtime_dir": {"consumers": ["cli"], "kind": "primitive", "why": "Runtime directory, printed by fux info / fux workspace info."},
+    "workspace": {"consumers": ["cli"], "kind": "primitive", "why": "Answering workspace when asked over a control socket, printed by fux info."},
+    "limits": {"consumers": ["cli"], "kind": "primitive", "why": "Request-sizing bounds, printed by fux info / fux workspace info."}
+  },
+  "info-limits": {
+    "scrollback_lines": {"consumers": ["cli"], "kind": "primitive", "why": "Bound for capture scrollback, printed for debugging."},
+    "frame_bytes": {"consumers": ["cli"], "kind": "primitive", "why": "Bound for one control frame, printed for debugging."},
+    "capture_bytes": {"consumers": ["cli"], "kind": "primitive", "why": "Bound for capture max_bytes, printed for debugging; zor sizes requests with its own constant."},
+    "key_bytes": {"consumers": ["cli"], "kind": "primitive", "why": "Bound for input payloads, printed for debugging."}
+  },
+  "capture-snapshot": {
+    "text": {"consumers": ["cli", "zor:run.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Screen text; zor prints and correlates the final record's text."},
+    "revision": {"consumers": ["cli"], "kind": "primitive", "why": "Grid revision of a text capture; zor reads it from the cells reply."},
+    "rows": {"consumers": ["cli"], "kind": "primitive", "why": "Text capture geometry; zor reads it from the cells reply."},
+    "columns": {"consumers": ["cli"], "kind": "primitive", "why": "Text capture geometry; zor reads it from the cells reply."},
+    "scrollback_offset": {"consumers": ["cli"], "kind": "primitive", "why": "Scrollback rows included in a text capture, printed for debugging."},
+    "title": {"consumers": ["cli"], "kind": "primitive", "why": "Pane title of a text capture; zor reads it from the cells reply."},
+    "progress": {"consumers": ["cli"], "kind": "primitive", "why": "OSC 9;4 progress of a text capture; zor reads it from the cells reply."},
+    "unchanged": {"consumers": ["cli"], "kind": "primitive", "why": "if_revision short-circuit of a text capture; zor uses the cells reply."},
+    "truncated": {"consumers": ["cli", "zor:run.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "zor refuses a truncated final screen."}
+  },
+  "cells-reply": {
+    "seq": {"consumers": ["cli"], "kind": "primitive", "why": "Output sequence counter, printed for debugging."},
+    "input_sequence": {"consumers": ["cli", "zor:watch.rs"], "kind": "primitive", "why": "Input counter the observation is correlated with."},
+    "revision": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs"], "kind": "primitive", "why": "Grid revision the observation is pinned to."},
+    "rows": {"consumers": ["cli", "zor:rules/view.rs"], "kind": "primitive", "why": "Geometry the rules expand rows against."},
+    "columns": {"consumers": ["cli", "zor:rules/view.rs"], "kind": "primitive", "why": "Geometry the rules expand rows against."},
+    "cursor": {"consumers": ["cli"], "kind": "primitive", "why": "Retained cursor, printed for debugging."},
+    "title": {"consumers": ["cli", "zor:rules/view.rs"], "kind": "primitive", "why": "Pane title the rules match."},
+    "progress": {"consumers": ["cli", "zor:rules/view.rs"], "kind": "primitive", "why": "OSC 9;4 progress the rules match."},
+    "unchanged": {"consumers": ["cli", "zor:observe.rs"], "kind": "primitive", "why": "if_revision short-circuit the observer's cache honours."},
+    "truncated": {"consumers": ["cli", "zor:observe.rs", "zor:rules/view.rs"], "kind": "primitive", "why": "A truncated capture is never classified."},
+    "lines": {"consumers": ["cli", "zor:rules/view.rs"], "kind": "primitive", "why": "The rows the rules read."}
+  },
+  "capture-line": {
+    "row": {"consumers": ["cli", "zor:rules/view.rs"], "kind": "primitive", "why": "Row index the rules check for order."},
+    "wrapped": {"consumers": ["cli"], "kind": "primitive", "why": "Soft-wrap marker, printed for debugging."},
+    "cells": {"consumers": ["cli", "zor:rules/view.rs"], "kind": "primitive", "why": "Run-length cells the rules expand to text."}
+  },
+  "input-receipt": {
+    "operation": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Operation identity of the receipt."},
+    "pane": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Receipt is checked against the target pane."},
+    "state": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Delivery phase."},
+    "revision": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Grid revision at delivery."},
+    "input_sequence": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Input counter at delivery."},
+    "expires_ms": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Reservation lifetime."},
+    "bytes_written": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Delivered byte count."},
+    "error": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Delivery failure text."}
+  },
+  "final-record": {
+    "pane": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Exit evidence identity."},
+    "workspace": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Exit evidence identity."},
+    "stream": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Exit evidence identity."},
+    "command": {"consumers": ["zor:tasks/launch.rs"], "kind": "primitive", "why": "Launch correlation matches the record by argv."},
+    "cwd": {"consumers": ["zor:tasks/launch.rs"], "kind": "primitive", "why": "Launch correlation matches the record by directory."},
+    "exit_status": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "The exit status only the process owner observed."},
+    "input_sequence": {"consumers": ["zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Input counter at exit, correlated with the last receipt."},
+    "capture": {"consumers": ["zor:run.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "The final screen."}
+  },
+  "manager-request": {
+    "create": {"consumers": ["zor:run.rs"], "kind": "primitive", "why": "Create-only workspace for a run that must not borrow an existing one."},
+    "final": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Retained exit evidence that outlives the workspace socket."},
+    "resolve": {"consumers": ["cli"], "kind": "primitive", "why": "Attach-or-create for fux workspace new and fux attach."},
+    "list": {"consumers": ["cli", "zor:watch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Workspace names on this server."},
+    "kill": {"consumers": ["cli"], "kind": "primitive", "why": "fux workspace kill."},
+    "info": {"consumers": ["cli"], "kind": "primitive", "why": "Server identity for fux workspace info and startup confirmation."}
+  },
+  "manager-reply": {
+    "final": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Reply of the final request."},
+    "attach": {"consumers": ["cli", "zor:run.rs"], "kind": "primitive", "why": "Descriptor of a resolved or created workspace."},
+    "names": {"consumers": ["cli", "zor:watch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Reply of list."},
+    "info": {"consumers": ["cli"], "kind": "primitive", "why": "Reply of info."},
+    "failed": {"consumers": ["cli", "zor:run.rs"], "kind": "primitive", "why": "Refusal with its message."}
+  }
+}

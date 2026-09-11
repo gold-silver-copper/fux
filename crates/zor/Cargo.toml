@@ -1,6 +1,6 @@
 [package]
 name = "zor"
-version = "0.3.2"
+version = "0.4.0"
 edition.workspace = true
 rust-version = "1.91"
 license.workspace = true
@@ -27,8 +27,9 @@ cli = [
     "dep:signal-hook",
     "dep:toml",
 ]
-# The PTY wrapper: `zor wrap <command>`. Off by default; needs the `cli` runtime plus a
-# terminal emulator for the wrapped child's screen.
+# The PTY wrapper: `zor <command>`. A default feature (on for `cargo install zor`); fux builds
+# zor with `--no-default-features --features cli`, which has no wrapper. Needs the `cli`
+# runtime plus a terminal emulator for the wrapped child's screen.
 wrap = ["cli", "dep:vt100"]
 
 [dependencies]
@@ -38,7 +39,7 @@ anyhow = { version = "1.0", optional = true }
 clap = { version = "4.5", features = ["derive"], optional = true }
 # Same-user local socket discipline shared with fux: private directories, 0600 sockets,
 # kernel peer credentials, instance tokens and non-blocking connect initiation.
-local-ipc = { version = "0.1.0", path = "../local-ipc", optional = true }
+local-ipc = { version = "0.2.0", path = "../local-ipc", optional = true }
 # Unix terminal and process primitives used only by platform adapters.
 libc = { version = "0.2", optional = true }
 # Safe termios operations for raw-mode guards.

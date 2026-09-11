@@ -24,6 +24,8 @@ pub mod dashboard;
 pub mod service;
 
 #[cfg(feature = "cli")]
+pub mod run;
+#[cfg(feature = "cli")]
 pub mod tasks;
 
 #[cfg(feature = "cli")]

@@ -1,9 +1,10 @@
 //! Private local sockets: owned directories, mode 0600 inodes, inode-aware cleanup and kernel peer
-//! credential checks over `local_ipc`. The operating-system user is the authorization boundary;
-//! stale-socket recovery, the control preface and deadline policy are fux's own.
+//! credential checks and deadline-bounded connect and write over `local_ipc`. The
+//! operating-system user is the authorization boundary; stale-socket recovery and the control
+//! preface are fux's own.
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -134,85 +135,7 @@ pub fn check_private_socket_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Connect without letting a saturated local listener outlive the caller's deadline.
-pub fn connect_local(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
-    use std::os::fd::AsFd;
-    let remaining = || {
-        deadline
-            .checked_duration_since(Instant::now())
-            .filter(|duration| !duration.is_zero())
-            .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
-    };
-    remaining()?;
-    let connecting = local_ipc::Connecting::start(path)?;
-    if connecting.pending() {
-        loop {
-            let timeout =
-                u16::try_from(remaining()?.as_millis().clamp(1, 2000)).map_err(io::Error::other)?;
-            let mut polls = [nix::poll::PollFd::new(
-                connecting.as_fd(),
-                nix::poll::PollFlags::POLLOUT,
-            )];
-            match nix::poll::poll(&mut polls, timeout) {
-                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
-                Ok(_) => {}
-                Err(error) => return Err(error.into()),
-            }
-            connecting.confirm()?;
-            break;
-        }
-    }
-    remaining()?;
-    connecting.finish()
-}
-
-/// Write with one wall-clock deadline, even when a peer drains only a few bytes at a time.
-/// Restore the descriptor's original status flags before returning.
-pub fn write_all_until(
-    stream: &mut UnixStream,
-    mut bytes: &[u8],
-    deadline: Instant,
-) -> io::Result<()> {
-    use nix::fcntl::{FcntlArg, OFlag, fcntl};
-    use std::os::fd::AsFd;
-    let flags = OFlag::from_bits_truncate(fcntl(&*stream, FcntlArg::F_GETFL)?);
-    fcntl(&*stream, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
-    let result = (|| {
-        while !bytes.is_empty() {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|duration| !duration.is_zero())
-                .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
-            match stream.write(bytes) {
-                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                Ok(count) => {
-                    bytes = bytes
-                        .get(count..)
-                        .ok_or_else(|| io::Error::other("invalid socket write count"))?
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    let mut polls = [nix::poll::PollFd::new(
-                        stream.as_fd(),
-                        nix::poll::PollFlags::POLLOUT,
-                    )];
-                    let timeout = u16::try_from(remaining.as_millis().clamp(1, 2000))
-                        .map_err(io::Error::other)?;
-                    match nix::poll::poll(&mut polls, timeout) {
-                        Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
-    })();
-    let restored = fcntl(&*stream, FcntlArg::F_SETFL(flags))
-        .map(|_| ())
-        .map_err(io::Error::from);
-    result.and(restored)
-}
+pub use local_ipc::{connect_until as connect_local, write_all_until};
 
 /// Client half of control negotiation: authorize the peer, send the preface, expect it back
 /// (the server half lives with the async socket tasks).
@@ -270,6 +193,7 @@ pub fn negotiate_client_with_timeout(stream: &mut UnixStream, timeout: Duration)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn slow_partial_socket_writes_obey_one_deadline_and_restore_flags() -> io::Result<()> {

@@ -2,7 +2,7 @@
   "status": "failed",
   "id": 4,
   "error": {
-    "code": "timeout",
-    "message": "wait timed out"
+    "code": "not-found",
+    "message": "pane not found"
   }
 }

@@ -88,7 +88,7 @@ pub(super) fn run(binary: &Path, zor: &Path) -> Result<()> {
         for mut op in [
             json!({"command":"capture","pane":1,"max_bytes":4096}),
             json!({"command":"send-keys","pane":1,"keys":"must-not-arrive"}),
-            json!({"command":"subscribe","events":[]}),
+            json!({"command":"subscribe"}),
         ] {
             op["id"] = 9.into();
             op["instance"] = "old-server".into();

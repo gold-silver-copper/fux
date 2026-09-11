@@ -7,10 +7,10 @@ use crate::ecs::messages::{
     Effect, Inbound, ManagerAction, ManagerOutcome, Requester, ViewerRequest,
 };
 use crate::ecs::resources::{
-    Clock, Deadlines, Ids, Limits, Registry, ServerIdentity, ShuttingDown, WorkspaceCounter,
+    Clock, Ids, Limits, Registry, ServerIdentity, ShuttingDown, WorkspaceCounter,
 };
 use crate::ecs::support::{
-    Effects, ViewerExit, close_tab, despawn_tab, effect, event, failed, focus_in_tab, is_member,
+    Effects, ViewerExit, close_tab, despawn_tab, effect, failed, focus_in_tab, is_member,
     mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity, pane_id, pane_in_layout,
     pane_tab, pane_workspace, remove_from_layout, reply, retire, sanitize_notice, tab_entity,
     tab_id, terminate_pane, viewer_entity, viewers_of_workspace, workspace_entity, write_pane,
@@ -21,7 +21,7 @@ use crate::ids::{PaneId, ViewerId};
 use crate::layout::{Axis, Direction, Rect};
 use crate::proto::attach::{MouseEvent, ServerMessage, ViewReply};
 use crate::proto::control::{
-    self, CommandResult, ErrorCode, Event, FocusTarget, PaneSummary, Reply, Request, TabAction,
+    self, CommandResult, ErrorCode, FocusTarget, PaneSummary, Reply, Request, TabAction,
     TabSummary, WorkspaceAction, WorkspaceSummary,
 };
 use crate::view::{MouseEncoding, MouseMode, PaneModes, PaneUpdate};
@@ -148,41 +148,23 @@ pub fn apply_attachments(
                         bindings: registry.bindings.clone(),
                     },
                 });
-                effects.event(
-                    entity,
-                    workspace,
-                    Event::ClientAttached {
-                        id: 0,
-                        client: id.0,
-                    },
-                );
             }
             Inbound::ViewerGone { viewer: id } => {
                 let Some(entity) = ids.viewer(*id) else {
                     continue;
                 };
-                let (workspace, name) = match viewers.get(entity) {
-                    Ok(viewer) => {
-                        departed.push(entity);
-                        (
-                            viewer.workspace,
-                            workspaces
-                                .get(viewer.workspace)
-                                .map(|workspace| workspace.name.clone())
-                                .unwrap_or_default(),
-                        )
-                    }
+                match viewers.get(entity) {
+                    Ok(_) => departed.push(entity),
                     // Arrived in this batch: the spawn is still queued and the despawn queues
                     // behind it.
                     Err(_) => match arrived.iter().position(|(arrived, ..)| arrived == id) {
                         Some(index) => {
-                            let (_, _, workspace, name) = arrived.swap_remove(index);
-                            (workspace, name)
+                            arrived.swap_remove(index);
                         }
                         None => continue,
                     },
-                };
-                exit.despawn(ids, entity, *id, workspace, &name, &mut effects);
+                }
+                exit.despawn(ids, entity, *id, &mut effects);
             }
             Inbound::Shutdown => shutting_down.0 = true,
             _ => {}
@@ -191,23 +173,12 @@ pub fn apply_attachments(
 }
 
 pub fn despawn_viewer(world: &mut World, viewer: Entity) {
-    let Some((id, workspace)) = world
-        .get::<Viewer>(viewer)
-        .map(|viewer| (viewer.id, viewer.workspace))
-    else {
+    let Some(id) = world.get::<Viewer>(viewer).map(|viewer| viewer.id) else {
         return;
     };
     world.resource_mut::<Ids>().viewers.remove(&id);
     world.despawn(viewer);
     effect(world, Effect::CloseViewer { viewer: id });
-    event(
-        world,
-        workspace,
-        Event::ClientDetached {
-            id: 0,
-            client: id.0,
-        },
-    );
 }
 
 pub fn apply_requests(world: &mut World) {
@@ -745,12 +716,6 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         Request::Info { .. } => Ok(CommandResult::Info {
             info: Box::new(server_info(world, Some(context.workspace))),
         }),
-        Request::Wait {
-            pane,
-            until,
-            timeout_ms,
-            ..
-        } => register_wait(world, &context, requester, id, pane, until, timeout_ms),
         Request::Tab { action, .. } => tab_action(world, &context, id, action),
         Request::Workspace { action, .. } => workspace_action(world, &context, id, action),
         Request::Events { after, .. } => {
@@ -773,135 +738,11 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         )),
     };
     match result {
-        // A started creation (barrier) and a registered wait both reply later, not now.
+        // A started creation (barrier) replies later, not now.
         Ok(CommandResult::Pane { pane: PaneId(0) }) => {}
         Ok(result) => reply(world, requester, Reply::Completed { id, result }),
         Err(reply_value) => reply(world, requester, reply_value),
     }
-}
-
-/// Registers a `wait`; the reply comes from `resolve_waits` when the condition or the timeout
-/// fires. Returns the barrier sentinel so `apply_control` sends no immediate reply.
-fn register_wait(
-    world: &mut World,
-    context: &Context,
-    requester: Requester,
-    id: u64,
-    pane: PaneId,
-    until: control::WaitUntil,
-    timeout_ms: u64,
-) -> Result<CommandResult, Reply> {
-    let entity = pane_in_workspace(world, context, pane)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-    let waits = world.resource::<crate::ecs::resources::Waits>();
-    if waits.pending.len() >= control::MAX_PENDING_WAITS {
-        return Err(failed(id, ErrorCode::Limit, "too many pending waits"));
-    }
-    if waits
-        .pending
-        .iter()
-        .filter(|wait| wait.pane == pane)
-        .count()
-        >= control::MAX_WAITS_PER_PANE
-    {
-        return Err(failed(
-            id,
-            ErrorCode::Limit,
-            "too many pending waits on this pane",
-        ));
-    }
-    debug_assert!(world.get::<Pane>(entity).is_some());
-    let now = world.resource::<Clock>().now_ms;
-    world
-        .resource_mut::<crate::ecs::resources::Waits>()
-        .pending
-        .push(crate::ecs::resources::PendingWait {
-            requester,
-            id,
-            pane,
-            workspace: context.workspace,
-            until,
-            timeout_at_ms: now.saturating_add(timeout_ms),
-        });
-    Ok(CommandResult::Pane { pane: PaneId(0) })
-}
-
-/// Evaluates every pending wait against the current pane state and the clock, replying to those
-/// that fired or timed out and proposing a deadline for the rest. A wait whose viewer is gone or
-/// whose pane left the workspace is dropped; a pane that no longer exists fails the wait.
-pub fn resolve_waits(world: &mut World) {
-    let pending = std::mem::take(&mut world.resource_mut::<crate::ecs::resources::Waits>().pending);
-    let now = world.resource::<Clock>().now_ms;
-    let mut keep = Vec::with_capacity(pending.len());
-    for wait in pending {
-        // Drop a wait whose viewer connection is gone.
-        if let Requester::Viewer(id) = wait.requester
-            && viewer_entity(world, id).is_none()
-        {
-            continue;
-        }
-        let entity = pane_in_workspace_ids(world, wait.workspace, wait.pane);
-        let Some(entity) = entity else {
-            reply(
-                world,
-                wait.requester,
-                failed(wait.id, ErrorCode::NotFound, "pane not found"),
-            );
-            continue;
-        };
-        if let Some(mut pane) = world.get_mut::<Pane>(entity) {
-            pane.refresh();
-        }
-        let Some(pane) = world.get::<Pane>(entity) else {
-            reply(
-                world,
-                wait.requester,
-                failed(wait.id, ErrorCode::NotFound, "pane not found"),
-            );
-            continue;
-        };
-        let seq = pane.terminal.grid().seq();
-        let exit_status = pane.state.exit_code();
-        let fired = match &wait.until {
-            control::WaitUntil::Exit => exit_status.is_some().then_some(control::WaitFired::Exit),
-            control::WaitUntil::Seq { value } => (seq >= *value).then_some(control::WaitFired::Seq),
-        };
-        if let Some(fired) = fired {
-            reply(
-                world,
-                wait.requester,
-                Reply::Completed {
-                    id: wait.id,
-                    result: CommandResult::Waited {
-                        fired,
-                        seq,
-                        exit_status,
-                    },
-                },
-            );
-            continue;
-        }
-        if now >= wait.timeout_at_ms {
-            reply(
-                world,
-                wait.requester,
-                failed(wait.id, ErrorCode::Timeout, "wait timed out"),
-            );
-            continue;
-        }
-        // Exit and seq fire from pane changes; the clock only has to wake the timeout.
-        world
-            .resource_mut::<Deadlines>()
-            .propose(wait.timeout_at_ms);
-        keep.push(wait);
-    }
-    world.resource_mut::<crate::ecs::resources::Waits>().pending = keep;
-}
-
-/// Resolves a public pane id to its entity within `workspace` without a `Context`.
-fn pane_in_workspace_ids(world: &World, workspace: Entity, pane: PaneId) -> Option<Entity> {
-    let entity = pane_entity(world, pane)?;
-    (pane_workspace(world, entity)? == workspace).then_some(entity)
 }
 
 /// A pane id that belongs to the requester's workspace.
@@ -1235,10 +1076,7 @@ fn workspace_action(
 
 /// Moves an attached viewer to another workspace over the same connection.
 pub fn switch_viewer_workspace(world: &mut World, viewer: Entity, workspace: Entity) {
-    let Some((id, previous)) = world
-        .get::<Viewer>(viewer)
-        .map(|viewer| (viewer.id, viewer.workspace))
-    else {
+    let Some(previous) = world.get::<Viewer>(viewer).map(|viewer| viewer.workspace) else {
         return;
     };
     if previous == workspace {
@@ -1259,22 +1097,6 @@ pub fn switch_viewer_workspace(world: &mut World, viewer: Entity, workspace: Ent
         component.sent.clear();
         component.dirty = true;
     }
-    event(
-        world,
-        previous,
-        Event::ClientDetached {
-            id: 0,
-            client: id.0,
-        },
-    );
-    event(
-        world,
-        workspace,
-        Event::ClientAttached {
-            id: 0,
-            client: id.0,
-        },
-    );
 }
 
 pub fn next_workspace_name(world: &mut World) -> String {
@@ -1454,7 +1276,7 @@ fn list_workspaces(world: &mut World) -> Vec<WorkspaceSummary> {
         .collect()
 }
 
-/// What `info` answers: the installed identity, the crate version and every limit.
+/// What `info` answers: the installed identity, the crate version and the request bounds.
 pub fn server_info(world: &World, workspace: Option<Entity>) -> control::ServerInfo {
     let identity = world.resource::<ServerIdentity>();
     let limits = world.resource::<Limits>();
@@ -1467,22 +1289,10 @@ pub fn server_info(world: &World, workspace: Option<Entity>) -> control::ServerI
             .and_then(|entity| world.get::<Workspace>(entity))
             .map(|workspace| workspace.name.clone()),
         limits: control::InfoLimits {
-            workspaces: limits.max_workspaces,
-            tabs: limits.max_tabs,
-            panes: limits.max_panes,
-            viewers: limits.max_viewers,
             scrollback_lines: limits.scrollback_lines,
-            control_connections: control::MAX_CONTROL_CONNECTIONS,
             frame_bytes: control::MAX_FRAME_BYTES,
             capture_bytes: control::MAX_CAPTURE_BYTES,
             key_bytes: control::MAX_KEY_BYTES,
-            event_filters: control::MAX_EVENT_FILTERS,
-            subscriber_queue: control::MAX_SUBSCRIBER_QUEUE,
-            viewer_queue: limits.viewer_queue,
-            retire_grace_ms: limits.retire_grace_ms,
-            terminate_deadline_ms: limits.terminate_deadline_ms,
-            output_event_interval_ms: limits.output_event_interval_ms,
-            frame_interval_ms: limits.frame_interval_ms,
         },
     }
 }

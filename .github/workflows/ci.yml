@@ -66,7 +66,7 @@ jobs:
         if: runner.os != 'Linux'
         env:
           FUX_SCENARIO_DEADLINE_SCALE: "3"
-        run: cargo +${{ matrix.rust }} test -p fux --locked --lib --bins --test ecs --test agent_boundary --test structure --test fixtures --test micro_timing --test local_cli -- --test-threads=1 --skip a_full_agent_session_runs_headlessly_over_the_control_protocol
+        run: cargo +${{ matrix.rust }} test -p fux --locked --lib --bins --test ecs --test agent_boundary --test structure --test protocol_consumers --test fixtures --test micro_timing --test local_cli -- --test-threads=1 --skip a_full_agent_session_runs_headlessly_over_the_control_protocol
       - if: runner.os == 'Linux'
         run: cargo +${{ matrix.rust }} test -p zor --all-features --locked
       - if: runner.os == 'Linux'

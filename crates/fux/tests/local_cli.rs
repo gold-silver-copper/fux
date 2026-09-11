@@ -72,11 +72,6 @@ fn empty_arguments_regressions() {
 }
 
 #[test]
-fn run_command_regressions() {
-    run("run-command");
-}
-
-#[test]
 fn incompatible_manager_rejection_preserves_existing_sessions() {
     run("migration");
 }

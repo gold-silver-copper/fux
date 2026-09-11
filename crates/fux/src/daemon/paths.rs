@@ -26,13 +26,11 @@ impl DaemonPaths {
         state: Option<OsString>,
         home: Option<OsString>,
     ) -> Result<Self, PathError> {
-        let runtime = absolute(runtime)
-            .or_else(|| macos_runtime_fallback(home.as_ref()))
+        let runtime_dir = local_ipc::runtime_directory_from("fux", runtime, home.clone())
             .ok_or(PathError::MissingRuntime)?;
         let state = absolute(state)
             .or_else(|| absolute(home).map(|path| path.join(".local/state")))
             .ok_or(PathError::MissingState)?;
-        let runtime_dir = runtime.join("fux");
         let state_dir = state.join("fux");
         Ok(Self {
             manager_socket: runtime_dir.join("manager.sock"),
@@ -62,16 +60,6 @@ impl DaemonPaths {
         crate::ids::validate_workspace_name(name).map_err(|_| PathError::UnsafeName)?;
         Ok(self.runtime_dir.join(format!("{name}.sock")))
     }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_runtime_fallback(home: Option<&OsString>) -> Option<PathBuf> {
-    absolute(home.cloned()).map(|path| path.join("Library/Caches/fux-runtime"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn macos_runtime_fallback(_: Option<&OsString>) -> Option<PathBuf> {
-    None
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]

@@ -130,25 +130,6 @@ pub struct ShuttingDown(pub bool);
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub struct WorkspaceCounter(pub u32);
 
-/// One client blocked in a `wait`, waiting for a pane condition or its timeout. Keyed by the
-/// public pane id because pane entities are despawned; the workspace scopes the lookup.
-#[derive(Clone, Debug)]
-pub struct PendingWait {
-    pub requester: crate::ecs::messages::Requester,
-    pub id: u64,
-    pub pane: PaneId,
-    pub workspace: Entity,
-    pub until: crate::proto::control::WaitUntil,
-    /// Absolute time the wait fails with a timeout.
-    pub timeout_at_ms: u64,
-}
-
-/// Pending waits across every connection; evaluated once per step before the lifecycle cascade.
-#[derive(Resource, Clone, Debug, Default)]
-pub struct Waits {
-    pub pending: Vec<PendingWait>,
-}
-
 /// Fixed, global receipt budget. Unexpired operations are never evicted to admit new ones.
 pub const MAX_INPUT_OPERATIONS: usize = 128;
 pub const INPUT_RETENTION_MS: u64 = 60_000;
@@ -170,4 +151,11 @@ pub const MAX_FINAL_RECORDS: usize = 128;
 pub const FINAL_RETENTION_MS: u64 = 60_000;
 
 #[derive(Resource, Default)]
-pub struct FinalRecords(pub BTreeMap<PaneId, crate::proto::control::FinalRecord>);
+pub struct FinalRecords(pub BTreeMap<PaneId, RetainedFinal>);
+
+/// A retained final record with the server-side bookkeeping that never crosses the wire.
+pub struct RetainedFinal {
+    pub record: crate::proto::control::FinalRecord,
+    pub closed_ms: u64,
+    pub expires_ms: u64,
+}

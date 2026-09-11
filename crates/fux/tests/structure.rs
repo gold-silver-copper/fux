@@ -15,7 +15,6 @@ fn production_spawns_exist_only_in_reviewed_owner_modules() {
         "src/client/mod.rs",     // frame reader task and workspace lookups, aborted on exit
         "src/client/io.rs",      // stdin/SIGWINCH producers, cancelled and joined
         "src/daemon/startup.rs", // background server child, killed when readiness fails
-        "src/main.rs",           // `fux run` capture-reader thread, joined before the CLI exits
     ];
     for file in rust_files("src") {
         let source = strip_test_modules(&read(&file)).to_owned();
@@ -104,16 +103,15 @@ fn ecs_is_the_only_authoritative_model() {
 
 #[test]
 fn wire_events_have_the_documented_dotted_spellings_exactly_twice() {
+    // The unit tests in that file assert the removed names are rejected; only declarations count.
     let source = read(Path::new("src/proto/control.rs"));
+    let source = strip_test_modules(&source);
     for name in [
         "pane.opened",
         "pane.closed",
-        "pane.title",
         "pane.output",
         "tab.opened",
         "tab.closed",
-        "client.attached",
-        "client.detached",
     ] {
         assert_eq!(
             source.matches(&format!("rename = \"{name}\"")).count(),
@@ -123,6 +121,11 @@ fn wire_events_have_the_documented_dotted_spellings_exactly_twice() {
     }
     for removed in [
         "agent.state",
+        "pane.title",
+        "client.attached",
+        "client.detached",
+        "wait",
+        "waited",
         "workspace.resized",
         "popup",
         "set-status",

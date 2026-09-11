@@ -45,6 +45,27 @@ pub enum Action {
         #[command(subcommand)]
         action: TaskAction,
     },
+    /// Run a command in a throwaway fux workspace, wait for it to exit, print its final screen
+    /// and exit with its status. Starts a fux session server (`fux` on PATH) when none is running.
+    Run {
+        /// Budget in milliseconds for workspace creation, the launch and the wait for exit.
+        #[arg(long, default_value_t = 300_000)]
+        timeout: u64,
+        #[arg(long)]
+        rows: Option<u16>,
+        #[arg(long)]
+        columns: Option<u16>,
+        /// Extra environment for the command; repeatable.
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Workspace name; it must not exist yet (default: unique to this invocation).
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(last = true, required = true)]
+        argv: Vec<String>,
+    },
     /// Run zor's shared local observation service in the foreground.
     Serve {
         #[arg(long)]

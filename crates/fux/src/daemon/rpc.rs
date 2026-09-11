@@ -79,37 +79,21 @@ pub fn manager_request_until(
     serde_json::from_slice(&reply).context("decoding manager reply")
 }
 
+/// One newline-delimited frame read byte by byte, so repeated calls on one stream each get the
+/// next frame.
 pub fn read_json_frame(stream: &mut UnixStream, deadline: Duration) -> Result<Vec<u8>> {
-    use nix::poll::{PollFd, PollFlags, poll};
-    use std::io::Read as _;
-    use std::os::fd::AsFd as _;
-    let deadline = Instant::now() + deadline;
-    let mut bytes = Vec::new();
-    let mut byte = [0];
-    loop {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|duration| !duration.is_zero())
-            .ok_or_else(|| anyhow::anyhow!("manager response timed out"))?;
-        let mut descriptors = [PollFd::new(stream.as_fd(), PollFlags::POLLIN)];
-        let timeout = u16::try_from(remaining.as_millis().max(1)).unwrap_or(u16::MAX);
-        match poll(&mut descriptors, timeout) {
-            Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
-            Ok(_) => {}
-            Err(error) => return Err(error.into()),
-        }
-        if stream.read(&mut byte)? == 0 {
-            bail!("manager closed before a complete response");
-        }
-        if byte[0] == b'\n' {
-            return Ok(bytes);
-        }
-        anyhow::ensure!(
-            bytes.len() < crate::proto::control::MAX_FRAME_BYTES,
-            "manager response exceeds frame limit"
-        );
-        bytes.push(byte[0]);
-    }
+    local_ipc::FrameReader::bytewise(crate::proto::control::MAX_FRAME_BYTES)
+        .next_frame(stream, Instant::now() + deadline)
+        .map_err(|error| match error {
+            local_ipc::FrameError::TimedOut => anyhow::anyhow!("manager response timed out"),
+            local_ipc::FrameError::Closed => {
+                anyhow::anyhow!("manager closed before a complete response")
+            }
+            local_ipc::FrameError::Oversize => {
+                anyhow::anyhow!("manager response exceeds frame limit")
+            }
+            local_ipc::FrameError::Io(error) => error.into(),
+        })
 }
 
 pub fn workspace_names(path: &Path) -> Result<Vec<String>> {

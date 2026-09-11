@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.9.0 - 2026-09-11
+
+Breaking release: dead automation surface is deleted and the two workflows fux still carried
+move to zor. fux keeps only what needs the PTY, the process, the retained grid or the event
+log. No compatibility with 0.8.0 consumers is kept.
+
+- Removed request `wait` (`WaitUntil::{Exit,Seq}`, `WaitFired`, the `waited` result, the
+  `Waits`/`PendingWait` resources, `MAX_WAIT_MS`, `MAX_PENDING_WAITS`, `MAX_WAITS_PER_PANE`,
+  the ECS `Waits` phase and the blocking-connection path); every request is now answered or
+  failed within the fixed 30 s window. CLI: `fux wait` is removed. Consumers poll `seq`/
+  `revision` or follow `pane.output`.
+- Removed the `events` filter from `subscribe` (and `MAX_EVENT_FILTERS`): a subscription
+  receives every event of its workspace. CLI: `fux subscribe` takes no arguments.
+- Removed event kinds `pane.title`, `client.attached` and `client.detached` (`Event` and
+  `EventKind`); a title change advances the pane's output sequence and is read from `list` or
+  a capture, viewer counts from `list`.
+- `info.limits` keeps only the bounds a client sizes requests by: `scrollback_lines`,
+  `frame_bytes`, `capture_bytes`, `key_bytes`. Removed fields: `workspaces`, `tabs`, `panes`,
+  `viewers`, `control_connections`, `event_filters`, `subscriber_queue`, `viewer_queue`,
+  `retire_grace_ms`, `terminate_deadline_ms`, `output_event_interval_ms`,
+  `frame_interval_ms`.
+- Removed CLI subcommands `fux run` (with its `--timeout`, `--workspace`, `--cwd`, `--env`,
+  `--rows`, `--columns` flags) and `fux final --instance NONCE PANE`. `zor run` (zor 0.4.0)
+  is the replacement for `run`, with the same observable behavior; manager `final`, the
+  retained final records and their bounds stay in fux as the primitive zor reads.
+- `progress` stays on both capture forms (zor's rules read it).
+- zor 0.4.0 ships from this workspace; see `crates/zor/CHANGELOG.md`.
+- `FinalRecord` no longer carries `closed_ms` and `expires_ms`; they were server-side
+  retention bookkeeping with no consumer, and stay internal.
+- Socket plumbing now comes from local-ipc 0.2.0: `connect_local`, `write_all_until`, the
+  manager frame reader and runtime-directory discovery are the shared `connect_until`,
+  `write_all_until`, `FrameReader` and `runtime_directory_from`; behavior, limits and error
+  texts are unchanged.
+- The fux integration test crate is `automation_integration` (it tests automation over the
+  control protocol, driven by zor); `tests/fixtures/control-consumers.json` records every
+  protocol item's consumer and the `protocol_consumers` test fails on any item with none.
+
+
 ## 0.8.0 - 2026-09-11
 
 Breaking release: the fux/zor boundary is tightened and unconsumed surface is removed. No

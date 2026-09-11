@@ -1,6 +1,6 @@
 [package]
 name = "fux"
-version = "0.8.0"
+version = "0.9.0"
 edition.workspace = true
 description = "Minimal persistent terminal multiplexer built on bevy_ecs"
 license.workspace = true
@@ -22,7 +22,7 @@ bevy_ecs = { version = "=0.19.1", default-features = false, features = ["std"] }
 clap = { version = "4.5", features = ["derive"] }
 # Same-user local socket discipline shared with zor: private directories, 0600 sockets,
 # kernel peer credentials, instance tokens and non-blocking connect initiation.
-local-ipc = { version = "0.1.0", path = "../local-ipc" }
+local-ipc = { version = "0.2.0", path = "../local-ipc" }
 # Safe Unix signal, process-group, peer-credential and flock operations.
 nix = { version = "0.30", features = ["fs", "poll", "signal", "socket", "term", "user"] }
 # Safe duplication of portable-pty master descriptors for cancellable I/O.

@@ -43,15 +43,14 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 | `send-keys` | `pane`, `keys` (at most 64 KiB), `notation?` (`escapes` default, or `keys`) | unit |
 | `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows; `text` only), `max_bytes` (1–131072), `format?` (`text` default or `cells`), `if_revision?` | coherent `capture` or `cells` (below) |
 | `list` | | `workspaces[]` |
-| `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{…}` |
-| `wait` | `pane`, `until`, `timeout_ms` (1–300000) | `waited`: `fired`, `seq`, `exit_status` |
+| `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{scrollback_lines,frame_bytes,capture_bytes,key_bytes}` (the bounds a client sizes requests by) |
 | `tab` | `action`: `new{name?}`, `next`, `previous`, `select{target}` (`{index:N}` or `{id:TAB}`), `rename{tab,name}`, `close{tab}` | `tab` |
 | `workspace` | `action`: `list`, `new{name?}`, `kill{name}` (only the connection's own workspace; other workspaces are killed through the manager or `fux workspace kill`), `select{name}` (viewer attachments only) | `workspace`/`workspaces[]` |
 | `input-reserve` | `instance`, `pane` | input receipt |
 | `input-submit` | `instance`, `operation`, `keys` (escape notation) | input receipt |
 | `input-status` | `instance`, `operation` | input receipt |
 | `events` | `instance`, `after` | current cursor and retained events |
-| `subscribe` | `events?` (≤32 filters), `after?` (requires `instance`) | `accepted`, replay, then live events |
+| `subscribe` | `after?` (requires `instance`) | `accepted`, replay, then every live event of the workspace |
 
 Replies are `{"status":"completed","id":N,"result":{...}}`, `{"status":"failed","id":N,"error":
 {"code":"not-found"|"invalid-request"|"limit"|"unknown-command"|…,"message":"…"}}` or
@@ -143,40 +142,20 @@ Every pane has an output sequence `seq`: a counter that advances once for each c
 can see (visible rows, cursor, terminal modes, title or exit status), never for output that
 changes nothing. It is reported by `list`, by `capture` (the value the returned text or cells
 reflect) and by `pane.output` events, so a client that remembers the sequence it last read can
-tell whether a capture is worth taking or `wait` for the sequence to move (below).
+tell whether a capture is worth taking; `pane.output` events report it as it moves.
 The sequence is current at the moment of the reply: a hidden pane's screen is read when it is
 listed, captured or its output event is due, a shown pane's whenever a viewer's frame goes out.
-
-## Waiting
-
-`wait` blocks a request until a pane meets a condition or the timeout elapses, so an agent need
-not poll. It is a server-side deadline, never a held thread, and the reply says which condition
-fired with the pane's current `seq` and `exit_status`:
-
-- `{"kind":"exit"}` — the pane's process exits (the reply carries `exit_status`).
-- `{"kind":"seq","value":V}` — the pane's output sequence reaches `V`.
-
-Screen-content conditions (a pattern on the text, a quiet window) are consumer policy: take a
-`cells` or `text` capture when `seq` moves and evaluate the rule there.
-
-```json
-{"command":"wait","id":8,"pane":1,"until":{"kind":"exit"},"timeout_ms":10000}
-{"status":"completed","id":8,"result":{"kind":"waited","value":{"fired":"exit","seq":31,"exit_status":0}}}
-```
-
-A pane that closes fails every wait on it with `not-found`; a viewer that disconnects drops its
-waits. The timeout is a `failed` reply with code `timeout`, never a hang. A server holds at most
-1,024 pending waits, at most 64 on one pane; `timeout_ms` is 1–300000. A
-viewer's waits are dropped when it detaches; a control-connection wait that outlives its client
-is bounded by its own timeout (there is no separate close signal on the control socket).
 
 ## Events
 
 Generic events are `workspace.changed`, `pane.opened`, `pane.closed` (`exit_status`),
-`pane.title`, `pane.output` (`seq`), `tab.opened`, `tab.closed`, `client.attached`, and
-`client.detached`. Each event carries a cursor containing workspace-lifetime `stream`
-and replay `sequence`. Subscription delivery uses the subscription's `id`; records
-returned by the `events` RPC retain their stored IDs.
+`pane.output` (`seq`), `tab.opened` (`name`) and `tab.closed`. Each event carries a cursor
+containing workspace-lifetime `stream` and replay `sequence`. Subscription delivery uses the
+subscription's `id`; records returned by the `events` RPC retain their stored IDs. A
+subscription receives every event of its workspace; what to act on is the consumer's
+selection. Title changes and viewer attachments are not events: a title change advances the
+pane's output sequence (`pane.output`) and is read from `list` or a capture, and viewer
+counts are read from `list`.
 
 `pane.output` retains the grid sequence semantics. Output that changes only capture
 history or metadata emits `workspace.changed` instead. These output invalidations share
@@ -227,14 +206,16 @@ most recently attached workspace. `kill` deliberately terminates that workspace'
 command/cwd and exit evidence. Records are bounded to 128 entries and up to 60 seconds (capacity pressure evicts older records), with at
 most 128 KiB of capture text each. Forced retirement may leave exit status unknown; late
 reports do not rewrite published records. The manager can remain alive after workspace
-sockets disappear to serve these records. The CLI exposes `fux final --instance NONCE PANE`;
-`fux run` uses this evidence and never claims task success from PTY delivery alone.
+sockets disappear to serve these records. `final` is the primitive; the workflows over it
+(`zor run`, zor's managed launches) live in zor and never claim task success from PTY
+delivery alone. The fux CLI has no subcommand for it.
 
 ## Consumers
 
 The fux CLI (`fux [NAME] list`, `fux ctl JSON`, …) sends the preface itself and takes plain JSON.
 zor's `observe` command sends the preface before each sampling request and consumes `list` and
-`capture` directly. The fixture-child suite covers bounded control framing; the Rust
+`capture` directly; `zor run` is the one-shot workflow over `create`, `split`, `final` and
+workspace `kill`. The fixture-child suite covers bounded control framing; the Rust
 `observer` scenario checks that malformed control clients leave panes and valid clients
 working. The Rust `protocol-rejection` scenario separately verifies that a rejected
 attachment hello leaves terminal settings and screen mode untouched.
