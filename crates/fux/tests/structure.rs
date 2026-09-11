@@ -103,7 +103,9 @@ fn ecs_is_the_only_authoritative_model() {
 
 #[test]
 fn wire_events_have_the_documented_dotted_spellings_exactly_twice() {
+    // The unit tests in that file assert the removed names are rejected; only declarations count.
     let source = read(Path::new("src/proto/control.rs"));
+    let source = strip_test_modules(&source);
     for name in [
         "pane.opened",
         "pane.closed",
