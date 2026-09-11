@@ -28,7 +28,7 @@ signal-hook = "0.3"
 # Terminal emulation of the wrapped child's bytes for rule evaluation.
 vt100 = "=0.16.2"
 # Observation: rules, hysteresis, OSC 7877 wire format and process helpers.
-zor = { path = "../zor", version = "0.2.0", default-features = false, features = ["cli"] }
+zor = { path = "../zor", version = "0.3.0", default-features = false, features = ["cli"] }
 
 [[bin]]
 name = "zor-wrap"
