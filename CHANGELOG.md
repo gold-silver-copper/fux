@@ -32,6 +32,16 @@ request shapes is kept.
   and `reply_completed_info.json` (the latter also copied to `crates/zor/tests/fixtures/
   control/`, kept byte-identical by the fixture suite). The consumer fixture records zor as
   the consumer of `info.limits` and its two ceilings.
+- `final` explains a missing record. New error codes `evicted` (the 128-record cap dropped the
+  record under load before its `expires_ms`) and `unknown` (this server never retained a record
+  for the id, or has forgotten that it did); `expired` now means only that a record existed and
+  its retention elapsed. fux remembers, per server instance, the most recent 1024 evicted ids
+  and the most recent 1024 expired ids (`MAX_EVICTED_FINAL_IDS`; two rings, 4 KiB each), and an
+  id that falls off its ring answers `unknown`. The rule is exact: no id is reported `evicted`
+  or `expired` without a record having been made for it. Capacity eviction now sweeps expired
+  records first, so it only ever drops a record that was still valid. `pending` and `conflict`
+  are unchanged. The `final-records` automation scenario checks `unknown` for a never-recorded
+  pane.
 - zor 0.5.0 ships from this workspace; see `crates/zor/CHANGELOG.md`.
 
 ## 0.9.0 - 2026-09-11

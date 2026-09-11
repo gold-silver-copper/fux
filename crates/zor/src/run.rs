@@ -205,31 +205,13 @@ fn run_in_workspace(
             &json!({"request":"final","instance":owned.instance,"pane":pane}),
             deadline,
         )?;
-        anyhow::ensure!(
-            reply.get("reply").and_then(Value::as_str) == Some("final"),
-            "unexpected final evidence reply: {reply}"
-        );
-        let result = reply
-            .get("result")
-            .context("final reply without a result")?;
-        match result.get("status").and_then(Value::as_str) {
-            Some("completed") => {
-                break result
-                    .pointer("/result/value/record")
-                    .cloned()
-                    .context("final record missing")?;
-            }
-            Some("failed") if result.pointer("/error/code") == Some(&json!("pending")) => {
+        // Only `pending` is polled; `evicted` (fux dropped the record under load), `expired`,
+        // `unknown` and `conflict` end the run at once.
+        match crate::fux::final_reply(&reply).context("run final evidence")? {
+            crate::fux::FinalReply::Record(record) => break record.clone(),
+            crate::fux::FinalReply::Pending => {
                 std::thread::sleep(remaining()?.min(Duration::from_millis(25)));
             }
-            Some("failed") => bail!(
-                "run final evidence unavailable: {}",
-                result
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-            ),
-            _ => bail!("unexpected final evidence reply: {reply}"),
         }
     };
     anyhow::ensure!(

@@ -2,7 +2,7 @@
 
 use crate::ids::{PaneId, TabId, ViewerId};
 use bevy_ecs::prelude::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 /// Resource budgets. Fixed ceilings live in `view`/`config`; these are the configured values.
 #[derive(Resource, Clone, Debug)]
@@ -165,4 +165,36 @@ pub struct RetainedFinal {
     pub record: crate::proto::control::FinalRecord,
     pub closed_ms: u64,
     pub expires_ms: u64,
+}
+
+/// How many pane ids each ring of [`ForgottenFinals`] remembers. 1024 ids (4 KiB per ring) is
+/// eight times the record cap: even a burst that turns the whole record set over several times
+/// keeps the recently forgotten ids distinguishable, while nothing here grows with the load.
+pub const MAX_EVICTED_FINAL_IDS: usize = 1024;
+
+/// Pane ids whose final records are gone, so `final` can say why instead of guessing. Two
+/// bounded rings, per server instance, oldest id dropped first: `evicted` holds ids the record
+/// cap forced out before their `expires_ms` (under load), `expired` holds ids whose retention
+/// elapsed. An id that fell off its ring, or that never had a record, is `unknown`.
+#[derive(Resource, Default)]
+pub struct ForgottenFinals {
+    pub evicted: VecDeque<PaneId>,
+    pub expired: VecDeque<PaneId>,
+}
+
+impl ForgottenFinals {
+    fn push(ring: &mut VecDeque<PaneId>, pane: PaneId) {
+        if ring.len() >= MAX_EVICTED_FINAL_IDS {
+            ring.pop_front();
+        }
+        ring.push_back(pane);
+    }
+
+    pub fn evicted(&mut self, pane: PaneId) {
+        Self::push(&mut self.evicted, pane);
+    }
+
+    pub fn expired(&mut self, pane: PaneId) {
+        Self::push(&mut self.expired, pane);
+    }
 }

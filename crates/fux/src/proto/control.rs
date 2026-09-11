@@ -643,6 +643,8 @@ pub enum ErrorCode {
     Pending,
     Gap,
     Expired,
+    Evicted,
+    Unknown,
     InvalidJson,
     UnknownCommand,
     InvalidRequest,

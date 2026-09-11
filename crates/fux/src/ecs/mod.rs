@@ -51,6 +51,7 @@ impl Session {
         world.init_resource::<Ids>();
         world.init_resource::<resources::InputOperations>();
         world.init_resource::<resources::FinalRecords>();
+        world.init_resource::<resources::ForgottenFinals>();
         world.init_resource::<Clock>();
         world.init_resource::<Deadlines>();
         world.init_resource::<resources::ShuttingDown>();

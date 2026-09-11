@@ -247,7 +247,7 @@ fn final_evidence_survives_workspace_release_and_expires_explicitly() {
         matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
     );
     assert!(
-        matches!(final_reply(&mut h, PaneId(999), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+        matches!(final_reply(&mut h, PaneId(999), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Unknown)
     );
 }
 
@@ -262,7 +262,7 @@ fn final_record_capacity_evicts_oldest_and_idle_waits_only_until_expiry() {
         }]);
     }
     assert!(
-        matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+        matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Evicted)
     );
     assert!(matches!(
         final_reply(&mut h, PaneId(2), "test-instance"),
@@ -271,6 +271,81 @@ fn final_record_capacity_evicts_oldest_and_idle_waits_only_until_expiry() {
     assert!(!h.idle);
     h.now += fux::config::DEFAULT_FINAL_RETAIN_MS;
     h.step(vec![]);
+    assert!(h.idle);
+}
+
+/// `final` tells an evicted record (cap pressure) from an expired one (retention elapsed) and
+/// from an id that never had a record; the rings remembering the first two are bounded.
+#[test]
+fn final_outcomes_distinguish_evicted_expired_and_unknown_within_bounded_rings() {
+    use fux::ecs::resources::{MAX_EVICTED_FINAL_IDS, MAX_FINAL_RECORDS};
+    let code = |h: &mut Harness, pane: u32| match final_reply(h, PaneId(pane), "test-instance") {
+        Reply::Failed { error, .. } => Some(error.code),
+        Reply::Completed { .. } => None,
+        other => panic!("unexpected final reply: {other:?}"),
+    };
+    let mut h = Harness::new();
+    // Pane ids are allocated in sequence; `closed` is the id of the last closed pane.
+    let mut closed = 0u32;
+    let mut close_one = |h: &mut Harness| {
+        h.create_workspace("default");
+        closed += 1;
+        h.step(vec![Inbound::PaneExited {
+            pane: PaneId(closed),
+            code: 0,
+        }]);
+        closed
+    };
+    for _ in 0..=MAX_FINAL_RECORDS {
+        close_one(&mut h);
+    }
+    // Pane 1 was pushed out by the cap while still within its retention.
+    assert_eq!(code(&mut h, 1), Some(ErrorCode::Evicted));
+    assert_eq!(code(&mut h, 2), None);
+    assert_eq!(code(&mut h, 9_999), Some(ErrorCode::Unknown));
+    // Retention elapses for every remaining record: those ids answer `expired`, not `evicted`.
+    h.now += fux::config::DEFAULT_FINAL_RETAIN_MS;
+    assert_eq!(code(&mut h, 2), Some(ErrorCode::Expired));
+    assert_eq!(
+        code(&mut h, MAX_FINAL_RECORDS as u32 + 1),
+        Some(ErrorCode::Expired)
+    );
+    assert_eq!(code(&mut h, 1), Some(ErrorCode::Evicted));
+    assert_eq!(code(&mut h, 9_999), Some(ErrorCode::Unknown));
+    // The eviction ring is bounded: once more than MAX_EVICTED_FINAL_IDS records have been
+    // evicted, the oldest evicted id is forgotten and answers `unknown`.
+    let first_evicted = MAX_FINAL_RECORDS as u32 + 2;
+    for _ in 0..MAX_FINAL_RECORDS {
+        close_one(&mut h);
+    }
+    // The cap is full again; every further close evicts one record early.
+    let mut last_closed = 0;
+    for _ in 0..MAX_EVICTED_FINAL_IDS {
+        last_closed = close_one(&mut h);
+    }
+    let last_evicted = last_closed - MAX_FINAL_RECORDS as u32;
+    assert_eq!(code(&mut h, first_evicted), Some(ErrorCode::Evicted));
+    assert_eq!(code(&mut h, last_evicted), Some(ErrorCode::Evicted));
+    assert_eq!(
+        code(&mut h, 1),
+        Some(ErrorCode::Unknown),
+        "pane 1 fell off the ring"
+    );
+    close_one(&mut h);
+    assert_eq!(
+        code(&mut h, first_evicted),
+        Some(ErrorCode::Unknown),
+        "the oldest evicted id is dropped once the ring is full"
+    );
+    assert_eq!(code(&mut h, last_evicted + 1), Some(ErrorCode::Evicted));
+    // The expired ring is bounded the same way.
+    h.now += fux::config::DEFAULT_FINAL_RETAIN_MS;
+    assert_eq!(code(&mut h, last_evicted + 2), Some(ErrorCode::Expired));
+    assert_eq!(
+        code(&mut h, 2),
+        Some(ErrorCode::Expired),
+        "still within the expired ring"
+    );
     assert!(h.idle);
 }
 

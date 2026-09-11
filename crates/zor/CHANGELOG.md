@@ -17,6 +17,12 @@
   by the service's recovery loop, by `wait`/`follow` or after a service restart, an open-ended
   horizon on zor's side, so the ceiling is the documented bound on how long a supervisor may be
   away before the exit evidence is gone.
+- `final` replies are classified in one place (`fux::final_reply`): `zor run`, a prompt wait's
+  final-evidence path and a managed launch's recovery treat fux's new `evicted` code as a hard
+  failure whose message says the server dropped the record under load before its retention
+  elapsed, never a retry; `expired` and the new `unknown` stay hard failures as before (a
+  never-recorded id used to be `expired`; nothing polls either). Only `pending` is polled, and
+  only by `zor run`.
 
 ## 0.4.0 - 2026-09-11
 

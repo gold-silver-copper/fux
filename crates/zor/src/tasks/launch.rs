@@ -640,14 +640,16 @@ fn recover_final(launch: &Launch) -> Result<(u32, LaunchFinal)> {
         deadline,
     )
     .context("read launch final record")?;
-    anyhow::ensure!(
-        response.get("reply").and_then(Value::as_str) == Some("final")
-            && response.pointer("/result/status").and_then(Value::as_str) == Some("completed"),
-        "final launch evidence unavailable or expired"
-    );
-    let record = response
-        .pointer("/result/result/value/record")
-        .context("final record missing")?;
+    // `pending` contradicts the failed live check and, like `evicted` (fux dropped the record
+    // under load), `expired` and `unknown`, leaves this reconciliation without an exit receipt.
+    let record = match crate::fux::final_reply(&response)
+        .context("final launch evidence unavailable or expired")?
+    {
+        crate::fux::FinalReply::Record(record) => record,
+        crate::fux::FinalReply::Pending => {
+            anyhow::bail!("final launch evidence unavailable: pane is still live")
+        }
+    };
     anyhow::ensure!(
         record.get("pane").and_then(Value::as_u64) == Some(u64::from(pane))
             && record.get("workspace").and_then(Value::as_str) == Some(&launch.workspace)

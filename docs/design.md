@@ -200,8 +200,13 @@ managed launch (see the comments at the three call sites).
 a bounded capture with the pane's original workspace name/stream, command/cwd and observed
 exit status. An unobserved exit remains unknown. Retention is bounded by count (fux's cap) and
 by the duration the launcher set on the pane; the manager serves records after workspace
-sockets close; `zor run` and zor's managed launches
-consume them.
+sockets close; `zor run` and zor's managed launches consume them. A missing record is
+explained rather than guessed: `ForgottenFinals` keeps two rings of pane ids per server
+instance, the ids the cap evicted before their `expires_ms` and the ids whose retention
+elapsed, each bounded to the most recent `MAX_EVICTED_FINAL_IDS` = 1024 (4 KiB per ring), so
+`final` answers `evicted`, `expired` or `unknown` (never recorded, or forgotten by the ring)
+next to `pending` and `conflict`. zor treats `evicted` as a hard failure that names the
+server-side loss; nothing retries it.
 
 Terminal revision invalidates coherent conditional text captures across output and actual
 resize. It is separate from the retained grid sequence, input sequence and event cursor.

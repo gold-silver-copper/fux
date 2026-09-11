@@ -53,7 +53,8 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 | `subscribe` | `after?` (requires `instance`) | `accepted`, replay, then every live event of the workspace |
 
 Replies are `{"status":"completed","id":N,"result":{...}}`, `{"status":"failed","id":N,"error":
-{"code":"not-found"|"invalid-request"|"limit"|"unknown-command"|…,"message":"…"}}` or
+{"code":"not-found"|"invalid-request"|"limit"|"unknown-command"|…,"message":"…"}}` (the manager's
+`final` adds `pending`, `conflict`, `evicted`, `expired` and `unknown`, below) or
 `{"status":"accepted","id":N}` for subscriptions.
 
 Listings carry stable identities: `instance`, `workspaces[].{event_cursor,name,focused,viewers,tabs[]}`, `tabs[].{id,index,
@@ -211,14 +212,33 @@ carries a descriptor (socket paths) the shared control schema deliberately does 
 most recently attached workspace. `kill` deliberately terminates that workspace's panes; nothing else does.
 
 `create` creates only when the name is absent; it never attaches to an existing workspace.
-`final` returns a `final` manager envelope containing a control reply. A live pane returns
-`pending`; a retained record supplies immutable final capture, original workspace identity,
-command/cwd and exit evidence. Each record lives for the `final_retain_ms` its pane was created
-with (clamped to four hours), from the moment the pane closed; at most 128 records are retained at
-once (capacity pressure evicts the oldest-closed record early), with at most 128 KiB of capture
-text each. Forced retirement may leave exit status unknown; late
-reports do not rewrite published records. The manager can remain alive after workspace
-sockets disappear to serve these records. `final` is the primitive; the workflows over it
+`final` returns a `final` manager envelope containing a control reply. A retained record
+supplies immutable final capture, original workspace identity, command/cwd and exit evidence.
+Each record lives for the `final_retain_ms` its pane was created with (clamped to four hours),
+from the moment the pane closed; at most 128 records are retained at once (capacity pressure
+evicts the oldest-closed record early), with at most 128 KiB of capture text each. Forced
+retirement may leave exit status unknown; late reports do not rewrite published records. The
+manager can remain alive after workspace sockets disappear to serve these records.
+
+A `final` without a record fails with one of five codes, and only the first is worth polling:
+
+| code | meaning |
+|---|---|
+| `pending` | the pane is still live; use `capture` for current evidence |
+| `conflict` | `instance` is not this server; the evidence belonged to a previous server |
+| `evicted` | the record existed and the 128-record cap dropped it under load before its `expires_ms` |
+| `expired` | the record existed and its retention elapsed |
+| `unknown` | this server never retained a record for that pane id, or has since forgotten that it did |
+
+fux distinguishes the last three without retaining more evidence: per server instance it keeps
+two bounded rings of pane ids, the ids evicted by the cap and the ids whose retention elapsed,
+each holding the most recent 1024 ids (`MAX_EVICTED_FINAL_IDS`); the oldest id is dropped when a
+ring is full. The exact rule: `evicted` while the id is in the eviction ring; `expired` while the
+record is still present past its `expires_ms` or the id is in the expiry ring; `unknown`
+otherwise. An id is never reported `expired` or `evicted` unless a record was made for it;
+after more than 1024 later evictions or expiries an id's history is forgotten and it becomes
+`unknown`, so a consumer that reads late must treat `unknown` as lost evidence, not as proof
+that the pane never existed. `final` is the primitive; the workflows over it
 (`zor run`, zor's managed launches) live in zor and never claim task success from PTY
 delivery alone. The fux CLI has no subcommand for it.
 
