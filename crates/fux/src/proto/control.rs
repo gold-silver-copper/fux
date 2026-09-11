@@ -24,7 +24,6 @@ pub const MAX_SUBSCRIBER_QUEUE: usize = 1024;
 pub const MAX_NAME_BYTES: usize = 128;
 pub const MAX_CONTROL_CONNECTIONS: usize = 64;
 pub const MAX_WAIT_MS: u64 = 300_000;
-pub const MAX_WAIT_PATTERN_BYTES: usize = 512;
 /// A server holds at most this many pending waits across every connection.
 pub const MAX_PENDING_WAITS: usize = 1024;
 /// And at most this many on one pane, so one client cannot fill the table against a pane.
@@ -104,10 +103,9 @@ pub enum Request {
         instance: Option<String>,
         operation: u64,
     },
-    /// The pane's text. `format: "rows"` returns the visible rows one by one with the cursor and
-    /// the output sequence; with `since` only the rows changed after that sequence.
-    /// `format: "cells"` returns the visible grid cell by cell with the same coherent metadata as
-    /// the text form.
+    /// The pane's screen. `format: "text"` returns the screen (and requested history) as one
+    /// text; `format: "cells"` returns the visible grid cell by cell with the same coherent
+    /// metadata as the text form.
     Capture {
         id: RequestId,
         #[serde(default)]
@@ -120,8 +118,6 @@ pub enum Request {
         max_bytes: usize,
         #[serde(default)]
         format: CaptureFormat,
-        #[serde(default)]
-        since: Option<u64>,
         #[serde(default)]
         if_revision: Option<u64>,
     },
@@ -299,7 +295,6 @@ impl Request {
                 max_bytes,
                 scrollback,
                 format,
-                since,
                 if_revision,
                 attrs,
                 ..
@@ -316,28 +311,10 @@ impl Request {
                         format!("scrollback must be at most {MAX_SCROLLBACK_LINES} lines"),
                     ));
                 }
-                if if_revision.is_some() && *format == CaptureFormat::Rows {
-                    return Err(ControlError::invalid(
-                        id,
-                        "if-revision requires text or cells capture",
-                    ));
-                }
                 if if_revision.is_some() && self.instance().is_none() {
                     return Err(ControlError::invalid(
                         id,
                         "conditional capture requires a server instance",
-                    ));
-                }
-                if since.is_some() && (*format != CaptureFormat::Rows || *scrollback > 0) {
-                    return Err(ControlError::invalid(
-                        id,
-                        "capture since needs format rows and no scrollback (history rows carry no sequence)",
-                    ));
-                }
-                if *format == CaptureFormat::Rows && *attrs {
-                    return Err(ControlError::invalid(
-                        id,
-                        "capture format rows carries plain text; attrs applies to the text format",
                     ));
                 }
                 if *format == CaptureFormat::Cells && *attrs {
@@ -367,40 +344,11 @@ impl Request {
                 crate::ids::validate_workspace_name(name)
                     .map_err(|error| ControlError::invalid(id, error.to_string()))?;
             }
-            Self::Wait {
-                until, timeout_ms, ..
-            } => {
-                if *timeout_ms == 0 || *timeout_ms > MAX_WAIT_MS {
-                    return Err(ControlError::invalid(
-                        id,
-                        format!("wait timeout must be 1-{MAX_WAIT_MS} ms"),
-                    ));
-                }
-                match until {
-                    WaitUntil::Quiet { ms } if *ms == 0 || *ms > MAX_WAIT_MS => {
-                        return Err(ControlError::invalid(
-                            id,
-                            format!("wait quiet must be 1-{MAX_WAIT_MS} ms"),
-                        ));
-                    }
-                    WaitUntil::Pattern { regex } => {
-                        if regex.len() > MAX_WAIT_PATTERN_BYTES {
-                            return Err(ControlError::invalid(
-                                id,
-                                format!(
-                                    "wait pattern must be at most {MAX_WAIT_PATTERN_BYTES} bytes"
-                                ),
-                            ));
-                        }
-                        if regex_lite::Regex::new(regex).is_err() {
-                            return Err(ControlError::invalid(
-                                id,
-                                "wait pattern is not a valid regex",
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
+            Self::Wait { timeout_ms, .. } if *timeout_ms == 0 || *timeout_ms > MAX_WAIT_MS => {
+                return Err(ControlError::invalid(
+                    id,
+                    format!("wait timeout must be 1-{MAX_WAIT_MS} ms"),
+                ));
             }
             Self::Subscribe { events, .. } if events.len() > MAX_EVENT_FILTERS => {
                 return Err(ControlError::invalid(
@@ -430,8 +378,6 @@ pub enum CaptureFormat {
     /// The screen (and requested history) as one text, plain or with attributes.
     #[default]
     Text,
-    /// Visible rows as `{row, text, wrapped}` entries with the cursor and the output sequence.
-    Rows,
     /// The visible grid as wire cells per row with the text form's coherent metadata.
     Cells,
 }
@@ -445,15 +391,6 @@ pub struct CaptureLine {
     pub row: u16,
     pub wrapped: bool,
     pub cells: Vec<crate::view::WireCell>,
-}
-
-/// One visible row of a `rows` capture: plain text without trailing blanks.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CaptureRow {
-    pub row: u16,
-    pub text: String,
-    pub wrapped: bool,
 }
 
 /// What `info` reports about the server answering the socket.
@@ -496,10 +433,6 @@ pub struct InfoLimits {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum WaitUntil {
-    /// No observable change for `ms`.
-    Quiet { ms: u64 },
-    /// The visible screen's plain text matches `regex`.
-    Pattern { regex: String },
     /// The pane's process exits.
     Exit,
     /// The pane's output sequence reaches `value`.
@@ -510,8 +443,6 @@ pub enum WaitUntil {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WaitFired {
-    Quiet,
-    Pattern,
     Exit,
     Seq,
 }
@@ -642,14 +573,6 @@ pub enum CommandResult {
         #[serde(flatten)]
         capture: Box<crate::terminal::CaptureSnapshot>,
     },
-    /// The visible rows (only the changed ones when `since_applied`), the cursor and the output
-    /// sequence they reflect.
-    Rows {
-        seq: u64,
-        cursor: crate::view::Cursor,
-        rows: Vec<CaptureRow>,
-        since_applied: bool,
-    },
     /// The visible grid cell by cell from one borrow of the pane: the same `revision`, `seq` and
     /// `input_sequence` a text capture taken in the same step reports. `lines` is empty when
     /// `unchanged`; `truncated` means trailing lines were dropped whole to honor `max_bytes`.
@@ -732,8 +655,6 @@ pub struct PaneSummary {
     pub pid: Option<u32>,
     pub cwd: PathBuf,
     pub title: String,
-    #[serde(default)]
-    pub progress: Option<(u8, u8)>,
     /// The output sequence: advances whenever the visible screen, cursor, modes, title or exit
     /// status changed; `capture` and `pane.output` report the same counter.
     pub seq: u64,
@@ -1282,94 +1203,25 @@ mod tests {
     }
 
     #[test]
-    fn capture_since_needs_rows_without_history_and_rows_carry_no_attrs() {
-        let base = Request::Capture {
+    fn cells_capture_rejects_attrs_and_history_and_defaults_stay_valid() {
+        let cells = |attrs: bool, scrollback: u32| Request::Capture {
             if_revision: None,
             instance: None,
             id: 1,
             pane: PaneId(1),
-            attrs: false,
-            scrollback: 0,
+            attrs,
+            scrollback,
             max_bytes: 100,
-            format: CaptureFormat::Rows,
-            since: Some(3),
+            format: CaptureFormat::Cells,
         };
-        assert!(base.validate().is_ok());
-        let text_since = match base.clone() {
-            Request::Capture {
-                id,
-                pane,
-                attrs,
-                scrollback,
-                max_bytes,
-                since,
-                ..
-            } => Request::Capture {
-                if_revision: None,
-                instance: None,
-                id,
-                pane,
-                attrs,
-                scrollback,
-                max_bytes,
-                since,
-                format: CaptureFormat::Text,
-            },
-            other => other,
-        };
-        assert!(text_since.validate().is_err());
-        let history_since = match base.clone() {
-            Request::Capture {
-                id,
-                pane,
-                attrs,
-                max_bytes,
-                format,
-                since,
-                ..
-            } => Request::Capture {
-                if_revision: None,
-                instance: None,
-                id,
-                pane,
-                attrs,
-                max_bytes,
-                format,
-                since,
-                scrollback: 5,
-            },
-            other => other,
-        };
-        assert!(history_since.validate().is_err());
-        let rows_attrs = match base {
-            Request::Capture {
-                id,
-                pane,
-                scrollback,
-                max_bytes,
-                format,
-                since,
-                ..
-            } => Request::Capture {
-                if_revision: None,
-                instance: None,
-                id,
-                pane,
-                scrollback,
-                max_bytes,
-                format,
-                since,
-                attrs: true,
-            },
-            other => other,
-        };
-        assert!(rows_attrs.validate().is_err());
-        // The defaults keep yesterday's request shape valid.
+        assert!(cells(false, 0).validate().is_ok());
+        assert!(cells(true, 0).validate().is_err());
+        assert!(cells(false, 5).validate().is_err());
+        // The defaults keep the plain request shape valid.
         assert!(matches!(
             decode_request_frame(br#"{"command":"capture","id":2,"pane":1,"max_bytes":10}"#),
             Ok(Request::Capture {
                 format: CaptureFormat::Text,
-                since: None,
                 ..
             })
         ));
@@ -1390,11 +1242,12 @@ mod tests {
     }
 
     #[test]
-    fn conditional_capture_requires_a_valid_identity_and_text_format() {
+    fn capture_rejects_removed_forms_and_conditional_capture_needs_an_identity() {
         for input in [
             r#"{"command":"capture","id":1,"pane":1,"max_bytes":4096,"if_revision":1}"#,
             r#"{"command":"capture","id":1,"pane":1,"max_bytes":4096,"instance":"","if_revision":1}"#,
             r#"{"command":"capture","id":1,"pane":1,"max_bytes":4096,"instance":"valid","if_revision":1,"format":"rows"}"#,
+            r#"{"command":"capture","id":1,"pane":1,"max_bytes":4096,"since":3}"#,
         ] {
             assert!(decode_request_frame(input.as_bytes()).is_err());
         }

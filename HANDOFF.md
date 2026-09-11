@@ -17,7 +17,8 @@ The older release and performance record in `docs/ecs-acceptance.md` is historic
   tracked input receipts, bounded event replay and retained final records support unattended
   consumers. `fux run` obtains final output and status from retained records.
 - Agent interpretation and provider/task/check/artifact policy belong to zor. fux ignores OSC
-  7877 agent reports and exposes no pane agent field or event. Generic title/progress remain.
+  7877 agent reports and exposes no pane agent field or event. Generic titles remain in `list`
+  and captures; OSC 9;4 progress is exposed only through the `text` and `cells` captures.
 - Active verification and measurements use Rust xtask. The original main Python scripts and
   native reports are explicitly archived with provenance. Current measurement commands are
   `fux-xtask measure`, `measure-frames`, `measure-viewer` and `measure-memory`, each taking a

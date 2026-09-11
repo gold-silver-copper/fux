@@ -1693,12 +1693,12 @@ fn pane_seq(harness: &mut Harness, viewer: ViewerId, pane: PaneId) -> u64 {
     }
 }
 
-fn rows_capture(
+/// A cells capture of the whole visible grid: the sequence it reflects and its lines.
+fn cells_capture(
     harness: &mut Harness,
     viewer: ViewerId,
     pane: PaneId,
-    since: Option<u64>,
-) -> (u64, Vec<fux::proto::control::CaptureRow>, bool) {
+) -> (u64, Vec<fux::proto::control::CaptureLine>) {
     harness.control(
         viewer,
         Request::Capture {
@@ -1708,24 +1708,30 @@ fn rows_capture(
             pane,
             attrs: false,
             scrollback: 0,
-            max_bytes: 4096,
-            format: fux::proto::control::CaptureFormat::Rows,
-            since,
+            max_bytes: 65536,
+            format: fux::proto::control::CaptureFormat::Cells,
         },
     );
     match harness.replies(viewer).last() {
         Some(Reply::Completed {
-            result:
-                CommandResult::Rows {
-                    seq,
-                    rows,
-                    since_applied,
-                    ..
-                },
+            result: CommandResult::Cells { seq, lines, .. },
             ..
-        }) => (*seq, rows.clone(), *since_applied),
+        }) => (*seq, lines.clone()),
         other => panic!("unexpected capture reply {other:?}"),
     }
+}
+
+/// The text a captured line carries, blanks as spaces and trailing blanks trimmed.
+fn line_text(line: &fux::proto::control::CaptureLine) -> String {
+    let mut text = String::new();
+    for cell in &line.cells {
+        match (&cell.text, cell.kind) {
+            (_, Some(fux::view::CellKind::WideContinuation)) => {}
+            (Some(t), _) => text.push_str(t),
+            (None, _) => text.extend(std::iter::repeat_n(' ', usize::from(cell.run.max(1)))),
+        }
+    }
+    text.trim_end_matches(' ').to_owned()
 }
 
 fn wait_reply(harness: &mut Harness, viewer: ViewerId) -> Option<Reply> {
@@ -1796,7 +1802,7 @@ fn split_carries_env_and_a_requested_headless_size_to_the_spawn() {
 }
 
 #[test]
-fn waits_fire_on_output_pattern_exit_and_timeout_and_never_hang() {
+fn waits_fire_on_seq_exit_and_timeout_and_never_hang() {
     use fux::proto::control::{CommandResult, WaitFired, WaitUntil};
     let mut harness = Harness::new();
     harness.create_workspace("default");
@@ -1827,77 +1833,13 @@ fn waits_fire_on_output_pattern_exit_and_timeout_and_never_hang() {
         })
     ));
     harness.messages.get_mut(&viewer).map(Vec::clear);
-    // A pattern wait matches the visible screen text.
-    send_wait(
-        &mut harness,
-        viewer,
-        801,
-        PaneId(1),
-        WaitUntil::Pattern {
-            regex: "done-[0-9]+".into(),
-        },
-        60_000,
-    );
-    assert!(wait_reply(&mut harness, viewer).is_none());
-    harness.step(vec![Inbound::PaneOutput {
-        pane: PaneId(1),
-        bytes: b"done-42\n".to_vec(),
-    }]);
-    assert!(matches!(
-        wait_reply(&mut harness, viewer),
-        Some(Reply::Completed {
-            result: CommandResult::Waited {
-                fired: WaitFired::Pattern,
-                ..
-            },
-            ..
-        })
-    ));
-    harness.messages.get_mut(&viewer).map(Vec::clear);
-    // A quiet wait fires after the window with no output, and proposes a deadline meanwhile.
-    send_wait(
-        &mut harness,
-        viewer,
-        802,
-        PaneId(1),
-        WaitUntil::Quiet { ms: 500 },
-        60_000,
-    );
-    harness.step(vec![Inbound::PaneOutput {
-        pane: PaneId(1),
-        bytes: b"busy".to_vec(),
-    }]);
-    assert!(
-        wait_reply(&mut harness, viewer).is_none(),
-        "output resets quiet"
-    );
-    // A deadline is proposed while the window runs (a frame-pacing deadline may be nearer).
-    assert!(
-        harness.session.next_deadline_ms().is_some(),
-        "quiet proposes a deadline"
-    );
-    harness.now += 600;
-    harness.step(Vec::new());
-    assert!(matches!(
-        wait_reply(&mut harness, viewer),
-        Some(Reply::Completed {
-            result: CommandResult::Waited {
-                fired: WaitFired::Quiet,
-                ..
-            },
-            ..
-        })
-    ));
-    harness.messages.get_mut(&viewer).map(Vec::clear);
     // A timeout is a failed reply with the timeout code, never a hang.
     send_wait(
         &mut harness,
         viewer,
         803,
         PaneId(1),
-        WaitUntil::Pattern {
-            regex: "never".into(),
-        },
+        WaitUntil::Seq { value: u64::MAX },
         100,
     );
     harness.now += 200;
@@ -2129,17 +2071,13 @@ fn output_sequences_are_reported_by_list_capture_and_paced_events() {
         "the output event carries the new sequence: {:?}",
         harness.events
     );
-    let (seq, rows, applied) = rows_capture(&mut harness, viewer, PaneId(1), Some(before));
+    // The cells capture reports the same sequence and the whole visible grid.
+    let (seq, lines) = cells_capture(&mut harness, viewer, PaneId(1));
     assert_eq!(seq, after);
-    assert!(applied);
-    assert_eq!(rows.len(), 1, "only the changed row: {rows:?}");
-    assert_eq!(rows[0].text, "hello");
-    assert_eq!(rows[0].row, 0);
-    let (_, rows, _) = rows_capture(&mut harness, viewer, PaneId(1), Some(after));
-    assert!(rows.is_empty(), "nothing changed since the capture");
-    let (_, rows, applied) = rows_capture(&mut harness, viewer, PaneId(1), None);
-    assert!(!applied);
-    assert_eq!(rows.len(), 23, "every visible row without since");
+    assert_eq!(lines.len(), 23, "every visible row");
+    assert_eq!(lines[0].row, 0);
+    assert_eq!(line_text(&lines[0]), "hello");
+    assert!(lines[1..].iter().all(|line| line_text(line).is_empty()));
     // The text capture reports the same sequence.
     harness.control(
         viewer,
@@ -2152,7 +2090,6 @@ fn output_sequences_are_reported_by_list_capture_and_paced_events() {
             scrollback: 0,
             max_bytes: 4096,
             format: fux::proto::control::CaptureFormat::Text,
-            since: None,
         },
     );
     assert!(matches!(
@@ -2229,10 +2166,10 @@ fn output_sequences_are_reported_by_list_capture_and_paced_events() {
         event,
         Event::PaneOutput { pane: PaneId(1), seq, .. } if *seq == hidden_before + 1
     )));
-    let (_, rows, _) = rows_capture(&mut harness, viewer, PaneId(1), Some(hidden_before));
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].row, 1);
-    assert_eq!(rows[0].text, "hidden");
+    let (seq, lines) = cells_capture(&mut harness, viewer, PaneId(1));
+    assert_eq!(seq, hidden_before + 1);
+    assert_eq!(lines[1].row, 1);
+    assert_eq!(line_text(&lines[1]), "hidden");
     // `info` names the workspace, the crate version and the limits.
     harness.control(
         viewer,
@@ -2690,23 +2627,20 @@ mod randomized {
                 keys: "x\\n".into(),
                 notation: fux::proto::control::KeyNotation::Escapes,
             }),
-            (pane(), any::<bool>(), proptest::option::of(0..4u64)).prop_map(
-                |(pane, rows, since)| Request::Capture {
-                    if_revision: None,
-                    instance: None,
-                    id: 1,
-                    pane,
-                    attrs: false,
-                    scrollback: if rows { 0 } else { 5 },
-                    max_bytes: 4096,
-                    format: if rows {
-                        fux::proto::control::CaptureFormat::Rows
-                    } else {
-                        fux::proto::control::CaptureFormat::Text
-                    },
-                    since: if rows { since } else { None },
-                }
-            ),
+            (pane(), any::<bool>()).prop_map(|(pane, cells)| Request::Capture {
+                if_revision: None,
+                instance: None,
+                id: 1,
+                pane,
+                attrs: false,
+                scrollback: if cells { 0 } else { 5 },
+                max_bytes: 4096,
+                format: if cells {
+                    fux::proto::control::CaptureFormat::Cells
+                } else {
+                    fux::proto::control::CaptureFormat::Text
+                },
+            }),
             Just(Request::List {
                 instance: None,
                 id: 1

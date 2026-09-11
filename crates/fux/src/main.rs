@@ -45,7 +45,7 @@ enum Command {
     Resize(PassthroughArgs),
     /// Send input bytes to a pane: PANE KEYS (escapes: \n \r \t \e \\ \0 \xHH)
     SendKeys(PassthroughArgs),
-    /// Capture a pane's text: PANE [--attrs] [--scrollback LINES] [--rows] [--since SEQ] [--cells]
+    /// Capture a pane's screen: PANE [--attrs] [--scrollback LINES] [--cells]
     Capture(PassthroughArgs),
     /// Read retained final screen and exit evidence for an incarnation-scoped pane.
     Final {
@@ -57,7 +57,7 @@ enum Command {
     List(PassthroughArgs),
     /// Show the session server's pid, version, runtime directory and limits as JSON.
     Info(PassthroughArgs),
-    /// Wait on a pane: PANE quiet MS | pattern REGEX | exit | seq N [--timeout MS]
+    /// Wait on a pane: PANE exit | seq N [--timeout MS]
     Wait(PassthroughArgs),
     /// Run a command in a pane, wait for it to exit, print its final screen, exit with its status:
     /// [--workspace NAME] [--cwd DIR] [--env K=V] [--rows R] [--columns C] [--timeout MS] -- CMD...
@@ -876,12 +876,9 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 max_bytes: fux::proto::control::MAX_CAPTURE_BYTES,
                 format: if options.cells {
                     fux::proto::control::CaptureFormat::Cells
-                } else if options.rows {
-                    fux::proto::control::CaptureFormat::Rows
                 } else {
                     fux::proto::control::CaptureFormat::Text
                 },
-                since: options.since,
             }
         }
         "list" => Request::List { instance: None, id },
@@ -899,18 +896,6 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 rest.drain(position..=position + 1);
             }
             let until = match rest.first().map(String::as_str) {
-                Some("quiet") => WaitUntil::Quiet {
-                    ms: rest
-                        .get(1)
-                        .ok_or_else(|| anyhow::anyhow!("quiet requires ms"))?
-                        .parse()?,
-                },
-                Some("pattern") => WaitUntil::Pattern {
-                    regex: rest
-                        .get(1)
-                        .ok_or_else(|| anyhow::anyhow!("pattern requires a regex"))?
-                        .clone(),
-                },
                 Some("exit") => WaitUntil::Exit,
                 Some("seq") => WaitUntil::Seq {
                     value: rest
@@ -918,7 +903,7 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                         .ok_or_else(|| anyhow::anyhow!("seq requires a value"))?
                         .parse()?,
                 },
-                _ => bail!("wait requires quiet MS | pattern REGEX | exit | seq N"),
+                _ => bail!("wait requires exit | seq N"),
             };
             Request::Wait {
                 instance: None,
@@ -1063,9 +1048,7 @@ fn parse_pane_options(args: &[String]) -> Result<PaneOptions> {
 struct CaptureOptions {
     attrs: bool,
     scrollback: u32,
-    rows: bool,
     cells: bool,
-    since: Option<u64>,
 }
 
 fn parse_capture_options(args: &[String]) -> Result<CaptureOptions> {
@@ -1077,10 +1060,6 @@ fn parse_capture_options(args: &[String]) -> Result<CaptureOptions> {
                 options.attrs = true;
                 index += 1;
             }
-            "--rows" => {
-                options.rows = true;
-                index += 1;
-            }
             "--cells" => {
                 options.cells = true;
                 index += 1;
@@ -1090,16 +1069,6 @@ fn parse_capture_options(args: &[String]) -> Result<CaptureOptions> {
                     .get(index + 1)
                     .ok_or_else(|| anyhow::anyhow!("--scrollback requires a line count"))?
                     .parse()?;
-                index += 2;
-            }
-            "--since" => {
-                options.since = Some(
-                    args.get(index + 1)
-                        .ok_or_else(|| anyhow::anyhow!("--since requires a sequence"))?
-                        .parse()?,
-                );
-                // `since` only means anything for row captures.
-                options.rows = true;
                 index += 2;
             }
             value => bail!("unknown capture option {value}"),

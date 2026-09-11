@@ -141,10 +141,6 @@ pub struct PendingWait {
     pub until: crate::proto::control::WaitUntil,
     /// Absolute time the wait fails with a timeout.
     pub timeout_at_ms: u64,
-    /// The pane's output sequence when it last changed, and the time of that change: a `quiet`
-    /// wait fires when the clock passes this time plus its window.
-    pub last_seq: u64,
-    pub last_change_ms: u64,
 }
 
 /// Pending waits across every connection; evaluated once per step before the lifecycle cascade.

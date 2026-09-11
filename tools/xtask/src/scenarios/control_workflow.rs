@@ -32,28 +32,42 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         let pane = completed(&socket, json!({"command":"split","id":2,"axis":"horizontal",
             "argv":["/bin/sh","-c","printf \"%s\\n\" \"$ROLE\"; read x; printf \"got:%s\\n\" \"$x\"; exit 7"],
             "env":[["ROLE","agent-pane"]],"rows":12,"columns":50}))?["pane"].clone();
+        // The cells capture carries the environment the command printed, row by row.
+        let seen = completed(&socket, json!({"command":"list","id":3}))?["workspaces"][0]["tabs"]
+            [0]["panes"]
+            .as_array()
+            .context("panes")?
+            .iter()
+            .find(|summary| summary["id"] == pane)
+            .map(|summary| summary["seq"].clone())
+            .context("split pane listed")?;
         let waited = completed(
             &socket,
-            json!({"command":"wait","id":3,"pane":pane,
-            "until":{"kind":"pattern","regex":"agent-pane"},"timeout_ms":10000}),
+            json!({"command":"wait","id":4,"pane":pane,
+            "until":{"kind":"seq","value":seen},"timeout_ms":10000}),
         )?;
-        ensure!(waited["fired"] == "pattern", "wait pattern");
-        let rows = completed(
-            &socket,
-            json!({"command":"capture","id":4,"pane":pane,
-            "max_bytes":65536,"format":"rows","since":0}),
-        )?;
-        let text = rows["rows"]
-            .as_array()
-            .context("capture rows")?
-            .iter()
-            .map(|row| row["text"].as_str().unwrap_or_default())
-            .collect::<Vec<_>>()
-            .join("\n");
-        ensure!(
-            text.contains("agent-pane") && rows["since_applied"] == true,
-            "incremental row capture"
-        );
+        ensure!(waited["fired"] == "seq", "wait seq");
+        until(Duration::from_secs(10), || {
+            let cells = completed(
+                &socket,
+                json!({"command":"capture","id":5,"pane":pane,"max_bytes":65536,"format":"cells"}),
+            )?;
+            let text = cells["lines"]
+                .as_array()
+                .context("capture lines")?
+                .iter()
+                .map(|line| {
+                    line["cells"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|cell| cell["text"].as_str())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok(text.contains("agent-pane").then_some(()))
+        })?;
         // rows/columns specify the initial PTY size; main's layout may resize it after spawn.
         // The ECS spawn regression verifies the initial dimensions independently.
         let mut events = Peer::connect(&socket)?;
@@ -109,7 +123,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         "explicit shutdown left the manager socket"
     );
     println!(
-        "PASS workspace startup, info, env/size, pattern wait, changed rows, key notation, exit event, final evidence and shutdown"
+        "PASS workspace startup, info, env/size, seq wait, cells capture, key notation, exit event, final evidence and shutdown"
     );
     Ok(())
 }

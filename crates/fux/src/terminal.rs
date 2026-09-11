@@ -3,7 +3,7 @@
 //!
 //! Adapted from koh (MIT); the upstream notice is retained in LICENSES/koh.txt.
 
-use crate::proto::control::{CaptureLine, CaptureRow};
+use crate::proto::control::CaptureLine;
 use crate::view::{
     CellKind, CellStyle, Cursor, Line, MAX_CELL_TEXT_BYTES, PaneModes, PaneUpdate, classify,
     push_wire,
@@ -310,8 +310,8 @@ impl GridCell {
 
 /// A copy of what an observer last saw of the pane: the visible screen with the sequence each
 /// row last changed at, plus cursor, modes, title and exit status. The sequence advances once per
-/// refresh that changed anything, so a frame carries only the rows a viewer has not seen, a
-/// `capture` can return the rows changed since a sequence, and `list` reports the sequence.
+/// refresh that changed anything, so a frame carries only the rows a viewer has not seen and
+/// `capture` and `list` report the sequence.
 #[derive(Default)]
 pub struct Grid {
     rows: u16,
@@ -408,38 +408,6 @@ impl Grid {
             self.seq = next;
         }
         changed
-    }
-
-    /// The rows changed after `since` (every row when `since` is `None`) as plain text with the
-    /// row's wrap flag: wide continuations are skipped and trailing blanks trimmed.
-    #[must_use]
-    pub fn rows_since(&self, since: Option<u64>) -> Vec<CaptureRow> {
-        let width = usize::from(self.columns);
-        let mut rows = Vec::new();
-        for row in 0..self.rows {
-            let index = usize::from(row);
-            if since
-                .is_some_and(|since| self.changed.get(index).is_none_or(|stamp| *stamp <= since))
-            {
-                continue;
-            }
-            let mut text = String::with_capacity(width);
-            for cell in self.cells.iter().skip(index * width).take(width) {
-                match cell.kind {
-                    CellKind::WideContinuation => {}
-                    CellKind::Blank => text.push(' '),
-                    CellKind::Text | CellKind::WideLeading => text.push_str(cell.text()),
-                }
-            }
-            let trimmed = text.trim_end_matches(' ').len();
-            text.truncate(trimmed);
-            rows.push(CaptureRow {
-                row,
-                text,
-                wrapped: self.wrapped.get(index).copied().unwrap_or(false),
-            });
-        }
-        rows
     }
 
     /// Every visible row as wire cells, top to bottom, keeping whole rows while the JSON encoding
@@ -984,19 +952,15 @@ mod tests {
         assert!(terminal.refresh_grid("", None));
         assert_eq!(terminal.grid().seq(), first + 1);
         assert_eq!(
-            terminal.grid().rows_since(Some(first)),
-            vec![CaptureRow {
-                row: 0,
-                text: "hi".into(),
-                wrapped: false
-            }]
+            changed_rows(terminal.grid(), Some(first)),
+            vec![(0, "hi".to_owned())]
         );
-        assert!(terminal.grid().rows_since(Some(first + 1)).is_empty());
+        assert!(changed_rows(terminal.grid(), Some(first + 1)).is_empty());
         // Cursor moves, titles and the exit status are observable too.
         terminal.process(b"\x1b[3;1H");
         assert!(terminal.refresh_grid("", None));
         assert_eq!(terminal.grid().cursor().row, 2);
-        assert!(terminal.grid().rows_since(Some(first + 1)).is_empty());
+        assert!(changed_rows(terminal.grid(), Some(first + 1)).is_empty());
         assert!(terminal.refresh_grid("title", None));
         assert!(terminal.refresh_grid("title", Some(3)));
         assert!(!terminal.refresh_grid("title", Some(3)));
@@ -1004,29 +968,53 @@ mod tests {
         // A resize stamps every row.
         terminal.resize(5, 10);
         assert!(terminal.refresh_grid("title", Some(3)));
-        assert_eq!(terminal.grid().rows_since(Some(first + 4)).len(), 5);
+        assert_eq!(changed_rows(terminal.grid(), Some(first + 4)).len(), 5);
         // Wide characters take one entry in the row text and blanks are trimmed.
         terminal.process("\x1b[H\u{65e5}x  ".as_bytes());
         terminal.refresh_grid("title", Some(3));
         assert_eq!(
-            terminal
-                .grid()
-                .rows_since(None)
+            changed_rows(terminal.grid(), None)
                 .first()
-                .map(|row| row.text.as_str()),
+                .map(|(_, text)| text.as_str()),
             Some("\u{65e5}x")
         );
     }
 
+    /// The rows a viewer update carries after `since`, as `(row, text)` with trailing blanks
+    /// trimmed, so tests can state which rows changed without decoding wire cells by hand.
+    fn changed_rows(grid: &Grid, since: Option<u64>) -> Vec<(u16, String)> {
+        let update = grid.update(since);
+        let mut rows = Vec::new();
+        let mut start = 0_usize;
+        for line in &update.lines {
+            let mut text = String::new();
+            let len = usize::from(line.len);
+            for cell in update.cells.iter().skip(start).take(len) {
+                match (&cell.text, cell.kind) {
+                    (_, Some(CellKind::WideContinuation)) => {}
+                    (Some(t), _) => text.push_str(t),
+                    (None, _) => {
+                        text.extend(std::iter::repeat_n(' ', usize::from(cell.run.max(1))));
+                    }
+                }
+            }
+            let trimmed = text.trim_end_matches(' ').len();
+            text.truncate(trimmed);
+            rows.push((line.row, text));
+            start += len;
+        }
+        rows
+    }
+
     proptest! {
-        /// Folding `capture {since}` over any split of an output stream reproduces the rows a
-        /// full capture returns.
+        /// Folding viewer updates over any split of an output stream reproduces the rows a full
+        /// update returns.
         #[test]
-        fn row_captures_since_fold_to_the_full_capture(
+        fn row_updates_since_fold_to_the_full_update(
             ops in proptest::collection::vec((0_u8..6, any::<u8>(), any::<bool>()), 1..60)
         ) {
             let mut terminal = ServerTerminal::new(4, 10, 0);
-            let mut folded: std::collections::BTreeMap<u16, CaptureRow> =
+            let mut folded: std::collections::BTreeMap<u16, String> =
                 std::collections::BTreeMap::new();
             let mut seen: Option<u64> = None;
             for (op, byte, read) in ops {
@@ -1035,17 +1023,17 @@ mod tests {
                     continue;
                 }
                 terminal.refresh_grid("", None);
-                for row in terminal.grid().rows_since(seen) {
-                    folded.insert(row.row, row);
+                for (row, text) in changed_rows(terminal.grid(), seen) {
+                    folded.insert(row, text);
                 }
                 seen = Some(terminal.grid().seq());
             }
             terminal.refresh_grid("", None);
-            for row in terminal.grid().rows_since(seen) {
-                folded.insert(row.row, row);
+            for (row, text) in changed_rows(terminal.grid(), seen) {
+                folded.insert(row, text);
             }
-            let full: Vec<CaptureRow> = terminal.grid().rows_since(None);
-            let folded: Vec<CaptureRow> = folded.into_values().collect();
+            let full = changed_rows(terminal.grid(), None);
+            let folded: Vec<(u16, String)> = folded.into_iter().collect();
             prop_assert_eq!(folded, full);
         }
     }
