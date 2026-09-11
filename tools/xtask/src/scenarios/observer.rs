@@ -333,16 +333,6 @@ pub(super) fn run(binary: &Path, zor: &Path) -> Result<()> {
         )?;
         snapshot(watching, |v| default_state(v) == Some("unknown"))?;
         ensure!(pane()?["pid"] == *pid, "unknown restarted pane");
-        let mut c = base_command();
-        c.args(["--title","never","--","/bin/sh","-c","printf '\\033]2;OBS_IDLE\\007'; sleep .3; printf '\\033[2J\\033[HUNKNOWN\\033]2;\\007'; sleep .3"]);
-        let wrapper = process::output(c, Duration::from_secs(5), 1024 * 1024)?;
-        let output = String::from_utf8_lossy(&wrapper.stdout);
-        ensure!(
-            wrapper.status.success()
-                && output.contains("state=blocked")
-                && output.contains("state=none"),
-            "wrapper state clearing: {output}"
-        );
         Ok(())
     })();
     let mut errors = stop_owned(&mut [

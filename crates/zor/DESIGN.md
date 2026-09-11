@@ -20,7 +20,7 @@ Detection is a pure function of one pane's byte stream plus its child process tr
 nothing with layout, transport, or control. Kept inside fux it is useful only to fux users; as its
 own binary it is useful the day it compiles:
 
-- `zor -- claude` under tmux shows state in the window title through tmux's title passthrough.
+- `zor-wrap -- claude` under tmux shows state in the window title through tmux's title passthrough.
 - `koh connect` on Termux with `--on-bell` already notifies on the bell; with the wrapper the
   title carries the state glyph too, with no change to koh.
 - A shell script can read the event line stream and do anything.
@@ -38,17 +38,20 @@ detection is a property of the pane and not of how the user typed the command.
 
 ## Surface
 
+The wrapper is the separate `zor-wrap` binary (`crates/zor-wrap`); the `zor` binary observes fux
+panes, runs the service and the durable task CLI, and never wraps a command itself.
+
 ```sh
-zor [options] [--] <command> [args…]    # run <command> in a pty; default: $SHELL -l
-zor --events <path> …                   # also write event lines to a unix socket or fifo
-zor --events - …                        # …or to fd 3 (stdout is the pty's)
-zor --title never|prefix|replace …      # how to touch OSC 0/2 (default: prefix)
-zor --no-osc …                          # never emit the state OSC (title only)
-zor --rules <dir> …                     # extra rule files; later files win on the same agent
-zor --agent <id> …                      # skip identification, force one rule set
-zor --debug …                           # dump matched rules to stderr on each change
-zor check <fixture.txt> [--agent id]    # evaluate one captured screen, print the verdict
-zor agents                              # list the bundled rule sets and their versions
+zor-wrap [options] [--] <command> [args…]  # run <command> in a pty; default: $SHELL -l
+zor-wrap --events <path> …                 # also write event lines to a unix socket or fifo
+zor-wrap --events - …                      # …or to fd 3 (stdout is the pty's)
+zor-wrap --title never|prefix|replace …    # how to touch OSC 0/2 (default: prefix)
+zor-wrap --no-osc …                        # never emit the state OSC (title only)
+zor-wrap --rules <dir> …                   # extra rule files; later files win on the same agent
+zor-wrap --agent <id> …                    # skip identification, force one rule set
+zor-wrap --debug …                         # dump matched rules to stderr on each change
+zor check <fixture.txt> [--agent id]       # evaluate one captured screen, print the verdict
+zor agents                                 # list the bundled rule sets and their versions
 ```
 
 Everything not listed passes through untouched. The wrapper is transparent to the program inside:
@@ -108,7 +111,7 @@ touched it and prints nothing else.
 
 ### Identification: the process tree, not the command line
 
-`zor -- claude` knows the agent. `zor` wrapping a shell does not, and must watch for one. Two
+`zor-wrap -- claude` knows the agent. `zor-wrap` wrapping a shell does not, and must watch for one. Two
 lookups, at different costs:
 
 - **Foreground pgid, every tick, cheap.** The child shell's controlling-terminal foreground group:
@@ -345,7 +348,7 @@ asserts the bytes reaching stdout are identical apart from the wrapper's own OSC
 
 ## What fux does with it
 
-- Spawns every pane as `zor --title never -- $SHELL` (or the configured default command). fux
+- Spawns every pane as `zor-wrap --title never -- $SHELL` (or the configured default command). fux
   draws its own status, so it does not want the title touched.
 - Reads OSC 7877 from `take_unhandled_oscs()` on each pane drain and sets the pane's agent state
   in `WorkspaceState`.
@@ -353,7 +356,7 @@ asserts the bytes reaching stdout are identical apart from the wrapper's own OSC
 - Fires its notifier on transitions into **blocked** and **idle**, as before.
 - Nothing else. fux carries no rules, no regex, no hysteresis, no process-tree code.
 
-A user running plain koh on a phone runs `zor -- claude` on the host and gets the title glyph in
+A user running plain koh on a phone runs `zor-wrap -- claude` on the host and gets the title glyph in
 koh's status line and the bell hook as before.
 
 ---
@@ -377,7 +380,7 @@ the detection window reaches into scrollback; a 200×50 vt100 screen is under a 
 
 `proc_listpids` and `KERN_PROCARGS2` are unpleasant. herdr's `platform/macos.rs` shows what works;
 the wrapper writes its own with the same syscalls. Failure degrades to identification by the
-command line given to `zor`, so `zor -- claude` always works.
+command line given to `zor-wrap`, so `zor-wrap -- claude` always works.
 
 ### The OSC number — *pick once*
 

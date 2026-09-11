@@ -1,4 +1,4 @@
-use crate::osc::State;
+use zor::osc::State;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {

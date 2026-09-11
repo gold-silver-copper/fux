@@ -49,11 +49,11 @@ fn take_pending_signal(pending: &AtomicU64) -> Option<i32> {
     None
 }
 
-use crate::{
-    emit::{
-        events::{AgentLine, EventLine, ExitLine, Sink, encode, timestamp},
-        title::{Mode as TitleMode, Titles},
-    },
+use crate::emit::{
+    events::{AgentLine, EventLine, ExitLine, Sink, encode, timestamp},
+    title::{Mode as TitleMode, Titles},
+};
+use zor::{
     osc::Report,
     rules::{RuleSet, evaluate, view::ScreenView},
     screen::Screen,
@@ -118,7 +118,7 @@ impl Drop for ChildCleanup {
 
 pub struct Options {
     pub rule_sets: Vec<RuleSet>,
-    pub agent: Option<crate::osc::AgentId>,
+    pub agent: Option<zor::osc::AgentId>,
     pub no_osc: bool,
     pub title: TitleMode,
     pub events: Option<std::path::PathBuf>,
@@ -127,8 +127,8 @@ pub struct Options {
 
 pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
     let system = NativePtySystem::default();
-    let initial_size = clamp_size(crate::platform::winsize(0));
-    let mut raw_guard = crate::platform::set_raw(0).ok();
+    let initial_size = clamp_size(zor::platform::winsize(0));
+    let mut raw_guard = zor::platform::set_raw(0).ok();
     let pair = system.openpty(initial_size).context("open pty")?;
     let mut builder = CommandBuilder::new(command);
     builder.args(argv);
@@ -296,7 +296,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
                 }
                 let cached = signal_foreground.load(Ordering::Acquire);
                 let current = child_pid
-                    .and_then(|pid| crate::platform::foreground_pgid(pid, foreground_fd))
+                    .and_then(|pid| zor::platform::foreground_pgid(pid, foreground_fd))
                     .or((cached > 0).then_some(cached));
                 if let Some(current) = current {
                     signal_foreground.store(current, Ordering::Release);
@@ -343,19 +343,19 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
                 .rule_sets
                 .iter()
                 .find(|set| set.id == name || set.process_names.iter().any(|value| value == name))
-                .and_then(|set| crate::osc::AgentId::new(set.id.clone()).ok())
+                .and_then(|set| zor::osc::AgentId::new(set.id.clone()).ok())
         })
     });
-    let mut scheduler = crate::platform::probe::Scheduler::new(std::time::Instant::now());
+    let mut scheduler = zor::platform::probe::Scheduler::new(std::time::Instant::now());
     let mut last_pgid = None;
-    let mut loss_tracker = crate::platform::probe::LossTracker::new();
+    let mut loss_tracker = zor::platform::probe::LossTracker::new();
     let mut last_title = String::new();
     let mut current_size = initial_size;
     loop {
         // Some PTY hosts update the wrapper's controlling terminal without delivering SIGWINCH
         // to its process group. Polling alongside the already bounded 50 ms event wait keeps the
         // child PTY authoritative on those hosts while the signal path remains the fast path.
-        let observed_size = clamp_size(crate::platform::winsize(0));
+        let observed_size = clamp_size(zor::platform::winsize(0));
         if observed_size.rows != current_size.rows || observed_size.cols != current_size.cols {
             restore_on_error(
                 pair.master.resize(observed_size).context("resize pty"),
@@ -374,7 +374,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
             Ok(Message::Eof) => break,
             Ok(Message::Signal(signal)) => {
                 if signal == signal_hook::consts::SIGWINCH {
-                    let size = clamp_size(crate::platform::winsize(0));
+                    let size = clamp_size(zor::platform::winsize(0));
                     restore_on_error(
                         pair.master.resize(size).context("resize pty"),
                         &titles,
@@ -394,10 +394,10 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
                     );
                     drop(raw_guard.take());
                     crate::platform::suspend_self();
-                    raw_guard = crate::platform::set_raw(0).ok();
+                    raw_guard = zor::platform::set_raw(0).ok();
                 } else if signal == signal_hook::consts::SIGCONT {
                     if raw_guard.is_none() {
-                        raw_guard = crate::platform::set_raw(0).ok();
+                        raw_guard = zor::platform::set_raw(0).ok();
                     }
                     let _ = forward_signal_with_retry(
                         last_pgid,
@@ -436,7 +436,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
             for payload in screen.take_observed_reports() {
                 if options.debug {
                     eprintln!(
-                        "zor: observed child OSC {}",
+                        "zor-wrap: observed child OSC {}",
                         String::from_utf8_lossy(&payload)
                     );
                 }
@@ -447,7 +447,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
                 if let Some(bytes) = titles.observe(
                     &last_title,
                     state,
-                    active_agent.as_ref().map(crate::osc::AgentId::as_str),
+                    active_agent.as_ref().map(zor::osc::AgentId::as_str),
                 ) {
                     queue_injection(&mut queued, bytes);
                 }
@@ -463,7 +463,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
                 if options.debug
                     && let Some(value) = &evaluated
                 {
-                    eprintln!("zor: verdict {:?} rule={:?}", value.state, value.rule);
+                    eprintln!("zor-wrap: verdict {:?} rule={:?}", value.state, value.rule);
                 }
                 let verdict = evaluated.as_ref().map(observation);
                 let events = machine.observe(
@@ -509,7 +509,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
             && scheduler.due(now)
             && let Some(pid) = child_pid
         {
-            let pgid = crate::platform::foreground_pgid(pid, pair.master.as_raw_fd());
+            let pgid = zor::platform::foreground_pgid(pid, pair.master.as_raw_fd());
             let no_pgid_full = scheduler.pgid_presence(pgid.is_some(), now);
             let changed = pgid != last_pgid;
             last_pgid = pgid;
@@ -521,23 +521,23 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
                 scheduler.completed(now, active_agent.is_some(), machine.hold_pending(), changed);
             if full || no_pgid_full {
                 let listed = pgid.map_or_else(
-                    || crate::platform::Job {
+                    || zor::platform::Job {
                         leader: 0,
                         processes: Vec::new(),
                     },
-                    |group| crate::platform::job(pid, group),
+                    |group| zor::platform::job(pid, group),
                 );
-                let detected = crate::rules::ident::identify(&listed, &options.rule_sets);
+                let detected = zor::rules::ident::identify(&listed, &options.rule_sets);
                 let shell = listed.processes.iter().any(|process| process.pid == pid);
                 if let Some(outcome) = loss_tracker.update(detected, shell) {
                     let (next, event_pid, exited, found) = match outcome {
-                        crate::platform::probe::Detection::AgentFound { id, pid } => {
+                        zor::platform::probe::Detection::AgentFound { id, pid } => {
                             (Some(id), Some(pid), false, true)
                         }
-                        crate::platform::probe::Detection::Exited { agent } => {
+                        zor::platform::probe::Detection::Exited { agent } => {
                             (Some(agent), None, true, false)
                         }
-                        crate::platform::probe::Detection::AgentLost => (None, None, false, false),
+                        zor::platform::probe::Detection::AgentLost => (None, None, false, false),
                     };
                     active_agent = next;
                     if found {
@@ -612,7 +612,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
     if let Some(target) = &mut sink {
         let time = timestamp();
         if let Ok(bytes) = encode(&ExitLine {
-            v: crate::osc::PROTOCOL_VERSION,
+            v: zor::osc::PROTOCOL_VERSION,
             t: "exit",
             code,
             ts: time,
@@ -623,7 +623,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
     if options.debug
         && let Some(value) = sink
     {
-        eprintln!("zor: dropped event lines: {}", value.dropped);
+        eprintln!("zor-wrap: dropped event lines: {}", value.dropped);
     }
     Ok(u8::try_from(code).unwrap_or(u8::MAX))
 }
@@ -700,10 +700,10 @@ fn signal_number(name: &str) -> Option<u32> {
     .find_map(|(label, number)| name.contains(label).then_some(number))
 }
 
-fn write_fixture(screen: &Screen, agent: Option<&crate::osc::AgentId>) {
-    use crate::rules::view::ScreenView;
+fn write_fixture(screen: &Screen, agent: Option<&zor::osc::AgentId>) {
+    use zor::rules::view::ScreenView;
     let path = std::env::temp_dir().join(format!(
-        "zor-fixture-{}-{}.txt",
+        "zor-wrap-fixture-{}-{}.txt",
         std::process::id(),
         timestamp()
     ));
@@ -712,13 +712,13 @@ fn write_fixture(screen: &Screen, agent: Option<&crate::osc::AgentId>) {
     });
     let body = format!(
         "# agent: {}\n# title: {}\n# progress: {progress}\n# expect: unknown\n# matched: none\n{}",
-        agent.map_or("unknown", crate::osc::AgentId::as_str),
+        agent.map_or("unknown", zor::osc::AgentId::as_str),
         screen.title(),
         screen.text()
     );
     match write_private_fixture(&path, body.as_bytes()) {
-        Ok(()) => eprintln!("zor: fixture written to {}", path.display()),
-        Err(error) => eprintln!("zor: failed to write fixture: {error}"),
+        Ok(()) => eprintln!("zor-wrap: fixture written to {}", path.display()),
+        Err(error) => eprintln!("zor-wrap: failed to write fixture: {error}"),
     }
 }
 
@@ -740,10 +740,10 @@ fn queue_events(
     sink: &mut Option<Sink>,
     queued: &mut Vec<Vec<u8>>,
 ) {
-    use crate::rules::view::ScreenView;
+    use zor::rules::view::ScreenView;
     for event in events {
         if options.debug {
-            eprintln!("zor: machine event {event:?}");
+            eprintln!("zor-wrap: machine event {event:?}");
         }
         if let Event::AgentFound { id, pid } = event {
             write_agent_event(sink, Some(id), Some(*pid));
@@ -785,12 +785,12 @@ fn queue_events(
         };
         if let Ok(report) = Report::new(*state, agent.clone(), *seq, *visible, *exited, None) {
             if !options.no_osc {
-                queue_injection(queued, crate::osc::format(&report));
+                queue_injection(queued, zor::osc::format(&report));
             }
             if let Some(title) = titles.observe(
                 screen.title(),
                 *state,
-                agent.as_ref().map(crate::osc::AgentId::as_str),
+                agent.as_ref().map(zor::osc::AgentId::as_str),
             ) {
                 queue_injection(queued, title);
             }
@@ -812,15 +812,15 @@ fn queue_events(
 #[allow(clippy::too_many_arguments)]
 fn write_event_line(
     target: &mut Sink,
-    state: crate::osc::State,
-    previous: Option<crate::osc::State>,
-    agent: Option<&crate::osc::AgentId>,
+    state: zor::osc::State,
+    previous: Option<zor::osc::State>,
+    agent: Option<&zor::osc::AgentId>,
     seq: u64,
-    visible: crate::osc::Flags,
+    visible: zor::osc::Flags,
     exited: bool,
     screen: &Screen,
 ) {
-    use crate::rules::view::ScreenView;
+    use zor::rules::view::ScreenView;
     let time = timestamp();
     let visible_names = [
         (visible.idle, "idle"),
@@ -831,12 +831,12 @@ fn write_event_line(
     .filter_map(|(set, name)| set.then_some(name))
     .collect();
     let line = EventLine {
-        v: crate::osc::PROTOCOL_VERSION,
+        v: zor::osc::PROTOCOL_VERSION,
         t: "state",
         ts: time,
         state: state_name(state),
         previous: previous.map(state_name),
-        agent: agent.map(crate::osc::AgentId::as_str),
+        agent: agent.map(zor::osc::AgentId::as_str),
         seq,
         pid: None,
         code: None,
@@ -849,17 +849,13 @@ fn write_event_line(
     }
 }
 
-fn write_agent_event(
-    sink: &mut Option<Sink>,
-    agent: Option<&crate::osc::AgentId>,
-    pid: Option<i32>,
-) {
+fn write_agent_event(sink: &mut Option<Sink>, agent: Option<&zor::osc::AgentId>, pid: Option<i32>) {
     let Some(target) = sink else { return };
     let time = timestamp();
     let line = AgentLine {
-        v: crate::osc::PROTOCOL_VERSION,
+        v: zor::osc::PROTOCOL_VERSION,
         t: "agent",
-        agent: agent.map(crate::osc::AgentId::as_str),
+        agent: agent.map(zor::osc::AgentId::as_str),
         pid,
         ts: time,
     };
@@ -867,18 +863,18 @@ fn write_agent_event(
         target.write(&bytes);
     }
 }
-fn state_name(state: crate::osc::State) -> &'static str {
+fn state_name(state: zor::osc::State) -> &'static str {
     match state {
-        crate::osc::State::Working => "working",
-        crate::osc::State::Blocked => "blocked",
-        crate::osc::State::Idle => "idle",
-        crate::osc::State::None => "none",
+        zor::osc::State::Working => "working",
+        zor::osc::State::Blocked => "blocked",
+        zor::osc::State::Idle => "idle",
+        zor::osc::State::None => "none",
     }
 }
 
-fn observation(verdict: &crate::rules::Verdict) -> crate::state::Observation {
-    use crate::{rules::RuleState, state::ObservationState};
-    crate::state::Observation {
+fn observation(verdict: &zor::rules::Verdict) -> zor::state::Observation {
+    use zor::{rules::RuleState, state::ObservationState};
+    zor::state::Observation {
         state: match verdict.state {
             RuleState::Unknown => ObservationState::Unknown,
             RuleState::Working => ObservationState::Working,

@@ -1,14 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-pub enum TitleMode {
-    Never,
-    #[default]
-    Prefix,
-    Replace,
-}
-
 #[derive(Debug, Subcommand)]
 pub enum Action {
     /// Internal headless native worker; requires verified managed fux ownership.
@@ -495,19 +487,9 @@ pub struct Cli {
     #[arg(long)]
     pub state_directory: Option<PathBuf>,
     #[arg(long)]
-    pub events: Option<PathBuf>,
-    #[arg(long, value_enum, default_value_t = TitleMode::Prefix)]
-    pub title: TitleMode,
-    #[arg(long)]
-    pub no_osc: bool,
-    #[arg(long)]
     pub rules: Vec<PathBuf>,
     #[arg(long)]
     pub agent: Option<String>,
-    #[arg(long)]
-    pub debug: bool,
     #[command(subcommand)]
-    pub action: Option<Action>,
-    #[arg(allow_hyphen_values = true)]
-    pub command: Vec<String>,
+    pub action: Action,
 }

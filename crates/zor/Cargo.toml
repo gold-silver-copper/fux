@@ -4,7 +4,7 @@ version = "0.2.0"
 edition.workspace = true
 rust-version = "1.91"
 license.workspace = true
-description = "Portable agent-state wrapper and OSC 7877 protocol"
+description = "Agent observation and task coordination over fux, and the OSC 7877 protocol"
 repository = "https://github.com/gold-silver-copper/zor"
 homepage = "https://github.com/gold-silver-copper/zor"
 documentation = "https://docs.rs/zor"
@@ -29,15 +29,15 @@ cli = [
 ]
 
 [dependencies]
-# Context-rich wrapper runtime errors.
+# Context-rich runtime errors.
 anyhow = { version = "1.0", optional = true }
-# Command-line parsing for the feature-gated wrapper binary.
+# Command-line parsing for the feature-gated zor binary.
 clap = { version = "4.5", features = ["derive"], optional = true }
 # Unix terminal and process primitives used only by platform adapters.
 libc = { version = "0.2", optional = true }
 # Safe termios operations for raw-mode guards.
 nix = { version = "0.28", features = ["fs", "poll", "term", "socket", "user", "process", "signal", "time"], optional = true }
-# Cross-platform pseudoterminal spawning and resizing.
+# Terminal size type shared with the dashboard and zor-wrap.
 portable-pty = { version = "=0.9.0", optional = true }
 # Compiled screen-rule matchers.
 regex = { version = "1.11", optional = true }
@@ -48,11 +48,11 @@ serde_json = { version = "1.0", optional = true }
 # Git object integrity for retained source snapshots.
 sha1 = { version = "0.10", optional = true }
 sha2 = { version = "0.10", optional = true }
-# Portable signal registration for the wrapper runtime.
+# Portable signal registration for the service, watcher and dashboard.
 signal-hook = { version = "0.3", optional = true }
 # Rule-file decoding.
 toml = { version = "0.9", optional = true }
-# Terminal emulation for detection without changing passthrough bytes.
+# Terminal emulation for detection over captured pane bytes.
 vt100 = { version = "=0.16.2", optional = true }
 
 [lib]

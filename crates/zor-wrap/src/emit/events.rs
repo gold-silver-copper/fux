@@ -221,7 +221,7 @@ mod tests {
     fn event_is_one_json_line() {
         // Phase Z §6: event output is parseable JSON Lines with optional fields omitted.
         let line = EventLine {
-            v: crate::osc::PROTOCOL_VERSION,
+            v: zor::osc::PROTOCOL_VERSION,
             t: "state",
             ts: 1.0,
             state: "idle",
@@ -237,7 +237,7 @@ mod tests {
         let encoded = encode(&line).unwrap_or_default();
         assert_eq!(encoded.last(), Some(&b'\n'));
         let value = serde_json::from_slice::<serde_json::Value>(&encoded).unwrap_or_default();
-        assert_eq!(value["v"], crate::osc::PROTOCOL_VERSION);
+        assert_eq!(value["v"], zor::osc::PROTOCOL_VERSION);
         assert_eq!(value["t"], "state");
         assert_eq!(value["ts"], 1.0);
         assert_eq!(value["state"], "idle");
@@ -248,7 +248,7 @@ mod tests {
     fn agent_and_exit_lines_use_the_tagged_contract() {
         // Phase Z §6: lifecycle lines carry their type, timestamp, and relevant payload.
         let agent = encode(&AgentLine {
-            v: crate::osc::PROTOCOL_VERSION,
+            v: zor::osc::PROTOCOL_VERSION,
             t: "agent",
             agent: Some("claude"),
             pid: Some(42),
@@ -256,7 +256,7 @@ mod tests {
         })
         .unwrap_or_default();
         let exit = encode(&ExitLine {
-            v: crate::osc::PROTOCOL_VERSION,
+            v: zor::osc::PROTOCOL_VERSION,
             t: "exit",
             code: 143,
             ts: 3.0,

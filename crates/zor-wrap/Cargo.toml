@@ -1,0 +1,48 @@
+[package]
+name = "zor-wrap"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.91"
+license.workspace = true
+description = "Standalone PTY wrapper publishing observed agent state as OSC 7877"
+repository = "https://github.com/gold-silver-copper/fux"
+readme = "README.md"
+publish = true
+
+[dependencies]
+# Context-rich wrapper runtime errors.
+anyhow = "1.0"
+# Command-line parsing for the wrapper binary.
+clap = { version = "4.5", features = ["derive"] }
+# Non-blocking event sinks and process-group signalling.
+libc = "0.2"
+# Descriptor polling in the wrapper loop.
+nix = { version = "0.28", features = ["poll"] }
+# Cross-platform pseudoterminal spawning and resizing.
+portable-pty = "=0.9.0"
+# Event line serialization.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Portable signal registration for the wrapper runtime.
+signal-hook = "0.3"
+# Observation: rules, screen emulation, hysteresis, OSC 7877 wire format and process helpers.
+zor = { path = "../zor", version = "0.2.0", default-features = false, features = ["cli"] }
+
+[[bin]]
+name = "zor-wrap"
+path = "src/main.rs"
+
+[lints.rust]
+dead_code = "deny"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"

@@ -1,4 +1,3 @@
-#![cfg(feature = "cli")]
 #![allow(clippy::indexing_slicing)]
 
 use std::{
@@ -27,7 +26,7 @@ fn lifecycle_events_follow_the_tagged_json_contract() -> Result<(), Box<dyn std:
         stream.read_to_end(&mut bytes)?;
         Ok(bytes)
     });
-    let output = Command::new(env!("CARGO_BIN_EXE_zor"))
+    let output = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
         .args([
             "--events",
             socket.to_str().ok_or("non-utf8 socket")?,
@@ -72,7 +71,7 @@ fn lifecycle_events_follow_the_tagged_json_contract() -> Result<(), Box<dyn std:
 fn child_control_bytes_are_forwarded_exactly() -> Result<(), Box<dyn std::error::Error>> {
     // Phase Z §5: CSI, OSC, DCS and queries reach stdout without rewriting.
     let expected = "\x1b[31m\x1b]2;title\x07\x1b]9;4;3;0\x1b\\\x1bPdata\x1b\\\x1b[c";
-    let output = Command::new(env!("CARGO_BIN_EXE_zor"))
+    let output = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
         .args([
             "--title",
             "never",
@@ -92,7 +91,7 @@ fn child_control_bytes_are_forwarded_exactly() -> Result<(), Box<dyn std::error:
 #[test]
 fn terminal_response_reaches_child_stdin() -> Result<(), Box<dyn std::error::Error>> {
     // Phase Z §5: DA responses from the outer terminal pass to the child unchanged.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_zor"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
         .args([
             "--title",
             "never",
@@ -131,7 +130,7 @@ fn outer_pty_resize_reaches_the_wrapped_child_terminal() -> Result<(), Box<dyn s
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_zor"));
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_zor-wrap"));
     command.args([
         "--title",
         "never",
@@ -176,7 +175,7 @@ fn outer_pty_resize_reaches_the_wrapped_child_terminal() -> Result<(), Box<dyn s
 #[test]
 fn split_control_string_is_never_interleaved() -> Result<(), Box<dyn std::error::Error>> {
     // Phase Z §5: a control string split across writes remains byte-identical.
-    let output = Command::new(env!("CARGO_BIN_EXE_zor"))
+    let output = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
         .args([
             "--title",
             "never",
@@ -194,12 +193,12 @@ fn split_control_string_is_never_interleaved() -> Result<(), Box<dyn std::error:
 fn child_exit_status_is_propagated() -> Result<(), Box<dyn std::error::Error>> {
     // Phase Z §5: ordinary and signal-style child statuses become zor's status.
     for code in [0, 1, 7] {
-        let output = Command::new(env!("CARGO_BIN_EXE_zor"))
+        let output = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
             .args(["--", "/bin/sh", "-c", &format!("exit {code}")])
             .output()?;
         assert_eq!(output.status.code(), Some(code));
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_zor"))
+    let output = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
         .args(["--", "/bin/sh", "-c", "kill -TERM $$"])
         .output()?;
     assert_eq!(output.status.code(), Some(143));
@@ -209,13 +208,13 @@ fn child_exit_status_is_propagated() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn nested_wrapper_uses_transparent_execution() -> Result<(), Box<dyn std::error::Error>> {
     // Phase Z §5: ZOR_PID avoids a second PTY/emulator layer.
-    let output = Command::new(env!("CARGO_BIN_EXE_zor"))
+    let output = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
         .env("ZOR_PID", "1")
         .args(["--", "/bin/sh", "-c", "printf nested; exit 9"])
         .output()?;
     assert_eq!(output.stdout, b"nested");
     assert_eq!(output.status.code(), Some(9));
-    let output = Command::new(env!("CARGO_BIN_EXE_zor"))
+    let output = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
         .env("ZOR_PID", "1")
         .args(["--", "/bin/sh", "-c", "kill -TERM $$"])
         .output()?;
@@ -226,7 +225,7 @@ fn nested_wrapper_uses_transparent_execution() -> Result<(), Box<dyn std::error:
 #[test]
 fn wrapper_signal_reaches_the_foreground_child_group() -> Result<(), Box<dyn std::error::Error>> {
     // Phase Z §4-5: termination targets the detected foreground process group.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_zor"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
         .args([
             "--title",
             "never",
@@ -258,7 +257,7 @@ fn termination_reaches_child_while_wrapper_stdout_pipe_is_full()
     let _ = fs::remove_dir_all(&root);
     fs::create_dir(&root)?;
     let marker = root.join("delivered");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_zor"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_zor-wrap"))
         .args([
             "--title",
             "never",

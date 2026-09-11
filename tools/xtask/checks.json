@@ -653,6 +653,24 @@
     ],
     [
       "cargo",
+      "clippy",
+      "--manifest-path",
+      "crates/zor-wrap/Cargo.toml",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "test",
+      "--manifest-path",
+      "crates/zor-wrap/Cargo.toml",
+      "--locked"
+    ],
+    [
+      "cargo",
       "fmt",
       "--manifest-path",
       "references/koh/Cargo.toml",
