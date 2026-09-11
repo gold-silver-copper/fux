@@ -140,5 +140,5 @@ jobs:
       # verify each against the freshly packaged dependency instead of the registry.
       - run: cargo package --locked -p fux -p local-ipc
       - run: cargo package --locked -p zor -p local-ipc
-      - run: cargo package --locked -p zor-wrap
+      - run: cargo package --locked -p zor-wrap -p zor -p local-ipc
       - run: cargo package --locked -p local-ipc
