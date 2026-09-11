@@ -46,7 +46,7 @@ agent-specific interpretation rules. Consumers must not authorize access based o
 
 Without zor, panes continue normally. Invalid or unsupported reports are ignored by the consumer.
 Observer/rule/sink failures must preserve byte forwarding, terminal queries, resize, signals,
-exit status, and child cleanup. The wrapper's passthrough integration suite covers these contracts.
+exit status, and child cleanup. The `zor wrap` passthrough integration suite (feature `wrap`) covers these contracts.
 
 
 ## Local multiplexer observer
@@ -61,9 +61,11 @@ Detection and the existing state machine remain in zor. Reports use the OSC v1 s
 
 The fux control adapter sends and verifies the four-byte `FUX\n` preface before each RPC. A mismatch or stalled preface ends that sampling attempt without sending a command. Preface reads use an absolute two-second deadline. This is an independent wire consumer, not a fux library dependency.
 
-Listing revisions are cache-invalidation hints. Capture supplies coherent text, dimensions,
-title and progress; the observer never subtracts borders or joins an old listing's geometry
-with newer text. Unchanged revisions skip capture/re-emulation. Truncated captures clear the observation to
+Listing revisions are cache-invalidation hints. Capture (`format:"cells"`, `max_bytes`
+131072) supplies coherent cells, dimensions, cursor, title and progress from fux's own grid;
+zor expands the run-length cells into rows without emulating a terminal, and never subtracts
+borders or joins an old listing's geometry with newer cells. Unchanged revisions (`if_revision`)
+skip capture. Truncated captures clear the observation to
 `none` without stopping the observer; later complete captures restore detection. No report is ingested or displayed as agent
 state by fux; zor and its consumers own agent presentation.
 
@@ -103,8 +105,9 @@ Budget/capacity exhaustion is reported and unobserved identities are removed fro
 snapshot. Continuous watch and the service retain up to 64 same-user fux subscriptions,
 using each listing's incarnation and cursor as the replay boundary. Unfiltered events must
 advance by exactly one sequence in the same stream. EOF, gaps, duplicates, reordered cursors,
-unknown events, malformed or oversized frames discard continuity and require a fresh listing
-and subscription. They never infer an agent state or task outcome. The service marks affected
+malformed or oversized frames discard continuity and require a fresh listing and
+subscription. An event kind this zor does not know is ignored, not a failure: its cursor still
+counts toward continuity, so fux may add event kinds without breaking observation. They never infer an agent state or task outcome. The service marks affected
 observations unknown while refreshing and preserves their original evidence ages. Failure
 counts survive successful resynchronization; a new observer lifetime resets them.
 
@@ -165,7 +168,7 @@ Agent IDs follow the OSC identifier contract. Aliases and effective process name
 Existing file-count, file-size, regex and gate-complexity limits still apply. Broad built-in
 agent coverage remains unfinished; the active Codex, Claude and OpenCode rules establish only their documented startup coverage.
 
-Unmatched screens evaluate to `unknown`, never implicit idle. Both wrapper and single-pane
+Unmatched screens evaluate to `unknown`, never implicit idle. Both `zor wrap` and the single-pane
 observer clear an earlier state immediately by publishing OSC `state=none` (without an agent
 field, as required by that wire schema). Internal process identity is retained, and a subsequent
 matched rule can recover without rediscovery. Unknown cancels pending idle confirmation;

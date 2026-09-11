@@ -1,0 +1,75 @@
+{
+  "status": "completed",
+  "id": 5,
+  "result": {
+    "kind": "cells",
+    "value": {
+      "seq": 12,
+      "input_sequence": 3,
+      "revision": 15,
+      "rows": 3,
+      "columns": 8,
+      "cursor": {
+        "row": 2,
+        "column": 0,
+        "hidden": false
+      },
+      "title": "sh",
+      "progress": null,
+      "unchanged": false,
+      "truncated": false,
+      "lines": [
+        {
+          "row": 0,
+          "wrapped": false,
+          "cells": [
+            { "text": "$" },
+            { "run": 1 },
+            {
+              "text": "日",
+              "kind": "wide-leading",
+              "style": {
+                "foreground": { "Indexed": 1 },
+                "background": "Default",
+                "bold": true,
+                "dim": false,
+                "italic": false,
+                "underline": false,
+                "inverse": false
+              }
+            },
+            {
+              "kind": "wide-continuation",
+              "style": {
+                "foreground": { "Indexed": 1 },
+                "background": "Default",
+                "bold": true,
+                "dim": false,
+                "italic": false,
+                "underline": false,
+                "inverse": false
+              }
+            },
+            { "run": 4 }
+          ]
+        },
+        {
+          "row": 1,
+          "wrapped": true,
+          "cells": [
+            { "text": "h" },
+            { "text": "i" },
+            { "run": 6 }
+          ]
+        },
+        {
+          "row": 2,
+          "wrapped": false,
+          "cells": [
+            { "run": 8 }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -96,13 +96,8 @@ pub fn request_until(socket: &Path, value: Value, limit: Instant) -> anyhow::Res
 }
 
 pub(crate) fn same_user(stream: &UnixStream) -> anyhow::Result<()> {
-    #[cfg(target_os = "macos")]
-    let peer = nix::unistd::getpeereid(stream)?.0.as_raw();
-    #[cfg(target_os = "linux")]
-    let peer =
-        nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)?.uid();
     anyhow::ensure!(
-        peer == nix::unistd::geteuid().as_raw(),
+        local_ipc::peer_is_current_user(stream)?,
         "control socket belongs to another user"
     );
     Ok(())
@@ -117,45 +112,22 @@ fn remaining(limit: Instant) -> anyhow::Result<Duration> {
 
 pub(crate) fn connect(path: &Path, limit: Instant) -> anyhow::Result<UnixStream> {
     let timeout = u16::try_from(remaining(limit)?.as_millis().clamp(1, 2000))?;
-    use nix::sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, sockopt};
-    use std::os::fd::{AsFd, AsRawFd};
-    let fd = nix::sys::socket::socket(
-        AddressFamily::Unix,
-        SockType::Stream,
-        SockFlag::empty(),
-        None,
-    )?;
-    nix::fcntl::fcntl(
-        fd.as_raw_fd(),
-        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
-    )?;
-    nix::fcntl::fcntl(
-        fd.as_raw_fd(),
-        nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::O_NONBLOCK),
-    )?;
-    match nix::sys::socket::connect(fd.as_raw_fd(), &UnixAddr::new(path)?) {
-        Ok(()) => {}
-        Err(nix::errno::Errno::EINPROGRESS) => {
-            let mut polls = [nix::poll::PollFd::new(
-                fd.as_fd(),
-                nix::poll::PollFlags::POLLOUT,
-            )];
-            anyhow::ensure!(
-                nix::poll::poll(&mut polls, timeout)? > 0,
-                "fux connect timed out"
-            );
-            let error = nix::sys::socket::getsockopt(&fd, sockopt::SocketError)?;
-            anyhow::ensure!(
-                error == 0,
-                "fux connect failed: {}",
-                std::io::Error::from_raw_os_error(error)
-            );
-        }
-        Err(error) => return Err(error.into()),
+    use std::os::fd::AsFd;
+    let connecting = local_ipc::Connecting::start(path)?;
+    if connecting.pending() {
+        let mut polls = [nix::poll::PollFd::new(
+            connecting.as_fd(),
+            nix::poll::PollFlags::POLLOUT,
+        )];
+        anyhow::ensure!(
+            nix::poll::poll(&mut polls, timeout)? > 0,
+            "fux connect timed out"
+        );
+        connecting
+            .confirm()
+            .map_err(|error| anyhow::anyhow!("fux connect failed: {error}"))?;
     }
-    let stream = UnixStream::from(fd);
-    stream.set_nonblocking(false)?;
-    Ok(stream)
+    Ok(connecting.finish()?)
 }
 
 pub fn completed(socket: &Path, request: Value) -> anyhow::Result<Value> {

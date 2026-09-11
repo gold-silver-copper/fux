@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.0 - 2026-09-11
+
+Breaking release: zor is the agent layer only; it no longer emulates terminals or wraps PTYs.
+
+- The PTY wrapper is now the off-by-default `wrap` Cargo feature and the `zor wrap <command>`
+  subcommand (`cargo install zor --features wrap`), carrying the former `--events`/`--title`/
+  `--no-osc`/`--debug` flags, `ZOR_PID` nested detection and OSC 7877 emission into the
+  passthrough stream. The bare `zor <command>` form is gone, and a default build has no `wrap`
+  subcommand or `vt100` dependency.
+- fux observation consumes `capture format:"cells"` and builds the rule view directly; the
+  vt100 re-emulation of text captures is gone, and `vt100` is no longer a runtime dependency
+  (it remains a dev-dependency for two tests of zor's own output, and a runtime dependency
+  only under `wrap`). Progress comes from the capture; zor's OSC 9;4 parser lives in the
+  wrapper's `screen` module.
+- Unknown fux event kinds are ignored instead of ending the subscription; their cursor still
+  counts toward continuity.
+- The local-socket discipline of `zor serve` and the fux client uses the shared `local-ipc`
+  crate; no wire, path, permission or limit changed. Connect and peer-check failures are now
+  reported as `io::Error` text (for example `No such file or directory (os error 2)`) instead
+  of `nix` errno text.
+- Requires fux 0.8.0 (cells capture).
+
 ## 0.2.0 - 2026-09-09
 
 - Consume fux's unversioned local protocols: the four-byte `FUX\n` preface, pane creation

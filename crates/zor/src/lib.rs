@@ -4,15 +4,9 @@
 pub mod osc;
 
 #[cfg(feature = "cli")]
-pub mod emit;
-#[cfg(feature = "cli")]
 pub mod platform;
 #[cfg(feature = "cli")]
-pub mod pty;
-#[cfg(feature = "cli")]
 pub mod rules;
-#[cfg(feature = "cli")]
-pub mod screen;
 #[cfg(feature = "cli")]
 pub mod state;
 
@@ -34,3 +28,11 @@ pub mod tasks;
 
 #[cfg(feature = "cli")]
 mod service_tasks;
+
+// The PTY wrapper (`zor wrap <command>`) ships only behind the off-by-default `wrap` feature.
+#[cfg(feature = "wrap")]
+pub mod emit;
+#[cfg(feature = "wrap")]
+pub mod pty;
+#[cfg(feature = "wrap")]
+pub mod screen;

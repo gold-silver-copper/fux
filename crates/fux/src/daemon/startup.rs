@@ -18,10 +18,7 @@ pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Exclusive ownership of the manager socket for one runtime directory.
 #[derive(Debug)]
 pub struct ManagerLock {
-    listener: UnixListener,
-    path: PathBuf,
-    device: u64,
-    inode: u64,
+    socket: local_ipc::BoundSocket,
 }
 
 impl ManagerLock {
@@ -31,31 +28,12 @@ impl ManagerLock {
         paths.prepare().map_err(io::Error::other)?;
         let _bind_lock = acquire_lock(&paths.runtime_dir, "manager.bind.lock")?;
         remove_stale_manager_socket(&paths.manager_socket, &paths.runtime_dir)?;
-        let listener = UnixListener::bind(&paths.manager_socket)?;
-        let metadata = fs::symlink_metadata(&paths.manager_socket)?;
-        let bound = Self {
-            listener,
-            path: paths.manager_socket.clone(),
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        };
-        fs::set_permissions(&bound.path, fs::Permissions::from_mode(0o600))?;
-        Ok(bound)
+        Ok(Self {
+            socket: local_ipc::BoundSocket::bind(&paths.manager_socket)?,
+        })
     }
     pub fn listener(&self) -> &UnixListener {
-        &self.listener
-    }
-}
-
-impl Drop for ManagerLock {
-    fn drop(&mut self) {
-        if fs::symlink_metadata(&self.path).is_ok_and(|metadata| {
-            metadata.file_type().is_socket()
-                && metadata.dev() == self.device
-                && metadata.ino() == self.inode
-        }) {
-            let _ = fs::remove_file(&self.path);
-        }
+        self.socket.listener()
     }
 }
 
@@ -187,7 +165,7 @@ impl ServerChild {
                 "startup channel directory is not private",
             ));
         }
-        let nonce = super::descriptor::random_token()?;
+        let nonce = local_ipc::random_token()?;
         let short = nonce.get(..16).unwrap_or(&nonce);
         let file_name = format!("s-{short}");
         let mut channel_path = runtime_dir.join(&file_name);

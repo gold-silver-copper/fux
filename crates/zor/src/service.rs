@@ -8,7 +8,7 @@ use std::{
     os::{
         fd::AsFd,
         unix::{
-            fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+            fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
             net::{UnixListener, UnixStream},
         },
     },
@@ -104,30 +104,17 @@ pub fn directory() -> Result<PathBuf> {
 
 fn private_directory(root: &Path) -> Result<()> {
     anyhow::ensure!(root.is_absolute(), "zor service directory must be absolute");
-    match fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(root)
-    {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error.into()),
-    }
-    let metadata = fs::symlink_metadata(root)?;
-    anyhow::ensure!(
-        metadata.is_dir()
-            && metadata.uid() == nix::unistd::geteuid().as_raw()
-            && metadata.mode() & 0o077 == 0,
-        "zor service directory must be an owned private directory (0700)"
-    );
-    Ok(())
+    local_ipc::ensure_private_directory(root).map_err(|error| match error {
+        local_ipc::DirectoryError::Unsafe => {
+            anyhow::anyhow!("zor service directory must be an owned private directory (0700)")
+        }
+        local_ipc::DirectoryError::Io(error) => error.into(),
+    })
 }
 
 struct Endpoint {
     _lock: nix::fcntl::Flock<File>,
-    listener: UnixListener,
-    path: PathBuf,
-    inode: u64,
+    socket: local_ipc::BoundSocket,
 }
 impl Endpoint {
     fn bind(root: &Path) -> Result<Self> {
@@ -165,26 +152,12 @@ impl Endpoint {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let listener = UnixListener::bind(&path)?;
-        let inode = fs::symlink_metadata(&path)?.ino();
         let endpoint = Self {
             _lock: lock,
-            listener,
-            path,
-            inode,
+            socket: local_ipc::BoundSocket::bind(&path)?,
         };
-        fs::set_permissions(&endpoint.path, fs::Permissions::from_mode(0o600))?;
-        endpoint.listener.set_nonblocking(true)?;
+        endpoint.socket.listener().set_nonblocking(true)?;
         Ok(endpoint)
-    }
-}
-impl Drop for Endpoint {
-    fn drop(&mut self) {
-        if fs::symlink_metadata(&self.path)
-            .is_ok_and(|metadata| metadata.ino() == self.inode && metadata.file_type().is_socket())
-        {
-            let _ = fs::remove_file(&self.path);
-        }
     }
 }
 
@@ -413,9 +386,7 @@ fn run_inner(
     );
     let root = root.map(Ok).unwrap_or_else(directory)?;
     let endpoint = Endpoint::bind(&root)?;
-    let mut nonce = [0u8; 16];
-    File::open("/dev/urandom")?.read_exact(&mut nonce)?;
-    let instance: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    let instance = local_ipc::random_token()?;
     let mut catalog = crate::rules::bundle::Catalog::load(extra)?;
     let stop = Arc::new(AtomicBool::new(false));
     let reload = Arc::new(AtomicBool::new(false));
@@ -503,7 +474,7 @@ fn run_inner(
     };
     let result = ready.and_then(|()| {
         serve(
-            &endpoint.listener,
+            endpoint.socket.listener(),
             &shared,
             &instance,
             &stop,
@@ -907,6 +878,7 @@ fn startup_frame(channel: &mut UnixStream, deadline: Instant) -> Result<Value> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn freshness_includes_scan_and_queue_age_and_clears_stale_evidence() {

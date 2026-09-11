@@ -1,11 +1,12 @@
 #![cfg(feature = "cli")]
+#![allow(clippy::indexing_slicing)]
 
+use std::{fs, os::unix::fs::PermissionsExt as _, process::Command};
+#[cfg(feature = "wrap")]
 use std::{
-    fs,
     io::Read as _,
     os::fd::AsRawFd as _,
-    os::unix::fs::PermissionsExt as _,
-    process::{Command, Stdio},
+    process::Stdio,
     thread,
     time::{Duration, Instant},
 };
@@ -83,6 +84,8 @@ fn check_evaluates_fixture_expectation_and_rule() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+// `zor wrap` (feature `wrap`): SIGUSR1 fixtures and state clearing through the real binary.
+#[cfg(feature = "wrap")]
 #[test]
 fn sigusr1_writes_the_detection_window_fixture() -> Result<(), Box<dyn std::error::Error>> {
     // Phase Z §7: SIGUSR1 writes the exact observed window to TMPDIR.
@@ -96,6 +99,7 @@ fn sigusr1_writes_the_detection_window_fixture() -> Result<(), Box<dyn std::erro
         .env("XDG_RUNTIME_DIR", &root)
         .env("TMPDIR", &root)
         .args([
+            "wrap",
             "--title",
             "never",
             "--",
@@ -162,7 +166,7 @@ fn sigusr1_writes_the_detection_window_fixture() -> Result<(), Box<dyn std::erro
     let stderr = String::from_utf8(output.stderr)?;
     let path = stderr
         .lines()
-        .find_map(|line| line.strip_prefix("zor: fixture written to "))
+        .find_map(|line| line.strip_prefix("zor wrap: fixture written to "))
         .map(std::path::PathBuf::from);
     assert!(path.as_ref().is_some_and(|path| path.exists()));
     assert_eq!(
@@ -177,6 +181,43 @@ fn sigusr1_writes_the_detection_window_fixture() -> Result<(), Box<dyn std::erro
         .transpose()?
         .unwrap_or_default();
     assert!(contents.contains("observed"));
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[cfg(feature = "wrap")]
+#[test]
+fn wrapper_clears_an_earlier_state_by_publishing_none() -> Result<(), Box<dyn std::error::Error>> {
+    // A matched title rule publishes its state; an unmatched screen publishes state=none.
+    let root = temp_dir("state-clearing")?;
+    let rules = root.join("rules");
+    fs::create_dir_all(&rules)?;
+    fs::write(
+        rules.join("test.toml"),
+        "id='test'\nprompt_marker='>'\nblock_markers=[]\n[[rules]]\nid='working'\nstate='working'\nregion='progress'\ncontains=['1:50']\nvisible_working=true\n[[rules]]\nid='idle'\nstate='blocked'\nregion='title'\ncontains=['OBS_IDLE']\nvisible_blocker=true\n",
+    )?;
+    let output = Command::new(env!("CARGO_BIN_EXE_zor"))
+        .arg("--rules")
+        .arg(&rules)
+        .args([
+            "--agent",
+            "test",
+            "wrap",
+            "--title",
+            "never",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf '\\033]2;OBS_IDLE\\007'; sleep .3; printf '\\033[2J\\033[HUNKNOWN\\033]2;\\007'; sleep .3",
+        ])
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success()
+            && stdout.contains("state=blocked")
+            && stdout.contains("state=none"),
+        "wrapper state clearing: {stdout:?}"
+    );
     fs::remove_dir_all(root)?;
     Ok(())
 }

@@ -1,0 +1,29 @@
+[package]
+name = "local-ipc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.95"
+description = "Same-user local socket discipline: private directories, 0600 sockets, kernel peer credentials"
+repository = "https://github.com/gold-silver-copper/fux"
+
+[dependencies]
+# Safe peer-credential, socket and descriptor-flag operations.
+nix = { version = "0.30", features = ["fs", "socket", "user"] }
+
+[lib]
+doctest = false
+
+[lints.rust]
+dead_code = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"

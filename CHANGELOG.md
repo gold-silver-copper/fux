@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.0 - 2026-09-11
+
+Breaking release: the fux/zor boundary is tightened and unconsumed surface is removed. No
+compatibility with 0.7.0 consumers is kept.
+
+- `capture` gains `format:"cells"`: the visible grid as fux's wire cells (text, kind, style,
+  run-length blanks) with cursor, size, title, progress, revision, grid sequence, input
+  sequence, `unchanged` and `truncated`, served from the same pane borrow as the text form.
+  `max_bytes` bounds the encoded lines (whole lines dropped from the bottom, `truncated:true`).
+  `cells` rejects `scrollback`, `attrs` and `if_revision` behaves as for text. CLI: `fux
+  capture --cells`.
+- Removed: `capture format:"rows"` and `since` (`CaptureRow`, `since_applied`, the CLI
+  `--rows` and `--since` flags); the `progress` field of `list` pane summaries (progress stays
+  in both capture forms); `wait` conditions `pattern` and `quiet` with their limits
+  (`exit` and `seq` remain; `fux run` never used them and is unchanged); the `regex-lite`
+  dependency.
+- New workspace crate `local-ipc` (0.1.0): the same-user local-socket discipline (private
+  0700 directory, 0600 socket with inode-scoped cleanup, peer-uid check, random token,
+  nonblocking connect) shared by fux and zor with no wire, path, permission, limit or
+  error-text change. fux depends on it.
+- `docs/design.md` states what fux promises automation consumers and what zor consumes.
+- zor 0.3.0 ships from this workspace, with its PTY wrapper behind the off-by-default `wrap`
+  feature (`zor wrap <command>`); see `crates/zor/CHANGELOG.md`.
+
 ## 0.7.0 - 2026-09-09
 
 Native capabilities on main, a release performance pass, and zor in the same repository.

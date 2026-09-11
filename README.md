@@ -139,9 +139,10 @@ second, and reap it. Workspace kill and server shutdown do the same for every pa
 Everything works without a terminal. `fux workspace new NAME` starts the server and a workspace;
 `fux [NAME] <command>` drives it over the control protocol (`new`, `split`, `focus`, `kill`,
 `resize`, `send-keys`, `capture`, `list`, `tab`, `subscribe`, `info`, `wait`). Panes carry a
-monotonic output sequence, so `fux [NAME] capture PANE --rows --since SEQ` returns only the rows
-that changed. `fux [NAME] wait PANE pattern REGEX` (or `quiet MS`, `exit`, `seq N`) blocks
-server-side until the condition holds instead of polling. `fux [NAME] new --env K=V --rows R
+monotonic output sequence reported by `list`, `capture` and `pane.output` events;
+`fux [NAME] capture PANE --cells` returns the visible grid cell by cell with the same coherent
+metadata as the text form. `fux [NAME] wait PANE exit` (or `seq N`) blocks server-side until
+the condition holds instead of polling. `fux [NAME] new --env K=V --rows R
 --columns C -- CMD` sets a pane's environment and headless size, and `fux [NAME] send-keys PANE
 --keys "C-c Enter"` sends named keys.
 

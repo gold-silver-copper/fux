@@ -102,7 +102,11 @@ pub(super) fn run(binary: &Path, zor: &Path) -> Result<()> {
             Ok(capture()?.contains("READY").then_some(()))
         })?;
         until(Duration::from_secs(10), || {
-            Ok((pane()?["progress"] == json!([1, 50])).then_some(()))
+            let capture = completed(
+                &control,
+                json!({"command":"capture","id":1,"pane":1,"max_bytes":4096}),
+            )?;
+            Ok((capture["progress"] == json!([1, 50])).then_some(()))
         })?;
         let request = json!({"command":"capture","id":3,"instance":instance,"pane":1,"attrs":true,"scrollback":0,"max_bytes":131072});
         let original = completed(&control, request.clone())?;
@@ -333,16 +337,6 @@ pub(super) fn run(binary: &Path, zor: &Path) -> Result<()> {
         )?;
         snapshot(watching, |v| default_state(v) == Some("unknown"))?;
         ensure!(pane()?["pid"] == *pid, "unknown restarted pane");
-        let mut c = base_command();
-        c.args(["--title","never","--","/bin/sh","-c","printf '\\033]2;OBS_IDLE\\007'; sleep .3; printf '\\033[2J\\033[HUNKNOWN\\033]2;\\007'; sleep .3"]);
-        let wrapper = process::output(c, Duration::from_secs(5), 1024 * 1024)?;
-        let output = String::from_utf8_lossy(&wrapper.stdout);
-        ensure!(
-            wrapper.status.success()
-                && output.contains("state=blocked")
-                && output.contains("state=none"),
-            "wrapper state clearing: {output}"
-        );
         Ok(())
     })();
     let mut errors = stop_owned(&mut [

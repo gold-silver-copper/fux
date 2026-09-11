@@ -1,42 +1,19 @@
 //! Private local sockets: owned directories, mode 0600 inodes, inode-aware cleanup and kernel peer
-//! credential checks. The operating-system user is the authorization boundary.
+//! credential checks over `local_ipc`. The operating-system user is the authorization boundary;
+//! stale-socket recovery, the control preface and deadline policy are fux's own.
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::control::CONTROL_PREFACE;
 
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(2);
 
-#[derive(Debug)]
-pub struct BoundSocket {
-    listener: UnixListener,
-    path: PathBuf,
-    device: u64,
-    inode: u64,
-}
-
-impl BoundSocket {
-    pub fn listener(&self) -> &UnixListener {
-        &self.listener
-    }
-}
-
-impl Drop for BoundSocket {
-    fn drop(&mut self) {
-        if let Ok(metadata) = fs::symlink_metadata(&self.path)
-            && metadata.file_type().is_socket()
-            && metadata.dev() == self.device
-            && metadata.ino() == self.inode
-        {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
+pub use local_ipc::BoundSocket;
 
 /// Binds an owned local service socket below a private directory. Startup must be serialized by
 /// the caller's lock; stale sockets are replaced only when refused and owner-matching.
@@ -47,44 +24,19 @@ pub fn bind_local_socket(path: &Path) -> io::Result<BoundSocket> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket has no parent"))?;
     ensure_private_directory(directory)?;
     remove_stale_socket(&path)?;
-    let listener = UnixListener::bind(&path)?;
-    let metadata = fs::symlink_metadata(&path)?;
-    let bound = BoundSocket {
-        listener,
-        path,
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    };
-    fs::set_permissions(&bound.path, fs::Permissions::from_mode(0o600))?;
-    Ok(bound)
+    BoundSocket::bind(&path)
 }
 
 /// Requires (creating it when absent) a real directory owned by this user with no group or
 /// world access.
 pub fn ensure_private_directory(directory: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(directory) {
-        Ok(metadata) => {
-            if !metadata.is_dir()
-                || metadata.file_type().is_symlink()
-                || metadata.permissions().mode() & 0o077 != 0
-                || metadata.uid() != nix::unistd::geteuid().as_raw()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "fux runtime directory must be a private real directory owned by this user",
-                ));
-            }
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            use std::os::unix::fs::DirBuilderExt as _;
-            fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(directory)?;
-        }
-        Err(error) => return Err(error),
-    }
-    Ok(())
+    local_ipc::ensure_private_directory(directory).map_err(|error| match error {
+        local_ipc::DirectoryError::Unsafe => io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "fux runtime directory must be a private real directory owned by this user",
+        ),
+        local_ipc::DirectoryError::Io(error) => error,
+    })
 }
 
 fn remove_stale_socket(path: &Path) -> io::Result<()> {
@@ -137,36 +89,10 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
 
 /// Authenticates a connected peer through kernel-supplied credentials.
 pub fn authorize_peer(stream: &UnixStream) -> io::Result<()> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let uid =
-        nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)?.uid();
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    let uid = nix::unistd::getpeereid(stream)?.0.as_raw();
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    )))]
-    let uid = {
-        let _ = stream;
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "OS peer credentials unavailable",
-        ));
-    };
-    authorize_uid(uid, nix::unistd::geteuid().as_raw())
+    authorize_uid(
+        local_ipc::peer_uid(stream)?,
+        nix::unistd::geteuid().as_raw(),
+    )
 }
 
 fn authorize_uid(peer: u32, owner: u32) -> io::Result<()> {
@@ -210,9 +136,7 @@ pub fn check_private_socket_path(path: &Path) -> io::Result<()> {
 
 /// Connect without letting a saturated local listener outlive the caller's deadline.
 pub fn connect_local(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
-    use nix::fcntl::{FcntlArg, FdFlag, OFlag, fcntl};
-    use nix::sys::socket::{AddressFamily, SockFlag, SockType, UnixAddr, sockopt};
-    use std::os::fd::{AsFd, AsRawFd};
+    use std::os::fd::AsFd;
     let remaining = || {
         deadline
             .checked_duration_since(Instant::now())
@@ -220,21 +144,13 @@ pub fn connect_local(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
             .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
     };
     remaining()?;
-    let fd = nix::sys::socket::socket(
-        AddressFamily::Unix,
-        SockType::Stream,
-        SockFlag::empty(),
-        None,
-    )?;
-    fcntl(&fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
-    fcntl(&fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))?;
-    match nix::sys::socket::connect(fd.as_raw_fd(), &UnixAddr::new(path)?) {
-        Ok(()) => {}
-        Err(nix::errno::Errno::EINPROGRESS) => loop {
+    let connecting = local_ipc::Connecting::start(path)?;
+    if connecting.pending() {
+        loop {
             let timeout =
                 u16::try_from(remaining()?.as_millis().clamp(1, 2000)).map_err(io::Error::other)?;
             let mut polls = [nix::poll::PollFd::new(
-                fd.as_fd(),
+                connecting.as_fd(),
                 nix::poll::PollFlags::POLLOUT,
             )];
             match nix::poll::poll(&mut polls, timeout) {
@@ -242,18 +158,12 @@ pub fn connect_local(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
                 Ok(_) => {}
                 Err(error) => return Err(error.into()),
             }
-            let error = nix::sys::socket::getsockopt(&fd, sockopt::SocketError)?;
-            if error != 0 {
-                return Err(io::Error::from_raw_os_error(error));
-            }
+            connecting.confirm()?;
             break;
-        },
-        Err(error) => return Err(error.into()),
+        }
     }
     remaining()?;
-    let stream = UnixStream::from(fd);
-    stream.set_nonblocking(false)?;
-    Ok(stream)
+    connecting.finish()
 }
 
 /// Write with one wall-clock deadline, even when a peer drains only a few bytes at a time.

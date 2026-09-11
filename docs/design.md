@@ -12,9 +12,9 @@ schemas.
 
 | Project | Responsibility | Boundary |
 |---|---|---|
-| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment and control protocols over private Unix sockets |
+| fux | PTYs and process groups, terminal emulation and bounded history, workspaces/tabs/splits, viewers, commands, configuration | attachment and control protocols over private Unix sockets. To automation consumers fux promises: coherent conditional capture (`text` and `cells` forms from one read, with `revision`, `seq`, `input_sequence`, title and OSC 9;4 progress), input reservation with receipts (`input-reserve`/`input-submit`/`input-status`), an event log with cursors and explicit gaps (`events`, `subscribe`), `wait` on `exit`/`seq`, and retained final records (manager `final`, which `fux run` reads) |
 | koh | identities, authorization, encryption, discovery, relays, reconnect | authenticated gateway carrying the opaque attachment stream to a private local socket |
-| zor | agent detection, rules, state machine, presentation | `zor observe` consuming `list`/`capture` over the control socket |
+| zor | agent detection, rules, state machine, presentation, task/check policy | consumes `list`, `capture` (`cells`), `split`, `kill`, `focus`, `subscribe`/`events`, `input-reserve`/`input-submit`/`input-status` over the control socket and `final` over the manager socket; screen rules (patterns, quiet windows, progress interpretation) are evaluated in zor on captured cells |
 
 ## Processes and sockets
 

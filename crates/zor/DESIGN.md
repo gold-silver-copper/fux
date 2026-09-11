@@ -20,7 +20,7 @@ Detection is a pure function of one pane's byte stream plus its child process tr
 nothing with layout, transport, or control. Kept inside fux it is useful only to fux users; as its
 own binary it is useful the day it compiles:
 
-- `zor -- claude` under tmux shows state in the window title through tmux's title passthrough.
+- `zor wrap -- claude` under tmux shows state in the window title through tmux's title passthrough.
 - `koh connect` on Termux with `--on-bell` already notifies on the bell; with the wrapper the
   title carries the state glyph too, with no change to koh.
 - A shell script can read the event line stream and do anything.
@@ -29,26 +29,32 @@ It also isolates the part of the system that changes most. Agents update their U
 weeks; the rule set will churn. Releasing that churn on its own cadence keeps fux releases about
 fux.
 
-The cost is one extra process and one extra `vt100::Screen` per pane. vt100 is a few hundred
-kilobytes of state at 200×50 and parses at memory speed; the process is a pty passthrough that
-sleeps on two fds. Both are cheap enough that fux wraps every pane, not only agent panes, so
+The cost is one extra process per pane, a pty passthrough that sleeps on two fds. Standalone,
+the wrapper also keeps one `vt100::Screen` per pane, a few hundred kilobytes of state at 200×50
+that parses at memory speed. Under fux there is no second emulator: zor asks fux for the pane's
+cells (`capture` with `format:"cells"`) and evaluates rules on the grid fux already keeps, so
 detection is a property of the pane and not of how the user typed the command.
 
 ---
 
 ## Surface
 
+The wrapper is the `zor wrap` subcommand, compiled only with the off-by-default `wrap` Cargo
+feature (`cargo install zor --features wrap`). A default `zor` build observes fux panes, runs
+the service and the durable task CLI, and has no `wrap` subcommand at all. There is no bare
+`zor <command>` form; `--rules` and `--agent` are zor's global flags and precede `wrap`.
+
 ```sh
-zor [options] [--] <command> [args…]    # run <command> in a pty; default: $SHELL -l
-zor --events <path> …                   # also write event lines to a unix socket or fifo
-zor --events - …                        # …or to fd 3 (stdout is the pty's)
-zor --title never|prefix|replace …      # how to touch OSC 0/2 (default: prefix)
-zor --no-osc …                          # never emit the state OSC (title only)
-zor --rules <dir> …                     # extra rule files; later files win on the same agent
-zor --agent <id> …                      # skip identification, force one rule set
-zor --debug …                           # dump matched rules to stderr on each change
-zor check <fixture.txt> [--agent id]    # evaluate one captured screen, print the verdict
-zor agents                              # list the bundled rule sets and their versions
+zor wrap [options] [--] <command> [args…]  # run <command> in a pty; default: $SHELL -l
+zor wrap --events <path> …                 # also write event lines to a unix socket or fifo
+zor wrap --events - …                      # …or to fd 3 (stdout is the pty's)
+zor wrap --title never|prefix|replace …    # how to touch OSC 0/2 (default: prefix)
+zor wrap --no-osc …                        # never emit the state OSC (title only)
+zor --rules <dir> wrap …                   # extra rule files; later files win on the same agent
+zor --agent <id> wrap …                    # skip identification, force one rule set
+zor wrap --debug …                         # dump matched rules to stderr on each change
+zor check <fixture.txt> [--agent id]       # evaluate one captured screen, print the verdict
+zor agents                                 # list the bundled rule sets and their versions
 ```
 
 Everything not listed passes through untouched. The wrapper is transparent to the program inside:
@@ -81,14 +87,15 @@ Four modules, each with one job and a test suite that does not need the others:
 
 | Module | Job | Depends on |
 |---|---|---|
-| `pty` | spawn, passthrough, resize, exit status | portable-pty, libc |
-| `screen` | one `vt100::Screen` plus title, bell count, OSC 9;4, per-drain change flag | vt100 |
-| `rules` | region extraction over a `ScreenView`, rule evaluation, agent identification | regex, serde, toml |
+| `pty` (feature `wrap`) | spawn, passthrough, resize, exit status | portable-pty, libc |
+| `screen` (feature `wrap`) | one `vt100::Screen` plus title, bell count, OSC 9;4, per-drain change flag | vt100 |
+| `rules` | region extraction over a `ScreenView` (the wrapper's screen, or `Captured` built from a fux cells capture), rule evaluation, agent identification | regex, serde, toml |
 | `state` | hysteresis machine, emitters | nothing |
 
 koh's `terminal::ServerTerminal` already does what `screen` needs (callbacks for title, bell,
 progress, unhandled OSC), but it is not on koh's stable surface and pulling koh pulls iroh. The
-wrapper depends on vt100 directly and reimplements the eighty lines of callbacks. The
+wrapper depends on vt100 directly and reimplements the eighty lines of callbacks; the `zor`
+crate itself has no terminal emulator and never re-parses fux's captures. The
 `ScreenView` trait is the same shape as koh's `predict::ScreenView` so a future shared crate is a
 move, not a rewrite.
 
@@ -108,7 +115,7 @@ touched it and prints nothing else.
 
 ### Identification: the process tree, not the command line
 
-`zor -- claude` knows the agent. `zor` wrapping a shell does not, and must watch for one. Two
+`zor wrap -- claude` knows the agent. `zor wrap` wrapping a shell does not, and must watch for one. Two
 lookups, at different costs:
 
 - **Foreground pgid, every tick, cheap.** The child shell's controlling-terminal foreground group:
@@ -345,7 +352,7 @@ asserts the bytes reaching stdout are identical apart from the wrapper's own OSC
 
 ## What fux does with it
 
-- Spawns every pane as `zor --title never -- $SHELL` (or the configured default command). fux
+- Spawns every pane as `zor wrap --title never -- $SHELL` (or the configured default command). fux
   draws its own status, so it does not want the title touched.
 - Reads OSC 7877 from `take_unhandled_oscs()` on each pane drain and sets the pane's agent state
   in `WorkspaceState`.
@@ -353,7 +360,7 @@ asserts the bytes reaching stdout are identical apart from the wrapper's own OSC
 - Fires its notifier on transitions into **blocked** and **idle**, as before.
 - Nothing else. fux carries no rules, no regex, no hysteresis, no process-tree code.
 
-A user running plain koh on a phone runs `zor -- claude` on the host and gets the title glyph in
+A user running plain koh on a phone runs `zor wrap -- claude` on the host and gets the title glyph in
 koh's status line and the bell hook as before.
 
 ---
@@ -367,17 +374,19 @@ in ways the user blames on the program. **Mitigation:** the wrapper never buffer
 first, parse a copy), never answers queries, and inserts its own bytes only when vt100 reports the
 parser is in ground state. The passthrough test runs the vttest-style corpus through it.
 
-### Double emulation cost — *bounded*
+### Double emulation cost — *removed*
 
-Two vt100 screens per pane under fux. **Mitigation:** measured with fux's chaos harness at 40
-panes before v1. The screen cannot be shrunk below the pane's rows plus an equal scrollback, since
-the detection window reaches into scrollback; a 200×50 vt100 screen is under a megabyte.
+Under fux, zor observes through `capture` with `format:"cells"`: fux's retained grid arrives as
+run-length wire cells with cursor, title, progress and revision, and `rules::view::Captured`
+expands them into the same right-trimmed window the wrapper derives from its own screen. No
+vt100 parser runs on fux captures, and OSC 9;4 progress is parsed once, in fux. The wrapper's
+`vt100::Screen` exists only standalone, where nothing else has emulated the bytes.
 
 ### Process-tree lookup on macOS — *reimplemented, not copied*
 
 `proc_listpids` and `KERN_PROCARGS2` are unpleasant. herdr's `platform/macos.rs` shows what works;
 the wrapper writes its own with the same syscalls. Failure degrades to identification by the
-command line given to `zor`, so `zor -- claude` always works.
+command line given to `zor wrap`, so `zor wrap -- claude` always works.
 
 ### The OSC number — *pick once*
 
@@ -428,8 +437,8 @@ agent, zor accepts 21337 as a self-report alongside 7877 and the contract docume
 
 ## Decisions
 
-- One binary, one crate, pure Rust, MIT. Depends on vt100, portable-pty, regex, serde, toml,
-  libc. Not on koh.
+- Pure Rust, MIT. `zor` depends on portable-pty, regex, serde, toml, libc; only the `wrap`
+  feature depends on vt100. Not on koh.
 - Passthrough first: write before parse, never answer queries, insert only in ground state.
 - Wrap the shell, identify by process tree with herdr's normalisation and scoring; `ZOR_AGENT`
   in a process environment and `--agent` short-circuit it.

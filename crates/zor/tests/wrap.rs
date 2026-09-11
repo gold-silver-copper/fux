@@ -1,5 +1,7 @@
-#![cfg(feature = "cli")]
+#![cfg(feature = "wrap")]
 #![allow(clippy::indexing_slicing)]
+
+// `zor wrap <command>`: PTY passthrough, event and lifecycle contracts of the wrapper.
 
 use std::{
     fs,
@@ -29,12 +31,13 @@ fn lifecycle_events_follow_the_tagged_json_contract() -> Result<(), Box<dyn std:
     });
     let output = Command::new(env!("CARGO_BIN_EXE_zor"))
         .args([
-            "--events",
-            socket.to_str().ok_or("non-utf8 socket")?,
             "--rules",
             root.join("rules").to_str().ok_or("non-utf8 rules")?,
             "--agent",
             "test",
+            "wrap",
+            "--events",
+            socket.to_str().ok_or("non-utf8 socket")?,
             "--title",
             "never",
             "--",
@@ -74,6 +77,7 @@ fn child_control_bytes_are_forwarded_exactly() -> Result<(), Box<dyn std::error:
     let expected = "\x1b[31m\x1b]2;title\x07\x1b]9;4;3;0\x1b\\\x1bPdata\x1b\\\x1b[c";
     let output = Command::new(env!("CARGO_BIN_EXE_zor"))
         .args([
+            "wrap",
             "--title",
             "never",
             "--",
@@ -94,6 +98,7 @@ fn terminal_response_reaches_child_stdin() -> Result<(), Box<dyn std::error::Err
     // Phase Z §5: DA responses from the outer terminal pass to the child unchanged.
     let mut child = Command::new(env!("CARGO_BIN_EXE_zor"))
         .args([
+            "wrap",
             "--title",
             "never",
             "--",
@@ -133,6 +138,7 @@ fn outer_pty_resize_reaches_the_wrapped_child_terminal() -> Result<(), Box<dyn s
     })?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_zor"));
     command.args([
+        "wrap",
         "--title",
         "never",
         "--",
@@ -178,6 +184,7 @@ fn split_control_string_is_never_interleaved() -> Result<(), Box<dyn std::error:
     // Phase Z §5: a control string split across writes remains byte-identical.
     let output = Command::new(env!("CARGO_BIN_EXE_zor"))
         .args([
+            "wrap",
             "--title",
             "never",
             "--",
@@ -195,12 +202,12 @@ fn child_exit_status_is_propagated() -> Result<(), Box<dyn std::error::Error>> {
     // Phase Z §5: ordinary and signal-style child statuses become zor's status.
     for code in [0, 1, 7] {
         let output = Command::new(env!("CARGO_BIN_EXE_zor"))
-            .args(["--", "/bin/sh", "-c", &format!("exit {code}")])
+            .args(["wrap", "--", "/bin/sh", "-c", &format!("exit {code}")])
             .output()?;
         assert_eq!(output.status.code(), Some(code));
     }
     let output = Command::new(env!("CARGO_BIN_EXE_zor"))
-        .args(["--", "/bin/sh", "-c", "kill -TERM $$"])
+        .args(["wrap", "--", "/bin/sh", "-c", "kill -TERM $$"])
         .output()?;
     assert_eq!(output.status.code(), Some(143));
     Ok(())
@@ -211,13 +218,13 @@ fn nested_wrapper_uses_transparent_execution() -> Result<(), Box<dyn std::error:
     // Phase Z §5: ZOR_PID avoids a second PTY/emulator layer.
     let output = Command::new(env!("CARGO_BIN_EXE_zor"))
         .env("ZOR_PID", "1")
-        .args(["--", "/bin/sh", "-c", "printf nested; exit 9"])
+        .args(["wrap", "--", "/bin/sh", "-c", "printf nested; exit 9"])
         .output()?;
     assert_eq!(output.stdout, b"nested");
     assert_eq!(output.status.code(), Some(9));
     let output = Command::new(env!("CARGO_BIN_EXE_zor"))
         .env("ZOR_PID", "1")
-        .args(["--", "/bin/sh", "-c", "kill -TERM $$"])
+        .args(["wrap", "--", "/bin/sh", "-c", "kill -TERM $$"])
         .output()?;
     assert_eq!(output.status.code(), Some(143));
     Ok(())
@@ -228,6 +235,7 @@ fn wrapper_signal_reaches_the_foreground_child_group() -> Result<(), Box<dyn std
     // Phase Z §4-5: termination targets the detected foreground process group.
     let mut child = Command::new(env!("CARGO_BIN_EXE_zor"))
         .args([
+            "wrap",
             "--title",
             "never",
             "--",
@@ -260,6 +268,7 @@ fn termination_reaches_child_while_wrapper_stdout_pipe_is_full()
     let marker = root.join("delivered");
     let mut child = Command::new(env!("CARGO_BIN_EXE_zor"))
         .args([
+            "wrap",
             "--title",
             "never",
             "--",

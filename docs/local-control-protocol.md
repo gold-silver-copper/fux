@@ -41,7 +41,7 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 | `kill` | `pane` | unit (the pane leaves the layout now; `pane.closed` follows the exit report) |
 | `resize` | `pane`, `delta` (non-zero) | unit |
 | `send-keys` | `pane`, `keys` (at most 64 KiB), `notation?` (`escapes` default, or `keys`) | unit |
-| `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows), `max_bytes` (1–131072), `format?` (`text` default, `rows`), `since?` (grid sequence; `rows` only, no scrollback), `if_revision?` (text only) | coherent `capture`, or `rows` (below) |
+| `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows; `text` only), `max_bytes` (1–131072), `format?` (`text` default or `cells`), `if_revision?` | coherent `capture` or `cells` (below) |
 | `list` | | `workspaces[]` |
 | `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{…}` |
 | `wait` | `pane`, `until`, `timeout_ms` (1–300000) | `waited`: `fired`, `seq`, `exit_status` |
@@ -58,7 +58,7 @@ Replies are `{"status":"completed","id":N,"result":{...}}`, `{"status":"failed",
 `{"status":"accepted","id":N}` for subscriptions.
 
 Listings carry stable identities: `instance`, `workspaces[].{event_cursor,name,focused,viewers,tabs[]}`, `tabs[].{id,index,
-name,focused,panes[]}`, `panes[].{id,command,pid,cwd,title,progress,seq,revision,input_sequence,geometry,focused,
+name,focused,panes[]}`, `panes[].{id,command,pid,cwd,title,seq,revision,input_sequence,geometry,focused,
 cursor,modes,exit_status}`. Pane and tab ids are never reused during a server's lifetime; a request naming a
 closed id fails with `not-found` even if a replacement exists. Control clients act on the
 workspace's own selection, not on any viewer's, and `list`/`capture` never change focus,
@@ -85,6 +85,33 @@ unchanged response retain the cached truncation flag. Nonempty output conservati
 terminal revision even when the refreshed grid sequence does not change; actual resize also
 advances revision. Grid sequence, terminal revision, input sequence and replay cursor are
 separate contracts.
+
+`format: "cells"` returns the visible grid as cells instead of text, from the same single read
+of the pane: `seq`, `input_sequence`, `revision`, `rows`, `columns`, `cursor`, `title`,
+`progress`, `unchanged`, `truncated` and `lines`. A text capture and a cells capture served in
+the same step report the same `revision`, `seq` and `input_sequence`, so a consumer can
+evaluate screen rules on the cells without re-emulating the text. Each line carries `row`,
+`wrapped` and `cells` in the viewer's wire encoding: `{"text":"a"}` is a text cell, `{}` a
+blank, `{"run":N}` `N` equal blanks, `kind` is spelled out only for `wide-leading` and
+`wide-continuation`, and `style` (`foreground`, `background`, `bold`, `dim`, `italic`,
+`underline`, `inverse`) only when it is not the default; a line expands to exactly `columns`
+cells. `if_revision` behaves as for text: a matching revision returns the metadata with
+`unchanged: true` and no lines. `max_bytes` bounds the JSON encoding of `lines`: lines are
+kept whole, top to bottom, while the encoding stays within the bound; the rest are dropped and
+`truncated` is `true`. `scrollback` and `attrs` are text-form options and are `invalid-request`
+with `cells`.
+
+```json
+{"command":"capture","id":5,"pane":1,"max_bytes":65536,"format":"cells"}
+{"status":"completed","id":5,"result":{"kind":"cells","value":{"seq":12,"input_sequence":3,"revision":15,
+  "rows":2,"columns":8,"cursor":{"row":1,"column":0,"hidden":false},"title":"sh","progress":null,
+  "unchanged":false,"truncated":false,"lines":[
+    {"row":0,"wrapped":false,"cells":[{"text":"$"},{},{"text":"日","kind":"wide-leading","style":{"foreground":{"Indexed":1},
+      "background":"Default","bold":true,"dim":false,"italic":false,"underline":false,"inverse":false}},
+      {"kind":"wide-continuation","style":{"foreground":{"Indexed":1},"background":"Default","bold":true,"dim":false,
+      "italic":false,"underline":false,"inverse":false}},{"run":4}]},
+    {"row":1,"wrapped":false,"cells":[{"run":8}]}]}}}
+```
 
 Reserve input to obtain an operation and the pane's input sequence, then submit escaped keys
 using that operation. Intervening application input causes a conflict before first submission.
@@ -114,21 +141,9 @@ literal character; arrow and navigation keys send their normal-cursor-mode seque
 
 Every pane has an output sequence `seq`: a counter that advances once for each change an observer
 can see (visible rows, cursor, terminal modes, title or exit status), never for output that
-changes nothing. It is reported by `list`, by `capture` (the value the returned text or rows
-reflect) and by `pane.output` events, and a client that remembers the sequence it last read can
-ask for only what changed since:
-
-```json
-{"command":"capture","id":4,"pane":1,"max_bytes":65536,"format":"rows","since":17}
-{"status":"completed","id":4,"result":{"kind":"rows","value":{"seq":19,"cursor":{"row":3,"column":0,"hidden":false},
-  "rows":[{"row":2,"text":"$ make","wrapped":false},{"row":3,"text":"","wrapped":false}],"since_applied":true}}}
-```
-
-`rows` lists visible rows top to bottom with trailing blanks trimmed and wide characters as one
-entry; without `since` every visible row is listed and `since_applied` is `false`. A resize
-re-stamps every row, so the next `since` capture returns the whole screen. `since` with
-`scrollback` or with the `text` format is `invalid-request` (history rows carry no sequence), as
-is `attrs` with `rows`. `max_bytes` bounds the total row text; rows past it are dropped whole.
+changes nothing. It is reported by `list`, by `capture` (the value the returned text or cells
+reflect) and by `pane.output` events, so a client that remembers the sequence it last read can
+tell whether a capture is worth taking or `wait` for the sequence to move (below).
 The sequence is current at the moment of the reply: a hidden pane's screen is read when it is
 listed, captured or its output event is due, a shown pane's whenever a viewer's frame goes out.
 
@@ -138,20 +153,20 @@ listed, captured or its output event is due, a shown pane's whenever a viewer's 
 not poll. It is a server-side deadline, never a held thread, and the reply says which condition
 fired with the pane's current `seq` and `exit_status`:
 
-- `{"kind":"quiet","ms":M}` — no observable change (the output sequence did not advance) for `M` ms.
-- `{"kind":"pattern","regex":R}` — the visible screen's plain text matches `R` (a linear-time
-  regex, at most 512 bytes).
 - `{"kind":"exit"}` — the pane's process exits (the reply carries `exit_status`).
 - `{"kind":"seq","value":V}` — the pane's output sequence reaches `V`.
 
+Screen-content conditions (a pattern on the text, a quiet window) are consumer policy: take a
+`cells` or `text` capture when `seq` moves and evaluate the rule there.
+
 ```json
-{"command":"wait","id":8,"pane":1,"until":{"kind":"pattern","regex":"\\$ $"},"timeout_ms":10000}
-{"status":"completed","id":8,"result":{"kind":"waited","value":{"fired":"pattern","seq":31,"exit_status":null}}}
+{"command":"wait","id":8,"pane":1,"until":{"kind":"exit"},"timeout_ms":10000}
+{"status":"completed","id":8,"result":{"kind":"waited","value":{"fired":"exit","seq":31,"exit_status":0}}}
 ```
 
 A pane that closes fails every wait on it with `not-found`; a viewer that disconnects drops its
 waits. The timeout is a `failed` reply with code `timeout`, never a hang. A server holds at most
-1,024 pending waits, at most 64 on one pane; `timeout_ms` and `quiet` `ms` are 1–300000. A
+1,024 pending waits, at most 64 on one pane; `timeout_ms` is 1–300000. A
 viewer's waits are dropped when it detaches; a control-connection wait that outlives its client
 is bounded by its own timeout (there is no separate close signal on the control socket).
 
@@ -178,7 +193,8 @@ reconnect with the last accepted cursor to replay, subject to the same retention
 
 ## Terminal metadata and ownership
 
-fux exposes generic terminal title and progress metadata. Agent interpretation, provider
+fux exposes generic terminal title metadata in `list` and both capture forms, and OSC 9;4
+progress only through capture (`text` and `cells`). Agent interpretation, provider
 integration, task state, checks and verified results belong to zor. fux ignores OSC 7877
 agent reports and exposes no pane agent state or `pane.agent` event. Terminal output,
 input delivery and process exit are observations, not verified task completion.

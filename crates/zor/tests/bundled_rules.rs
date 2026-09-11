@@ -3,8 +3,57 @@
 use std::borrow::Cow;
 use zor::rules::{
     RuleState, evaluate, load,
-    view::{Progress, ScreenView},
+    view::{Captured, Progress, ScreenView},
 };
+
+/// Builds the `format:"cells"` capture fux would serve for a plain text fixture at this size:
+/// one text cell per character, rows wrapped at `columns` and the window ending at the last
+/// non-blank row, as the observer sees it.
+#[allow(clippy::expect_used)]
+fn captured(text: &str, rows: u16, columns: u16) -> Captured {
+    let width = usize::from(columns);
+    let mut wrapped: Vec<Vec<char>> = Vec::new();
+    for line in text.split('\n') {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            wrapped.push(Vec::new());
+        }
+        for chunk in chars.chunks(width) {
+            wrapped.push(chunk.to_vec());
+        }
+    }
+    while wrapped.last().is_some_and(Vec::is_empty) {
+        wrapped.pop();
+    }
+    let start = wrapped.len().saturating_sub(usize::from(rows));
+    let mut lines: Vec<serde_json::Value> = wrapped
+        .get(start..)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(row, chars)| {
+            let mut cells: Vec<serde_json::Value> = chars
+                .iter()
+                .map(|c| serde_json::json!({"text": c.to_string()}))
+                .collect();
+            if chars.len() < width {
+                cells.push(serde_json::json!({"run": width - chars.len()}));
+            }
+            serde_json::json!({"row": row, "wrapped": false, "cells": cells})
+        })
+        .collect();
+    while lines.len() < usize::from(rows) {
+        lines.push(
+            serde_json::json!({"row": lines.len(), "wrapped": false, "cells": [{"run": width}]}),
+        );
+    }
+    Captured::from_capture(&serde_json::json!({
+        "seq": 1, "input_sequence": 1, "revision": 1, "rows": rows, "columns": columns,
+        "cursor": {"row": 0, "column": 0, "hidden": false}, "title": "", "progress": null,
+        "unchanged": false, "truncated": false, "lines": lines,
+    }))
+    .expect("fixture capture is valid")
+}
 
 struct Screen(String);
 impl ScreenView for Screen {
@@ -46,8 +95,7 @@ fn real_codex_startup_and_derived_negative_screens() -> Result<(), Box<dyn std::
             .ok_or("text")?;
         // Feed visible rows through the production terminal model, as the observer does.
         // CRLF places each plain captured row at column zero; this is not an OSC transcript.
-        let mut screen = zor::screen::Screen::new(23, 80);
-        screen.process(text.replace('\n', "\r\n").as_bytes());
+        let screen = captured(text, 23, 80);
         let text = screen.text();
         let verdict = evaluate(&set, &screen);
         if text.is_empty() {
@@ -104,8 +152,7 @@ fn real_claude_startup_keeps_partial_and_derived_negative_screens_unknown()
             .ok_or("text")?;
         // Feed visible rows through the production terminal model, as the observer does.
         // CRLF places each plain captured row at column zero; this is not an OSC transcript.
-        let mut screen = zor::screen::Screen::new(23, 80);
-        screen.process(text.replace('\n', "\r\n").as_bytes());
+        let screen = captured(text, 23, 80);
         let text = screen.text();
         let verdict = evaluate(&set, &screen);
         assert_eq!(verdict.state, expected, "normalized screen: {text:?}");
@@ -167,8 +214,7 @@ fn real_opencode_startup_input_keeps_blank_and_changed_screens_unknown()
                 .and_then(serde_json::Value::as_str)
                 .ok_or("text")?;
             // As in the observer, normalize the actual captured rows through the terminal model.
-            let mut screen = zor::screen::Screen::new(23, 80);
-            screen.process(text.replace('\n', "\r\n").as_bytes());
+            let screen = captured(text, 23, 80);
             let text = screen.text();
             let verdict = evaluate(&set, &screen);
             if text.is_empty() {
@@ -255,8 +301,7 @@ fn real_resized_startup_screens_remain_explicitly_unknown() -> Result<(), Box<dy
                 .get("text")
                 .and_then(serde_json::Value::as_str)
                 .ok_or("text")?;
-            let mut screen = zor::screen::Screen::new(rows, columns);
-            screen.process(text.replace('\n', "\r\n").as_bytes());
+            let screen = captured(text, rows, columns);
             assert_eq!(
                 evaluate(&set, &screen).state,
                 RuleState::Unknown,
@@ -289,8 +334,7 @@ fn real_codex_authenticated_trust_working_and_response() -> Result<(), Box<dyn s
             .get("text")
             .and_then(serde_json::Value::as_str)
             .ok_or("text")?;
-        let mut screen = zor::screen::Screen::new(23, 80);
-        screen.process(text.replace('\n', "\r\n").as_bytes());
+        let screen = captured(text, 23, 80);
         let text = screen.text();
         let expected = if text.contains("Do you trust the contents of this directory?") {
             blocked += 1;
@@ -364,8 +408,7 @@ fn real_codex_unanswered_command_approval_is_blocked() -> Result<(), Box<dyn std
         .get("text")
         .and_then(serde_json::Value::as_str)
         .ok_or("text")?;
-    let mut screen = zor::screen::Screen::new(23, 80);
-    screen.process(text.replace('\n', "\r\n").as_bytes());
+    let screen = captured(text, 23, 80);
     let text = screen.text();
     let verdict = evaluate(&set, &screen);
     assert_eq!(verdict.state, RuleState::Blocked);
@@ -419,8 +462,7 @@ fn real_opencode_permission_and_question_are_passive_blockers()
             .pointer("/capture/text")
             .and_then(serde_json::Value::as_str)
             .ok_or("text")?;
-        let mut screen = zor::screen::Screen::new(23, 40);
-        screen.process(text.replace('\n', "\r\n").as_bytes());
+        let screen = captured(text, 23, 40);
         let text = screen.text();
         let verdict = evaluate(&set, &screen);
         assert_eq!(verdict.state, RuleState::Blocked);
@@ -467,8 +509,7 @@ fn real_claude_working_footer_does_not_turn_response_into_completion()
         if !text.contains("Sonnet 5 · API Usage Billing") {
             continue;
         }
-        let mut screen = zor::screen::Screen::new(23, 80);
-        screen.process(text.replace('\n', "\r\n").as_bytes());
+        let screen = captured(text, 23, 80);
         let text = screen.text();
         let expected = if text.contains("esc to interrupt") {
             working += 1;

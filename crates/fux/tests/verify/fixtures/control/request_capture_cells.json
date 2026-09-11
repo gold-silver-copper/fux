@@ -1,0 +1,9 @@
+{
+  "command": "capture",
+  "id": 5,
+  "instance": "srv-7f3a",
+  "pane": 1,
+  "max_bytes": 65536,
+  "format": "cells",
+  "if_revision": 14
+}

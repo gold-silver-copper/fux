@@ -685,7 +685,6 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             scrollback,
             max_bytes,
             format,
-            since,
             if_revision,
             ..
         } => {
@@ -709,20 +708,29 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
                                 input_sequence: component.input_sequence,
                             })
                         }
-                        control::CaptureFormat::Rows => {
-                            let grid = component.terminal.grid();
-                            let mut rows = grid.rows_since(since);
-                            // The byte bound counts row text; rows past it are dropped whole.
-                            let mut bytes = 0_usize;
-                            rows.retain(|row| {
-                                bytes = bytes.saturating_add(row.text.len());
-                                bytes <= max_bytes
-                            });
-                            Ok(CommandResult::Rows {
+                        control::CaptureFormat::Cells => {
+                            let terminal = &component.terminal;
+                            let grid = terminal.grid();
+                            let revision = terminal.revision();
+                            let unchanged = if_revision == Some(revision);
+                            let (lines, truncated) = if unchanged {
+                                (Vec::new(), false)
+                            } else {
+                                grid.capture_lines(max_bytes)
+                            };
+                            let (rows, columns) = grid.size();
+                            Ok(CommandResult::Cells {
                                 seq,
-                                cursor: grid.cursor(),
+                                input_sequence: component.input_sequence,
+                                revision,
                                 rows,
-                                since_applied: since.is_some(),
+                                columns,
+                                cursor: grid.cursor(),
+                                title: terminal.title().to_owned(),
+                                progress: terminal.progress().map(|p| (p.state, p.percent)),
+                                unchanged,
+                                truncated,
+                                lines,
                             })
                         }
                     }
@@ -802,11 +810,8 @@ fn register_wait(
             "too many pending waits on this pane",
         ));
     }
+    debug_assert!(world.get::<Pane>(entity).is_some());
     let now = world.resource::<Clock>().now_ms;
-    let seq = world
-        .get::<Pane>(entity)
-        .map(|component| component.terminal.grid().seq())
-        .unwrap_or(0);
     world
         .resource_mut::<crate::ecs::resources::Waits>()
         .pending
@@ -817,8 +822,6 @@ fn register_wait(
             workspace: context.workspace,
             until,
             timeout_at_ms: now.saturating_add(timeout_ms),
-            last_seq: seq,
-            last_change_ms: now,
         });
     Ok(CommandResult::Pane { pane: PaneId(0) })
 }
@@ -830,7 +833,7 @@ pub fn resolve_waits(world: &mut World) {
     let pending = std::mem::take(&mut world.resource_mut::<crate::ecs::resources::Waits>().pending);
     let now = world.resource::<Clock>().now_ms;
     let mut keep = Vec::with_capacity(pending.len());
-    for mut wait in pending {
+    for wait in pending {
         // Drop a wait whose viewer connection is gone.
         if let Requester::Viewer(id) = wait.requester
             && viewer_entity(world, id).is_none()
@@ -859,29 +862,9 @@ pub fn resolve_waits(world: &mut World) {
         };
         let seq = pane.terminal.grid().seq();
         let exit_status = pane.state.exit_code();
-        if seq != wait.last_seq {
-            wait.last_seq = seq;
-            wait.last_change_ms = now;
-        }
         let fired = match &wait.until {
             control::WaitUntil::Exit => exit_status.is_some().then_some(control::WaitFired::Exit),
             control::WaitUntil::Seq { value } => (seq >= *value).then_some(control::WaitFired::Seq),
-            control::WaitUntil::Quiet { ms } => (now.saturating_sub(wait.last_change_ms) >= *ms)
-                .then_some(control::WaitFired::Quiet),
-            control::WaitUntil::Pattern { regex } => {
-                let text = pane
-                    .terminal
-                    .grid()
-                    .rows_since(None)
-                    .iter()
-                    .map(|row| row.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                regex_lite::Regex::new(regex)
-                    .ok()
-                    .filter(|re| re.is_match(&text))
-                    .map(|_| control::WaitFired::Pattern)
-            }
         };
         if let Some(fired) = fired {
             reply(
@@ -906,12 +889,10 @@ pub fn resolve_waits(world: &mut World) {
             );
             continue;
         }
-        // Propose the next time this wait might fire: its timeout, and for quiet its window end.
-        let mut next = wait.timeout_at_ms;
-        if let control::WaitUntil::Quiet { ms } = &wait.until {
-            next = next.min(wait.last_change_ms.saturating_add(*ms));
-        }
-        world.resource_mut::<Deadlines>().propose(next);
+        // Exit and seq fire from pane changes; the clock only has to wake the timeout.
+        world
+            .resource_mut::<Deadlines>()
+            .propose(wait.timeout_at_ms);
         keep.push(wait);
     }
     world.resource_mut::<crate::ecs::resources::Waits>().pending = keep;
@@ -1549,10 +1530,6 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
                         pid: component.state.pid(),
                         cwd: component.cwd.clone(),
                         title: component.published_title.clone(),
-                        progress: component
-                            .terminal
-                            .progress()
-                            .map(|progress| (progress.state, progress.percent)),
                         geometry: component.rect,
                         focused: focused_pane == Some(pane),
                         cursor: crate::view::Cursor {

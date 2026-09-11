@@ -3,9 +3,11 @@
 
 # zor
 
-`zor` owns agent observation and task coordination over fux's generic multiplexer API. It also
-provides an independent PTY wrapper that publishes observed agent state using OSC 7877.
-Its library can parse and format the wire protocol without default features or the CLI runtime.
+`zor` owns agent observation and task coordination over fux's generic multiplexer API.
+Its library can parse and format the OSC 7877 wire protocol without default features or the
+CLI runtime. The PTY wrapper that publishes observed agent state without fux is the
+`zor wrap <command>` subcommand behind the off-by-default `wrap` Cargo feature
+(`cargo install zor --features wrap`); a default build has no `wrap` subcommand.
 
 [Durable prompt groups](GROUPS.md) coordinate bounded admission and verified dependencies
 across existing managed tasks through explicit steps or opt-in `task group-run` service advancement. Agent orchestration
@@ -29,14 +31,8 @@ cargo install zor
 ## Usage
 
 ```text
-zor [options] [--] <command> [args…]    # default: $SHELL -l
-zor --events <path> …                   # unix socket or fifo event lines
-zor --events - …                        # event lines on fd 3
-zor --title never|prefix|replace …      # default: prefix
-zor --no-osc …                          # title updates only
 zor --rules <dir> …                     # later rule sets replace earlier ids
 zor --agent <id> …                      # force one rule set
-zor --debug …                           # diagnostics on stderr
 zor check <fixture.txt> [--agent id]
 zor agents
 zor serve [--directory path] [--runtime path]  # shared foreground observation service
@@ -70,15 +66,11 @@ Unmatched screens are unknown; no task completion is inferred. See the
 [coverage inventory](tests/fixtures/agents/README.md) before relying on detection.
 
 External input is bounded: zor loads at most 256 rule files, each at most 1 MiB, and accepts
-fixtures up to 4 MiB. SIGUSR1 captures are created exclusively with owner-only permissions.
-
-Everything else passes through untouched. Child output reaches stdout byte-for-byte before zor
-appends its own OSCs; stdin, window size (including pixels), signals, and exit status propagate to
-the child. zor does not set `TERM`, answer terminal queries, or implement keyboard protocols.
+fixtures up to 4 MiB.
 
 ```sh
-cargo run -- -- your-command
-cargo run --no-default-features --lib
+cargo run -- agents
+cargo run --features wrap -- wrap -- your-command   # PTY wrapper (feature `wrap`, off by default)
 ```
 
 See `DESIGN.md` for the architecture and full protocol contract.

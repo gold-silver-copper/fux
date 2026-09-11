@@ -22,10 +22,10 @@ an instance nonce and socket paths only; the protocols carry no version numbers.
   and write deadlines, 64 attachments per workspace, 64-message viewer outbox (slow viewers are
   disconnected, panes unaffected).
 - Control: 1 MiB frames, two-second preface deadline, 64 connections per workspace, 128 KiB
-  captures (text, or the total row text of a `rows` capture), 100 000 scrollback rows, 64 KiB
+  captures (text, or the JSON encoding of a `cells` capture's lines), 100 000 scrollback rows, 64 KiB
   `send-keys`, 128-byte labels, 32 event filters, 1024-event subscriber queues, 1024 pending
-  `wait`s per server and 64 per pane, `wait` timeout and quiet windows 1–300000 ms, 512-byte
-  `wait` regex patterns (matched in linear time), at most 8 stacked `send-keys` key modifiers. `info` reports these and the configured session
+  `wait`s per server and 64 per pane, `wait` timeouts 1–300000 ms, at most 8 stacked
+  `send-keys` key modifiers. `info` reports these and the configured session
   limits.
 - Session: 64 workspaces, 32 tabs and 128 panes per workspace, 512×512 pane cells, 256 queued
   viewer requests during a creation barrier, per-step ingest budgets (64 pane chunks of at most

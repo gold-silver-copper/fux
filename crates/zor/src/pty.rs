@@ -49,14 +49,14 @@ fn take_pending_signal(pending: &AtomicU64) -> Option<i32> {
     None
 }
 
+use crate::emit::{
+    events::{AgentLine, EventLine, ExitLine, Sink, encode, timestamp},
+    title::{Mode as TitleMode, Titles},
+};
+use crate::screen::Screen;
 use crate::{
-    emit::{
-        events::{AgentLine, EventLine, ExitLine, Sink, encode, timestamp},
-        title::{Mode as TitleMode, Titles},
-    },
     osc::Report,
     rules::{RuleSet, evaluate, view::ScreenView},
-    screen::Screen,
     state::{Config, Event, Machine},
 };
 
@@ -436,7 +436,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
             for payload in screen.take_observed_reports() {
                 if options.debug {
                     eprintln!(
-                        "zor: observed child OSC {}",
+                        "zor wrap: observed child OSC {}",
                         String::from_utf8_lossy(&payload)
                     );
                 }
@@ -463,7 +463,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
                 if options.debug
                     && let Some(value) = &evaluated
                 {
-                    eprintln!("zor: verdict {:?} rule={:?}", value.state, value.rule);
+                    eprintln!("zor wrap: verdict {:?} rule={:?}", value.state, value.rule);
                 }
                 let verdict = evaluated.as_ref().map(observation);
                 let events = machine.observe(
@@ -623,7 +623,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
     if options.debug
         && let Some(value) = sink
     {
-        eprintln!("zor: dropped event lines: {}", value.dropped);
+        eprintln!("zor wrap: dropped event lines: {}", value.dropped);
     }
     Ok(u8::try_from(code).unwrap_or(u8::MAX))
 }
@@ -717,8 +717,8 @@ fn write_fixture(screen: &Screen, agent: Option<&crate::osc::AgentId>) {
         screen.text()
     );
     match write_private_fixture(&path, body.as_bytes()) {
-        Ok(()) => eprintln!("zor: fixture written to {}", path.display()),
-        Err(error) => eprintln!("zor: failed to write fixture: {error}"),
+        Ok(()) => eprintln!("zor wrap: fixture written to {}", path.display()),
+        Err(error) => eprintln!("zor wrap: failed to write fixture: {error}"),
     }
 }
 
@@ -743,7 +743,7 @@ fn queue_events(
     use crate::rules::view::ScreenView;
     for event in events {
         if options.debug {
-            eprintln!("zor: machine event {event:?}");
+            eprintln!("zor wrap: machine event {event:?}");
         }
         if let Event::AgentFound { id, pid } = event {
             write_agent_event(sink, Some(id), Some(*pid));
