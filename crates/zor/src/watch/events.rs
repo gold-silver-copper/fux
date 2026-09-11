@@ -112,7 +112,10 @@ impl Peer {
             Ok(None)
         }
     }
-    fn event(&mut self, frame: Value) -> Result<()> {
+    /// Validates one frame and advances the cursor. Returns whether the event is one zor
+    /// observes; a kind this version does not know is ignored (fux may add event kinds), but
+    /// its cursor still counts toward continuity.
+    fn event(&mut self, frame: Value) -> Result<bool> {
         anyhow::ensure!(
             frame.get("id").and_then(Value::as_u64) == Some(1),
             "event subscription ID changed"
@@ -121,20 +124,17 @@ impl Peer {
             .get("event")
             .and_then(Value::as_str)
             .context("missing event type")?;
-        anyhow::ensure!(
-            matches!(
-                kind,
-                "pane.opened"
-                    | "pane.closed"
-                    | "pane.title"
-                    | "pane.output"
-                    | "tab.opened"
-                    | "tab.closed"
-                    | "client.attached"
-                    | "client.detached"
-                    | "workspace.changed"
-            ),
-            "unknown event type"
+        let observed = matches!(
+            kind,
+            "pane.opened"
+                | "pane.closed"
+                | "pane.title"
+                | "pane.output"
+                | "tab.opened"
+                | "tab.closed"
+                | "client.attached"
+                | "client.detached"
+                | "workspace.changed"
         );
         let cursor: Cursor =
             serde_json::from_value(frame.get("cursor").context("missing event cursor")?.clone())?;
@@ -144,7 +144,7 @@ impl Peer {
             "event cursor gap, duplicate or reordered frame"
         );
         self.boundary.cursor = cursor;
-        Ok(())
+        Ok(observed)
     }
 }
 
@@ -276,10 +276,11 @@ impl Events {
                             break;
                         }
                         if let Some(frame) = peer.frame()? {
-                            peer.event(frame)?;
-                            changed.entry(name.clone()).or_insert_with(|| {
-                                "workspace event; observation refresh pending".into()
-                            });
+                            if peer.event(frame)? {
+                                changed.entry(name.clone()).or_insert_with(|| {
+                                    "workspace event; observation refresh pending".into()
+                                });
+                            }
                         } else {
                             let n = peer.read()?;
                             bytes += n;
@@ -349,12 +350,28 @@ mod tests {
         for malformed in [
             json!({"id":2,"event":"workspace.changed","cursor":{"stream":7,"sequence":12}}),
             json!({"id":1,"event":"workspace.changed","cursor":{"stream":8,"sequence":12}}),
-            json!({"id":1,"event":"agent.done","cursor":{"stream":7,"sequence":12}}),
+            json!({"id":1,"cursor":{"stream":7,"sequence":12}}),
         ] {
             assert!(peer.event(malformed).is_err());
         }
         assert_eq!(peer.boundary.cursor.sequence, 11);
-        peer.event(event(12)).expect("correct event after refusal");
+        assert!(peer.event(event(12)).expect("correct event after refusal"));
+    }
+    #[test]
+    fn unknown_event_kinds_are_ignored_but_keep_continuity() {
+        let (mut peer, _writer) = peer();
+        assert!(peer.event(event(11)).expect("known"));
+        // A kind added by a newer fux is not an observation, and not a failure either.
+        let unknown = |sequence: u64| json!({"id":1,"event":"pane.future","cursor":{"stream":7,"sequence":sequence}});
+        assert!(!peer.event(unknown(12)).expect("unknown kind tolerated"));
+        assert_eq!(peer.boundary.cursor.sequence, 12);
+        // Its cursor still counts: a gap after it is a failure, and the next known event
+        // must follow it exactly.
+        assert!(peer.event(unknown(14)).is_err());
+        assert!(peer.event(event(12)).is_err());
+        assert!(peer.event(event(13)).expect("known after unknown"));
+        assert!(!peer.event(unknown(14)).expect("unknown again"));
+        assert_eq!(peer.boundary.cursor.sequence, 14);
     }
     #[test]
     fn frames_preserve_fragmentation_and_reject_oversize_or_malformed_json() {

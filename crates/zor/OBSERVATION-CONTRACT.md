@@ -103,8 +103,9 @@ Budget/capacity exhaustion is reported and unobserved identities are removed fro
 snapshot. Continuous watch and the service retain up to 64 same-user fux subscriptions,
 using each listing's incarnation and cursor as the replay boundary. Unfiltered events must
 advance by exactly one sequence in the same stream. EOF, gaps, duplicates, reordered cursors,
-unknown events, malformed or oversized frames discard continuity and require a fresh listing
-and subscription. They never infer an agent state or task outcome. The service marks affected
+malformed or oversized frames discard continuity and require a fresh listing and
+subscription. An event kind this zor does not know is ignored, not a failure: its cursor still
+counts toward continuity, so fux may add event kinds without breaking observation. They never infer an agent state or task outcome. The service marks affected
 observations unknown while refreshing and preserves their original evidence ages. Failure
 counts survive successful resynchronization; a new observer lifetime resets them.
 
