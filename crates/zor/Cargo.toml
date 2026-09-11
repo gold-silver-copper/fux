@@ -27,6 +27,9 @@ cli = [
     "dep:signal-hook",
     "dep:toml",
 ]
+# The PTY wrapper: `zor wrap <command>`. Off by default; needs the `cli` runtime plus a
+# terminal emulator for the wrapped child's screen.
+wrap = ["cli", "dep:vt100"]
 
 [dependencies]
 # Context-rich runtime errors.
@@ -40,7 +43,7 @@ local-ipc = { version = "0.1.0", path = "../local-ipc", optional = true }
 libc = { version = "0.2", optional = true }
 # Safe termios operations for raw-mode guards.
 nix = { version = "0.28", features = ["fs", "poll", "term", "socket", "user", "process", "signal", "time"], optional = true }
-# Terminal size type shared with the dashboard and zor-wrap.
+# Terminal size type shared with the dashboard and the wrapper.
 portable-pty = { version = "=0.9.0", optional = true }
 # Compiled screen-rule matchers.
 regex = { version = "1.11", optional = true }
@@ -55,6 +58,8 @@ sha2 = { version = "0.10", optional = true }
 signal-hook = { version = "0.3", optional = true }
 # Rule-file decoding.
 toml = { version = "0.9", optional = true }
+# Terminal emulation of the wrapped child's bytes for rule evaluation (`wrap` feature only).
+vt100 = { version = "=0.16.2", optional = true }
 
 [lib]
 doctest = false

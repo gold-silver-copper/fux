@@ -655,7 +655,9 @@
       "cargo",
       "clippy",
       "--manifest-path",
-      "crates/zor-wrap/Cargo.toml",
+      "crates/zor/Cargo.toml",
+      "--features",
+      "wrap",
       "--all-targets",
       "--locked",
       "--",
@@ -666,7 +668,9 @@
       "cargo",
       "test",
       "--manifest-path",
-      "crates/zor-wrap/Cargo.toml",
+      "crates/zor/Cargo.toml",
+      "--features",
+      "wrap",
       "--locked"
     ],
     [

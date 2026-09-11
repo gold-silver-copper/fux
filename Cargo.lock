@@ -2073,19 +2073,3 @@ dependencies = [
  "toml",
  "vt100",
 ]
-
-[[package]]
-name = "zor-wrap"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "libc",
- "nix 0.28.0",
- "portable-pty",
- "serde",
- "serde_json",
- "signal-hook",
- "vt100",
- "zor",
-]

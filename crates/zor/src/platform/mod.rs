@@ -10,6 +10,10 @@ pub mod usage;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(feature = "wrap")]
+mod wrap;
+#[cfg(feature = "wrap")]
+pub use wrap::{forward_signal, suspend_self};
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{process_children, process_identity};

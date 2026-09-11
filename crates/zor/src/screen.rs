@@ -1,5 +1,5 @@
+use crate::rules::view::{Progress, ScreenView};
 use std::borrow::Cow;
-use zor::rules::view::{Progress, ScreenView};
 
 const SCROLLBACK_LINES: usize = u16::MAX as usize;
 const MAX_TITLE_CHARS: usize = 256;

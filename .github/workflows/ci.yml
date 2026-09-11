@@ -41,7 +41,7 @@ jobs:
       - run: cargo +${{ matrix.rust }} clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} clippy -p zor --all-targets --all-features --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} clippy -p zor --all-targets --no-default-features --locked -- -D warnings
-      - run: cargo +${{ matrix.rust }} clippy -p zor-wrap --all-targets --locked -- -D warnings
+      - run: cargo +${{ matrix.rust }} clippy -p zor --features wrap --all-targets --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} clippy -p local-ipc --all-targets --locked -- -D warnings
       - name: Build the exact binaries for real-process scenarios
         run: cargo +${{ matrix.rust }} build --locked --bin fux --bin zor
@@ -70,7 +70,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: cargo +${{ matrix.rust }} test -p zor --no-default-features --locked
       - if: runner.os == 'Linux'
-        run: cargo +${{ matrix.rust }} test -p zor-wrap --locked
+        run: cargo +${{ matrix.rust }} test -p zor --features wrap --locked
       - run: cargo +${{ matrix.rust }} test -p local-ipc --locked
       - run: cargo +${{ matrix.rust }} check -p zor --no-default-features --all-targets --locked
       - run: cargo +${{ matrix.rust }} doc --workspace --no-deps --locked
@@ -81,8 +81,11 @@ jobs:
         run: |
           ! grep -rE 'crate::(pty|platform|emit)' crates/zor/src/rules
           ! grep -rE 'crate::(pty|platform|emit|screen|rules)' crates/zor/src/state.rs
-      - name: Check zor never reaches back into the standalone wrapper
-        run: '! grep -rE "zor_wrap|crate::(pty|emit)|ZOR_PID" crates/zor/src crates/zor/tests'
+      - name: Check the PTY wrapper is declared only behind the wrap feature
+        run: |
+          for module in emit pty screen; do
+            grep -B1 -E "^pub mod $module;$" crates/zor/src/lib.rs | grep -q '^#\[cfg(feature = "wrap")\]$'
+          done
       - run: cargo +${{ matrix.rust }} clippy --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --locked -- -D warnings
       - if: runner.os == 'Linux'
         run: cargo +${{ matrix.rust }} test --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --locked
@@ -140,5 +143,4 @@ jobs:
       # verify each against the freshly packaged dependency instead of the registry.
       - run: cargo package --locked -p fux -p local-ipc
       - run: cargo package --locked -p zor -p local-ipc
-      - run: cargo package --locked -p zor-wrap -p zor -p local-ipc
       - run: cargo package --locked -p local-ipc

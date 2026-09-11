@@ -4,8 +4,8 @@ Phase 0 was checked against koh 0.11.0 (`7d1f514436b5cf24d250c2fb1f14bd4d195c155
 vt100 0.16.2 on 2026-09-03.
 
 - The always-built library consists only of `osc`; all runtime code and dependencies are gated by
-  the default `cli` feature. The standalone PTY wrapper is the separate `zor-wrap` crate, which
-  depends on this library for rules, screen emulation, hysteresis and the wire format.
+  the default `cli` feature. The PTY wrapper (`zor wrap <command>`, modules `pty`, `emit`,
+  `screen`) is behind the off-by-default `wrap` feature, which alone pulls in `vt100`.
 - koh's OSC callback supplies parameters as byte slices. Consumers reconstruct the protocol input
   by joining those slices with `;`, so `parse` accepts both that payload and complete OSC frames.
 - vt100 exposes callbacks for unknown OSC sequences but no parser ground-state query. Phase Z must

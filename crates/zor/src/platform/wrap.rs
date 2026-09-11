@@ -1,7 +1,7 @@
 //! Process-group control the wrapper needs beyond zor's shared process helpers.
 #![allow(unsafe_code)]
+use super::Pid;
 use std::io;
-use zor::platform::Pid;
 
 pub fn forward_signal(pgid: Pid, signal: i32) -> io::Result<()> {
     unsafe {

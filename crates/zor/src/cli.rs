@@ -91,6 +91,34 @@ pub enum Action {
         #[arg(long)]
         pid: u32,
     },
+    /// Run a command in a pseudoterminal and publish its observed agent state as OSC 7877.
+    #[cfg(feature = "wrap")]
+    Wrap {
+        /// Also write event lines to a unix socket or fifo (`-` selects fd 3).
+        #[arg(long)]
+        events: Option<PathBuf>,
+        /// How to touch the child's OSC 0/2 window title.
+        #[arg(long, value_enum, default_value_t = TitleMode::Prefix)]
+        title: TitleMode,
+        /// Never emit the state OSC; title updates only.
+        #[arg(long)]
+        no_osc: bool,
+        /// Dump matched rules and machine events to stderr.
+        #[arg(long)]
+        debug: bool,
+        /// Command and arguments to wrap (default: `$SHELL -l`).
+        #[arg(allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+}
+
+#[cfg(feature = "wrap")]
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum TitleMode {
+    Never,
+    #[default]
+    Prefix,
+    Replace,
 }
 
 #[derive(Debug, Subcommand)]

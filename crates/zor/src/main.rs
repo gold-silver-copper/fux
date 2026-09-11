@@ -493,6 +493,60 @@ fn run(cli: cli::Cli) -> anyhow::Result<u8> {
             let sets = zor::rules::bundle::load_all(&cli.rules)?;
             check_fixture(&fixture, agent.as_deref(), &sets)
         }
+        #[cfg(feature = "wrap")]
+        cli::Action::Wrap {
+            events,
+            title,
+            no_osc,
+            debug,
+            command,
+        } => wrap(&cli.rules, cli.agent, events, title, no_osc, debug, command),
+    }
+}
+
+/// `zor wrap`: run one command in a pseudoterminal, forward every byte, and publish the
+/// observed agent state as OSC 7877. Under an outer wrapper (`ZOR_PID`) it only forwards.
+#[cfg(feature = "wrap")]
+fn wrap(
+    rules: &[std::path::PathBuf],
+    agent: Option<String>,
+    events: Option<std::path::PathBuf>,
+    title: cli::TitleMode,
+    no_osc: bool,
+    debug: bool,
+    command: Vec<String>,
+) -> anyhow::Result<u8> {
+    let sets = zor::rules::bundle::load_all(rules)?;
+    let program = command
+        .first()
+        .cloned()
+        .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned()));
+    let argv = if command.is_empty() {
+        vec!["-l".to_owned()]
+    } else {
+        command.into_iter().skip(1).collect()
+    };
+    let agent = agent.map(zor::osc::AgentId::new).transpose()?;
+    let title = match title {
+        cli::TitleMode::Never => zor::emit::title::Mode::Never,
+        cli::TitleMode::Prefix => zor::emit::title::Mode::Prefix,
+        cli::TitleMode::Replace => zor::emit::title::Mode::Replace,
+    };
+    if std::env::var_os("ZOR_PID").is_some() {
+        zor::pty::run_transparent(&program, &argv)
+    } else {
+        zor::pty::run(
+            &program,
+            &argv,
+            zor::pty::Options {
+                rule_sets: sets,
+                agent,
+                no_osc,
+                title,
+                events,
+                debug,
+            },
+        )
     }
 }
 

@@ -46,7 +46,7 @@ agent-specific interpretation rules. Consumers must not authorize access based o
 
 Without zor, panes continue normally. Invalid or unsupported reports are ignored by the consumer.
 Observer/rule/sink failures must preserve byte forwarding, terminal queries, resize, signals,
-exit status, and child cleanup. `zor-wrap`'s passthrough integration suite covers these contracts.
+exit status, and child cleanup. The `zor wrap` passthrough integration suite (feature `wrap`) covers these contracts.
 
 
 ## Local multiplexer observer
@@ -168,7 +168,7 @@ Agent IDs follow the OSC identifier contract. Aliases and effective process name
 Existing file-count, file-size, regex and gate-complexity limits still apply. Broad built-in
 agent coverage remains unfinished; the active Codex, Claude and OpenCode rules establish only their documented startup coverage.
 
-Unmatched screens evaluate to `unknown`, never implicit idle. Both `zor-wrap` and the single-pane
+Unmatched screens evaluate to `unknown`, never implicit idle. Both `zor wrap` and the single-pane
 observer clear an earlier state immediately by publishing OSC `state=none` (without an agent
 field, as required by that wire schema). Internal process identity is retained, and a subsequent
 matched rule can recover without rediscovery. Unknown cancels pending idle confirmation;

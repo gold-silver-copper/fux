@@ -5,8 +5,9 @@
 
 `zor` owns agent observation and task coordination over fux's generic multiplexer API.
 Its library can parse and format the OSC 7877 wire protocol without default features or the
-CLI runtime. The standalone PTY wrapper that publishes observed agent state without fux is the
-separate [`zor-wrap`](../zor-wrap/README.md) crate; `zor` itself never wraps a command.
+CLI runtime. The PTY wrapper that publishes observed agent state without fux is the
+`zor wrap <command>` subcommand behind the off-by-default `wrap` Cargo feature
+(`cargo install zor --features wrap`); a default build has no `wrap` subcommand.
 
 [Durable prompt groups](GROUPS.md) coordinate bounded admission and verified dependencies
 across existing managed tasks through explicit steps or opt-in `task group-run` service advancement. Agent orchestration
@@ -69,7 +70,7 @@ fixtures up to 4 MiB.
 
 ```sh
 cargo run -- agents
-cargo run -p zor-wrap -- -- your-command   # standalone wrapper, see crates/zor-wrap
+cargo run --features wrap -- wrap -- your-command   # PTY wrapper (feature `wrap`, off by default)
 ```
 
 See `DESIGN.md` for the architecture and full protocol contract.
