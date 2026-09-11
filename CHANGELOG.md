@@ -21,7 +21,7 @@ compatibility with 0.7.0 consumers is kept.
   nonblocking connect) shared by fux and zor with no wire, path, permission, limit or
   error-text change. fux depends on it.
 - `docs/design.md` states what fux promises automation consumers and what zor consumes.
-- zor 0.3.0 ships from this workspace, with its PTY wrapper behind the off-by-default `wrap`
+- zor 0.3.0 ships from this workspace, with its PTY wrapper behind the `wrap`
   feature (`zor wrap <command>`); see `crates/zor/CHANGELOG.md`.
 
 ## 0.7.0 - 2026-09-09

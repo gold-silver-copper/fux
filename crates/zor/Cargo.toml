@@ -1,6 +1,6 @@
 [package]
 name = "zor"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 rust-version = "1.91"
 license.workspace = true
@@ -11,7 +11,7 @@ documentation = "https://docs.rs/zor"
 readme = "README.md"
 
 [features]
-default = ["cli"]
+default = ["cli", "wrap"]
 cli = [
     "dep:anyhow",
     "dep:clap",

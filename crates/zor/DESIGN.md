@@ -39,8 +39,9 @@ detection is a property of the pane and not of how the user typed the command.
 
 ## Surface
 
-The wrapper is the `zor wrap` subcommand, compiled only with the off-by-default `wrap` Cargo
-feature (`cargo install zor --features wrap`). A default `zor` build observes fux panes, runs
+The wrapper is the `zor wrap` subcommand, compiled only with the `wrap` Cargo feature, which is
+on by default for `cargo install zor`; fux builds zor with `--no-default-features --features
+cli`, and that build observes fux panes, runs
 the service and the durable task CLI, and has no `wrap` subcommand at all. There is no bare
 `zor <command>` form; `--rules` and `--agent` are zor's global flags and precede `wrap`.
 
