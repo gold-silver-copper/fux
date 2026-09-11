@@ -15,7 +15,9 @@ Breaking release: zor is the agent layer only; it no longer emulates terminals o
 - Unknown fux event kinds are ignored instead of ending the subscription; their cursor still
   counts toward continuity.
 - The local-socket discipline of `zor serve` and the fux client uses the shared `local-ipc`
-  crate; no wire, path, permission or limit changed.
+  crate; no wire, path, permission or limit changed. Connect and peer-check failures are now
+  reported as `io::Error` text (for example `No such file or directory (os error 2)`) instead
+  of `nix` errno text.
 - Requires fux 0.8.0 (cells capture).
 
 ## 0.2.0 - 2026-09-09
