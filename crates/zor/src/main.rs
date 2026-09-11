@@ -1,11 +1,10 @@
-use clap::Parser;
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
 mod cli;
 
 fn main() -> ExitCode {
-    match run(cli::Cli::parse()) {
+    match run(cli::Cli::parse_args()) {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("zor: {error:#}");
@@ -14,8 +13,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: cli::Cli) -> anyhow::Result<u8> {
-    match cli.action {
+fn run(mut cli: cli::Cli) -> anyhow::Result<u8> {
+    let Some(action) = cli.action.take() else {
+        return wrap(&cli, Vec::new());
+    };
+    match action {
+        cli::Action::Command(command) => wrap(&cli, command),
         cli::Action::CodexWorker { task, argv } => {
             let root = zor::tasks::state_root(cli.state_directory)?;
             zor::tasks::codex::worker::run(&root, &task, argv)
@@ -493,30 +496,15 @@ fn run(cli: cli::Cli) -> anyhow::Result<u8> {
             let sets = zor::rules::bundle::load_all(&cli.rules)?;
             check_fixture(&fixture, agent.as_deref(), &sets)
         }
-        #[cfg(feature = "wrap")]
-        cli::Action::Wrap {
-            events,
-            title,
-            no_osc,
-            debug,
-            command,
-        } => wrap(&cli.rules, cli.agent, events, title, no_osc, debug, command),
     }
 }
 
-/// `zor wrap`: run one command in a pseudoterminal, forward every byte, and publish the
-/// observed agent state as OSC 7877. Under an outer wrapper (`ZOR_PID`) it only forwards.
+/// `zor [flags] <program> [args...]`: run one program in a pseudoterminal, forward every byte,
+/// and publish the observed agent state as OSC 7877. Under an outer wrapper (`ZOR_PID`) it
+/// only forwards. An empty command wraps `$SHELL -l`.
 #[cfg(feature = "wrap")]
-fn wrap(
-    rules: &[std::path::PathBuf],
-    agent: Option<String>,
-    events: Option<std::path::PathBuf>,
-    title: cli::TitleMode,
-    no_osc: bool,
-    debug: bool,
-    command: Vec<String>,
-) -> anyhow::Result<u8> {
-    let sets = zor::rules::bundle::load_all(rules)?;
+fn wrap(cli: &cli::Cli, command: Vec<String>) -> anyhow::Result<u8> {
+    let sets = zor::rules::bundle::load_all(&cli.rules)?;
     let program = command
         .first()
         .cloned()
@@ -526,8 +514,8 @@ fn wrap(
     } else {
         command.into_iter().skip(1).collect()
     };
-    let agent = agent.map(zor::osc::AgentId::new).transpose()?;
-    let title = match title {
+    let agent = cli.agent.clone().map(zor::osc::AgentId::new).transpose()?;
+    let title = match cli.title {
         cli::TitleMode::Never => zor::emit::title::Mode::Never,
         cli::TitleMode::Prefix => zor::emit::title::Mode::Prefix,
         cli::TitleMode::Replace => zor::emit::title::Mode::Replace,
@@ -541,13 +529,23 @@ fn wrap(
             zor::pty::Options {
                 rule_sets: sets,
                 agent,
-                no_osc,
+                no_osc: cli.no_osc,
                 title,
-                events,
-                debug,
+                events: cli.events.clone(),
+                debug: cli.debug,
             },
         )
     }
+}
+
+/// This build has no PTY wrapper: a program name is an error, not a silent no-op.
+#[cfg(not(feature = "wrap"))]
+fn wrap(_cli: &cli::Cli, command: Vec<String>) -> anyhow::Result<u8> {
+    anyhow::bail!(
+        "the PTY wrapper is not compiled into this zor (build with the `wrap` feature); \
+         {} is not a zor subcommand",
+        command.first().map_or("an empty command", String::as_str)
+    )
 }
 
 fn check_fixture(

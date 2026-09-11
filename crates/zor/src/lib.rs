@@ -29,7 +29,7 @@ pub mod tasks;
 #[cfg(feature = "cli")]
 mod service_tasks;
 
-// The PTY wrapper (`zor wrap <command>`) ships only behind the off-by-default `wrap` feature.
+// The PTY wrapper (`zor <command>`) ships only behind the `wrap` feature (on by default).
 #[cfg(feature = "wrap")]
 pub mod emit;
 #[cfg(feature = "wrap")]

@@ -4,7 +4,7 @@ Phase 0 was checked against koh 0.11.0 (`7d1f514436b5cf24d250c2fb1f14bd4d195c155
 vt100 0.16.2 on 2026-09-03.
 
 - The always-built library consists only of `osc`; all runtime code and dependencies are gated by
-  the default `cli` feature. The PTY wrapper (`zor wrap <command>`, modules `pty`, `emit`,
+  the default `cli` feature. The PTY wrapper (`zor <command>`, modules `pty`, `emit`,
   `screen`) is behind the `wrap` feature (on by default; fux builds zor with `--no-default-features --features cli`), which alone pulls in `vt100`.
 - koh's OSC callback supplies parameters as byte slices. Consumers reconstruct the protocol input
   by joining those slices with `;`, so `parse` accepts both that payload and complete OSC frames.

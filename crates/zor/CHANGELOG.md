@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 - 2026-09-11
+
+- The wrapper is the bare form again: `zor [flags] <program> [args...]` runs the program in a
+  pseudoterminal (like `sudo`, `env` or `time`), `zor` alone wraps `$SHELL -l`, and
+  `zor -- <program>` forces wrapping when the program is named like a zor subcommand. The
+  `wrap` subcommand is removed; its `--events`, `--title`, `--no-osc` and `--debug` options
+  are top-level flags. A build without the `wrap` feature reports that the wrapper is not
+  compiled in instead of a generic unknown-subcommand error.
+
 ## 0.3.1 - 2026-09-11
 
 - `wrap` is a default feature again: `cargo install zor` includes `zor wrap <command>`. fux
