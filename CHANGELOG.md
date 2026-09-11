@@ -27,6 +27,14 @@ log. No compatibility with 0.8.0 consumers is kept.
   retained final records and their bounds stay in fux as the primitive zor reads.
 - `progress` stays on both capture forms (zor's rules read it).
 - zor 0.4.0 ships from this workspace; see `crates/zor/CHANGELOG.md`.
+- Socket plumbing now comes from local-ipc 0.2.0: `connect_local`, `write_all_until`, the
+  manager frame reader and runtime-directory discovery are the shared `connect_until`,
+  `write_all_until`, `FrameReader` and `runtime_directory_from`; behavior, limits and error
+  texts are unchanged.
+- The fux integration test crate is `automation_integration` (it tests automation over the
+  control protocol, driven by zor); `tests/fixtures/control-consumers.json` records every
+  protocol item's consumer and the `protocol_consumers` test fails on any item with none.
+
 
 ## 0.8.0 - 2026-09-11
 

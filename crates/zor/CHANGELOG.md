@@ -11,6 +11,13 @@
   is killed whatever the outcome (which also ends a timed-out command's descendants). It is
   task-free and does not use `zor serve`. Unknown or expired evidence and a truncated final
   screen are errors; an existing workspace name is refused, never borrowed.
+- fux connections, request writes, reply framing and the service client/startup channel use
+  local-ipc 0.2.0's `connect_until`, `write_all_until` and `FrameReader`; connect now waits
+  until the caller's full deadline instead of a single 2 s poll. zor derives fux's runtime
+  directory (`$XDG_RUNTIME_DIR/fux`, macOS `~/Library/Caches/fux-runtime/fux`) from the same
+  shared function fux uses, so the two cannot diverge; zor's own service directory naming is
+  unchanged.
+
 
 ## 0.3.2 - 2026-09-11
 
