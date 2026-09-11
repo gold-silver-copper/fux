@@ -3,7 +3,7 @@
 //!
 //! Adapted from koh (MIT); the upstream notice is retained in LICENSES/koh.txt.
 
-use crate::proto::control::CaptureRow;
+use crate::proto::control::{CaptureLine, CaptureRow};
 use crate::view::{
     CellKind, CellStyle, Cursor, Line, MAX_CELL_TEXT_BYTES, PaneModes, PaneUpdate, classify,
     push_wire,
@@ -440,6 +440,37 @@ impl Grid {
             });
         }
         rows
+    }
+
+    /// Every visible row as wire cells, top to bottom, keeping whole rows while the JSON encoding
+    /// of the kept rows stays within `max_bytes`; returns the rows and whether any were dropped.
+    #[must_use]
+    pub fn capture_lines(&self, max_bytes: usize) -> (Vec<CaptureLine>, bool) {
+        let width = usize::from(self.columns);
+        let mut lines = Vec::with_capacity(usize::from(self.rows));
+        let mut bytes = 0_usize;
+        for row in 0..self.rows {
+            let index = usize::from(row);
+            let mut cells = Vec::new();
+            for cell in self.cells.iter().skip(index * width).take(width) {
+                push_wire(&mut cells, 0, cell.text(), cell.kind, cell.style);
+            }
+            let line = CaptureLine {
+                row,
+                wrapped: self.wrapped.get(index).copied().unwrap_or(false),
+                cells,
+            };
+            // Each row is one array element; the separating comma counts toward the bound.
+            let encoded = serde_json::to_vec(&line).map_or(usize::MAX, |json| json.len());
+            bytes = bytes
+                .saturating_add(encoded)
+                .saturating_add(usize::from(row > 0));
+            if bytes > max_bytes {
+                return (lines, true);
+            }
+            lines.push(line);
+        }
+        (lines, false)
     }
 
     fn copy_row(&mut self, screen: &vt100::Screen, row: u16, width: usize) {

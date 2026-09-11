@@ -45,7 +45,7 @@ enum Command {
     Resize(PassthroughArgs),
     /// Send input bytes to a pane: PANE KEYS (escapes: \n \r \t \e \\ \0 \xHH)
     SendKeys(PassthroughArgs),
-    /// Capture a pane's text: PANE [--attrs] [--scrollback LINES] [--rows] [--since SEQ]
+    /// Capture a pane's text: PANE [--attrs] [--scrollback LINES] [--rows] [--since SEQ] [--cells]
     Capture(PassthroughArgs),
     /// Read retained final screen and exit evidence for an incarnation-scoped pane.
     Final {
@@ -874,7 +874,9 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 attrs: options.attrs,
                 scrollback: options.scrollback,
                 max_bytes: fux::proto::control::MAX_CAPTURE_BYTES,
-                format: if options.rows {
+                format: if options.cells {
+                    fux::proto::control::CaptureFormat::Cells
+                } else if options.rows {
                     fux::proto::control::CaptureFormat::Rows
                 } else {
                     fux::proto::control::CaptureFormat::Text
@@ -1062,6 +1064,7 @@ struct CaptureOptions {
     attrs: bool,
     scrollback: u32,
     rows: bool,
+    cells: bool,
     since: Option<u64>,
 }
 
@@ -1076,6 +1079,10 @@ fn parse_capture_options(args: &[String]) -> Result<CaptureOptions> {
             }
             "--rows" => {
                 options.rows = true;
+                index += 1;
+            }
+            "--cells" => {
+                options.cells = true;
                 index += 1;
             }
             "--scrollback" => {

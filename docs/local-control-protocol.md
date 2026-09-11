@@ -41,7 +41,7 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 | `kill` | `pane` | unit (the pane leaves the layout now; `pane.closed` follows the exit report) |
 | `resize` | `pane`, `delta` (non-zero) | unit |
 | `send-keys` | `pane`, `keys` (at most 64 KiB), `notation?` (`escapes` default, or `keys`) | unit |
-| `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows), `max_bytes` (1–131072), `format?` (`text` default, `rows`), `since?` (grid sequence; `rows` only, no scrollback), `if_revision?` (text only) | coherent `capture`, or `rows` (below) |
+| `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows; `text` only), `max_bytes` (1–131072), `format?` (`text` default, `rows`, `cells`), `since?` (grid sequence; `rows` only, no scrollback), `if_revision?` (`text` or `cells`) | coherent `capture`, `rows` or `cells` (below) |
 | `list` | | `workspaces[]` |
 | `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{…}` |
 | `wait` | `pane`, `until`, `timeout_ms` (1–300000) | `waited`: `fired`, `seq`, `exit_status` |
@@ -85,6 +85,33 @@ unchanged response retain the cached truncation flag. Nonempty output conservati
 terminal revision even when the refreshed grid sequence does not change; actual resize also
 advances revision. Grid sequence, terminal revision, input sequence and replay cursor are
 separate contracts.
+
+`format: "cells"` returns the visible grid as cells instead of text, from the same single read
+of the pane: `seq`, `input_sequence`, `revision`, `rows`, `columns`, `cursor`, `title`,
+`progress`, `unchanged`, `truncated` and `lines`. A text capture and a cells capture served in
+the same step report the same `revision`, `seq` and `input_sequence`, so a consumer can
+evaluate screen rules on the cells without re-emulating the text. Each line carries `row`,
+`wrapped` and `cells` in the viewer's wire encoding: `{"text":"a"}` is a text cell, `{}` a
+blank, `{"run":N}` `N` equal blanks, `kind` is spelled out only for `wide-leading` and
+`wide-continuation`, and `style` (`foreground`, `background`, `bold`, `dim`, `italic`,
+`underline`, `inverse`) only when it is not the default; a line expands to exactly `columns`
+cells. `if_revision` behaves as for text: a matching revision returns the metadata with
+`unchanged: true` and no lines. `max_bytes` bounds the JSON encoding of `lines`: lines are
+kept whole, top to bottom, while the encoding stays within the bound; the rest are dropped and
+`truncated` is `true`. `scrollback` and `attrs` are text-form options and are `invalid-request`
+with `cells`, as is `since`.
+
+```json
+{"command":"capture","id":5,"pane":1,"max_bytes":65536,"format":"cells"}
+{"status":"completed","id":5,"result":{"kind":"cells","value":{"seq":12,"input_sequence":3,"revision":15,
+  "rows":2,"columns":8,"cursor":{"row":1,"column":0,"hidden":false},"title":"sh","progress":null,
+  "unchanged":false,"truncated":false,"lines":[
+    {"row":0,"wrapped":false,"cells":[{"text":"$"},{},{"text":"日","kind":"wide-leading","style":{"foreground":{"Indexed":1},
+      "background":"Default","bold":true,"dim":false,"italic":false,"underline":false,"inverse":false}},
+      {"kind":"wide-continuation","style":{"foreground":{"Indexed":1},"background":"Default","bold":true,"dim":false,
+      "italic":false,"underline":false,"inverse":false}},{"run":4}]},
+    {"row":1,"wrapped":false,"cells":[{"run":8}]}]}}}
+```
 
 Reserve input to obtain an operation and the pane's input sequence, then submit escaped keys
 using that operation. Intervening application input causes a conflict before first submission.

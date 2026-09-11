@@ -725,6 +725,31 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
                                 since_applied: since.is_some(),
                             })
                         }
+                        control::CaptureFormat::Cells => {
+                            let terminal = &component.terminal;
+                            let grid = terminal.grid();
+                            let revision = terminal.revision();
+                            let unchanged = if_revision == Some(revision);
+                            let (lines, truncated) = if unchanged {
+                                (Vec::new(), false)
+                            } else {
+                                grid.capture_lines(max_bytes)
+                            };
+                            let (rows, columns) = grid.size();
+                            Ok(CommandResult::Cells {
+                                seq,
+                                input_sequence: component.input_sequence,
+                                revision,
+                                rows,
+                                columns,
+                                cursor: grid.cursor(),
+                                title: terminal.title().to_owned(),
+                                progress: terminal.progress().map(|p| (p.state, p.percent)),
+                                unchanged,
+                                truncated,
+                                lines,
+                            })
+                        }
                     }
                 }
                 _ => Err(failed(id, ErrorCode::NotFound, "pane not found")),

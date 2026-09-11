@@ -106,6 +106,8 @@ pub enum Request {
     },
     /// The pane's text. `format: "rows"` returns the visible rows one by one with the cursor and
     /// the output sequence; with `since` only the rows changed after that sequence.
+    /// `format: "cells"` returns the visible grid cell by cell with the same coherent metadata as
+    /// the text form.
     Capture {
         id: RequestId,
         #[serde(default)]
@@ -314,10 +316,10 @@ impl Request {
                         format!("scrollback must be at most {MAX_SCROLLBACK_LINES} lines"),
                     ));
                 }
-                if if_revision.is_some() && *format != CaptureFormat::Text {
+                if if_revision.is_some() && *format == CaptureFormat::Rows {
                     return Err(ControlError::invalid(
                         id,
-                        "if-revision requires text capture",
+                        "if-revision requires text or cells capture",
                     ));
                 }
                 if if_revision.is_some() && self.instance().is_none() {
@@ -336,6 +338,18 @@ impl Request {
                     return Err(ControlError::invalid(
                         id,
                         "capture format rows carries plain text; attrs applies to the text format",
+                    ));
+                }
+                if *format == CaptureFormat::Cells && *attrs {
+                    return Err(ControlError::invalid(
+                        id,
+                        "capture format cells carries styles; attrs applies to the text format",
+                    ));
+                }
+                if *format == CaptureFormat::Cells && *scrollback > 0 {
+                    return Err(ControlError::invalid(
+                        id,
+                        "capture format cells reads the visible grid; scrollback applies to the text format",
                     ));
                 }
             }
@@ -418,6 +432,19 @@ pub enum CaptureFormat {
     Text,
     /// Visible rows as `{row, text, wrapped}` entries with the cursor and the output sequence.
     Rows,
+    /// The visible grid as wire cells per row with the text form's coherent metadata.
+    Cells,
+}
+
+/// One visible row of a `cells` capture: its wrap flag and the row's cells in the viewer wire
+/// encoding (`text` implies kind `text`, no text implies `blank`, default styles are omitted,
+/// and `run` folds equal blanks), covering exactly `columns` cells when expanded.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureLine {
+    pub row: u16,
+    pub wrapped: bool,
+    pub cells: Vec<crate::view::WireCell>,
 }
 
 /// One visible row of a `rows` capture: plain text without trailing blanks.
@@ -622,6 +649,22 @@ pub enum CommandResult {
         cursor: crate::view::Cursor,
         rows: Vec<CaptureRow>,
         since_applied: bool,
+    },
+    /// The visible grid cell by cell from one borrow of the pane: the same `revision`, `seq` and
+    /// `input_sequence` a text capture taken in the same step reports. `lines` is empty when
+    /// `unchanged`; `truncated` means trailing lines were dropped whole to honor `max_bytes`.
+    Cells {
+        seq: u64,
+        input_sequence: u64,
+        revision: u64,
+        rows: u16,
+        columns: u16,
+        cursor: crate::view::Cursor,
+        title: String,
+        progress: Option<(u8, u8)>,
+        unchanged: bool,
+        truncated: bool,
+        lines: Vec<CaptureLine>,
     },
     Listing {
         instance: String,
