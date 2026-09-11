@@ -27,8 +27,9 @@ cli = [
     "dep:signal-hook",
     "dep:toml",
 ]
-# The PTY wrapper: `zor wrap <command>`. Off by default; needs the `cli` runtime plus a
-# terminal emulator for the wrapped child's screen.
+# The PTY wrapper: `zor <command>`. A default feature (on for `cargo install zor`); fux builds
+# zor with `--no-default-features --features cli`, which has no wrapper. Needs the `cli`
+# runtime plus a terminal emulator for the wrapped child's screen.
 wrap = ["cli", "dep:vt100"]
 
 [dependencies]

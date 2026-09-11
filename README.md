@@ -216,7 +216,7 @@ crates/fux/tests/verify/release-package.sh
 Deterministic ECS tests inject events and time (`crates/fux/tests/ecs.rs`, including randomized
 command sequences); real-process scenarios use disposable HOME/XDG directories and owned
 processes only (`crates/fux/tests/local_cli.rs`, the fixture-child suite). The real zor
-integration (`cargo test -p fux --test zor_integration`) builds `crates/zor` from this
+integration (`cargo test -p fux --test automation_integration`) builds `crates/zor` from this
 checkout; `ZOR_BIN` overrides it with another build, and `FUX_REQUIRE_ZOR_BIN=1` makes a
 missing binary a failure. The optional cross-repository job and
 `cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify --build`

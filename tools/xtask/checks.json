@@ -255,7 +255,7 @@
       "--test",
       "structure",
       "--test",
-      "zor_integration",
+      "automation_integration",
       "--",
       "--test-threads=1"
     ],
@@ -539,7 +539,7 @@
       "--test",
       "structure",
       "--test",
-      "zor_integration",
+      "automation_integration",
       "--",
       "--test-threads=1"
     ],
