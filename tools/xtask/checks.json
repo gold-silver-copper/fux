@@ -671,6 +671,24 @@
     ],
     [
       "cargo",
+      "clippy",
+      "--manifest-path",
+      "crates/local-ipc/Cargo.toml",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "test",
+      "--manifest-path",
+      "crates/local-ipc/Cargo.toml",
+      "--locked"
+    ],
+    [
+      "cargo",
       "fmt",
       "--manifest-path",
       "references/koh/Cargo.toml",

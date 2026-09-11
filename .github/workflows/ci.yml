@@ -42,6 +42,7 @@ jobs:
       - run: cargo +${{ matrix.rust }} clippy -p zor --all-targets --all-features --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} clippy -p zor --all-targets --no-default-features --locked -- -D warnings
       - run: cargo +${{ matrix.rust }} clippy -p zor-wrap --all-targets --locked -- -D warnings
+      - run: cargo +${{ matrix.rust }} clippy -p local-ipc --all-targets --locked -- -D warnings
       - name: Build the exact binaries for real-process scenarios
         run: cargo +${{ matrix.rust }} build --locked --bin fux --bin zor
       # The real zor integration pairs the exact binaries built above and cannot silently skip.
@@ -70,6 +71,7 @@ jobs:
         run: cargo +${{ matrix.rust }} test -p zor --no-default-features --locked
       - if: runner.os == 'Linux'
         run: cargo +${{ matrix.rust }} test -p zor-wrap --locked
+      - run: cargo +${{ matrix.rust }} test -p local-ipc --locked
       - run: cargo +${{ matrix.rust }} check -p zor --no-default-features --all-targets --locked
       - run: cargo +${{ matrix.rust }} doc --workspace --no-deps --locked
       - run: cargo +${{ matrix.rust }} doc -p zor --no-deps --all-features --locked
@@ -134,6 +136,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - run: cargo package --locked -p fux
-      - run: cargo package --locked -p zor
+      # fux and zor depend on the unpublished local-ipc crate: packaging them together lets cargo
+      # verify each against the freshly packaged dependency instead of the registry.
+      - run: cargo package --locked -p fux -p local-ipc
+      - run: cargo package --locked -p zor -p local-ipc
       - run: cargo package --locked -p zor-wrap
+      - run: cargo package --locked -p local-ipc

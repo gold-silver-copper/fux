@@ -29,7 +29,7 @@ impl ManagerIdentity {
     pub fn current() -> std::io::Result<Self> {
         Ok(Self {
             pid: std::process::id(),
-            instance_nonce: random_token()?,
+            instance_nonce: local_ipc::random_token()?,
         })
     }
 }
@@ -216,10 +216,4 @@ fn safe_token(value: &str, max: usize) -> bool {
         && value.len() <= max
         && !value.chars().any(char::is_whitespace)
         && !value.contains('\0')
-}
-
-pub fn random_token() -> std::io::Result<String> {
-    let mut bytes = [0_u8; 16];
-    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }

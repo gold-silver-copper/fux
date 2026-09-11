@@ -20,6 +20,9 @@ base64 = "0.22"
 bevy_ecs = { version = "=0.19.1", default-features = false, features = ["std"] }
 # Derive-based parsing for fux's command surface.
 clap = { version = "4.5", features = ["derive"] }
+# Same-user local socket discipline shared with zor: private directories, 0600 sockets,
+# kernel peer credentials, instance tokens and non-blocking connect initiation.
+local-ipc = { version = "0.1.0", path = "../local-ipc" }
 # Safe Unix signal, process-group, peer-credential and flock operations.
 nix = { version = "0.30", features = ["fs", "poll", "signal", "socket", "term", "user"] }
 # Safe duplication of portable-pty master descriptors for cancellable I/O.
