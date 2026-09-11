@@ -330,10 +330,10 @@ fn empty_arguments(binary: &Path) -> Result<()> {
     let pane = listing["workspaces"][0]["tabs"][0]["panes"][0]["id"].clone();
     let new = completed(
         &root.control(),
-        json!({"id":1,"command":"split","axis":"horizontal","instance":instance,"argv":argv}),
+        json!({"id":1,"command":"split","axis":"horizontal","instance":instance,"argv":argv,"final_retain_ms":60000}),
     )?["pane"]
         .clone();
-    let split = completed(&root.control(), json!({"id":1,"command":"split","instance":instance,"target":pane,"axis":"horizontal","argv":argv}))?["pane"].clone();
+    let split = completed(&root.control(), json!({"id":1,"command":"split","instance":instance,"target":pane,"axis":"horizontal","argv":argv,"final_retain_ms":60000}))?["pane"].clone();
     let panes = [pane, new, split];
     let visible = |text: &str| {
         ["ARGC=2", "FIRST=<>", "SECOND=<tail>"]
@@ -352,7 +352,7 @@ fn empty_arguments(binary: &Path) -> Result<()> {
     for bad in [json!([""]), json!(["/bin/sh", "\0"])] {
         let reply = rpc(
             &root.control(),
-            json!({"id":1,"command":"split","axis":"horizontal","instance":instance,"argv":bad}),
+            json!({"id":1,"command":"split","axis":"horizontal","instance":instance,"argv":bad,"final_retain_ms":60000}),
         )?;
         ensure!(
             reply["status"] == "failed" && reply["error"]["code"] == "invalid-request",

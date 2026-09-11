@@ -53,7 +53,8 @@ layout or a frame. A tab may close before its panes' exit reports arrive; such a
 its tab only while `Terminating` and is released when the exit arrives (or by adapter shutdown).
 
 Resources: `Limits` (workspaces 64, tabs 32, panes 128, viewers 64, scrollback rows, viewer
-queue 256, retirement grace 5 s, terminate deadline 10 s, `pane.output` interval 250 ms), `Ids`
+queue 256, retirement grace 5 s, terminate deadline 10 s, `pane.output` interval 250 ms, the
+configured `[final] retain-ms` for panes fux creates itself), `Ids`
 (monotonic `PaneId`/`TabId`/`ViewerId` counters and id→Entity maps; ids are never reused during a
 server lifetime and descriptors carry an instance nonce), `Clock` (step time injected by the
 owner loop), `Deadlines` (next wake proposed by systems), `Registry` (bindings and default
@@ -181,10 +182,25 @@ intervening writers; PTY write completions report delivered bytes or partial fai
 ECS. The writer uses nonblocking I/O with cancellable waits, so a stalled PTY cannot hold up
 shutdown indefinitely. Terminal host replies are excluded from application input sequence.
 
+Retention bounds split between the two crates. The caps are fux's, because they bound server
+memory against any client; the durations are the caller's policy under a fux ceiling:
+
+| Retained | Cap (fux) | Duration (caller) | Ceiling (fux, published by `info.limits`) |
+|---|---|---|---|
+| input receipts (`InputOperations`) | 128 | `input-reserve.retain_ms` | `input_retention_ms` = 600 000 (10 min) |
+| final records (`FinalRecords`) | 128 | `split.final_retain_ms`, stored on the `Pane` | `final_retention_ms` = 14 400 000 (4 h) |
+
+`0` is refused (`invalid-request`), larger values are clamped and a receipt's `expires_ms`
+shows the clamped value. fux's own panes take their `final_retain_ms` from the configured
+`[final] retain-ms` (default 60 s). zor chooses per use: a prompt's remaining window plus one
+reconcile round for receipts, `zor run`'s timeout plus a poll margin and the full ceiling for a
+managed launch (see the comments at the three call sites).
+
 `FinalRecords` outlives pane and workspace entities. Before release, the lifecycle code retains
 a bounded capture with the pane's original workspace name/stream, command/cwd and observed
-exit status. An unobserved exit remains unknown. Retention is bounded by count and time;
-the manager serves records after workspace sockets close; `zor run` and zor's managed launches
+exit status. An unobserved exit remains unknown. Retention is bounded by count (fux's cap) and
+by the duration the launcher set on the pane; the manager serves records after workspace
+sockets close; `zor run` and zor's managed launches
 consume them.
 
 Terminal revision invalidates coherent conditional text captures across output and actual

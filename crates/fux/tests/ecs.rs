@@ -186,7 +186,7 @@ fn closing_last_tab_explicitly_retains_orphan_pane_before_manager_idle() {
     ]);
     assert_eq!(final_reply(&mut h, PaneId(1), "test-instance"), before);
     assert!(!h.idle);
-    h.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    h.now += fux::config::DEFAULT_FINAL_RETAIN_MS;
     h.step(Vec::new());
     assert!(h.idle);
 }
@@ -242,7 +242,7 @@ fn final_evidence_survives_workspace_release_and_expires_explicitly() {
         final_reply(&mut h, PaneId(1), "test-instance"),
         Reply::Completed { .. }
     ));
-    h.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    h.now += fux::config::DEFAULT_FINAL_RETAIN_MS;
     assert!(
         matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
     );
@@ -269,7 +269,7 @@ fn final_record_capacity_evicts_oldest_and_idle_waits_only_until_expiry() {
         Reply::Completed { .. }
     ));
     assert!(!h.idle);
-    h.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    h.now += fux::config::DEFAULT_FINAL_RETAIN_MS;
     h.step(vec![]);
     assert!(h.idle);
 }
@@ -394,6 +394,7 @@ fn input_operations_deduplicate_and_report_actual_completion() {
             id: 1,
             instance: Some("test-instance".into()),
             pane: PaneId(1),
+            retain_ms: 60_000,
         },
     ));
     assert_eq!(reserved.state, InputState::Reserved);
@@ -441,6 +442,177 @@ fn input_operations_deduplicate_and_report_actual_completion() {
 }
 
 #[test]
+fn input_reservation_retention_is_the_callers_under_the_ceiling() {
+    use fux::proto::control::MAX_INPUT_RETENTION_MS;
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let reserve = |retain_ms: u64| Request::InputReserve {
+        id: 1,
+        instance: Some("test-instance".into()),
+        pane: PaneId(1),
+        retain_ms,
+    };
+    let status = |operation: u64| Request::InputStatus {
+        id: 4,
+        instance: Some("test-instance".into()),
+        operation,
+    };
+    // Zero is refused before anything is reserved.
+    assert!(
+        matches!(input_request(&mut h, "default", reserve(0)), Reply::Failed { error, .. } if error.code == ErrorCode::InvalidRequest)
+    );
+    // A short caller value expires exactly when the caller asked.
+    let short = input_receipt(input_request(&mut h, "default", reserve(2_500)));
+    assert_eq!(short.expires_ms, h.now + 2_500);
+    // A value above the ceiling is clamped, visibly in the receipt.
+    let clamped = input_receipt(input_request(
+        &mut h,
+        "default",
+        reserve(MAX_INPUT_RETENTION_MS + 1),
+    ));
+    assert_eq!(clamped.expires_ms, h.now + MAX_INPUT_RETENTION_MS);
+    assert_eq!(
+        input_receipt(input_request(&mut h, "default", reserve(u64::MAX))).expires_ms,
+        h.now + MAX_INPUT_RETENTION_MS
+    );
+    assert_eq!(h.session.next_deadline_ms(), Some(short.expires_ms));
+    // Every harness step advances the clock by 10 ms: land one step before expiry, then on it.
+    h.now = short.expires_ms - 20;
+    assert!(matches!(
+        input_request(&mut h, "default", status(short.operation)),
+        Reply::Completed { .. }
+    ));
+    assert!(
+        matches!(input_request(&mut h, "default", status(short.operation)), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    assert!(matches!(
+        input_request(&mut h, "default", status(clamped.operation)),
+        Reply::Completed { .. }
+    ));
+    // The clamped reservation lives until the ceiling, not until the requested value.
+    h.now = clamped.expires_ms - 20;
+    assert!(matches!(
+        input_request(&mut h, "default", status(clamped.operation)),
+        Reply::Completed { .. }
+    ));
+    assert!(
+        matches!(input_request(&mut h, "default", status(clamped.operation)), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+}
+
+#[test]
+fn final_record_retention_is_the_launchers_under_the_ceiling() {
+    use fux::proto::control::MAX_FINAL_RETENTION_MS;
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let launch = |id: u64, final_retain_ms: u64| {
+        let mut request = split(id, Axis::Horizontal);
+        if let Request::Split {
+            final_retain_ms: retention,
+            ..
+        } = &mut request
+        {
+            *retention = final_retain_ms;
+        }
+        request
+    };
+    assert!(
+        matches!(input_request(&mut h, "default", launch(1, 0)), Reply::Failed { error, .. } if error.code == ErrorCode::InvalidRequest)
+    );
+    assert!(
+        h.pending_spawns.is_empty(),
+        "a refused split spawns nothing"
+    );
+    input_request(&mut h, "default", launch(2, 3_000));
+    h.complete_spawns();
+    input_request(&mut h, "default", launch(3, MAX_FINAL_RETENTION_MS + 1));
+    h.complete_spawns();
+    assert_eq!(h.session.entity_counts().panes, 3);
+    h.step(vec![
+        Inbound::PaneExited {
+            pane: PaneId(2),
+            code: 4,
+        },
+        Inbound::PaneExited {
+            pane: PaneId(3),
+            code: 5,
+        },
+    ]);
+    // Every harness step (each `final_reply`) advances the clock by 10 ms.
+    let closed = h.now;
+    assert!(matches!(
+        final_reply(&mut h, PaneId(2), "test-instance"),
+        Reply::Completed { .. }
+    ));
+    // The short record expires at the launcher's value.
+    h.now = closed + 3_000 - 20;
+    assert!(matches!(
+        final_reply(&mut h, PaneId(2), "test-instance"),
+        Reply::Completed { .. }
+    ));
+    assert!(
+        matches!(final_reply(&mut h, PaneId(2), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    assert!(matches!(
+        final_reply(&mut h, PaneId(3), "test-instance"),
+        Reply::Completed { .. }
+    ));
+    // The over-ceiling record expires at the ceiling, not later.
+    h.now = closed + MAX_FINAL_RETENTION_MS - 20;
+    assert!(matches!(
+        final_reply(&mut h, PaneId(3), "test-instance"),
+        Reply::Completed { .. }
+    ));
+    assert!(
+        matches!(final_reply(&mut h, PaneId(3), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    // fux's own initial pane keeps the configured default.
+    h.step(vec![Inbound::PaneExited {
+        pane: PaneId(1),
+        code: 0,
+    }]);
+    let closed = h.now;
+    h.now = closed + fux::config::DEFAULT_FINAL_RETAIN_MS - 20;
+    assert!(matches!(
+        final_reply(&mut h, PaneId(1), "test-instance"),
+        Reply::Completed { .. }
+    ));
+    assert!(
+        matches!(final_reply(&mut h, PaneId(1), "test-instance"), Reply::Failed { error, .. } if error.code == ErrorCode::Expired)
+    );
+    assert!(h.idle);
+}
+
+#[test]
+fn info_publishes_the_retention_ceilings() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let reply = input_request(
+        &mut h,
+        "default",
+        Request::Info {
+            id: 9,
+            instance: None,
+        },
+    );
+    let Reply::Completed {
+        result: CommandResult::Info { info },
+        ..
+    } = reply
+    else {
+        panic!("info failed: {reply:?}");
+    };
+    assert_eq!(
+        info.limits.input_retention_ms,
+        fux::proto::control::MAX_INPUT_RETENTION_MS
+    );
+    assert_eq!(
+        info.limits.final_retention_ms,
+        fux::proto::control::MAX_FINAL_RETENTION_MS
+    );
+}
+
+#[test]
 fn terminal_query_replies_do_not_invalidate_controller_input_reservations() {
     let mut h = Harness::new();
     h.create_workspace("default");
@@ -451,6 +623,7 @@ fn terminal_query_replies_do_not_invalidate_controller_input_reservations() {
             id: 1,
             instance: Some("test-instance".into()),
             pane: PaneId(1),
+            retain_ms: 60_000,
         },
     ));
     h.step(vec![Inbound::PaneOutput {
@@ -481,6 +654,7 @@ fn reservations_detect_intervening_input_and_receipts_expire_without_reusing_ids
         id: 1,
         instance: Some("test-instance".into()),
         pane: PaneId(1),
+        retain_ms: 60_000,
     };
     let first = input_receipt(input_request(&mut h, "default", reserve()));
     input_request(
@@ -534,6 +708,7 @@ fn input_receipt_capacity_and_partial_failure_are_explicit() {
         id: 1,
         instance: Some("test-instance".into()),
         pane: PaneId(1),
+        retain_ms: 60_000,
     };
     let first = input_receipt(input_request(&mut h, "default", reserve()));
     for _ in 1..fux::ecs::resources::MAX_INPUT_OPERATIONS {
@@ -1219,6 +1394,7 @@ fn split(id: u64, axis: Axis) -> Request {
         env: Vec::new(),
         rows: None,
         columns: None,
+        final_retain_ms: fux::config::DEFAULT_FINAL_RETAIN_MS,
     }
 }
 
@@ -1455,7 +1631,7 @@ fn output_eof_and_exit_keep_final_output_and_retire_the_workspace() {
     assert!(harness.released.contains(&PaneId(1)));
     assert!(!harness.idle, "final evidence keeps the manager alive");
     assert_eq!(harness.session.entity_counts(), Default::default());
-    harness.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    harness.now += fux::config::DEFAULT_FINAL_RETAIN_MS;
     harness.step(Vec::new());
     assert!(harness.idle);
 }
@@ -1479,7 +1655,7 @@ fn retirement_grace_expires_without_viewer_acknowledgement() {
     harness.step(Vec::new());
     assert_eq!(harness.closed, vec!["default".to_owned()]);
     assert!(!harness.idle);
-    harness.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    harness.now += fux::config::DEFAULT_FINAL_RETAIN_MS;
     harness.step(Vec::new());
     assert!(harness.idle);
 }
@@ -1736,6 +1912,7 @@ fn split_carries_env_and_a_requested_headless_size_to_the_spawn() {
             env: vec![("AGENT".into(), "1".into())],
             rows: Some(30),
             columns: Some(100),
+            final_retain_ms: fux::config::DEFAULT_FINAL_RETAIN_MS,
         },
         token: 5,
     }]);
@@ -2822,7 +2999,7 @@ fn a_workspace_whose_first_pane_exits_at_once_retires_with_its_status() {
     // Nobody is watching, so the workspace finalizes at once; final evidence retains the manager.
     assert!(harness.closed.contains(&"default".to_owned()));
     assert!(!harness.idle);
-    harness.now += fux::ecs::resources::FINAL_RETENTION_MS;
+    harness.now += fux::config::DEFAULT_FINAL_RETAIN_MS;
     harness.step(Vec::new());
     assert!(harness.idle);
     let counts = harness.session.entity_counts();

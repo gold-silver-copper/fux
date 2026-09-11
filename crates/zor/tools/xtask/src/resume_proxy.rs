@@ -155,7 +155,7 @@ mod tests {
             ensure!(
                 crate::runtime::raw_rpc(
                     &front,
-                    json!({"id":1,"command":"split","axis":"horizontal"})
+                    json!({"id":1,"command":"split","axis":"horizontal","final_retain_ms":60000})
                 )
                 .is_err(),
                 "creation reply not dropped"

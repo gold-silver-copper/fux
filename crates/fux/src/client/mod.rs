@@ -130,6 +130,7 @@ pub async fn attach(
         &mut io,
         bindings,
         options,
+        config.final_records.retain_ms,
         &mut interrupt,
         &mut terminate,
         &mut hangup,
@@ -147,6 +148,7 @@ async fn run(
     io: &mut io::ClientIo,
     bindings: crate::commands::ClientBindings,
     options: AttachOptions,
+    final_retain_ms: u64,
     interrupt: &mut tokio::signal::unix::Signal,
     terminate: &mut tokio::signal::unix::Signal,
     hangup: &mut tokio::signal::unix::Signal,
@@ -315,6 +317,7 @@ async fn run(
                                 &mut controller,
                                 &mut filter,
                                 workspaces_enabled,
+                                final_retain_ms,
                             ) {
                                 Dispatch::Send(request) => {
                                     send(&mut writer, &ClientMessage::Control { request }).await?;
@@ -497,6 +500,7 @@ fn dispatch(
     controller: &mut Controller,
     filter: &mut PrefixFilter,
     workspaces: bool,
+    final_retain_ms: u64,
 ) -> Dispatch {
     if let Some(reason) = action.unavailable(frame, workspaces) {
         controller.report_error(reason);
@@ -520,6 +524,7 @@ fn dispatch(
             env: Vec::new(),
             rows: None,
             columns: None,
+            final_retain_ms,
         }),
         Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
             Dispatch::Send(Request::Focus {

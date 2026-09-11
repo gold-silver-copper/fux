@@ -1,8 +1,7 @@
 //! Bounded terminal evidence, independent of the lifetime of pane and workspace entities.
 use crate::ecs::components::{Pane, PaneState};
 use crate::ecs::resources::{
-    Clock, Deadlines, FINAL_RETENTION_MS, FinalRecords, Ids, MAX_FINAL_RECORDS, RetainedFinal,
-    ServerIdentity,
+    Clock, Deadlines, FinalRecords, Ids, MAX_FINAL_RECORDS, RetainedFinal, ServerIdentity,
 };
 use crate::proto::control::{CommandResult, ErrorCode, FinalRecord, Reply};
 use bevy_ecs::prelude::*;
@@ -28,7 +27,8 @@ pub fn remember(world: &mut World, pane: Entity) {
     let record = RetainedFinal {
         record,
         closed_ms: now,
-        expires_ms: now.saturating_add(FINAL_RETENTION_MS),
+        // The launcher's retention, clamped at creation; nothing here re-derives it.
+        expires_ms: now.saturating_add(component.final_retain_ms),
     };
     let mut records = world.resource_mut::<FinalRecords>();
     if records.0.len() >= MAX_FINAL_RECORDS {

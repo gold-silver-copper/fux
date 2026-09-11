@@ -168,7 +168,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         })?;
         evidence["captures"].as_array_mut().unwrap().push(first);
         for (turn, prompt) in PROMPTS.iter().enumerate() {
-            let reserved = value("input-reserve", json!({"pane":pane}))?;
+            let reserved = value("input-reserve", json!({"pane":pane,"retain_ms":60000}))?;
             let operation = reserved
                 .pointer("/receipt/operation")
                 .context("operation")?;

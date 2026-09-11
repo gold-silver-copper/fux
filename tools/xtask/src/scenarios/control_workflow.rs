@@ -29,12 +29,14 @@ pub(super) fn run(binary: &Path) -> Result<()> {
             info["limits"]["capture_bytes"] == 131072
                 && info["limits"]["key_bytes"] == 65536
                 && info["limits"]["frame_bytes"] == 1_048_576
-                && info["limits"]["scrollback_lines"].is_u64(),
+                && info["limits"]["scrollback_lines"].is_u64()
+                && info["limits"]["input_retention_ms"] == 600_000
+                && info["limits"]["final_retention_ms"] == 14_400_000,
             "info request bounds changed: {info}"
         );
         let pane = completed(&socket, json!({"command":"split","id":2,"axis":"horizontal",
             "argv":["/bin/sh","-c","printf \"%s\\n\" \"$ROLE\"; read x; printf \"got:%s\\n\" \"$x\"; exit 7"],
-            "env":[["ROLE","agent-pane"]],"rows":12,"columns":50}))?["pane"].clone();
+            "env":[["ROLE","agent-pane"]],"rows":12,"columns":50,"final_retain_ms":60000}))?["pane"].clone();
         // The cells capture carries the environment the command printed, row by row.
         let seen = completed(&socket, json!({"command":"list","id":3}))?["workspaces"][0]["tabs"]
             [0]["panes"]

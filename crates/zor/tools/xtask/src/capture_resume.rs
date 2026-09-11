@@ -151,7 +151,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             evidence["captures"].as_array_mut().unwrap().push(before);
             let reserved = value(
                 "input-reserve",
-                json!({"pane":pane.get("id").context("pane id")?}),
+                json!({"pane":pane.get("id").context("pane id")?,"retain_ms":60000}),
             )?;
             let operation = reserved
                 .pointer("/receipt/operation")

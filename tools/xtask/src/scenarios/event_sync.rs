@@ -69,7 +69,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         &mut control,
         &instance,
         "split",
-        json!({"axis":"horizontal","stream":cursor["stream"].as_u64().context("stream")?+1,"argv":["/bin/sh","-c","touch \"$HOME/unexpected-launch\""]}),
+        json!({"axis":"horizontal","stream":cursor["stream"].as_u64().context("stream")?+1,"argv":["/bin/sh","-c","touch \"$HOME/unexpected-launch\""],"final_retain_ms":60000}),
     )?;
     ensure!(
         rejected["status"] == "failed" && rejected["error"]["code"] == "conflict",

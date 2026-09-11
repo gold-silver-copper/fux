@@ -47,6 +47,9 @@ max-panes = 128                                 # per workspace
 max-tabs = 32
 max-workspaces = 64
 
+[final]
+retain-ms = 60000                               # final records of fux's own panes, 1-14400000; automation sets split.final_retain_ms
+
 [style]                                         # sixteen ANSI names, "default" (terminal foreground) or "none" (keep the cell's colour)
 bar = "white"                                   # workspace name, inactive tabs, pane id: title
 bar-background = "bright-black"                 # background of the bar row
@@ -129,8 +132,10 @@ merged output log.
 
 When the only pane of the only tab exits by itself the workspace retires with that exit status:
 attached viewers see the final screen, then exit with the code; the workspace finalizes once the
-viewers have seen it (or after five seconds). The manager retains bounded final records for up
-to 60 seconds after pane retirement, even after the workspace sockets disappear. Other natural exits close the pane, and an emptied
+viewers have seen it (or after five seconds). The manager retains bounded final records after
+pane retirement, even after the workspace sockets disappear, for the duration the pane's
+launcher chose (`split.final_retain_ms`, at most four hours; `[final] retain-ms`, 60 seconds
+by default, for panes fux creates itself). Other natural exits close the pane, and an emptied
 tab closes. Confirmed close and `kill` send SIGHUP to the pane's process group, SIGKILL after one
 second, and reap it. Workspace kill and server shutdown do the same for every pane.
 

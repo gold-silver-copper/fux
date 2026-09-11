@@ -81,7 +81,7 @@ pub fn run(h: &Harness<'_>) -> Result<Managed> {
     fs::rename(&saved, &tree_path)?;
     let pane = h.fux(
         "split",
-        json!({"axis":"horizontal","cwd":tree_path,"argv":["/bin/cat"]}),
+        json!({"axis":"horizontal","cwd":tree_path,"argv":["/bin/cat"],"final_retain_ms":60000}),
     )?["pane"]
         .clone();
     api!(json!({"action":"worktree-reconcile","id":"api-tree"}));
@@ -175,7 +175,7 @@ pub fn run(h: &Harness<'_>) -> Result<Managed> {
     fs::remove_file(&marker)?;
     let pane = h.fux(
         "split",
-        json!({"axis":"horizontal","cwd":root,"argv":moved_argv}),
+        json!({"axis":"horizontal","cwd":root,"argv":moved_argv,"final_retain_ms":60000}),
     )?["pane"]
         .clone();
     marked(&marker, path(&tree_path)?)?;
@@ -197,7 +197,7 @@ pub fn run(h: &Harness<'_>) -> Result<Managed> {
     h.fux("kill", json!({"pane":pane}))?;
     h.closed(&pane)?;
     let descendant = root.join("descendant-ready");
-    let pane=h.fux("split",json!({"axis":"horizontal","cwd":root,"argv":[std::env::current_exe()?,"fixture-worker","service-descendant",tree_path,descendant,"1"]}))?["pane"].clone();
+    let pane=h.fux("split",json!({"axis":"horizontal","cwd":root,"argv":[std::env::current_exe()?,"fixture-worker","service-descendant",tree_path,descendant,"1"],"final_retain_ms":60000}))?["pane"].clone();
     marked(&descendant, path(&root.canonicalize()?)?)?;
     let before = fs::read(&h.journal)?;
     refuse(

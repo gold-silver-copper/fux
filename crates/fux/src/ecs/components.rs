@@ -173,6 +173,9 @@ pub struct Pane {
     /// Nonempty controller/viewer writes; terminal query replies are excluded.
     pub input_sequence: u64,
     pub last_output_event_ms: Option<u64>,
+    /// The launcher's retention for this pane's final record, already clamped to
+    /// `MAX_FINAL_RETENTION_MS`; applied when the record is created at close.
+    pub final_retain_ms: u64,
 }
 
 impl Pane {

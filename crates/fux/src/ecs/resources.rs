@@ -23,6 +23,9 @@ pub struct Limits {
     /// Minimum spacing of output-driven frames per viewer; replies, selection changes and
     /// retirement are never delayed.
     pub frame_interval_ms: u64,
+    /// Retention of the final record of a pane fux creates itself (the initial pane of a
+    /// workspace, a new tab's pane): the configured `[final] retain-ms`.
+    pub final_retain_ms: u64,
 }
 
 impl Limits {
@@ -40,6 +43,7 @@ impl Limits {
             terminate_deadline_ms: 10_000,
             output_event_interval_ms: 250,
             frame_interval_ms: 8,
+            final_retain_ms: config.final_records.retain_ms,
         }
     }
 }
@@ -131,8 +135,9 @@ pub struct ShuttingDown(pub bool);
 pub struct WorkspaceCounter(pub u32);
 
 /// Fixed, global receipt budget. Unexpired operations are never evicted to admit new ones.
+/// The retention duration is the caller's (`input-reserve.retain_ms`), under
+/// [`crate::proto::control::MAX_INPUT_RETENTION_MS`].
 pub const MAX_INPUT_OPERATIONS: usize = 128;
-pub const INPUT_RETENTION_MS: u64 = 60_000;
 
 pub struct InputRecord {
     pub workspace: Entity,
@@ -147,8 +152,10 @@ pub struct InputOperations {
     pub records: BTreeMap<u64, InputRecord>,
 }
 
+/// Fixed, global final-record budget. The retention duration is the launcher's
+/// (`split.final_retain_ms`, stored on the pane), under
+/// [`crate::proto::control::MAX_FINAL_RETENTION_MS`].
 pub const MAX_FINAL_RECORDS: usize = 128;
-pub const FINAL_RETENTION_MS: u64 = 60_000;
 
 #[derive(Resource, Default)]
 pub struct FinalRecords(pub BTreeMap<PaneId, RetainedFinal>);

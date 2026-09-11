@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 - 2026-09-11
+
+- Requires fux 0.10.0: `input-reserve` and `split` carry zor's retention policy under fux's
+  published ceilings (`info.limits.input_retention_ms` = 600 000, `final_retention_ms` =
+  14 400 000; `crates/zor/src/fux.rs` mirrors both and a test pins them to fux's `info` reply
+  fixture). zor clamps first, so a receipt's `expires_ms` and a record's lifetime are exactly
+  what zor asked for.
+- `task submit` reserves input with `retain_ms` = the prompt's remaining window plus one
+  reconcile round (10 s): zor reads the receipt through `input-status` on every reconcile until
+  delivery is settled, on a late binding and on arm retirement, all bounded by the prompt
+  deadline.
+- `zor run` splits with `final_retain_ms` = `--timeout` plus a 5 s poll margin: the run polls
+  `final` every 25 ms until its deadline and never reads the record after it.
+- A managed launch splits with `final_retain_ms` = fux's ceiling (four hours): its exit is read
+  by the service's recovery loop, by `wait`/`follow` or after a service restart, an open-ended
+  horizon on zor's side, so the ceiling is the documented bound on how long a supervisor may be
+  away before the exit evidence is gone.
+
 ## 0.4.0 - 2026-09-11
 
 - New `zor run [--timeout MS] [--rows R] [--columns C] [--env K=V ...] [--cwd DIR]

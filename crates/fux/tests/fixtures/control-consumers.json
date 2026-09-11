@@ -11,7 +11,7 @@
     "input-status": {"consumers": ["zor:tasks/submit.rs", "zor:tasks/binding.rs", "zor:tasks/integration.rs"], "kind": "primitive", "why": "Reads the retained receipt of an input operation."},
     "capture": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/wait.rs", "zor:tasks/heartbeat.rs"], "kind": "primitive", "why": "Coherent snapshot of the retained grid."},
     "list": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Enumerates the server's workspaces, tabs and panes with their identity and counters."},
-    "info": {"consumers": ["cli"], "kind": "primitive", "why": "Server identity and limits over the control socket; the CLI prints it for debugging, zor reads identity from the manager descriptor instead."},
+    "info": {"consumers": ["cli", "zor:fux.rs"], "kind": "primitive", "why": "Server identity and limits over the control socket; the CLI prints it, zor pins its retention policy to the published ceilings of the info reply (fixture-checked) and reads identity from the manager descriptor."},
     "tab": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Tab lifecycle inside a workspace the server owns."},
     "workspace": {"consumers": ["viewer", "zor:run.rs"], "kind": "primitive", "why": "Workspace lifecycle from a control connection; zor run releases its throwaway workspace with it."},
     "events": {"consumers": ["zor:tasks/launch.rs"], "kind": "primitive", "why": "Bounded replay of the event log after a cursor."},
@@ -28,7 +28,7 @@
     "capture": {"consumers": ["cli", "zor:tasks/wait.rs", "zor:tasks/heartbeat.rs"], "kind": "primitive", "why": "Text capture with its sequence counters; zor reads input_sequence from a one-byte capture."},
     "cells": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:rules/view.rs"], "kind": "primitive", "why": "Cell-level capture zor's rules classify."},
     "listing": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Reply of list."},
-    "info": {"consumers": ["cli"], "kind": "primitive", "why": "Reply of the control-socket info request, printed verbatim by the CLI."}
+    "info": {"consumers": ["cli", "zor:fux.rs"], "kind": "primitive", "why": "Reply of the control-socket info request, printed verbatim by the CLI; zor reads its limits."}
   },
   "event": {
     "workspace.changed": {"consumers": ["cli", "zor:watch/events.rs"], "kind": "primitive", "why": "Layout or focus changed; zor counts it toward cursor continuity."},
@@ -73,13 +73,15 @@
     "version": {"consumers": ["cli"], "kind": "primitive", "why": "Server version, printed by fux info / fux workspace info."},
     "runtime_dir": {"consumers": ["cli"], "kind": "primitive", "why": "Runtime directory, printed by fux info / fux workspace info."},
     "workspace": {"consumers": ["cli"], "kind": "primitive", "why": "Answering workspace when asked over a control socket, printed by fux info."},
-    "limits": {"consumers": ["cli"], "kind": "primitive", "why": "Request-sizing bounds, printed by fux info / fux workspace info."}
+    "limits": {"consumers": ["cli", "zor:fux.rs"], "kind": "primitive", "why": "Request-sizing bounds and retention ceilings, printed by fux info / fux workspace info; zor reads the ceilings."}
   },
   "info-limits": {
     "scrollback_lines": {"consumers": ["cli"], "kind": "primitive", "why": "Bound for capture scrollback, printed for debugging."},
     "frame_bytes": {"consumers": ["cli"], "kind": "primitive", "why": "Bound for one control frame, printed for debugging."},
     "capture_bytes": {"consumers": ["cli"], "kind": "primitive", "why": "Bound for capture max_bytes, printed for debugging; zor sizes requests with its own constant."},
-    "key_bytes": {"consumers": ["cli"], "kind": "primitive", "why": "Bound for input payloads, printed for debugging."}
+    "key_bytes": {"consumers": ["cli"], "kind": "primitive", "why": "Bound for input payloads, printed for debugging."},
+    "input_retention_ms": {"consumers": ["cli", "zor:fux.rs"], "kind": "primitive", "why": "Ceiling input-reserve's retain_ms is clamped to; zor's receipt retention policy is pinned to it."},
+    "final_retention_ms": {"consumers": ["cli", "zor:fux.rs"], "kind": "primitive", "why": "Ceiling split's final_retain_ms is clamped to; zor's launch and run retention policy is pinned to it."}
   },
   "capture-snapshot": {
     "text": {"consumers": ["cli", "zor:run.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Screen text; zor prints and correlates the final record's text."},
@@ -116,7 +118,7 @@
     "state": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Delivery phase."},
     "revision": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Grid revision at delivery."},
     "input_sequence": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Input counter at delivery."},
-    "expires_ms": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Reservation lifetime."},
+    "expires_ms": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Reservation lifetime: the caller's retain_ms after the clamp to fux's ceiling."},
     "bytes_written": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Delivered byte count."},
     "error": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Delivery failure text."}
   },

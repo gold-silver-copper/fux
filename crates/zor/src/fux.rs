@@ -8,6 +8,13 @@ use std::time::{Duration, Instant};
 
 const MAX_REPLY: usize = 1024 * 1024;
 
+/// fux's retention ceilings, as `info` publishes them in `limits.input_retention_ms` and
+/// `limits.final_retention_ms`. fux clamps `input-reserve.retain_ms` and `split.final_retain_ms`
+/// to these; zor clamps its own policy first so a receipt's `expires_ms` and a record's lifetime
+/// are exactly what zor asked for. The test below pins both to fux's `info` reply fixture.
+pub const MAX_INPUT_RETENTION_MS: u64 = 600_000;
+pub const MAX_FINAL_RETENTION_MS: u64 = 14_400_000;
+
 pub fn request(socket: &Path, value: Value) -> anyhow::Result<Value> {
     request_until(socket, value, Instant::now() + Duration::from_secs(6))
 }
@@ -151,5 +158,26 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         server.join().expect("join");
         std::fs::remove_file(path).expect("cleanup");
+    }
+
+    /// fux's `info` reply fixture (a copy of `crates/fux/tests/verify/fixtures/control/
+    /// reply_completed_info.json`, which fux's fixture suite keeps byte-identical).
+    const INFO_REPLY: &str = include_str!("../tests/fixtures/control/reply_completed_info.json");
+
+    #[test]
+    fn retention_ceilings_match_the_limits_fux_info_publishes() {
+        let reply: Value = serde_json::from_str(INFO_REPLY).unwrap_or_default();
+        let limits = reply
+            .pointer("/result/value/info/limits")
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            limits.get("input_retention_ms").and_then(Value::as_u64),
+            Some(MAX_INPUT_RETENTION_MS)
+        );
+        assert_eq!(
+            limits.get("final_retention_ms").and_then(Value::as_u64),
+            Some(MAX_FINAL_RETENTION_MS)
+        );
     }
 }

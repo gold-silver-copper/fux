@@ -8,6 +8,24 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// One reconcile round after the prompt window: `wait::check_until` gives the reconcile
+/// (`input-status`) up to 6 s and the evaluation that follows up to 4 s.
+const RECONCILE_GRACE_MS: u64 = 10_000;
+
+/// The receipt retention zor asks fux for. zor reads the receipt through `input-status` for as
+/// long as the prompt is open: every reconcile until delivery is `delivered`/`failed`
+/// (`run_until`, `wait::check_until`, the service's 1 s recovery loop), a late binding
+/// (`binding.rs`) and the arm retirement (`integration.rs`). So the receipt must outlive the
+/// prompt's remaining window plus one reconcile round; anything longer is waste, anything
+/// beyond fux's ceiling would be clamped there anyway, so zor clamps first.
+pub(super) fn input_retain_ms(prompt: &Prompt, now_ms: u64) -> u64 {
+    prompt
+        .deadline_ms
+        .saturating_sub(now_ms)
+        .saturating_add(RECONCILE_GRACE_MS)
+        .min(crate::fux::MAX_INPUT_RETENTION_MS)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Reserve,
@@ -257,10 +275,11 @@ pub(super) fn run_until(
             );
             check_deadline(&prompt)?;
             verify_target(&target, deadline)?;
+            let retain_ms = input_retain_ms(&prompt, super::now_ms()?);
             let response = request(
                 &target,
                 "input-reserve",
-                json!({"pane":target.pane}),
+                json!({"pane":target.pane,"retain_ms":retain_ms}),
                 deadline,
             )?;
             let (phase, receipt) = receipt(response, &target, None, bytes)?;
@@ -413,6 +432,44 @@ mod tests {
             wait_exit_status: None,
         };
         assert!(super::super::active(&prompt));
+    }
+
+    #[test]
+    fn receipt_retention_covers_the_prompt_window_and_stays_under_fux_ceiling() {
+        let mut prompt = Prompt {
+            handoff: None,
+            id: "window".into(),
+            attempt: "attempt".into(),
+            text: "hello".into(),
+            created_ms: 1_000,
+            deadline_ms: 31_000,
+            delivery: Delivery::Prepared,
+            receipt: None,
+            wait: WaitOutcome::Pending,
+            released: false,
+            report_token: None,
+            response: None,
+            report_binding: None,
+            arm: None,
+            wait_problem: None,
+            wait_exit_status: None,
+        };
+        // The remaining window plus one reconcile round.
+        assert_eq!(input_retain_ms(&prompt, 6_000), 25_000 + RECONCILE_GRACE_MS);
+        const {
+            assert!(RECONCILE_GRACE_MS <= crate::fux::MAX_INPUT_RETENTION_MS);
+        }
+        // A day-long prompt (the longest zor accepts) is clamped to what fux will grant.
+        prompt.deadline_ms = prompt.created_ms + 86_400_000;
+        assert_eq!(
+            input_retain_ms(&prompt, prompt.created_ms),
+            crate::fux::MAX_INPUT_RETENTION_MS
+        );
+        // Never zero, which fux refuses, even after the window closed.
+        assert_eq!(
+            input_retain_ms(&prompt, prompt.deadline_ms + 5),
+            RECONCILE_GRACE_MS
+        );
     }
 
     #[test]

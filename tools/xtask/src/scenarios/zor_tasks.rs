@@ -842,7 +842,7 @@ pub fn run(fux: &Path, zor: &Path) -> Result<()> {
         t!("abandon", "timeout");
         let created = completed(
             &root.control(),
-            json!({"command":"split","axis":"horizontal","id":1,"instance":instance,"argv":["/bin/sh","-c","read line; exit 17"]}),
+            json!({"command":"split","axis":"horizontal","id":1,"instance":instance,"argv":["/bin/sh","-c","read line; exit 17"],"final_retain_ms":60000}),
         )?;
         t!(
             "adopt",

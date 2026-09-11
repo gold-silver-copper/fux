@@ -269,7 +269,7 @@ fn case(
         for _ in 1..panes {
             local::rpc(
                 &control,
-                json!({"command":"split","id":1,"axis":"horizontal","argv":[worker]}),
+                json!({"command":"split","id":1,"axis":"horizontal","argv":[worker],"final_retain_ms":60000}),
             )?;
         }
         for index in 0..viewers {

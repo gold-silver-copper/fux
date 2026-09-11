@@ -13,6 +13,19 @@ use std::time::{Duration, Instant};
 /// The largest reply frame a run reads; fux's own frame limit.
 const MAX_REPLY: usize = 1024 * 1024;
 
+/// A run reads the record within its own poll loop, so the record only has to outlive the last
+/// `final` poll before the run's deadline: one request round trip after `--timeout`.
+const FINAL_POLL_MARGIN_MS: u64 = 5_000;
+
+/// The final-record retention a run asks fux for on `split`: the run's `--timeout` (it polls
+/// `final` every 25 ms until then and gives up after) plus the last poll's round trip, clamped
+/// to fux's ceiling, which fux would apply anyway.
+fn final_retain_ms(timeout_ms: u64) -> u64 {
+    timeout_ms
+        .saturating_add(FINAL_POLL_MARGIN_MS)
+        .min(crate::fux::MAX_FINAL_RETENTION_MS)
+}
+
 pub struct Run {
     /// Covers workspace creation, the launch and the wait for final evidence.
     pub timeout_ms: u64,
@@ -164,7 +177,8 @@ fn run_in_workspace(
         &owned.control,
         &json!({"command":"split","id":2,"instance":owned.instance,"stream":owned.stream,
             "axis":"horizontal","cwd":cwd,"argv":request.argv,"env":request.env,
-            "rows":request.rows,"columns":request.columns}),
+            "rows":request.rows,"columns":request.columns,
+            "final_retain_ms":final_retain_ms(request.timeout_ms)}),
         deadline,
     )?;
     let pane = match split.get("status").and_then(Value::as_str) {
@@ -325,6 +339,17 @@ pub fn env_pairs(values: Vec<String>) -> Result<Vec<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_retention_follows_the_timeout_and_stays_under_fux_ceiling() {
+        assert_eq!(final_retain_ms(30_000), 30_000 + FINAL_POLL_MARGIN_MS);
+        assert!(final_retain_ms(0) > 0, "fux refuses a zero retention");
+        assert_eq!(
+            final_retain_ms(u64::MAX),
+            crate::fux::MAX_FINAL_RETENTION_MS
+        );
+        assert!(final_retain_ms(86_400_000) <= crate::fux::MAX_FINAL_RETENTION_MS);
+    }
 
     #[test]
     fn env_pairs_split_on_the_first_equals_and_reject_malformed_entries() {

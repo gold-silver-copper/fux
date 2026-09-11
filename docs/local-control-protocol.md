@@ -36,17 +36,17 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 
 | Command | Fields | Result |
 |---|---|---|
-| `split` | `axis` (`horizontal`/`vertical`), `target?`, `cwd?`, `argv?`, `env?`, `rows?`, `columns?` | `pane` |
+| `split` | `axis` (`horizontal`/`vertical`), `final_retain_ms` (nonzero; clamped to `final_retention_ms`), `target?`, `cwd?`, `argv?`, `env?`, `rows?`, `columns?` | `pane` |
 | `focus` | `target`: `left`/`right`/`up`/`down` or `{"pane":ID}` | unit |
 | `kill` | `pane` | unit (the pane leaves the layout now; `pane.closed` follows the exit report) |
 | `resize` | `pane`, `delta` (non-zero) | unit |
 | `send-keys` | `pane`, `keys` (at most 64 KiB), `notation?` (`escapes` default, or `keys`) | unit |
 | `capture` | `pane`, `attrs?`, `scrollback?` (≤100 000 rows; `text` only), `max_bytes` (1–131072), `format?` (`text` default or `cells`), `if_revision?` | coherent `capture` or `cells` (below) |
 | `list` | | `workspaces[]` |
-| `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{scrollback_lines,frame_bytes,capture_bytes,key_bytes}` (the bounds a client sizes requests by) |
+| `info` | | `info`: `pid`, `instance_nonce`, `version`, `runtime_dir`, `workspace`, `limits{scrollback_lines,frame_bytes,capture_bytes,key_bytes,input_retention_ms,final_retention_ms}` (the bounds a client sizes requests by and the retention ceilings it chooses under) |
 | `tab` | `action`: `new{name?}`, `next`, `previous`, `select{target}` (`{index:N}` or `{id:TAB}`), `rename{tab,name}`, `close{tab}` | `tab` |
 | `workspace` | `action`: `list`, `new{name?}`, `kill{name}` (only the connection's own workspace; other workspaces are killed through the manager or `fux workspace kill`), `select{name}` (viewer attachments only) | `workspace`/`workspaces[]` |
-| `input-reserve` | `instance`, `pane` | input receipt |
+| `input-reserve` | `instance`, `pane`, `retain_ms` (nonzero; clamped to `input_retention_ms`) | input receipt |
 | `input-submit` | `instance`, `operation`, `keys` (escape notation) | input receipt |
 | `input-status` | `instance`, `operation` | input receipt |
 | `events` | `instance`, `after` | current cursor and retained events |
@@ -120,13 +120,23 @@ Receipts contain `state` (`reserved`, `queued`, `delivered`, `failed`), `bytes_w
 `revision`, `input_sequence` and server-clock `expires_ms`. Delivery means PTY write completion,
 not application acknowledgement. A failed write may have delivered a prefix. An expired or
 unavailable receipt leaves the outcome unknown; do not automatically replay the input.
-At most 128 receipts are retained for 60 seconds; expiry does not cancel queued bytes.
+Retention is the caller's policy under a server ceiling: `input-reserve` requires `retain_ms`,
+the milliseconds the receipt stays readable from the reservation; `0` is `invalid-request`, a
+value above `info.limits.input_retention_ms` (600 000, ten minutes) is clamped to it, and
+`expires_ms` is the reservation time plus the value actually applied, so a caller sees the
+clamp in the receipt. At most 128 receipts are retained at once, whatever their durations
+(capacity is fux's bound against any client); expiry does not cancel queued bytes.
 
 ## Creating panes and sending keys
 
-Pane `split` accepts `env` (an array of `[name, value]` pairs, at most 64 entries and 16 KiB
-total, applied on top of the sanitized inherited environment) and `rows`/`columns` for the pane's
-initial spawn size. Subsequent layout can resize the pane, including without a viewer;
+Pane `split` requires `final_retain_ms`, the milliseconds the pane's final record (below) stays
+readable after the pane closes: the record is created at exit, when no client need be present,
+so the launcher states its retention when it creates the pane. `0` is `invalid-request`; a value
+above `info.limits.final_retention_ms` (14 400 000, four hours) is clamped to it. fux's own
+panes (a workspace's initial pane, a new tab's pane, the viewer's and CLI's splits) use the
+configured `[final] retain-ms` (default 60 000). `split` also accepts `env` (an array of
+`[name, value]` pairs, at most 64 entries and 16 KiB total, applied on top of the sanitized
+inherited environment) and `rows`/`columns` for the pane's initial spawn size. Subsequent layout can resize the pane, including without a viewer;
 attached viewers determine the tab's available area. Workspace creation does not accept these
 fields in either the manager or workspace control schema.
 
@@ -203,8 +213,10 @@ most recently attached workspace. `kill` deliberately terminates that workspace'
 `create` creates only when the name is absent; it never attaches to an existing workspace.
 `final` returns a `final` manager envelope containing a control reply. A live pane returns
 `pending`; a retained record supplies immutable final capture, original workspace identity,
-command/cwd and exit evidence. Records are bounded to 128 entries and up to 60 seconds (capacity pressure evicts older records), with at
-most 128 KiB of capture text each. Forced retirement may leave exit status unknown; late
+command/cwd and exit evidence. Each record lives for the `final_retain_ms` its pane was created
+with (clamped to four hours), from the moment the pane closed; at most 128 records are retained at
+once (capacity pressure evicts the oldest-closed record early), with at most 128 KiB of capture
+text each. Forced retirement may leave exit status unknown; late
 reports do not rewrite published records. The manager can remain alive after workspace
 sockets disappear to serve these records. `final` is the primitive; the workflows over it
 (`zor run`, zor's managed launches) live in zor and never claim task success from PTY
