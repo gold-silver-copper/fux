@@ -1,15 +1,19 @@
 //! Same-user local socket discipline shared by programs that publish a private Unix socket:
 //! an owned 0700 directory, a 0600 socket inode that is only ever removed by the process that
 //! bound it, kernel-supplied peer credentials, random instance tokens and non-blocking
-//! connect initiation. Wait policies, framing and error wording stay with the caller.
+//! connect initiation, plus the deadline discipline built on it: a bounded connect, a bounded
+//! full write, a newline-delimited frame reader and per-application runtime-directory
+//! discovery. Limits, prefaces and error wording stay with the caller.
 
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 /// Why a directory cannot hold private sockets.
 #[derive(Debug)]
@@ -219,10 +223,243 @@ impl AsFd for Connecting {
     }
 }
 
+/// Time left before `deadline`, or `TimedOut` once it has passed.
+fn remaining(deadline: Instant) -> io::Result<std::time::Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))
+}
+
+/// Waits for `flags` on `fd` for at most the time left before `deadline` (capped at two seconds
+/// per call so callers observe the deadline promptly). `Ok(false)` means nothing happened yet;
+/// `EINTR` is retried by the caller's loop.
+fn poll_until(
+    fd: BorrowedFd<'_>,
+    flags: nix::poll::PollFlags,
+    deadline: Instant,
+) -> io::Result<bool> {
+    let timeout =
+        u16::try_from(remaining(deadline)?.as_millis().clamp(1, 2000)).map_err(io::Error::other)?;
+    let mut polls = [nix::poll::PollFd::new(fd, flags)];
+    match nix::poll::poll(&mut polls, timeout) {
+        Ok(0) | Err(nix::errno::Errno::EINTR) => Ok(false),
+        Ok(_) => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Connects to `path` without letting a saturated listener outlive `deadline`: initiates the
+/// connection non-blocking and polls for writability until it completes or the deadline passes
+/// (`TimedOut`), retrying interrupted polls. The returned stream is blocking.
+pub fn connect_until(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
+    remaining(deadline)?;
+    let connecting = Connecting::start(path)?;
+    if connecting.pending() {
+        while !poll_until(connecting.as_fd(), nix::poll::PollFlags::POLLOUT, deadline)? {}
+        connecting.confirm()?;
+    }
+    remaining(deadline)?;
+    connecting.finish()
+}
+
+/// Writes all of `bytes` under one wall-clock deadline, even when the peer drains only a few
+/// bytes at a time. The descriptor's status flags are restored before returning.
+pub fn write_all_until(
+    stream: &mut UnixStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+    let flags = OFlag::from_bits_truncate(fcntl(&*stream, FcntlArg::F_GETFL)?);
+    fcntl(&*stream, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+    let result = (|| {
+        while !bytes.is_empty() {
+            remaining(deadline)?;
+            match stream.write(bytes) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(count) => {
+                    bytes = bytes
+                        .get(count..)
+                        .ok_or_else(|| io::Error::other("invalid socket write count"))?
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    poll_until(stream.as_fd(), nix::poll::PollFlags::POLLOUT, deadline)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    })();
+    let restored = fcntl(&*stream, FcntlArg::F_SETFL(flags))
+        .map(|_| ())
+        .map_err(io::Error::from);
+    result.and(restored)
+}
+
+/// Why a newline-delimited frame did not arrive.
+#[derive(Debug)]
+pub enum FrameError {
+    /// The deadline passed before a newline arrived.
+    TimedOut,
+    /// The peer closed before a newline arrived.
+    Closed,
+    /// More than the reader's maximum frame size arrived without a newline.
+    Oversize,
+    /// Polling or reading the socket failed.
+    Io(io::Error),
+}
+
+impl fmt::Display for FrameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TimedOut => f.write_str("frame deadline passed"),
+            Self::Closed => f.write_str("peer closed before a complete frame"),
+            Self::Oversize => f.write_str("frame exceeds the size limit"),
+            Self::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for FrameError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::TimedOut | Self::Closed | Self::Oversize => None,
+        }
+    }
+}
+
+impl From<io::Error> for FrameError {
+    fn from(error: io::Error) -> Self {
+        if error.kind() == io::ErrorKind::TimedOut {
+            Self::TimedOut
+        } else {
+            Self::Io(error)
+        }
+    }
+}
+
+/// Reads newline-delimited frames of at most `max_frame` payload bytes (the newline excluded),
+/// keeping partial data across calls. Works on blocking and non-blocking streams alike: every
+/// read is preceded by a poll bounded by the call's deadline. Decoding stays with the caller.
+#[derive(Debug)]
+pub struct FrameReader {
+    buffer: Vec<u8>,
+    max_frame: usize,
+    read_size: usize,
+}
+
+impl FrameReader {
+    /// A reader that pulls up to 8 KiB per read; bytes after a newline stay buffered for the
+    /// next call, so one reader must serve the stream for its lifetime.
+    pub fn new(max_frame: usize) -> Self {
+        Self {
+            buffer: Vec::new(),
+            max_frame,
+            read_size: 8192,
+        }
+    }
+
+    /// A reader that pulls one byte per read, so nothing past the newline leaves the socket and
+    /// the reader may be dropped between frames.
+    pub fn bytewise(max_frame: usize) -> Self {
+        Self {
+            read_size: 1,
+            ..Self::new(max_frame)
+        }
+    }
+
+    /// The next frame's payload, without its newline, before `deadline`.
+    pub fn next_frame(
+        &mut self,
+        stream: &mut UnixStream,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, FrameError> {
+        loop {
+            if let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
+                let mut frame = self.buffer.split_off(newline);
+                std::mem::swap(&mut frame, &mut self.buffer);
+                self.buffer.drain(..1);
+                return Ok(frame);
+            }
+            if self.buffer.len() > self.max_frame {
+                return Err(FrameError::Oversize);
+            }
+            if !poll_until(stream.as_fd(), nix::poll::PollFlags::POLLIN, deadline)? {
+                continue;
+            }
+            let start = self.buffer.len();
+            self.buffer.resize(start + self.read_size, 0);
+            let target = self
+                .buffer
+                .get_mut(start..)
+                .ok_or_else(|| io::Error::other("invalid frame buffer offset"))?;
+            let outcome = stream.read(target);
+            self.buffer
+                .truncate(start + outcome.as_ref().copied().unwrap_or(0));
+            match outcome {
+                Ok(0) => return Err(FrameError::Closed),
+                Ok(_) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+/// The private runtime directory for the application `name`: `$XDG_RUNTIME_DIR/<name>` when
+/// that variable holds an absolute path; on macOS otherwise
+/// `$HOME/Library/Caches/<name>-runtime/<name>`. `None` when neither applies.
+pub fn runtime_directory(name: &str) -> Option<PathBuf> {
+    runtime_directory_from(
+        name,
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// [`runtime_directory`] over explicit `XDG_RUNTIME_DIR` and `HOME` values.
+pub fn runtime_directory_from(
+    name: &str,
+    runtime: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
+    let absolute = |value: Option<OsString>| {
+        value
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    if let Some(root) = absolute(runtime) {
+        return Some(root.join(name));
+    }
+    macos_fallback(name, absolute(home))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_fallback(name: &str, home: Option<PathBuf>) -> Option<PathBuf> {
+    home.map(|home| {
+        home.join("Library/Caches")
+            .join(format!("{name}-runtime"))
+            .join(name)
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_fallback(_: &str, _: Option<PathBuf>) -> Option<PathBuf> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::time::Duration;
 
     /// Short enough for a socket path below the platform temporary directory.
     fn scratch(name: &str) -> io::Result<PathBuf> {
@@ -327,5 +564,147 @@ mod tests {
         ));
         drop(bound);
         fs::remove_dir_all(root)
+    }
+
+    #[test]
+    fn frames_survive_partial_reads_and_reject_oversize_and_deadlines() -> io::Result<()> {
+        let (mut client, mut server) = UnixStream::pair()?;
+        let mut reader = FrameReader::new(8);
+        let far = || Instant::now() + Duration::from_secs(2);
+        server.write_all(b"ab")?;
+        std::thread::sleep(Duration::from_millis(10));
+        server.write_all(b"c\nde\nf")?;
+        let frame = reader
+            .next_frame(&mut client, far())
+            .map_err(io::Error::other)?;
+        assert_eq!(frame, b"abc");
+        let frame = reader
+            .next_frame(&mut client, far())
+            .map_err(io::Error::other)?;
+        assert_eq!(frame, b"de");
+        let started = Instant::now();
+        assert!(matches!(
+            reader.next_frame(&mut client, Instant::now() + Duration::from_millis(50)),
+            Err(FrameError::TimedOut)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        server.write_all(b"gh\n")?;
+        let frame = reader
+            .next_frame(&mut client, far())
+            .map_err(io::Error::other)?;
+        assert_eq!(frame, b"fgh", "partial data is retained across a deadline");
+        server.write_all(b"123456789")?;
+        assert!(matches!(
+            reader.next_frame(&mut client, far()),
+            Err(FrameError::Oversize)
+        ));
+        let (mut client, mut server) = UnixStream::pair()?;
+        server.write_all(b"12345678\n")?;
+        let frame = FrameReader::new(8)
+            .next_frame(&mut client, far())
+            .map_err(io::Error::other)?;
+        assert_eq!(frame.len(), 8, "a frame of exactly the limit is accepted");
+        server.write_all(b"partial")?;
+        drop(server);
+        assert!(matches!(
+            FrameReader::new(8).next_frame(&mut client, far()),
+            Err(FrameError::Closed)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn bytewise_reader_leaves_the_next_frame_on_the_socket() -> io::Result<()> {
+        let (mut client, mut server) = UnixStream::pair()?;
+        server.write_all(b"one\ntwo\n")?;
+        let far = Instant::now() + Duration::from_secs(2);
+        let first = FrameReader::bytewise(16)
+            .next_frame(&mut client, far)
+            .map_err(io::Error::other)?;
+        let second = FrameReader::bytewise(16)
+            .next_frame(&mut client, far)
+            .map_err(io::Error::other)?;
+        assert_eq!(
+            (first.as_slice(), second.as_slice()),
+            (&b"one"[..], &b"two"[..])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn connect_until_honors_the_deadline_against_a_saturated_listener() -> io::Result<()> {
+        let root = scratch("deadline")?;
+        ensure_private_directory(&root).map_err(io::Error::other)?;
+        let path = root.join("s.sock");
+        let bound = BoundSocket::bind(&path)?;
+        let mut client = connect_until(&path, Instant::now() + Duration::from_secs(2))?;
+        let (mut server, _) = bound.listener().accept()?;
+        client.write_all(b"hi")?;
+        let mut received = [0; 2];
+        server.read_exact(&mut received)?;
+        assert!(matches!(
+            connect_until(&path, Instant::now()),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut
+        ));
+        assert!(matches!(
+            connect_until(&root.join("absent.sock"), Instant::now() + Duration::from_secs(1)),
+            Err(error) if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            )
+        ));
+        drop(bound);
+        fs::remove_dir_all(root)
+    }
+
+    #[test]
+    fn slow_partial_writes_obey_one_deadline_and_restore_flags() -> io::Result<()> {
+        use nix::fcntl::{FcntlArg, OFlag, fcntl};
+        let (mut writer, mut reader) = UnixStream::pair()?;
+        nix::sys::socket::setsockopt(&writer, nix::sys::socket::sockopt::SndBuf, &4096)?;
+        reader.set_read_timeout(Some(Duration::from_secs(1)))?;
+        let peer = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            while let Ok(count) = reader.read(&mut buffer) {
+                if count == 0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let start = Instant::now();
+        let result = write_all_until(
+            &mut writer,
+            &vec![b'x'; 1024 * 1024],
+            start + Duration::from_millis(100),
+        );
+        let flags = OFlag::from_bits_truncate(fcntl(&writer, FcntlArg::F_GETFL)?);
+        drop(writer);
+        peer.join().map_err(|_| io::Error::other("peer panicked"))?;
+        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(!flags.contains(OFlag::O_NONBLOCK));
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_directory_prefers_xdg_and_falls_back_only_on_macos() {
+        assert_eq!(
+            runtime_directory_from("app", Some("/run/user/1".into()), Some("/home/u".into())),
+            Some(PathBuf::from("/run/user/1/app"))
+        );
+        let fallback = runtime_directory_from("app", Some("".into()), Some("/Users/u".into()));
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                fallback,
+                Some(PathBuf::from("/Users/u/Library/Caches/app-runtime/app"))
+            );
+        } else {
+            assert_eq!(fallback, None);
+        }
+        assert_eq!(
+            runtime_directory_from("app", Some("relative".into()), Some("relative".into())),
+            None
+        );
     }
 }

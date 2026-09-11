@@ -645,31 +645,19 @@ fn request(root: &Path, value: Value) -> Result<Value> {
     let mut stream = crate::fux::connect(&root.join("control.sock"), deadline)
         .context("zor service unavailable; start `zor serve` with the same --directory")?;
     crate::fux::same_user(&stream)?;
-    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-    serde_json::to_writer(&mut stream, &value)?;
-    stream.write_all(b"\n")?;
-    let mut output = Vec::new();
-    loop {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or_else(|| anyhow::anyhow!("zor service request timed out"))?;
-        stream.set_read_timeout(Some(remaining))?;
-        let mut chunk = [0; 8192];
-        let count = stream.read(&mut chunk)?;
-        anyhow::ensure!(count != 0, "zor service closed before replying");
-        anyhow::ensure!(
-            output.len() + count <= MAX_RESPONSE,
-            "zor service response exceeds limit"
-        );
-        output.extend_from_slice(
-            chunk
-                .get(..count)
-                .ok_or_else(|| anyhow::anyhow!("invalid response length"))?,
-        );
-        if output.contains(&b'\n') {
-            break;
-        }
-    }
+    let mut bytes = serde_json::to_vec(&value)?;
+    bytes.push(b'\n');
+    local_ipc::write_all_until(&mut stream, &bytes, Instant::now() + Duration::from_secs(1))?;
+    let output = local_ipc::FrameReader::new(MAX_RESPONSE)
+        .next_frame(&mut stream, deadline)
+        .map_err(|error| match error {
+            local_ipc::FrameError::TimedOut => anyhow::anyhow!("zor service request timed out"),
+            local_ipc::FrameError::Closed => anyhow::anyhow!("zor service closed before replying"),
+            local_ipc::FrameError::Oversize => {
+                anyhow::anyhow!("zor service response exceeds limit")
+            }
+            local_ipc::FrameError::Io(error) => error.into(),
+        })?;
     let response: Value = serde_json::from_slice(&output)?;
     if response.get("v") == Some(&json!(1))
         && response.get("id") == Some(&json!(1))
@@ -856,22 +844,19 @@ fn start_background(
 }
 
 fn startup_frame(channel: &mut UnixStream, deadline: Instant) -> Result<Value> {
-    let mut bytes = Vec::new();
-    loop {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or_else(|| anyhow::anyhow!("zor startup deadline exceeded"))?;
-        channel.set_read_timeout(Some(remaining))?;
-        let mut byte = [0];
-        channel
-            .read_exact(&mut byte)
-            .context("zor child closed its startup channel")?;
-        bytes.extend_from_slice(&byte);
-        anyhow::ensure!(bytes.len() <= 4096, "zor startup response exceeds limit");
-        if byte == *b"\n" {
-            return serde_json::from_slice(&bytes).context("invalid zor startup response");
-        }
-    }
+    let bytes = local_ipc::FrameReader::bytewise(4096)
+        .next_frame(channel, deadline)
+        .map_err(|error| match error {
+            local_ipc::FrameError::TimedOut => anyhow::anyhow!("zor startup deadline exceeded"),
+            local_ipc::FrameError::Closed => {
+                anyhow::anyhow!("zor child closed its startup channel")
+            }
+            local_ipc::FrameError::Oversize => {
+                anyhow::anyhow!("zor startup response exceeds limit")
+            }
+            local_ipc::FrameError::Io(error) => error.into(),
+        })?;
+    serde_json::from_slice(&bytes).context("invalid zor startup response")
 }
 
 #[cfg(test)]

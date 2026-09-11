@@ -38,7 +38,7 @@ anyhow = { version = "1.0", optional = true }
 clap = { version = "4.5", features = ["derive"], optional = true }
 # Same-user local socket discipline shared with fux: private directories, 0600 sockets,
 # kernel peer credentials, instance tokens and non-blocking connect initiation.
-local-ipc = { version = "0.1.0", path = "../local-ipc", optional = true }
+local-ipc = { version = "0.2.0", path = "../local-ipc", optional = true }
 # Unix terminal and process primitives used only by platform adapters.
 libc = { version = "0.2", optional = true }
 # Safe termios operations for raw-mode guards.
