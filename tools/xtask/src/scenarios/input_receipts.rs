@@ -39,7 +39,10 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         )
     };
     let reserve = || -> Result<Value> {
-        Ok(value("input-reserve", json!({"pane":1}))?["receipt"]["operation"].clone())
+        Ok(
+            value("input-reserve", json!({"pane":1,"retain_ms":60000}))?["receipt"]["operation"]
+                .clone(),
+        )
     };
     let status = |op: &Value| -> Result<Value> {
         Ok(value("input-status", json!({"operation":op}))?["receipt"].clone())

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0 - 2026-09-11
+
+- Requires fux 0.10.0: `input-reserve` and `split` carry zor's retention policy under fux's
+  published ceilings (`info.limits.input_retention_ms` = 600 000, `final_retention_ms` =
+  14 400 000; `crates/zor/src/fux.rs` mirrors both and a test pins them to fux's `info` reply
+  fixture). zor clamps first, so a receipt's `expires_ms` and a record's lifetime are exactly
+  what zor asked for.
+- `task submit` reserves input with `retain_ms` = the prompt's remaining window plus one
+  reconcile round (10 s): zor reads the receipt through `input-status` on every reconcile until
+  delivery is settled, on a late binding and on arm retirement, all bounded by the prompt
+  deadline.
+  Prompts whose window exceeds fux's 10-minute receipt ceiling lose their receipt after that
+  ceiling; a later reconcile reports `expired` and the arm cannot be proven unsent.
+- `zor run` splits with `final_retain_ms` = `--timeout` plus a 5 s poll margin: the run polls
+  `final` every 25 ms until its deadline and never reads the record after it.
+- A managed launch splits with `final_retain_ms` = fux's ceiling (four hours): its exit is read
+  by the service's recovery loop, by `wait`/`follow` or after a service restart, an open-ended
+  horizon on zor's side, so the ceiling is the documented bound on how long a supervisor may be
+  away before the exit evidence is gone.
+- `final` replies are classified in one place (`fux::final_reply`): `zor run`, a prompt wait's
+  final-evidence path and a managed launch's recovery treat fux's new `evicted` code as a hard
+  failure whose message says the server dropped the record under load before its retention
+  elapsed, never a retry; `expired` and the new `unknown` stay hard failures as before (a
+  never-recorded id used to be `expired`; nothing polls either). Only `pending` is polled, and
+  only by `zor run`.
+
 ## 0.4.0 - 2026-09-11
 
 - New `zor run [--timeout MS] [--rows R] [--columns C] [--env K=V ...] [--cwd DIR]

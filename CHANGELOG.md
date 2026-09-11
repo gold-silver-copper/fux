@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.10.0 - 2026-09-11
+
+Breaking release: retention durations become the caller's policy under fux-enforced ceilings.
+fux keeps the caps (128 receipts, 128 final records: they bound server memory against any
+client); how long each item lives is chosen by whoever created it. No compatibility with 0.9.0
+request shapes is kept.
+
+- `input-reserve` requires `retain_ms` (u64, milliseconds). `0` is `invalid-request`; values
+  above the new ceiling `MAX_INPUT_RETENTION_MS` = 600 000 (ten minutes) are clamped, and the
+  receipt's `expires_ms` is the reservation time plus the applied value, so the clamp is
+  visible. Ten minutes covers any single input round trip and its reconciliation many times
+  over while keeping a stuck client from pinning receipts (and their submitted bytes) for hours.
+  Removed `INPUT_RETENTION_MS` (60 s, applied to every receipt).
+- `split` requires `final_retain_ms` (u64, milliseconds), stored on the pane and applied when
+  its final record is created at close. `0` is `invalid-request`; values above the new ceiling
+  `MAX_FINAL_RETENTION_MS` = 14 400 000 (four hours) are clamped. Four hours lets a supervisor
+  that was down reconnect and still read exit evidence, while a record's bounded capture
+  (128 KiB) times the cap of 128 stays a fixed worst case however long the durations.
+  Removed `FINAL_RETENTION_MS` (60 s, applied to every record).
+- New configuration key `[final] retain-ms` (1 through 14 400 000, default 60 000): the
+  `final_retain_ms` of the panes fux creates itself (a workspace's initial pane on `workspace
+  new`/`resolve`/manager `create`, a new tab's pane, the viewer's `split-side`/`split-stack`,
+  the CLI's `fux new`/`fux split`). It lives in `Config` because those panes have no protocol
+  caller to state a policy, and fux's interactive users keep the previous 60 s behavior by
+  configuration; automation must choose per pane on `split`. Only the `new`/`split` CLI
+  aliases read the configuration; the other aliases still run without a config file.
+- `info.limits` gains `input_retention_ms` and `final_retention_ms`, the two ceilings, so a
+  client can size its policy without guessing; zor pins its policy to them.
+- Fixtures: `request_split.json` carries `final_retain_ms`; new `request_input_reserve.json`
+  and `reply_completed_info.json` (the latter also copied to `crates/zor/tests/fixtures/
+  control/`, kept byte-identical by the fixture suite). The consumer fixture records zor as
+  the consumer of `info.limits` and its two ceilings.
+- `final` explains a missing record. New error codes `evicted` (the 128-record cap dropped the
+  record under load before its `expires_ms`) and `unknown` (this server never retained a record
+  for the id, or has forgotten that it did); `expired` now means only that a record existed and
+  its retention elapsed. fux remembers, per server instance, the most recent 1024 evicted ids
+  and the most recent 1024 expired ids (`MAX_FORGOTTEN_FINAL_IDS`; two rings, 4 KiB each), and an
+  id that falls off its ring answers `unknown`. The rule is exact: no id is reported `evicted`
+  or `expired` without a record having been made for it. Capacity eviction now sweeps expired
+  records first, so it only ever drops a record that was still valid. `pending` and `conflict`
+  are unchanged. The `final-records` automation scenario checks `unknown` for a never-recorded
+  pane.
+- zor 0.5.0 ships from this workspace; see `crates/zor/CHANGELOG.md`.
+
 ## 0.9.0 - 2026-09-11
 
 Breaking release: dead automation surface is deleted and the two workflows fux still carried

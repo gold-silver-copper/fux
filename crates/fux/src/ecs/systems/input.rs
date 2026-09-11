@@ -2,22 +2,35 @@
 use crate::ecs::components::Pane;
 use crate::ecs::messages::{Effect, Inbound};
 use crate::ecs::resources::{
-    Clock, Deadlines, INPUT_RETENTION_MS, Ids, InputOperations, InputRecord, MAX_INPUT_OPERATIONS,
+    Clock, Deadlines, Ids, InputOperations, InputRecord, MAX_INPUT_OPERATIONS,
 };
 use crate::ecs::support::effect;
-use crate::proto::control::{CommandResult, ErrorCode, InputReceipt, InputState, Reply};
+use crate::proto::control::{
+    CommandResult, ErrorCode, InputReceipt, InputState, MAX_INPUT_RETENTION_MS, Reply,
+};
 use bevy_ecs::prelude::*;
 
 fn failure(id: u64, code: ErrorCode, message: &str) -> Reply {
     Reply::failed(id, code, message)
 }
 
+/// `retain_ms` is the caller's retention: zero is rejected, larger values are clamped to
+/// [`MAX_INPUT_RETENTION_MS`], and the receipt's `expires_ms` reflects the clamp.
 pub fn reserve(
     world: &mut World,
     workspace: Entity,
     pane: Entity,
+    retain_ms: u64,
     id: u64,
 ) -> Result<CommandResult, Reply> {
+    if retain_ms == 0 {
+        return Err(failure(
+            id,
+            ErrorCode::InvalidRequest,
+            "retain_ms must be nonzero",
+        ));
+    }
+    let retain_ms = retain_ms.min(MAX_INPUT_RETENTION_MS);
     expire(world);
     let component = world
         .get::<Pane>(pane)
@@ -35,10 +48,7 @@ pub fn reserve(
         state: InputState::Reserved,
         revision: component.terminal.revision(),
         input_sequence: component.input_sequence,
-        expires_ms: world
-            .resource::<Clock>()
-            .now_ms
-            .saturating_add(INPUT_RETENTION_MS),
+        expires_ms: world.resource::<Clock>().now_ms.saturating_add(retain_ms),
         bytes_written: 0,
         error: None,
     };

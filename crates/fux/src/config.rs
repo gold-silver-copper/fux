@@ -31,6 +31,9 @@ pub struct Config {
     pub clipboard: ClipboardPolicy,
     pub history: HistoryLimits,
     pub limits: Limits,
+    /// `[final]`: retention of the final records of panes fux creates itself.
+    #[serde(rename = "final")]
+    pub final_records: FinalRecords,
     pub style: Style,
 }
 
@@ -43,6 +46,7 @@ impl Default for Config {
             clipboard: ClipboardPolicy::Disabled,
             history: HistoryLimits::default(),
             limits: Limits::default(),
+            final_records: FinalRecords::default(),
             style: Style::default(),
         }
     }
@@ -112,7 +116,8 @@ impl Config {
         }
         self.default_command.validate("default-command")?;
         self.history.validate()?;
-        self.limits.validate()
+        self.limits.validate()?;
+        self.final_records.validate()
     }
 }
 
@@ -277,6 +282,37 @@ impl HistoryLimits {
                 "history.scrollback-lines",
                 format!("must be 1-{MAX_SCROLLBACK_LINES}"),
             );
+        }
+        Ok(())
+    }
+}
+
+/// `[final] retain-ms`: how long the final record of a pane fux creates on its own (the initial
+/// pane of a workspace, a new tab's pane, the viewer's and CLI's splits) stays readable through
+/// the manager's `final` after the pane closes. Automation chooses per pane on `split`
+/// (`final_retain_ms`); this default only covers panes nobody launched over the protocol.
+pub const DEFAULT_FINAL_RETAIN_MS: u64 = 60_000;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
+pub struct FinalRecords {
+    /// Milliseconds, 1 through `MAX_FINAL_RETENTION_MS` (four hours).
+    pub retain_ms: u64,
+}
+
+impl Default for FinalRecords {
+    fn default() -> Self {
+        Self {
+            retain_ms: DEFAULT_FINAL_RETAIN_MS,
+        }
+    }
+}
+
+impl FinalRecords {
+    fn validate(&self) -> Result<(), ConfigError> {
+        let ceiling = crate::proto::control::MAX_FINAL_RETENTION_MS;
+        if self.retain_ms == 0 || self.retain_ms > ceiling {
+            return invalid("final.retain-ms", format!("must be 1-{ceiling}"));
         }
         Ok(())
     }
@@ -448,6 +484,14 @@ mod tests {
         assert!(Config::from_toml("[hints]\ndelay-ms = 0").is_err());
         assert!(Config::from_toml("[history]\nscrollback-lines = 0").is_err());
         assert!(Config::from_toml("[limits]\nmax-panes = 100000").is_err());
+        assert!(Config::from_toml("[final]\nretain-ms = 0").is_err());
+        assert!(Config::from_toml("[final]\nretain-ms = 14400001").is_err());
+        assert_eq!(
+            Config::from_toml("[final]\nretain-ms = 5000")
+                .map(|config| config.final_records.retain_ms)
+                .ok(),
+            Some(5000)
+        );
         assert!(Config::from_toml("default-command = { argv = [] }").is_err());
         assert!(Config::from_toml("clipboard = 'read-write'").is_err());
     }

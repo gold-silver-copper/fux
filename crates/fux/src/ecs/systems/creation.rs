@@ -26,6 +26,9 @@ pub struct NewPane {
     pub env: Vec<(String, String)>,
     pub requester: Requester,
     pub request_id: RequestId,
+    /// Retention of the pane's final record; zero is rejected, larger values are clamped to
+    /// `MAX_FINAL_RETENTION_MS`.
+    pub final_retain_ms: u64,
 }
 
 /// Reserves a pane entity and asks the adapter to spawn its process. Returns the reservation.
@@ -37,6 +40,16 @@ pub fn reserve_pane(
     size: (u16, u16),
 ) -> Result<Entity, Reply> {
     let limits = world.resource::<Limits>().clone();
+    if new.final_retain_ms == 0 {
+        return Err(failed(
+            new.request_id,
+            ErrorCode::InvalidRequest,
+            "final_retain_ms must be nonzero",
+        ));
+    }
+    let final_retain_ms = new
+        .final_retain_ms
+        .min(crate::proto::control::MAX_FINAL_RETENTION_MS);
     if panes_in_workspace(world, workspace).len() >= limits.max_panes {
         return Err(failed(
             new.request_id,
@@ -105,6 +118,7 @@ pub fn reserve_pane(
                 published_title: String::new(),
                 input_sequence: 0,
                 last_output_event_ms: None,
+                final_retain_ms,
             },
             Creation {
                 requesters: vec![(new.requester, new.request_id)],
@@ -235,6 +249,7 @@ pub fn reserve_workspace(
             env: Vec::new(),
             requester,
             request_id,
+            final_retain_ms: limits.final_retain_ms,
         },
         CreationKind::Workspace { tab },
         (crate::terminal::MIN_DIM.max(22), 80),

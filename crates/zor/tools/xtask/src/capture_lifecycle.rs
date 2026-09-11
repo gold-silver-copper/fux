@@ -100,7 +100,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             if name == "narrow" {
                 other = command(
                     "split",
-                    json!({"axis":"horizontal","target":pane,"argv":["/bin/cat"]}),
+                    json!({"axis":"horizontal","target":pane,"argv":["/bin/cat"],"final_retain_ms":60000}),
                 )?["pane"]
                     .clone();
             } else if name == "restored" {

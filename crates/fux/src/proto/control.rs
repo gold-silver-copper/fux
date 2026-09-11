@@ -16,6 +16,12 @@ pub const MAX_ARGV_BYTES: usize = 16 * 1024;
 /// Maximum captured text before JSON encoding; worst-case escaping stays under the frame limit.
 pub const MAX_CAPTURE_BYTES: usize = 128 * 1024;
 pub const MAX_KEY_BYTES: usize = 64 * 1024;
+/// Ceiling on `input-reserve`'s `retain_ms`: a receipt is retained at most ten minutes. The
+/// caller chooses the duration under it; fux clamps and reports the result in `expires_ms`.
+pub const MAX_INPUT_RETENTION_MS: u64 = 600_000;
+/// Ceiling on `split`'s `final_retain_ms`: a final record is retained at most four hours after
+/// the pane closes, long enough for a supervisor that reconnects later.
+pub const MAX_FINAL_RETENTION_MS: u64 = 14_400_000;
 pub const MAX_ENV_ENTRIES: usize = 64;
 pub const MAX_ENV_BYTES: usize = 16 * 1024;
 pub const MAX_SCROLLBACK_LINES: u32 = 100_000;
@@ -50,6 +56,9 @@ pub enum Request {
         rows: Option<u16>,
         #[serde(default)]
         columns: Option<u16>,
+        /// How long the pane's final record is retained after it closes, in milliseconds;
+        /// nonzero, clamped to [`MAX_FINAL_RETENTION_MS`].
+        final_retain_ms: u64,
     },
     Focus {
         id: RequestId,
@@ -85,6 +94,9 @@ pub enum Request {
         id: RequestId,
         instance: Option<String>,
         pane: PaneId,
+        /// How long the receipt is retained, in milliseconds; nonzero, clamped to
+        /// [`MAX_INPUT_RETENTION_MS`]. The receipt's `expires_ms` reflects the clamp.
+        retain_ms: u64,
     },
     InputSubmit {
         id: RequestId,
@@ -231,7 +243,16 @@ impl Request {
             ));
         }
         match self {
-            Self::Split { argv, cwd, env, .. } => {
+            Self::Split {
+                argv,
+                cwd,
+                env,
+                final_retain_ms,
+                ..
+            } => {
+                if *final_retain_ms == 0 {
+                    return Err(ControlError::invalid(id, "final_retain_ms must be nonzero"));
+                }
                 validate_argv(argv).map_err(|mut error| {
                     error.id = id;
                     error
@@ -247,6 +268,9 @@ impl Request {
             }
             Self::Resize { delta: 0, .. } => {
                 return Err(ControlError::invalid(id, "resize delta must not be zero"));
+            }
+            Self::InputReserve { retain_ms: 0, .. } => {
+                return Err(ControlError::invalid(id, "retain_ms must be nonzero"));
             }
             Self::InputSubmit { keys, .. } => {
                 if keys.len() > MAX_KEY_BYTES {
@@ -377,7 +401,9 @@ pub struct ServerInfo {
 }
 
 /// The bounds a client must honor when it sizes a request: the frame limit, the capture text
-/// limit, the `send-keys`/`input-submit` payload limit and the configured scrollback depth.
+/// limit, the `send-keys`/`input-submit` payload limit, the configured scrollback depth and
+/// the retention ceilings `input-reserve`'s `retain_ms` and `split`'s `final_retain_ms` are
+/// clamped to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InfoLimits {
@@ -385,6 +411,8 @@ pub struct InfoLimits {
     pub frame_bytes: usize,
     pub capture_bytes: usize,
     pub key_bytes: usize,
+    pub input_retention_ms: u64,
+    pub final_retention_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -615,6 +643,8 @@ pub enum ErrorCode {
     Pending,
     Gap,
     Expired,
+    Evicted,
+    Unknown,
     InvalidJson,
     UnknownCommand,
     InvalidRequest,
@@ -1089,7 +1119,7 @@ mod tests {
     #[test]
     fn env_and_send_keys_notation_are_validated() {
         let ok = decode_request_frame(
-            br#"{"command":"split","id":1,"axis":"horizontal","env":[["FOO","bar"]],"rows":40,"columns":100}"#,
+            br#"{"command":"split","id":1,"axis":"horizontal","env":[["FOO","bar"]],"rows":40,"columns":100,"final_retain_ms":60000}"#,
         );
         assert!(matches!(
             ok,
@@ -1101,7 +1131,7 @@ mod tests {
         ));
         assert!(ok.unwrap().validate().is_ok());
         let bad_name = decode_request_frame(
-            br#"{"command":"split","id":1,"axis":"horizontal","env":[["A=B","c"]]}"#,
+            br#"{"command":"split","id":1,"axis":"horizontal","env":[["A=B","c"]],"final_retain_ms":60000}"#,
         )
         .ok()
         .filter(|request| request.validate().is_ok());

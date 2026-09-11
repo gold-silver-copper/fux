@@ -60,3 +60,35 @@ fn every_protocol_fixture_round_trips_through_its_type() {
     total += each("attach", "server_", round_trip::<ServerMessage>);
     assert!(total >= 20, "expected the fixture set, found {total}");
 }
+
+/// The `info` fixture publishes the live retention ceilings, and zor's copy of it (which pins
+/// zor's retention policy in `crates/zor/src/fux.rs`) is byte-identical to fux's.
+#[test]
+fn info_fixture_carries_the_retention_ceilings_and_zor_reads_the_same_bytes() {
+    use fux::proto::control::{CommandResult, Reply};
+    let path = fixtures_dir().join("control/reply_completed_info.json");
+    let bytes = std::fs::read(&path).expect("info fixture");
+    let Reply::Completed {
+        result: CommandResult::Info { info },
+        ..
+    } = serde_json::from_slice(&bytes).expect("decode info reply")
+    else {
+        panic!("info fixture is not a completed info reply");
+    };
+    assert_eq!(
+        info.limits.input_retention_ms,
+        fux::proto::control::MAX_INPUT_RETENTION_MS
+    );
+    assert_eq!(
+        info.limits.final_retention_ms,
+        fux::proto::control::MAX_FINAL_RETENTION_MS
+    );
+    let zor = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../zor/tests/fixtures/control/reply_completed_info.json");
+    assert_eq!(
+        std::fs::read(&zor).expect("zor's copy of the info fixture"),
+        bytes,
+        "{} differs from fux's fixture",
+        zor.display()
+    );
+}

@@ -404,8 +404,14 @@ fn ctl_json(workspace: Option<&str>, arguments: Vec<String>) -> Result<ExitCode>
 }
 
 fn ctl_alias(workspace: Option<&str>, command: &str, arguments: Vec<String>) -> Result<ExitCode> {
-    let request = alias_request(command, &arguments)?;
+    let request = alias_request(command, &arguments, &configured_final_retain_ms)?;
     send_control(workspace, request)
+}
+
+/// The `[final] retain-ms` a CLI-created pane's final record keeps; only `new`/`split` read the
+/// configuration, so the other aliases never depend on a config file or `$HOME`.
+fn configured_final_retain_ms() -> Result<u64> {
+    Ok(fux::config::Config::load()?.final_records.retain_ms)
 }
 
 fn control_path(workspace: Option<&str>) -> Result<PathBuf> {
@@ -461,7 +467,11 @@ fn send_control(
     )))
 }
 
-fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::Request> {
+fn alias_request(
+    command: &str,
+    args: &[String],
+    final_retain_ms: &dyn Fn() -> Result<u64>,
+) -> Result<fux::proto::control::Request> {
     use fux::ids::{PaneId, TabId};
     use fux::layout::Axis;
     use fux::proto::control::{FocusTarget, Request, TabAction};
@@ -486,6 +496,7 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 env,
                 rows,
                 columns,
+                final_retain_ms: final_retain_ms()?,
             }
         }
         "split" => {
@@ -507,6 +518,7 @@ fn alias_request(command: &str, args: &[String]) -> Result<fux::proto::control::
                 env,
                 rows,
                 columns,
+                final_retain_ms: final_retain_ms()?,
             }
         }
         "focus" => {
@@ -745,6 +757,8 @@ mod tests {
 
     #[test]
     fn aliases_build_validated_requests() {
+        let retain = || Ok(fux::config::DEFAULT_FINAL_RETAIN_MS);
+        let alias_request = |command: &str, args: &[String]| alias_request(command, args, &retain);
         let split = alias_request(
             "split",
             &[
@@ -760,8 +774,12 @@ mod tests {
         );
         assert!(matches!(
             split,
-            Ok(fux::proto::control::Request::Split { axis: fux::layout::Axis::Vertical, target: Some(fux::ids::PaneId(3)), argv, .. }) if argv == ["sh", "-l"]
+            Ok(fux::proto::control::Request::Split { axis: fux::layout::Axis::Vertical, target: Some(fux::ids::PaneId(3)), argv, final_retain_ms: fux::config::DEFAULT_FINAL_RETAIN_MS, .. }) if argv == ["sh", "-l"]
         ));
+        assert!(
+            alias_request("focus", &["left".into()]).is_ok(),
+            "aliases other than new/split never read the configured retention"
+        );
         assert!(alias_request("resize", &["1".into(), "0".into()]).is_err());
         assert!(alias_request("popup", &[]).is_err());
         assert!(alias_request("tab", &["close".into(), "2".into()]).is_ok());

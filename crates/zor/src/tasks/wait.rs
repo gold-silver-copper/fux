@@ -279,15 +279,17 @@ fn evaluate(
                 deadline,
             )
             .with_context(|| format!("live/final evidence unavailable: {live_error}"))?;
-            anyhow::ensure!(
-                response.get("reply").and_then(Value::as_str) == Some("final")
-                    && response.pointer("/result/status").and_then(Value::as_str)
-                        == Some("completed"),
-                "final evidence unavailable or expired"
-            );
-            let record = response
-                .pointer("/result/result/value/record")
-                .context("final evidence unavailable or expired")?;
+            // A live pane answering `pending` here contradicts the failed capture; like
+            // `evicted` (fux dropped the record under load), `expired` and `unknown`, it is a
+            // hard failure of this evaluation, never a retry.
+            let record = match crate::fux::final_reply(&response)
+                .context("final evidence unavailable or expired")?
+            {
+                crate::fux::FinalReply::Record(record) => record,
+                crate::fux::FinalReply::Pending => {
+                    anyhow::bail!("final evidence unavailable: pane is still live")
+                }
+            };
             anyhow::ensure!(
                 record.get("pane").and_then(Value::as_u64) == Some(u64::from(target.pane))
                     && record.get("workspace").and_then(Value::as_str) == Some(&target.workspace)

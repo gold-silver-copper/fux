@@ -70,7 +70,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         let rss_plain = crate::measure::rss(pid)?;
         attachment::send(
             &mut viewers[0].peer,
-            &json!({"type":"control","request":{"command":"split","id":1,"axis":"horizontal"}}),
+            &json!({"type":"control","request":{"command":"split","id":1,"axis":"horizontal","final_retain_ms":60000}}),
         )?;
         wait_text(&mut viewers, |_| true, Duration::from_secs(5))?;
         drain_all(&mut viewers, Duration::from_secs(1))?;

@@ -215,6 +215,14 @@ pub fn start(root: &Path, request: Start) -> Result<Value> {
     submit_prepared(root, &mut store, &request.id)
 }
 
+/// The final-record retention a managed launch asks fux for. Nobody polls a launch's exit the
+/// way `zor run` does: the record is read by `recover_final` when the service's 1 s recovery
+/// loop or a `wait`/`follow` (up to 24 h) finds the pane gone, or after a stopped service is
+/// restarted. That horizon is open-ended on zor's side, so a launch asks for everything fux
+/// grants, and fux's ceiling (four hours) is the documented bound on how long a supervisor
+/// may be away before the exit evidence is gone.
+pub(super) const LAUNCH_FINAL_RETAIN_MS: u64 = crate::fux::MAX_FINAL_RETENTION_MS;
+
 pub(super) fn submit_prepared(root: &Path, store: &mut Store, id: &str) -> Result<Value> {
     let launch = store
         .journal()
@@ -242,7 +250,7 @@ pub(super) fn submit_prepared(root: &Path, store: &mut Store, id: &str) -> Resul
         })?;
         let response = crate::fux::completed_until(
             &launch.runtime.join(format!("{}.sock", launch.workspace)),
-            json!({"command":"split","axis":"horizontal","id":1,"instance":launch.instance,"stream":launch.stream,"cwd":launch.cwd,"argv":command(&launch)}),
+            json!({"command":"split","axis":"horizontal","id":1,"instance":launch.instance,"stream":launch.stream,"cwd":launch.cwd,"argv":command(&launch),"final_retain_ms":LAUNCH_FINAL_RETAIN_MS}),
             Instant::now() + Duration::from_secs(6),
         );
         match response {
@@ -632,14 +640,16 @@ fn recover_final(launch: &Launch) -> Result<(u32, LaunchFinal)> {
         deadline,
     )
     .context("read launch final record")?;
-    anyhow::ensure!(
-        response.get("reply").and_then(Value::as_str) == Some("final")
-            && response.pointer("/result/status").and_then(Value::as_str) == Some("completed"),
-        "final launch evidence unavailable or expired"
-    );
-    let record = response
-        .pointer("/result/result/value/record")
-        .context("final record missing")?;
+    // `pending` contradicts the failed live check and, like `evicted` (fux dropped the record
+    // under load), `expired` and `unknown`, leaves this reconciliation without an exit receipt.
+    let record = match crate::fux::final_reply(&response)
+        .context("final launch evidence unavailable or expired")?
+    {
+        crate::fux::FinalReply::Record(record) => record,
+        crate::fux::FinalReply::Pending => {
+            anyhow::bail!("final launch evidence unavailable: pane is still live")
+        }
+    };
     anyhow::ensure!(
         record.get("pane").and_then(Value::as_u64) == Some(u64::from(pane))
             && record.get("workspace").and_then(Value::as_str) == Some(&launch.workspace)
@@ -687,6 +697,20 @@ fn recover_final(launch: &Launch) -> Result<(u32, LaunchFinal)> {
 
 #[cfg(test)]
 mod argv_tests {
+    #[test]
+    fn launch_final_retention_is_exactly_fux_ceiling() {
+        assert_eq!(
+            super::LAUNCH_FINAL_RETAIN_MS,
+            crate::fux::MAX_FINAL_RETENTION_MS
+        );
+        const {
+            assert!(
+                super::LAUNCH_FINAL_RETAIN_MS > 0,
+                "fux refuses a zero retention"
+            );
+        }
+    }
+
     #[test]
     fn empty_arguments_are_preserved_but_executable_and_nul_are_rejected() {
         let arguments = vec!["/bin/printf".to_owned(), "<%s>".to_owned(), String::new()];

@@ -24,8 +24,11 @@ an instance nonce and socket paths only; the protocols carry no version numbers.
 - Control: 1 MiB frames, two-second preface deadline, 64 connections per workspace, 128 KiB
   captures (text, or the JSON encoding of a `cells` capture's lines), 100 000 scrollback rows, 64 KiB
   `send-keys`, 128-byte labels, 1024-event subscriber queues, at most 8 stacked
-  `send-keys` key modifiers; every request is answered or failed within 30 s. `info` reports
-  the bounds a client sizes requests by (frame, capture and key bytes, scrollback depth).
+  `send-keys` key modifiers; every request is answered or failed within 30 s. Retained input
+  receipts and final records are capped at 128 each; their durations are the caller's
+  (`input-reserve.retain_ms`, `split.final_retain_ms`), clamped to ten minutes and four hours.
+  `info` reports the bounds a client sizes requests by (frame, capture and key bytes, scrollback
+  depth) and both retention ceilings.
 - Session: 64 workspaces, 32 tabs and 128 panes per workspace, 512×512 pane cells, 256 queued
   viewer requests during a creation barrier, per-step ingest budgets (64 pane chunks of at most
   64 KiB from a 256-deep channel and 256 ingress requests per collection, two collections per

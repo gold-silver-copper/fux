@@ -88,8 +88,8 @@ pub(super) fn run(binary: &Path) -> Result<()> {
             &manager,
             json!({"request":"final","instance":instance,"pane":pane.as_u64().context("pane")? + 100})
         )?["result"]["error"]["code"]
-            == "expired",
-        "missing pane accepted"
+            == "unknown",
+        "never-recorded pane was not reported unknown"
     );
     let mut command = root.command(binary);
     command.args(["workspace", "new", "default"]);

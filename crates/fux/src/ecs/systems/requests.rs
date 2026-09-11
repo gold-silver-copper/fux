@@ -608,9 +608,20 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             env,
             rows,
             columns,
+            final_retain_ms,
             ..
         } => split(
-            world, &context, id, axis, target, cwd, argv, env, rows, columns,
+            world,
+            &context,
+            id,
+            axis,
+            target,
+            cwd,
+            argv,
+            env,
+            rows,
+            columns,
+            final_retain_ms,
         ),
         Request::Focus { target, .. } => focus(world, &context, id, target),
         Request::Kill { pane, .. } => kill(world, &context, id, pane),
@@ -637,10 +648,14 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
                 }
             })
         }
-        Request::InputReserve { pane, .. } => {
+        Request::InputReserve {
+            pane, retain_ms, ..
+        } => {
             let entity = pane_in_workspace(world, &context, pane)
                 .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"));
-            entity.and_then(|entity| super::input::reserve(world, context.workspace, entity, id))
+            entity.and_then(|entity| {
+                super::input::reserve(world, context.workspace, entity, retain_ms, id)
+            })
         }
         Request::InputSubmit {
             operation, keys, ..
@@ -768,6 +783,7 @@ fn split(
     env: Vec<(String, String)>,
     rows: Option<u16>,
     columns: Option<u16>,
+    final_retain_ms: u64,
 ) -> Result<CommandResult, Reply> {
     let selection = context.selection(world);
     let target = match target {
@@ -800,6 +816,7 @@ fn split(
             env,
             requester: context.requester,
             request_id: id,
+            final_retain_ms,
         },
         CreationKind::Split { tab, target, axis },
         size,
@@ -945,6 +962,7 @@ fn tab_action(
                     env: Vec::new(),
                     requester: context.requester,
                     request_id: id,
+                    final_retain_ms: world.resource::<Limits>().final_retain_ms,
                 },
                 CreationKind::NewTab { tab },
                 size,
@@ -1293,6 +1311,8 @@ pub fn server_info(world: &World, workspace: Option<Entity>) -> control::ServerI
             frame_bytes: control::MAX_FRAME_BYTES,
             capture_bytes: control::MAX_CAPTURE_BYTES,
             key_bytes: control::MAX_KEY_BYTES,
+            input_retention_ms: control::MAX_INPUT_RETENTION_MS,
+            final_retention_ms: control::MAX_FINAL_RETENTION_MS,
         },
     }
 }

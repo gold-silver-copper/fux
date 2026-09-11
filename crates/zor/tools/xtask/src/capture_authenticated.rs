@@ -89,7 +89,7 @@ fn submit(
 ) -> Result<()> {
     let receipt = runtime::rpc(
         control,
-        json!({"id":1,"command":"input-reserve","instance":instance,"pane":pane}),
+        json!({"id":1,"command":"input-reserve","instance":instance,"pane":pane,"retain_ms":60000}),
     )?["receipt"]
         .clone();
     let result = runtime::rpc(
