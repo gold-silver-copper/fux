@@ -108,16 +108,16 @@ pub(super) fn run(binary: &Path) -> Result<()> {
             .all(|event| event["cursor"]["stream"] == cursor["stream"]),
         "foreign stream in replay"
     );
-    ensure!(
-        value(
-            &mut control,
-            &instance,
-            "events",
-            json!({"after":replay["cursor"]})
-        )?["events"]
-            == json!([]),
-        "replay duplicated events"
-    );
+    // A new pane may still publish spawn/output events after the previous replay. Those
+    // are fresh events, not duplicates: verify their cursors instead of requiring silence.
+    let subsequent = value(
+        &mut control,
+        &instance,
+        "events",
+        json!({"after":replay["cursor"]}),
+    )?;
+    validate_replay(&replay, cursor)?;
+    validate_replay(&subsequent, &replay["cursor"])?;
     let mut subscriber = Peer::connect(&path)?;
     subscriber.send(&json!({"id":7,"command":"subscribe","instance":instance,"after":cursor}))?;
     ensure!(
@@ -184,10 +184,8 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     );
     let fresh =
         value(&mut control, &instance, "list", json!({}))?["workspaces"][0]["event_cursor"].clone();
-    ensure!(
-        value(&mut control, &instance, "events", json!({"after":fresh}))?["events"] == json!([]),
-        "fresh snapshot replay not empty"
-    );
+    let fresh_replay = value(&mut control, &instance, "events", json!({"after":fresh}))?;
+    validate_replay(&fresh_replay, &fresh)?;
     for (field, increment) in [("stream", 1), ("sequence", 100)] {
         let mut bad = fresh.clone();
         bad[field] = json!(bad[field].as_u64().context("cursor number")? + increment);
@@ -200,4 +198,56 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     server.finish()?;
     println!("PASS snapshot replay, live delivery, race deduplication, gap and resync");
     Ok(())
+}
+
+/// Replay may contain events produced since the snapshot, but never repeat or reorder cursors.
+fn validate_replay(replay: &Value, after: &Value) -> Result<()> {
+    let mut sequence = after["sequence"].as_u64().context("after sequence")?;
+    for event in replay["events"].as_array().context("replay events")? {
+        let next = event["cursor"]["sequence"]
+            .as_u64()
+            .context("event sequence")?;
+        ensure!(
+            event["cursor"]["stream"] == after["stream"] && next > sequence,
+            "duplicated, reordered or foreign replay event: {event}; after: {after}"
+        );
+        sequence = next;
+    }
+    ensure!(
+        replay["cursor"]["stream"] == after["stream"]
+            && replay["cursor"]["sequence"].as_u64() == Some(sequence),
+        "replay cursor does not match its events: {replay}"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_accepts_new_output_but_rejects_duplicate_and_foreign_cursors() {
+        let after = json!({"stream":1,"sequence":4});
+        let event = |stream, sequence| {
+            json!({
+                "event":"pane.output", "cursor":{"stream":stream,"sequence":sequence}
+            })
+        };
+        let replay = |events, sequence| {
+            json!({
+                "events":events, "cursor":{"stream":1,"sequence":sequence}
+            })
+        };
+        assert!(validate_replay(&replay(vec![], 4), &after).is_ok());
+        assert!(validate_replay(&replay(vec![event(1, 5), event(1, 6)], 6), &after).is_ok());
+        for events in [
+            vec![event(1, 4)],
+            vec![event(1, 5), event(1, 5)],
+            vec![event(1, 6), event(1, 5)],
+            vec![event(2, 5)],
+        ] {
+            assert!(validate_replay(&replay(events, 5), &after).is_err());
+        }
+        assert!(validate_replay(&replay(vec![event(1, 5)], 6), &after).is_err());
+    }
 }

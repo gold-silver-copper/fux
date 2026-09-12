@@ -4,7 +4,7 @@
 //! preface are fux's own.
 
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -149,51 +149,23 @@ pub fn negotiate_client_with_timeout(stream: &mut UnixStream, timeout: Duration)
         return Err(io::ErrorKind::TimedOut.into());
     }
     authorize_peer(stream)?;
-    let read_timeout = stream.read_timeout()?;
-    let write_timeout = stream.write_timeout()?;
-    let result = (|| {
-        let deadline = Instant::now() + timeout;
-        write_all_until(stream, CONTROL_PREFACE, deadline)?;
-        let mut received = [0; CONTROL_PREFACE.len()];
-        let mut used = 0;
-        while used < received.len() {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::TimedOut, "control negotiation timed out")
-                })?;
-            stream.set_read_timeout(Some(remaining))?;
-            let target = received
-                .get_mut(used..)
-                .ok_or_else(|| io::Error::other("invalid preface offset"))?;
-            let length = stream.read(target)?;
-            if length == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "peer closed during the control preface",
-                ));
-            }
-            used += length;
-        }
-        if &received != CONTROL_PREFACE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "not a fux control socket; restart the session server if it is older than this fux",
-            ));
-        }
-        Ok(())
-    })();
-    // Best effort: macOS rejects timeout changes on a socket whose peer already closed, and the
-    // negotiation outcome above is what matters.
-    let _ = stream.set_read_timeout(read_timeout);
-    let _ = stream.set_write_timeout(write_timeout);
-    result
+    let deadline = Instant::now() + timeout;
+    write_all_until(stream, CONTROL_PREFACE, deadline)?;
+    let mut received = [0; CONTROL_PREFACE.len()];
+    local_ipc::read_exact_until(stream, &mut received, deadline)?;
+    if &received != CONTROL_PREFACE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a fux control socket; restart the session server if it is older than this fux",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     #[test]
     fn slow_partial_socket_writes_obey_one_deadline_and_restore_flags() -> io::Result<()> {
@@ -258,7 +230,7 @@ mod tests {
                 Ok::<_, io::Error>(preface)
             });
             let result = negotiate_client(&mut client);
-            assert_eq!(result.is_ok(), accepted, "{answer:?}");
+            assert_eq!(result.is_ok(), accepted, "{answer:?}: {result:?}");
             assert!(
                 handle
                     .join()

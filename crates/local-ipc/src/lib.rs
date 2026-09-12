@@ -298,6 +298,42 @@ pub fn write_all_until(
     result.and(restored)
 }
 
+/// Reads exactly `bytes.len()` bytes under one wall-clock deadline without changing socket
+/// timeouts (which macOS may reject after the peer closes). Buffered bytes remain readable
+/// after closure. The descriptor's status flags are restored on every return path.
+pub fn read_exact_until(
+    stream: &mut UnixStream,
+    bytes: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+    let flags = OFlag::from_bits_truncate(fcntl(&*stream, FcntlArg::F_GETFL)?);
+    fcntl(&*stream, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+    let result = (|| {
+        let mut used = 0;
+        while used < bytes.len() {
+            remaining(deadline)?;
+            let target = bytes
+                .get_mut(used..)
+                .ok_or_else(|| io::Error::other("invalid socket read offset"))?;
+            match stream.read(target) {
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(count) => used += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    poll_until(stream.as_fd(), nix::poll::PollFlags::POLLIN, deadline)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    })();
+    let restored = fcntl(&*stream, FcntlArg::F_SETFL(flags))
+        .map(|_| ())
+        .map_err(io::Error::from);
+    result.and(restored)
+}
+
 /// Why a newline-delimited frame did not arrive.
 #[derive(Debug)]
 pub enum FrameError {
@@ -465,6 +501,68 @@ mod tests {
 
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn exact_reads_drain_closed_peers_without_consuming_following_bytes() -> io::Result<()> {
+        use nix::fcntl::{FcntlArg, OFlag, fcntl};
+        for nonblocking in [false, true] {
+            let (mut reader, mut writer) = UnixStream::pair()?;
+            reader.set_nonblocking(nonblocking)?;
+            reader.set_read_timeout(Some(Duration::from_secs(3)))?;
+            writer.write_all(b"FUX\nnext")?;
+            drop(writer);
+            let flags = OFlag::from_bits_truncate(fcntl(&reader, FcntlArg::F_GETFL)?);
+            let mut preface = [0; 4];
+            read_exact_until(
+                &mut reader,
+                &mut preface,
+                Instant::now() + Duration::from_secs(1),
+            )?;
+            assert_eq!(&preface, b"FUX\n");
+            assert_eq!(
+                OFlag::from_bits_truncate(fcntl(&reader, FcntlArg::F_GETFL)?),
+                flags
+            );
+            assert_eq!(reader.read_timeout()?, Some(Duration::from_secs(3)));
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest)?;
+            assert_eq!(rest, b"next");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exact_reads_report_partial_eof_and_timeout_and_restore_flags() -> io::Result<()> {
+        use nix::fcntl::{FcntlArg, OFlag, fcntl};
+        for closed in [false, true] {
+            let (mut reader, mut writer) = UnixStream::pair()?;
+            writer.write_all(b"FU")?;
+            let _writer = if closed {
+                drop(writer);
+                None
+            } else {
+                Some(writer)
+            };
+            let flags = OFlag::from_bits_truncate(fcntl(&reader, FcntlArg::F_GETFL)?);
+            let mut bytes = [0; 4];
+            let result = read_exact_until(
+                &mut reader,
+                &mut bytes,
+                Instant::now() + Duration::from_secs(1),
+            );
+            let expected = if closed {
+                io::ErrorKind::UnexpectedEof
+            } else {
+                io::ErrorKind::TimedOut
+            };
+            assert!(matches!(result, Err(error) if error.kind() == expected));
+            assert_eq!(
+                OFlag::from_bits_truncate(fcntl(&reader, FcntlArg::F_GETFL)?),
+                flags
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn chunked_reader_rejects_an_oversize_payload_that_arrives_with_its_newline()
