@@ -1,0 +1,22 @@
+{
+  "reply": "input-status",
+  "result": {
+    "id": 0,
+    "status": "completed",
+    "result": {
+      "kind": "input",
+      "value": {
+        "receipt": {
+          "operation": 9,
+          "pane": 2,
+          "state": "delivered",
+          "revision": 3,
+          "input_sequence": 4,
+          "expires_ms": 1000,
+          "bytes_written": 5,
+          "error": null
+        }
+      }
+    }
+  }
+}

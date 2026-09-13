@@ -479,7 +479,7 @@ mod tests {
     fn invalid_documents_are_rejected() {
         assert!(Config::from_toml("prefix = 'ab'").is_err());
         assert!(Config::from_toml("[bindings]\n'C-a' = 'detach'").is_err());
-        assert!(Config::from_toml("[bindings]\n'x' = 'zoom'").is_err());
+        assert!(Config::from_toml("[bindings]\n'x' = 'nonexistent-action'").is_err());
         assert!(Config::from_toml("zor-path = '/bin/true'").is_err());
         assert!(Config::from_toml("[hints]\ndelay-ms = 0").is_err());
         assert!(Config::from_toml("[history]\nscrollback-lines = 0").is_err());

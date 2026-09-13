@@ -6,6 +6,7 @@ pub mod changes;
 pub mod check;
 mod check_artifacts;
 pub mod codex;
+mod diagnostics;
 pub mod focus;
 mod git;
 pub mod group;
@@ -14,10 +15,12 @@ pub mod headless;
 pub mod heartbeat;
 pub mod integration;
 pub mod launch;
+mod lifecycle;
 pub mod model;
 pub mod recovery;
 pub mod result;
 pub mod resume;
+mod route;
 pub mod source;
 pub mod stop;
 pub mod store;
@@ -136,7 +139,8 @@ pub fn adopt(root: &Path, mut request: Adopt) -> Result<Value> {
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|pid| *pid > 0)
         .ok_or_else(|| anyhow::anyhow!("pane has no running process"))?;
-    let target = Target {
+    let mut target = Target {
+        origin: None,
         runtime: request.runtime,
         instance: request.instance,
         workspace: request.workspace,
@@ -144,6 +148,7 @@ pub fn adopt(root: &Path, mut request: Adopt) -> Result<Value> {
         pane: request.pane,
         pid: Some(pid),
     };
+    target.origin = Some(route::locate(&target, Instant::now() + Duration::from_secs(2))?.origin());
     let created_ms = now_ms()?;
     let session_id = store
         .journal()

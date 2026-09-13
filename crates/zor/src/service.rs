@@ -112,6 +112,16 @@ fn private_directory(root: &Path) -> Result<()> {
     })
 }
 
+/// A competing starter owns election but may not have bound its socket yet.
+#[derive(Debug)]
+struct ConcurrentStart;
+impl std::fmt::Display for ConcurrentStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("another zor service is starting or already running")
+    }
+}
+impl std::error::Error for ConcurrentStart {}
+
 struct Endpoint {
     _lock: nix::fcntl::Flock<File>,
     socket: local_ipc::BoundSocket,
@@ -137,7 +147,11 @@ impl Endpoint {
         );
         let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
             .map_err(|(_, error)| {
-                anyhow::anyhow!("zor service already running or lock unavailable: {error}")
+                if error == nix::errno::Errno::EAGAIN {
+                    anyhow::Error::from(ConcurrentStart)
+                } else {
+                    anyhow::anyhow!("zor service lock unavailable: {error}")
+                }
             })?;
         let path = root.join("control.sock");
         match fs::symlink_metadata(&path) {
@@ -362,7 +376,16 @@ pub fn run_daemon(
         .and_then(|_| run_inner(root, runtime, state, extra, forced, Some(&mut channel)));
     if let Err(error) = &result {
         let diagnostic: String = format!("{error:#}").chars().take(512).collect();
-        let _ = writeln!(channel, "{}", json!({"status":"failed","error":diagnostic}));
+        let code = if error.is::<ConcurrentStart>() {
+            "concurrent-start"
+        } else {
+            "startup-failed"
+        };
+        let _ = writeln!(
+            channel,
+            "{}",
+            json!({"status":"failed","code":code,"error":diagnostic})
+        );
     }
     result
 }
@@ -641,13 +664,20 @@ pub fn run_group(
 }
 
 fn request(root: &Path, value: Value) -> Result<Value> {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    request_until(root, value, Instant::now() + Duration::from_secs(3))
+}
+
+fn request_until(root: &Path, value: Value, deadline: Instant) -> Result<Value> {
     let mut stream = crate::fux::connect(&root.join("control.sock"), deadline)
         .context("zor service unavailable; start `zor serve` with the same --directory")?;
     crate::fux::same_user(&stream)?;
     let mut bytes = serde_json::to_vec(&value)?;
     bytes.push(b'\n');
-    local_ipc::write_all_until(&mut stream, &bytes, Instant::now() + Duration::from_secs(1))?;
+    local_ipc::write_all_until(
+        &mut stream,
+        &bytes,
+        deadline.min(Instant::now() + Duration::from_secs(1)),
+    )?;
     let output = local_ipc::FrameReader::new(MAX_RESPONSE)
         .next_frame(&mut stream, deadline)
         .map_err(|error| match error {
@@ -703,8 +733,19 @@ pub fn ensure(
         .iter()
         .map(std::path::absolute)
         .collect::<std::io::Result<_>>()?;
-    let started = start_background(&root, &runtime, &extra, forced, state.as_deref());
-    match status(Some(root)) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let started = start_background(&root, &runtime, &extra, forced, state.as_deref(), deadline);
+    let contended = started
+        .as_ref()
+        .is_err_and(|error| error.is::<ConcurrentStart>());
+    let observed = if contended {
+        await_competing_start(deadline, || {
+            request_until(&root, json!({"v":1,"id":1,"op":"snapshot"}), deadline)
+        })
+    } else {
+        status(Some(root))
+    };
+    match observed {
         Ok(response) => {
             if let Ok(instance) = started {
                 anyhow::ensure!(
@@ -724,6 +765,30 @@ pub fn ensure(
                     "zor startup did not produce a usable service: {error:#}"
                 ))),
             }
+        }
+    }
+}
+
+/// A losing election does not authorize another spawn. Wait only for an absent
+/// winner endpoint, within the original startup deadline; all other errors stop.
+fn await_competing_start(
+    deadline: Instant,
+    mut observe: impl FnMut() -> Result<Value>,
+) -> Result<Value> {
+    loop {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "concurrent zor startup deadline exceeded"
+        );
+        match observe() {
+            Err(error) if absent(&error) => {
+                std::thread::sleep(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(10)),
+                );
+            }
+            result => return result,
         }
     }
 }
@@ -781,6 +846,7 @@ fn start_background(
     extra: &[PathBuf],
     forced: Option<&str>,
     state: Option<&Path>,
+    deadline: Instant,
 ) -> Result<String> {
     anyhow::ensure!(
         state.is_none_or(|path| path.is_absolute()),
@@ -813,8 +879,12 @@ fn start_background(
     let child = StartingChild(Some(
         command.spawn().context("launch zor background service")?,
     ));
-    let deadline = Instant::now() + Duration::from_secs(5);
     let ready = startup_frame(&mut channel, deadline)?;
+    if ready.get("status").and_then(Value::as_str) == Some("failed")
+        && ready.get("code").and_then(Value::as_str) == Some("concurrent-start")
+    {
+        return Err(ConcurrentStart.into());
+    }
     anyhow::ensure!(
         ready.get("status").and_then(Value::as_str) == Some("ready"),
         "zor child startup failed: {ready}"
@@ -864,6 +934,40 @@ fn startup_frame(channel: &mut UnixStream, deadline: Instant) -> Result<Value> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn concurrent_starter_waits_for_winner_socket_but_not_invalid_replies() {
+        let mut attempts = 0;
+        let response = await_competing_start(Instant::now() + Duration::from_secs(1), || {
+            attempts += 1;
+            if attempts < 3 {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound).into())
+            } else {
+                Ok(json!({"service_instance":"winner"}))
+            }
+        })
+        .expect("winner binds after election");
+        assert_eq!(attempts, 3);
+        assert_eq!(response.get("service_instance"), Some(&json!("winner")));
+        let mut attempts = 0;
+        assert!(
+            await_competing_start(Instant::now() + Duration::from_secs(1), || {
+                attempts += 1;
+                anyhow::bail!("incompatible service response")
+            })
+            .is_err()
+        );
+        assert_eq!(attempts, 1);
+        let mut attempts = 0;
+        assert!(
+            await_competing_start(Instant::now(), || {
+                attempts += 1;
+                Ok(Value::Null)
+            })
+            .is_err()
+        );
+        assert_eq!(attempts, 0, "expired deadline performed another operation");
+    }
 
     #[test]
     fn freshness_includes_scan_and_queue_age_and_clears_stale_evidence() {
@@ -931,7 +1035,12 @@ mod tests {
         fs::create_dir(&root).expect("unique directory");
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("private");
         let endpoint = Endpoint::bind(&root).expect("bind");
-        assert!(Endpoint::bind(&root).is_err());
+        assert!(
+            Endpoint::bind(&root)
+                .err()
+                .expect("election loser")
+                .is::<ConcurrentStart>()
+        );
         assert!(root.join("control.sock").exists());
         drop(endpoint);
         assert!(!root.join("control.sock").exists());

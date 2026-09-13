@@ -17,7 +17,7 @@ use std::{
 fn digest(path: &Path) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }
-fn cpu_us() -> Result<i128> {
+pub(crate) fn cpu_us() -> Result<i128> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
     ensure!(
         unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, usage.as_mut_ptr()) } == 0,

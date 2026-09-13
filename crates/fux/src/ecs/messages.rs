@@ -32,6 +32,33 @@ pub enum ViewerRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagerAction {
+    ReleasePanePin {
+        instance: String,
+        pane: PaneId,
+        pid: u32,
+    },
+    InputStatus {
+        instance: String,
+        pane: PaneId,
+        operation: u64,
+    },
+    PaneLocation {
+        instance: String,
+        pane: PaneId,
+    },
+    ApplyLayout {
+        expected: control::LayoutArchive,
+        archive: control::LayoutArchive,
+    },
+    ExportLayout,
+    Catalog,
+    Transfer {
+        transfer: control::WorkspaceTransfer,
+    },
+    Reorder {
+        name: String,
+        before: Option<String>,
+    },
     /// Create only; an existing or reserved name is an error.
     Create {
         name: String,
@@ -55,6 +82,12 @@ pub enum ManagerAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagerOutcome {
+    ReleasePanePin(control::Reply),
+    InputStatus(control::Reply),
+    PaneLocation(control::Reply),
+    LayoutArchive(control::LayoutArchive),
+    Catalog(control::WorkspaceCatalog),
+    Layout(control::Reply),
     Final(control::Reply),
     Names(Vec<String>),
     Attach {

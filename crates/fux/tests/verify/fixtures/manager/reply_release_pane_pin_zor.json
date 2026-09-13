@@ -1,0 +1,10 @@
+{
+  "reply": "release-pane-pin",
+  "result": {
+    "id": 0,
+    "status": "completed",
+    "result": {
+      "kind": "unit"
+    }
+  }
+}

@@ -4,12 +4,12 @@
 //! `▼ n more` indicators; the thin one-line hints stay full-width rows above the bar.
 
 use super::text;
-use crate::commands::{ClientBindings, Group, key_name};
+use crate::commands::{Action, ClientBindings, Group, key_name};
 use crate::view::Frame;
 use ratatui_core::buffer::Buffer;
 use ratatui_core::layout::Rect;
 use ratatui_core::style::{Color, Modifier, Style};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use unicode_width::UnicodeWidthStr as _;
 
 /// One cell of padding on each side of the column's text.
@@ -17,6 +17,8 @@ const PADDING: u16 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HintPanel {
+    pub drop_target: Option<(crate::ids::PaneId, crate::layout::Direction)>,
+    pub drop_tab: Option<crate::ids::TabId>,
     title: Option<String>,
     entries: Vec<String>,
     /// Rows scrolled off the top of a long list (clamped while painting).
@@ -27,6 +29,7 @@ pub struct HintPanel {
     input: bool,
     headings: BTreeSet<usize>,
     disabled: BTreeSet<usize>,
+    actions: BTreeMap<usize, Action>,
 }
 
 /// Where the column's entries land after clamping the scroll to the space available.
@@ -41,7 +44,19 @@ struct Window {
     below: bool,
 }
 
+pub struct PaintedPanel {
+    pub entries: Vec<(Rect, usize)>,
+    pub bounds: Option<Rect>,
+}
+
 impl HintPanel {
+    pub fn command_action(&self, index: usize) -> Option<Action> {
+        self.actions.get(&index).copied()
+    }
+
+    pub fn disable(&mut self, indices: impl IntoIterator<Item = usize>) {
+        self.disabled.extend(indices);
+    }
     /// The command column: every binding grouped under its heading, unavailable actions dimmed.
     pub fn commands(
         bindings: &ClientBindings,
@@ -58,6 +73,7 @@ impl HintPanel {
         let mut entries = Vec::new();
         let mut headings = BTreeSet::new();
         let mut disabled = BTreeSet::new();
+        let mut actions = BTreeMap::new();
         let mut previous: Option<Group> = None;
         for (key, action) in bindings.entries() {
             let group = action.group();
@@ -69,11 +85,14 @@ impl HintPanel {
             if action.unavailable(frame, workspaces).is_some() {
                 disabled.insert(entries.len());
             }
+            actions.insert(entries.len(), action);
             let key = key_name(key);
             let pad = " ".repeat(key_width.saturating_sub(key.width()));
             entries.push(format!("  {pad}{key}  {}", action.label()));
         }
         Self {
+            drop_target: None,
+            drop_tab: None,
             title: None,
             entries,
             scroll,
@@ -83,6 +102,7 @@ impl HintPanel {
             input: false,
             headings,
             disabled,
+            actions,
         }
     }
 
@@ -96,6 +116,8 @@ impl HintPanel {
         let clean = |value: String| crate::view::printable(&value, usize::MAX);
         let title = clean(title);
         Self {
+            drop_target: None,
+            drop_tab: None,
             title: (!title.is_empty()).then_some(title),
             entries: entries.into_iter().map(clean).collect(),
             scroll: 0,
@@ -105,6 +127,7 @@ impl HintPanel {
             input: false,
             headings: BTreeSet::new(),
             disabled: BTreeSet::new(),
+            actions: BTreeMap::new(),
         }
     }
 
@@ -217,10 +240,18 @@ impl HintPanel {
 
     /// Paints the column at the bottom-right of `area` (the compositor passes everything above
     /// the bar), or a thin full-width row for transient hints.
-    pub fn paint(&self, buffer: &mut Buffer, area: Rect) {
+    pub fn paint(&self, buffer: &mut Buffer, area: Rect) -> Vec<(Rect, usize)> {
+        self.paint_with_bounds(buffer, area).entries
+    }
+
+    pub fn paint_with_bounds(&self, buffer: &mut Buffer, area: Rect) -> PaintedPanel {
+        let mut regions = Vec::new();
         let area = area.intersection(buffer.area);
         if area.width == 0 || area.height == 0 {
-            return;
+            return PaintedPanel {
+                entries: regions,
+                bounds: None,
+            };
         }
         let style = Style::reset().fg(Color::White).bg(Color::DarkGray);
         if self.thin {
@@ -234,7 +265,10 @@ impl HintPanel {
                 area.width,
                 style,
             );
-            return;
+            return PaintedPanel {
+                entries: regions,
+                bounds: Some(Rect::new(area.x, row, area.width, 1)),
+            };
         }
         let window = self.window(area.height);
         let mut lines: Vec<(String, Style)> = Vec::new();
@@ -309,6 +343,17 @@ impl HintPanel {
                 inner,
                 *line_style,
             );
+            let body_start = usize::from(self.title.is_some()) + usize::from(window.above);
+            if row >= body_start && row < body_start + window.body {
+                let index = window.start + row - body_start;
+                if !self.headings.contains(&index) && !self.disabled.contains(&index) {
+                    regions.push((Rect::new(x, y, width, 1), index));
+                }
+            }
+        }
+        PaintedPanel {
+            entries: regions,
+            bounds: Some(Rect::new(x, top, width, height)),
         }
     }
 }
@@ -326,6 +371,36 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    #[test]
+    fn scrolled_chooser_hit_regions_match_visible_rows_only() {
+        let panel = HintPanel::context(
+            "Destinations".into(),
+            (0..40).map(|index| format!("workspace-{index}")).collect(),
+            "Click to move",
+            Some(31),
+        );
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 30, 8));
+        let area = buffer.area;
+        let regions = panel.paint(&mut buffer, area);
+        let rows = text(&buffer);
+        assert!(regions.iter().any(|(_, index)| *index == 31));
+        assert!(regions.iter().all(|(_, index)| *index > 0));
+        for (rect, index) in &regions {
+            assert_eq!(rect.height, 1);
+            assert_eq!(
+                rows[usize::from(rect.y)].trim(),
+                format!("workspace-{index}")
+            );
+        }
+        for (row, text) in rows.iter().enumerate() {
+            if text.contains("more") || text.contains("Destinations") || text.contains("Click") {
+                assert!(!regions.iter().any(|(rect, _)| usize::from(rect.y) == row));
+            }
+        }
+        let mut zero = Buffer::empty(Rect::new(0, 0, 0, 0));
+        assert!(panel.paint(&mut zero, Rect::new(0, 0, 0, 0)).is_empty());
     }
 
     fn painted(panel: &HintPanel, rows: u16, cols: u16) -> (Buffer, Vec<String>) {
@@ -350,11 +425,16 @@ mod tests {
     fn command_column_sits_bottom_right_as_wide_as_its_widest_line_and_shows_everything() {
         let bindings = ClientBindings::default();
         let panel = HintPanel::commands(&bindings, true, 0, &Frame::default());
-        let (buffer, lines) = painted(&panel, 30, 80);
+        let height = panel.entries.len() + 2;
+        let (buffer, lines) = painted(&panel, height as u16, 80);
         let entries = panel.entries.len();
-        assert_eq!(entries, 23, "18 bindings under 5 headings");
+        assert_eq!(
+            entries,
+            bindings.entries().len() + 5,
+            "one row per binding under five headings"
+        );
         assert!(
-            lines[..30 - entries]
+            lines[..height - entries]
                 .iter()
                 .all(|line| line.trim().is_empty()),
             "nothing above the column"
@@ -362,7 +442,7 @@ mod tests {
         let widest = panel.entries.iter().map(|e| e.width()).max().unwrap_or(0);
         let left = 80 - widest - 2;
         for (index, entry) in panel.entries.iter().enumerate() {
-            let line = &lines[30 - entries + index];
+            let line = &lines[height - entries + index];
             assert!(
                 line.chars().take(left).all(|c| c == ' '),
                 "text left of the column: {line:?}"
@@ -378,10 +458,11 @@ mod tests {
                 .any(|line| line.contains("Commands") || line.contains("more"))
         );
         // Headings are bold; the empty frame makes split actions unavailable and dim.
-        let heading_row = 30 - entries;
+        let heading_row = height - entries;
         assert!(modifier(&buffer, left + 1, heading_row).contains(Modifier::BOLD));
         assert!(
-            (heading_row..30).any(|row| modifier(&buffer, left + 1, row).contains(Modifier::DIM))
+            (heading_row..height)
+                .any(|row| modifier(&buffer, left + 1, row).contains(Modifier::DIM))
         );
     }
 
@@ -392,16 +473,28 @@ mod tests {
         let top = HintPanel::commands(&bindings, true, 0, &frame);
         let (_, lines) = painted(&top, 6, 60);
         assert!(lines[0].contains("Panes"), "{:?}", lines[0]);
-        assert!(lines[5].contains("▼ 18 more"), "{:?}", lines[5]);
-        assert_eq!(top.max_scroll(6), 18);
+        assert!(
+            lines[5].contains(&format!("▼ {} more", top.entries.len() - 5)),
+            "{:?}",
+            lines[5]
+        );
+        assert_eq!(top.max_scroll(6), top.entries.len() - 5);
         assert_eq!(top.screenful(6), 4);
         let middle = HintPanel::commands(&bindings, true, 3, &frame);
         let (_, lines) = painted(&middle, 6, 60);
         assert!(lines[0].contains("▲ 3 more"), "{:?}", lines[0]);
-        assert!(lines[5].contains("▼ 16 more"), "{:?}", lines[5]);
+        assert!(
+            lines[5].contains(&format!("▼ {} more", top.entries.len() - 7)),
+            "{:?}",
+            lines[5]
+        );
         let end = HintPanel::commands(&bindings, true, 999, &frame);
         let (_, lines) = painted(&end, 6, 60);
-        assert!(lines[0].contains("▲ 18 more"), "{:?}", lines[0]);
+        assert!(
+            lines[0].contains(&format!("▲ {} more", top.entries.len() - 5)),
+            "{:?}",
+            lines[0]
+        );
         assert!(lines[5].contains("detach"), "{:?}", lines[5]);
         assert!(!lines.iter().any(|line| line.contains('▼')));
         // Every entry is reachable by scrolling one row at a time.
@@ -422,7 +515,7 @@ mod tests {
         let panel = HintPanel::context(
             "Choose workspace".into(),
             names,
-            "↑/↓ move · Enter switch · Esc back",
+            "↑/↓ move · Enter switch · Esc dismiss",
             Some(10),
         );
         let (buffer, lines) = painted(&panel, 8, 50);

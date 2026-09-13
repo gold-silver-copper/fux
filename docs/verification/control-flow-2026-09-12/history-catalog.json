@@ -1,0 +1,266 @@
+[
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0000.png",
+    "label": "history first pane",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0001.png",
+    "label": "history two panes",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0002.png",
+    "label": "left numbered history",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0003.png",
+    "label": "right numbered history",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0004.png",
+    "label": "wheel A history",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0005.png",
+    "label": "A and B independently scrolled",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0006.png",
+    "label": "return to A history",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0007.png",
+    "label": "Escape restores only A",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0008.png",
+    "label": "typing restores focused B",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0009.png",
+    "label": "active keyboard selection",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0010.png",
+    "label": "selection Escape returns normal",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0011.png",
+    "label": "input after selection dismissal",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0012.png",
+    "label": "prefix exits copy into commands",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0013.png",
+    "label": "command Escape returns normal",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0014.png",
+    "label": "history before geometry change",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0015.png",
+    "label": "scrolled history refreshed at smaller geometry",
+    "size": [
+      600,
+      240
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0016.png",
+    "label": "tiny scrolled history",
+    "size": [
+      120,
+      60
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0017.png",
+    "label": "restored scrolled history geometry",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0018.png",
+    "label": "geometry history dismissal",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0019.png",
+    "label": "pointer command popup",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0020.png",
+    "label": "popup click creates nested pane once",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0021.png",
+    "label": "popup before wheel",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0022.png",
+    "label": "wheel scrolls command popup",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0023.png",
+    "label": "outside click dismisses popup",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-7385ei/0024.png",
+    "label": "normal input after popup mouse dismissal",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-4CGrKU/0000.png",
+    "label": "independent live viewer",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-4CGrKU/0001.png",
+    "label": "typing restores focused B",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-4CGrKU/0002.png",
+    "label": "input after selection dismissal",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-4CGrKU/0003.png",
+    "label": "scrolled history refreshed at smaller geometry",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-4CGrKU/0004.png",
+    "label": "tiny scrolled history",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-4CGrKU/0005.png",
+    "label": "restored scrolled history geometry",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-4CGrKU/0006.png",
+    "label": "popup click creates nested pane once",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-controls-expanded-v3/terminal-79099-4CGrKU/0007.png",
+    "label": "normal input after popup mouse dismissal",
+    "size": [
+      800,
+      480
+    ]
+  }
+]

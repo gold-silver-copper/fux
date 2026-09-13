@@ -1,0 +1,10 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.78s
+     Running unittests src/lib.rs (/tmp/fux-codebase-work/build/debug/deps/zor-62922c614c9df093)
+
+running 2 tests
+test tasks::diagnostics::tests::refuses_symlink_and_shared_permissions ... ok
+test tasks::diagnostics::tests::private_bounded_records_and_contention ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 163 filtered out; finished in 0.00s
+

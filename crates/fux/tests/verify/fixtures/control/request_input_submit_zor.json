@@ -1,0 +1,7 @@
+{
+  "command": "input-submit",
+  "id": 1,
+  "instance": "owner",
+  "operation": 9,
+  "keys": "literal\\\\界\\r"
+}

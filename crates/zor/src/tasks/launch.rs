@@ -245,12 +245,11 @@ pub(super) fn submit_prepared(root: &Path, store: &mut Store, id: &str) -> Resul
                 .launches
                 .get_mut(id)
                 .context("launch missing")?
-                .phase = LaunchPhase::Submitting;
-            Ok(())
+                .begin_submission()
         })?;
         let response = crate::fux::completed_until(
             &launch.runtime.join(format!("{}.sock", launch.workspace)),
-            json!({"command":"split","axis":"horizontal","id":1,"instance":launch.instance,"stream":launch.stream,"cwd":launch.cwd,"argv":command(&launch),"final_retain_ms":LAUNCH_FINAL_RETAIN_MS}),
+            json!({"command":"split","axis":"horizontal","id":1,"instance":launch.instance,"stream":launch.stream,"cwd":launch.cwd,"argv":command(&launch),"fixed_workspace":true,"final_retain_ms":LAUNCH_FINAL_RETAIN_MS}),
             Instant::now() + Duration::from_secs(6),
         );
         match response {
@@ -262,8 +261,11 @@ pub(super) fn submit_prepared(root: &Path, store: &mut Store, id: &str) -> Resul
                     .filter(|p| *p > 0)
                 {
                     store.transaction(|journal| {
-                        journal.launches.get_mut(id).context("launch missing")?.pane = Some(pane);
-                        Ok(())
+                        journal
+                            .launches
+                            .get_mut(id)
+                            .context("launch missing")?
+                            .record_created_pane(pane)
                     })?;
                 }
             }
@@ -281,11 +283,7 @@ pub(super) fn submit_prepared(root: &Path, store: &mut Store, id: &str) -> Resul
 fn uncertain(store: &mut Store, id: &str, error: &anyhow::Error) -> Result<()> {
     store.transaction(|journal| {
         let launch = journal.launches.get_mut(id).context("launch missing")?;
-        // A post-rename sync error must not erase an attached ownership record.
-        if !matches!(launch.phase, LaunchPhase::Attached | LaunchPhase::Closed) {
-            launch.phase = LaunchPhase::Uncertain;
-            launch.problem = Some(error.to_string().chars().take(128).collect());
-        }
+        launch.creation_uncertain(&error.to_string());
         Ok(())
     })
 }
@@ -294,6 +292,11 @@ pub fn reconcile(root: &Path, id: &str) -> Result<Value> {
     reconcile_store(&mut Store::open(root)?, id)
 }
 pub(super) fn reconcile_store(store: &mut Store, id: &str) -> Result<Value> {
+    let result = reconcile_locked(store, id);
+    store.recovery_observed(id, result.is_ok());
+    result
+}
+fn reconcile_locked(store: &mut Store, id: &str) -> Result<Value> {
     let launch = store
         .journal()
         .launches
@@ -392,23 +395,16 @@ fn reconcile_attached(store: &mut Store, launch: &Launch) -> Result<Value> {
         .and_then(|id| store.journal().sessions.get(id))
         .context("managed session missing")?;
     let target = session.target.clone();
-    let live = super::submit::verify_target(&target, Instant::now() + Duration::from_secs(2));
+    let live = super::submit::verify_target(&target, Instant::now() + Duration::from_secs(2))
+        .and_then(|()| super::route::release_pin(&target, Instant::now() + Duration::from_secs(2)));
     if live.is_ok() {
         if launch.problem.is_some() {
             store.transaction(|journal| {
-                journal
-                    .launches
-                    .get_mut(id)
-                    .context("launch missing")?
-                    .problem = None;
-                let attempt = journal
-                    .attempts
-                    .get_mut(&attempt_id)
-                    .context("attempt missing")?;
-                if matches!(attempt.state, AttemptState::Uncertain | AttemptState::Lost) {
-                    attempt.state = AttemptState::Active;
-                }
-                Ok(())
+                journal.observe_attached(
+                    id,
+                    &attempt_id,
+                    super::lifecycle::AttachedObservation::Live,
+                )
             })?;
         }
         return super::inspect_journal(store.journal(), id);
@@ -416,42 +412,25 @@ fn reconcile_attached(store: &mut Store, launch: &Launch) -> Result<Value> {
     match recover_final(launch) {
         Ok((pane, evidence)) => {
             anyhow::ensure!(pane == target.pane, "final launch pane mismatch");
-            store.transaction(|journal| {
-                let launch = journal.launches.get_mut(id).context("launch missing")?;
-                launch.phase = LaunchPhase::Closed;
-                launch.final_evidence = Some(evidence);
-                launch.problem = None;
-                journal
-                    .attempts
-                    .get_mut(&attempt_id)
-                    .context("attempt missing")?
-                    .state = AttemptState::Finished;
-                // Preserve task outcome, identities, original PID, prompt receipts and waits.
-                // A process lifecycle observation is not prompt correlation or task verification.
-                Ok(())
-            })?;
+            close_attached(store, id, &attempt_id, evidence)?;
             super::inspect_journal(store.journal(), id)
         }
         Err(error) => {
             // A replacement server is positive evidence of lost ownership, not
             // an exit receipt. An unavailable endpoint alone remains uncertain.
             let replacement = replacement_instance(&target);
-            let lost = replacement.is_some()
-                || store
-                    .journal()
-                    .attempts
-                    .get(&attempt_id)
-                    .is_some_and(|attempt| attempt.state == AttemptState::Lost);
-            let state = if lost {
-                AttemptState::Lost
-            } else {
-                AttemptState::Uncertain
-            };
-            let problem: String = if lost {
-                "fux server incarnation replaced; original process ownership lost; no command or prompt replayed".into()
-            } else {
-                error.to_string().chars().take(128).collect()
-            };
+            let previous = &store
+                .journal()
+                .attempts
+                .get(&attempt_id)
+                .context("attempt missing")?
+                .state;
+            let (state, problem) = super::lifecycle::unavailable_state(
+                previous,
+                replacement.is_some(),
+                &error.to_string(),
+            );
+            let lost = state == AttemptState::Lost;
             if launch.problem.as_ref() != Some(&problem)
                 || store
                     .journal()
@@ -460,17 +439,14 @@ fn reconcile_attached(store: &mut Store, launch: &Launch) -> Result<Value> {
                     .is_some_and(|attempt| attempt.state != state)
             {
                 store.transaction(|journal| {
-                    journal
-                        .launches
-                        .get_mut(id)
-                        .context("launch missing")?
-                        .problem = Some(problem);
-                    journal
-                        .attempts
-                        .get_mut(&attempt_id)
-                        .context("attempt missing")?
-                        .state = state;
-                    Ok(())
+                    journal.observe_attached(
+                        id,
+                        &attempt_id,
+                        super::lifecycle::AttachedObservation::Unavailable {
+                            replacement: replacement.is_some(),
+                            problem,
+                        },
+                    )
                 })?;
             }
             Err(error.context(if lost {
@@ -485,16 +461,16 @@ fn reconcile_attached(store: &mut Store, launch: &Launch) -> Result<Value> {
 /// Same-user live listing, deliberately unpinned only to identify a replacement.
 /// No pane from this response can become the retained session's target.
 fn replacement_instance(target: &Target) -> Option<String> {
-    let response = crate::fux::completed_until(
-        &target.runtime.join(format!("{}.sock", target.workspace)),
-        json!({"command":"list","id":1}),
+    let response = crate::fux::request_until(
+        &target.runtime.join("manager.sock"),
+        json!({"request":"info"}),
         Instant::now() + Duration::from_secs(2),
     )
     .ok()?;
-    if response.get("id").and_then(Value::as_u64) != Some(1) {
+    if response.get("reply").and_then(Value::as_str) != Some("info") {
         return None;
     }
-    let instance = response.pointer("/result/value/instance")?.as_str()?;
+    let instance = response.pointer("/info/instance_nonce")?.as_str()?;
     (!instance.is_empty() && instance.len() <= 128 && instance != target.instance)
         .then(|| instance.to_owned())
 }
@@ -506,76 +482,74 @@ fn attach(
     pid: Option<u32>,
     evidence: Option<LaunchFinal>,
 ) -> Result<()> {
-    let id = launch.task_id();
     let session = super::store::nonce()?;
     let attempt = super::store::nonce()?;
     store.transaction(|journal| {
-        if launch.task.is_some() {
-            super::resume::attach_launch(journal, launch)?;
-        }
-        journal.sessions.insert(
-            session.clone(),
-            Session {
-                id: session.clone(),
-                target: Target {
-                    runtime: launch.runtime.clone(),
-                    instance: launch.instance.clone(),
-                    workspace: launch.workspace.clone(),
-                    stream: launch.stream,
-                    pane: pane_id,
-                    pid,
-                },
-                agent: launch.agent.clone(),
-                ownership: Ownership::Managed,
-                launch: Some(id.into()),
-                created_ms: launch.created_ms,
-            },
-        );
-        journal.attempts.insert(
-            attempt.clone(),
-            Attempt {
-                id: attempt.clone(),
-                task: id.into(),
+        journal.attach_managed(
+            &launch.id,
+            super::lifecycle::Attachment {
                 session: session.clone(),
-                state: if evidence.is_some() {
-                    AttemptState::Finished
-                } else {
-                    AttemptState::Active
-                },
+                attempt,
+                pane: pane_id,
+                pid,
+                evidence,
             },
-        );
-        if launch.task.is_some() {
-            journal
-                .tasks
-                .get_mut(id)
-                .context("resume task missing")?
-                .attempt = attempt;
-        } else {
-            journal.tasks.insert(
-                id.into(),
-                Task {
-                    required_checks: Default::default(),
-                    required_artifacts: Default::default(),
-                    id: id.into(),
-                    requested_runtime: launch.requested_runtime.clone(),
-                    title: launch.title.clone(),
-                    created_ms: launch.created_ms,
-                    outcome: TaskOutcome::Open,
-                    attempt,
-                },
-            );
+        )
+    })?;
+    if pid.is_some() {
+        let target = store
+            .journal()
+            .sessions
+            .get(&session)
+            .context("committed session missing")?
+            .target
+            .clone();
+        if let Err(release_error) =
+            super::route::release_pin(&target, Instant::now() + Duration::from_secs(2))
+        {
+            // The process can exit after attachment was durably recorded. Only
+            // matching retained evidence can turn this failed release into a
+            // completed lifecycle; a live/pending or unavailable result remains
+            // an error, preserving lost-reply reconciliation semantics.
+            let current = store
+                .journal()
+                .launches
+                // Resume attachment archives the old launch under the pending
+                // operation ID and installs the new launch under the task ID.
+                .get(launch.task_id())
+                .context("committed launch missing")?
+                .clone();
+            let (pane, evidence) = recover_final(&current).map_err(|error| {
+                release_error.context(format!("no matching exit evidence: {error:#}"))
+            })?;
+            anyhow::ensure!(pane == target.pane, "final launch pane mismatch");
+            let attempt = store
+                .journal()
+                .attempts
+                .values()
+                .find(|attempt| attempt.session == session && attempt.task == current.task_id())
+                .context("committed attempt missing")?
+                .id
+                .clone();
+            close_attached(store, &current.id, &attempt, evidence)?;
         }
-        let launch = journal.launches.get_mut(id).context("launch missing")?;
-        launch.phase = if evidence.is_some() {
-            LaunchPhase::Closed
-        } else {
-            LaunchPhase::Attached
-        };
-        launch.final_evidence = evidence;
-        launch.pane = Some(pane_id);
-        launch.session = Some(session);
-        launch.problem = None;
-        Ok(())
+    }
+    Ok(())
+}
+
+/// Record process completion without changing task outcome or delivery evidence.
+fn close_attached(
+    store: &mut Store,
+    id: &str,
+    attempt_id: &str,
+    evidence: LaunchFinal,
+) -> Result<()> {
+    store.transaction(|journal| {
+        journal.observe_attached(
+            id,
+            attempt_id,
+            super::lifecycle::AttachedObservation::Final(evidence),
+        )
     })
 }
 
@@ -634,63 +608,37 @@ fn recover_final(launch: &Launch) -> Result<(u32, LaunchFinal)> {
         }
         found.context("no retained creation event for launch")?
     };
-    let response = crate::fux::request_until(
-        &launch.runtime.join("manager.sock"),
-        json!({"request":"final","instance":launch.instance,"pane":pane}),
-        deadline,
-    )
-    .context("read launch final record")?;
-    // `pending` contradicts the failed live check and, like `evicted` (fux dropped the record
-    // under load), `expired` and `unknown`, leaves this reconciliation without an exit receipt.
-    let record = match crate::fux::final_reply(&response)
-        .context("final launch evidence unavailable or expired")?
-    {
-        crate::fux::FinalReply::Record(record) => record,
-        crate::fux::FinalReply::Pending => {
-            anyhow::bail!("final launch evidence unavailable: pane is still live")
-        }
-    };
+    let record =
+        match crate::fux::manager::final_record(&launch.runtime, &launch.instance, pane, deadline)
+            .context("final launch evidence unavailable or expired")?
+        {
+            crate::fux::manager::FinalOutcome::Record(record) => record,
+            crate::fux::manager::FinalOutcome::Pending => {
+                anyhow::bail!("final launch evidence unavailable: pane is still live")
+            }
+        };
     anyhow::ensure!(
-        record.get("pane").and_then(Value::as_u64) == Some(u64::from(pane))
-            && record.get("workspace").and_then(Value::as_str) == Some(&launch.workspace)
-            && record.get("stream").and_then(Value::as_u64) == Some(launch.stream)
-            && record.get("command") == Some(&serde_json::to_value(command(launch))?)
-            && record.get("cwd") == Some(&serde_json::to_value(&launch.cwd)?),
+        record.pane == pane
+            && record.workspace == launch.workspace
+            && record.stream == launch.stream
+            && record.command == command(launch)
+            && record.cwd == launch.cwd,
         "final launch identity mismatch"
     );
-    let exit_status = match record.get("exit_status") {
-        Some(Value::Null) => None,
-        Some(value) => Some(
-            value
-                .as_u64()
-                .and_then(|code| u32::try_from(code).ok())
-                .context("invalid final exit status")?,
-        ),
-        None => anyhow::bail!("final exit status missing"),
-    };
-    let text = record
-        .pointer("/capture/text")
-        .and_then(Value::as_str)
-        .context("final text missing")?;
+    let exit_status = record.exit_status;
+    let text = &record.capture.text;
     let mut end = text.len().min(4096);
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    let truncated = record
-        .pointer("/capture/truncated")
-        .and_then(Value::as_bool)
-        .context("final truncation flag missing")?
-        || end < text.len();
+    let truncated = record.capture.truncated || end < text.len();
     Ok((
         pane,
         LaunchFinal {
             exit_status,
             text: text.get(..end).context("invalid text boundary")?.into(),
             truncated,
-            input_sequence: record
-                .get("input_sequence")
-                .and_then(Value::as_u64)
-                .context("final input sequence missing")?,
+            input_sequence: record.input_sequence,
         },
     ))
 }

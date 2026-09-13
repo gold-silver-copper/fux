@@ -1,4 +1,4 @@
-//! Task receipt failure injection on a fixture-owned control socket.
+//! Task receipt failure injection on fixture-owned workspace and manager sockets.
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -101,11 +101,11 @@ pub struct Faults {
     pub drop_before_submit: bool,
     pub drop_submit: bool,
     pub expire_status: bool,
-    pub delay_list: Duration,
+    pub delay_observation: Duration,
     pub delay_status: Duration,
     pub drop_delayed: bool,
     pub hold_submit: bool,
-    pub hold_list: bool,
+    pub hold_observation: bool,
     pub hold_receipt: bool,
 }
 impl Default for Faults {
@@ -115,11 +115,11 @@ impl Default for Faults {
             drop_before_submit: true,
             drop_submit: true,
             expire_status: false,
-            delay_list: Duration::ZERO,
+            delay_observation: Duration::ZERO,
             delay_status: Duration::ZERO,
             drop_delayed: false,
             hold_submit: false,
-            hold_list: false,
+            hold_observation: false,
             hold_receipt: false,
         }
     }
@@ -146,41 +146,62 @@ fn hold(state: &State) -> Result<()> {
     }
     Ok(())
 }
-fn handle(mut peer: UnixStream, control: &Path, state: &State) -> Result<()> {
+fn handle(mut peer: UnixStream, control: &Path, state: &State, manager: bool) -> Result<()> {
     peer.set_nonblocking(true)?;
     ensure!(line(&mut peer, 8, state)? == b"FUX\n", "proxy preface");
     write(&mut peer, b"FUX\n", state)?;
     let request: Value = serde_json::from_slice(&line(&mut peer, 1048576, state)?)?;
+    let command = request[if manager { "request" } else { "command" }]
+        .as_str()
+        .unwrap_or("");
     let f = state.faults.lock().unwrap().clone();
     // Freeze an admitted waiter at its next observation request so killing it
     // cannot race a fixture reply write. No request reaches fux in this mode.
-    if f.hold_list && request["command"] == "list" {
+    if f.hold_observation && matches!(command, "list" | "pane-location") {
         hold(state)?;
         return Ok(());
     }
-    let delay = match request["command"].as_str() {
-        Some("list") => f.delay_list,
-        Some("input-status") => f.delay_status,
+    let delay = match command {
+        "list" | "pane-location" => f.delay_observation,
+        "input-status" => f.delay_status,
         _ => Duration::ZERO,
     };
     let discard_delayed = f.drop_delayed && !delay.is_zero();
     pause(state, delay)?;
+    if manager && command != "input-status" {
+        if discard_delayed {
+            return Ok(());
+        }
+        let response = super::local::rpc(control, request.clone())?;
+        let mut bytes = serde_json::to_vec(&response)?;
+        bytes.push(b'\n');
+        return write(&mut peer, &bytes, state);
+    }
+
     {
         let mut f = state.faults.lock().unwrap();
-        if request["command"] == "input-submit" && f.drop_before_submit {
+        if command == "input-submit" && f.drop_before_submit {
             f.drop_before_submit = false;
             return Ok(());
         }
     }
-    let mut response =
-        if request["command"] == "input-status" && state.faults.lock().unwrap().expire_status {
-            json!({"id":1,"status":"failed","error":{"code":"expired"}})
+    let mut response = if command == "input-status" && state.faults.lock().unwrap().expire_status {
+        json!({"id":if manager { 0 } else { 1 },"status":"failed","error":{"code":"expired"}})
+    } else {
+        let upstream = super::local::rpc(control, request.clone())?;
+        if manager {
+            ensure!(
+                upstream["reply"] == "input-status",
+                "unexpected manager proxy reply"
+            );
+            upstream["result"].clone()
         } else {
-            super::local::rpc(control, request.clone())?
-        };
+            upstream
+        }
+    };
     {
         let mut f = state.faults.lock().unwrap();
-        if request["command"] == "input-reserve" && f.drop_reserve {
+        if command == "input-reserve" && f.drop_reserve {
             f.drop_reserve = false;
             state.orphaned.lock().unwrap().push(
                 response
@@ -196,10 +217,7 @@ fn handle(mut peer: UnixStream, control: &Path, state: &State) -> Result<()> {
     }
     let f = state.faults.lock().unwrap().clone();
     if f.hold_receipt
-        && matches!(
-            request["command"].as_str(),
-            Some("input-submit" | "input-status")
-        )
+        && matches!(command, "input-submit" | "input-status")
         && response["status"] == "completed"
     {
         let receipt = response
@@ -208,7 +226,7 @@ fn handle(mut peer: UnixStream, control: &Path, state: &State) -> Result<()> {
         receipt["state"] = json!("queued");
         receipt["bytes_written"] = json!(0);
     }
-    if request["command"] == "input-submit" {
+    if command == "input-submit" {
         if f.hold_submit {
             hold(state)?;
             return Ok(());
@@ -219,6 +237,11 @@ fn handle(mut peer: UnixStream, control: &Path, state: &State) -> Result<()> {
             return Ok(());
         }
     }
+    let response = if manager {
+        json!({"reply":"input-status","result":response})
+    } else {
+        response
+    };
     let mut bytes = serde_json::to_vec(&response)?;
     bytes.push(b'\n');
     write(&mut peer, &bytes, state)
@@ -231,6 +254,8 @@ impl Proxy {
     pub fn start(directory: &Path, control: &Path) -> Result<Self> {
         let listener = UnixListener::bind(directory.join("default.sock"))?;
         listener.set_nonblocking(true)?;
+        let manager = UnixListener::bind(directory.join("manager.sock"))?;
+        manager.set_nonblocking(true)?;
         let state = Arc::new(State::default());
         let shared = state.clone();
         let control = control.to_owned();
@@ -238,13 +263,17 @@ impl Proxy {
             let state = shared;
             let result = (|| -> Result<()> {
                 while !state.stop.load(Ordering::Acquire) {
-                    match listener.accept() {
-                        Ok((peer, _)) => handle(peer, &control, &state)?,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            pause(&state, Duration::from_millis(10))?
+                    for (listener, upstream, manager) in [
+                        (&listener, control.clone(), false),
+                        (&manager, control.with_file_name("manager.sock"), true),
+                    ] {
+                        match listener.accept() {
+                            Ok((peer, _)) => handle(peer, &upstream, &state, manager)?,
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                            Err(e) => return Err(e.into()),
                         }
-                        Err(e) => return Err(e.into()),
                     }
+                    pause(&state, Duration::from_millis(10))?;
                 }
                 Ok(())
             })();

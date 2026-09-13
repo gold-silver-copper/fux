@@ -123,6 +123,7 @@ impl Harness {
         loop {
             self.pump(0.03)?;
             if check(self)? {
+                self.checkpoint(label)?;
                 return Ok(());
             }
             ensure!(
@@ -135,11 +136,20 @@ impl Harness {
             );
         }
     }
+    #[track_caller]
     fn hold(&mut self, mut check: impl FnMut(&Self) -> bool, seconds: f64) -> Result<()> {
         let end = Instant::now() + Duration::from_secs_f64(seconds);
         while Instant::now() < end {
             self.pump(0.03)?;
-            ensure!(check(self), "viewer isolation changed");
+            ensure!(
+                check(self),
+                "viewer isolation changed at {}:\n{}",
+                std::panic::Location::caller(),
+                (0..self.viewers.len())
+                    .map(|i| self.text(i))
+                    .collect::<Vec<_>>()
+                    .join("\n--- viewer ---\n")
+            );
         }
         Ok(())
     }
@@ -173,6 +183,10 @@ impl Harness {
         loop {
             let state = self.tabs("default")?;
             if check(&state) {
+                if std::env::var_os("FUX_BETAMAX_DIR").is_some() {
+                    self.pump(0.03)?;
+                }
+                self.checkpoint(label)?;
                 return Ok(state);
             }
             ensure!(Instant::now() < end, "{label}: {state:?}");
@@ -180,11 +194,52 @@ impl Harness {
         }
     }
     fn resize(&mut self, index: usize, rows: u16, columns: u16) -> Result<()> {
+        self.checkpoint("before-resize")?;
         self.viewers[index]
             .screen
             .screen_mut()
             .set_size(rows, columns);
         self.viewers[index].terminal.resize(rows, columns)
+    }
+    fn checkpoint(&mut self, label: &str) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self
+            .viewers
+            .iter()
+            .map(|viewer| viewer.terminal.frame_pending())
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .any(|pending| pending)
+        {
+            self.pump(0.005)?;
+            ensure!(
+                Instant::now() < deadline,
+                "unfinished synchronized viewer frame at {label}"
+            );
+        }
+        for viewer in &mut self.viewers {
+            if let Some(actual) = viewer.terminal.checkpoint(label)? {
+                let expected = viewer
+                    .screen
+                    .screen()
+                    .rows(0, viewer.screen.screen().size().1)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let normalize = |text: &str| {
+                    text.lines()
+                        .map(str::trim_end)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .trim_end()
+                        .to_owned()
+                };
+                ensure!(
+                    normalize(&actual) == normalize(&expected),
+                    "Betamax/vt100 screen mismatch at {label}:\nBetamax: {actual:?}\nvt100: {expected:?}"
+                );
+            }
+        }
+        Ok(())
     }
     fn exited(&mut self, index: usize) -> Result<bool> {
         Ok(self.viewers[index].terminal.child.0.try_wait()?.is_some())
@@ -201,7 +256,10 @@ impl Harness {
         let mut failures = Vec::new();
         for viewer in &mut self.viewers {
             if let Err(error) = viewer.terminal.close() {
-                failures.push(format!("{error:#}"));
+                failures.push(format!(
+                    "viewer {} cleanup: {error:#}",
+                    viewer.terminal.child.0.id()
+                ));
             }
         }
         self.viewers.clear();
@@ -232,7 +290,168 @@ fn widths(tab: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+fn click_popup_entry(h: &mut Harness, text: &str) -> Result<()> {
+    click_popup_entry_at(h, 0, text)
+}
+
+fn click_popup_entry_at(h: &mut Harness, viewer: usize, text: &str) -> Result<()> {
+    h.wait(
+        |h| Ok(h.rows(viewer).iter().take(23).any(|row| row.contains(text))),
+        "mouse chooser entry",
+        8,
+    )?;
+    let row = h
+        .rows(viewer)
+        .iter()
+        .take(23)
+        .position(|row| row.contains(text))
+        .context("popup row")?
+        + 1;
+    h.send(
+        viewer,
+        format!("\x1b[<0;75;{row}M\x1b[<0;75;{row}m").as_bytes(),
+    )?;
+    h.pump(0.1)
+}
+
+fn mouse_workspace_action(h: &mut Harness, action: &str, target: &str) -> Result<()> {
+    h.send(0, b"\x1b[<2;2;24M\x1b[<2;2;24m")?;
+    click_popup_entry(h, action)?;
+    let heading = if action == "reorder workspace" {
+        "Place workspace before"
+    } else {
+        "Choose workspace"
+    };
+    h.wait(
+        |h| Ok(h.text(0).contains(heading)),
+        "workspace destination chooser",
+        8,
+    )?;
+    click_popup_entry(h, target)
+}
+
+fn mouse_reorder_tab(h: &mut Harness, label: &str, before: &str) -> Result<()> {
+    let column = h.bar(0).find(label).context("source tab label")? + 2;
+    h.send(
+        0,
+        format!("\x1b[<2;{column};24M\x1b[<2;{column};24m").as_bytes(),
+    )?;
+    click_popup_entry(h, "reorder tab")?;
+    h.wait(
+        |h| Ok(h.text(0).contains("Place current tab before")),
+        "tab reorder chooser",
+        8,
+    )?;
+    click_popup_entry(h, before)
+}
+
+fn verify_traversal(h: &mut Harness, tab: usize) -> Result<()> {
+    let shows_focus = |h: &Harness, pane: &Value| {
+        h.bar(0)
+            .rsplit('│')
+            .next()
+            .is_some_and(|field| field.trim().split(':').next() == Some(pane.to_string().as_str()))
+    };
+    let instance = h.cli(&["default", "list"])?["result"]["value"]["instance"]
+        .as_str()
+        .context("instance")?
+        .to_owned();
+    let state = h.tabs("default")?;
+    let panes = state[tab]["panes"].as_array().context("traversal panes")?;
+    let ids: Vec<_> = panes.iter().map(|pane| pane["id"].clone()).collect();
+    let pids: Vec<_> = panes.iter().map(|pane| pane["pid"].clone()).collect();
+    let start = panes
+        .iter()
+        .position(|pane| pane["focused"] == true)
+        .context("focused pane")?;
+    let original_label = panes[start]["label"].as_str().unwrap_or("").to_owned();
+    h.wait(
+        |h| Ok(shows_focus(h, &ids[start])),
+        "traversal initial frame",
+        8,
+    )?;
+    for (forward, key, command) in [(true, b'o', "next"), (false, b'u', "previous")] {
+        let mut index = start;
+        if ids.len() > 1 {
+            h.send(0, b"\x01z")?;
+            h.wait(
+                |h| {
+                    Ok(h.rows(0)
+                        .iter()
+                        .take(23)
+                        .all(|row| !row.contains(['│', '─'])))
+                },
+                "zoomed frame before traversal",
+                8,
+            )?;
+        }
+        for _ in 0..ids.len() {
+            index = if forward {
+                (index + 1) % ids.len()
+            } else {
+                (index + ids.len() - 1) % ids.len()
+            };
+            h.send(0, &[1, key])?;
+            h.wait(
+                |h| Ok(shows_focus(h, &ids[index])),
+                "keyboard traversal and wrap",
+                8,
+            )?;
+        }
+        ensure!(index == start, "cycle did not return to original pane");
+        for _ in 0..ids.len() {
+            index = if forward {
+                (index + 1) % ids.len()
+            } else {
+                (index + ids.len() - 1) % ids.len()
+            };
+            let reply = h.cli(&["default", "focus", command])?;
+            ensure!(
+                reply["result"]["value"]["pane"] == ids[index],
+                "CLI traversal target: {reply}"
+            );
+            // A later metadata change forces an observable attachment snapshot after the CLI focus.
+            let marker = format!("cycle-{command}-{index}");
+            h.cli(&[
+                "default",
+                "rename-pane",
+                &ids[start].to_string(),
+                &marker,
+                "--instance",
+                &instance,
+            ])?;
+            h.wait(
+                |h| Ok(h.bar(0).contains(&marker) && shows_focus(h, &ids[start])),
+                "CLI preserves private focus in a later snapshot",
+                8,
+            )?;
+        }
+    }
+    h.cli(&[
+        "default",
+        "rename-pane",
+        &ids[start].to_string(),
+        &original_label,
+        "--instance",
+        &instance,
+    ])?;
+    let after = h.tabs("default")?;
+    ensure!(
+        after[tab]["panes"]
+            .as_array()
+            .context("panes after cycle")?
+            .iter()
+            .map(|pane| pane["pid"].clone())
+            .collect::<Vec<_>>()
+            == pids,
+        "traversal changed a process"
+    );
+    Ok(())
+}
+
 pub(super) fn run(binary: &Path) -> Result<()> {
+    modal::run(binary)?;
+    verify_tiny_layout(binary)?;
     let root = Root::new(
         "fview-rs-",
         &[
@@ -281,6 +500,60 @@ pub(super) fn run(binary: &Path) -> Result<()> {
             && panes(&tabs[0]) == 1,
         "fresh topology"
     );
+    let original_pid = tabs[0]["panes"][0]["pid"].clone();
+    let instance = h.cli(&["default", "list"])?["result"]["value"]["instance"]
+        .as_str()
+        .context("server instance")?
+        .to_owned();
+    h.send(0, "\x01;build界\r".as_bytes())?;
+    h.state(
+        |s| s[0]["panes"][0]["label"] == "build界",
+        "manual pane label",
+        8,
+    )?;
+    h.wait(
+        |h| Ok(h.bar(0).contains("1: build界")),
+        "manual label in bar",
+        8,
+    )?;
+    ensure!(
+        h.tabs("default")?[0]["panes"][0]["pid"] == original_pid,
+        "rename replaced process"
+    );
+    ensure!(
+        h.text(0).contains("COPY_TARGET"),
+        "rename lost terminal content"
+    );
+    h.send(0, b"\x01;\x15discarded\x1b")?;
+    h.pump(0.2)?;
+    ensure!(
+        h.tabs("default")?[0]["panes"][0]["label"] == "build界",
+        "cancel changed pane label"
+    );
+    h.send(0, b"\x1b")?;
+    h.pump(0.15)?;
+    h.cli(&["default", "rename-pane", "1", "", "--instance", &instance])?;
+    h.wait(
+        |h| Ok(h.bar(0).trim_end().ends_with("│ 1")),
+        "clear manual pane label",
+        8,
+    )?;
+    ensure!(
+        h.tabs("default")?[0]["panes"][0]["label"].is_null(),
+        "CLI did not clear manual label"
+    );
+    h.send(0, b"\x01?")?;
+    h.wait(
+        |h| Ok(h.text(0).contains("Pane 1 actions")),
+        "keyboard pane menu",
+        8,
+    )?;
+    h.send(0, b"\x1b")?;
+    h.pump(0.15)?;
+    ensure!(
+        !h.text(0).contains("Pane 1 actions"),
+        "menu escape did not dismiss"
+    );
     h.send(0, b"\x01")?;
     h.wait(
         |h| Ok(h.text(0).contains("split side by side")),
@@ -298,9 +571,17 @@ pub(super) fn run(binary: &Path) -> Result<()> {
                 && row.chars().take(40).all(char::is_whitespace)),
         "popup column: {rows:?}"
     );
+    ensure!(h.text(0).contains("Panes"), "first popup heading");
+    h.send(0, b"\x1b[6~")?;
     h.wait(
-        |h| Ok(h.text(0).contains("Panes") && h.text(0).contains("Session")),
-        "popup headings",
+        |h| Ok(h.text(0).contains("Session")),
+        "scrolled popup headings",
+        8,
+    )?;
+    h.send(0, b"\x1b[5~")?;
+    h.wait(
+        |h| Ok(h.text(0).contains("Panes")),
+        "popup returns to first heading",
         8,
     )?;
     h.send(0, b"\x1b")?;
@@ -322,6 +603,84 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         8,
     )?;
     h.send(0, b"\x01!")?;
+    h.wait(
+        |h| Ok(h.bar(0).trim_end().ends_with("│ 1")),
+        "last pane returns across tabs",
+        8,
+    )?;
+    h.send(0, b"\x01!")?;
+    h.wait(
+        |h| Ok(h.bar(0).trim_end().ends_with("│ 2")),
+        "last pane toggles back",
+        8,
+    )?;
+    let last = h.cli(&["default", "focus", "last"])?;
+    ensure!(
+        last["result"]["value"]["pane"] == 1,
+        "CLI last pane target: {last}"
+    );
+    ensure!(
+        h.bar(0).trim_end().ends_with("│ 2"),
+        "default focus changed viewer focus"
+    );
+    let last = h.cli(&["default", "focus", "last"])?;
+    ensure!(
+        last["result"]["value"]["pane"] == 2,
+        "CLI last pane toggle: {last}"
+    );
+    ensure!(
+        h.tabs("default")?[0]["panes"][0]["pid"] == original_pid,
+        "last focus replaced process"
+    );
+    h.send(0, b"\x01*")?;
+    h.wait(
+        |h| Ok(h.tabs("default")?[1]["panes"][0]["right_click"] == "fux"),
+        "right-click keyboard policy",
+        8,
+    )?;
+    h.send(0, b"\x01?")?;
+    h.wait(
+        |h| Ok(h.text(0).contains("right-click: fux")),
+        "pane menu policy",
+        8,
+    )?;
+    h.send(0, b"\x1b")?;
+    h.pump(0.15)?;
+    h.cli(&[
+        "default",
+        "pane-input",
+        "2",
+        "--right-click",
+        "pane",
+        "--instance",
+        &instance,
+    ])?;
+    h.wait(
+        |h| Ok(h.tabs("default")?[1]["panes"][0]["right_click"] == "pane"),
+        "CLI pane policy",
+        8,
+    )?;
+    // Observe the attachment update before issuing a cycle based on the viewer's policy.
+    h.pump(0.2)?;
+    h.send(0, b"\x01?")?;
+    h.wait(
+        |h| Ok(h.text(0).contains("right-click: pane")),
+        "viewer observes CLI policy",
+        8,
+    )?;
+    h.send(0, b"\x1b")?;
+    h.pump(0.15)?;
+    h.send(0, b"\x01*")?;
+    h.wait(
+        |h| {
+            Ok(h.tabs("default")?[1]["panes"][0]
+                .get("right_click")
+                .is_none())
+        },
+        "policy resets to auto",
+        8,
+    )?;
+    h.send(0, b"\x010")?;
     h.wait(
         |h| Ok(h.text(0).contains("split side by side")),
         "unknown key popup",
@@ -347,28 +706,241 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     h.send(0, b"\x1b")?;
     h.pump(0.15)?;
     h.wait(
-        |h| Ok(h.text(0).contains("split side by side")),
-        "rename escape",
+        |h| Ok(!h.text(0).contains("Rename tab") && !h.text(0).contains("split side by side")),
+        "rename Escape returns normal",
         8,
     )?;
-    h.send(0, b"\x1b")?;
-    h.pump(0.15)?;
+    h.send(0, b"AFTER_RENAME_CANCEL")?;
+    h.wait(
+        |h| Ok(h.text(0).contains("AFTER_RENAME_CANCEL")),
+        "input after rename cancellation",
+        8,
+    )?;
     ensure!(
         h.tabs("default")?[1]["name"] == "tab-2",
         "cancel changed rename"
     );
     h.send(0, "\x01,\x15renamed界\r".as_bytes())?;
     h.state(|s| s[1]["name"] == "renamed界", "Unicode rename", 8)?;
-    h.send(0, b"\x01|")?;
-    let state = h.state(|s| panes(&s[1]) == 2, "split", 8)?;
+    h.wait(
+        |h| Ok(h.bar(0).contains("renamed")),
+        "tab label rendered",
+        8,
+    )?;
+    mouse_reorder_tab(&mut h, "renamed", "main")?;
+    h.state(
+        |s| s[0]["name"] == "renamed界" && s[1]["name"] == "main" && s[0]["focused"] == true,
+        "mouse-only tab reorder",
+        8,
+    )?;
+    mouse_reorder_tab(&mut h, "renamed", "second")?;
+    h.state(
+        |s| s[0]["name"] == "main" && s[1]["name"] == "renamed界" && s[1]["focused"] == true,
+        "mouse-only tab order restore",
+        8,
+    )?;
+
+    h.wait(|h| Ok(h.bar(0).contains(" main ")), "inactive tab label", 8)?;
+    let main_column = h.bar(0).find(" main ").context("main label")? + 2;
+    h.send(
+        0,
+        format!("\x1b[<2;{main_column};24M\x1b[<2;{main_column};24m").as_bytes(),
+    )?;
+    h.wait(
+        |h| Ok(h.text(0).contains("Tab main (1) actions")),
+        "inactive tab menu",
+        8,
+    )?;
+    h.send(0, b"j\r\x15menu-main\r")?;
+    h.state(
+        |s| s[0]["name"] == "menu-main" && s[1]["focused"] == true,
+        "contextual tab rename retains selection",
+        8,
+    )?;
+    h.cli(&["default", "tab", "rename", "1", "main"])?;
+    let retained_pid = h.tabs("default")?[1]["panes"][0]["pid"].clone();
+    h.cli(&[
+        "default",
+        "split",
+        "horizontal",
+        "--ratio",
+        "7000",
+        "--no-focus",
+    ])?;
+    let state = h.state(|s| panes(&s[1]) == 2, "split with initial ratio", 8)?;
+    ensure!(
+        state[1]["panes"][0]["focused"] == true && state[1]["panes"][0]["pid"] == retained_pid,
+        "no-focus split changed focus or existing process"
+    );
+    ensure!(
+        state[1]["panes"][0]["geometry"]["width"] == 55
+            && state[1]["panes"][1]["geometry"]["width"] == 24,
+        "initial 70/30 ratio not applied: {}",
+        state[1]
+    );
+    h.wait(
+        |h| Ok(h.bar(0).trim_end().ends_with("│ 2")),
+        "viewer focus retained after CLI split",
+        8,
+    )?;
+    // Restore equal geometry for the existing mouse-coordinate scenarios below.
+    let exported = h.cli(&["default", "layout", "2", "export"])?;
+    let value = &exported["result"]["value"];
+    let mut document = value["document"].clone();
+    for node in document["nodes"].as_array_mut().context("layout nodes")? {
+        if node.get("ratio").is_some() {
+            node["ratio"] = 5000.into();
+        }
+    }
+    h.cli(&[
+        "default",
+        "ctl",
+        &serde_json::json!({"command":"layout", "id":1,
+        "instance":instance, "tab":2, "generation":value["generation"],
+        "action":{"operation":"apply","document":document}})
+        .to_string(),
+    ])?;
+    h.send(0, b"\x01o")?;
+    let state = h.state(
+        |s| s[1]["panes"][1]["focused"] == true,
+        "focus new pane after no-focus split",
+        8,
+    )?;
+    let clicked = state[1]["panes"][0].clone();
+    ensure!(
+        clicked["focused"] == false,
+        "expected a nonfocused menu target"
+    );
+    h.send(0, b"\x1b[<2;2;2M\x1b[<2;2;2m")?;
+    h.wait(
+        |h| {
+            Ok(h.text(0)
+                .contains(&format!("Pane {} actions", clicked["id"])))
+        },
+        "nonfocused pane menu",
+        8,
+    )?;
+    h.send(0, b"\r\x15menu-pane\r")?;
+    h.state(
+        |s| s[1]["panes"][0]["label"] == "menu-pane" && s[1]["panes"][0]["focused"] == false,
+        "contextual pane rename retains target",
+        8,
+    )?;
+    ensure!(
+        h.tabs("default")?[1]["panes"][0]["pid"] == clicked["pid"],
+        "context action replaced pane"
+    );
+    let swap_source = state[1]["panes"][1].clone();
+    h.send(0, b"\x01.\r")?;
+    h.state(
+        |s| s[1]["panes"][0]["id"] == swap_source["id"] && s[1]["panes"][1]["id"] == clicked["id"],
+        "explicit keyboard swap",
+        8,
+    )?;
+    h.send(0, b"\x01.")?;
+    h.wait(
+        |h| Ok(h.text(0).contains("Swap pane") && h.text(0).contains("menu-pane")),
+        "swap destination chooser",
+        8,
+    )?;
+    let rows = h.rows(0);
+    let (row, line) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, line)| line.contains("menu-pane"))
+        .context("swap destination row")?;
+    let column = line
+        .find(&format!("{}:", clicked["id"]))
+        .context("swap destination column")?
+        + 1;
+    let row = row + 1;
+    h.send(
+        0,
+        format!("\x1b[<0;{column};{row}M\x1b[<0;{column};{row}m").as_bytes(),
+    )?;
+    let restored = h.state(
+        |s| s[1]["panes"][0]["id"] == clicked["id"] && s[1]["panes"][1]["id"] == swap_source["id"],
+        "mouse swap restores layout",
+        8,
+    )?;
+    ensure!(
+        restored[1]["panes"][0]["pid"] == clicked["pid"]
+            && restored[1]["panes"][1]["pid"] == swap_source["pid"],
+        "swap replaced a process"
+    );
+    // The server listing above does not prove the viewer has consumed the swap
+    // frame. A private focus round trip supplies an observable attachment ack
+    // before starting a generation-pinned drag, then restores the original focus.
+    let focused = |h: &Harness| {
+        h.bar(0)
+            .rsplit('│')
+            .next()?
+            .trim()
+            .split(':')
+            .next()?
+            .parse::<u32>()
+            .ok()
+    };
+    let original_focus = focused(&h).context("focus before drag synchronization")?;
+    h.send(0, b"\x01o")?;
+    h.wait(
+        |h| Ok(focused(h).is_some_and(|pane| pane != original_focus)),
+        "focus after swap frame",
+        8,
+    )?;
+    h.send(0, b"\x01u")?;
+    h.wait(
+        |h| Ok(focused(h) == Some(original_focus)),
+        "restore focus before drag",
+        8,
+    )?;
     let before = widths(&state[1]);
+    let tab_id = state[1]["id"].to_string();
+    let layout_before = h.cli(&["default", "layout", &tab_id, "export"])?;
+    h.send(0, b"\x1b[<8;2;2M\x1b[<40;78;3M")?;
+    h.wait(
+        |h| Ok(h.text(0).contains("release to apply")),
+        "pane drag target",
+        8,
+    )?;
+    ensure!(
+        h.viewers[0]
+            .screen
+            .screen()
+            .cell(2, 77)
+            .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)),
+        "pane drag did not render its destination highlight"
+    );
+    // Neither a right-button release nor a wheel report may commit a left-button drag.
+    h.send(0, b"\x1b[<2;78;3m\x1b[<64;78;3M")?;
+    h.hold(|h| h.text(0).contains("release to apply"), 0.2)?;
+    ensure!(
+        h.cli(&["default", "layout", &tab_id, "export"])? == layout_before,
+        "other mouse buttons committed layout drag"
+    );
+    h.send(0, b"\x1b")?;
+    h.pump(0.15)?;
+    h.send(0, b"\x1b[<2;78;3m\x1b[<40;78;3M\x1b[<0;78;3m")?;
+    h.pump(0.15)?;
+    ensure!(
+        h.cli(&["default", "layout", &tab_id, "export"])? == layout_before,
+        "cancelled mouse tail changed layout"
+    );
+    ensure!(
+        h.viewers[0]
+            .screen
+            .screen()
+            .cell(2, 77)
+            .is_some_and(|cell| cell.bgcolor() != vt100::Color::Idx(6)),
+        "cancelled drag left its highlight visible"
+    );
     h.send(0, b"\x01r")?;
     h.wait(|h| Ok(h.text(0).contains("Resize")), "resize hint", 8)?;
-    h.send(0, b"jj\r")?;
+    h.send(0, b"hh\r")?;
     h.state(|s| widths(&s[1]) != before, "repeated resize", 8)?;
     h.send(
         0,
-        format!("\x01r{}\r\x01,\x15burst-done\r", "jk".repeat(128)).as_bytes(),
+        format!("\x01r{}\r\x01,\x15burst-done\r", "hH".repeat(128)).as_bytes(),
     )?;
     h.state(|s| s[1]["name"] == "burst-done", "resize burst", 30)?;
     h.send(0, b"\x01h")?;
@@ -402,7 +974,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     h.state(|s| panes(&s[1]) == 1, "confirmed close", 8)?;
     h.send(0, b"\x01c")?;
     h.wait(
-        |h| Ok(h.text(0).contains("Close tab") && h.text(0).contains("1 pane")),
+        |h| Ok(h.text(0).contains("Close tab") && h.text(0).contains("All its panes")),
         "tab close prompt",
         8,
     )?;
@@ -447,6 +1019,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     h.send(0, b"\x01_")?;
     h.state(|s| panes(&s[0]) == 3, "stacked split", 8)?;
     h.wait(|h| Ok(h.text(0).contains("├─")), "separator junction", 8)?;
+    verify_traversal(&mut h, 0)?;
     // Preserve main's combined-read regression: entering copy mode, selecting,
     // moving and copying must work without an intervening rendered frame.
     h.send(0, b"\x01[ hhhy")?;
@@ -493,8 +1066,10 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     h.cli(&["default", "tab", "select", "0"])?;
     h.send(0, b"\x01xy")?;
     h.state(|s| panes(&s[0]) == 2, "split close", 8)?;
+    verify_traversal(&mut h, 0)?;
     h.send(0, b"\x01Xy")?;
     h.state(|s| panes(&s[0]) == 1, "second split close", 8)?;
+    verify_traversal(&mut h, 0)?;
     h.add(&[])?;
     h.wait(
         |h| Ok(h.text(1).contains("COPY_TARGET")),
@@ -575,6 +1150,12 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     ensure!(!h.exited(0)?, "one-cell crash");
     h.resize(0, 24, 80)?;
     h.wait(
+        |h| Ok(h.text(0).contains("Session")),
+        "resized scrolled command context",
+        8,
+    )?;
+    h.send(0, b"\x1b[5~")?;
+    h.wait(
         |h| Ok(h.text(0).contains("split side by side")),
         "resize command context",
         8,
@@ -613,6 +1194,36 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         "other listed",
         5,
     )?;
+    h.wait(
+        |h| Ok(h.bar(0).starts_with(" other")),
+        "workspace bar ready",
+        8,
+    )?;
+    mouse_workspace_action(&mut h, "reorder workspace", "default")?;
+    h.wait(
+        |h| Ok(h.cli(&["workspace", "list"])?["names"] == serde_json::json!(["other", "default"])),
+        "mouse-only workspace reorder",
+        8,
+    )?;
+    mouse_workspace_action(&mut h, "choose workspace", "default")?;
+    h.wait(
+        |h| Ok(h.bar(0).starts_with(" default")),
+        "mouse workspace select",
+        8,
+    )?;
+    mouse_workspace_action(&mut h, "reorder workspace", "other")?;
+    h.wait(
+        |h| Ok(h.cli(&["workspace", "list"])?["names"] == serde_json::json!(["default", "other"])),
+        "mouse-only workspace restore",
+        8,
+    )?;
+    mouse_workspace_action(&mut h, "choose workspace", "other")?;
+    h.wait(
+        |h| Ok(h.bar(0).starts_with(" other")),
+        "mouse workspace return",
+        8,
+    )?;
+
     h.send(0, b"\x01s")?;
     h.wait(
         |h| Ok(h.text(0).contains("Choose workspace")),
@@ -622,12 +1233,10 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     h.send(0, b"\x1b")?;
     h.pump(0.1)?;
     h.wait(
-        |h| Ok(h.text(0).contains("split side by side")),
-        "chooser cancel",
+        |h| Ok(!h.text(0).contains("Choose workspace") && !h.text(0).contains("split side by side")),
+        "chooser Escape returns normal",
         8,
     )?;
-    h.send(0, b"\x1b")?;
-    h.pump(0.1)?;
     h.send(0, b"\x01sk\r\x01,\x15switched\r")?;
     h.state(|s| s[0]["name"] == "switched", "switch suffix", 8)?;
     ensure!(
@@ -676,6 +1285,365 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     h.send(1, b"\x01d")?;
     h.wait(|h| h.exited(1), "second detach", 8)?;
     ensure!(h.success(1)?, "second detach failed");
+    h.add(&["fresh-source"])?;
+    h.wait(
+        |h| Ok(h.bar(3).contains("fresh-source") && h.text(3).contains("COPY_TARGET")),
+        "fresh workspace viewer",
+        8,
+    )?;
+    let original = h.tabs("fresh-source")?[0]["panes"][0].clone();
+    h.send(3, b"\x01y")?;
+    h.wait(
+        |h| Ok(h.text(3).contains("Move pane to new workspace")),
+        "workspace transfer prompt",
+        8,
+    )?;
+    h.send(3, b"followed\r")?;
+    h.wait(
+        |h| Ok(h.bar(3).starts_with(" followed") && !h.exited(3)?),
+        "viewer follows moved pane",
+        8,
+    )?;
+    let moved = h.tabs("followed")?[0]["panes"][0].clone();
+    ensure!(
+        moved["id"] == original["id"] && moved["pid"] == original["pid"],
+        "viewer transfer replaced its pane"
+    );
+    h.wait(
+        |h| {
+            Ok(!h.cli(&["workspace", "list"])?["names"]
+                .as_array()
+                .context("workspace names")?
+                .contains(&Value::from("fresh-source")))
+        },
+        "emptied source retires",
+        8,
+    )?;
+    h.send(3, b"\x01f")?;
+    h.wait(
+        |h| Ok(h.text(3).contains("Place workspace before")),
+        "workspace order prompt",
+        8,
+    )?;
+    h.send(3, b"$")?;
+    h.wait(
+        |h| {
+            Ok(h.cli(&["workspace", "list"])?["names"]
+                .as_array()
+                .context("workspace names")?
+                .last()
+                == Some(&Value::from("followed")))
+        },
+        "viewer workspace ordering",
+        8,
+    )?;
+    h.send(3, b"\x01i")?;
+    h.wait(
+        |h| Ok(h.text(3).contains("to workspace")),
+        "existing workspace destination chooser",
+        8,
+    )?;
+    h.send(3, b"j\r")?;
+    h.wait(
+        |h| Ok(h.bar(3).starts_with(" other") && !h.exited(3)?),
+        "viewer follows into existing workspace",
+        8,
+    )?;
+    let destination_tabs = h.tabs("other")?;
+    let continued = destination_tabs
+        .iter()
+        .flat_map(|tab| tab["panes"].as_array().into_iter().flatten())
+        .find(|pane| pane["id"] == original["id"])
+        .context("moved pane at existing destination")?;
+    ensure!(
+        continued["pid"] == original["pid"],
+        "existing workspace move replaced process"
+    );
+    h.send(3, b"FOLLOW_STILL_ALIVE\r")?;
+    let input_after_transfer = h.wait(
+        |h| Ok(h.text(3).contains("FOLLOW_STILL_ALIVE")),
+        "input after viewer transfer",
+        8,
+    );
+    if let Err(error) = input_after_transfer {
+        let capture = h.cli(&["other", "capture", &original["id"].to_string()]);
+        return Err(error.context(format!(
+            "moved pane capture: {capture:?}; current tabs: {:?}",
+            h.tabs("other")
+        )));
+    }
+    let main_tab = destination_tabs
+        .iter()
+        .find(|tab| tab["name"] == "main")
+        .context("tab drag destination")?["id"]
+        .clone();
+    let main_column = h.bar(3).find(" main ").context("visible destination tab")? + 2;
+    h.send(
+        3,
+        format!("\x1b[<8;2;2M\x1b[<40;{main_column};24M").as_bytes(),
+    )?;
+    h.wait(
+        |h| Ok(h.text(3).contains("to tab main")),
+        "tab drag hint",
+        8,
+    )?;
+    ensure!(
+        h.viewers[3]
+            .screen
+            .screen()
+            .cell(23, (main_column - 1) as u16)
+            .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)),
+        "tab drop highlight"
+    );
+    h.send(3, format!("\x1b[<0;{main_column};24m").as_bytes())?;
+    h.wait(
+        |h| {
+            let tabs = h.tabs("other")?;
+            Ok(tabs.len() == destination_tabs.len() - 1
+                && tabs.iter().any(|tab| {
+                    tab["id"] == main_tab
+                        && tab["panes"].as_array().is_some_and(|panes| {
+                            panes.iter().any(|pane| {
+                                pane["id"] == original["id"] && pane["pid"] == original["pid"]
+                            })
+                        })
+                }))
+        },
+        "pane tab drop preserves process and removes empty source",
+        8,
+    )?;
+    h.send(3, b"\x01d")?;
+    h.wait(|h| h.exited(3), "moved viewer detach", 8)?;
+    ensure!(h.success(3)?, "moved viewer detach failed");
+    h.add(&["overflow"])?;
+    h.wait(
+        |h| Ok(h.bar(4).starts_with(" overflow")),
+        "overflow viewer",
+        8,
+    )?;
+    let overflow_pane = h.tabs("overflow")?[0]["panes"][0].clone();
+    h.cli(&["overflow", "tab", "new", &"long-destination-".repeat(6)])?;
+    h.cli(&["overflow", "tab", "new", "hidden-drop"])?;
+    h.send(4, b"\x01,\x15origin\r")?;
+    h.wait(
+        |h| {
+            Ok(h.bar(4).contains(" origin ")
+                && h.bar(4).contains("long-destination")
+                && !h.bar(4).contains("hidden-drop"))
+        },
+        "hidden tab destination",
+        8,
+    )?;
+    let origin_column = h.bar(4).find(" origin ").context("visible source tab")? + 2;
+    h.send(
+        4,
+        format!("\x1b[<8;2;2M\x1b[<65;{origin_column};24M\x1b[<65;{origin_column};24M").as_bytes(),
+    )?;
+    h.wait(
+        |h| Ok(h.text(4).contains("to tab hidden-drop")),
+        "wheel chooses hidden tab",
+        8,
+    )?;
+    h.send(4, format!("\x1b[<0;{origin_column};24m").as_bytes())?;
+    h.wait(
+        |h| {
+            Ok(h.tabs("overflow")?.iter().any(|tab| {
+                tab["name"] == "hidden-drop"
+                    && tab["panes"].as_array().is_some_and(|panes| {
+                        panes.iter().any(|pane| {
+                            pane["id"] == overflow_pane["id"] && pane["pid"] == overflow_pane["pid"]
+                        })
+                    })
+            }))
+        },
+        "drop into hidden tab preserves process",
+        8,
+    )?;
+    h.send(4, b"\x01d")?;
+    h.wait(|h| h.exited(4), "overflow viewer detach", 8)?;
+    ensure!(h.success(4)?, "overflow viewer detach failed");
+    h.add(&["mouse-source"])?;
+    h.wait(
+        |h| Ok(h.bar(5).starts_with(" mouse-source")),
+        "mouse workspace source",
+        8,
+    )?;
+    let mouse_pane = h.tabs("mouse-source")?[0]["panes"][0].clone();
+    h.send(5, b"\x1b[<8;2;2M\x1b[<40;2;24M")?;
+    h.wait(
+        |h| Ok(h.text(5).contains("release to choose")),
+        "workspace drop hint",
+        8,
+    )?;
+    h.send(5, b"\x1b[<0;2;24m")?;
+    h.wait(
+        |h| Ok(h.rows(5).iter().any(|row| row.trim() == "other")),
+        "mouse workspace chooser",
+        8,
+    )?;
+    let other_row = h
+        .rows(5)
+        .iter()
+        .position(|row| row.trim() == "other")
+        .context("other workspace row")?
+        + 1;
+    h.send(
+        5,
+        format!("\x1b[<0;79;{other_row}M\x1b[<0;79;{other_row}m").as_bytes(),
+    )?;
+    h.wait(
+        |h| {
+            Ok(h.bar(5).starts_with(" other")
+                && h.tabs("other")?.iter().any(|tab| {
+                    tab["panes"].as_array().is_some_and(|panes| {
+                        panes.iter().any(|pane| {
+                            pane["id"] == mouse_pane["id"] && pane["pid"] == mouse_pane["pid"]
+                        })
+                    })
+                }))
+        },
+        "mouse workspace transfer follows original process",
+        8,
+    )?;
+    h.send(5, b"MOUSE_WORKSPACE_ALIVE\r")?;
+    h.wait(
+        |h| Ok(h.text(5).contains("MOUSE_WORKSPACE_ALIVE")),
+        "input after mouse transfer",
+        8,
+    )?;
+    h.send(5, b"\x01d")?;
+    h.wait(|h| h.exited(5), "mouse workspace viewer detach", 8)?;
+    ensure!(h.success(5)?, "mouse workspace viewer detach failed");
+    let other_pid = h.tabs("other")?[0]["panes"][0]["pid"].clone();
+    h.add(&["close-menu"])?;
+    h.add(&["close-menu"])?;
+    h.wait(
+        |h| Ok(h.bar(6).starts_with(" close-menu") && h.bar(7).starts_with(" close-menu")),
+        "workspace close viewers",
+        8,
+    )?;
+    let close_pid = h.tabs("close-menu")?[0]["panes"][0]["pid"].clone();
+    let close_stream = h.listing("close-menu")?["event_cursor"]["stream"].clone();
+    h.send(6, b"\x01=")?;
+    h.wait(
+        |h| Ok(h.text(6).contains("Rename workspace")),
+        "workspace label editor",
+        8,
+    )?;
+    h.send(6, b"Build team\r")?;
+    h.wait(
+        |h| Ok(h.bar(6).starts_with(" Build team") && h.bar(7).starts_with(" Build team")),
+        "shared workspace display label",
+        8,
+    )?;
+    let renamed = h.listing("close-menu")?;
+    ensure!(
+        renamed["name"] == "close-menu" && renamed["label"] == "Build team",
+        "rename changed routing name"
+    );
+    ensure!(
+        renamed["event_cursor"]["stream"] == close_stream,
+        "rename changed workspace lifetime"
+    );
+    ensure!(
+        h.tabs("close-menu")?[0]["panes"][0]["pid"] == close_pid,
+        "rename replaced live pane"
+    );
+    h.cli(&[
+        "workspace",
+        "rename",
+        "close-menu",
+        "",
+        "--instance",
+        &instance,
+        "--stream",
+        &close_stream.to_string(),
+    ])?;
+    h.wait(
+        |h| Ok(h.bar(6).starts_with(" close-menu") && h.bar(7).starts_with(" close-menu")),
+        "cleared workspace display label",
+        8,
+    )?;
+    h.send(6, b"\x1b[<2;2;24M\x1b[<2;2;24m")?;
+    click_popup_entry_at(&mut h, 6, "close workspace")?;
+    h.wait(
+        |h| Ok(h.text(6).contains("Close workspace close-menu?")),
+        "workspace close confirmation",
+        8,
+    )?;
+    click_popup_entry_at(&mut h, 6, "Cancel")?;
+    h.wait(
+        |h| Ok(!h.text(6).contains("Close workspace close-menu?")),
+        "mouse workspace cancel",
+        8,
+    )?;
+    ensure!(
+        h.tabs("close-menu")?[0]["panes"][0]["pid"] == close_pid,
+        "cancel closed workspace"
+    );
+    h.send(6, b"\x1b[<2;2;24M\x1b[<2;2;24m")?;
+    h.wait(
+        |h| Ok(h.text(6).contains("Workspace close-menu actions")),
+        "workspace close menu",
+        8,
+    )?;
+    click_popup_entry_at(&mut h, 6, "close workspace")?;
+    h.wait(
+        |h| Ok(h.text(6).contains("Close workspace close-menu?")),
+        "menu close confirmation",
+        8,
+    )?;
+    click_popup_entry_at(&mut h, 6, "Confirm close")?;
+    h.wait(
+        |h| Ok(h.exited(6)? && h.exited(7)?),
+        "workspace close detaches every viewer",
+        8,
+    )?;
+    ensure!(
+        h.success(6)? && h.success(7)?,
+        "workspace close viewer exit failed"
+    );
+    ensure!(
+        h.tabs("other")?[0]["panes"][0]["pid"] == other_pid,
+        "workspace close affected another workspace"
+    );
+    h.cli(&["workspace", "new", "close-menu"])?;
+    let recreated = h.listing("close-menu")?;
+    let new_stream = recreated["event_cursor"]["stream"].clone();
+    ensure!(new_stream != close_stream, "workspace lifetime reused");
+    let mut stale = h.root.command(&h.binary);
+    stale.args([
+        "workspace",
+        "close",
+        "close-menu",
+        "--instance",
+        &instance,
+        "--stream",
+        &close_stream.to_string(),
+    ]);
+    let stale = process::output(stale, Duration::from_secs(8), 1048576)?;
+    ensure!(
+        !stale.status.success(),
+        "stale CLI close killed recreated workspace"
+    );
+    let reply: Value = serde_json::from_slice(&stale.stdout)?;
+    ensure!(
+        reply["error"]["code"] == "conflict",
+        "unexpected stale close reply: {reply}"
+    );
+    ensure!(
+        h.listing("close-menu")?["event_cursor"]["stream"] == new_stream,
+        "stale close changed replacement"
+    );
+    h.cli(&[
+        "workspace",
+        "close",
+        "close-menu",
+        "--instance",
+        &instance,
+        "--stream",
+        &new_stream.to_string(),
+    ])?;
     h.finish()?;
     println!(
         "PASS viewer scenarios: launch, popup, tabs, splits, resize, close, copy, viewers, tiny screens, workspaces, detach"
@@ -683,25 +1651,35 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn unfinished_osc_is_bounded_across_terminal_reads() -> Result<()> {
-        let mut bound = EscapeBound::default();
-        bound.feed(b"\x1b")?;
-        bound.feed(b"]52;c;")?;
-        for _ in 0..31 {
-            bound.feed(&vec![b'x'; 65536])?;
-        }
-        assert!(bound.feed(&vec![b'x'; 65536]).is_err());
-        let mut bounded = EscapeBound::default();
-        for _ in 0..40 {
-            bounded.feed(b"\x1b]52;c;")?;
-            bounded.feed(&vec![b'x'; 65536])?;
-            bounded.feed(b"\x1b")?;
-            bounded.feed(b"\\")?;
-        }
-        Ok(())
-    }
+mod gesture;
+mod modal;
+mod mouse;
+pub(super) fn gestures(binary: &Path) -> Result<()> {
+    gesture::run(binary)
+}
+pub(super) fn modals(binary: &Path) -> Result<()> {
+    modal::run(binary)
+}
+pub(super) fn mouse_app(binary: &Path) -> Result<()> {
+    mouse::run(binary)
+}
+
+mod history;
+pub(super) fn history_controls(binary: &Path) -> Result<()> {
+    history::run(binary)
+}
+
+mod transfer;
+pub(super) fn transfer_input(binary: &Path) -> Result<()> {
+    transfer::run(binary)
+}
+
+mod tiny;
+pub(super) fn verify_tiny_layout(binary: &Path) -> Result<()> {
+    tiny::run(binary)
+}
+
+mod manager;
+pub(super) fn manager_delay(binary: &Path) -> Result<()> {
+    manager::run(binary)
 }

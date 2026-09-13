@@ -15,17 +15,27 @@ pub struct Target {
     pub stream: u64,
     pub pane: u32,
     pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
 }
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Origin {
+    pub workspace: String,
+    pub stream: u64,
+}
+
 impl Target {
-    /// Routing directories are not part of the identity of a live pane/process.
-    pub(crate) fn identity(&self) -> (&str, &str, u64, u32, Option<u32>) {
-        (
-            &self.instance,
-            &self.workspace,
-            self.stream,
-            self.pane,
-            self.pid,
-        )
+    /// Routing and display containers can change without changing the live process.
+    pub(crate) fn identity(&self) -> (&str, u32, Option<u32>) {
+        (&self.instance, self.pane, self.pid)
+    }
+    pub(crate) fn origin(&self) -> (&str, u64) {
+        self.origin
+            .as_ref()
+            .map_or((self.workspace.as_str(), self.stream), |origin| {
+                (&origin.workspace, origin.stream)
+            })
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -864,7 +874,11 @@ impl Journal {
                         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
                     && target.stream != 0
                     && target.pane != 0
-                    && target.pid != Some(0),
+                    && target.pid != Some(0)
+                    && target
+                        .origin
+                        .as_ref()
+                        .is_none_or(|origin| workspace(&origin.workspace) && origin.stream != 0),
                 "invalid pane target"
             );
             match session.ownership {
@@ -886,7 +900,12 @@ impl Journal {
                             && launch.runtime == target.runtime
                             && launch.instance == target.instance
                             && launch.workspace == target.workspace
-                            && launch.stream == target.stream,
+                            && launch.stream == target.stream
+                            && target
+                                .origin
+                                .as_ref()
+                                .is_none_or(|origin| origin.workspace == launch.workspace
+                                    && origin.stream == launch.stream),
                         "managed launch target mismatch"
                     );
                 }

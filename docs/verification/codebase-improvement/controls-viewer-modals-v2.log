@@ -1,0 +1,24 @@
+fux-xtask: Escape opened command popup after Pane 2 actions: READY                                  │READY
+                                       │NORMAL-0
+                                       │
+                                       │NORMAL-1
+                                       │
+                                       │NORMAL-2
+                                       │
+                                       │NORMAL-3                                
+                                       │                                        
+                                       │NORMAL-4                                
+                               split side by side                               
+                               split stacked                                    
+                               zoom or restore pane                             
+                               swap with another pane                           
+                               swap pane direction                              
+                               move pane direction                              
+                               resize split                                     
+                               move pane to tab · Only one tab                  
+                               move pane to new tab                             
+                               move pane to workspace                           
+                               move pane to new workspace                       
+                               close pane                                       
+                               ↑/↓ or j/k · Enter or click select · Esc dismiss 
+ default │ main                                                             │ 2 

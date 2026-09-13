@@ -1,0 +1,11 @@
+{
+  "binary": "/private/tmp/fux-codebase-work/release-baseline/release/fux",
+  "bytes_per_plain_row": 2565,
+  "bytes_per_wide_row": 786,
+  "rss_after_plain_kib": 32016,
+  "rss_after_split_kib": 32464,
+  "rss_after_wide_kib": 40144,
+  "rss_start_kib": 6960,
+  "scrollback": 10000,
+  "size": "24x80"
+}

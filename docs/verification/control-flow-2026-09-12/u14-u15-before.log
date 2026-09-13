@@ -1,0 +1,74 @@
+   Compiling fux v0.10.0 (/Users/kisaczka/Desktop/code/fux/crates/fux)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.22s
+     Running unittests src/lib.rs (target/debug/deps/fux-ac01031fe3ff3cd2)
+
+running 49 tests
+test client::controller::tests::copy_escape_dismisses_instead_of_requesting_commands ... ok
+test client::controller::tests::copy_parser_forwards_other_application_mouse_and_ends_outside_drag ... ok
+test client::controller::tests::confirmations_carry_the_original_target_and_ignore_paste ... ok
+thread 'client::controller::tests::fresh_selection_press_recovers_a_lost_release' (14462607) panicked at crates/fux/src/client/controller.rs:4020:13:
+assertion failed: matches!(&controller.mode, Mode::Copy(copy) if copy.pane() == pane &&
+    copy.anchor() == Some(anchor))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+test client::controller::tests::canceled_modes_keep_owning_unfinished_pastes ... ok
+test client::controller::tests::copy_mode_selection_and_mouse_routing ... ok
+test client::controller::tests::clearing_a_selection_releases_capture_without_leaving_copy ... ok
+test client::controller::tests::buffer_switch_discards_history_and_ignores_old_buffer_reply ... ok
+test client::controller::tests::cancelled_lookup_cannot_populate_a_reopened_chooser ... ok
+test client::controller::tests::border_drag_cancel_and_stale_layout_swallow_the_gesture_tail ... ok
+test client::controller::tests::contextual_pane_actions_keep_clicked_target_and_release_ownership ... ok
+test client::controller::tests::destination_chooser_keeps_catalog_lifetime_and_discards_cancelled_input ... ok
+test client::controller::tests::hidden_tab_menu_targets_its_tab_and_cancels_when_catalog_changes ... ok
+test client::controller::tests::contextual_menu_clicks_disabled_actions_and_application_mouse_override ... ok
+test client::controller::tests::histories_are_memory_bounded_and_exited_apps_do_not_own_the_mouse ... ok
+test client::controller::tests::layout_drag_ignores_other_buttons_and_keeps_cancelled_tail_captured ... ok
+test client::controller::tests::move_and_swap_modes_use_latest_frame_but_keep_original_target ... ok
+
+thread 'client::controller::tests::pending_destination_browses_and_dismisses_without_replaying_mouse' (14462620) panicked at crates/fux/src/client/controller.rs:4001:9:
+assertion `left == right` failed
+  left: 0
+ right: 1
+test client::controller::tests::mouse_close_dialogs_confirm_cancel_and_consume_gesture_tails ... ok
+test client::controller::tests::layout_drag_rejects_replaced_server_viewer_or_zoom_even_with_same_revision ... ok
+test client::controller::tests::normal_mouse_does_not_belong_to_stale_popup_regions ... ok
+test client::controller::tests::overlapping_paste_delimiters_release_a_cancelled_mode ... ok
+test client::controller::tests::pane_drag_requires_alt_and_commits_only_on_release_with_original_revision ... ok
+test client::controller::tests::pane_tab_drop_keeps_destination_revision_and_cancels_changed_bar ... ok
+test client::controller::tests::fresh_selection_press_recovers_a_lost_release ... FAILED
+test client::controller::tests::passive_histories_resume_only_the_focused_pane_and_expire_by_identity ... ok
+test client::controller::tests::pane_rename_keeps_its_target_and_cancels_on_identity_changes ... ok
+test client::controller::tests::pending_workspace_lookup_browses_without_replaying_mouse ... ok
+test client::controller::tests::popup_capture_survives_parser_handoff_and_recovers_without_release ... ok
+test client::controller::tests::pending_destination_browses_and_dismisses_without_replaying_mouse ... FAILED
+test client::controller::tests::rename_submits_fragmented_unicode_and_cancels_without_mutation ... ok
+test client::controller::tests::reorder_chooser_places_before_or_last_and_escape_cancels ... ok
+test client::controller::tests::resize_repeats_with_arrows_and_application_cursor_keys ... ok
+test client::controller::tests::swap_picker_selects_an_explicit_nonadjacent_target_and_cancels_stale_edits ... ok
+test client::controller::tests::tab_chooser_mouse_selects_reorders_and_cancels_without_forwarding_release ... ok
+test client::controller::tests::text_fields_ignore_inside_clicks_and_dismiss_outside_with_release_owned ... ok
+test client::controller::tests::transfer_chooser_pins_both_revisions_and_ignores_paste ... ok
+test client::controller::tests::selection_exit_and_clear_own_the_release_then_accept_a_new_drag ... ok
+test client::controller::tests::waiting_command_browses_without_replaying_mouse_and_cancels_buffered_suffix ... ok
+test client::controller::tests::wheel_browsing_is_passive_and_accepts_another_pane ... ok
+test client::controller::tests::wheel_during_tab_drag_reaches_hidden_destinations_and_wraps ... ok
+test client::controller::tests::workspace_chooser_mouse_reorders_through_manager ... ok
+test client::controller::tests::transient_modes_escape_to_normal_without_forwarding_or_mutating ... ok
+test client::controller::tests::workspace_chooser_replays_buffered_input_and_switches ... ok
+test client::controller::tests::workspace_close_confirms_the_captured_lifetime_and_rejects_replacements ... ok
+test client::controller::tests::workspace_drop_and_click_keep_dragged_pane_and_consume_release ... ok
+test client::controller::tests::workspace_identity_change_cancels_lookup_and_rejects_its_completion ... ok
+test client::controller::tests::workspace_move_keeps_observed_identity_and_follows_only_its_viewer ... ok
+test client::controller::tests::workspace_order_uses_manager_and_cancels_stale_loading ... ok
+test client::controller::tests::workspace_rename_edits_labels_and_rejects_stale_lifetimes ... ok
+test client::controller::tests::right_click_policy_controls_menu_capture_and_preserves_alt_override ... ok
+
+failures:
+
+failures:
+    client::controller::tests::fresh_selection_press_recovers_a_lost_release
+    client::controller::tests::pending_destination_browses_and_dismisses_without_replaying_mouse
+
+test result: FAILED. 47 passed; 2 failed; 0 ignored; 0 measured; 131 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p fux --lib`

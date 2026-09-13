@@ -1,0 +1,17 @@
+[
+  {
+    "viewer": 0,
+    "pane": 2,
+    "op": "Wheel"
+  },
+  {
+    "viewer": 0,
+    "pane": 1,
+    "op": "Wheel"
+  },
+  {
+    "viewer": 0,
+    "pane": 1,
+    "op": "Escape"
+  }
+]

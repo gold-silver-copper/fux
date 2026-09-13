@@ -1,0 +1,307 @@
+{
+  "fux": "/private/tmp/fux-codebase-work/release-candidate/release/fux",
+  "limits": "Recovery of a real pane after a controlled lost create reply. Elapsed includes CLI startup and 10 ms fixture proxy/subprocess polling. Child CPU measures reaped zor CLI user+system time including startup; server CPU and sampled RSS are separate and exclude descendants. Journal bytes are logical size, not physical writes; no fsync timing isolation.",
+  "samples": [
+    {
+      "committed_attachment": true,
+      "creates": 1,
+      "idempotent_recovery_ms": 28.350542,
+      "journal_bytes": 1648,
+      "recovery_child_cpu_ms": 3.746,
+      "recovery_ms": 36.528083,
+      "retry_child_cpu_ms": 2.419,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 8.627125,
+          "finished_ms": 8.879542,
+          "operation": "pane-location",
+          "requested_ms": 8.741083999999999
+        },
+        {
+          "accepted_ms": 21.570791999999997,
+          "finished_ms": 21.812542,
+          "operation": "release-pane-pin",
+          "requested_ms": 21.704584
+        }
+      ],
+      "server_cpu_s": 0.00033570833333333196,
+      "server_rss_kib": 7664
+    },
+    {
+      "committed_attachment": true,
+      "creates": 2,
+      "idempotent_recovery_ms": 39.896665999999996,
+      "journal_bytes": 3136,
+      "recovery_child_cpu_ms": 4.575,
+      "recovery_ms": 39.024333,
+      "retry_child_cpu_ms": 3.231,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 14.547708,
+          "finished_ms": 14.842832999999999,
+          "operation": "pane-location",
+          "requested_ms": 14.692041
+        },
+        {
+          "accepted_ms": 28.148083,
+          "finished_ms": 28.425333000000002,
+          "operation": "release-pane-pin",
+          "requested_ms": 28.308540999999998
+        }
+      ],
+      "server_cpu_s": 0.0002753750000000013,
+      "server_rss_kib": 7936
+    },
+    {
+      "committed_attachment": true,
+      "creates": 3,
+      "idempotent_recovery_ms": 26.703708,
+      "journal_bytes": 4624,
+      "recovery_child_cpu_ms": 4.104,
+      "recovery_ms": 29.468958,
+      "retry_child_cpu_ms": 3.407,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 9.006292,
+          "finished_ms": 9.334583,
+          "operation": "pane-location",
+          "requested_ms": 9.168917
+        },
+        {
+          "accepted_ms": 24.352917,
+          "finished_ms": 24.65175,
+          "operation": "release-pane-pin",
+          "requested_ms": 24.530917
+        }
+      ],
+      "server_cpu_s": 0.00024912499999999935,
+      "server_rss_kib": 8048
+    },
+    {
+      "committed_attachment": true,
+      "creates": 4,
+      "idempotent_recovery_ms": 27.2035,
+      "journal_bytes": 6112,
+      "recovery_child_cpu_ms": 3.335,
+      "recovery_ms": 26.355166,
+      "retry_child_cpu_ms": 2.902,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 11.59925,
+          "finished_ms": 11.904459,
+          "operation": "pane-location",
+          "requested_ms": 11.746084
+        },
+        {
+          "accepted_ms": 23.667792,
+          "finished_ms": 23.953125,
+          "operation": "release-pane-pin",
+          "requested_ms": 23.831875
+        }
+      ],
+      "server_cpu_s": 0.00019658333333333333,
+      "server_rss_kib": 8064
+    },
+    {
+      "committed_attachment": true,
+      "creates": 5,
+      "idempotent_recovery_ms": 40.087833,
+      "journal_bytes": 7600,
+      "recovery_child_cpu_ms": 5.737,
+      "recovery_ms": 41.138708,
+      "retry_child_cpu_ms": 4.783,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 11.170791,
+          "finished_ms": 11.680125,
+          "operation": "pane-location",
+          "requested_ms": 11.410125
+        },
+        {
+          "accepted_ms": 26.334666,
+          "finished_ms": 26.832083,
+          "operation": "release-pane-pin",
+          "requested_ms": 26.62975
+        }
+      ],
+      "server_cpu_s": 0.00029341666666666405,
+      "server_rss_kib": 8144
+    },
+    {
+      "committed_attachment": true,
+      "creates": 6,
+      "idempotent_recovery_ms": 37.238166,
+      "journal_bytes": 9088,
+      "recovery_child_cpu_ms": 5.984,
+      "recovery_ms": 39.734832999999995,
+      "retry_child_cpu_ms": 5.383,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 20.666166,
+          "finished_ms": 21.258583,
+          "operation": "pane-location",
+          "requested_ms": 20.959541
+        },
+        {
+          "accepted_ms": 35.0905,
+          "finished_ms": 35.622415999999994,
+          "operation": "release-pane-pin",
+          "requested_ms": 35.397875
+        }
+      ],
+      "server_cpu_s": 0.00039483333333333037,
+      "server_rss_kib": 8400
+    },
+    {
+      "committed_attachment": true,
+      "creates": 7,
+      "idempotent_recovery_ms": 27.453959,
+      "journal_bytes": 10576,
+      "recovery_child_cpu_ms": 4.493,
+      "recovery_ms": 52.438916,
+      "retry_child_cpu_ms": 3.659,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 7.352167,
+          "finished_ms": 7.683834,
+          "operation": "pane-location",
+          "requested_ms": 7.511792
+        },
+        {
+          "accepted_ms": 19.318624999999997,
+          "finished_ms": 19.629959,
+          "operation": "release-pane-pin",
+          "requested_ms": 19.496792
+        }
+      ],
+      "server_cpu_s": 0.0003036666666666743,
+      "server_rss_kib": 8400
+    },
+    {
+      "committed_attachment": true,
+      "creates": 8,
+      "idempotent_recovery_ms": 38.915749999999996,
+      "journal_bytes": 12064,
+      "recovery_child_cpu_ms": 6.083,
+      "recovery_ms": 40.930375,
+      "retry_child_cpu_ms": 4.797,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 12.48325,
+          "finished_ms": 12.949041999999999,
+          "operation": "pane-location",
+          "requested_ms": 12.708667
+        },
+        {
+          "accepted_ms": 27.392333,
+          "finished_ms": 27.899625,
+          "operation": "release-pane-pin",
+          "requested_ms": 27.692708
+        }
+      ],
+      "server_cpu_s": 0.0003495833333333198,
+      "server_rss_kib": 8400
+    },
+    {
+      "committed_attachment": true,
+      "creates": 9,
+      "idempotent_recovery_ms": 36.309084,
+      "journal_bytes": 13554,
+      "recovery_child_cpu_ms": 6.118,
+      "recovery_ms": 39.050416,
+      "retry_child_cpu_ms": 4.843,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 7.188125,
+          "finished_ms": 7.667959000000001,
+          "operation": "pane-location",
+          "requested_ms": 7.411542
+        },
+        {
+          "accepted_ms": 22.705375,
+          "finished_ms": 23.134834,
+          "operation": "release-pane-pin",
+          "requested_ms": 22.947834
+        }
+      ],
+      "server_cpu_s": 0.00042945833333332684,
+      "server_rss_kib": 8432
+    },
+    {
+      "committed_attachment": true,
+      "creates": 10,
+      "idempotent_recovery_ms": 40.49975,
+      "journal_bytes": 15044,
+      "recovery_child_cpu_ms": 4.186,
+      "recovery_ms": 57.688917,
+      "retry_child_cpu_ms": 4.203,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 15.969000000000001,
+          "finished_ms": 16.374625,
+          "operation": "pane-location",
+          "requested_ms": 16.164583
+        },
+        {
+          "accepted_ms": 28.691333,
+          "finished_ms": 29.107416,
+          "operation": "release-pane-pin",
+          "requested_ms": 28.934166
+        }
+      ],
+      "server_cpu_s": 0.0003725416666666703,
+      "server_rss_kib": 8432
+    },
+    {
+      "committed_attachment": true,
+      "creates": 11,
+      "idempotent_recovery_ms": 28.3155,
+      "journal_bytes": 16540,
+      "recovery_child_cpu_ms": 4.213,
+      "recovery_ms": 46.551875,
+      "retry_child_cpu_ms": 3.723,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 14.513,
+          "finished_ms": 14.873958,
+          "operation": "pane-location",
+          "requested_ms": 14.675291
+        },
+        {
+          "accepted_ms": 26.149874999999998,
+          "finished_ms": 26.477833,
+          "operation": "release-pane-pin",
+          "requested_ms": 26.339707999999998
+        }
+      ],
+      "server_cpu_s": 0.00041066666666669804,
+      "server_rss_kib": 8464
+    },
+    {
+      "committed_attachment": true,
+      "creates": 12,
+      "idempotent_recovery_ms": 26.96525,
+      "journal_bytes": 18036,
+      "recovery_child_cpu_ms": 5.284,
+      "recovery_ms": 40.156749999999995,
+      "retry_child_cpu_ms": 4.964,
+      "retry_proxy_timings": [
+        {
+          "accepted_ms": 11.442458,
+          "finished_ms": 12.068125,
+          "operation": "pane-location",
+          "requested_ms": 11.682583
+        },
+        {
+          "accepted_ms": 23.066042,
+          "finished_ms": 23.555417,
+          "operation": "release-pane-pin",
+          "requested_ms": 23.321792000000002
+        }
+      ],
+      "server_cpu_s": 0.00032479166666665726,
+      "server_rss_kib": 8464
+    }
+  ],
+  "zor": "/private/tmp/fux-codebase-work/release-candidate/release/zor"
+}

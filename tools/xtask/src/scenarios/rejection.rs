@@ -93,6 +93,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
             }
         }
         let text = String::from_utf8_lossy(&output);
+        crate::support::visual::record(binary, 1, 1, &output, "rejected-handshake-zero-size-pty")?;
         ensure!(
             text.contains("session server"),
             "missing rejection diagnostic: {text}"

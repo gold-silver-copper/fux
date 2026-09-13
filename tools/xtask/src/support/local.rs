@@ -84,6 +84,13 @@ pub fn connect(path: &Path, deadline: Instant) -> Result<UnixStream> {
     Ok(stream)
 }
 pub fn rpc(path: &Path, value: Value) -> Result<Value> {
+    let start = Instant::now();
+    let result = rpc_inner(path, &value);
+    super::failure::rpc(&value, result.is_ok(), start.elapsed());
+    result
+}
+
+fn rpc_inner(path: &Path, value: &Value) -> Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut stream = connect(path, deadline)?;
     stream.set_read_timeout(Some(remaining(deadline)?))?;
@@ -92,7 +99,7 @@ pub fn rpc(path: &Path, value: Value) -> Result<Value> {
     let mut preface = [0; 4];
     stream.read_exact(&mut preface)?;
     ensure!(&preface == b"FUX\n", "control protocol mismatch");
-    let mut request = serde_json::to_vec(&value)?;
+    let mut request = serde_json::to_vec(value)?;
     request.push(b'\n');
     stream.write_all(&request)?;
     stream.set_nonblocking(true)?;
@@ -187,6 +194,11 @@ impl Root {
     pub fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
         command.env_clear().envs(&self.env).current_dir(self.path());
+        if super::failure::enabled() {
+            command
+                .env("FUX_DIAGNOSTICS", "1")
+                .env("ZOR_DIAGNOSTICS", "1");
+        }
         command
     }
     pub fn server(&self, binary: &Path) -> Result<Server> {
@@ -211,6 +223,11 @@ impl Root {
             Ok(self.control().exists().then_some(()))
         })?;
         Ok(owner)
+    }
+}
+impl Drop for Root {
+    fn drop(&mut self) {
+        super::failure::collect_root(self.path());
     }
 }
 pub struct Server {

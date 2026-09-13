@@ -55,6 +55,24 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         status(&operation)?["state"] == "reserved",
         "new receipt not reserved"
     );
+    // The workspace-local status wire operation remains available through the
+    // raw debugging CLI; orchestration uses the manager route instead.
+    let mut command = root.command(binary);
+    command.arg("ctl").arg(serde_json::to_string(&request(
+        "input-status",
+        json!({"operation":operation}),
+    ))?);
+    let reply = crate::support::process::output(command, Duration::from_secs(5), 1024 * 1024)?;
+    ensure!(
+        reply.status.success(),
+        "raw receipt CLI failed: {}",
+        String::from_utf8_lossy(&reply.stderr)
+    );
+    let reply: Value = serde_json::from_slice(&reply.stdout)?;
+    ensure!(
+        reply["result"]["value"]["receipt"] == status(&operation)?,
+        "raw CLI changed receipt evidence"
+    );
     let mut discarded = Peer::connect(&path)?;
     discarded.send(&request(
         "input-submit",

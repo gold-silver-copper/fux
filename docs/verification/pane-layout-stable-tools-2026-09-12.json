@@ -1,0 +1,49 @@
+{
+  "checks": [
+    {
+      "command": "cargo +stable clippy --locked --manifest-path tools/xtask/Cargo.toml --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-tools-0.log",
+      "log_sha256": "c7a2c0c2c5a0069cd40a2ee438a8d6fe063ae02708884f0bffe0d59217f89a8b",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 54.03s"
+      ]
+    },
+    {
+      "command": "cargo +stable clippy --locked --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-tools-1.log",
+      "log_sha256": "272f284a7913f061e3fb9a48168e6369927ce17fc9276112d66536e07abe6759",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.93s"
+      ]
+    },
+    {
+      "command": "cargo +stable test --locked --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml -- --skip concurrent_first_clients_elect_exactly_one_server_and_workspace",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-tools-2.log",
+      "log_sha256": "4504c080e7c578f894cde67c9811cce4a2c04a46e33d8a1d36c68248024cd4cc",
+      "results": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.16s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 4.43s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s"
+      ]
+    },
+    {
+      "command": "cargo +stable clippy --locked --manifest-path crates/zor/tools/xtask/Cargo.toml --all-targets -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-tools-3.log",
+      "log_sha256": "ed0414eea1d080cd557316f101fce42b72a5218d4adb77eac6e59e243c56b7c7",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.57s"
+      ]
+    }
+  ],
+  "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6",
+  "scope": "Stable standalone harness/fixture/producer Clippy and CI-prescribed macOS fixture tests; one documented concurrent-startup exclusion.",
+  "env": {
+    "CARGO_TARGET_DIR": "target/pane-stable-tools",
+    "FUX_SCENARIO_DEADLINE_SCALE": "3"
+  }
+}

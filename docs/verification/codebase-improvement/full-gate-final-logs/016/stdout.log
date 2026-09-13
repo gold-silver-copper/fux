@@ -1,0 +1,31 @@
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 6 tests
+test arbitrary_bytes_never_make_parse_panic ... ok
+test complete_bel_frames_and_unknown_keys_are_accepted ... ok
+test every_state_and_flag_combination_round_trips ... ok
+test malformed_contract_inputs_are_rejected ... ok
+test report_version_and_total_encoded_size_are_enforced ... ok
+test vt100_callback_payload_parses_to_the_original_report ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

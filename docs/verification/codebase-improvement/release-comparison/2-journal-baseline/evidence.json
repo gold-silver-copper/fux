@@ -1,0 +1,2342 @@
+{
+  "limits": "CPU includes CLI startup; logical committed bytes count atomic journal replacements, not physical filesystem writes. Inode checks observe these serial operations only. No internal lock hold time, allocation count or durability timing isolation. Inspection/replay make zero replacements. The journal implementation is unchanged by the fux sharing optimization. Rust elapsed measurements include the bounded subprocess runner's 10 ms completion polling; do not compare them directly to historical Python harness latency.",
+  "provenance": {
+    "fux_sha256": "60e9956ef610d2afeddee3615b14c9df6faaf785653bc8bd45162ecb117c3a62",
+    "harness_kind": "rust-public-cli",
+    "harness_sha256": "bc10d8a921f94dac33b449f233551d11b2a72d66bfc49e2a8d859a83a796d271",
+    "process_support_sha256": "2f4d5f3594b2a0e31f05121f0c82a43e042694add7f38559b508787f84ead144",
+    "zor_sha256": "6d0708a4b20b767fd9fa9a54d26ce8c64709baa154a1834153ce03a1d3969917"
+  },
+  "runs": [
+    {
+      "final_generation": 32,
+      "repetition": 1,
+      "samples": [
+        {
+          "child_cpu_ms": 2.78,
+          "committed_replacement": true,
+          "elapsed_ms": 54.093917,
+          "journal_bytes": 963,
+          "kind": "adopt",
+          "logical_committed_bytes": 963
+        },
+        {
+          "child_cpu_ms": 3.324,
+          "committed_replacement": true,
+          "elapsed_ms": 23.376875,
+          "journal_bytes": 1342,
+          "kind": "adopt",
+          "logical_committed_bytes": 1342
+        },
+        {
+          "child_cpu_ms": 3.294,
+          "committed_replacement": true,
+          "elapsed_ms": 26.630542,
+          "journal_bytes": 1721,
+          "kind": "adopt",
+          "logical_committed_bytes": 1721
+        },
+        {
+          "child_cpu_ms": 3.605,
+          "committed_replacement": true,
+          "elapsed_ms": 24.667,
+          "journal_bytes": 2100,
+          "kind": "adopt",
+          "logical_committed_bytes": 2100
+        },
+        {
+          "child_cpu_ms": 4.046,
+          "committed_replacement": true,
+          "elapsed_ms": 29.594583,
+          "journal_bytes": 2479,
+          "kind": "adopt",
+          "logical_committed_bytes": 2479
+        },
+        {
+          "child_cpu_ms": 4.013,
+          "committed_replacement": true,
+          "elapsed_ms": 23.43675,
+          "journal_bytes": 2858,
+          "kind": "adopt",
+          "logical_committed_bytes": 2858
+        },
+        {
+          "child_cpu_ms": 4.567,
+          "committed_replacement": true,
+          "elapsed_ms": 24.993709,
+          "journal_bytes": 3237,
+          "kind": "adopt",
+          "logical_committed_bytes": 3237
+        },
+        {
+          "child_cpu_ms": 4.699,
+          "committed_replacement": true,
+          "elapsed_ms": 26.78675,
+          "journal_bytes": 3616,
+          "kind": "adopt",
+          "logical_committed_bytes": 3616
+        },
+        {
+          "child_cpu_ms": 4.79,
+          "committed_replacement": true,
+          "elapsed_ms": 25.056041,
+          "journal_bytes": 3995,
+          "kind": "adopt",
+          "logical_committed_bytes": 3995
+        },
+        {
+          "child_cpu_ms": 5.12,
+          "committed_replacement": true,
+          "elapsed_ms": 24.741875,
+          "journal_bytes": 4375,
+          "kind": "adopt",
+          "logical_committed_bytes": 4375
+        },
+        {
+          "child_cpu_ms": 5.093,
+          "committed_replacement": true,
+          "elapsed_ms": 41.281625000000005,
+          "journal_bytes": 4757,
+          "kind": "adopt",
+          "logical_committed_bytes": 4757
+        },
+        {
+          "child_cpu_ms": 5.596,
+          "committed_replacement": true,
+          "elapsed_ms": 23.178792,
+          "journal_bytes": 5139,
+          "kind": "adopt",
+          "logical_committed_bytes": 5139
+        },
+        {
+          "child_cpu_ms": 5.496,
+          "committed_replacement": true,
+          "elapsed_ms": 26.186208,
+          "journal_bytes": 5521,
+          "kind": "adopt",
+          "logical_committed_bytes": 5521
+        },
+        {
+          "child_cpu_ms": 5.51,
+          "committed_replacement": true,
+          "elapsed_ms": 26.956500000000002,
+          "journal_bytes": 5903,
+          "kind": "adopt",
+          "logical_committed_bytes": 5903
+        },
+        {
+          "child_cpu_ms": 5.399,
+          "committed_replacement": true,
+          "elapsed_ms": 27.059416,
+          "journal_bytes": 6285,
+          "kind": "adopt",
+          "logical_committed_bytes": 6285
+        },
+        {
+          "child_cpu_ms": 5.45,
+          "committed_replacement": true,
+          "elapsed_ms": 28.747249999999998,
+          "journal_bytes": 6667,
+          "kind": "adopt",
+          "logical_committed_bytes": 6667
+        },
+        {
+          "child_cpu_ms": 5.856,
+          "committed_replacement": true,
+          "elapsed_ms": 26.251458,
+          "journal_bytes": 7049,
+          "kind": "adopt",
+          "logical_committed_bytes": 7049
+        },
+        {
+          "child_cpu_ms": 4.817,
+          "committed_replacement": true,
+          "elapsed_ms": 26.902209,
+          "journal_bytes": 7431,
+          "kind": "adopt",
+          "logical_committed_bytes": 7431
+        },
+        {
+          "child_cpu_ms": 3.298,
+          "committed_replacement": true,
+          "elapsed_ms": 27.291916999999998,
+          "journal_bytes": 7813,
+          "kind": "adopt",
+          "logical_committed_bytes": 7813
+        },
+        {
+          "child_cpu_ms": 3.504,
+          "committed_replacement": true,
+          "elapsed_ms": 24.516541999999998,
+          "journal_bytes": 8195,
+          "kind": "adopt",
+          "logical_committed_bytes": 8195
+        },
+        {
+          "child_cpu_ms": 3.116,
+          "committed_replacement": true,
+          "elapsed_ms": 26.978292,
+          "journal_bytes": 8577,
+          "kind": "adopt",
+          "logical_committed_bytes": 8577
+        },
+        {
+          "child_cpu_ms": 3.01,
+          "committed_replacement": true,
+          "elapsed_ms": 25.668208,
+          "journal_bytes": 8959,
+          "kind": "adopt",
+          "logical_committed_bytes": 8959
+        },
+        {
+          "child_cpu_ms": 3.232,
+          "committed_replacement": true,
+          "elapsed_ms": 25.003332999999998,
+          "journal_bytes": 9341,
+          "kind": "adopt",
+          "logical_committed_bytes": 9341
+        },
+        {
+          "child_cpu_ms": 3.477,
+          "committed_replacement": true,
+          "elapsed_ms": 23.855500000000003,
+          "journal_bytes": 9723,
+          "kind": "adopt",
+          "logical_committed_bytes": 9723
+        },
+        {
+          "child_cpu_ms": 3.622,
+          "committed_replacement": true,
+          "elapsed_ms": 25.604374999999997,
+          "journal_bytes": 10105,
+          "kind": "adopt",
+          "logical_committed_bytes": 10105
+        },
+        {
+          "child_cpu_ms": 3.651,
+          "committed_replacement": true,
+          "elapsed_ms": 25.802333,
+          "journal_bytes": 10487,
+          "kind": "adopt",
+          "logical_committed_bytes": 10487
+        },
+        {
+          "child_cpu_ms": 3.7,
+          "committed_replacement": true,
+          "elapsed_ms": 29.036584,
+          "journal_bytes": 10869,
+          "kind": "adopt",
+          "logical_committed_bytes": 10869
+        },
+        {
+          "child_cpu_ms": 4.177,
+          "committed_replacement": true,
+          "elapsed_ms": 23.317458,
+          "journal_bytes": 11251,
+          "kind": "adopt",
+          "logical_committed_bytes": 11251
+        },
+        {
+          "child_cpu_ms": 4.188,
+          "committed_replacement": true,
+          "elapsed_ms": 24.475792,
+          "journal_bytes": 11633,
+          "kind": "adopt",
+          "logical_committed_bytes": 11633
+        },
+        {
+          "child_cpu_ms": 3.788,
+          "committed_replacement": true,
+          "elapsed_ms": 25.043375,
+          "journal_bytes": 12015,
+          "kind": "adopt",
+          "logical_committed_bytes": 12015
+        },
+        {
+          "child_cpu_ms": 3.586,
+          "committed_replacement": true,
+          "elapsed_ms": 24.960333000000002,
+          "journal_bytes": 12397,
+          "kind": "adopt",
+          "logical_committed_bytes": 12397
+        },
+        {
+          "child_cpu_ms": 4.006,
+          "committed_replacement": true,
+          "elapsed_ms": 22.507125,
+          "journal_bytes": 12779,
+          "kind": "adopt",
+          "logical_committed_bytes": 12779
+        },
+        {
+          "child_cpu_ms": 2.688,
+          "committed_replacement": false,
+          "elapsed_ms": 11.630415999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.373,
+          "committed_replacement": false,
+          "elapsed_ms": 11.980583,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.144,
+          "committed_replacement": false,
+          "elapsed_ms": 11.976542,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.113,
+          "committed_replacement": false,
+          "elapsed_ms": 14.946582999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 1.978,
+          "committed_replacement": false,
+          "elapsed_ms": 11.071,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 1.956,
+          "committed_replacement": false,
+          "elapsed_ms": 13.764541999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.043,
+          "committed_replacement": false,
+          "elapsed_ms": 12.50925,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.15,
+          "committed_replacement": false,
+          "elapsed_ms": 14.865584,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.102,
+          "committed_replacement": false,
+          "elapsed_ms": 11.090582999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.114,
+          "committed_replacement": false,
+          "elapsed_ms": 12.671417,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.037,
+          "committed_replacement": false,
+          "elapsed_ms": 14.968957999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.031,
+          "committed_replacement": false,
+          "elapsed_ms": 12.479375,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.001,
+          "committed_replacement": false,
+          "elapsed_ms": 10.641917000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.45,
+          "committed_replacement": false,
+          "elapsed_ms": 14.70875,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.205,
+          "committed_replacement": false,
+          "elapsed_ms": 12.955667,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.111,
+          "committed_replacement": false,
+          "elapsed_ms": 15.313125000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.305,
+          "committed_replacement": false,
+          "elapsed_ms": 12.423541,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.318,
+          "committed_replacement": false,
+          "elapsed_ms": 13.748916,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.121,
+          "committed_replacement": false,
+          "elapsed_ms": 11.961833,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.127,
+          "committed_replacement": false,
+          "elapsed_ms": 14.959834,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.355,
+          "committed_replacement": false,
+          "elapsed_ms": 11.989791,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.353,
+          "committed_replacement": false,
+          "elapsed_ms": 11.983583000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.518,
+          "committed_replacement": false,
+          "elapsed_ms": 11.980125,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.525,
+          "committed_replacement": false,
+          "elapsed_ms": 14.959708000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.693,
+          "committed_replacement": false,
+          "elapsed_ms": 15.512167,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.078,
+          "committed_replacement": false,
+          "elapsed_ms": 11.114125000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.989,
+          "committed_replacement": false,
+          "elapsed_ms": 15.585291,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.956,
+          "committed_replacement": false,
+          "elapsed_ms": 15.520917,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.886,
+          "committed_replacement": false,
+          "elapsed_ms": 14.34875,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.831,
+          "committed_replacement": false,
+          "elapsed_ms": 10.936542000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.872,
+          "committed_replacement": false,
+          "elapsed_ms": 12.864709,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.177,
+          "committed_replacement": false,
+          "elapsed_ms": 13.022416,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.192,
+          "committed_replacement": false,
+          "elapsed_ms": 13.342792,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.187,
+          "committed_replacement": false,
+          "elapsed_ms": 15.410542,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.376,
+          "committed_replacement": false,
+          "elapsed_ms": 12.85375,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.38,
+          "committed_replacement": false,
+          "elapsed_ms": 11.598208,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.997,
+          "committed_replacement": false,
+          "elapsed_ms": 12.348833,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.998,
+          "committed_replacement": false,
+          "elapsed_ms": 14.935583000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.308,
+          "committed_replacement": false,
+          "elapsed_ms": 11.982334000000002,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.256,
+          "committed_replacement": false,
+          "elapsed_ms": 11.918415999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.333,
+          "committed_replacement": false,
+          "elapsed_ms": 14.900165999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.323,
+          "committed_replacement": false,
+          "elapsed_ms": 14.927833,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.304,
+          "committed_replacement": false,
+          "elapsed_ms": 13.450208,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.297,
+          "committed_replacement": false,
+          "elapsed_ms": 14.926333999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.421,
+          "committed_replacement": false,
+          "elapsed_ms": 11.643832999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.339,
+          "committed_replacement": false,
+          "elapsed_ms": 12.235332999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.489,
+          "committed_replacement": false,
+          "elapsed_ms": 16.024875,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.639,
+          "committed_replacement": false,
+          "elapsed_ms": 11.992375,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.522,
+          "committed_replacement": false,
+          "elapsed_ms": 13.795417,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.268,
+          "committed_replacement": false,
+          "elapsed_ms": 12.273042,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.336,
+          "committed_replacement": false,
+          "elapsed_ms": 15.46625,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.476,
+          "committed_replacement": false,
+          "elapsed_ms": 11.225667,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.499,
+          "committed_replacement": false,
+          "elapsed_ms": 14.611167,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.623,
+          "committed_replacement": false,
+          "elapsed_ms": 10.7455,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.757,
+          "committed_replacement": false,
+          "elapsed_ms": 15.503708,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.908,
+          "committed_replacement": false,
+          "elapsed_ms": 12.319417,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.858,
+          "committed_replacement": false,
+          "elapsed_ms": 12.462875,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.836,
+          "committed_replacement": false,
+          "elapsed_ms": 12.436084,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.901,
+          "committed_replacement": false,
+          "elapsed_ms": 10.972833,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.883,
+          "committed_replacement": false,
+          "elapsed_ms": 15.187584000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.049,
+          "committed_replacement": false,
+          "elapsed_ms": 14.822875,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.832,
+          "committed_replacement": false,
+          "elapsed_ms": 15.579667,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.718,
+          "committed_replacement": false,
+          "elapsed_ms": 14.18875,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.864,
+          "committed_replacement": false,
+          "elapsed_ms": 14.787042,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        }
+      ],
+      "server_exit": 0,
+      "worker_exit_confirmed": true
+    },
+    {
+      "final_generation": 32,
+      "repetition": 2,
+      "samples": [
+        {
+          "child_cpu_ms": 5.112,
+          "committed_replacement": true,
+          "elapsed_ms": 27.495041,
+          "journal_bytes": 963,
+          "kind": "adopt",
+          "logical_committed_bytes": 963
+        },
+        {
+          "child_cpu_ms": 5.188,
+          "committed_replacement": true,
+          "elapsed_ms": 26.245167,
+          "journal_bytes": 1342,
+          "kind": "adopt",
+          "logical_committed_bytes": 1342
+        },
+        {
+          "child_cpu_ms": 5.379,
+          "committed_replacement": true,
+          "elapsed_ms": 31.161458,
+          "journal_bytes": 1721,
+          "kind": "adopt",
+          "logical_committed_bytes": 1721
+        },
+        {
+          "child_cpu_ms": 5.648,
+          "committed_replacement": true,
+          "elapsed_ms": 25.003584,
+          "journal_bytes": 2100,
+          "kind": "adopt",
+          "logical_committed_bytes": 2100
+        },
+        {
+          "child_cpu_ms": 5.601,
+          "committed_replacement": true,
+          "elapsed_ms": 28.773166999999997,
+          "journal_bytes": 2479,
+          "kind": "adopt",
+          "logical_committed_bytes": 2479
+        },
+        {
+          "child_cpu_ms": 5.482,
+          "committed_replacement": true,
+          "elapsed_ms": 29.283917,
+          "journal_bytes": 2858,
+          "kind": "adopt",
+          "logical_committed_bytes": 2858
+        },
+        {
+          "child_cpu_ms": 5.957,
+          "committed_replacement": true,
+          "elapsed_ms": 28.737665999999997,
+          "journal_bytes": 3237,
+          "kind": "adopt",
+          "logical_committed_bytes": 3237
+        },
+        {
+          "child_cpu_ms": 5.684,
+          "committed_replacement": true,
+          "elapsed_ms": 30.900167,
+          "journal_bytes": 3616,
+          "kind": "adopt",
+          "logical_committed_bytes": 3616
+        },
+        {
+          "child_cpu_ms": 6.36,
+          "committed_replacement": true,
+          "elapsed_ms": 27.613625,
+          "journal_bytes": 3995,
+          "kind": "adopt",
+          "logical_committed_bytes": 3995
+        },
+        {
+          "child_cpu_ms": 6.095,
+          "committed_replacement": true,
+          "elapsed_ms": 31.124875,
+          "journal_bytes": 4375,
+          "kind": "adopt",
+          "logical_committed_bytes": 4375
+        },
+        {
+          "child_cpu_ms": 5.953,
+          "committed_replacement": true,
+          "elapsed_ms": 26.592000000000002,
+          "journal_bytes": 4757,
+          "kind": "adopt",
+          "logical_committed_bytes": 4757
+        },
+        {
+          "child_cpu_ms": 5.936,
+          "committed_replacement": true,
+          "elapsed_ms": 29.849125,
+          "journal_bytes": 5139,
+          "kind": "adopt",
+          "logical_committed_bytes": 5139
+        },
+        {
+          "child_cpu_ms": 6.517,
+          "committed_replacement": true,
+          "elapsed_ms": 22.752667000000002,
+          "journal_bytes": 5521,
+          "kind": "adopt",
+          "logical_committed_bytes": 5521
+        },
+        {
+          "child_cpu_ms": 6.594,
+          "committed_replacement": true,
+          "elapsed_ms": 46.546708,
+          "journal_bytes": 5903,
+          "kind": "adopt",
+          "logical_committed_bytes": 5903
+        },
+        {
+          "child_cpu_ms": 7.46,
+          "committed_replacement": true,
+          "elapsed_ms": 27.007666999999998,
+          "journal_bytes": 6285,
+          "kind": "adopt",
+          "logical_committed_bytes": 6285
+        },
+        {
+          "child_cpu_ms": 6.154,
+          "committed_replacement": true,
+          "elapsed_ms": 27.25975,
+          "journal_bytes": 6667,
+          "kind": "adopt",
+          "logical_committed_bytes": 6667
+        },
+        {
+          "child_cpu_ms": 3.879,
+          "committed_replacement": true,
+          "elapsed_ms": 25.879709000000002,
+          "journal_bytes": 7049,
+          "kind": "adopt",
+          "logical_committed_bytes": 7049
+        },
+        {
+          "child_cpu_ms": 3.137,
+          "committed_replacement": true,
+          "elapsed_ms": 22.832417,
+          "journal_bytes": 7431,
+          "kind": "adopt",
+          "logical_committed_bytes": 7431
+        },
+        {
+          "child_cpu_ms": 3.268,
+          "committed_replacement": true,
+          "elapsed_ms": 28.693416,
+          "journal_bytes": 7813,
+          "kind": "adopt",
+          "logical_committed_bytes": 7813
+        },
+        {
+          "child_cpu_ms": 3.772,
+          "committed_replacement": true,
+          "elapsed_ms": 27.551458,
+          "journal_bytes": 8195,
+          "kind": "adopt",
+          "logical_committed_bytes": 8195
+        },
+        {
+          "child_cpu_ms": 3.78,
+          "committed_replacement": true,
+          "elapsed_ms": 26.302415999999997,
+          "journal_bytes": 8577,
+          "kind": "adopt",
+          "logical_committed_bytes": 8577
+        },
+        {
+          "child_cpu_ms": 4.066,
+          "committed_replacement": true,
+          "elapsed_ms": 23.840208,
+          "journal_bytes": 8959,
+          "kind": "adopt",
+          "logical_committed_bytes": 8959
+        },
+        {
+          "child_cpu_ms": 4.205,
+          "committed_replacement": true,
+          "elapsed_ms": 28.250166,
+          "journal_bytes": 9341,
+          "kind": "adopt",
+          "logical_committed_bytes": 9341
+        },
+        {
+          "child_cpu_ms": 4.269,
+          "committed_replacement": true,
+          "elapsed_ms": 24.888834,
+          "journal_bytes": 9723,
+          "kind": "adopt",
+          "logical_committed_bytes": 9723
+        },
+        {
+          "child_cpu_ms": 3.727,
+          "committed_replacement": true,
+          "elapsed_ms": 28.800875,
+          "journal_bytes": 10105,
+          "kind": "adopt",
+          "logical_committed_bytes": 10105
+        },
+        {
+          "child_cpu_ms": 4.222,
+          "committed_replacement": true,
+          "elapsed_ms": 25.288083,
+          "journal_bytes": 10487,
+          "kind": "adopt",
+          "logical_committed_bytes": 10487
+        },
+        {
+          "child_cpu_ms": 4.141,
+          "committed_replacement": true,
+          "elapsed_ms": 26.769791,
+          "journal_bytes": 10869,
+          "kind": "adopt",
+          "logical_committed_bytes": 10869
+        },
+        {
+          "child_cpu_ms": 4.781,
+          "committed_replacement": true,
+          "elapsed_ms": 26.7225,
+          "journal_bytes": 11251,
+          "kind": "adopt",
+          "logical_committed_bytes": 11251
+        },
+        {
+          "child_cpu_ms": 4.789,
+          "committed_replacement": true,
+          "elapsed_ms": 24.697792,
+          "journal_bytes": 11633,
+          "kind": "adopt",
+          "logical_committed_bytes": 11633
+        },
+        {
+          "child_cpu_ms": 4.997,
+          "committed_replacement": true,
+          "elapsed_ms": 30.837,
+          "journal_bytes": 12015,
+          "kind": "adopt",
+          "logical_committed_bytes": 12015
+        },
+        {
+          "child_cpu_ms": 5.759,
+          "committed_replacement": true,
+          "elapsed_ms": 30.769792,
+          "journal_bytes": 12397,
+          "kind": "adopt",
+          "logical_committed_bytes": 12397
+        },
+        {
+          "child_cpu_ms": 5.833,
+          "committed_replacement": true,
+          "elapsed_ms": 28.497999999999998,
+          "journal_bytes": 12779,
+          "kind": "adopt",
+          "logical_committed_bytes": 12779
+        },
+        {
+          "child_cpu_ms": 4.404,
+          "committed_replacement": false,
+          "elapsed_ms": 11.556040999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 4.336,
+          "committed_replacement": false,
+          "elapsed_ms": 11.986375,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 4.17,
+          "committed_replacement": false,
+          "elapsed_ms": 11.953709,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 4.157,
+          "committed_replacement": false,
+          "elapsed_ms": 12.7595,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.765,
+          "committed_replacement": false,
+          "elapsed_ms": 11.175875,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.734,
+          "committed_replacement": false,
+          "elapsed_ms": 14.272459,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.574,
+          "committed_replacement": false,
+          "elapsed_ms": 11.268958000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.281,
+          "committed_replacement": false,
+          "elapsed_ms": 10.714875000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.426,
+          "committed_replacement": false,
+          "elapsed_ms": 14.857417,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.756,
+          "committed_replacement": false,
+          "elapsed_ms": 13.424875,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.626,
+          "committed_replacement": false,
+          "elapsed_ms": 11.246584,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.617,
+          "committed_replacement": false,
+          "elapsed_ms": 15.667292,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.534,
+          "committed_replacement": false,
+          "elapsed_ms": 15.762124999999997,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.852,
+          "committed_replacement": false,
+          "elapsed_ms": 12.740958000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.508,
+          "committed_replacement": false,
+          "elapsed_ms": 11.988416,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.313,
+          "committed_replacement": false,
+          "elapsed_ms": 11.98725,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.337,
+          "committed_replacement": false,
+          "elapsed_ms": 10.744625000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.267,
+          "committed_replacement": false,
+          "elapsed_ms": 15.632582999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.243,
+          "committed_replacement": false,
+          "elapsed_ms": 11.969542,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.228,
+          "committed_replacement": false,
+          "elapsed_ms": 11.979458,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.587,
+          "committed_replacement": false,
+          "elapsed_ms": 13.070917,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 4.773,
+          "committed_replacement": false,
+          "elapsed_ms": 15.653667,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.755,
+          "committed_replacement": false,
+          "elapsed_ms": 10.975416,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.365,
+          "committed_replacement": false,
+          "elapsed_ms": 11.305333000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.462,
+          "committed_replacement": false,
+          "elapsed_ms": 11.994625,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.339,
+          "committed_replacement": false,
+          "elapsed_ms": 14.924750000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.422,
+          "committed_replacement": false,
+          "elapsed_ms": 12.636125,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.333,
+          "committed_replacement": false,
+          "elapsed_ms": 14.650917,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 4.295,
+          "committed_replacement": false,
+          "elapsed_ms": 15.670791999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.641,
+          "committed_replacement": false,
+          "elapsed_ms": 12.509375,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.346,
+          "committed_replacement": false,
+          "elapsed_ms": 14.838208,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.36,
+          "committed_replacement": false,
+          "elapsed_ms": 11.922625,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.475,
+          "committed_replacement": false,
+          "elapsed_ms": 12.199375,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.418,
+          "committed_replacement": false,
+          "elapsed_ms": 14.914959,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.452,
+          "committed_replacement": false,
+          "elapsed_ms": 10.752542,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.859,
+          "committed_replacement": false,
+          "elapsed_ms": 15.695084000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.609,
+          "committed_replacement": false,
+          "elapsed_ms": 14.903917,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.775,
+          "committed_replacement": false,
+          "elapsed_ms": 15.218708,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.864,
+          "committed_replacement": false,
+          "elapsed_ms": 13.716417,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.017,
+          "committed_replacement": false,
+          "elapsed_ms": 16.4065,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.833,
+          "committed_replacement": false,
+          "elapsed_ms": 12.007292,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.823,
+          "committed_replacement": false,
+          "elapsed_ms": 11.979417,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.706,
+          "committed_replacement": false,
+          "elapsed_ms": 12.29075,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.353,
+          "committed_replacement": false,
+          "elapsed_ms": 10.87775,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.196,
+          "committed_replacement": false,
+          "elapsed_ms": 11.071791,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.32,
+          "committed_replacement": false,
+          "elapsed_ms": 15.08875,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.376,
+          "committed_replacement": false,
+          "elapsed_ms": 14.825792000000002,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.488,
+          "committed_replacement": false,
+          "elapsed_ms": 11.993042,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.507,
+          "committed_replacement": false,
+          "elapsed_ms": 11.340459000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.523,
+          "committed_replacement": false,
+          "elapsed_ms": 11.890333,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.662,
+          "committed_replacement": false,
+          "elapsed_ms": 12.298,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.714,
+          "committed_replacement": false,
+          "elapsed_ms": 11.519625,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.717,
+          "committed_replacement": false,
+          "elapsed_ms": 11.585833000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.754,
+          "committed_replacement": false,
+          "elapsed_ms": 10.9605,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.748,
+          "committed_replacement": false,
+          "elapsed_ms": 10.940042,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.959,
+          "committed_replacement": false,
+          "elapsed_ms": 13.950792,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.924,
+          "committed_replacement": false,
+          "elapsed_ms": 14.045542,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.94,
+          "committed_replacement": false,
+          "elapsed_ms": 12.565167,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.917,
+          "committed_replacement": false,
+          "elapsed_ms": 12.068000000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.88,
+          "committed_replacement": false,
+          "elapsed_ms": 10.61725,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.885,
+          "committed_replacement": false,
+          "elapsed_ms": 13.948375,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.063,
+          "committed_replacement": false,
+          "elapsed_ms": 12.613541000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.888,
+          "committed_replacement": false,
+          "elapsed_ms": 12.801083,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.822,
+          "committed_replacement": false,
+          "elapsed_ms": 13.664958,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        }
+      ],
+      "server_exit": 0,
+      "worker_exit_confirmed": true
+    },
+    {
+      "final_generation": 32,
+      "repetition": 3,
+      "samples": [
+        {
+          "child_cpu_ms": 4.244,
+          "committed_replacement": true,
+          "elapsed_ms": 28.416583,
+          "journal_bytes": 963,
+          "kind": "adopt",
+          "logical_committed_bytes": 963
+        },
+        {
+          "child_cpu_ms": 3.774,
+          "committed_replacement": true,
+          "elapsed_ms": 29.876834000000002,
+          "journal_bytes": 1342,
+          "kind": "adopt",
+          "logical_committed_bytes": 1342
+        },
+        {
+          "child_cpu_ms": 2.745,
+          "committed_replacement": true,
+          "elapsed_ms": 30.191375,
+          "journal_bytes": 1721,
+          "kind": "adopt",
+          "logical_committed_bytes": 1721
+        },
+        {
+          "child_cpu_ms": 2.923,
+          "committed_replacement": true,
+          "elapsed_ms": 25.848875,
+          "journal_bytes": 2100,
+          "kind": "adopt",
+          "logical_committed_bytes": 2100
+        },
+        {
+          "child_cpu_ms": 3.159,
+          "committed_replacement": true,
+          "elapsed_ms": 24.877875,
+          "journal_bytes": 2479,
+          "kind": "adopt",
+          "logical_committed_bytes": 2479
+        },
+        {
+          "child_cpu_ms": 2.994,
+          "committed_replacement": true,
+          "elapsed_ms": 25.884334,
+          "journal_bytes": 2858,
+          "kind": "adopt",
+          "logical_committed_bytes": 2858
+        },
+        {
+          "child_cpu_ms": 2.791,
+          "committed_replacement": true,
+          "elapsed_ms": 24.761,
+          "journal_bytes": 3237,
+          "kind": "adopt",
+          "logical_committed_bytes": 3237
+        },
+        {
+          "child_cpu_ms": 2.778,
+          "committed_replacement": true,
+          "elapsed_ms": 28.046125,
+          "journal_bytes": 3616,
+          "kind": "adopt",
+          "logical_committed_bytes": 3616
+        },
+        {
+          "child_cpu_ms": 2.821,
+          "committed_replacement": true,
+          "elapsed_ms": 25.829207999999998,
+          "journal_bytes": 3995,
+          "kind": "adopt",
+          "logical_committed_bytes": 3995
+        },
+        {
+          "child_cpu_ms": 3.04,
+          "committed_replacement": true,
+          "elapsed_ms": 23.224834,
+          "journal_bytes": 4375,
+          "kind": "adopt",
+          "logical_committed_bytes": 4375
+        },
+        {
+          "child_cpu_ms": 2.761,
+          "committed_replacement": true,
+          "elapsed_ms": 29.712959,
+          "journal_bytes": 4757,
+          "kind": "adopt",
+          "logical_committed_bytes": 4757
+        },
+        {
+          "child_cpu_ms": 2.717,
+          "committed_replacement": true,
+          "elapsed_ms": 26.841834,
+          "journal_bytes": 5139,
+          "kind": "adopt",
+          "logical_committed_bytes": 5139
+        },
+        {
+          "child_cpu_ms": 2.947,
+          "committed_replacement": true,
+          "elapsed_ms": 25.282834,
+          "journal_bytes": 5521,
+          "kind": "adopt",
+          "logical_committed_bytes": 5521
+        },
+        {
+          "child_cpu_ms": 3.274,
+          "committed_replacement": true,
+          "elapsed_ms": 25.682959,
+          "journal_bytes": 5903,
+          "kind": "adopt",
+          "logical_committed_bytes": 5903
+        },
+        {
+          "child_cpu_ms": 3.514,
+          "committed_replacement": true,
+          "elapsed_ms": 25.360917,
+          "journal_bytes": 6285,
+          "kind": "adopt",
+          "logical_committed_bytes": 6285
+        },
+        {
+          "child_cpu_ms": 3.671,
+          "committed_replacement": true,
+          "elapsed_ms": 26.954124999999998,
+          "journal_bytes": 6667,
+          "kind": "adopt",
+          "logical_committed_bytes": 6667
+        },
+        {
+          "child_cpu_ms": 3.472,
+          "committed_replacement": true,
+          "elapsed_ms": 29.969666999999998,
+          "journal_bytes": 7049,
+          "kind": "adopt",
+          "logical_committed_bytes": 7049
+        },
+        {
+          "child_cpu_ms": 2.865,
+          "committed_replacement": true,
+          "elapsed_ms": 22.909583,
+          "journal_bytes": 7431,
+          "kind": "adopt",
+          "logical_committed_bytes": 7431
+        },
+        {
+          "child_cpu_ms": 3.22,
+          "committed_replacement": true,
+          "elapsed_ms": 26.45625,
+          "journal_bytes": 7813,
+          "kind": "adopt",
+          "logical_committed_bytes": 7813
+        },
+        {
+          "child_cpu_ms": 3.573,
+          "committed_replacement": true,
+          "elapsed_ms": 29.899958,
+          "journal_bytes": 8195,
+          "kind": "adopt",
+          "logical_committed_bytes": 8195
+        },
+        {
+          "child_cpu_ms": 3.644,
+          "committed_replacement": true,
+          "elapsed_ms": 29.95275,
+          "journal_bytes": 8577,
+          "kind": "adopt",
+          "logical_committed_bytes": 8577
+        },
+        {
+          "child_cpu_ms": 3.935,
+          "committed_replacement": true,
+          "elapsed_ms": 28.472125000000002,
+          "journal_bytes": 8959,
+          "kind": "adopt",
+          "logical_committed_bytes": 8959
+        },
+        {
+          "child_cpu_ms": 4.014,
+          "committed_replacement": true,
+          "elapsed_ms": 25.330792000000002,
+          "journal_bytes": 9341,
+          "kind": "adopt",
+          "logical_committed_bytes": 9341
+        },
+        {
+          "child_cpu_ms": 4.383,
+          "committed_replacement": true,
+          "elapsed_ms": 25.01,
+          "journal_bytes": 9723,
+          "kind": "adopt",
+          "logical_committed_bytes": 9723
+        },
+        {
+          "child_cpu_ms": 4.264,
+          "committed_replacement": true,
+          "elapsed_ms": 25.250375,
+          "journal_bytes": 10105,
+          "kind": "adopt",
+          "logical_committed_bytes": 10105
+        },
+        {
+          "child_cpu_ms": 4.381,
+          "committed_replacement": true,
+          "elapsed_ms": 24.29575,
+          "journal_bytes": 10487,
+          "kind": "adopt",
+          "logical_committed_bytes": 10487
+        },
+        {
+          "child_cpu_ms": 4.865,
+          "committed_replacement": true,
+          "elapsed_ms": 27.265874999999998,
+          "journal_bytes": 10869,
+          "kind": "adopt",
+          "logical_committed_bytes": 10869
+        },
+        {
+          "child_cpu_ms": 4.972,
+          "committed_replacement": true,
+          "elapsed_ms": 27.046584,
+          "journal_bytes": 11251,
+          "kind": "adopt",
+          "logical_committed_bytes": 11251
+        },
+        {
+          "child_cpu_ms": 4.941,
+          "committed_replacement": true,
+          "elapsed_ms": 26.537083,
+          "journal_bytes": 11633,
+          "kind": "adopt",
+          "logical_committed_bytes": 11633
+        },
+        {
+          "child_cpu_ms": 5.448,
+          "committed_replacement": true,
+          "elapsed_ms": 23.747167,
+          "journal_bytes": 12015,
+          "kind": "adopt",
+          "logical_committed_bytes": 12015
+        },
+        {
+          "child_cpu_ms": 5.969,
+          "committed_replacement": true,
+          "elapsed_ms": 25.701042,
+          "journal_bytes": 12397,
+          "kind": "adopt",
+          "logical_committed_bytes": 12397
+        },
+        {
+          "child_cpu_ms": 5.931,
+          "committed_replacement": true,
+          "elapsed_ms": 26.122333,
+          "journal_bytes": 12779,
+          "kind": "adopt",
+          "logical_committed_bytes": 12779
+        },
+        {
+          "child_cpu_ms": 4.512,
+          "committed_replacement": false,
+          "elapsed_ms": 14.911959000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 4.386,
+          "committed_replacement": false,
+          "elapsed_ms": 15.79125,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 4.186,
+          "committed_replacement": false,
+          "elapsed_ms": 11.079833,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 4.283,
+          "committed_replacement": false,
+          "elapsed_ms": 12.088291,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 4.071,
+          "committed_replacement": false,
+          "elapsed_ms": 15.784459,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.763,
+          "committed_replacement": false,
+          "elapsed_ms": 11.988624999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.772,
+          "committed_replacement": false,
+          "elapsed_ms": 12.323042,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.758,
+          "committed_replacement": false,
+          "elapsed_ms": 14.275375,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.719,
+          "committed_replacement": false,
+          "elapsed_ms": 14.897709,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.912,
+          "committed_replacement": false,
+          "elapsed_ms": 12.77375,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.631,
+          "committed_replacement": false,
+          "elapsed_ms": 11.972417,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.579,
+          "committed_replacement": false,
+          "elapsed_ms": 15.762833,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.303,
+          "committed_replacement": false,
+          "elapsed_ms": 12.213541,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.288,
+          "committed_replacement": false,
+          "elapsed_ms": 11.376542,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.407,
+          "committed_replacement": false,
+          "elapsed_ms": 14.927541000000002,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.315,
+          "committed_replacement": false,
+          "elapsed_ms": 11.9845,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.292,
+          "committed_replacement": false,
+          "elapsed_ms": 12.559333,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.261,
+          "committed_replacement": false,
+          "elapsed_ms": 12.872042,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.272,
+          "committed_replacement": false,
+          "elapsed_ms": 14.915041,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.344,
+          "committed_replacement": false,
+          "elapsed_ms": 13.568792,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.297,
+          "committed_replacement": false,
+          "elapsed_ms": 10.95,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.346,
+          "committed_replacement": false,
+          "elapsed_ms": 14.3825,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.505,
+          "committed_replacement": false,
+          "elapsed_ms": 11.968292,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.352,
+          "committed_replacement": false,
+          "elapsed_ms": 11.176917,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.972,
+          "committed_replacement": false,
+          "elapsed_ms": 15.667582999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.318,
+          "committed_replacement": false,
+          "elapsed_ms": 14.766417,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.313,
+          "committed_replacement": false,
+          "elapsed_ms": 11.992541000000001,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.255,
+          "committed_replacement": false,
+          "elapsed_ms": 11.979459,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.229,
+          "committed_replacement": false,
+          "elapsed_ms": 10.871541,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.078,
+          "committed_replacement": false,
+          "elapsed_ms": 14.832542,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.175,
+          "committed_replacement": false,
+          "elapsed_ms": 15.645249999999999,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.258,
+          "committed_replacement": false,
+          "elapsed_ms": 15.347792,
+          "journal_bytes": 12779,
+          "kind": "inspect",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.302,
+          "committed_replacement": false,
+          "elapsed_ms": 11.947542,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.159,
+          "committed_replacement": false,
+          "elapsed_ms": 14.847833,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.438,
+          "committed_replacement": false,
+          "elapsed_ms": 15.7745,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.398,
+          "committed_replacement": false,
+          "elapsed_ms": 12.854542,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.421,
+          "committed_replacement": false,
+          "elapsed_ms": 14.799625,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.353,
+          "committed_replacement": false,
+          "elapsed_ms": 15.733958,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.32,
+          "committed_replacement": false,
+          "elapsed_ms": 14.121082999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.291,
+          "committed_replacement": false,
+          "elapsed_ms": 13.818,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.294,
+          "committed_replacement": false,
+          "elapsed_ms": 11.821,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 3.66,
+          "committed_replacement": false,
+          "elapsed_ms": 15.719584000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.758,
+          "committed_replacement": false,
+          "elapsed_ms": 15.414000000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.362,
+          "committed_replacement": false,
+          "elapsed_ms": 14.136249999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.559,
+          "committed_replacement": false,
+          "elapsed_ms": 12.317833,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.668,
+          "committed_replacement": false,
+          "elapsed_ms": 11.940707999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.239,
+          "committed_replacement": false,
+          "elapsed_ms": 12.002875,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.281,
+          "committed_replacement": false,
+          "elapsed_ms": 11.728416000000001,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.294,
+          "committed_replacement": false,
+          "elapsed_ms": 13.168042,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.352,
+          "committed_replacement": false,
+          "elapsed_ms": 11.214666,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.437,
+          "committed_replacement": false,
+          "elapsed_ms": 12.881,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.59,
+          "committed_replacement": false,
+          "elapsed_ms": 10.554499999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.53,
+          "committed_replacement": false,
+          "elapsed_ms": 14.127707999999998,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.718,
+          "committed_replacement": false,
+          "elapsed_ms": 13.805167,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.719,
+          "committed_replacement": false,
+          "elapsed_ms": 14.105834,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.975,
+          "committed_replacement": false,
+          "elapsed_ms": 12.177667,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.946,
+          "committed_replacement": false,
+          "elapsed_ms": 12.706791,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.831,
+          "committed_replacement": false,
+          "elapsed_ms": 15.23175,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.716,
+          "committed_replacement": false,
+          "elapsed_ms": 13.764541999999999,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.456,
+          "committed_replacement": false,
+          "elapsed_ms": 12.439084,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.472,
+          "committed_replacement": false,
+          "elapsed_ms": 11.782541,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.548,
+          "committed_replacement": false,
+          "elapsed_ms": 12.59525,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.685,
+          "committed_replacement": false,
+          "elapsed_ms": 13.768333,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        },
+        {
+          "child_cpu_ms": 2.746,
+          "committed_replacement": false,
+          "elapsed_ms": 14.399542,
+          "journal_bytes": 12779,
+          "kind": "idempotent-adopt",
+          "logical_committed_bytes": 0
+        }
+      ],
+      "server_exit": 0,
+      "worker_exit_confirmed": true
+    }
+  ],
+  "schema": 1,
+  "scope": "Public CLI, journal activity, fixed binaries; no model calls"
+}

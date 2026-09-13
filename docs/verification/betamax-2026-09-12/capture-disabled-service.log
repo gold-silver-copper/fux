@@ -1,0 +1,2 @@
+fux-xtask: CLI ["--state-directory", "/tmp/zsvc-OiSqMy/tasks", "task", "adopt", "slow-task", "--title", "slow fixture", "--instance", "56ba4480bd4b955c33b023c3ac33cf8f", "--workspace", "default", "--pane", "1", "--runtime", "/tmp/zsvc-OiSqMy/proxy"]: zor: connect control socket: No such file or directory (os error 2)
+

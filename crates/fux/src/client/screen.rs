@@ -76,10 +76,10 @@ impl<B: TerminalBackend> Screen<B> {
     pub fn render(
         &mut self,
         frame: &Frame,
-        local: Option<&LocalView<'_>>,
+        local: Option<&[LocalView<'_>]>,
         panel: Option<&HintPanel>,
         notice: Option<&Notice>,
-    ) -> io::Result<()> {
+    ) -> io::Result<super::render::HitRegions> {
         self.emit_out_of_band(frame)?;
         let (rows, cols) = self.backend.size()?;
         let composed = compose(frame, local, panel, notice, &self.palette, rows, cols);
@@ -90,7 +90,11 @@ impl<B: TerminalBackend> Screen<B> {
             composed.cursor,
         )?;
         self.previous = Some(composed.buffer);
-        Ok(())
+        Ok(super::render::HitRegions {
+            tabs: composed.tabs,
+            entries: composed.entries,
+            panel: composed.panel,
+        })
     }
 
     fn emit_out_of_band(&mut self, frame: &Frame) -> io::Result<()> {

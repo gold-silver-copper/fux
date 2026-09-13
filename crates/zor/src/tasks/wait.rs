@@ -273,35 +273,28 @@ fn evaluate(
             );
         }
         Err(live_error) => {
-            let response = crate::fux::request_until(
-                &target.runtime.join("manager.sock"),
-                json!({"request":"final","instance":target.instance,"pane":target.pane}),
+            let record = match crate::fux::manager::final_record(
+                &target.runtime,
+                &target.instance,
+                target.pane,
                 deadline,
             )
-            .with_context(|| format!("live/final evidence unavailable: {live_error}"))?;
-            // A live pane answering `pending` here contradicts the failed capture; like
-            // `evicted` (fux dropped the record under load), `expired` and `unknown`, it is a
-            // hard failure of this evaluation, never a retry.
-            let record = match crate::fux::final_reply(&response)
-                .context("final evidence unavailable or expired")?
+            .with_context(|| format!("live/final evidence unavailable: {live_error}"))?
             {
-                crate::fux::FinalReply::Record(record) => record,
-                crate::fux::FinalReply::Pending => {
+                crate::fux::manager::FinalOutcome::Record(record) => record,
+                crate::fux::manager::FinalOutcome::Pending => {
                     anyhow::bail!("final evidence unavailable: pane is still live")
                 }
             };
             anyhow::ensure!(
-                record.get("pane").and_then(Value::as_u64) == Some(u64::from(target.pane))
-                    && record.get("workspace").and_then(Value::as_str) == Some(&target.workspace)
-                    && record.get("stream").and_then(Value::as_u64) == Some(target.stream)
-                    && record.get("input_sequence").and_then(Value::as_u64)
-                        == Some(receipt.input_sequence),
+                record.pane == target.pane
+                    && record.workspace == target.origin().0
+                    && record.stream == target.origin().1
+                    && record.input_sequence == receipt.input_sequence,
                 "final evidence identity/input sequence mismatch"
             );
             let status = record
-                .get("exit_status")
-                .and_then(Value::as_u64)
-                .and_then(|status| u32::try_from(status).ok())
+                .exit_status
                 .context("pane closed without valid observed process exit")?;
             return Ok((WaitOutcome::ProcessExited, Some(status)));
         }

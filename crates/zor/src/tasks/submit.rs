@@ -1,7 +1,6 @@
 //! Durable terminal input coordination. Receipts establish PTY delivery only.
 use super::{model::*, store::Store};
 use anyhow::{Context, Result};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     path::Path,
@@ -51,31 +50,12 @@ pub(super) fn keys(text: &str) -> Result<String> {
     Ok(encoded)
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WireReceipt {
-    operation: u64,
-    pane: u32,
-    state: String,
-    revision: u64,
-    input_sequence: u64,
-    expires_ms: u64,
-    bytes_written: usize,
-    error: Option<String>,
-}
-
 pub(super) fn receipt(
-    response: Value,
+    wire: crate::fux::input::Receipt,
     target: &Target,
     previous: Option<&Receipt>,
     bytes: usize,
 ) -> Result<(Delivery, Receipt)> {
-    let wire: WireReceipt = serde_json::from_value(
-        response
-            .pointer("/result/value/receipt")
-            .cloned()
-            .context("missing input receipt")?,
-    )?;
     anyhow::ensure!(
         wire.operation != 0
             && wire.pane == target.pane
@@ -85,12 +65,11 @@ pub(super) fn receipt(
             && wire.bytes_written <= bytes,
         "invalid input receipt identity/length"
     );
-    let phase = match wire.state.as_str() {
-        "reserved" => Delivery::Reserved,
-        "queued" => Delivery::Queued,
-        "delivered" => Delivery::Delivered,
-        "failed" => Delivery::Failed,
-        _ => anyhow::bail!("unknown input receipt state"),
+    let phase = match wire.state {
+        crate::fux::input::State::Reserved => Delivery::Reserved,
+        crate::fux::input::State::Queued => Delivery::Queued,
+        crate::fux::input::State::Delivered => Delivery::Delivered,
+        crate::fux::input::State::Failed => Delivery::Failed,
     };
     anyhow::ensure!(
         (phase != Delivery::Reserved || wire.bytes_written == 0)
@@ -110,19 +89,34 @@ pub(super) fn receipt(
     ))
 }
 
+pub(super) fn input_status(
+    target: &Target,
+    operation: u64,
+    deadline: Instant,
+) -> Result<crate::fux::input::Receipt> {
+    crate::fux::manager::input_status(
+        &target.runtime,
+        &target.instance,
+        target.pane,
+        operation,
+        deadline,
+    )
+}
+
 pub(super) fn request(
     target: &Target,
     command: &str,
     fields: Value,
     deadline: Instant,
 ) -> Result<Value> {
+    let location = super::route::locate(target, deadline)?;
     let mut value = json!({"command":command,"id":1,"instance":target.instance});
     value
         .as_object_mut()
         .context("request object")?
         .extend(fields.as_object().context("fields object")?.clone());
     let response = crate::fux::completed_until(
-        &target.runtime.join(format!("{}.sock", target.workspace)),
+        &target.runtime.join(format!("{}.sock", location.workspace)),
         value,
         deadline,
     )?;
@@ -130,16 +124,35 @@ pub(super) fn request(
         response.get("id").and_then(Value::as_u64) == Some(1),
         "fux response ID mismatch"
     );
+    if command == "list" {
+        let mut routed = target.clone();
+        routed.workspace = location.workspace;
+        routed.stream = location.stream;
+        validate_target_reply(&routed, &response)?;
+    }
     Ok(response)
 }
 
 pub(super) fn verify_target(target: &Target, deadline: Instant) -> Result<()> {
-    target_pane(target, deadline).map(|_| ())
+    // The manager validates live process identity and current ownership in one read.
+    // A second workspace listing would race a legal move and falsely retire native workers.
+    super::route::locate(target, deadline).map(|_| ())
 }
 
 pub(super) fn target_pane(target: &Target, deadline: Instant) -> Result<Value> {
     let response = request(target, "list", json!({}), deadline)?;
-    validate_target_reply(target, &response)
+    response
+        .pointer("/result/value/workspaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|workspace| workspace.get("tabs").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|tab| tab.get("panes").and_then(Value::as_array))
+        .flatten()
+        .find(|pane| pane.get("id").and_then(Value::as_u64) == Some(u64::from(target.pane)))
+        .cloned()
+        .context("validated pane missing")
 }
 
 // Pure identity validation; the effectful caller owns socket negotiation and its deadline.
@@ -187,22 +200,16 @@ fn validate_target_reply(target: &Target, response: &Value) -> Result<Value> {
 fn persist(store: &mut Store, id: &str, phase: Delivery, receipt: Receipt) -> Result<()> {
     store.transaction(|journal| {
         let prompt = journal.prompts.get_mut(id).context("prompt missing")?;
+        prompt.record_delivery(phase, receipt)?;
         prompt.wait = if super::wait::terminal(&prompt.wait) {
             prompt.wait.clone()
         } else if prompt.released {
             WaitOutcome::Cancelled
-        } else if phase == Delivery::Failed {
+        } else if prompt.delivery == Delivery::Failed {
             WaitOutcome::Uncertain
         } else {
             WaitOutcome::Pending
         };
-        if phase == Delivery::Submitting
-            && let Some(arm) = &mut prompt.arm
-        {
-            arm.input_started = true;
-        }
-        prompt.delivery = phase;
-        prompt.receipt = Some(receipt);
         Ok(())
     })
 }
@@ -279,10 +286,12 @@ pub(super) fn run_until(
             check_deadline(&prompt)?;
             verify_target(&target, deadline)?;
             let retain_ms = input_retain_ms(&prompt, super::now_ms()?);
-            let response = request(
-                &target,
-                "input-reserve",
-                json!({"pane":target.pane,"retain_ms":retain_ms}),
+            let location = super::route::locate(&target, deadline)?;
+            let response = crate::fux::input::reserve(
+                &target.runtime.join(format!("{}.sock", location.workspace)),
+                &target.instance,
+                target.pane,
+                retain_ms,
                 deadline,
             )?;
             let (phase, receipt) = receipt(response, &target, None, bytes)?;
@@ -290,12 +299,7 @@ pub(super) fn run_until(
             persist(&mut store, id, phase, receipt)?;
         } else {
             let old = prompt.receipt.as_ref().context("receipt missing")?;
-            let response = request(
-                &target,
-                "input-status",
-                json!({"operation":old.operation}),
-                deadline,
-            )?;
+            let response = input_status(&target, old.operation, deadline)?;
             let (phase, receipt) = receipt(response, &target, Some(old), bytes)?;
             persist(&mut store, id, phase, receipt)?;
         }
@@ -314,10 +318,12 @@ pub(super) fn run_until(
         let old = current.receipt.clone().context("receipt missing")?;
         persist(&mut store, id, Delivery::Submitting, old.clone())?;
         let submission_deadline = deadline.min(input_deadline(&current)?);
-        let response = request(
-            &target,
-            "input-submit",
-            json!({"operation":old.operation,"keys":encoded}),
+        let location = super::route::locate(&target, submission_deadline)?;
+        let response = crate::fux::input::submit(
+            &target.runtime.join(format!("{}.sock", location.workspace)),
+            &target.instance,
+            old.operation,
+            &encoded,
             submission_deadline,
         )?;
         let (phase, receipt) = receipt(response, &target, Some(&old), bytes)?;
@@ -341,10 +347,7 @@ pub(super) fn run_until(
         }) {
             store.transaction(|journal| {
                 let prompt = journal.prompts.get_mut(id).context("prompt missing")?;
-                prompt.delivery = Delivery::Uncertain;
-                if !prompt.released && !super::wait::terminal(&prompt.wait) {
-                    prompt.wait = WaitOutcome::Uncertain;
-                }
+                prompt.delivery_uncertain();
                 Ok(())
             })?;
         }
@@ -379,6 +382,7 @@ mod tests {
     #[test]
     fn captured_reply_cannot_transfer_authority_to_replaced_targets() -> Result<()> {
         let target = Target {
+            origin: None,
             runtime: "/tmp/fixture".into(),
             instance: "owner".into(),
             workspace: "default".into(),

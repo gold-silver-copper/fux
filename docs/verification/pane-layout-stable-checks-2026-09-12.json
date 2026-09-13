@@ -1,0 +1,108 @@
+{
+  "toolchain": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6",
+  "checks": [
+    {
+      "command": "cargo +stable fmt --all --check",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-0.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "results": []
+    },
+    {
+      "command": "cargo +stable clippy --workspace --all-targets --locked -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-1.log",
+      "log_sha256": "cc555ea5a03ba679ad3cb2ef933012f0c70bd0d85f00d6cf0ce0afcc06950f0c",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 29s"
+      ]
+    },
+    {
+      "command": "cargo +stable clippy -p zor --all-targets --all-features --locked -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-2.log",
+      "log_sha256": "aa4a4c91dc8ab6f93f4b6f0846f81c0272d3bf5813736d45ae8e6846ecd9b875",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 48.47s"
+      ]
+    },
+    {
+      "command": "cargo +stable clippy -p zor --all-targets --no-default-features --locked -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-3.log",
+      "log_sha256": "68ac32695d90ad1ff6f2f337b56969d810a2d8bd9bb989ebaac8cc2623c611b8",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.10s"
+      ]
+    },
+    {
+      "command": "cargo +stable clippy -p zor --all-targets --no-default-features --features cli --locked -- -D warnings",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-4.log",
+      "log_sha256": "1857186588bd3b4a8aa0c3f2b16e3774329ee25fa0b72e749b47792ceef7a0d6",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.04s"
+      ]
+    },
+    {
+      "command": "cargo +stable test -p fux --locked --lib --bins --test ecs --test agent_boundary --test structure --test protocol_consumers --test fixtures --test micro_timing --test local_cli -- --test-threads=1 --skip a_full_agent_session_runs_headlessly_over_the_control_protocol",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-5.log",
+      "log_sha256": "0bc08041cc2a9abd9a58eb0f7496a06a8f7d8ca4d682fceb49c78a54792a7f32",
+      "results": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.45s",
+        "test result: ok. 145 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.09s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s",
+        "test result: ok. 82 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.71s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 60.89s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s"
+      ]
+    },
+    {
+      "command": "cargo +stable test -p local-ipc --locked",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-6.log",
+      "log_sha256": "d212923b74477d199e65548b14390c811b98ae94cda718fd9af4bb3bbdc403f1",
+      "results": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.55s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s"
+      ]
+    },
+    {
+      "command": "cargo +stable check -p zor --no-default-features --all-targets --locked",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-7.log",
+      "log_sha256": "e0bbf4b4600678b639ba81555339e435014303aa8fa18ca1337746f3cbcccb18",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.25s"
+      ]
+    },
+    {
+      "command": "cargo +stable doc --workspace --no-deps --locked",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-8.log",
+      "log_sha256": "37d07244af9c68d93eb9df3423a23ec113929832c36a4750dc8686f2cdf98a8b",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.93s"
+      ]
+    },
+    {
+      "command": "cargo +stable doc -p zor --all-features --no-deps --locked",
+      "exit_code": 0,
+      "log": "/tmp/fux-pane-stable-9.log",
+      "log_sha256": "e633fc2f20b07cf3c7f2a2bcdcfce3971141559adaf93982bbe24b2871a6c51e",
+      "results": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.57s"
+      ]
+    }
+  ],
+  "env": {
+    "CARGO_TARGET_DIR": "target/pane-stable",
+    "FUX_SCENARIO_DEADLINE_SCALE": "3"
+  },
+  "scope": "Stable1.97.1 macOS: format, workspace/all-feature/no-default/CLI Clippy,264 fux tests with CI-prescribed exclusion,13 local-ipc tests, no-default zor check and docs. Native Linux/Windows execution is not claimed."
+}

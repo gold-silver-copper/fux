@@ -257,6 +257,7 @@ fn case(
     let epoch = Instant::now();
     let mut row =
         json!({"panes":panes,"viewers":viewers,"slow":slow,"geometry":[80,24],"phases":[]});
+    let mut stage = "fux startup";
     let measured = (|| -> Result<()> {
         let mut c = root.command(fux);
         c.arg("serve")
@@ -266,8 +267,9 @@ fn case(
         owners.push(("fux", Guard(c.spawn()?)));
         let control = root.control();
         until(&mut owners, &readers, || Ok(control.exists()))?;
+        stage = "split panes";
         for _ in 1..panes {
-            local::rpc(
+            local::completed(
                 &control,
                 json!({"command":"split","id":1,"axis":"horizontal","argv":[worker],"final_retain_ms":60000}),
             )?;
@@ -278,6 +280,7 @@ fn case(
                 slow && index == viewers - 1,
             )?);
         }
+        stage = "all viewers observe READY";
         until(&mut owners, &readers, || {
             readers
                 .iter()
@@ -305,31 +308,38 @@ fn case(
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         owners.push(("zor", Guard(c.spawn()?)));
+        stage = "zor socket startup";
         until(&mut owners, &readers, || {
             Ok(root.path().join("zor/control.sock").exists())
         })?;
+        stage = "fresh zor observations for every pane";
         until(&mut owners, &readers, || {
             let mut c = root.command(zor);
             c.arg("status");
             let r = process::output(c, Duration::from_secs(3), 1048576)?;
+            row["last_zor_observation"] = json!({"cli_success":r.status.success()});
             if !r.status.success() {
                 return Ok(false);
             }
             let v: Value = serde_json::from_slice(&r.stdout)?;
-            Ok(v.pointer("/snapshot/observations")
+            let count = v
+                .pointer("/snapshot/observations")
                 .and_then(Value::as_array)
-                .is_some_and(|a| a.len() == panes)
-                && v.get("stale") == Some(&json!(false)))
+                .map(Vec::len);
+            let stale = v.get("stale").and_then(Value::as_bool);
+            row["last_zor_observation"] = json!({"cli_success":true,"count":count,"stale":stale});
+            Ok(count == Some(panes) && stale == Some(false))
         })?;
         thread::sleep(Duration::from_millis(300));
         for label in ["idle", "B01", "S01"] {
+            stage = label;
             let before = sample(&owners, &readers, sampler, epoch)?;
             let start = Instant::now();
             if label == "idle" {
                 thread::sleep(Duration::from_secs(1));
             } else {
                 for pane in &pane_ids {
-                    local::rpc(
+                    local::completed(
                         &control,
                         json!({"command":"send-keys","id":1,"pane":pane,"keys":format!("{label}\\n")}),
                     )?;
@@ -348,6 +358,20 @@ fn case(
         row["passed"] = json!(true);
         Ok(())
     })();
+    if let Err(error) = &measured {
+        row["failed_stage"] = json!(stage);
+        row["error"] = json!(format!("{error:#}").chars().take(4096).collect::<String>());
+        row["reader_evidence"] = json!(
+            readers
+                .iter()
+                .map(|reader| {
+                    let counters = reader.state.counters.lock().unwrap();
+                    json!({"counters":counters.value(),"observed_markers":counters.markers})
+                })
+                .collect::<Vec<_>>()
+        );
+        eprintln!("failed performance case: {}", serde_json::to_string(&row)?);
+    }
     let mut failures = Vec::new();
     for r in &mut readers {
         if let Err(e) = r.close() {
@@ -393,7 +417,7 @@ fn case(
     if !failures.is_empty() {
         eprintln!("cleanup: {}", failures.join("; "));
     }
-    measured?;
+    measured.with_context(|| format!("{panes} panes/{viewers} viewers/slow={slow}: {stage}"))?;
     ensure!(failures.is_empty(), "{}", failures.join("; "));
     Ok(row)
 }

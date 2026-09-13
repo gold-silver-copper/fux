@@ -1,0 +1,107 @@
+{
+  "capture_root": "/var/folders/3t/6t0byq3s589g86m361mc7p100000gn/T/fux-codebase-gate-Vw1D2I/betamax",
+  "manual_inspection_count": 20,
+  "checkpoints": [
+    {
+      "file": "terminal-9688-AP9Ist/0004.png",
+      "label": "tiny keyboard focus and zoom",
+      "sha256": "e0ef64d1d290dcd2755ca23d2bf9a7f12f8e55d768e861751a74bd2c96146f74"
+    },
+    {
+      "file": "terminal-9688-AP9Ist/0014.png",
+      "label": "restore tiny layout",
+      "sha256": "16b365657700881df07ec121525f9471139aa12c993635d1a1a3e53497b9bdd4"
+    },
+    {
+      "file": "terminal-9688-PDTUlR/0101.png",
+      "label": "tiny popup",
+      "sha256": "cb981697d8414b466e9c87cf72c70612aac1fa682f515221ec1e02376d810bf1"
+    },
+    {
+      "file": "terminal-9688-PDTUlR/0052.png",
+      "label": "copy selection",
+      "sha256": "7f0329b4fe74fc02bb1494031807cf15a952c993e337468b8476815baf4a5d46"
+    },
+    {
+      "file": "terminal-9332-1pSY6C/0011.png",
+      "label": "A and B independently scrolled",
+      "sha256": "8f3c4fbf257ab57a9d1460d6508dfc75ef13203c1a9a99f31964a35a12ec14e2"
+    },
+    {
+      "file": "terminal-9332-1pSY6C/0012.png",
+      "label": "return to A history",
+      "sha256": "0b312563b8063c3ee1f3b3e4c9afa176cf96ca6a8d37f5d0c25616762fb3774a"
+    },
+    {
+      "file": "terminal-9332-1pSY6C/0013.png",
+      "label": "Escape restores only A",
+      "sha256": "014c6347802aa15ad69ba7fe63664c541d582825904a9b6466a160a6d59ab3d2"
+    },
+    {
+      "file": "terminal-9332-1pSY6C/0015.png",
+      "label": "active keyboard selection",
+      "sha256": "945da682790851779704cd5e5e86eb3bcd73095da73a303cc2e497be57681afa"
+    },
+    {
+      "file": "terminal-9332-1pSY6C/0022.png",
+      "label": "tiny scrolled history",
+      "sha256": "93aab78a901eda0d6a79868d1e2102dfe7aea70d831a79b93047f19e765984d8"
+    },
+    {
+      "file": "terminal-9332-1pSY6C/0025.png",
+      "label": "resize clears history selection and capture",
+      "sha256": "dfd133e7331fcb01ea9b34b5bd0f06598f1bef7be81a4e722bd8e28b266fea03"
+    },
+    {
+      "file": "terminal-9688-JbiISu/0002.png",
+      "label": "Rename pane",
+      "sha256": "ff3a2d4bc2fc98cf82753a0e5e70bc3943a3527831bfa2ed331998cf4927f910"
+    },
+    {
+      "file": "terminal-9688-JbiISu/0003.png",
+      "label": "one Escape dismisses modal",
+      "sha256": "6734bfa4ac43690482d5b6ef5fd41e08995de94e6d22f33b52b4e439feeb87d2"
+    },
+    {
+      "file": "terminal-9688-JbiISu/0011.png",
+      "label": "Resize",
+      "sha256": "e1134193c36e271caaec8a95cd2802e9075f49dbfd5262d36bc9805202418662"
+    },
+    {
+      "file": "terminal-9688-JbiISu/0012.png",
+      "label": "one Escape dismisses modal",
+      "sha256": "632cb98082dea38f1f103afe940eb3473c31a2c65a6a56c22e1abce09f462793"
+    },
+    {
+      "file": "terminal-9688-joyEnX/0001.png",
+      "label": "workspace transfer prompt",
+      "sha256": "3c7923990430dadc127ebcec8872a092fe12e7dbde058def99ac701f40cfe498"
+    },
+    {
+      "file": "terminal-9688-joyEnX/0006.png",
+      "label": "viewer follows into existing workspace",
+      "sha256": "724beb852d895f7e4d61b277446c73d69cb20778d8ecff65666ff39bb27f4b84"
+    },
+    {
+      "file": "terminal-9688-joyEnX/0009.png",
+      "label": "pane tab drop preserves process and removes empty source",
+      "sha256": "fd4b0cab263706375165151096f326e118b7aa8c2de50c28c97b485cee02f4cc"
+    },
+    {
+      "file": "terminal-8853-AwBU8w/0004.png",
+      "label": "cancel pending workspace lookup",
+      "sha256": "1bd7cb75738f5559dc897692d58b4583032fde5c03ef6a1c69bf0552dfe882e9"
+    },
+    {
+      "file": "terminal-8853-AwBU8w/0023.png",
+      "label": "manager queued input target loss notice",
+      "sha256": "2bd0e68593e2359ae5b25e051f6b3bc1dd099c49380787483a5ebb1fb99d8e28"
+    },
+    {
+      "file": "terminal-8853-AwBU8w/0029.png",
+      "label": "manager failure is a notice without commands",
+      "sha256": "fc5ef539b076a90505cac4ca808e10f772abe08473fa28f012e71113936af3b0"
+    }
+  ],
+  "scope": "Affected transitions selected for direct image inspection; all 412 frames passed exact replay. Full gate metadata retained separately."
+}

@@ -1,6 +1,6 @@
 //! Real managed native worker; account-free provider protocol fixture.
 use crate::support::{
-    local::{Root, completed, until},
+    local::{Root, completed, rpc, until},
     process,
 };
 use anyhow::{Context, Result, ensure};
@@ -47,7 +47,7 @@ fn cli(root: &Root, zor: &Path, args: &[&str]) -> Result<Value> {
 }
 
 pub(super) fn run(fux: &Path, zor: &Path, fixture: &Path) -> Result<()> {
-    for mode in ["--keep-open", "--exit-after-turn", "--controls"] {
+    for mode in ["--keep-open", "--exit-after-turn", "--controls", "--layout"] {
         run_case(fux, zor, fixture, mode)?;
     }
     Ok(())
@@ -364,6 +364,8 @@ impl Drop for Paused {
 
 fn run_case(fux: &Path, zor: &Path, fixture: &Path, mode: &str) -> Result<()> {
     let controls = mode == "--controls";
+    let moving = mode == "--layout";
+    let mode = if moving { "--keep-open" } else { mode };
     let root = Root::new("znative-", &["/bin/cat".into()])?;
     let mut server = root.server(fux)?;
     let mut service = if controls {
@@ -431,6 +433,41 @@ fn run_case(fux: &Path, zor: &Path, fixture: &Path, mode: &str) -> Result<()> {
                 )),
             "native storage identity was not retained"
         );
+        let moved_identity = if moving {
+            let journal = read()?;
+            let attempt = journal["tasks"]["native"]["attempt"]
+                .as_str()
+                .context("attempt")?;
+            let session = journal["attempts"][attempt]["session"]
+                .as_str()
+                .context("session")?;
+            let target = journal["sessions"][session]["target"].clone();
+            move_native(&root, &target, "moved")?;
+            completed(
+                &root.control(),
+                json!({"command":"workspace","id":1,"instance":instance,
+                "stream":target["stream"],"action":{"kill":{"name":"default"}}}),
+            )?;
+            until(Duration::from_secs(3), || {
+                Ok((!root.control().exists()).then_some(()))
+            })?;
+            let recreated = rpc(
+                &root.path().join("fux/manager.sock"),
+                json!({"request":"create","name":"default"}),
+            )?;
+            ensure!(
+                recreated["reply"] == "attach"
+                    && recreated["descriptor"]["stream"] != target["stream"],
+                "source lifetime was not replaced"
+            );
+            Some((
+                session.to_owned(),
+                target,
+                journal["native_workers"]["native"]["producer"].clone(),
+            ))
+        } else {
+            None
+        };
         let lock_file = std::fs::File::open(root.path().join("state/zor/journal.lock"))?;
         let lock = nix::fcntl::Flock::lock(lock_file, nix::fcntl::FlockArg::LockExclusive)
             .map_err(|(_, error)| error)?;
@@ -628,6 +665,36 @@ fn run_case(fux: &Path, zor: &Path, fixture: &Path, mode: &str) -> Result<()> {
                 "coordination cancel or native interrupt stopped the worker"
             );
         }
+        if let Some((session, target, producer)) = moved_identity {
+            // A complete native turn after source retirement proves that repeated liveness
+            // checks and provider observation survived movement. Move back into the new lifetime.
+            move_native(&root, &target, "default")?;
+            cli(
+                &root,
+                zor,
+                &["codex-reconcile", "input-a", "--request", "after-return"],
+            )?;
+            until(Duration::from_secs(5), || {
+                let journal = read()?;
+                ensure!(
+                    journal["sessions"][&session]["target"] == target,
+                    "native target was rebound"
+                );
+                ensure!(
+                    journal["native_workers"]["native"]["producer"] == producer,
+                    "native worker was restarted"
+                );
+                ensure!(
+                    journal["native_workers"]["native"]["ready"] == true,
+                    "moved native worker stopped"
+                );
+                Ok(
+                    (journal["native_turns"]["input-a"]["controls"]["after-return"]["phase"]
+                        == "observed")
+                        .then_some(()),
+                )
+            })?;
+        }
         cli(&root, zor, &["stop", "native"])?;
         Ok(())
     })();
@@ -665,6 +732,43 @@ fn run_case(fux: &Path, zor: &Path, fixture: &Path, mode: &str) -> Result<()> {
     ensure!(errors.is_empty(), "{}", errors.join("; "));
     println!(
         "PASS native managed ownership, literal submission, correlated response, no replay, separate task outcome and child cleanup (fixture)"
+    );
+    Ok(())
+}
+
+/// Move the exact live native owner through the same manager primitive used by UI/CLI controls.
+fn move_native(root: &Root, target: &Value, destination: &str) -> Result<()> {
+    let manager = root.path().join("fux/manager.sock");
+    let location = rpc(
+        &manager,
+        json!({"request":"pane-location","instance":target["instance"],"pane":target["pane"]}),
+    )?;
+    let location = &location["result"]["result"]["value"]["location"];
+    ensure!(
+        location["pid"] == target["pid"],
+        "native process identity changed"
+    );
+    let destination = if destination == "moved" {
+        let created = rpc(&manager, json!({"request":"create","name":destination}))?;
+        ensure!(
+            created["reply"] == "attach",
+            "destination creation: {created}"
+        );
+        json!({"kind":"existing","name":destination,"stream":created["descriptor"]["stream"]})
+    } else {
+        let listing = completed(&root.control(), json!({"command":"list","id":1}))?;
+        json!({"kind":"existing","name":destination,"stream":listing["workspaces"][0]["event_cursor"]["stream"]})
+    };
+    let moved = rpc(
+        &manager,
+        json!({"request":"transfer","transfer":{
+            "instance":target["instance"],"source":location["tab"],"generation":location["layout_generation"],
+            "pane":target["pane"],"workspace":destination,"destination":{"kind":"new-tab","label":null},"side":"right"
+        }}),
+    )?;
+    ensure!(
+        moved["result"]["status"] == "completed",
+        "native movement rejected: {moved}"
     );
     Ok(())
 }

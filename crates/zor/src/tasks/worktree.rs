@@ -191,10 +191,7 @@ pub fn create(root: &Path, request: Create) -> Result<Value> {
                 .worktrees
                 .get_mut(&request.id)
                 .context("worktree missing")?;
-            record.parent_dev = dev;
-            record.parent_ino = ino;
-            record.phase = WorktreePhase::Prepared;
-            Ok(())
+            record.pin_parent((dev, ino))
         })?;
     }
     let record = store
@@ -214,8 +211,7 @@ pub fn create(root: &Path, request: Create) -> Result<Value> {
                 .worktrees
                 .get_mut(&request.id)
                 .context("worktree missing")?
-                .phase = WorktreePhase::Creating;
-            Ok(())
+                .begin_creation()
         })?;
         let result = git::run(
             &record.repo,
@@ -238,16 +234,9 @@ pub fn create(root: &Path, request: Create) -> Result<Value> {
     reconcile_store(root, &mut store, &request.id)
 }
 fn problem(store: &mut Store, id: &str, error: &anyhow::Error) -> Result<()> {
-    let message: String = error.to_string().chars().take(128).collect();
     store.transaction(|journal| {
         let record = journal.worktrees.get_mut(id).context("worktree missing")?;
-        if !matches!(
-            record.phase,
-            WorktreePhase::Ready | WorktreePhase::Removing | WorktreePhase::Removed
-        ) {
-            record.phase = WorktreePhase::Uncertain;
-        }
-        record.problem = Some(message);
+        record.record_problem(&error.to_string());
         Ok(())
     })
 }
@@ -331,10 +320,7 @@ pub fn remove(root: &Path, id: &str, force: bool) -> Result<Value> {
     }
     store.transaction(|journal| {
         let record = journal.worktrees.get_mut(id).context("worktree missing")?;
-        record.phase = WorktreePhase::Removing;
-        record.remove_force = Some(force);
-        record.problem = None;
-        Ok(())
+        record.begin_removal(force)
     })?;
     let mut args = vec![OsStr::new("worktree"), OsStr::new("remove")];
     if force {
@@ -379,9 +365,7 @@ fn reconcile_removal(root: &Path, store: &mut Store, record: &Worktree) -> Resul
                 .worktrees
                 .get_mut(&record.id)
                 .context("worktree missing")?;
-            tree.phase = WorktreePhase::Removed;
-            tree.problem = None;
-            Ok(())
+            tree.record_removed()
         })
     })();
     if let Err(error) = result {
@@ -446,11 +430,7 @@ fn reconcile_store(root: &Path, store: &mut Store, id: &str) -> Result<Value> {
         fs::File::open(&record.parent)?.sync_all()?;
         store.transaction(|journal| {
             let record = journal.worktrees.get_mut(id).context("worktree missing")?;
-            record.parent_dev = pinned.parent_dev;
-            record.parent_ino = pinned.parent_ino;
-            record.phase = WorktreePhase::Prepared;
-            record.problem = None;
-            Ok(())
+            record.pin_parent((pinned.parent_dev, pinned.parent_ino))
         })?;
         return inspect_store(store, id);
     }
@@ -529,10 +509,7 @@ fn reconcile_store(root: &Path, store: &mut Store, id: &str) -> Result<Value> {
         if record.phase != WorktreePhase::Ready || record.problem.is_some() {
             store.transaction(|journal| {
                 let record = journal.worktrees.get_mut(id).context("worktree missing")?;
-                record.phase = WorktreePhase::Ready;
-                record.checkout_identity = Some(checkout_identity);
-                record.problem = None;
-                Ok(())
+                record.record_ready(checkout_identity)
             })?;
         }
         Ok(())

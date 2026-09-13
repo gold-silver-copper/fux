@@ -1,0 +1,115 @@
+{
+  "fux": "/private/tmp/fux-codebase-work/release-baseline/release/fux",
+  "limits": "Recovery of a real pane after a controlled lost create reply. Elapsed includes CLI startup and 10 ms fixture proxy/subprocess polling. CPU and RSS here cover the fux server only, not zor CLI or descendants. Journal bytes are logical size, not physical writes; no fsync timing isolation.",
+  "samples": [
+    {
+      "committed_attachment": true,
+      "creates": 1,
+      "idempotent_recovery_ms": 38.189125,
+      "journal_bytes": 1648,
+      "recovery_ms": 56.778375,
+      "server_cpu_s": 0.00024637500000000007,
+      "server_rss_kib": 7744
+    },
+    {
+      "committed_attachment": true,
+      "creates": 2,
+      "idempotent_recovery_ms": 30.880917,
+      "journal_bytes": 3136,
+      "recovery_ms": 25.517459,
+      "server_cpu_s": 0.00027391666666666883,
+      "server_rss_kib": 7920
+    },
+    {
+      "committed_attachment": true,
+      "creates": 3,
+      "idempotent_recovery_ms": 41.830875,
+      "journal_bytes": 4624,
+      "recovery_ms": 44.972249999999995,
+      "server_cpu_s": 0.00024141666666666756,
+      "server_rss_kib": 8000
+    },
+    {
+      "committed_attachment": true,
+      "creates": 4,
+      "idempotent_recovery_ms": 26.664375,
+      "journal_bytes": 6112,
+      "recovery_ms": 52.539500000000004,
+      "server_cpu_s": 0.0003967916666666668,
+      "server_rss_kib": 8176
+    },
+    {
+      "committed_attachment": true,
+      "creates": 5,
+      "idempotent_recovery_ms": 26.86425,
+      "journal_bytes": 7600,
+      "recovery_ms": 48.986208000000005,
+      "server_cpu_s": 0.00023562499999999625,
+      "server_rss_kib": 8192
+    },
+    {
+      "committed_attachment": true,
+      "creates": 6,
+      "idempotent_recovery_ms": 28.694834,
+      "journal_bytes": 9088,
+      "recovery_ms": 52.515834,
+      "server_cpu_s": 0.0003570833333333412,
+      "server_rss_kib": 8256
+    },
+    {
+      "committed_attachment": true,
+      "creates": 7,
+      "idempotent_recovery_ms": 30.584625,
+      "journal_bytes": 10576,
+      "recovery_ms": 40.452625,
+      "server_cpu_s": 0.0003615416666666732,
+      "server_rss_kib": 8288
+    },
+    {
+      "committed_attachment": true,
+      "creates": 8,
+      "idempotent_recovery_ms": 27.800874999999998,
+      "journal_bytes": 12064,
+      "recovery_ms": 42.056958,
+      "server_cpu_s": 0.0003075833333333333,
+      "server_rss_kib": 8288
+    },
+    {
+      "committed_attachment": true,
+      "creates": 9,
+      "idempotent_recovery_ms": 28.130417,
+      "journal_bytes": 13554,
+      "recovery_ms": 48.024708,
+      "server_cpu_s": 0.00038354166666665357,
+      "server_rss_kib": 8368
+    },
+    {
+      "committed_attachment": true,
+      "creates": 10,
+      "idempotent_recovery_ms": 25.627041,
+      "journal_bytes": 15044,
+      "recovery_ms": 40.05325,
+      "server_cpu_s": 0.0003577916666666764,
+      "server_rss_kib": 8448
+    },
+    {
+      "committed_attachment": true,
+      "creates": 11,
+      "idempotent_recovery_ms": 28.929709000000003,
+      "journal_bytes": 16540,
+      "recovery_ms": 55.170334000000004,
+      "server_cpu_s": 0.0003670000000000062,
+      "server_rss_kib": 8480
+    },
+    {
+      "committed_attachment": true,
+      "creates": 12,
+      "idempotent_recovery_ms": 26.186125,
+      "journal_bytes": 18036,
+      "recovery_ms": 41.367625,
+      "server_cpu_s": 0.0002832916666666574,
+      "server_rss_kib": 8496
+    }
+  ],
+  "zor": "/private/tmp/fux-codebase-work/release-baseline/release/zor"
+}

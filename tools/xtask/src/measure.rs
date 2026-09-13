@@ -270,6 +270,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         visible(&mut peer, "BURSTDONE", Duration::from_secs(60))?;
         let burst = begin.elapsed().as_secs_f64();
         let rss_after = rss(server.0.id())?;
+        let latency_samples_s = latencies.clone();
         latencies.sort_by(f64::total_cmp);
         let median = if samples.is_multiple_of(2) {
             (latencies[samples / 2 - 1] + latencies[samples / 2]) / 2.
@@ -279,7 +280,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         let rank = (samples as f64 * 0.95) as usize;
         let p95 = latencies[if rank == 0 { samples - 1 } else { rank - 1 }];
         Ok(
-            json!({"binary":binary,"startup_s":round(startup,4),"idle_cpu_s_per_10s":round(cpu_after-cpu_before,3),"idle_wakeups_per_10s":wakeups,"rss_start_kib":rss_start,"rss_after_burst_kib":rss_after,"burst_20000_lines_s":round(burst,3),"latency_median_ms":round(median*1000.,2),"latency_p95_ms":round(p95*1000.,2)}),
+            json!({"binary":binary,"latency_samples_s":latency_samples_s,"startup_s":round(startup,4),"idle_cpu_s_per_10s":round(cpu_after-cpu_before,3),"idle_wakeups_per_10s":wakeups,"rss_start_kib":rss_start,"rss_after_burst_kib":rss_after,"burst_20000_lines_s":round(burst,3),"latency_median_ms":round(median*1000.,2),"latency_p95_ms":round(p95*1000.,2)}),
         )
     })();
     let cleanup = (|| -> Result<()> {

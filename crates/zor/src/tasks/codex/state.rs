@@ -1020,6 +1020,7 @@ mod tests {
                     launch: Some("task".into()),
                     created_ms: 1,
                     target: model::Target {
+                        origin: None,
                         runtime: path.clone(),
                         instance: "instance".into(),
                         workspace: "workspace".into(),

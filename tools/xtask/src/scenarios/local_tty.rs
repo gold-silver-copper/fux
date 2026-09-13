@@ -58,7 +58,14 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         while Instant::now() < deadline {
             read(&mut output)?;
             let text = String::from_utf8_lossy(&output);
-            if text.contains("\x1b[?1049h") && text.contains("?2026h") {
+            // Startup is ready only after the application commits its first full frame.
+            // A PTY read may stop anywhere inside the synchronized redraw.
+            if text.contains("\x1b[?1049h")
+                && text
+                    .rfind("\x1b[?2026h")
+                    .zip(text.rfind("\x1b[?2026l"))
+                    .is_some_and(|(start, end)| end > start)
+            {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -69,6 +76,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
             "cold startup did not enter alternate screen: {text}"
         );
         ensure!(!text.contains("Passphrase"), "unexpected credential prompt");
+        crate::support::visual::record(binary, 24, 80, &output, "cold-start")?;
         ensure!(
             nix::unistd::write(&pty.master, b"\x01d")? == 2,
             "detach input short write"
@@ -102,6 +110,8 @@ pub(super) fn run(binary: &Path) -> Result<()> {
             Ok(())
         }
         no_keys(root.path())?;
+        read(&mut output)?;
+        crate::support::visual::record(binary, 24, 80, &output, "cold-start-detached")?;
         Ok(())
     })();
     let client_cleanup = (|| -> Result<()> {

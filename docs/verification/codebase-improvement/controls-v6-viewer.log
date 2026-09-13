@@ -1,0 +1,2 @@
+PASS one-Escape modal dismissal, normal input and no unintended mutations
+PASS viewer scenarios: launch, popup, tabs, splits, resize, close, copy, viewers, tiny screens, workspaces, detach

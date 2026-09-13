@@ -1,0 +1,12 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.07s
+     Running unittests src/lib.rs (/tmp/fux-codebase-work/build/debug/deps/zor-0744bc31aa645b1a)
+
+running 4 tests
+test fux::tests::retention_ceilings_match_the_limits_fux_info_publishes ... ok
+test fux::manager::tests::release_requires_exact_operation_id_and_payload ... ok
+test fux::manager::tests::final_evidence_requires_correlated_complete_record_and_classifies_failures ... ok
+test fux::tests::caller_deadline_bounds_a_stalled_preface ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 120 filtered out; finished in 0.08s
+

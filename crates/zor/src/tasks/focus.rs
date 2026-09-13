@@ -14,9 +14,10 @@ pub fn target(target: &Target) -> Result<Value> {
     );
     let deadline = Instant::now() + Duration::from_secs(3);
     submit::verify_target(target, deadline)?;
-    crate::fux::completed_until(
-        &target.runtime.join(format!("{}.sock", target.workspace)),
-        json!({"command":"focus","id":1,"instance":target.instance,"target":{"pane":target.pane}}),
+    submit::request(
+        target,
+        "focus",
+        json!({"target":{"pane":target.pane}}),
         deadline,
     )
 }

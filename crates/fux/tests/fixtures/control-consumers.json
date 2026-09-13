@@ -1,14 +1,18 @@
 {
   "_comment": "Every control-protocol and manager-protocol surface item with its consumers. Consumers: \"viewer\" (crates/fux/src/client), \"cli\" (crates/fux/src/main.rs subcommand or verbatim reply printing), \"zor:<path under crates/zor/src>\", or \"none\". A cli-only consumer is acceptable for a primitive, never for a workflow. Reviewed by tests/protocol_consumers.rs.",
   "request": {
+    "pane-input": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Sets generic per-pane right-click ownership without terminal input or process changes."},
+    "rename-pane": {"consumers": ["viewer", "cli"], "kind": "workflow", "why": "Set or clear a manual pane label independently of the application title, with a captured server and pane identity."},
+    "fix-workspace": {"consumers": ["cli"], "kind": "primitive", "why": "Explicit generic routing constraint available through ctl for consumers that cannot follow a live pane; adoption now resolves stable process identity."},
+    "layout": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Inspects and atomically edits the server-owned split tree and shared zoom with an observed layout generation."},
     "split": {"consumers": ["viewer", "cli", "zor:run.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Creates a pane and starts its process; only the PTY owner can."},
     "focus": {"consumers": ["viewer", "cli", "zor:tasks/focus.rs"], "kind": "primitive", "why": "Moves the retained focus that the viewer renders."},
     "kill": {"consumers": ["viewer", "cli", "zor:tasks/stop.rs"], "kind": "primitive", "why": "Terminates a pane's process; only the process owner can."},
     "resize": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Changes the retained layout the server owns."},
     "send-keys": {"consumers": ["cli"], "kind": "primitive", "why": "Unsequenced write to the PTY, the CLI's debugging input; zor delivers input through the receipted input-* requests."},
-    "input-reserve": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Reserves a sequenced input operation with a receipt."},
-    "input-submit": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Writes the reserved operation's bytes to the PTY."},
-    "input-status": {"consumers": ["zor:tasks/submit.rs", "zor:tasks/binding.rs", "zor:tasks/integration.rs"], "kind": "primitive", "why": "Reads the retained receipt of an input operation."},
+    "input-reserve": {"consumers": ["zor:fux/input.rs"], "kind": "primitive", "why": "Reserves a sequenced input operation with a receipt."},
+    "input-submit": {"consumers": ["zor:fux/input.rs"], "kind": "primitive", "why": "Writes the reserved operation's bytes to the PTY."},
+    "input-status": {"consumers": ["cli"], "kind": "primitive", "why": "The raw fux ctl debugging interface reads workspace-local receipts; zor uses the typed manager input-status operation so status survives pane moves and workspace retirement."},
     "capture": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/wait.rs", "zor:tasks/heartbeat.rs"], "kind": "primitive", "why": "Coherent snapshot of the retained grid."},
     "list": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Enumerates the server's workspaces, tabs and panes with their identity and counters."},
     "info": {"consumers": ["cli", "zor:fux.rs"], "kind": "primitive", "why": "Server identity and limits over the control socket; the CLI prints it, zor pins its retention policy to the published ceilings of the info reply (fixture-checked) and reads identity from the manager descriptor."},
@@ -18,7 +22,10 @@
     "subscribe": {"consumers": ["cli", "zor:watch/events.rs"], "kind": "primitive", "why": "Live sequenced event stream after a cursor."}
   },
   "command-result": {
-    "final": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Carries the retained final record inside the manager's final reply."},
+    "pane-geometry": {"consumers": ["cli"], "kind": "primitive", "why": "layout inspect reads coherent pane geometry, outer edges and directional neighbors with revision and zoom visibility; no mutation or task policy."},
+    "pane-location": {"consumers": ["cli", "zor:fux/manager.rs"], "kind": "primitive", "why": "locate-pane reads current workspace routing and immutable launch attribution for an exact server/pane identity without mutation."},
+    "layout": {"consumers": ["cli"], "kind": "primitive", "why": "Exports existing pane geometry, shared zoom, manual labels, server identity and revision for guarded edits and file round trips."},
+    "final": {"consumers": ["zor:fux/manager.rs"], "kind": "primitive", "why": "Carries the retained final record inside the manager's final reply."},
     "events": {"consumers": ["zor:tasks/launch.rs"], "kind": "primitive", "why": "Replayed events and the cursor to continue from."},
     "input": {"consumers": ["zor:tasks/submit.rs"], "kind": "primitive", "why": "Receipt of an input-* request."},
     "unit": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Completion without a value (focus, resize, kill, send-keys, tab actions); the viewer clears its outstanding request on it."},
@@ -39,6 +46,9 @@
     "tab.closed": {"consumers": ["cli", "zor:watch/events.rs"], "kind": "primitive", "why": "Tab lifecycle on the event stream."}
   },
   "pane-summary": {
+    "right_click": {"consumers": ["cli"], "kind": "primitive", "why": "Reports the stored per-pane mouse ownership policy; auto is omitted by default."},
+    "label": {"consumers": ["cli"], "kind": "primitive", "why": "Manual pane name in the listing, distinct from the application title."},
+    "fixed_workspace": {"consumers": ["cli"], "kind": "primitive", "why": "Reports whether moving this pane across workspace routes is prohibited."},
     "id": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Pane identity."},
     "command": {"consumers": ["cli", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Launch correlation matches the pane by its argv."},
     "pid": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Process identity zor probes and pins targets to."},
@@ -61,6 +71,7 @@
     "panes": {"consumers": ["cli", "zor:observe.rs", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "The panes zor enumerates."}
   },
   "workspace-summary": {
+    "label": {"consumers": ["cli"], "kind": "primitive", "why": "Optional manual display label printed by list; routing name and event stream remain unchanged."},
     "event_cursor": {"consumers": ["cli", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs", "zor:tasks/resume.rs"], "kind": "primitive", "why": "Stream and sequence zor subscribes and replays from."},
     "name": {"consumers": ["cli", "zor:watch.rs", "zor:tasks/mod.rs", "zor:tasks/submit.rs", "zor:tasks/launch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Workspace identity."},
     "focused": {"consumers": ["cli"], "kind": "primitive", "why": "Retained workspace focus, printed for debugging."},
@@ -133,18 +144,32 @@
     "capture": {"consumers": ["zor:run.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "The final screen."}
   },
   "manager-request": {
+    "release-pane-pin": {"consumers": ["zor:fux/manager.rs"], "kind": "primitive", "why": "Releases only a temporary spawn route pin after an exact server/pane/PID has been recorded for recovery or owned cleanup; retries are idempotent and explicit pins remain protected."},
+    "input-status": {"consumers": ["zor:fux/manager.rs"], "kind": "primitive", "why": "Reconciles an exact server/pane/operation receipt after route changes or source workspace retirement without authorizing submission."},
+    "pane-location": {"consumers": ["cli", "zor:fux/manager.rs"], "kind": "primitive", "why": "locate-pane reads current workspace routing and immutable launch attribution for an exact server/pane identity without mutation."},
+    "apply-layout": {"consumers": ["cli"], "kind": "primitive", "why": "Atomically restores existing container order, default selections and layouts against an observed complete archive without launching processes."},
+    "export-layout": {"consumers": ["cli"], "kind": "primitive", "why": "Reads the existing server-owned layout trees, container order and default selections coherently without starting processes."},
+    "catalog": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Reads an ordered snapshot of workspace names, lifetime streams and server identity without creating workspaces."},
+    "transfer": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Moves an existing live pane between workspace routes with instance, lifetime and layout revision guards; requires manager authority."},
+    "reorder": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Orders the server-owned workspace catalog through the global manager socket without changing workspace or pane identities."},
     "create": {"consumers": ["zor:run.rs"], "kind": "primitive", "why": "Create-only workspace for a run that must not borrow an existing one."},
-    "final": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Retained exit evidence that outlives the workspace socket."},
+    "final": {"consumers": ["zor:fux/manager.rs"], "kind": "primitive", "why": "Retained exit evidence that outlives the workspace socket."},
     "resolve": {"consumers": ["cli"], "kind": "primitive", "why": "Attach-or-create for fux workspace new and fux attach."},
     "list": {"consumers": ["cli", "zor:watch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Workspace names on this server."},
     "kill": {"consumers": ["cli"], "kind": "primitive", "why": "fux workspace kill."},
-    "info": {"consumers": ["cli"], "kind": "primitive", "why": "Server identity for fux workspace info and startup confirmation."}
+    "info": {"consumers": ["cli", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Server identity for startup confirmation and replacement detection independent of a retired workspace route."}
   },
   "manager-reply": {
-    "final": {"consumers": ["zor:run.rs", "zor:tasks/wait.rs", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Reply of the final request."},
+    "release-pane-pin": {"consumers": ["zor:fux/manager.rs"], "kind": "primitive", "why": "Releases only a temporary spawn route pin after an exact server/pane/PID has been recorded for recovery or owned cleanup; retries are idempotent and explicit pins remain protected."},
+    "input-status": {"consumers": ["zor:fux/manager.rs"], "kind": "primitive", "why": "Reconciles an exact server/pane/operation receipt after route changes or source workspace retirement without authorizing submission."},
+    "pane-location": {"consumers": ["cli", "zor:fux/manager.rs"], "kind": "primitive", "why": "locate-pane reads current workspace routing and immutable launch attribution for an exact server/pane identity without mutation."},
+    "layout-archive": {"consumers": ["cli"], "kind": "primitive", "why": "Versioned bounded export of existing container identities, order, selection, trees, zoom and pane labels."},
+    "catalog": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Reads an ordered snapshot of workspace names, lifetime streams and server identity without creating workspaces."},
+    "layout": {"consumers": ["viewer", "cli"], "kind": "primitive", "why": "Returns the destination layout or the reason a manager-authorized transfer was rejected."},
+    "final": {"consumers": ["zor:fux/manager.rs"], "kind": "primitive", "why": "Reply of the final request."},
     "attach": {"consumers": ["cli", "zor:run.rs"], "kind": "primitive", "why": "Descriptor of a resolved or created workspace."},
     "names": {"consumers": ["cli", "zor:watch.rs", "zor:tasks/worktree_use.rs"], "kind": "primitive", "why": "Reply of list."},
-    "info": {"consumers": ["cli"], "kind": "primitive", "why": "Reply of info."},
+    "info": {"consumers": ["cli", "zor:tasks/launch.rs"], "kind": "primitive", "why": "Reply of manager info, including replacement-instance detection."},
     "failed": {"consumers": ["cli", "zor:run.rs"], "kind": "primitive", "why": "Refusal with its message."}
   }
 }

@@ -1,0 +1,250 @@
+{
+  "diagnostics": [
+    {
+      "kind": "zor",
+      "tail": "{\"directory_synced\":true,\"event\":{\"id\":\"worker\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":null,\"phase\":\"prepared\",\"pid\":null,\"problem\":false,\"stop_requested\":false},\"generation\":1,\"pid\":65310}\n{\"directory_synced\":true,\"event\":{\"id\":\"worker\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":null,\"phase\":\"submitting\",\"pid\":null,\"problem\":false,\"stop_requested\":false},\"generation\":2,\"pid\":65310}\n{\"directory_synced\":true,\"event\":{\"id\":\"worker\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":2,\"phase\":\"submitting\",\"pid\":null,\"problem\":false,\"stop_requested\":false},\"generation\":3,\"pid\":65310}\n{\"directory_synced\":true,\"event\":{\"id\":\"worker\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":2,\"phase\":\"attached\",\"pid\":65311,\"problem\":false,\"stop_requested\":false},\"generation\":4,\"pid\":65310}\n{\"directory_synced\":true,\"event\":{\"id\":\"ff07d09d5cbdd4afd8149014908f89a5\",\"kind\":\"attempt\",\"session\":\"dc8bc9bfc0837fae9d2c5640a1ea3319\",\"state\":\"active\"},\"generation\":4,\"pid\":65310}\n{\"directory_synced\":null,\"event\":{\"id\":\"worker\",\"kind\":\"recovery\",\"phase\":\"attached\",\"succeeded\":true},\"generation\":4,\"pid\":65310}\n{\"directory_synced\":true,\"event\":{\"bytes_written\":null,\"id\":\"completed\",\"kind\":\"delivery\",\"operation\":null,\"phase\":\"prepared\",\"released\":false,\"wait\":\"pending\"},\"generation\":6,\"pid\":65316}\n{\"directory_synced\":true,\"event\":{\"bytes_written\":0,\"id\":\"completed\",\"kind\":\"delivery\",\"operation\":1,\"phase\":\"reserved\",\"released\":false,\"wait\":\"pending\"},\"generation\":7,\"pid\":65317}\n{\"directory_synced\":true,\"event\":{\"bytes_written\":0,\"id\":\"completed\",\"kind\":\"delivery\",\"operation\":1,\"phase\":\"submitting\",\"released\":false,\"wait\":\"pending\"},\"generation\":10,\"pid\":65317}\n{\"directory_synced\":true,\"event\":{\"bytes_written\":0,\"id\":\"completed\",\"kind\":\"delivery\",\"operation\":1,\"phase\":\"queued\",\"released\":false,\"wait\":\"pending\"},\"generation\":11,\"pid\":65317}\n{\"directory_synced\":true,\"event\":{\"bytes_written\":8,\"id\":\"completed\",\"kind\":\"delivery\",\"operation\":1,\"phase\":\"delivered\",\"released\":false,\"wait\":\"pending\"},\"generation\":12,\"pid\":65320}\n{\"directory_synced\":true,\"event\":{\"bytes_written\":8,\"id\":\"completed\",\"kind\":\"delivery\",\"operation\":1,\"phase\":\"delivered\",\"released\":false,\"wait\":\"response-observed\"},\"generation\":14,\"pid\":65324}\n{\"directory_synced\":true,\"event\":{\"bytes_written\":null,\"id\":\"unsent\",\"kind\":\"delivery\",\"operation\":null,\"phase\":\"prepared\",\"released\":false,\"wait\":\"pending\"},\"generation\":15,\"pid\":65325}\n{\"directory_synced\":true,\"event\":{\"id\":\"worker\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":2,\"phase\":\"closed\",\"pid\":65311,\"problem\":false,\"stop_requested\":false},\"generation\":16,\"pid\":65345}\n{\"directory_synced\":true,\"event\":{\"id\":\"ff07d09d5cbdd4afd8149014908f89a5\",\"kind\":\"attempt\",\"session\":\"dc8bc9bfc0837fae9d2c5640a1ea3319\",\"state\":\"finished\"},\"generation\":16,\"pid\":65345}\n{\"directory_synced\":null,\"event\":{\"id\":\"worker\",\"kind\":\"recovery\",\"phase\":\"closed\",\"succeeded\":true},\"generation\":16,\"pid\":65345}\n{\"directory_synced\":true,\"event\":{\"id\":\"resume-one\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":null,\"phase\":\"prepared\",\"pid\":null,\"problem\":false,\"stop_requested\":false},\"generation\":17,\"pid\":65347}\n{\"directory_synced\":true,\"event\":{\"id\":\"resume-one\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":null,\"phase\":\"submitting\",\"pid\":null,\"problem\":false,\"stop_requested\":false},\"generation\":18,\"pid\":65347}\n{\"directory_synced\":true,\"event\":{\"id\":\"resume-one\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":3,\"phase\":\"submitting\",\"pid\":null,\"problem\":false,\"stop_requested\":false},\"generation\":19,\"pid\":65347}\n{\"directory_synced\":true,\"event\":{\"id\":\"resume-one\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":2,\"phase\":\"closed\",\"pid\":65311,\"problem\":false,\"stop_requested\":false},\"generation\":20,\"pid\":65347}\n{\"directory_synced\":true,\"event\":{\"id\":\"worker\",\"instance\":\"20453c9eacd38054077be800c830b431\",\"kind\":\"launch\",\"pane\":3,\"phase\":\"attached\",\"pid\":65348,\"problem\":false,\"stop_requested\":false},\"generation\":20,\"pid\":65347}\n{\"directory_synced\":true,\"event\":{\"id\":\"74b404807bc7d92de48d3b92a5e3dbe0\",\"kind\":\"attempt\",\"session\":\"5cd47b766a5e6c72b09bffa1696b36af\",\"state\":\"active\"},\"generation\":20,\"pid\":65347}\n{\"directory_synced\":null,\"event\":{\"id\":\"resume-one\",\"kind\":\"recovery\",\"phase\":\"closed\",\"succeeded\":false},\"generation\":20,\"pid\":65347}\n",
+      "truncated": false
+    }
+  ],
+  "dropped_diagnostics": 0,
+  "dropped_rpc": 0,
+  "dropped_terminals": 0,
+  "error": "task [\"resume\", \"worker\", \"--operation\", \"resume-one\", \"--instance\", \"20453c9eacd38054077be800c830b431\"]:  zor: final launch pane mismatch\n",
+  "identity": {
+    "arguments": [
+      "zor-resume",
+      "/tmp/fux-codebase-work/build/debug/fux",
+      "/tmp/fux-codebase-work/build/debug/zor"
+    ],
+    "binaries": [
+      {
+        "identity": {
+          "sha256": "27b22860faca164c6156d0d81ef71c703cffd8dbba9c7356700667108f496c39"
+        },
+        "path": "/tmp/fux-codebase-work/build/debug/fux"
+      },
+      {
+        "identity": {
+          "sha256": "830bccb3344f6f56c7e6e2385482fe7b5cfca3582d116a95fdf41209644c9e14"
+        },
+        "path": "/tmp/fux-codebase-work/build/debug/zor"
+      }
+    ],
+    "scenario": "zor-resume",
+    "seed": null,
+    "source_observed_before_run": {
+      "files": 1054,
+      "revision": "1792223ea4a24905501823203b585e50906f0d38",
+      "scope": "tracked and nonignored untracked regular files, excluding docs/verification",
+      "worktree_sha256": "06c16fb327aacff0e4ca4eb385a6680043eb14f42b65f0f46ad8a88a9e05e80b"
+    }
+  },
+  "note": "Final fixture screen, not a visual approval. Input records contain lengths/hashes only.",
+  "rpc": [
+    {
+      "command": "list",
+      "elapsed_us": 11102,
+      "id": 1,
+      "pane": null,
+      "transport_completed": true
+    },
+    {
+      "command": "kill",
+      "elapsed_us": 4275,
+      "id": 1,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 831,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 2986,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1242,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 956,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1043,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1454,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1613,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1229,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 2717,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 916,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1075,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1062,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1145,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 607,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1016,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1066,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1066,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1075,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1028,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1050,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1105,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1146,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 554,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1059,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1186,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1062,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    },
+    {
+      "command": "final",
+      "elapsed_us": 1015,
+      "id": null,
+      "pane": 2,
+      "transport_completed": true
+    }
+  ],
+  "terminals": [],
+  "version": 1
+}

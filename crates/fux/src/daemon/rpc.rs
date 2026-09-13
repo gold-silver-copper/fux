@@ -11,6 +11,33 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "request", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ManagerRequest {
+    ReleasePanePin {
+        instance: String,
+        pane: crate::ids::PaneId,
+        pid: u32,
+    },
+    InputStatus {
+        instance: String,
+        pane: crate::ids::PaneId,
+        operation: u64,
+    },
+    PaneLocation {
+        instance: String,
+        pane: crate::ids::PaneId,
+    },
+    ApplyLayout {
+        expected: crate::proto::control::LayoutArchive,
+        archive: crate::proto::control::LayoutArchive,
+    },
+    ExportLayout,
+    Catalog,
+    Transfer {
+        transfer: crate::proto::control::WorkspaceTransfer,
+    },
+    Reorder {
+        name: String,
+        before: Option<String>,
+    },
     Create {
         name: String,
     },
@@ -33,6 +60,24 @@ pub enum ManagerRequest {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "reply", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ManagerReply {
+    ReleasePanePin {
+        result: crate::proto::control::Reply,
+    },
+    InputStatus {
+        result: crate::proto::control::Reply,
+    },
+    PaneLocation {
+        result: crate::proto::control::Reply,
+    },
+    LayoutArchive {
+        archive: crate::proto::control::LayoutArchive,
+    },
+    Catalog {
+        catalog: crate::proto::control::WorkspaceCatalog,
+    },
+    Layout {
+        result: crate::proto::control::Reply,
+    },
     Final {
         result: crate::proto::control::Reply,
     },
@@ -96,6 +141,30 @@ pub fn read_json_frame(stream: &mut UnixStream, deadline: Duration) -> Result<Ve
         })
 }
 
+pub fn workspace_entries(path: &Path) -> Result<Vec<crate::proto::control::WorkspaceRoute>> {
+    match manager_request(path, &ManagerRequest::Catalog)? {
+        ManagerReply::Catalog { catalog } => {
+            anyhow::ensure!(
+                catalog.entries.len() <= crate::config::MAX_WORKSPACES,
+                "too many workspaces in manager reply"
+            );
+            for entry in &catalog.entries {
+                crate::ids::validate_workspace_name(&entry.name)?;
+                anyhow::ensure!(
+                    entry.stream != 0
+                        && entry.label.as_ref().is_none_or(
+                            |label| label.len() <= 128 && !label.chars().any(char::is_control)
+                        ),
+                    "invalid workspace presentation"
+                );
+            }
+            Ok(catalog.entries)
+        }
+        ManagerReply::Failed { message } => bail!("{message}"),
+        _ => bail!("unexpected workspace catalog reply"),
+    }
+}
+
 pub fn workspace_names(path: &Path) -> Result<Vec<String>> {
     match manager_request(path, &ManagerRequest::List)? {
         ManagerReply::Names { names } => {
@@ -109,7 +178,15 @@ pub fn workspace_names(path: &Path) -> Result<Vec<String>> {
             Ok(names)
         }
         ManagerReply::Failed { message } => bail!("{message}"),
-        ManagerReply::Attach { .. } | ManagerReply::Info { .. } | ManagerReply::Final { .. } => {
+        ManagerReply::Attach { .. }
+        | ManagerReply::Info { .. }
+        | ManagerReply::Final { .. }
+        | ManagerReply::ReleasePanePin { .. }
+        | ManagerReply::InputStatus { .. }
+        | ManagerReply::PaneLocation { .. }
+        | ManagerReply::Catalog { .. }
+        | ManagerReply::LayoutArchive { .. }
+        | ManagerReply::Layout { .. } => {
             bail!("manager did not return a workspace list")
         }
     }

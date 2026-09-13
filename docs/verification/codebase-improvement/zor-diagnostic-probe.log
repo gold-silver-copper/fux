@@ -1,0 +1,2 @@
+PASS closed launch evidence, gaps, identity rejection, managed launch, stable-ID replay, lost creation reply, killed creator, and no blind replacement
+fux-xtask: failure artifacts: /tmp/fux-codebase-work/zor-diagnostic-probe/fux-harness-failure-Min8gJ: injected failure after scenario teardown

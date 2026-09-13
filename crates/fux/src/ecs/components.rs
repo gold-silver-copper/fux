@@ -16,9 +16,52 @@ use super::messages::{Requester, ViewerRequest};
 pub struct Selection {
     pub tab: Option<Entity>,
     pub focus: BTreeMap<Entity, Entity>,
+    pub history: FocusHistory,
+}
+
+/// At most two generational entity handles. History never authorizes substituting a pane.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FocusHistory {
+    pub current: Option<Entity>,
+    pub previous: Option<Entity>,
+}
+
+impl FocusHistory {
+    pub fn observe(&mut self, focused: Option<Entity>) {
+        if focused != self.current {
+            if self.current.is_some() {
+                self.previous = self.current;
+            }
+            self.current = focused;
+        }
+    }
 }
 
 impl Selection {
+    /// Initial selection is inherited, but another viewer's focus history is not.
+    #[must_use]
+    pub fn for_viewer(&self) -> Self {
+        let mut selection = self.clone();
+        selection.history = FocusHistory {
+            current: self.history.current.or(self.focused()),
+            previous: None,
+        };
+        selection
+    }
+    #[must_use]
+    pub fn focused_in(&self, tab: Entity, component: &Tab) -> Option<Entity> {
+        component
+            .zoomed
+            .filter(|pane| component.layout.contains(*pane))
+            .or_else(|| {
+                self.focus
+                    .get(&tab)
+                    .copied()
+                    .filter(|pane| component.layout.contains(*pane))
+            })
+            .or_else(|| component.layout.leaves().first().copied())
+    }
+
     #[must_use]
     pub fn focused(&self) -> Option<Entity> {
         self.focus.get(&self.tab?).copied()
@@ -55,6 +98,8 @@ impl Selection {
 #[derive(Component, Debug)]
 pub struct Workspace {
     pub name: String,
+    /// User-facing name, independent of the immutable routing identity.
+    pub label: Option<String>,
     /// Default selection for new attachments and control-socket clients.
     pub selection: Selection,
     /// Step counter of the most recent attachment; the deterministic no-name attach rule.
@@ -77,6 +122,27 @@ pub struct TabOf(pub Entity);
 #[derive(Component, Debug, Default)]
 #[relationship_target(relationship = TabOf)]
 pub struct Tabs(Vec<Entity>);
+
+impl Tabs {
+    /// Reorders existing relationship members without adding or removing membership.
+    pub fn place_before(&mut self, tab: Entity, before: Option<Entity>) -> bool {
+        let Some(index) = self.0.iter().position(|entry| *entry == tab) else {
+            return false;
+        };
+        if before == Some(tab) {
+            return true;
+        }
+        if before.is_some_and(|before| !self.0.contains(&before)) {
+            return false;
+        }
+        self.0.remove(index);
+        let position = before
+            .and_then(|before| self.0.iter().position(|entry| *entry == before))
+            .unwrap_or(self.0.len());
+        self.0.insert(position, tab);
+        true
+    }
+}
 
 impl std::ops::Deref for Tabs {
     type Target = [Entity];
@@ -103,6 +169,10 @@ pub struct Tab {
     /// The area the geometry was computed for.
     pub area: Rect,
     pub layout_changed: bool,
+    /// Monotonic layout/area revision for optimistic edits.
+    pub layout_generation: u64,
+    /// Shared tab zoom; the underlying tree and hidden PTYs remain intact.
+    pub zoomed: Option<Entity>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,9 +217,27 @@ impl PaneState {
     }
 }
 
+/// Automatic spawn pins can be released after a consumer records exact process identity.
+/// An explicit fixed route is a separate intent and cannot be released by that operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspacePin {
+    None,
+    Creation,
+    Explicit,
+}
+impl WorkspacePin {
+    pub fn is_fixed(self) -> bool {
+        self != Self::None
+    }
+}
+
 /// A pane is one terminal: its emulator/history, process lifecycle and geometry.
 #[derive(Component)]
 pub struct Pane {
+    /// Current ownership, retained even after its tab closes. Launch attribution stays below.
+    pub routing_workspace: Entity,
+    /// A consumer requested stable workspace routing for this pane's lifetime.
+    pub workspace_pin: WorkspacePin,
     pub id: PaneId,
     /// Immutable attribution survives tab/workspace retirement and name reuse.
     pub workspace_name: String,
@@ -170,6 +258,8 @@ pub struct Pane {
     /// advance this counter or produce a pane.output event.
     pub last_event_seq: u64,
     pub published_title: String,
+    pub right_click: crate::view::RightClickPolicy,
+    pub label: Option<String>,
     /// Nonempty controller/viewer writes; terminal query replies are excluded.
     pub input_sequence: u64,
     pub last_output_event_ms: Option<u64>,
@@ -211,6 +301,8 @@ pub enum CreationKind {
         tab: Entity,
         target: Entity,
         axis: crate::layout::Axis,
+        ratio: std::num::NonZeroU16,
+        focus: bool,
     },
     /// The first pane of a new tab; the tab entity already exists but is not in the workspace.
     NewTab { tab: Entity },
@@ -219,8 +311,10 @@ pub enum CreationKind {
 }
 
 /// A pane as last sent to a viewer: its size and the output sequence the viewer holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sent {
+    pub right_click: crate::view::RightClickPolicy,
+    pub label: Option<String>,
     pub rows: u16,
     pub columns: u16,
     pub seq: u64,
@@ -243,6 +337,9 @@ pub struct Viewer {
     /// What this viewer holds of each visible pane: its size and the output sequence of its last
     /// update, so the next frame carries only the rows changed since.
     pub sent: BTreeMap<PaneId, Sent>,
+    /// Last published tab catalog; ordinary terminal output need not repeat it.
+    pub sent_tabs: Vec<crate::view::TabEntry>,
+    pub sent_workspace_label: Option<String>,
     /// Metadata or selection changed: a frame goes out this step.
     pub dirty: bool,
     /// Output changed under this viewer since its last frame; paced by the frame interval.

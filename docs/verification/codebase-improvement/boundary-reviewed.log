@@ -1,0 +1,8 @@
+
+running 3 tests
+test agent_osc_reports_have_no_semantic_effect_on_the_multiplexer ... ok
+test boundary_detects_semantics_and_generic_disguised_model_additions ... ok
+test multiplexer_declarations_match_the_reviewed_boundary ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+

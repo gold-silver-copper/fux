@@ -1,0 +1,22 @@
+   Compiling fux v0.10.0 (/Users/kisaczka/Desktop/code/fux/crates/fux)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.95s
+     Running unittests src/lib.rs (target/debug/deps/fux-ac01031fe3ff3cd2)
+
+running 1 test
+test client::copy::tests::a_reply_from_another_screen_buffer_cannot_replace_the_session ... FAILED
+
+failures:
+
+---- client::copy::tests::a_reply_from_another_screen_buffer_cannot_replace_the_session stdout ----
+
+thread 'client::copy::tests::a_reply_from_another_screen_buffer_cannot_replace_the_session' (14789287) panicked at crates/fux/src/client/copy.rs:415:13:
+mismatched buffer reply must dismiss the old interaction
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    client::copy::tests::a_reply_from_another_screen_buffer_cannot_replace_the_session
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 182 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p fux --lib`

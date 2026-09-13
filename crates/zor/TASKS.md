@@ -41,17 +41,36 @@ All commands emit JSON and use the same bounded journal. They can run as CLI tra
 continue to work without the fux or zor service. Busy storage returns an error instead of waiting
 indefinitely; retry the same operation ID.
 
+Fux layouts and cross-workspace moves preserve adopted task identity. Adoption records immutable
+launch attribution through manager `pane-location` and does not pin the workspace. Live checks,
+input, capture and focus resolve the current route for the same server/pane/root-PID; discovery
+never substitutes a replacement process. Native worker liveness checks use a single coherent
+manager lookup, avoiding a second workspace read that could race a move. EOF routes remain
+available for owned cleanup but are rejected by live-input checks. A concurrent move can reject a request, and failed input
+is reconciled by operation ID rather than blindly replayed. The recorded adoption route stays
+unchanged for request identity; it is not assumed to remain the pane's current location.
+
+Managed launches request `fixed_workspace: true` at creation while unresolved recovery relies on
+the original workspace. Once a journal transaction commits the exact session/pane/PID, zor asks
+the manager to release that creation pin. Attached launches can move and continue input, live
+checks, reconciliation and stop on their current route. Release failure does not erase the durable
+attachment or create a replacement: retry `launch-reconcile` for the same launch ID. A lost reply
+is safe to retry, and explicit `fix-workspace` pins are never cleared by this release operation.
+`zor run` releases its creation pin once its pane identity is known. Its final observer uses
+manager evidence, and timeout cleanup follows that exact pane across workspace moves without
+closing its destination workspace.
+
 ## Identity and ownership
 
-A session identifies a target by canonical fux runtime path, server incarnation, workspace,
-workspace stream, pane and root PID. Tasks describe logical work; an attempt associates one task
+A session records a canonical runtime path, server incarnation, initial workspace/stream, pane
+and root PID. New records also carry immutable launch workspace/stream as `origin`. Tasks describe logical work; an attempt associates one task
 with one session. Tasks adopting the same target and agent label reuse the session, while keeping
 separate task and attempt IDs. `ownership: adopted` grants no right to terminate the pane, remove
 its directory or clean a worktree. Adoption never reuses a managed session.
 
 The runtime path selects a socket route. Prompt writer exclusion, group admission and
-closed-target worktree checks compare the pinned incarnation/workspace/stream/pane/PID
-independently of that route, so aliases cannot bypass coordination.
+closed-target worktree checks compare the incarnation/pane/PID independently of workspace,
+stream or runtime route, so aliases cannot bypass coordination.
 
 ## Managed launch
 
@@ -183,7 +202,7 @@ idempotency guarantees apply only while the corresponding records remain retaine
 `reserve OP` records a fux reservation without sending input. `submit OP` reserves when necessary,
 syncs that receipt and then a submitting phase before calling fux input-submit. Both operate on
 an already prepared immutable prompt. Each invocation holds the shared journal lock, uses a
-six-second total RPC budget and revalidates server/workspace/pane/root-PID identity before input.
+six-second total RPC budget and resolves current routing and revalidates server/pane/root-PID identity before input.
 Submission rechecks the wall-clock deadline after durable intent and caps its RPC budget to the
 remaining lifetime. This bounds the caller; input already accepted by fux may finish afterward.
 Native storage operations do not have a hard time bound. A backward clock reading refuses input.
@@ -293,11 +312,15 @@ binding publication, so `wait` still verifies the current input boundary indepen
 input, sleeps awaiting a response, spawns an observer, or treats terminal text as completion.
 Callers may poll a pending result. The journal admits one active transaction; concurrent callers
 receive a busy error and retry, and no retained waiter queue is allocated. Receipt reconciliation
+reads fux's manager `input-status` with the recorded server instance, pane and operation IDs,
+so it can retain delivery evidence after the original workspace socket disappears. This is a
+read-only lookup; it does not replay input or change the recorded task target. Live target and
+semantic-response checks resolve current routing and retain exact process identity. Receipt reconciliation
 has a six-second RPC budget followed by at most four seconds for live/final evidence. Native
 filesystem operations are not hard-time-bounded. The service exposes the single check; a shared blocking waiter API remains unfinished.
 
 A semantic report satisfies this check only after PTY delivery is known and a current capture has
-the receipt's input sequence, with matching server/workspace/pane/root-PID identity. Ordinary human
+the receipt's input sequence, with matching server/pane/root-PID identity. Ordinary human
 input after submission weakens correlation and produces `uncertain`, even if a report exists.
 A fast response needs no intermediate working state. Old idle/blocked text, redraws, silence and
 reports scoped to another prompt cannot satisfy the check. Passive screen adapters are not yet

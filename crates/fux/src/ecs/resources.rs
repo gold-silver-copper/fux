@@ -198,3 +198,7 @@ impl ForgottenFinals {
         Self::push(&mut self.expired, pane);
     }
 }
+
+/// Explicit workspace presentation order. Unlisted new workspaces follow in name order.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct WorkspaceOrder(pub Vec<bevy_ecs::prelude::Entity>);

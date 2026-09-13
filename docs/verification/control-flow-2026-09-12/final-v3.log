@@ -1,0 +1,119 @@
+   Compiling fux v0.10.0 (/Users/kisaczka/Desktop/code/fux/crates/fux)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.82s
+     Running tests/automation_integration.rs (target/debug/deps/automation_integration-8ba9a3af34947e4b)
+
+running 23 tests
+test independent_zor_observes_fux_panes_through_the_control_protocol ... ok
+test test_owned_processes ... ok
+test test_zor_contention ... ok
+test zor_bindings ... ok
+test zor_changes ... ok
+test zor_check_workers ... ok
+test zor_checks ... ok
+test zor_dashboard ... ok
+test zor_events ... ok
+test zor_group_scheduler ... 
+thread 'zor_group_scheduler' (14980437) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_group_scheduler
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "adopt", "route-alias", "--title", "same pane via alias", "--runtime", "/tmp/zgroup-rs-vpBaD6/alternate", "--instance", "2ac572213e451253a7a2a458ee5d4b5f", "--workspace", "default", "--pane", "2"]: zor: connect control socket: No such file or directory (os error 2)
+
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test zor_groups ... 
+thread 'zor_groups' (14981010) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_groups
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "adopt", "route-alias", "--title", "same pane via alias", "--runtime", "/tmp/zgroup-rs-0Bg0nK/alternate", "--instance", "0a9a941f5536bd4089f8a421f40829dd", "--workspace", "default", "--pane", "2"]: zor: connect control socket: No such file or directory (os error 2)
+
+
+FAILED
+test zor_headless ... ok
+test zor_launch ... ok
+test zor_native ... ok
+test zor_pane_layout ... ok
+test zor_producers ... ok
+test zor_recovery ... 
+thread 'zor_recovery' (14986566) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_recovery
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "launch-reconcile", "untouched"]: {"artifact_captures":[],"artifact_policy":{"collected_count":0,"required_count":0,"sealed":false},"artifacts":[],"attempt":{"id":"be6561ea5a8bff38dfbe3eaac6458551","session":"58b2e2deecf696bc8a9ea51acb5adac4","state":"active","task":"untouched"},"check_policy":{"passed_count":0,"required_count":0,"sealed":false},"checks":[],"generation":24,"launch":{"agent":null,"argv":["/bin/cat"],"created_ms":1789278403496,"cwd":"/private/tmp/zrecover-rs-ALJXg3","event_sequence":14,"final_evidence":null,"id":"untouched","instance":"04204134f63d5c73e4c73460ce29aeb8","integration":null,"marker":"7286314456dd7f756c317b44422eeba1","pane":5,"phase":"attached","problem":null,"requested_cwd":"/tmp/zrecover-rs-ALJXg3","requested_runtime":"/tmp/zrecover-rs-ALJXg3/fux","resume":null,"runtime":"/private/tmp/zrecover-rs-ALJXg3/fux","session":"58b2e2deecf696bc8a9ea51acb5adac4","stop_requested":false,"stream":1,"task":null,"title":"untouched","workspace":"default","worktree":null},"prompts":[],"session":{"agent":null,"created_ms":1789278403496,"id":"58b2e2deecf696bc8a9ea51acb5adac4","launch":"untouched","ownership":"managed","target":{"instance":"04204134f63d5c73e4c73460ce29aeb8","origin":{"stream":1,"workspace":"default"},"pane":5,"pid":8796,"runtime":"/private/tmp/zrecover-rs-ALJXg3/fux","stream":1,"workspace":"default"}},"task":{"attempt":"be6561ea5a8bff38dfbe3eaac6458551","created_ms":1789278403496,"id":"untouched","outcome":"open","requested_runtime":"/tmp/zrecover-rs-ALJXg3/fux","required_artifacts":{},"required_checks":{},"title":"untouched"},"verification":null}
+ 
+
+FAILED
+test zor_run ... ok
+test zor_service ... 
+thread 'zor_service' (14988310) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_service
+stdout:
+
+stderr:
+fux-xtask: CLI ["--state-directory", "/tmp/zsvc-K97knU/tasks", "task", "adopt", "slow-task", "--title", "slow fixture", "--instance", "3341bb73fbaef883c998af653162bec2", "--workspace", "default", "--pane", "1", "--runtime", "/tmp/zsvc-K97knU/proxy"]: zor: connect control socket: No such file or directory (os error 2)
+
+
+FAILED
+test zor_sources ... ok
+test zor_tasks ... ok
+test zor_workflow ... ok
+test zor_worktree ... ok
+
+failures:
+
+failures:
+    zor_group_scheduler
+    zor_groups
+    zor_recovery
+    zor_service
+
+test result: FAILED. 19 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 235.73s
+
+error: test failed, to rerun pass `-p fux --test automation_integration`
+     Running tests/local_cli.rs (target/debug/deps/local_cli-5d538c6250de02fd)
+
+running 18 tests
+test a_full_agent_session_runs_headlessly_over_the_control_protocol ... ok
+test delayed_history_keeps_local_input_responsive_and_rejects_stale_replies ... ok
+test delayed_manager_keeps_local_controls_responsive_and_input_targeted ... ok
+test detach_sends_preceding_input_waits_for_exit_and_drops_the_suffix ... ok
+test empty_arguments_regressions ... ok
+test event_sync_regressions ... ok
+test final_records_regressions ... ok
+test incompatible_manager_rejection_preserves_existing_sessions ... ok
+test independent_pane_histories_and_normal_input_transitions ... ok
+test input_receipts_regressions ... ok
+test isolated_local_attachment_has_no_keys_and_preserves_sessions ... ok
+test isolated_tty_cold_start_and_detach_need_no_credentials ... ok
+test real_viewer_scenarios_cover_the_interaction_contract ... ok
+test rejected_handshake_leaves_the_terminal_untouched ... ok
+test reporting_application_mouse_and_screen_buffers_preserve_local_history_ownership ... 
+thread 'reporting_application_mouse_and_screen_buffers_preserve_local_history_ownership' (14999147) panicked at crates/fux/tests/local_cli.rs:11:5:
+viewer-mouse-app failed
+stdout:
+
+stderr:
+fux-xtask: popup auxiliary gesture leaked to other app
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test utf8_capture_regressions ... ok
+test viewer_input_survives_two_workspace_moves_and_source_cleanup ... ok
+test workspace_transfer_preserves_process_after_source_cleanup ... ok
+
+failures:
+
+failures:
+    reporting_application_mouse_and_screen_buffers_preserve_local_history_ownership
+
+test result: FAILED. 17 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 79.08s
+
+error: test failed, to rerun pass `-p fux --test local_cli`
+error: 2 targets failed:
+    `-p fux --test automation_integration`
+    `-p fux --test local_cli`

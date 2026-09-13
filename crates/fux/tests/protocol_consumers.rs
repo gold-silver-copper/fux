@@ -106,6 +106,48 @@ fn variant_fields(file: &syn::File, name: &str, variant: &str) -> BTreeSet<Strin
     field_names(&variant.fields)
 }
 
+/// Typed consumer DTOs can name a wire operation through serde's enum naming
+/// rule rather than repeat its kebab-case string at every call site.
+fn mentions_wire_name(source: &str, name: &str) -> bool {
+    if source.contains(name) {
+        return true;
+    }
+    let file = syn::parse_file(source).expect("parse typed consumer");
+    file.items.iter().any(|item| {
+        let syn::Item::Enum(item) = item else { return false; };
+        let kebab_names = item.attrs.iter().filter(|attr| attr.path().is_ident("serde")).any(|attr| {
+            attr.parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                .is_ok_and(|values| values.iter().any(|meta| {
+                    matches!(meta, syn::Meta::NameValue(pair) if pair.path.is_ident("rename_all")
+                        && matches!(&pair.value, syn::Expr::Lit(value) if matches!(&value.lit, syn::Lit::Str(value) if value.value() == "kebab-case")))
+                }))
+        });
+        kebab_names && item.variants.iter().any(|variant| {
+            serde_rename(&variant.attrs).unwrap_or_else(|| kebab(&variant.ident.to_string())) == name
+        })
+    })
+}
+
+#[test]
+fn typed_consumer_wire_names_follow_serialization_rules() {
+    assert!(mentions_wire_name(
+        r#"#[serde(tag = "request", rename_all = "kebab-case")] enum Request { InputStatus { operation: u64 } }"#,
+        "input-status"
+    ));
+    assert!(!mentions_wire_name(
+        "enum Policy { InputStatus }",
+        "input-status"
+    ));
+    assert!(!mentions_wire_name(
+        r#"#[serde(rename_all = "snake_case")] enum Request { InputStatus }"#,
+        "input-status"
+    ));
+    assert!(!mentions_wire_name(
+        r#"#[serde(rename_all = "kebab-case")] enum Request { InputSubmit }"#,
+        "input-status"
+    ));
+}
+
 /// The current wire surface, section by section, derived from the source.
 fn surface(root: &Path) -> BTreeMap<&'static str, BTreeSet<String>> {
     let control = parse(root, "src/proto/control.rs");
@@ -242,7 +284,7 @@ fn every_protocol_item_has_a_consumer_that_still_reads_it() {
                                 panic!("{label}: zor consumer {relative} is unreadable: {error}")
                             })
                         });
-                        if !source.contains(name.as_str()) {
+                        if !mentions_wire_name(source, &name) {
                             problems.push(format!(
                                 "{label}: crates/zor/src/{relative} no longer mentions {name:?}"
                             ));

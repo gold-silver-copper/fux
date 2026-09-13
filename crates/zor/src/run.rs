@@ -2,8 +2,8 @@
 //!
 //! A workflow over fux primitives: the manager's create-only `create`, `split` with an
 //! environment and a headless size, the retained `final` record, and workspace `kill`. Nothing
-//! is durable and no zor service is involved; the only thing zor owns is the workspace it
-//! created, which it releases when the run ends, whatever the outcome.
+//! is durable and no zor service is involved. Cleanup owns the created workspace and exact
+//! launched pane, including when that pane moves to another workspace.
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -44,6 +44,7 @@ struct Owned {
     stream: u64,
     instance: String,
     control: PathBuf,
+    pane: Option<u64>,
 }
 
 /// Runs the command and returns the child's exit status as a process exit code.
@@ -72,10 +73,13 @@ pub fn run(request: Run) -> Result<u8> {
         .checked_add(Duration::from_millis(request.timeout_ms))
         .context("run timeout is too large")?;
     let runtime = crate::fux::runtime()?;
-    let owned = create_workspace(&runtime, &name, deadline)?;
-    let result = run_in_workspace(&runtime, &owned, &request, cwd, deadline);
+    let mut owned = create_workspace(&runtime, &name, deadline)?;
+    let result = run_in_workspace(&runtime, &mut owned, &request, cwd, deadline);
     // A reused name or a replacement server must never receive this run's cleanup request.
-    let cleanup = release_workspace(&owned);
+    // Attempt both cleanups even if one fails. Never kill the destination workspace.
+    let pane_cleanup = release_pane(&runtime, &owned);
+    let workspace_cleanup = release_workspace(&owned);
+    let cleanup = pane_cleanup.and(workspace_cleanup);
     match (result, cleanup) {
         (Ok(code), Ok(())) => Ok(u8::try_from(code).unwrap_or(1)),
         (Err(error), Ok(())) => Err(error),
@@ -128,6 +132,7 @@ fn create_workspace(runtime: &Path, name: &str, deadline: Instant) -> Result<Own
         stream,
         instance,
         control,
+        pane: None,
     })
 }
 
@@ -156,7 +161,7 @@ fn start_server(name: &str, deadline: Instant) -> Result<Value> {
 
 fn run_in_workspace(
     runtime: &Path,
-    owned: &Owned,
+    owned: &mut Owned,
     request: &Run,
     cwd: Option<PathBuf>,
     deadline: Instant,
@@ -178,7 +183,7 @@ fn run_in_workspace(
         &json!({"command":"split","id":2,"instance":owned.instance,"stream":owned.stream,
             "axis":"horizontal","cwd":cwd,"argv":request.argv,"env":request.env,
             "rows":request.rows,"columns":request.columns,
-            "final_retain_ms":final_retain_ms(request.timeout_ms)}),
+            "fixed_workspace":true,"final_retain_ms":final_retain_ms(request.timeout_ms)}),
         deadline,
     )?;
     let pane = match split.get("status").and_then(Value::as_str) {
@@ -195,48 +200,164 @@ fn run_in_workspace(
         ),
         _ => bail!("unexpected split reply: {split}"),
     };
+    owned.pane = Some(pane);
+    let mut released = false;
     // The manager retains authoritative evidence even when the pane exits before its launch
     // reply or its workspace socket disappears; no event connection is needed.
-    let manager = runtime.join("manager.sock");
     let record = loop {
         remaining()?;
-        let reply = exchange(
-            &manager,
-            &json!({"request":"final","instance":owned.instance,"pane":pane}),
+        match crate::fux::manager::final_record(
+            runtime,
+            &owned.instance,
+            u32::try_from(pane)?,
             deadline,
-        )?;
-        // Only `pending` is polled; `evicted` (fux dropped the record under load), `expired`,
-        // `unknown` and `conflict` end the run at once.
-        match crate::fux::final_reply(&reply).context("run final evidence")? {
-            crate::fux::FinalReply::Record(record) => break record.clone(),
-            crate::fux::FinalReply::Pending => {
+        )
+        .context("run final evidence")?
+        {
+            crate::fux::manager::FinalOutcome::Record(record) => break record,
+            crate::fux::manager::FinalOutcome::Pending => {
+                if !released {
+                    // Final polling and timeout cleanup now use exact manager identity.
+                    // A fast exit between these reads is handled by the next final poll.
+                    if let Some(location) = pane_location(runtime, owned, deadline)?
+                        && location.accepts_input
+                    {
+                        released = match crate::fux::manager::release_pin(
+                            runtime,
+                            &owned.instance,
+                            u32::try_from(pane)?,
+                            location.pid,
+                            deadline,
+                        ) {
+                            Ok(()) => true,
+                            Err(error)
+                                if crate::fux::manager::remote_code(&error)
+                                    == Some("not-found") =>
+                            {
+                                false
+                            }
+                            Err(error) => return Err(error.context("run release-pane-pin failed")),
+                        };
+                    }
+                }
                 std::thread::sleep(remaining()?.min(Duration::from_millis(25)));
             }
         }
     };
     anyhow::ensure!(
-        record.get("pane").and_then(Value::as_u64) == Some(pane)
-            && record.get("workspace").and_then(Value::as_str) == Some(&owned.name)
-            && record.get("stream").and_then(Value::as_u64) == Some(owned.stream),
+        u64::from(record.pane) == pane
+            && record.workspace == owned.name
+            && record.stream == owned.stream,
         "run final evidence identity mismatch"
     );
     anyhow::ensure!(
-        record.pointer("/capture/truncated") == Some(&json!(false)),
+        !record.capture.truncated,
         "run final screen exceeded the retained capture limit"
     );
-    let text = record
-        .pointer("/capture/text")
-        .and_then(Value::as_str)
-        .context("final record without capture text")?;
+    let text = &record.capture.text;
     if !text.is_empty() {
         writeln!(std::io::stdout().lock(), "{text}")?;
     }
-    match record.get("exit_status") {
-        Some(Value::Number(status)) => status
-            .as_u64()
-            .and_then(|status| u32::try_from(status).ok())
-            .context("invalid final exit status"),
-        _ => bail!("run was released before its exit status was observed"),
+    record
+        .exit_status
+        .context("run was released before its exit status was observed")
+}
+
+/// Mutable routing is read separately from the immutable launch attribution.
+fn pane_location(
+    runtime: &Path,
+    owned: &Owned,
+    deadline: Instant,
+) -> Result<Option<crate::fux::manager::Location>> {
+    let Some(pane) = owned.pane else {
+        return Ok(None);
+    };
+    let location =
+        match crate::fux::manager::locate(runtime, &owned.instance, u32::try_from(pane)?, deadline)
+        {
+            Ok(location) => location,
+            Err(error) => {
+                match crate::fux::manager::remote_code(&error) {
+                    Some("not-found") => return Ok(None),
+                    Some("conflict") => {
+                        let info = exchange(
+                            &runtime.join("manager.sock"),
+                            &json!({"request":"info"}),
+                            deadline,
+                        )?;
+                        if different_instance(owned, &info)? {
+                            return Ok(None);
+                        }
+                    }
+                    _ => {}
+                }
+                return Err(error.context("run pane location unavailable"));
+            }
+        };
+    validate_location(owned, &location)?;
+    Ok(Some(location))
+}
+
+/// Replacement discovery releases old ownership; it never grants authority over the new server.
+fn different_instance(owned: &Owned, info: &Value) -> Result<bool> {
+    anyhow::ensure!(
+        info.get("reply").and_then(Value::as_str) == Some("info"),
+        "unexpected server info: {info}"
+    );
+    let instance = info
+        .pointer("/info/instance_nonce")
+        .and_then(Value::as_str)
+        .filter(|instance| !instance.is_empty())
+        .context("server info without instance")?;
+    Ok(instance != owned.instance)
+}
+
+fn validate_location(owned: &Owned, location: &crate::fux::manager::Location) -> Result<()> {
+    anyhow::ensure!(
+        location.instance == owned.instance
+            && Some(u64::from(location.pane)) == owned.pane
+            && location.pane != 0
+            && location.pid != 0
+            && location.origin_workspace == owned.name
+            && location.origin_stream == owned.stream
+            && crate::tasks::model::workspace(&location.workspace)
+            && location.stream != 0,
+        "run pane location identity mismatch"
+    );
+    Ok(())
+}
+
+/// Release only this run's pane, wherever it currently lives. A move racing the scoped kill
+/// is harmless: retry discovery under the same instance/pane identity within a bounded deadline.
+fn release_pane(runtime: &Path, owned: &Owned) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let location = match pane_location(runtime, owned, deadline) {
+            Ok(Some(location)) => location,
+            Ok(None) => return Ok(()),
+            Err(error) if no_server(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let reply = exchange(
+            &runtime.join(format!("{}.sock", location.workspace)),
+            &json!({"command":"kill","id":4,"instance":owned.instance,"pane":location.pane}),
+            deadline,
+        );
+        match reply {
+            Ok(reply) if reply.get("status").and_then(Value::as_str) == Some("completed") => {
+                return Ok(());
+            }
+            Ok(reply)
+                if reply.pointer("/error/code").and_then(Value::as_str) == Some("not-found") => {}
+            Err(error) if no_server(&error) => (),
+            Ok(reply) => bail!("run pane cleanup failed: {reply}"),
+            Err(error) => return Err(error),
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "run pane kept moving during cleanup"
+        );
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -321,6 +442,56 @@ pub fn env_pairs(values: Vec<String>) -> Result<Vec<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moved_run_location_requires_original_launch_identity() -> Result<()> {
+        let owned = Owned {
+            name: "launch".into(),
+            stream: 2,
+            instance: "server".into(),
+            control: "/unused/launch.sock".into(),
+            pane: Some(3),
+        };
+        assert!(!different_instance(
+            &owned,
+            &json!({"reply":"info","info":{"instance_nonce":"server"}})
+        )?);
+        assert!(different_instance(
+            &owned,
+            &json!({"reply":"info","info":{"instance_nonce":"replacement"}})
+        )?);
+        assert!(
+            different_instance(
+                &owned,
+                &json!({"reply":"info","info":{"instance_nonce":""}})
+            )
+            .is_err()
+        );
+        assert!(different_instance(&owned, &json!({"reply":"failed"})).is_err());
+        let valid = json!({"instance":"server","pane":3,"pid":4,"accepts_input":true,"workspace":"destination",
+            "stream":9,"origin_workspace":"launch","origin_stream":2,"tab":1,"layout_generation":1});
+        validate_location(&owned, &serde_json::from_value(valid.clone())?)?;
+        for (key, value) in [
+            ("instance", json!("replacement")),
+            ("pane", json!(30)),
+            ("pid", json!(0)),
+            ("workspace", json!("../escape")),
+            ("stream", json!(0)),
+            ("origin_workspace", json!("destination")),
+            ("origin_stream", json!(9)),
+        ] {
+            let mut invalid = valid.clone();
+            invalid
+                .as_object_mut()
+                .context("location object")?
+                .insert(key.into(), value);
+            assert!(
+                validate_location(&owned, &serde_json::from_value(invalid)?).is_err(),
+                "accepted {key}"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn final_retention_follows_the_timeout_and_stays_under_fux_ceiling() {

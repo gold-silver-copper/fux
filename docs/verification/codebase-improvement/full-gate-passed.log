@@ -1,0 +1,45 @@
+   Compiling fux-xtask v0.1.0 (/Users/kisaczka/Desktop/code/fux/tools/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.89s
+     Running `target/codebase-runner/debug/fux-xtask verify-codebase full`
+codebase gate evidence: /var/folders/3t/6t0byq3s589g86m361mc7p100000gn/T/fux-codebase-gate-Yuo673
+codebase check 0: cargo +stable fmt --all --check
+codebase check 1: cargo +stable fmt --manifest-path tools/xtask/Cargo.toml --check
+codebase check 2: cargo +stable fmt --manifest-path crates/zor/tools/xtask/Cargo.toml --check
+codebase check 3: cargo +stable clippy --workspace --all-targets --locked -- -D warnings
+codebase check 4: cargo +stable clippy -p zor --all-targets --locked --all-features -- -D warnings
+codebase check 5: cargo +stable clippy -p zor --all-targets --locked --no-default-features -- -D warnings
+codebase check 6: cargo +stable clippy -p zor --all-targets --locked --no-default-features --features cli -- -D warnings
+codebase check 7: cargo +stable clippy --manifest-path crates/zor/tools/xtask/Cargo.toml --target-dir /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures --all-targets --locked -- -D warnings
+codebase check 8: cargo +stable clippy --manifest-path tools/xtask/Cargo.toml --target-dir /Users/kisaczka/Desktop/code/fux/target/rust-harness --features betamax --all-targets --locked -- -D warnings
+codebase check 9: cargo +stable build --locked -p fux --bin fux
+codebase check 10: cargo +stable build --locked -p zor --no-default-features --features cli --bin zor
+codebase check 11: cargo +stable build --manifest-path tools/xtask/Cargo.toml --target-dir /Users/kisaczka/Desktop/code/fux/target/rust-harness --features betamax --locked
+codebase check 12: cargo +stable build --manifest-path crates/zor/tools/xtask/Cargo.toml --target-dir /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures --bins --locked
+codebase check 13: cargo +stable test --manifest-path tools/xtask/Cargo.toml --target-dir /Users/kisaczka/Desktop/code/fux/target/rust-harness --features betamax --locked -- --test-threads=1
+codebase check 14: cargo +stable test --workspace --locked --no-fail-fast -- --test-threads=1
+codebase check 15: cargo +stable test -p zor --locked --all-features -- --test-threads=1
+codebase check 16: cargo +stable test -p zor --locked --no-default-features -- --test-threads=1
+codebase check 17: cargo +stable test -p zor --locked --no-default-features --features cli -- --test-threads=1
+codebase check 18: cargo +stable test --manifest-path crates/zor/tools/xtask/Cargo.toml --target-dir /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures --locked -- --test-threads=1
+codebase check 19: cargo +stable clippy --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --locked -- -D warnings
+codebase check 20: cargo +stable test --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --locked -- --test-threads=1
+codebase check 21: cargo +stable doc --workspace --no-deps --locked
+codebase check 22: cargo +stable doc -p zor --no-deps --all-features --locked
+codebase check 23: cargo +stable package --locked --allow-dirty -p fux -p local-ipc
+codebase check 24: cargo +stable package --locked --allow-dirty -p zor -p local-ipc
+codebase check 25: node crates/zor/tools/test_opencode_adapter.mjs
+codebase check 26: /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask verify-opencode-integration
+codebase check 27: /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask verify-opencode-resume
+codebase check 28: /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask verify-zor-resume
+codebase check 29: /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask verify-lifecycle
+codebase check 30: /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask verify-codex-authenticated
+codebase check 31: /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask verify-claude-authenticated
+codebase check 32: /Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask verify-opencode-events
+codebase check 33: /Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask verify-detection-screens
+codebase check 34: /Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask verify-controller-setup
+codebase check 35: /Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask verify-resources
+codebase check 36: /Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask verify-capture-traffic
+codebase check 37: /Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask verify-workflow
+codebase check 38: /Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask verify-detection-freshness
+codebase check 39: /Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask verify-headless-performance
+PASS codebase checks; manual image review and release performance comparison remain separate: /var/folders/3t/6t0byq3s589g86m361mc7p100000gn/T/fux-codebase-gate-Yuo673

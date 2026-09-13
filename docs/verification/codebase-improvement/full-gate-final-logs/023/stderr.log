@@ -1,0 +1,12 @@
+   Packaging local-ipc v0.2.0 (/Users/kisaczka/Desktop/code/fux/crates/local-ipc)
+    Updating crates.io index
+    Packaged 6 files, 34.1KiB (9.4KiB compressed)
+   Packaging fux v0.10.0 (/Users/kisaczka/Desktop/code/fux/crates/fux)
+    Updating crates.io index
+    Packaged 118 files, 1.5MiB (332.8KiB compressed)
+   Verifying local-ipc v0.2.0 (/Users/kisaczka/Desktop/code/fux/crates/local-ipc)
+   Compiling local-ipc v0.2.0 (/tmp/fux-codebase-work/build/package/local-ipc-0.2.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.16s
+   Verifying fux v0.10.0 (/Users/kisaczka/Desktop/code/fux/crates/fux)
+   Compiling fux v0.10.0 (/tmp/fux-codebase-work/build/package/fux-0.10.0)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.07s

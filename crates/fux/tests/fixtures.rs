@@ -92,3 +92,44 @@ fn info_fixture_carries_the_retention_ceilings_and_zor_reads_the_same_bytes() {
         zor.display()
     );
 }
+
+#[test]
+fn zor_typed_operation_fixtures_match_the_producer_and_round_trip_exactly() {
+    use fux::daemon::{ManagerReply, ManagerRequest};
+    use fux::proto::control::{Reply, Request};
+    let consumer = Path::new(env!("CARGO_MANIFEST_DIR")).join("../zor/tests/fixtures");
+    let mut count = 0;
+    for dir in ["manager", "control"] {
+        for entry in std::fs::read_dir(fixtures_dir().join(dir)).expect("fixtures") {
+            let path = entry.expect("entry").path();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            if !name.ends_with("_zor.json") {
+                continue;
+            }
+            let bytes = std::fs::read(&path).expect("producer fixture");
+            assert_eq!(
+                bytes,
+                std::fs::read(consumer.join(dir).join(name)).expect("consumer fixture")
+            );
+            let value: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+            let encoded = match (dir, name.starts_with("request_")) {
+                ("manager", true) => serde_json::to_value(
+                    serde_json::from_slice::<ManagerRequest>(&bytes).expect("manager request"),
+                ),
+                ("manager", false) => serde_json::to_value(
+                    serde_json::from_slice::<ManagerReply>(&bytes).expect("manager reply"),
+                ),
+                (_, true) => serde_json::to_value(
+                    serde_json::from_slice::<Request>(&bytes).expect("request"),
+                ),
+                (_, false) => {
+                    serde_json::to_value(serde_json::from_slice::<Reply>(&bytes).expect("reply"))
+                }
+            }
+            .expect("serialize producer");
+            assert_eq!(encoded, value, "producer changed {name}");
+            count += 1;
+        }
+    }
+    assert_eq!(count, 16);
+}

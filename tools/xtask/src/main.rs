@@ -1,4 +1,5 @@
 //! Repository development tooling, never linked into the fux runtime.
+mod codebase;
 mod dependencies;
 mod evidence;
 mod freshness_capture;
@@ -10,8 +11,11 @@ mod headless_performance;
 mod inventory;
 mod measure;
 mod measure_frames;
+mod measure_interactions;
 mod measure_koh;
+mod measure_layout;
 mod measure_memory;
+mod measure_recovery;
 mod measure_viewer;
 mod package;
 mod prompt_capture;
@@ -27,8 +31,14 @@ fn main() -> std::process::ExitCode {
     let result = (|| -> anyhow::Result<()> {
         let mut args = std::env::args().skip(1);
         match args.next().as_deref() {
+            Some("verify-codebase") => codebase::run(args.collect()),
             Some("dependencies") => dependencies::run(args.collect()),
             Some("scenario") => fux_xtask::scenarios::run(args.collect()),
+            Some("betamax-report") => {
+                fux_xtask::support::visual::report(std::path::Path::new(&args.next().ok_or_else(
+                    || anyhow::anyhow!("betamax-report requires an artifact directory"),
+                )?))
+            }
             Some("fixture-worker") => fux_xtask::scenarios::worker(args.collect()),
             Some("detection-inventory") => inventory::run(args.collect()),
             Some("capture-input-retry") => retry_capture::run(args.collect()),
@@ -53,7 +63,10 @@ fn main() -> std::process::ExitCode {
             Some("resource-sampler-check") => resource_sampler::run(args.collect()),
             Some("resource-sampler-worker") => resource_sampler::worker(),
             Some("measure") => measure::run(args.collect()),
+            Some("measure-layout") => measure_layout::run(args.collect()),
             Some("measure-frames") => measure_frames::run(args.collect()),
+            Some("measure-interactions") => measure_interactions::run(args.collect()),
+            Some("measure-recovery") => measure_recovery::run(args.collect()),
             Some("measure-memory") => measure_memory::run(args.collect()),
             Some("measure-viewer") => measure_viewer::run(args.collect()),
             Some("measure-koh") => measure_koh::run(args.collect()),

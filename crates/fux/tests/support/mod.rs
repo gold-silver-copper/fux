@@ -44,11 +44,16 @@ pub fn rust_harness() -> &'static PathBuf {
     BINARY.get_or_init(|| {
         let root = workspace_root();
         let target = root.join("target/rust-harness");
-        let output = Command::new("cargo")
+        let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+        command
             .args(["build", "--locked", "--manifest-path"])
             .arg(root.join("tools/xtask/Cargo.toml"))
             .arg("--target-dir")
-            .arg(&target)
+            .arg(&target);
+        if std::env::var_os("FUX_BETAMAX_DIR").is_some() {
+            command.args(["--features", "betamax"]);
+        }
+        let output = command
             .output()
             .unwrap_or_else(|error| panic!("building Rust harness: {error}"));
         assert!(

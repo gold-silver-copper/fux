@@ -5,11 +5,14 @@ mod detach_drain;
 mod event_sync;
 mod events_proxy;
 mod final_records;
+mod history_delay;
 mod input_receipts;
 mod local_attachment;
 mod local_tty;
 mod migration;
+mod mouse_app;
 mod observer;
+mod pane_layout;
 mod rejection;
 mod service_fixture;
 mod service_tasks;
@@ -45,12 +48,30 @@ use std::{
 };
 
 pub fn run(args: Vec<String>) -> Result<()> {
+    crate::support::failure::run(&args, || {
+        run_inner(&args)?;
+        ensure!(
+            !std::env::var("FUX_HARNESS_FAIL_AFTER")
+                .ok()
+                .is_some_and(|name| args.first() == Some(&name)),
+            "injected failure after scenario teardown"
+        );
+        Ok(())
+    })
+}
+
+fn run_inner(args: &[String]) -> Result<()> {
     let name = args.first().context("missing scenario name")?;
     let binary = Path::new(args.get(1).context("missing fux binary")?).canonicalize()?;
     match name.as_str() {
         "empty-arguments" => empty_arguments(&binary),
         "utf8-capture" => utf8_capture(&binary),
         "protocol-rejection" => rejection::run(&binary),
+        "pane-layout-transfer" => pane_layout::run(&binary, None),
+        "zor-pane-layout" => pane_layout::run(
+            &binary,
+            Some(&Path::new(args.get(2).context("missing zor binary")?).canonicalize()?),
+        ),
         "local-attachment" => local_attachment::run(&binary),
         "local-tty" => local_tty::run(&binary),
         "detach-drain" => detach_drain::run(&binary),
@@ -60,6 +81,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "input-receipts" => input_receipts::run(&binary),
         "migration" => migration::run(&binary),
         "viewer" => viewer::run(&binary),
+        "viewer-tiny-layout" => viewer::verify_tiny_layout(&binary),
+        "viewer-gestures" => viewer::gestures(&binary),
+        "viewer-modals" => viewer::modals(&binary),
+        "viewer-history-controls" => viewer::history_controls(&binary),
+        "viewer-history-delay" => history_delay::run(&binary),
+        "viewer-manager-delay" => viewer::manager_delay(&binary),
+        "viewer-mouse-app" => viewer::mouse_app(&binary),
+        "viewer-transfer-input" => viewer::transfer_input(&binary),
         "zor-dashboard" => zor_dashboard::run(
             &binary,
             &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
@@ -114,6 +143,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
             &binary,
             &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
         ),
+        "zor-resume" => zor_producers::resume(
+            &binary,
+            &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
+        ),
         "zor-recovery" => zor_recovery::run(
             &binary,
             &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
@@ -145,6 +178,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
 }
 
 pub fn worker(args: Vec<String>) -> Result<()> {
+    if args.first().map(String::as_str) == Some("mouse-app") {
+        return mouse_app::worker(Path::new(
+            args.get(1).context("missing mouse log directory")?,
+        ));
+    }
+    if args.first().map(String::as_str) == Some("run-eof") {
+        return zor_run::eof_worker(Path::new(args.get(1).context("missing EOF trigger")?));
+    }
     if matches!(
         args.first().map(String::as_str),
         Some(

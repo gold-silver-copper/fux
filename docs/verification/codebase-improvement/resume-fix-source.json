@@ -1,0 +1,11 @@
+{
+  "files": {
+    "crates/zor/src/tasks/launch.rs": "2460126961ffaacb4c66700239f472134b75dcbd1e6a70538ac7e7c4e3cb2ac2",
+    "tools/xtask/src/scenarios/zor_producers.rs": "ec4c622fa0c4bedebfb4a26b06d632dda5dedf387b481c8f1465d024edb3c693",
+    "tools/xtask/src/scenarios/input_receipts.rs": "3fe69b3c45a3383195b86d09903e8c0b5c17574b8bc4d5788bc864a28659d666",
+    "tools/xtask/src/codebase.rs": "72cbb4592b583482da4c1dd7b9aa2a7b3613a63219f29c4780653adbf5a4d72e",
+    "crates/fux/tests/protocol_consumers.rs": "993e69b7724ad32a1e9c9c9daf685451ce68adb8a5652b4021214f90f89be402",
+    "crates/fux/tests/fixtures/control-consumers.json": "df35cca910f455ace7f3bea8d38c4128b84b6920d22430b96d718d069ee9bbf6"
+  },
+  "zor_binary": "e4996cd65e376d5144a0e84ff4d175d0ea549a67a1b683b61b61de04c847f45e"
+}

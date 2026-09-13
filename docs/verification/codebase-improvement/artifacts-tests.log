@@ -1,0 +1,21 @@
+   Compiling fux-xtask v0.1.0 (/Users/kisaczka/Desktop/code/fux/tools/xtask)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.32s
+     Running unittests src/lib.rs (/tmp/fux-codebase-work/harness/debug/deps/fux_xtask-a36ac7886c388c23)
+
+running 3 tests
+test support::failure::tests::private_artifact_preserves_screen_but_not_input_contents ... FAILED
+test support::failure::tests::oversized_recording_reports_omissions_and_bounds_event_retention ... ok
+test support::failure::tests::failed_scenario_keeps_terminal_evidence_after_fixture_teardown ... ok
+
+failures:
+
+---- support::failure::tests::private_artifact_preserves_screen_but_not_input_contents stdout ----
+Error: directory permissions
+
+
+failures:
+    support::failure::tests::private_artifact_preserves_screen_but_not_input_contents
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 1.19s
+
+error: test failed, to rerun pass `--lib`

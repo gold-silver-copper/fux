@@ -20,6 +20,7 @@ struct Ui {
     child: Option<Guard>,
     pty: nix::pty::OpenptyResult,
     output: Vec<u8>,
+    visual: Option<crate::support::visual::Capture>,
 }
 impl Ui {
     fn new() -> Result<Self> {
@@ -38,6 +39,7 @@ impl Ui {
             child: None,
             pty,
             output: Vec::new(),
+            visual: None,
         })
     }
     fn attributes(&self) -> Result<libc::termios> {
@@ -62,6 +64,7 @@ impl Ui {
         }
         self.pump()?;
         self.output.clear();
+        self.visual = crate::support::visual::Capture::new(zor, args, 24, 100)?;
         self.child = Some(Guard(
             root.command(zor)
                 .args(args)
@@ -78,6 +81,9 @@ impl Ui {
             match nix::unistd::read(&self.pty.master, &mut bytes) {
                 Ok(0) | Err(nix::errno::Errno::EAGAIN | nix::errno::Errno::EIO) => return Ok(()),
                 Ok(n) => {
+                    if let Some(visual) = &mut self.visual {
+                        visual.feed(&bytes[..n])?;
+                    }
                     self.output.extend_from_slice(&bytes[..n]);
                     ensure!(
                         self.output.len() <= 16 * 1024 * 1024,
@@ -108,6 +114,9 @@ impl Ui {
         loop {
             self.pump()?;
             if self.contains(text) {
+                if let Some(visual) = &mut self.visual {
+                    visual.checkpoint(text)?;
+                }
                 return Ok(());
             }
             ensure!(
@@ -125,7 +134,11 @@ impl Ui {
             self.pump()?;
             std::thread::sleep(Duration::from_millis(20));
         }
-        self.pump()
+        self.pump()?;
+        if let Some(visual) = &mut self.visual {
+            visual.checkpoint("dashboard-observe")?;
+        }
+        Ok(())
     }
     fn send(&self, text: &[u8]) -> Result<()> {
         ensure!(
@@ -141,14 +154,21 @@ impl Ui {
         })
         .and_then(|s| {
             ensure!(s.success(), "UI exit {s}");
-            self.pump()
+            self.pump()?;
+            if let Some(visual) = &mut self.visual {
+                visual.checkpoint("dashboard-exit")?;
+            }
+            Ok(())
         })
     }
     fn quit(&mut self, timeout: Duration) -> Result<()> {
         self.send(b"q")?;
         self.wait_exit(timeout)
     }
-    fn resize(&self, rows: u16, columns: u16) -> Result<()> {
+    fn resize(&mut self, rows: u16, columns: u16) -> Result<()> {
+        if let Some(visual) = &mut self.visual {
+            visual.resize(rows, columns)?;
+        }
         let size = libc::winsize {
             ws_row: rows,
             ws_col: columns,

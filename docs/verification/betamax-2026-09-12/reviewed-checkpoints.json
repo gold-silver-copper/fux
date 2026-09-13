@@ -1,0 +1,2412 @@
+[
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-1aYyo0/0000.png",
+    "label": "start notification command",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "b08553b499a06cf7c08e466388eeec4695c7a28e3bf1c5927bf0aeb11057b79a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-1aYyo0/0001.png",
+    "label": "dashboard-exit",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "18ffc142c6ba2f21c0ca855f2f415bac884040402670c4d1deb6730aa32a06d5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-4vDb50/0000.png",
+    "label": "notification command exited",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "59dc1688886a1503bc85efc077817a2f7c8c94d3e5e74313c290e88ad728f36e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-4vDb50/0001.png",
+    "label": "dashboard-exit",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "18ffc142c6ba2f21c0ca855f2f415bac884040402670c4d1deb6730aa32a06d5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-89jr7q/0000.png",
+    "label": "checks-failed",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "ef628a2f2bfbbb079f60b4f60248c1d221b39326630b0c057e63ce602b801ebc"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-89jr7q/0001.png",
+    "label": "Focused default pane",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "91a8b3204a65ff306f194a47ec5dec788b0f1d8a858345258203dc70e11665b1"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-89jr7q/0002.png",
+    "label": "attention only",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "64c2a994408317ff6aa0317546ab74d33e3f993fc27b8c26d064b7cd5c64ac20"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-89jr7q/0003.png",
+    "label": "dashboard-observe",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "73a89d44fb118fe2a2055ec04e878393e9a9d05db2d881e399fd924cb2babf0e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-89jr7q/0004.png",
+    "label": "dashboard-observe",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "a08ee4aedd26224cd3c14a906a36ad2b66db57a3ef94a4dcca6b8290c507569a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-89jr7q/0005.png",
+    "label": "dashboard-observe",
+    "size": [
+      200,
+      60
+    ],
+    "previously_reviewed": true,
+    "sha256": "4204caa11ede4297fcc03c394332216ed86279ca8fc48d0a355a37826b40a96a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-89jr7q/0006.png",
+    "label": "dashboard-exit",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "18ffc142c6ba2f21c0ca855f2f415bac884040402670c4d1deb6730aa32a06d5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-Db73tw/0000.png",
+    "label": "notification command timed out",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "8fb042bb39ecd986aa569df017d3a0eb25031aa2511bfaaaa82f4ce37046426e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-Db73tw/0001.png",
+    "label": "dashboard-exit",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "18ffc142c6ba2f21c0ca855f2f415bac884040402670c4d1deb6730aa32a06d5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-NUPi9Y/0000.png",
+    "label": "checks-failed",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "b730f748e05d49a96908f3ff3ff47e52b0c591e40ce797e1b25da709a63e9bd6"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-NUPi9Y/0001.png",
+    "label": "dashboard-exit",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "18ffc142c6ba2f21c0ca855f2f415bac884040402670c4d1deb6730aa32a06d5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-rCqdrx/0000.png",
+    "label": "checks-failed",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "c2b0e5939220b4227d22093619ed96be3104d40e4a361eec23e8f142f6c04388"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-rCqdrx/0001.png",
+    "label": "dashboard-exit",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "18ffc142c6ba2f21c0ca855f2f415bac884040402670c4d1deb6730aa32a06d5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-xuQPyb/0000.png",
+    "label": "checks-failed",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "e4e1bb77152e2703dfbf909f89f74185abfa565d87e334ba8c8a6bd3bd249a7b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-xuQPyb/0001.png",
+    "label": "STALE",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9baba1ff5ba3c72ce38d809c9212d66bb998d807bf244d937939d8d3664d6eb7"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-79448-xuQPyb/0002.png",
+    "label": "dashboard-exit",
+    "size": [
+      1000,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "18ffc142c6ba2f21c0ca855f2f415bac884040402670c4d1deb6730aa32a06d5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85657-HqxAoL/0000.png",
+    "label": "detach-drain-complete",
+    "size": [
+      480,
+      240
+    ],
+    "previously_reviewed": true,
+    "sha256": "f3d91bc24833ec0bb2992a9d498abe77dd7f7df38bf86d7135902535b9ebef4d"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85726-2Ujecy/0000.png",
+    "label": "terminal-close",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "112dc4637eb65609f3cc93f15123e9d28889465d1ed127d1eb2fa55406b1c1dd"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85726-lMN1wc/0000.png",
+    "label": "NEW_SERVER_PANE",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "0df5ed0011ee4cb17891930b3837669db6abbfeb997a8d18a60de170aa1755ea"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85726-lMN1wc/0001.png",
+    "label": "terminal-close",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85798-S0Fz7D/0000.png",
+    "label": "cold-start",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "a65b51d3990fcd90fd200336d173924c10d1e7655a599861fca8ba4075c51bad"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85798-Xjux2J/0000.png",
+    "label": "cold-start-detached",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-27aYm7/0000.png",
+    "label": "mouse workspace source",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "2ebee8ac1b2709a49656be72aed89faf035ab051fcf9fe6d7eaf3eb5db6cbe73"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-27aYm7/0001.png",
+    "label": "workspace drop hint",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "ec9d3756444ad1afc38c748b2a946e060b8c6e550c96c01f42d6211e1eff70d0"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-27aYm7/0002.png",
+    "label": "mouse workspace chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "34e9f21574e7f91c02dcae32e12b00aa4b3d9bce00378cfa7d29f0819edd7c7a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-27aYm7/0003.png",
+    "label": "mouse workspace transfer follows original process",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "a6704ffd38491d007c70eb099aee7526520ea1414268b4060c8e6956acde5153"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-27aYm7/0004.png",
+    "label": "input after mouse transfer",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d7bad059d4c81a29c249071f563d80dcd3baf55ac4a0afc7528fa1c7d2989580"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-27aYm7/0005.png",
+    "label": "mouse workspace viewer detach",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0000.png",
+    "label": "fresh workspace viewer",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "b111840693e1a05bf5b42961f1ce8274866680c1ef74c44d22994425cf06bc93"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0001.png",
+    "label": "workspace transfer prompt",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9cb45868d80af8b68d70e1a40b9e3332c2d37f4baabfc802bafe28ebe05fc218"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0002.png",
+    "label": "viewer follows moved pane",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "df69ed797eefb04f1333cc16a2c203e58880272cc093f66f071795eff589b717"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0003.png",
+    "label": "workspace order prompt",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "0d79821920acb7d73f1a4a33558f49284ec4a3dc945f19b0fe21d4c49f001f25"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0004.png",
+    "label": "viewer workspace ordering",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "a8b2b8070a92b08f4f233711cac70fec54f80d929dd82088843c26c76ed715cd"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0005.png",
+    "label": "existing workspace destination chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "fc5d185ae0746767ca9d7ea3afbd49c577895dd13eaf8c7de047fb699f014959"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0006.png",
+    "label": "viewer follows into existing workspace",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "724beb852d895f7e4d61b277446c73d69cb20778d8ecff65666ff39bb27f4b84"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0007.png",
+    "label": "input after viewer transfer",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "53c5794e929cab31471600b3da8d47e4f80b3bb5bf190e5cdf391b2107459788"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0008.png",
+    "label": "tab drag hint",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "faf20e6c26f6304b92308e635147b480d578ee136cececf6e45373151ff1749f"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0009.png",
+    "label": "pane tab drop preserves process and removes empty source",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "fd4b0cab263706375165151096f326e118b7aa8c2de50c28c97b485cee02f4cc"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-79FqS2/0010.png",
+    "label": "moved viewer detach",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-CIS0vO/0000.png",
+    "label": "workspace close viewers",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "4c90d1eb76c07185daaa06bfaf344a2840bae26d8aacca2efbb446865d719f8e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-CIS0vO/0001.png",
+    "label": "shared workspace display label",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "de3150c92757aa36ccceeb450f3efa89586fc79fd9f0156a387de884f93f2a32"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-CIS0vO/0002.png",
+    "label": "cleared workspace display label",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "4c90d1eb76c07185daaa06bfaf344a2840bae26d8aacca2efbb446865d719f8e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-CIS0vO/0003.png",
+    "label": "workspace close detaches every viewer",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-DbSoz3/0000.png",
+    "label": "detach preceding input",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9ee9ca17830691114c1cf3bf62cab5212fa4ebdc504cfc56bb7e249a5ce3db61"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-DbSoz3/0001.png",
+    "label": "listing",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "b22a53998cf470ff54b641c0d5c74101c694d7297ff90b60e6a9d79befcfdf7a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-DbSoz3/0002.png",
+    "label": "lone Escape",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "556bd348f1fb3485c8ab09f946ee72208b75f017b242ae59120045fd433cd673"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-DbSoz3/0003.png",
+    "label": "Escape prefixed key",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "349ababa439f34eb5431ce98647cb6e2553e1c5dc09d6cd474adb14dda694343"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-DbSoz3/0004.png",
+    "label": "third detach",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0000.png",
+    "label": "first pane",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "a606c5a723fee2bdda593e4502b2538f4e507832c45ae9089112aabe2cae06c7"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0001.png",
+    "label": "manual pane label",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "a18a72b8b3d9abe790a94da95853496d1265b3b95a15cdc44ad88b40820df456"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0002.png",
+    "label": "clear manual pane label",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "a606c5a723fee2bdda593e4502b2538f4e507832c45ae9089112aabe2cae06c7"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0003.png",
+    "label": "keyboard pane menu",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "c3f6d6b6aa79623f4aae06507cadf93de33dd5d19ae7982cf340035b27580765"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0004.png",
+    "label": "prefix popup",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d132e17cf982c69a7d611aedd391ac62bb437a5dc81c6819ac7fa949b225e6f0"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0005.png",
+    "label": "scrolled popup headings",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9e997ad90bbd4c7d43a76d7bdf2e7ee5447912c8902b5d3144b8ee736c060605"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0006.png",
+    "label": "popup returns to first heading",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d132e17cf982c69a7d611aedd391ac62bb437a5dc81c6819ac7fa949b225e6f0"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0007.png",
+    "label": "new tab",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5689ea960ed50198d38173ce456140b651154ca78b8d76fae0277eb35c97b30e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0008.png",
+    "label": "last pane returns across tabs",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "1291ed4027cd7f0320db51aa90328d53e4714fb5a61febf02df23202946fe4b7"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0009.png",
+    "label": "last pane toggles back",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5689ea960ed50198d38173ce456140b651154ca78b8d76fae0277eb35c97b30e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0010.png",
+    "label": "pane menu policy",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "1e5fb7bb7f93c75bbd4245900a3edebece94360794e910f58a6ef2c52fc44e08"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0011.png",
+    "label": "CLI pane policy",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5689ea960ed50198d38173ce456140b651154ca78b8d76fae0277eb35c97b30e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0012.png",
+    "label": "viewer observes CLI policy",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "c77fec2bc546057e2a4fe239077c4f9e9d137fff7d834fae461d8a2a769a1139"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0013.png",
+    "label": "policy resets to auto",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5689ea960ed50198d38173ce456140b651154ca78b8d76fae0277eb35c97b30e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0014.png",
+    "label": "unknown key popup",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "283644ef07ff13a7cd3a3098ef5a9e61db34db9244380aa3a87b317535c1af91"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0015.png",
+    "label": "literal prefix echo",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "248b7e6e45ade97fbc53618bbea8e2a7791ad820d5eb27d0d6c8e8cb17a3c164"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0016.png",
+    "label": "new-tab rename ordering",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d98fa7c1bc349a825c2c06fe63642cca45178ae0582c711a6a49057f22efb1a6"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0017.png",
+    "label": "tab chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "dae2e79cc2341c8a471a4eb0b9ca20ec24aafeb932cd3d9786f3c086830be069"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0018.png",
+    "label": "tab selection",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d9ba982e49c4b76a8d91ddf08f4ec131ab85b3e6ad22cce35ee90c7898d6710f"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0019.png",
+    "label": "rename prompt",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "a31b40a0f2d8582e263d92a55e15a63a44d972dbd96831658e881e5132c8f483"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0020.png",
+    "label": "rename escape",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "4b44ae1b9533f49addce513bf3610531a89a5b5a03415463e1b80485f4f2c247"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0021.png",
+    "label": "Unicode rename",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9686899926fc604e5c0d4dbb360bba10b893a899b168bbe45fc0ffdbcaed4fe2"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0022.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "43e891b7d0fcfcca4638acfd4db87e0bd8ff480478c7a894d73599d38a652e9f"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0023.png",
+    "label": "tab reorder chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "00aa8c281c1252ffc1a2eb1bd27cd3631ecfdc611cebdf2ce4c2e32cdfd0a64c"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0024.png",
+    "label": "mouse-only tab reorder",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "6b1cc82806c6314531cc771732d16b70c69f60d33fd78955111da082eb8a1bd1"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0025.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "002133217bcefd25b5f8697bcbb336df1af57b0655867815199bbba8673933ae"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0026.png",
+    "label": "tab reorder chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f65e3b6096a2cf81715c43d7d3400db6b57f038fb13fc67b5622e4f26f130a21"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0027.png",
+    "label": "mouse-only tab order restore",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9686899926fc604e5c0d4dbb360bba10b893a899b168bbe45fc0ffdbcaed4fe2"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0028.png",
+    "label": "inactive tab menu",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "afac8a1fb849a13051e1b12290db450d963a72ca0889fbc5c1c3dd5eb3df03e5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0029.png",
+    "label": "contextual tab rename retains selection",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "313ce438da88b751020e47246450c504dd7f899de78c5b14d27f72276406088a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0030.png",
+    "label": "split with initial ratio",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "780885d28ea7abb052bb132aa4ccdc3d1516e1220e97648596de1bf2f1b43c8c"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0031.png",
+    "label": "focus new pane after no-focus split",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "bb993400a7d3cdba6fb4e8eb992d568be4cd781563d544d452ce06f49df16f18"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0032.png",
+    "label": "nonfocused pane menu",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "1125c1c679a76e48131804bcefdcbbd1631b1800f82708e9d4baec6f3a75dbd5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0033.png",
+    "label": "contextual pane rename retains target",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "bb993400a7d3cdba6fb4e8eb992d568be4cd781563d544d452ce06f49df16f18"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0034.png",
+    "label": "explicit keyboard swap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "cc00c33e84a14b929a35ff18c83d8a9b73d2f1cf04dc635ec156e81de4349e87"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0035.png",
+    "label": "swap destination chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "14e8b024ef0b27b9fc105ce274a50813fcad765b09a2ada80413c26b762aa44b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0036.png",
+    "label": "mouse swap restores layout",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "bb993400a7d3cdba6fb4e8eb992d568be4cd781563d544d452ce06f49df16f18"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0037.png",
+    "label": "pane drag target",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "6d5b1707c6a4e7d40748eb9a6fcc96e2ce4ebbf6fc87eb077fad730c63c89cb9"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0038.png",
+    "label": "resize hint",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "3f15f2b00843b409bd1fde7ee83e622bff304cde50c70bc55f1e970972242754"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0039.png",
+    "label": "repeated resize",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f64e38a2dff3537befc34c099cb0f32851d3a2f33b90881ba79b051ddcb166d5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0040.png",
+    "label": "resize burst",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "91a1bddc4e3734d17b711c281d06145fd800a9a375f133dfbebb36c822c16e04"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0041.png",
+    "label": "focus",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d8099bfc5c3fca1fb6aad6f9feb51460f811d448be54b0fafc44bec48d44e04e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0042.png",
+    "label": "close prompt",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d5e8ab97c56d05b37bc1bb99bfc71e53ae766ef0ce9cc9ee08e7bdc42d194766"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0043.png",
+    "label": "confirmed close",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "b8b6e3f66958d1f211b73f0fa0eecbb0c551fc33996cf6e305b300bb6d4f550a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0044.png",
+    "label": "tab close prompt",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "2bf900d086c67f1560e11fa3492b4d0d4e2ebb3829aa654620f22e5e37a9fea5"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0045.png",
+    "label": "tab close",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5d5900b0e9e19efa4b04d860015d8a58ab200cdb0ad9aaf1d056c36685fed4fe"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0046.png",
+    "label": "tab chooser2",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "87a77e6c7358a02a1361e04d5621940b496151be58d92c5db1f196a6df8f746e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0047.png",
+    "label": "first tab",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5d5900b0e9e19efa4b04d860015d8a58ab200cdb0ad9aaf1d056c36685fed4fe"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0048.png",
+    "label": "copy hint",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "e1a347b2c4647c6fc694096c23e4c8304d03564da320b13a8d507f87307171a6"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0049.png",
+    "label": "copy selection",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "b918198effd8b0e6b4918f09c0a4998767d68804af551691f943c27240cd7338"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0050.png",
+    "label": "clipboard copy",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "112b7b14f8959727d72fced8a45f7680d4717dcc60469a12567c5745bfbece54"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0051.png",
+    "label": "shift drag",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "b918198effd8b0e6b4918f09c0a4998767d68804af551691f943c27240cd7338"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0052.png",
+    "label": "shift drag copy",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "112b7b14f8959727d72fced8a45f7680d4717dcc60469a12567c5745bfbece54"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0053.png",
+    "label": "side split",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d75e6350d87382eb023cf0e56f3d01fbbdf91fdf4c730f6dad8a6d448e848b1b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0054.png",
+    "label": "stacked split",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f8cce3ac9bc8436e8d360ab854a7a93870af7e1692b0f61addb239ef13377470"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0055.png",
+    "label": "zoomed frame before traversal",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "fb8b4cb229f6fb38d33a14953c125130f433044a260bd68d4e96ab59eebed024"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0056.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "39ae742ef4f318c394c09744b2c16f6a6f557be7efcc08ae2c567c512e3ec97b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0057.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "fafdce73461fc7be1a636cefb35b1f2d05213e40d0d9a8b42d94ec1d96c9cdaa"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0058.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f8cce3ac9bc8436e8d360ab854a7a93870af7e1692b0f61addb239ef13377470"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0059.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "4c3a95f3c042001607bba354ce2d47d7c2ac178a9c1fdd5bda49b618af024aea"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0060.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "45a5e4ea6ad8520b5df9adc813f99558c5288f2769e66234ea3e52a4ff6977b2"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0061.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "18b031f51a6476b14a411d047466be6d8b870c1b343a1d1dd81590e4092ccd6a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0062.png",
+    "label": "zoomed frame before traversal",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "68307389ff5d44dbfd24f0e98d5278124fc4a2697b69f7086506af05d19669c0"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0063.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "fafdce73461fc7be1a636cefb35b1f2d05213e40d0d9a8b42d94ec1d96c9cdaa"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0064.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "39ae742ef4f318c394c09744b2c16f6a6f557be7efcc08ae2c567c512e3ec97b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0065.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "18b031f51a6476b14a411d047466be6d8b870c1b343a1d1dd81590e4092ccd6a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0066.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "65c72a0f4997c99fc00b65e958ba7a6decf157e08419342a0a83306f93b904c4"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0067.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "05713affac3a37070c2015a5f232bfa4010551e0889e62df31fbedde84534d32"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0068.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "b41fc60ffa961ef8d5df8c2822ccca5257550cfd87b65deac73edfbad156ffaa"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0069.png",
+    "label": "burst copy notice",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9ce6bc395cb7fb4b583c7db1319366979e3ef2ddf8fb248f5d0a221307382d50"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0070.png",
+    "label": "burst notice expiry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f8cce3ac9bc8436e8d360ab854a7a93870af7e1692b0f61addb239ef13377470"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0071.png",
+    "label": "copy mode notice",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f71aa775b1c6d67de636496b319232c784c59fb3486ffa5730ca6b8dfceebbf7"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0072.png",
+    "label": "notice copy",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "96133ea88a473826bf84aa92b825422c9fe590ea480d1eee60f6bcc8078461ab"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0073.png",
+    "label": "notice expiry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f8cce3ac9bc8436e8d360ab854a7a93870af7e1692b0f61addb239ef13377470"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0074.png",
+    "label": "third tab",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "224a2bb65e6c6ea57581bfc4f668781bea542247430b10e7918ee98c4277e129"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0075.png",
+    "label": "long label truncation",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "810ccfd9d464b56e341f04cbecea0c94a3247776f4cbd48f2d999083d8511909"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0076.png",
+    "label": "rename back",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "224a2bb65e6c6ea57581bfc4f668781bea542247430b10e7918ee98c4277e129"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0077.png",
+    "label": "third tab close",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f8cce3ac9bc8436e8d360ab854a7a93870af7e1692b0f61addb239ef13377470"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0078.png",
+    "label": "split close",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d75e6350d87382eb023cf0e56f3d01fbbdf91fdf4c730f6dad8a6d448e848b1b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0079.png",
+    "label": "zoomed frame before traversal",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "622ba1134d8421ad32e22ab847d09e1b7e57bdb4035d3efc643259ce1461f46c"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0080.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "ed14ad0cba41f9c3da35ee9fe8f0000f31734a040442d3c8253dba8df1fd002e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0081.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d75e6350d87382eb023cf0e56f3d01fbbdf91fdf4c730f6dad8a6d448e848b1b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0082.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "621d1a30c1fbbc8be34545803c9dad5ac5ac0928b90eb72277bc1ac06d5c1543"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0083.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "254abc34d0bae1a7f30c4598473a8992efe82f3f3a62bb1ee1af50f5219c5a27"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0084.png",
+    "label": "zoomed frame before traversal",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "405e529afa35e3efb4bf9b5c5391bd7a9d6f5d65329eb0a95f465937fb889d32"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0085.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "ed14ad0cba41f9c3da35ee9fe8f0000f31734a040442d3c8253dba8df1fd002e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0086.png",
+    "label": "keyboard traversal and wrap",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "254abc34d0bae1a7f30c4598473a8992efe82f3f3a62bb1ee1af50f5219c5a27"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0087.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d57fe16f33ffb594fb1e6a92f398b830446eb20934cd63e801348171bbc19945"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0088.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "233528cae581fef6ff99c8b3e803a8dfd4ed6d982caaf3f2ac6125a34969cace"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0089.png",
+    "label": "second split close",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5d5900b0e9e19efa4b04d860015d8a58ab200cdb0ad9aaf1d056c36685fed4fe"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0090.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f32315fe9aa0ab00a350311d0a2b148915878bd97fe9dc769a2172d2f8c2d62d"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0091.png",
+    "label": "CLI preserves private focus in a later snapshot",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f925a9c0be1ea2545fa205eecc530ab4fb78345586ec7f5ab7c6d5cf13326649"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0092.png",
+    "label": "second viewer",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5d5900b0e9e19efa4b04d860015d8a58ab200cdb0ad9aaf1d056c36685fed4fe"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0093.png",
+    "label": "first popup",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "b8b29b81110f922340af0cf5100fa3dcddaab38ae4a22a992dbb4414fa1e2a05"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0094.png",
+    "label": "second input",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9ebc9a105186daabe672bb0691030d74b057fca068a490d2dee864beba9c5b85"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0095.png",
+    "label": "first selection",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f93effd8f5f29cb38d709cc831a8fe53a380fd0166cb307b26983fd41a39e96b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0096.png",
+    "label": "second output during copy",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "6e490c7d8512bd42e565f474da93c7cc51272b1d7378908290421e2b2c3ea2b6"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0097.png",
+    "label": "before-resize",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "afb2ee4de4a7d0b889bcebeea715acbd570d6c30bf7d4381037e91a482f59ec6"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0098.png",
+    "label": "tiny popup",
+    "size": [
+      180,
+      80
+    ],
+    "previously_reviewed": true,
+    "sha256": "cb981697d8414b466e9c87cf72c70612aac1fa682f515221ec1e02376d810bf1"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0099.png",
+    "label": "before-resize",
+    "size": [
+      180,
+      80
+    ],
+    "previously_reviewed": true,
+    "sha256": "6169544e9697181095eb98768e8f7d1a3673f1e35d524bad7633b3af2608fa7c"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0100.png",
+    "label": "before-resize",
+    "size": [
+      10,
+      20
+    ],
+    "previously_reviewed": true,
+    "sha256": "0924f13a2589355298301a665df256ea118aba4a211bef56eadcfe1d21813621"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0101.png",
+    "label": "resized scrolled command context",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "1d74c0bf12006c484675854a012924db22358ba1cbc31d4dd6f5b562ae2bdc76"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0102.png",
+    "label": "resize command context",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "6334b652bd760b613d289aa919eb3191ca6db9fc735ebc6c00892effafd58395"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0103.png",
+    "label": "before-resize",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "af685cfcf4c8f10edb1d8f16b40fc93ac38954df7387b2d2b6843efede71b23a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0104.png",
+    "label": "two-row bar",
+    "size": [
+      200,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "78fdb0ea6281abbf3237d633f5a4589c3c2fc2e5f4cd1eb8dc59a0d91da0d87d"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0105.png",
+    "label": "new workspace prompt",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "27a46cf15c814ef78dc0b1e5b79ea3b5629f94466e08b7729b875a1c486552e7"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0106.png",
+    "label": "new workspace attachment",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "353a35ca92da8aa59bd2a8bdd50dabe103a97c7d7ebaf46ba7eae9b12066376e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0107.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "484dbac5fece7a3c28c8f3f7474dd1bdbc7baabdeb424bd3bd2f1da2699f8115"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0108.png",
+    "label": "workspace destination chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "494fc8e68f2c7562285c0f8a2db202579d2cbf579181fca3b420bb06b76930a2"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0109.png",
+    "label": "mouse-only workspace reorder",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "db6a082230da48a1c4692733dfe8f7c75e99feb7efdaeb8cefddc4305941d8c7"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0110.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "484dbac5fece7a3c28c8f3f7474dd1bdbc7baabdeb424bd3bd2f1da2699f8115"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0111.png",
+    "label": "workspace destination chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "06d0ea89212f0ec7eca36b32e216334c0f87d3bd089aa660dcd3b27de107b0b0"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0112.png",
+    "label": "mouse workspace select",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "af685cfcf4c8f10edb1d8f16b40fc93ac38954df7387b2d2b6843efede71b23a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0113.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "0152eba775609f90e322ca75e11920150af2aa23166cd47ec5df991fbed8fa9b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0114.png",
+    "label": "workspace destination chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d4e8efde6b6cce2101783d8ee51e2538e29d91a090979a2f08c76420cfb32a26"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0115.png",
+    "label": "mouse-only workspace restore",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "af685cfcf4c8f10edb1d8f16b40fc93ac38954df7387b2d2b6843efede71b23a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0116.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "0152eba775609f90e322ca75e11920150af2aa23166cd47ec5df991fbed8fa9b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0117.png",
+    "label": "workspace destination chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "45f3caea3db1a3456209a40115950c66238d4129234bcfc104e89bb81c20563e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0118.png",
+    "label": "mouse workspace return",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "db6a082230da48a1c4692733dfe8f7c75e99feb7efdaeb8cefddc4305941d8c7"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0119.png",
+    "label": "workspace chooser",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "83ea0f0e8106ef9883673cc8d8fc467c4711634d316e951e50ea2da728e395a9"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0120.png",
+    "label": "chooser cancel",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "f1aecf7888d9ab9f2845f27b9c3db30c12fbd0a60d95555ed81c78e91cfbd2ca"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0121.png",
+    "label": "switch suffix",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "cce3cbbfac3ae925d84243791b226e9af748156e394a99a842cb2b8c07bbde2a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0122.png",
+    "label": "workspace chooser2",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "0e4ebf3808bb023320c5ba7a93126fd37a53cfc1db90b61b305b9e93390b2d16"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0123.png",
+    "label": "switch back",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "353a35ca92da8aa59bd2a8bdd50dabe103a97c7d7ebaf46ba7eae9b12066376e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-GgAJ8k/0124.png",
+    "label": "first detach",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0000.png",
+    "label": "second viewer",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5d5900b0e9e19efa4b04d860015d8a58ab200cdb0ad9aaf1d056c36685fed4fe"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0001.png",
+    "label": "second input",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "8708955621a77492670c7b85edf9c3ea17cbd4b265a9a022b8457b0a517cf47a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0002.png",
+    "label": "second popup",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9ebc9a105186daabe672bb0691030d74b057fca068a490d2dee864beba9c5b85"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0003.png",
+    "label": "second output during copy",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "d723d8bffcd5342369c12e8fa55d926e21a67eb11010d8b751872e5324caed17"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0004.png",
+    "label": "before-resize",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "afb2ee4de4a7d0b889bcebeea715acbd570d6c30bf7d4381037e91a482f59ec6"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0005.png",
+    "label": "tiny popup",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "3e05aabd6856d6dc40e6517d94aa81c65fe98121f49402100ea2d0b6ba123e40"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0006.png",
+    "label": "before-resize",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": false,
+    "sha256": "300ebca935cef91d4aa35f7aad453e0e094f1c4cd27c461b53a51417d39b6859"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0007.png",
+    "label": "resized scrolled command context",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "af685cfcf4c8f10edb1d8f16b40fc93ac38954df7387b2d2b6843efede71b23a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0008.png",
+    "label": "two-row bar",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "cd9268e4abab4875c0b9e779d864bdc8d29269466aa250bd415a3c04a93978c9"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0009.png",
+    "label": "new workspace prompt",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "af685cfcf4c8f10edb1d8f16b40fc93ac38954df7387b2d2b6843efede71b23a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0010.png",
+    "label": "switch suffix",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "cce3cbbfac3ae925d84243791b226e9af748156e394a99a842cb2b8c07bbde2a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-Nc1jPD/0011.png",
+    "label": "second detach",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0000.png",
+    "label": "workspace close viewers",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "4c90d1eb76c07185daaa06bfaf344a2840bae26d8aacca2efbb446865d719f8e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0001.png",
+    "label": "workspace label editor",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "9325c7a7851a414157da1ecb2eed2f5cb5cb3c436d2578af0baf7f2a62ca14be"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0002.png",
+    "label": "shared workspace display label",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "de3150c92757aa36ccceeb450f3efa89586fc79fd9f0156a387de884f93f2a32"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0003.png",
+    "label": "cleared workspace display label",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "4c90d1eb76c07185daaa06bfaf344a2840bae26d8aacca2efbb446865d719f8e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0004.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "745abf868d39f9cebbd93bfce2adc1dc52a6fa73d26616ce0508fae3622e951b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0005.png",
+    "label": "workspace close confirmation",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "77d53178ab2515c9ef717b1fc03d7a7cccb00980ac0e33d73eb051509e95a6e4"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0006.png",
+    "label": "mouse workspace cancel",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "4c90d1eb76c07185daaa06bfaf344a2840bae26d8aacca2efbb446865d719f8e"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0007.png",
+    "label": "workspace close menu",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "745abf868d39f9cebbd93bfce2adc1dc52a6fa73d26616ce0508fae3622e951b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0008.png",
+    "label": "menu close confirmation",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "77d53178ab2515c9ef717b1fc03d7a7cccb00980ac0e33d73eb051509e95a6e4"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-SkqcpU/0009.png",
+    "label": "workspace close detaches every viewer",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0000.png",
+    "label": "tiny fixture ready",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "5175741f278967609fa2e1db39fe4982b378fbba63b406e1e627f99c29e99788"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0001.png",
+    "label": "tiny side split",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "6734bfa4ac43690482d5b6ef5fd41e08995de94e6d22f33b52b4e439feeb87d2"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0002.png",
+    "label": "tiny nested split",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "302b4a1f00bbc08af4003935a20b5b421e7cbfd459fcdc46f8834b24847dbf2a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0003.png",
+    "label": "tiny area applied",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "08caf50ac376f631082a56870e27be068d5dda4a95f14578195927b1bb5e94e1"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0004.png",
+    "label": "tiny keyboard focus and zoom",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "e0ef64d1d290dcd2755ca23d2bf9a7f12f8e55d768e861751a74bd2c96146f74"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0005.png",
+    "label": "tiny pane accepts input",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "3772ca820edbefaa923d9c3f44bb9243401546fec4e94a118785017c8fa316f4"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0006.png",
+    "label": "tiny unzoom",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "08caf50ac376f631082a56870e27be068d5dda4a95f14578195927b1bb5e94e1"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0007.png",
+    "label": "tiny keyboard focus and zoom",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "e0ef64d1d290dcd2755ca23d2bf9a7f12f8e55d768e861751a74bd2c96146f74"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0008.png",
+    "label": "tiny pane accepts input",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "1d818e6e792ee7ff2ff988aaf927cecc49bc1ab2dd5a5acb9b904e77dba55759"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0009.png",
+    "label": "tiny unzoom",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "08caf50ac376f631082a56870e27be068d5dda4a95f14578195927b1bb5e94e1"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0010.png",
+    "label": "tiny keyboard focus and zoom",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "e0ef64d1d290dcd2755ca23d2bf9a7f12f8e55d768e861751a74bd2c96146f74"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0011.png",
+    "label": "tiny pane accepts input",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "b08768dbc6f2f4753fc835d40e7466caedbd82183aac41d00a6a466187d3e628"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0012.png",
+    "label": "tiny unzoom",
+    "size": [
+      20,
+      40
+    ],
+    "previously_reviewed": true,
+    "sha256": "08caf50ac376f631082a56870e27be068d5dda4a95f14578195927b1bb5e94e1"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0013.png",
+    "label": "tiny area applied",
+    "size": [
+      10,
+      20
+    ],
+    "previously_reviewed": true,
+    "sha256": "0924f13a2589355298301a665df256ea118aba4a211bef56eadcfe1d21813621"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0014.png",
+    "label": "restore tiny layout",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "16b365657700881df07ec121525f9471139aa12c993635d1a1a3e53497b9bdd4"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0015.png",
+    "label": "output after tiny restore",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "37d210072b6f44ebacf45abf9ce8e330caf607c5f7d166b99f44dd5e2d59aafe"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0016.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "26a3c8fae717798f581223c356032ed78d3b986673e49541b2640d6820f50d9a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0017.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "1b0ee2473103991114b6a8b3309efe8f499b333f4269e3e6bc5bafca9933bcd0"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0018.png",
+    "label": "mouse pane close dialog finished",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "37d210072b6f44ebacf45abf9ce8e330caf607c5f7d166b99f44dd5e2d59aafe"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0019.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "26a3c8fae717798f581223c356032ed78d3b986673e49541b2640d6820f50d9a"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0020.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "1b0ee2473103991114b6a8b3309efe8f499b333f4269e3e6bc5bafca9933bcd0"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0021.png",
+    "label": "mouse pane close dialog finished",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "63f9287cd03d07d2d940b9c3081912a096ea0ecf9123c5ee87a9745caee260b6"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0022.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "e478ebdc4d9f6238c4c647125cb9120286f7431fa9595dbae9e5bd226776b7e9"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0023.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "3aeb6431fc2d7e895a36bd0eec4179cc5644bba621077fc0975f4c1dbaa20947"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0024.png",
+    "label": "mouse tab close cancelled",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "63f9287cd03d07d2d940b9c3081912a096ea0ecf9123c5ee87a9745caee260b6"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0025.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "e478ebdc4d9f6238c4c647125cb9120286f7431fa9595dbae9e5bd226776b7e9"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0026.png",
+    "label": "mouse chooser entry",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "3aeb6431fc2d7e895a36bd0eec4179cc5644bba621077fc0975f4c1dbaa20947"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-T4ywQS/0027.png",
+    "label": "mouse last-tab close detaches viewer",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-XWkqRe/0000.png",
+    "label": "overflow viewer",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "1846fc9a03024df4db831a72a986e4da2dc1c3bac4baf322d55193d4b540752b"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-XWkqRe/0001.png",
+    "label": "hidden tab destination",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "bb95e7bbce3c4217ac927f515694254c673ed3d65e4f18783beecdc8956763e8"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-XWkqRe/0002.png",
+    "label": "wheel chooses hidden tab",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "35b104794ddc66a1d39657f209913b688054411a705d717f76f3416b1fe6fe68"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-XWkqRe/0003.png",
+    "label": "drop into hidden tab preserves process",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "ee3404622f101f3820ffdcf39b06b4627e3d12327b33ae0a8f774f1d5f6e29ca"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-85821-XWkqRe/0004.png",
+    "label": "overflow viewer detach",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "303783dd98c897601744818bd3910205b758f9f5e46ce22631adc787426e54ce"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-87066-1Cx56f/0000.png",
+    "label": "rejected-handshake-zero-size-pty",
+    "size": [
+      10,
+      20
+    ],
+    "previously_reviewed": true,
+    "sha256": "235777e26e792f435bc7104e6e1e98b71a970912c6ea4f6b4985411496183112"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-87066-ilECOY/0000.png",
+    "label": "rejected-handshake-zero-size-pty",
+    "size": [
+      10,
+      20
+    ],
+    "previously_reviewed": true,
+    "sha256": "235777e26e792f435bc7104e6e1e98b71a970912c6ea4f6b4985411496183112"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-87066-mLKmkO/0000.png",
+    "label": "rejected-handshake-zero-size-pty",
+    "size": [
+      10,
+      20
+    ],
+    "previously_reviewed": true,
+    "sha256": "235777e26e792f435bc7104e6e1e98b71a970912c6ea4f6b4985411496183112"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-87066-pUVgvS/0000.png",
+    "label": "rejected-handshake-zero-size-pty",
+    "size": [
+      10,
+      20
+    ],
+    "previously_reviewed": true,
+    "sha256": "235777e26e792f435bc7104e6e1e98b71a970912c6ea4f6b4985411496183112"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-87133-ecPgRL/0000.png",
+    "label": "source ready",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "a606c5a723fee2bdda593e4502b2538f4e507832c45ae9089112aabe2cae06c7"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-87133-ecPgRL/0001.png",
+    "label": "first workspace move",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "df69ed797eefb04f1333cc16a2c203e58880272cc093f66f071795eff589b717"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-87133-ecPgRL/0002.png",
+    "label": "existing destination ready",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "a6362f5acc4e08cc7bde163ef42d9dc5e728b8e075f4329552d1367fe2b06aa9"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-87133-ecPgRL/0003.png",
+    "label": "second workspace move",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "724beb852d895f7e4d61b277446c73d69cb20778d8ecff65666ff39bb27f4b84"
+  },
+  {
+    "png": "target/betamax-verified-complete-frames/terminal-87133-ecPgRL/0004.png",
+    "label": "input after two moves",
+    "size": [
+      800,
+      480
+    ],
+    "previously_reviewed": true,
+    "sha256": "7003e96225de1ae241392478095d9f068fd8e6074c3c0e09fbe14cfa5c1f4179"
+  }
+]

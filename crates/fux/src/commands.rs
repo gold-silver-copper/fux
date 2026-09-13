@@ -49,17 +49,37 @@ actions! {
     FocusRight => Focus, "focus right", b'l';
     FocusUp => Focus, "focus up", b'k';
     FocusDown => Focus, "focus down", b'j';
+    FocusNext => Focus, "focus next pane", b'o';
+    FocusPrevious => Focus, "focus previous pane", b'u';
+    FocusLast => Focus, "focus last pane", b'!';
+    PaneMenu => Panes, "pane actions", b'?';
+    RenamePane => Panes, "rename pane", b';';
+    CycleRightClick => Panes, "cycle right-click policy", b'*';
     ClosePane => Panes, "close pane", b'x';
+    Zoom => Panes, "zoom or restore pane", b'z';
+    SwapMode => Panes, "swap pane direction", b'v';
+    SwapPane => Panes, "swap with another pane", b'.';
+    MoveMode => Panes, "move pane direction", b'm';
     ResizeMode => Panes, "resize split", b'r';
     CopyMode => Panes, "history and copy", b'[';
+    TabMenu => Tabs, "tab actions", b'\'';
     NewTab => Tabs, "new tab", b't';
+    MoveToTab => Tabs, "move pane to tab", b'e';
+    MoveToNewTab => Tabs, "move pane to new tab", b'b';
+    ReorderTab => Tabs, "reorder tab", b'g';
     NextTab => Tabs, "next tab", b'n';
     PreviousTab => Tabs, "previous tab", b'p';
     ChooseTab => Tabs, "choose tab", b'w';
     RenameTab => Tabs, "rename tab", b',';
     CloseTab => Tabs, "close tab", b'c';
+    RenameWorkspace => Workspaces, "rename workspace", b'=';
+    CloseWorkspace => Workspaces, "close workspace", b'q';
+    WorkspaceMenu => Workspaces, "workspace actions", b'`';
     ChooseWorkspace => Workspaces, "choose workspace", b's';
     NewWorkspace => Workspaces, "new workspace", b'a';
+    ReorderWorkspace => Workspaces, "reorder workspace", b'f';
+    MoveToNewWorkspace => Workspaces, "move pane to new workspace", b'y';
+    MoveToWorkspace => Workspaces, "move pane to workspace", b'i';
     Detach => Session, "detach", b'd';
 }
 
@@ -90,29 +110,96 @@ pub struct BindingSpec {
 }
 
 impl Action {
+    pub const PANE_CONTEXT: &'static [Self] = &[
+        Self::RenamePane,
+        Self::CycleRightClick,
+        Self::SplitSide,
+        Self::SplitStack,
+        Self::Zoom,
+        Self::SwapPane,
+        Self::SwapMode,
+        Self::MoveMode,
+        Self::ResizeMode,
+        Self::MoveToTab,
+        Self::MoveToNewTab,
+        Self::MoveToWorkspace,
+        Self::MoveToNewWorkspace,
+        Self::ClosePane,
+    ];
+    pub const TAB_CONTEXT: &'static [Self] = &[
+        Self::NewTab,
+        Self::RenameTab,
+        Self::ReorderTab,
+        Self::CloseTab,
+    ];
+    pub const WORKSPACE_CONTEXT: &'static [Self] = &[
+        Self::ChooseWorkspace,
+        Self::NewWorkspace,
+        Self::ReorderWorkspace,
+        Self::CloseWorkspace,
+        Self::RenameWorkspace,
+    ];
+
     /// The obvious contextual restrictions shared by the popup and viewer dispatch. The server
     /// remains authoritative for limits and for changes made by other viewers.
     pub fn unavailable(self, frame: &Frame, workspaces: bool) -> Option<&'static str> {
         let visible = frame.layout.len();
         let live_focus = frame.focused_pane().is_some_and(|pane| pane.exit.is_none());
         match self {
-            Self::Detach | Self::NewTab => None,
-            Self::ChooseWorkspace | Self::NewWorkspace => {
+            Self::Detach | Self::NewTab | Self::WorkspaceMenu => None,
+            Self::CloseWorkspace | Self::RenameWorkspace => (frame.server_instance.is_empty()
+                || frame.workspace_stream == 0)
+                .then_some("Workspace identity unavailable"),
+            Self::ChooseWorkspace | Self::NewWorkspace | Self::ReorderWorkspace => {
                 (!workspaces).then_some("Not available through this attachment")
             }
-            Self::ClosePane | Self::CopyMode => (!live_focus).then_some("No live pane"),
-            Self::SplitSide | Self::SplitStack => {
-                frame.focused.is_none().then_some("No active pane")
+            Self::MoveToNewWorkspace | Self::MoveToWorkspace => {
+                if !workspaces {
+                    Some("Not available through this attachment")
+                } else if !live_focus {
+                    Some("No live pane")
+                } else {
+                    frame
+                        .server_instance
+                        .is_empty()
+                        .then_some("Server identity unavailable")
+                }
             }
-            Self::NextTab | Self::PreviousTab => (frame.tabs.len() < 2).then_some("Only one tab"),
-            Self::ChooseTab | Self::RenameTab | Self::CloseTab => {
-                frame.active_tab.is_none().then_some("No active tab")
+            Self::PaneMenu | Self::RenamePane | Self::CycleRightClick => {
+                if frame.server_instance.is_empty() {
+                    Some("Server identity unavailable")
+                } else {
+                    (!live_focus).then_some("No live pane")
+                }
             }
             Self::FocusLeft
             | Self::FocusRight
             | Self::FocusUp
             | Self::FocusDown
-            | Self::ResizeMode => (visible < 2).then_some("No split to adjust"),
+            | Self::FocusNext
+            | Self::FocusPrevious
+            | Self::FocusLast => frame.focused.is_none().then_some("No active pane"),
+            Self::ClosePane => (!live_focus).then_some("No live pane"),
+            Self::CopyMode => frame.focused_pane().is_none().then_some("No pane to copy"),
+            Self::MoveToNewTab => (!live_focus).then_some("No live pane"),
+            Self::MoveToTab => {
+                if !live_focus {
+                    Some("No live pane")
+                } else {
+                    (frame.tabs.len() < 2).then_some("Only one tab")
+                }
+            }
+            Self::ReorderTab => (frame.tabs.len() < 2).then_some("Only one tab"),
+            Self::SplitSide | Self::SplitStack | Self::Zoom => {
+                frame.focused.is_none().then_some("No active pane")
+            }
+            Self::NextTab | Self::PreviousTab => (frame.tabs.len() < 2).then_some("Only one tab"),
+            Self::TabMenu | Self::ChooseTab | Self::RenameTab | Self::CloseTab => {
+                frame.active_tab.is_none().then_some("No active tab")
+            }
+            Self::SwapMode | Self::SwapPane | Self::MoveMode | Self::ResizeMode => {
+                (visible < 2).then_some("No split to adjust")
+            }
         }
     }
 }
@@ -352,6 +439,36 @@ mod tests {
     }
 
     #[test]
+    fn navigation_remains_available_with_one_visible_or_zoomed_pane() {
+        let mut frame = Frame::default();
+        let navigation = [
+            Action::FocusLeft,
+            Action::FocusRight,
+            Action::FocusUp,
+            Action::FocusDown,
+            Action::FocusNext,
+            Action::FocusPrevious,
+            Action::FocusLast,
+        ];
+        for action in navigation {
+            assert_eq!(action.unavailable(&frame, true), Some("No active pane"));
+        }
+        frame.focused = Some(crate::ids::PaneId(1));
+        frame.layout.push(crate::view::PaneRect {
+            pane: crate::ids::PaneId(1),
+            rect: crate::layout::Rect::default(),
+        });
+        for zoomed in [None, frame.focused] {
+            frame.zoomed = zoomed;
+            for action in navigation {
+                assert_eq!(action.unavailable(&frame, true), None);
+            }
+            assert!(Action::ResizeMode.unavailable(&frame, true).is_some());
+            assert!(Action::SwapPane.unavailable(&frame, true).is_some());
+        }
+    }
+
+    #[test]
     fn keys_match_without_shift_and_shifted_twins_are_rejected() {
         let bindings = ClientBindings::default();
         assert_eq!(
@@ -366,9 +483,10 @@ mod tests {
         assert_eq!(bindings.action(b'A'), Some(Action::NewWorkspace));
         assert_eq!(
             bindings.action(b'?'),
-            None,
-            "no help action; ? is an unknown key"
+            Some(Action::PaneMenu),
+            "pane context menu is available with or without Shift"
         );
+        assert_eq!(bindings.action(b'/'), Some(Action::PaneMenu));
         assert_eq!(canonical_key(b'{'), b'[');
         assert_eq!(canonical_key(1), 1);
         let mut config = crate::config::Config::default();

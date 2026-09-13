@@ -259,6 +259,17 @@ pub(super) fn run(fux: &Path, zor: &Path) -> Result<()> {
             "recovery rotation: {rotated}"
         );
         parked(&control, || {
+            // Discovery is manager-owned: losing a workspace route alone must
+            // not make an otherwise verifiable process uncertain.
+            let live = cli(&["task", "launch-reconcile", "untouched"], true)?;
+            ensure!(
+                live["attempt"]["state"] == "active" && live["session"] == untouched["session"],
+                "workspace route outage changed verified identity"
+            );
+            Ok(())
+        })?;
+        let manager = root.path().join("fux/manager.sock");
+        parked(&manager, || {
             cli(&["task", "launch-reconcile", "untouched"], false)?;
             ensure!(
                 inspect("untouched")?["attempt"]["state"] == "uncertain",
@@ -325,7 +336,7 @@ pub(super) fn run(fux: &Path, zor: &Path) -> Result<()> {
                     .contains("no command or prompt replayed"),
             "unproven final evidence"
         );
-        parked(&control, || {
+        parked(&manager, || {
             cli(&["task", "launch-reconcile", "untouched"], false)?;
             ensure!(
                 inspect("untouched")?["attempt"]["state"] == "lost",

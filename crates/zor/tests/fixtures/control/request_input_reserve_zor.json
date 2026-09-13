@@ -1,0 +1,7 @@
+{
+  "command": "input-reserve",
+  "id": 1,
+  "instance": "owner",
+  "pane": 2,
+  "retain_ms": 1000
+}

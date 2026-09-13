@@ -1,0 +1,15 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.48s
+     Running unittests src/lib.rs (target/debug/deps/fux-ac01031fe3ff3cd2)
+
+running 7 tests
+test client::render::tests::bar_shows_workspace_tab_and_focused_pane_without_any_frame ... ok
+test client::render::tests::bar_truncates_from_the_right_zone_first_and_keeps_the_current_tab ... ok
+test client::render::tests::drop_preview_preserves_text_and_highlights_whole_wide_characters ... ok
+test client::render::tests::invalidated_redraw_clears_the_previous_status_bar_background ... ok
+test client::render::tests::notices_replace_the_pane_title_in_the_bar ... ok
+test client::render::tests::separators_join_between_panes_and_brighten_next_to_focus ... ok
+test client::render::tests::tiny_and_zero_terminals_never_panic ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 139 filtered out; finished in 0.01s
+

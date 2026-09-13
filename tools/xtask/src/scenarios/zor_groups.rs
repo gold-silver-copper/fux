@@ -482,6 +482,13 @@ pub fn run(fux: &Path, zor: &Path, automatic: bool) -> Result<()> {
         let alternate = root.path().join("alternate");
         fs::create_dir(&alternate)?;
         std::os::unix::fs::symlink(root.control(), alternate.join("default.sock"))?;
+        // A runtime alias must expose both discovery and workspace operations.
+        // Adoption validates immutable launch identity through the manager before
+        // the assertions below check route-independent prompt exclusion.
+        std::os::unix::fs::symlink(
+            root.path().join("fux/manager.sock"),
+            alternate.join("manager.sock"),
+        )?;
         c!(
             "task",
             "adopt",

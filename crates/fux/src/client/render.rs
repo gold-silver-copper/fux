@@ -22,6 +22,7 @@ pub struct LocalView<'a> {
     pub view: &'a PaneView,
     pub cursor: (u16, u16),
     pub anchor: Option<(u16, u16)>,
+    pub keyboard: bool,
 }
 
 /// A transient message for the bar's right zone.
@@ -91,12 +92,21 @@ fn styled(fg: Option<Color>) -> Style {
 pub struct Composed {
     pub buffer: Buffer,
     pub cursor: Option<(u16, u16)>,
+    pub tabs: Vec<(Rect, crate::ids::TabId)>,
+    pub entries: Vec<(Rect, usize)>,
+    pub panel: Option<Rect>,
+}
+
+pub struct HitRegions {
+    pub tabs: Vec<(Rect, crate::ids::TabId)>,
+    pub entries: Vec<(Rect, usize)>,
+    pub panel: Option<Rect>,
 }
 
 /// Composes `frame` for a terminal of `rows` x `cols`.
 pub fn compose(
     frame: &Frame,
-    local: Option<&LocalView<'_>>,
+    local: Option<&[LocalView<'_>]>,
     panel: Option<&HintPanel>,
     notice: Option<&Notice>,
     palette: &Palette,
@@ -106,7 +116,13 @@ pub fn compose(
     let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
     let mut cursor = None;
     if rows == 0 || cols == 0 {
-        return Composed { buffer, cursor };
+        return Composed {
+            buffer,
+            cursor,
+            tabs: Vec::new(),
+            entries: Vec::new(),
+            panel: None,
+        };
     }
     for entry in &frame.layout {
         let content = Rect::new(
@@ -119,12 +135,16 @@ pub fn compose(
         let Some(pane) = frame.pane(entry.pane) else {
             continue;
         };
-        let overlay = local.filter(|local| local.pane == entry.pane);
+        let overlay = local.and_then(|views| views.iter().find(|local| local.pane == entry.pane));
         let view = overlay.map_or(pane, |local| local.view);
         paint_pane(&mut buffer, content, view);
         if let Some(local) = overlay {
             paint_selection(&mut buffer, content, local);
-            if focused && local.cursor.0 < content.height && local.cursor.1 < content.width {
+            if focused
+                && local.keyboard
+                && local.cursor.0 < content.height
+                && local.cursor.1 < content.width
+            {
                 cursor = Some((
                     content.y.saturating_add(local.cursor.0),
                     content.x.saturating_add(local.cursor.1),
@@ -152,17 +172,80 @@ pub fn compose(
         }
     }
     paint_separators(&mut buffer, frame, palette);
+    if let Some((pane, side)) = panel.and_then(|panel| panel.drop_target) {
+        paint_drop_target(&mut buffer, frame, pane, side);
+    }
     // The bar is painted last so a stale, taller frame (repainted after a shrink) cannot cover it.
-    paint_bar(&mut buffer, frame, notice, palette);
+    let tabs = paint_bar(&mut buffer, frame, notice, palette);
+    if let Some(target) = panel.and_then(|panel| panel.drop_tab)
+        && let Some((rect, _)) = tabs.iter().find(|(_, tab)| *tab == target)
+    {
+        for x in rect.x..rect.right() {
+            if let Some(cell) = buffer.cell_mut((x, rect.y)) {
+                cell.set_style(Style::reset().fg(Color::Black).bg(Color::Cyan));
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    let mut panel_bounds = None;
     if let Some(panel) = panel {
         // Popups sit above the bar, never on it.
         let above_bar = Rect::new(0, 0, cols, rows.saturating_sub(1));
-        panel.paint(&mut buffer, above_bar);
-        if !panel.is_thin() || local.is_none() {
+        let painted = panel.paint_with_bounds(&mut buffer, above_bar);
+        entries = painted.entries;
+        panel_bounds = painted.bounds;
+        if !panel.is_thin()
+            || !local.is_some_and(|views| views.iter().any(|view| view.keyboard))
+            || cursor.is_some_and(|(row, _)| row >= above_bar.bottom().saturating_sub(1))
+        {
             cursor = None;
         }
     }
-    Composed { buffer, cursor }
+    Composed {
+        buffer,
+        cursor,
+        tabs,
+        entries,
+        panel: panel_bounds,
+    }
+}
+
+/// Preview the insertion side without changing terminal cells or server geometry. Whole wide
+/// characters share the highlight, including when the half-pane boundary bisects one.
+fn paint_drop_target(
+    buffer: &mut Buffer,
+    frame: &Frame,
+    pane: PaneId,
+    side: crate::layout::Direction,
+) {
+    use crate::layout::Direction;
+    let Some(entry) = frame.layout.iter().find(|entry| entry.pane == pane) else {
+        return;
+    };
+    let Some(view) = frame.pane(pane) else {
+        return;
+    };
+    let rect = entry.rect;
+    let selected = |x: u16, y: u16| match side {
+        Direction::Left => x < rect.width.div_ceil(2),
+        Direction::Right => x >= rect.width / 2,
+        Direction::Up => y < rect.height.div_ceil(2),
+        Direction::Down => y >= rect.height / 2,
+    };
+    for y in 0..rect.height.min(buffer.area.height.saturating_sub(rect.y)) {
+        for x in 0..rect.width.min(buffer.area.width.saturating_sub(rect.x)) {
+            let neighbor = view.cell(y, x).and_then(|cell| match cell.kind {
+                CellKind::WideLeading => x.checked_add(1).filter(|x| *x < rect.width),
+                CellKind::WideContinuation => x.checked_sub(1),
+                _ => None,
+            });
+            if (selected(x, y) || neighbor.is_some_and(|x| selected(x, y)))
+                && let Some(cell) = buffer.cell_mut((rect.x + x, rect.y + y))
+            {
+                cell.set_style(Style::reset().fg(Color::Black).bg(Color::Cyan));
+            }
+        }
+    }
 }
 
 fn paint_exit_marker(buffer: &mut Buffer, content: Rect, code: u32, palette: &Palette) {
@@ -191,7 +274,13 @@ fn paint_exit_marker(buffer: &mut Buffer, content: Rect, code: u32, palette: &Pa
     );
 }
 
-fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palette: &Palette) {
+fn paint_bar(
+    buffer: &mut Buffer,
+    frame: &Frame,
+    notice: Option<&Notice>,
+    palette: &Palette,
+) -> Vec<(Rect, crate::ids::TabId)> {
+    let mut tabs = Vec::new();
     let width = buffer.area.width;
     let row = buffer.area.height.saturating_sub(1);
     let base = palette
@@ -209,7 +298,7 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
         .iter()
         .find(|tab| Some(tab.id) == frame.active_tab)
         .map_or(0, |tab| text::width(&tab.label).saturating_add(2));
-    let mut left = format!(" {} │", frame.workspace);
+    let mut left = format!(" {} │", frame.workspace_display_name());
     if text::width(&left).saturating_add(active_width) > width {
         // The name never disappears entirely: it keeps at least a quarter of the bar.
         let allowed = width
@@ -218,7 +307,7 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
             .clamp(3, width.max(3));
         left = format!(
             " {} │",
-            text::head(&frame.workspace, allowed.saturating_sub(3))
+            text::head(frame.workspace_display_name(), allowed.saturating_sub(3))
         );
     }
     let (right_text, right_style) = match notice {
@@ -259,7 +348,7 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
     let mut x = 0_u16;
     text::put(buffer, x, row, &left, left_width, base);
     x = x.saturating_add(left_width);
-    for (label, active) in fit_tabs(frame, room) {
+    for (id, label, active) in fit_tabs(frame, room) {
         let style = if active {
             palette
                 .tab_active
@@ -270,6 +359,7 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
         };
         let w = text::width(&label);
         text::put(buffer, x, row, &label, w, style);
+        tabs.push((Rect::new(x, row, w, 1), id));
         x = x.saturating_add(w);
     }
     if right_width > 0 && right_width <= width {
@@ -284,6 +374,7 @@ fn paint_bar(buffer: &mut Buffer, frame: &Frame, notice: Option<&Notice>, palett
             right_style,
         );
     }
+    tabs
 }
 
 fn focused_label(frame: &Frame) -> String {
@@ -293,7 +384,7 @@ fn focused_label(frame: &Frame) -> String {
     let Some(pane) = frame.pane(id) else {
         return id.to_string();
     };
-    let title = crate::view::printable(&pane.title, usize::MAX);
+    let title = crate::view::printable(pane.label.as_deref().unwrap_or(&pane.title), usize::MAX);
     let mut label = if title.is_empty() {
         id.to_string()
     } else {
@@ -307,7 +398,7 @@ fn focused_label(frame: &Frame) -> String {
 
 /// Chooses which tab labels fit in `room`, the current tab first, then its neighbours outward;
 /// the first label that does not fit whole is truncated. Returns labels in tab order.
-fn fit_tabs(frame: &Frame, room: u16) -> Vec<(String, bool)> {
+fn fit_tabs(frame: &Frame, room: u16) -> Vec<(crate::ids::TabId, String, bool)> {
     let active = frame
         .tabs
         .iter()
@@ -351,7 +442,11 @@ fn fit_tabs(frame: &Frame, room: u16) -> Vec<(String, bool)> {
     chosen
         .into_iter()
         .enumerate()
-        .filter_map(|(index, label)| label.map(|label| (label, index == active)))
+        .filter_map(|(index, label)| {
+            label
+                .zip(frame.tabs.get(index))
+                .map(|(label, tab)| (tab.id, label, index == active))
+        })
         .collect()
 }
 
@@ -553,7 +648,10 @@ pub fn paint<B: TerminalBackend>(
         let empty = Buffer::empty(next.area);
         let previous = previous.filter(|previous| previous.area == next.area);
         if previous.is_none() {
-            backend.write_bytes(b"\x1b[2J")?;
+            // ED uses the current background on BCE terminals. The preceding frame
+            // commonly ends on the colored status bar; reset before treating the
+            // cleared screen as an all-default buffer for the diff below.
+            backend.write_bytes(b"\x1b[0m\x1b[2J")?;
         }
         let previous = previous.unwrap_or(&empty);
         for (col, row, cell) in previous.diff(next) {
@@ -633,6 +731,8 @@ mod tests {
             frame.tabs.push(TabEntry {
                 id: TabId(index as u32 + 1),
                 label: format!("t{index}"),
+                layout_generation: 0,
+                first_pane: None,
             });
         }
         frame.active_tab = Some(TabId(1));
@@ -648,6 +748,121 @@ mod tests {
         });
         frame.panes.insert(PaneId(1), view(b"hello", 4, 10));
         frame
+    }
+
+    #[test]
+    fn copy_exit_remains_visible_at_standard_and_narrow_widths() {
+        for width in [40, 80] {
+            for selection in [false, true] {
+                let mut copy =
+                    super::super::copy::CopySession::new(PaneId(1), view(b"hello", 4, 10));
+                if selection {
+                    copy.key(super::super::copy::CopyKey::Anchor);
+                }
+                let panel = HintPanel::bar(&copy.hint());
+                let composed = compose(
+                    &frame(1),
+                    None,
+                    Some(&panel),
+                    None,
+                    &Palette::default(),
+                    5,
+                    width,
+                );
+                let line: String = (0..width)
+                    .map(|x| composed.buffer[(x, 3)].symbol())
+                    .collect();
+                assert!(
+                    line.contains("Esc finish"),
+                    "missing visible exit at width {width}: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_thin_history_hint_never_displays_an_application_cursor_inside_it() {
+        let frame = frame(1);
+        let panel = HintPanel::bar("History pane 2 · Esc live");
+        let composed = compose(
+            &frame,
+            Some(&[]),
+            Some(&panel),
+            None,
+            &Palette::default(),
+            5,
+            30,
+        );
+        assert!(composed.cursor.is_none());
+        let pane = frame
+            .pane(PaneId(1))
+            .unwrap_or_else(|| panic!("fixture pane"));
+        let local = [LocalView {
+            pane: PaneId(1),
+            view: pane,
+            cursor: (3, 0),
+            anchor: None,
+            keyboard: true,
+        }];
+        let composed = compose(
+            &frame,
+            Some(&local),
+            Some(&panel),
+            None,
+            &Palette::default(),
+            5,
+            30,
+        );
+        assert!(
+            composed.cursor.is_none(),
+            "copy cursor overlaps the hint row"
+        );
+    }
+
+    #[test]
+    fn drop_preview_preserves_text_and_highlights_whole_wide_characters() {
+        use crate::layout::Direction;
+        let mut frame = frame(1);
+        frame
+            .panes
+            .insert(PaneId(1), view("abcd界efgh".as_bytes(), 4, 10));
+        let original = compose(&frame, None, None, None, &Palette::default(), 6, 12);
+        for side in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            let mut panel = HintPanel::bar("drop");
+            panel.drop_target = Some((PaneId(1), side));
+            let preview = compose(&frame, None, Some(&panel), None, &Palette::default(), 6, 12);
+            for y in 0..4 {
+                for x in 0..10 {
+                    assert_eq!(
+                        preview.buffer[(x, y)].symbol(),
+                        original.buffer[(x, y)].symbol()
+                    );
+                }
+            }
+            assert_eq!(preview.buffer[(4, 0)].bg, preview.buffer[(5, 0)].bg);
+            let (inside, outside) = match side {
+                Direction::Left => ((0, 0), (9, 0)),
+                Direction::Right => ((9, 0), (0, 0)),
+                Direction::Up => ((0, 0), (0, 3)),
+                Direction::Down => ((0, 3), (0, 0)),
+            };
+            assert_eq!(preview.buffer[inside].bg, Color::Cyan);
+            assert_eq!(preview.buffer[outside].bg, original.buffer[outside].bg);
+            // Local viewport shrink must clip stale geometry and leave the bar above the overlay.
+            let tiny = compose(&frame, None, Some(&panel), None, &Palette::default(), 2, 3);
+            assert_ne!(tiny.buffer[(0, 1)].bg, Color::Cyan);
+            compose(&frame, None, Some(&panel), None, &Palette::default(), 0, 0);
+        }
+        assert_eq!(
+            compose(&frame, None, None, None, &Palette::default(), 6, 12).buffer,
+            original.buffer,
+            "removing the preview restores the exact rendering"
+        );
     }
 
     fn split_frame() -> Frame {
@@ -791,6 +1006,37 @@ mod tests {
                 .is_some_and(|cell| cell.modifier.contains(Modifier::BOLD)),
             "the row separator above pane 3 is bold"
         );
+    }
+
+    #[test]
+    fn invalidated_redraw_clears_the_previous_status_bar_background() -> std::io::Result<()> {
+        let mut backend = super::super::backend::CaptureBackend::new(3, 8);
+        let mut first = Buffer::empty(Rect::new(0, 0, 8, 3));
+        for x in 0..8 {
+            first[(x, 2)].set_bg(Color::DarkGray);
+        }
+        paint(&mut backend, None, &first, None)?;
+        let mut terminal = vt100::Parser::new(3, 8, 0);
+        terminal.process(&backend.bytes);
+        assert_eq!(
+            terminal.screen().cell(2, 0).map(|cell| cell.bgcolor()),
+            Some(vt100::Color::Idx(8))
+        );
+        terminal.screen_mut().set_size(4, 8);
+        backend.bytes.clear();
+        let restored = Buffer::empty(Rect::new(0, 0, 8, 4));
+        paint(&mut backend, None, &restored, None)?;
+        terminal.process(&backend.bytes);
+        for row in 0..4 {
+            for col in 0..8 {
+                assert_eq!(
+                    terminal.screen().cell(row, col).map(|cell| cell.bgcolor()),
+                    Some(vt100::Color::Default),
+                    "stale background at {row},{col}"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]

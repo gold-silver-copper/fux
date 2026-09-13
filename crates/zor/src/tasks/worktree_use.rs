@@ -170,6 +170,7 @@ fn discover(runtime: &Path, deadline: Instant) -> Result<Vec<Target>> {
                     .filter(|value| *value > 0)
                     .context("missing pane process")?;
                 targets.push(Target {
+                    origin: None,
                     runtime: runtime.to_owned(),
                     instance: current.to_owned(),
                     workspace: name.into(),

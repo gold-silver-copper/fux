@@ -1,0 +1,36 @@
+   Compiling fux-xtask v0.1.0 (/Users/kisaczka/Desktop/code/fux/tools/xtask)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.69s
+     Running unittests src/lib.rs (/tmp/fux-codebase-work/harness/debug/deps/fux_xtask-a36ac7886c388c23)
+
+running 28 tests
+test support::contention::tests::cli_busy_requires_exact_exit_and_stderr ... ok
+test support::attachment_measure::tests::rejects_oversize_before_reading_body ... ok
+test support::contention::tests::non_idempotent_effect_then_busy_cannot_replay ... ok
+test support::contention::tests::contention_cannot_satisfy_an_expected_semantic_rejection ... ok
+test support::contention::tests::original_deadline_survives_busy_retries ... ok
+test support::contention::tests::expired_deadline_never_calls_and_transport_errors_never_retry ... ok
+test support::contention::tests::api_busy_checks_envelope_and_incarnation ... ok
+test scenarios::event_sync::tests::replay_accepts_new_output_but_rejects_duplicate_and_foreign_cursors ... ok
+test support::attachment_measure::tests::fragmented_frames_and_every_delta_are_observed ... ok
+test support::launch_proxy::tests::final_and_event_faults_preserve_original_injections ... ok
+test support::process::tests::failed_kill_still_reaches_other_owners ... ok
+test support::process::tests::timeout_falls_back_and_reaps_every_remaining_owner ... ok
+test support::retry_proxy::tests::partial_reply_is_not_lost_reply_evidence ... ok
+test support::service::tests::retained_reply_is_read_after_service_closes_connection ... ok
+test support::local::tests::isolated_root_matches_private_python_mkdtemp_permissions ... ok
+test support::pty::tests::originals_do_not_leak_through_exec ... ok
+test support::failure::tests::oversized_recording_reports_omissions_and_bounds_event_retention ... ok
+test support::failure::tests::private_artifact_preserves_screen_but_not_input_contents ... ok
+test support::local::tests::truncated_diagnostic_cannot_establish_negative_evidence ... ok
+test support::process::tests::terminate_of_a_reaped_child_does_not_signal_its_old_pid ... ok
+test support::traffic_proxy::tests::malformed_preface_is_not_silently_recorded_as_valid_traffic ... ok
+test support::terminal::tests::cleanup_reaps_a_terminal_with_output_in_flight ... ok
+test scenarios::viewer::manager::tests::unfinished_osc_is_bounded_across_terminal_reads ... ok
+test scenarios::zor_check_workers::tests::held_admission_replays_only_the_same_intent_after_busy ... ok
+test support::launch_proxy::tests::close_cancels_partial_front_handshake ... ok
+test support::task_proxy::tests::close_cancels_partial_front_handshake ... ok
+test support::traffic_proxy::tests::forwards_capture_and_subscription_bytes_and_stops_idle_handlers ... ok
+test support::failure::tests::failed_scenario_keeps_terminal_evidence_after_fixture_teardown ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.17s
+

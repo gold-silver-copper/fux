@@ -1,0 +1,11 @@
+{
+  "reply": "final",
+  "result": {
+    "id": 0,
+    "status": "failed",
+    "error": {
+      "code": "pending",
+      "message": "fixture failure"
+    }
+  }
+}

@@ -128,11 +128,16 @@ fn main() -> Result<()> {
                 emit(
                     json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":user.clone()}}),
                 )?;
+                retained_turn = json!({"id":"fixture-turn","status":"completed","items":[user,{"type":"agentMessage","id":"fixture-answer","text":"native fixture response"}]});
+                std::fs::write(
+                    format!("{marker}.thread.json"),
+                    serde_json::to_vec(&retained_turn)?,
+                )?;
                 emit(
-                    json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":"fixture-turn","status":"completed","items":[user,{"type":"agentMessage","id":"fixture-answer","text":"native fixture response"}]}}}),
+                    json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":retained_turn.clone()}}),
                 )?;
             }
-            "thread/read" if controls => {
+            "thread/read" => {
                 std::fs::OpenOptions::new()
                     .create_new(true)
                     .write(true)

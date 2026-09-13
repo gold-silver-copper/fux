@@ -1,0 +1,24 @@
+{
+  "reply": "pane-location",
+  "result": {
+    "id": 0,
+    "status": "completed",
+    "result": {
+      "kind": "pane-location",
+      "value": {
+        "location": {
+          "instance": "owner",
+          "pane": 2,
+          "pid": 3,
+          "accepts_input": true,
+          "workspace": "moved",
+          "stream": 8,
+          "origin_workspace": "origin",
+          "origin_stream": 7,
+          "tab": 1,
+          "layout_generation": 2
+        }
+      }
+    }
+  }
+}

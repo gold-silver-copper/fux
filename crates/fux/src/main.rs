@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
 
+mod layout_cli;
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 /// A minimal persistent terminal multiplexer: workspaces group tabs, tabs switch layouts, splits
@@ -20,6 +22,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Locate a live pane by server identity, independently of its current workspace.
+    LocatePane(PaneLocationArgs),
     /// Run the session server in the foreground.
     Serve(ServeArgs),
     /// Attach to an explicit attachment socket (for example a koh gateway proxy socket).
@@ -29,7 +33,7 @@ enum Command {
     },
     /// Show the configured prefix and keybindings.
     Bindings,
-    /// Manage workspaces on the session server: list, new [NAME], kill NAME.
+    /// Manage workspaces: list, catalog, export-layout, apply-layout FILE --against EXPECTED_FILE, new [NAME], kill NAME, close NAME --instance INSTANCE --stream STREAM, reorder NAME [BEFORE_NAME].
     Workspace(PassthroughArgs),
     /// Send one raw JSON control request to the workspace control socket.
     Ctl(PassthroughArgs),
@@ -37,12 +41,20 @@ enum Command {
     New(PassthroughArgs),
     /// Split the focused pane: horizontal|vertical [--target PANE] [--cwd DIR] [--] [COMMAND...]
     Split(PassthroughArgs),
-    /// Move the workspace focus: left|right|up|down|PANE
+    /// Move the workspace focus: left|right|up|down|next|previous|last|PANE
     Focus(PassthroughArgs),
     /// Close a pane and terminate its process: PANE
     Kill(PassthroughArgs),
+    /// Set a manual pane label; an empty name restores the application title.
+    RenamePane(RenamePaneArgs),
+    /// Choose ordinary right-click ownership for a pane.
+    PaneInput(PaneInputArgs),
     /// Resize the split around a pane: PANE DELTA
     Resize(PassthroughArgs),
+    /// Inspect and edit existing pane layouts without restarting their processes.
+    Layout(layout_cli::LayoutArgs),
+    /// Move a live pane to another workspace on this server, preserving its process.
+    TransferPane(layout_cli::WorkspaceTransferArgs),
     /// Send input bytes to a pane: PANE KEYS (escapes: \n \r \t \e \\ \0 \xHH)
     SendKeys(PassthroughArgs),
     /// Capture a pane's screen: PANE [--attrs] [--scrollback LINES] [--cells]
@@ -51,10 +63,56 @@ enum Command {
     List(PassthroughArgs),
     /// Show the session server's pid, version, runtime directory and request bounds as JSON.
     Info(PassthroughArgs),
-    /// Tab commands: new [NAME] | next | previous | select INDEX | select-id TAB | rename TAB NAME | close TAB
+    /// Tab commands: new [NAME] | next | previous | select INDEX | select-id TAB | rename TAB NAME | close TAB | reorder TAB [BEFORE_TAB]
     Tab(PassthroughArgs),
     /// Stream the workspace's lifecycle events as JSON lines.
     Subscribe(PassthroughArgs),
+}
+
+#[derive(Debug, Args)]
+struct PaneInputArgs {
+    pane: u32,
+    #[arg(long, value_parser = ["auto", "fux", "pane"])]
+    right_click: String,
+    #[arg(long)]
+    instance: String,
+}
+
+#[derive(Debug, Args)]
+struct RenamePaneArgs {
+    pane: u32,
+    name: String,
+    /// Observed server instance from `fux info`.
+    #[arg(long)]
+    instance: String,
+}
+
+#[derive(Debug, Args)]
+struct PaneLocationArgs {
+    pane: u32,
+    #[arg(long)]
+    instance: String,
+}
+
+#[derive(Debug, Parser)]
+struct WorkspaceRenameArgs {
+    name: String,
+    label: String,
+    #[arg(long)]
+    instance: String,
+    #[arg(long)]
+    stream: u64,
+}
+
+#[derive(Debug, Parser)]
+struct WorkspaceCloseArgs {
+    name: String,
+    /// Observed server instance from workspace catalog/list.
+    #[arg(long)]
+    instance: String,
+    /// Observed workspace lifetime from workspace catalog/list.
+    #[arg(long)]
+    stream: u64,
 }
 
 #[derive(Debug, Args)]
@@ -101,24 +159,42 @@ fn main() -> ExitCode {
 
 fn init_diagnostics(daemon: bool) -> Result<()> {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
-    let writer = if daemon {
+    use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
+    let detailed = std::env::var_os("FUX_DIAGNOSTICS").is_some_and(|value| value == "1");
+    let writer = if daemon || detailed {
         let paths = fux::daemon::DaemonPaths::discover()?;
         paths.prepare()?;
-        let log = paths.state_dir.join("daemon.log");
+        let log = paths.state_dir.join(if detailed {
+            "diagnostics.log"
+        } else {
+            "daemon.log"
+        });
         BoxMakeWriter::new(move || CappedLog::open(&log))
     } else {
         BoxMakeWriter::new(std::io::stderr)
     };
-    tracing_subscriber::fmt()
+    let layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .with_writer(writer)
+        .with_filter(tracing_subscriber::filter::filter_fn(move |metadata| {
+            if metadata.target() == "fux::diagnostics" {
+                detailed
+            } else {
+                *metadata.level() <= tracing::Level::INFO
+            }
+        }));
+    tracing_subscriber::registry()
+        .with(layer)
         .try_init()
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     Ok(())
 }
 
 enum CappedLog {
-    File(std::fs::File),
+    File {
+        file: nix::fcntl::Flock<std::fs::File>,
+        remaining: usize,
+    },
     Sink(std::io::Sink),
 }
 
@@ -146,26 +222,43 @@ impl CappedLog {
         if !private {
             return Self::Sink(std::io::sink());
         }
+        let Ok(file) = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
+        else {
+            return Self::Sink(std::io::sink());
+        };
         if file
             .metadata()
             .is_ok_and(|metadata| metadata.len() >= 1024 * 1024)
         {
             let _ = file.set_len(0);
         }
-        Self::File(file)
+        let used = file.metadata().map_or(1024 * 1024, |metadata| {
+            metadata.len().min(1024 * 1024) as usize
+        });
+        Self::File {
+            file,
+            remaining: (1024 * 1024_usize).saturating_sub(used),
+        }
     }
 }
 
 impl std::io::Write for CappedLog {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         match self {
-            Self::File(file) => std::io::Write::write(file, bytes),
+            Self::File { file, remaining } => {
+                let kept = bytes.len().min(*remaining);
+                std::io::Write::write_all(&mut **file, bytes.get(..kept).unwrap_or_default())?;
+                *remaining -= kept;
+                // Diagnostics are best-effort: discard overflow without delaying
+                // or failing the operation that produced the record.
+                Ok(bytes.len())
+            }
             Self::Sink(sink) => std::io::Write::write(sink, bytes),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
-            Self::File(file) => std::io::Write::flush(file),
+            Self::File { file, .. } => std::io::Write::flush(&mut **file),
             Self::Sink(sink) => std::io::Write::flush(sink),
         }
     }
@@ -219,6 +312,29 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Some(Command::LocatePane(args)) => {
+            let paths = fux::daemon::DaemonPaths::discover()?;
+            let reply = fux::daemon::manager_request(
+                &paths.manager_socket,
+                &fux::daemon::ManagerRequest::PaneLocation {
+                    instance: args.instance,
+                    pane: fux::ids::PaneId(args.pane),
+                },
+            )?;
+            println!("{}", serde_json::to_string(&reply)?);
+            Ok(
+                if matches!(
+                    reply,
+                    fux::daemon::ManagerReply::PaneLocation {
+                        result: fux::proto::control::Reply::Completed { .. }
+                    }
+                ) {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                },
+            )
+        }
         Some(Command::Workspace(args)) => workspace_command(args.arguments),
         Some(Command::Ctl(args)) => ctl_json(cli.name.as_deref(), args.arguments),
         Some(Command::New(args)) => ctl_alias(cli.name.as_deref(), "new", args.arguments),
@@ -226,6 +342,43 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Focus(args)) => ctl_alias(cli.name.as_deref(), "focus", args.arguments),
         Some(Command::Kill(args)) => ctl_alias(cli.name.as_deref(), "kill", args.arguments),
         Some(Command::Resize(args)) => ctl_alias(cli.name.as_deref(), "resize", args.arguments),
+        Some(Command::PaneInput(args)) => {
+            let right_click = match args.right_click.as_str() {
+                "fux" => fux::view::RightClickPolicy::Fux,
+                "pane" => fux::view::RightClickPolicy::Pane,
+                _ => fux::view::RightClickPolicy::Auto,
+            };
+            let request = fux::proto::control::Request::PaneInput {
+                id: 1,
+                instance: Some(args.instance),
+                pane: fux::ids::PaneId(args.pane),
+                right_click,
+            };
+            request.validate()?;
+            send_control(cli.name.as_deref(), request)
+        }
+        Some(Command::RenamePane(args)) => {
+            let request = fux::proto::control::Request::RenamePane {
+                id: 1,
+                instance: Some(args.instance),
+                pane: fux::ids::PaneId(args.pane),
+                name: args.name,
+            };
+            request.validate()?;
+            send_control(cli.name.as_deref(), request)
+        }
+        Some(Command::Layout(args)) => send_control(cli.name.as_deref(), args.request()?),
+        Some(Command::TransferPane(args)) => {
+            let paths = fux::daemon::DaemonPaths::discover()?;
+            let reply = fux::daemon::manager_request(&paths.manager_socket, &args.request()?)?;
+            println!("{}", serde_json::to_string(&reply)?);
+            Ok(status(!matches!(
+                reply,
+                fux::daemon::ManagerReply::Layout {
+                    result: fux::proto::control::Reply::Completed { .. }
+                }
+            )))
+        }
         Some(Command::SendKeys(args)) => {
             ctl_alias(cli.name.as_deref(), "send-keys", args.arguments)
         }
@@ -282,7 +435,7 @@ fn resolve(
     ) {
         Ok(fux::daemon::ManagerReply::Attach { descriptor }) => Ok(Some(descriptor)),
         Ok(fux::daemon::ManagerReply::Failed { message }) => bail!("session server: {message}"),
-        Ok(fux::daemon::ManagerReply::Names { .. } | fux::daemon::ManagerReply::Info { .. } | fux::daemon::ManagerReply::Final { .. }) => {
+        Ok(fux::daemon::ManagerReply::ReleasePanePin { .. } | fux::daemon::ManagerReply::InputStatus { .. } | fux::daemon::ManagerReply::PaneLocation { .. } | fux::daemon::ManagerReply::Names { .. } | fux::daemon::ManagerReply::Info { .. } | fux::daemon::ManagerReply::Final { .. } | fux::daemon::ManagerReply::Layout { .. } | fux::daemon::ManagerReply::Catalog { .. } | fux::daemon::ManagerReply::LayoutArchive { .. }) => {
             bail!("unexpected manager reply")
         }
         Err(error) if no_server(&error) => Ok(None),
@@ -350,7 +503,71 @@ fn start_server(paths: &fux::daemon::DaemonPaths, name: &str) -> Result<fux::dae
 fn workspace_command(arguments: Vec<String>) -> Result<ExitCode> {
     let paths = fux::daemon::DaemonPaths::discover()?;
     let action = arguments.first().map(String::as_str).unwrap_or("list");
+    if action == "rename" {
+        let args = WorkspaceRenameArgs::try_parse_from(
+            std::iter::once("workspace rename".to_owned()).chain(arguments.into_iter().skip(1)),
+        )?;
+        let request = fux::proto::control::Request::Workspace {
+            id: 1,
+            instance: Some(args.instance),
+            stream: Some(args.stream),
+            action: fux::proto::control::WorkspaceAction::Rename { label: args.label },
+        };
+        request.validate()?;
+        return send_control(Some(&args.name), request);
+    }
+    if action == "close" {
+        let args = WorkspaceCloseArgs::try_parse_from(
+            std::iter::once("workspace close".to_owned()).chain(arguments.into_iter().skip(1)),
+        )?;
+        let request = fux::proto::control::Request::Workspace {
+            id: 1,
+            instance: Some(args.instance),
+            stream: Some(args.stream),
+            action: fux::proto::control::WorkspaceAction::Kill {
+                name: args.name.clone(),
+            },
+        };
+        request.validate()?;
+        return send_control(Some(&args.name), request);
+    }
     let reply = match action {
+        "reorder" => fux::daemon::manager_request(
+            &paths.manager_socket,
+            &fux::daemon::ManagerRequest::Reorder {
+                name: arguments
+                    .get(1)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("workspace reorder requires NAME [BEFORE_NAME]")
+                    })?
+                    .clone(),
+                before: arguments.get(2).cloned(),
+            },
+        )?,
+        "apply-layout" => {
+            if arguments.len() != 4 || arguments.get(2).map(String::as_str) != Some("--against") {
+                bail!("workspace apply-layout FILE --against EXPECTED_FILE");
+            }
+            fux::daemon::manager_request(
+                &paths.manager_socket,
+                &fux::daemon::ManagerRequest::ApplyLayout {
+                    archive: layout_cli::read_archive(std::path::Path::new(
+                        arguments.get(1).context("archive file")?,
+                    ))?,
+                    expected: layout_cli::read_archive(std::path::Path::new(
+                        arguments.get(3).context("expected archive file")?,
+                    ))?,
+                },
+            )?
+        }
+        "export-layout" => fux::daemon::manager_request(
+            &paths.manager_socket,
+            &fux::daemon::ManagerRequest::ExportLayout,
+        )?,
+        "catalog" => fux::daemon::manager_request(
+            &paths.manager_socket,
+            &fux::daemon::ManagerRequest::Catalog,
+        )?,
         "list" => {
             fux::daemon::manager_request(&paths.manager_socket, &fux::daemon::ManagerRequest::List)?
         }
@@ -484,7 +701,8 @@ fn alias_request(
     let request = match command {
         "new" => {
             // `new` is sugar for a side-by-side split of the focused pane.
-            let (cwd, env, rows, columns, argv) = parse_pane_options(args)?;
+            let (cwd, env, rows, columns, right_click, ratio, focus, argv) =
+                parse_pane_options(args)?;
             Request::Split {
                 stream: None,
                 instance: None,
@@ -497,6 +715,10 @@ fn alias_request(
                 rows,
                 columns,
                 final_retain_ms: final_retain_ms()?,
+                fixed_workspace: false,
+                right_click,
+                ratio,
+                focus,
             }
         }
         "split" => {
@@ -506,7 +728,8 @@ fn alias_request(
                 _ => bail!("split requires horizontal|vertical followed by options and a command"),
             };
             let (target, rest) = parse_target(rest)?;
-            let (cwd, env, rows, columns, argv) = parse_pane_options(rest)?;
+            let (cwd, env, rows, columns, right_click, ratio, focus, argv) =
+                parse_pane_options(rest)?;
             Request::Split {
                 stream: None,
                 instance: None,
@@ -519,10 +742,17 @@ fn alias_request(
                 rows,
                 columns,
                 final_retain_ms: final_retain_ms()?,
+                fixed_workspace: false,
+                right_click,
+                ratio,
+                focus,
             }
         }
         "focus" => {
             let target = match get(0, "a target")?.as_str() {
+                "last" => FocusTarget::Last,
+                "next" => FocusTarget::Next,
+                "previous" => FocusTarget::Previous,
                 "left" => FocusTarget::Left,
                 "right" => FocusTarget::Right,
                 "up" => FocusTarget::Up,
@@ -593,6 +823,13 @@ fn alias_request(
         "info" => Request::Info { instance: None, id },
         "tab" => {
             let action = match get(0, "an action")?.as_str() {
+                "reorder" => TabAction::Reorder {
+                    tab: TabId(number(1, "a tab id")?),
+                    before: args
+                        .get(2)
+                        .map(|value| value.parse::<u32>().map(TabId))
+                        .transpose()?,
+                },
                 "new" => TabAction::New {
                     name: args.get(1).cloned(),
                 },
@@ -651,6 +888,9 @@ type PaneOptions = (
     Vec<(String, String)>,
     Option<u16>,
     Option<u16>,
+    fux::view::RightClickPolicy,
+    u16,
+    bool,
     Vec<String>,
 );
 
@@ -659,6 +899,9 @@ fn parse_pane_options(args: &[String]) -> Result<PaneOptions> {
     let mut env = Vec::new();
     let mut rows = None;
     let mut columns = None;
+    let mut right_click = fux::view::RightClickPolicy::Auto;
+    let mut ratio = 5000;
+    let mut focus = true;
     let mut index = 0;
     while let Some(argument) = args.get(index) {
         match argument.as_str() {
@@ -668,8 +911,31 @@ fn parse_pane_options(args: &[String]) -> Result<PaneOptions> {
                     env,
                     rows,
                     columns,
+                    right_click,
+                    ratio,
+                    focus,
                     args.get(index + 1..).unwrap_or_default().to_vec(),
                 ));
+            }
+            "--ratio" => {
+                ratio = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--ratio requires 500..=9500"))?
+                    .parse()?;
+                index += 2;
+            }
+            "--focus" | "--no-focus" => {
+                focus = argument == "--focus";
+                index += 1;
+            }
+            "--right-click" => {
+                right_click = match args.get(index + 1).map(String::as_str) {
+                    Some("auto") => fux::view::RightClickPolicy::Auto,
+                    Some("fux") => fux::view::RightClickPolicy::Fux,
+                    Some("pane") => fux::view::RightClickPolicy::Pane,
+                    _ => bail!("--right-click requires auto|fux|pane"),
+                };
+                index += 2;
             }
             "--cwd" => {
                 let directory = args
@@ -710,12 +976,24 @@ fn parse_pane_options(args: &[String]) -> Result<PaneOptions> {
                     env,
                     rows,
                     columns,
+                    right_click,
+                    ratio,
+                    focus,
                     args.get(index..).unwrap_or_default().to_vec(),
                 ));
             }
         }
     }
-    Ok((cwd, env, rows, columns, Vec::new()))
+    Ok((
+        cwd,
+        env,
+        rows,
+        columns,
+        right_click,
+        ratio,
+        focus,
+        Vec::new(),
+    ))
 }
 
 #[derive(Default)]
@@ -765,6 +1043,11 @@ mod tests {
                 "vertical".into(),
                 "--target".into(),
                 "3".into(),
+                "--ratio".into(),
+                "7000".into(),
+                "--no-focus".into(),
+                "--right-click".into(),
+                "pane".into(),
                 "--cwd".into(),
                 "/tmp".into(),
                 "--".into(),
@@ -774,7 +1057,7 @@ mod tests {
         );
         assert!(matches!(
             split,
-            Ok(fux::proto::control::Request::Split { axis: fux::layout::Axis::Vertical, target: Some(fux::ids::PaneId(3)), argv, final_retain_ms: fux::config::DEFAULT_FINAL_RETAIN_MS, .. }) if argv == ["sh", "-l"]
+            Ok(fux::proto::control::Request::Split { axis: fux::layout::Axis::Vertical, target: Some(fux::ids::PaneId(3)), right_click: fux::view::RightClickPolicy::Pane, ratio: 7000, focus: false, argv, final_retain_ms: fux::config::DEFAULT_FINAL_RETAIN_MS, .. }) if argv == ["sh", "-l"]
         ));
         assert!(
             alias_request("focus", &["left".into()]).is_ok(),
@@ -785,7 +1068,15 @@ mod tests {
         assert!(alias_request("tab", &["close".into(), "2".into()]).is_ok());
         assert!(alias_request("subscribe", &[]).is_ok());
         assert!(alias_request("subscribe", &["pane.closed".into()]).is_err());
+        assert!(alias_request("new", &["--right-click".into(), "invalid".into()]).is_err());
+        assert!(
+            matches!(alias_request("new", &["--".into(), "sh".into(), "--right-click".into(), "pane".into()]),
+            Ok(fux::proto::control::Request::Split { right_click: fux::view::RightClickPolicy::Auto, argv, .. }) if argv == ["sh", "--right-click", "pane"])
+        );
         assert!(alias_request("wait", &["1".into(), "exit".into()]).is_err());
+        for ratio in ["0", "499", "9501", "nan", "inf", "-1", "0.5"] {
+            assert!(alias_request("new", &["--ratio".into(), ratio.into()]).is_err());
+        }
         assert!(alias_request("run", &[]).is_err());
     }
 
@@ -804,6 +1095,18 @@ mod tests {
         log.write_all(b"fresh")?;
         log.flush()?;
         assert!(std::fs::metadata(&path)?.len() < 1024 * 1024);
+        let before = std::fs::metadata(&path)?.len();
+        let mut contender = CappedLog::open(&path);
+        contender.write_all(b"must not interleave")?;
+        assert_eq!(std::fs::metadata(&path)?.len(), before);
+        log.write_all(&vec![b'y'; 2 * 1024 * 1024])?;
+        log.flush()?;
+        assert_eq!(std::fs::metadata(&path)?.len(), 1024 * 1024);
+        drop(log);
+        let mut reopened = CappedLog::open(&path);
+        reopened.write_all(b"next record")?;
+        reopened.flush()?;
+        assert_eq!(std::fs::read(&path)?, b"next record");
         assert_eq!(std::fs::metadata(&path)?.permissions().mode() & 0o077, 0);
         std::fs::remove_dir_all(root)?;
         Ok(())

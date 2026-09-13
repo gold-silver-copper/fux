@@ -30,6 +30,34 @@ struct State {
     accepted: AtomicBool,
     release: AtomicBool,
     errors: Mutex<Vec<String>>,
+    timings: Mutex<Option<Vec<RequestTiming>>>,
+}
+struct RequestTiming {
+    operation: &'static str,
+    accepted: Instant,
+    requested: Instant,
+    finished: Instant,
+}
+struct TimingGuard<'a> {
+    state: &'a State,
+    operation: &'static str,
+    accepted: Instant,
+    requested: Instant,
+}
+impl Drop for TimingGuard<'_> {
+    fn drop(&mut self) {
+        let finished = Instant::now();
+        if let Some(timings) = self.state.timings.lock().unwrap().as_mut()
+            && timings.len() < 256
+        {
+            timings.push(RequestTiming {
+                operation: self.operation,
+                accepted: self.accepted,
+                requested: self.requested,
+                finished,
+            });
+        }
+    }
 }
 fn poll(
     peer: &UnixStream,
@@ -108,7 +136,7 @@ pub struct Faults {
     pub mode: Mode,
     pub creates: usize,
     pub kills: usize,
-    pub list_failures: usize,
+    pub observation_failures: usize,
     pub bad_final: bool,
     pub gap: bool,
     pub expired: bool,
@@ -118,6 +146,9 @@ pub struct Faults {
     pub unavailable: bool,
     pub drop_kill: bool,
     pub hold_kill: bool,
+    pub drop_pin_before: bool,
+    pub drop_pin_reply: bool,
+    pub exit_before_pin: bool,
 }
 fn checkpoint(state: &State) -> Result<()> {
     if state.stop.load(Ordering::Acquire) {
@@ -193,10 +224,28 @@ fn handle(
     instance: &Value,
     state: &State,
 ) -> Result<()> {
+    let accepted = Instant::now();
     peer.set_nonblocking(true)?;
     ensure!(line(&mut peer, 4, state)? == b"FUX\n", "proxy preface");
     write(&mut peer, b"FUX\n", state)?;
     let request: Value = serde_json::from_slice(&line(&mut peer, 1048576, state)?)?;
+    let _timing = state
+        .timings
+        .lock()
+        .unwrap()
+        .is_some()
+        .then(|| TimingGuard {
+            state,
+            operation: match request["request"].as_str().or(request["command"].as_str()) {
+                Some("pane-location") => "pane-location",
+                Some("release-pane-pin") => "release-pane-pin",
+                Some("list") => "list",
+                Some("final") => "final",
+                _ => "other",
+            },
+            accepted,
+            requested: Instant::now(),
+        });
     {
         let mut f = state.faults.lock().unwrap();
         if request["command"] == "kill" {
@@ -208,21 +257,57 @@ fn handle(
                 return Ok(());
             }
         }
-        if request["command"] == "list" && (f.unavailable || f.list_failures > 0) {
-            f.list_failures = f.list_failures.saturating_sub(1);
+        if (request["command"] == "list" || request["request"] == "pane-location")
+            && (f.unavailable || f.observation_failures > 0)
+        {
+            f.observation_failures = f.observation_failures.saturating_sub(1);
             drop(f);
-            write(
-                &mut peer,
-                b"{\"id\":1,\"status\":\"failed\",\"error\":{\"code\":\"internal\"}}\n",
-                state,
-            )?;
+            let response = if request["request"] == "pane-location" {
+                json!({"reply":"pane-location","result":{"id":0,"status":"failed","error":{"code":"internal"}}})
+            } else {
+                json!({"id":1,"status":"failed","error":{"code":"internal"}})
+            };
+            let mut bytes = serde_json::to_vec(&response)?;
+            bytes.push(b'\n');
+            write(&mut peer, &bytes, state)?;
             return Ok(());
+        }
+    }
+    if request["request"] == "release-pane-pin" {
+        let mut faults = state.faults.lock().unwrap();
+        if faults.drop_pin_before {
+            faults.drop_pin_before = false;
+            return Ok(());
+        }
+        let exit_before_pin = std::mem::take(&mut faults.exit_before_pin);
+        drop(faults);
+        if exit_before_pin {
+            let pane = request.get("pane").context("release pane")?;
+            super::local::completed(
+                control,
+                json!({"command":"kill","id":1,"instance":instance,"pane":pane}),
+            )?;
+            super::local::until(Duration::from_secs(3), || {
+                checkpoint(state)?;
+                let reply = super::local::rpc(
+                    manager,
+                    json!({"request":"final","instance":instance,"pane":pane}),
+                )?;
+                Ok((reply["result"]["status"] == "completed").then_some(()))
+            })?;
         }
     }
     if !destination.exists() {
         return Ok(());
     }
     let mut response = super::local::rpc(destination, request.clone())?;
+    if request["request"] == "release-pane-pin" {
+        let mut faults = state.faults.lock().unwrap();
+        if faults.drop_pin_reply {
+            faults.drop_pin_reply = false;
+            return Ok(());
+        }
+    }
     let faults = state.faults.lock().unwrap().clone();
     if request["command"] == "kill" {
         if faults.hold_kill {
@@ -308,7 +393,17 @@ impl Proxy {
                                 handle(peer, &destination, &control, &manager, &instance, &state)?
                             }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                thread::sleep(Duration::from_millis(10))
+                                // Wake as soon as a queued connection is readable. An
+                                // unconditional sleep adds fixture latency to every RPC.
+                                // Keep the same maximum cancellation-check interval.
+                                let mut fds = [nix::poll::PollFd::new(
+                                    listener.as_fd(),
+                                    nix::poll::PollFlags::POLLIN,
+                                )];
+                                match nix::poll::poll(&mut fds, 10u16) {
+                                    Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                                    Err(error) => return Err(error.into()),
+                                }
                             }
                             Err(e) => return Err(e.into()),
                         }
@@ -329,6 +424,30 @@ impl Proxy {
     }
     pub fn faults(&self) -> Faults {
         self.state.faults.lock().unwrap().clone()
+    }
+    /// Opt-in, bounded timings for synthetic benchmark requests; never retain payloads.
+    pub fn begin_timing(&self) {
+        *self.state.timings.lock().unwrap() = Some(Vec::new());
+    }
+    pub fn finish_timing(&self, epoch: Instant) -> Value {
+        let timings = self
+            .state
+            .timings
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_default();
+        json!(
+            timings
+                .into_iter()
+                .map(|timing| {
+                    let ms =
+                        |at: Instant| at.saturating_duration_since(epoch).as_secs_f64() * 1000.;
+                    json!({"operation":timing.operation,"accepted_ms":ms(timing.accepted),
+                "requested_ms":ms(timing.requested),"finished_ms":ms(timing.finished)})
+                })
+                .collect::<Vec<_>>()
+        )
     }
     pub fn reset_hold(&self) {
         self.state.accepted.store(false, Ordering::Release);

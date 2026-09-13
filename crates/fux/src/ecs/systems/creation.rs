@@ -14,13 +14,15 @@ use crate::ecs::support::{
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
 use crate::ecs::systems::requests::switch_viewer_workspace;
 use crate::ids::{PaneId, TabId};
-use crate::layout::{LayoutTree, Rect, half};
+use crate::layout::{LayoutTree, Rect};
 use crate::proto::control::{CommandResult, ErrorCode, Event, Reply, RequestId};
 use crate::terminal::ServerTerminal;
 use bevy_ecs::prelude::*;
 use std::path::PathBuf;
 
 pub struct NewPane {
+    pub fixed_workspace: bool,
+    pub right_click: crate::view::RightClickPolicy,
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
@@ -98,6 +100,12 @@ pub fn reserve_pane(
     let entity = world
         .spawn((
             Pane {
+                routing_workspace: workspace,
+                workspace_pin: if new.fixed_workspace {
+                    crate::ecs::components::WorkspacePin::Creation
+                } else {
+                    crate::ecs::components::WorkspacePin::None
+                },
                 workspace_name,
                 workspace_stream,
                 id,
@@ -116,6 +124,8 @@ pub fn reserve_pane(
                 event_pending: false,
                 last_event_seq: 0,
                 published_title: String::new(),
+                label: None,
+                right_click: new.right_click,
                 input_sequence: 0,
                 last_output_event_ms: None,
                 final_retain_ms,
@@ -180,6 +190,8 @@ pub fn reserve_tab(
             // Until a viewer shows the tab, lay it out for a conventional 80x24 terminal.
             area: tab_area(24, 80),
             layout_changed: true,
+            layout_generation: 0,
+            zoomed: None,
         })
         .id();
     world.resource_mut::<Ids>().tabs.insert(id, entity);
@@ -194,45 +206,7 @@ pub fn reserve_workspace(
     request_id: RequestId,
 ) -> Result<Entity, Reply> {
     let limits = world.resource::<Limits>().clone();
-    if world.resource::<Ids>().workspaces.len() >= limits.max_workspaces {
-        return Err(failed(
-            request_id,
-            ErrorCode::Limit,
-            "configured workspace limit reached",
-        ));
-    }
-    if world.resource::<Ids>().workspace(&name).is_some() {
-        return Err(failed(
-            request_id,
-            ErrorCode::Conflict,
-            format!("workspace {name} already exists"),
-        ));
-    }
-    let stream = world.resource_mut::<Ids>().next_stream().ok_or_else(|| {
-        failed(
-            request_id,
-            ErrorCode::Limit,
-            "workspace stream IDs exhausted",
-        )
-    })?;
-    let step = world.resource::<Clock>().step;
-    let workspace = world
-        .spawn(Workspace {
-            name: name.clone(),
-            selection: Selection::default(),
-            last_attached: step,
-            open: false,
-            retiring: None,
-            tab_counter: 0,
-        })
-        .id();
-    world
-        .entity_mut(workspace)
-        .insert(crate::ecs::events::EventLog::new(stream));
-    world
-        .resource_mut::<Ids>()
-        .workspaces
-        .insert(name.clone(), workspace);
+    let workspace = reserve_empty_workspace(world, name, request_id)?;
     let tab = match reserve_tab(world, workspace, None) {
         Ok(tab) => tab,
         Err(reply) => {
@@ -250,6 +224,8 @@ pub fn reserve_workspace(
             requester,
             request_id,
             final_retain_ms: limits.final_retain_ms,
+            fixed_workspace: false,
+            right_click: Default::default(),
         },
         CreationKind::Workspace { tab },
         (crate::terminal::MIN_DIM.max(22), 80),
@@ -310,7 +286,13 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
         return abandon(world, entity, pid, &requesters, missing);
     };
     match kind {
-        CreationKind::Split { target, axis, .. } => {
+        CreationKind::Split {
+            target,
+            axis,
+            ratio,
+            focus,
+            ..
+        } => {
             let mut target = Some(target).filter(|target| {
                 world
                     .get::<Tab>(tab)
@@ -336,7 +318,7 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
             }
             let inserted = target.is_some_and(|target| {
                 world.get_mut::<Tab>(tab).is_some_and(|mut component| {
-                    let ok = component.layout.split(target, entity, axis, half()).is_ok();
+                    let ok = component.layout.split(target, entity, axis, ratio).is_ok();
                     component.layout_changed |= ok;
                     ok
                 })
@@ -351,7 +333,14 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                 );
             }
             go_live(world, entity, pid);
-            focus_requesters(world, &requesters, workspace, tab, entity);
+            if focus {
+                if let Some(mut component) = world.get_mut::<Tab>(tab) {
+                    component.zoomed = None;
+                }
+                focus_requesters(world, &requesters, workspace, tab, entity);
+            } else {
+                mark_tab_dirty(world, tab);
+            }
             announce_pane(world, workspace, tab, entity, id);
             reply_all(world, requesters, |request| Reply::Completed {
                 id: request,
@@ -459,6 +448,7 @@ fn place_first_pane(world: &mut World, tab: Entity, pane: Entity, pid: u32) {
     if let Some(mut component) = world.get_mut::<Tab>(tab) {
         component.layout = LayoutTree::new(pane);
         component.layout_changed = true;
+        component.layout_generation = component.layout_generation.saturating_add(1);
     }
     go_live(world, pane, pid);
 }
@@ -492,7 +482,7 @@ fn focus_requesters(
         }
     }
     if let Some(mut component) = world.get_mut::<Workspace>(workspace) {
-        component.selection.set_focus(tab, pane);
+        component.selection.select(tab, Some(pane));
     }
     mark_tab_dirty(world, tab);
 }
@@ -584,4 +574,57 @@ pub fn workspace_pending(world: &World, workspace: Entity) -> bool {
     world
         .get::<Workspace>(workspace)
         .is_some_and(|workspace| !workspace.open && workspace.retiring.is_none())
+}
+
+/// Reserve a workspace identity without creating a process or publishing an endpoint.
+/// The caller must either populate/open it within this request or roll the reservation back.
+pub fn reserve_empty_workspace(
+    world: &mut World,
+    name: String,
+    request_id: RequestId,
+) -> Result<Entity, Reply> {
+    crate::ids::validate_workspace_name(&name)
+        .map_err(|error| failed(request_id, ErrorCode::InvalidRequest, error.to_string()))?;
+    let limits = world.resource::<Limits>().clone();
+    if world.resource::<Ids>().workspaces.len() >= limits.max_workspaces {
+        return Err(failed(
+            request_id,
+            ErrorCode::Limit,
+            "configured workspace limit reached",
+        ));
+    }
+    if world.resource::<Ids>().workspace(&name).is_some() {
+        return Err(failed(
+            request_id,
+            ErrorCode::Conflict,
+            format!("workspace {name} already exists"),
+        ));
+    }
+    let stream = world.resource_mut::<Ids>().next_stream().ok_or_else(|| {
+        failed(
+            request_id,
+            ErrorCode::Limit,
+            "workspace stream IDs exhausted",
+        )
+    })?;
+    let step = world.resource::<Clock>().step;
+    let workspace = world
+        .spawn(Workspace {
+            name: name.clone(),
+            label: None,
+            selection: Selection::default(),
+            last_attached: step,
+            open: false,
+            retiring: None,
+            tab_counter: 0,
+        })
+        .id();
+    world
+        .entity_mut(workspace)
+        .insert(crate::ecs::events::EventLog::new(stream));
+    world
+        .resource_mut::<Ids>()
+        .workspaces
+        .insert(name.clone(), workspace);
+    Ok(workspace)
 }

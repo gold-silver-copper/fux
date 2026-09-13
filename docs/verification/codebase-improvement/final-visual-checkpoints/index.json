@@ -1,0 +1,52 @@
+{
+  "capture_root": "/var/folders/3t/6t0byq3s589g86m361mc7p100000gn/T/fux-codebase-gate-lS2WjX/betamax",
+  "gallery_frames": 411,
+  "manual_inspection_count": 9,
+  "checkpoints": [
+    {
+      "label": "manager failure is a notice without commands",
+      "file": "terminal-10495-jbSQeM/0029.png",
+      "sha256": "fc5ef539b076a90505cac4ca808e10f772abe08473fa28f012e71113936af3b0"
+    },
+    {
+      "label": "tiny popup",
+      "file": "terminal-11091-rul51v/0005.png",
+      "sha256": "af97261db3ceef3e8168858f607aa4e0059512822763bf96a27349c422388727"
+    },
+    {
+      "label": "tiny keyboard focus and zoom",
+      "file": "terminal-11091-Mh9G8z/0004.png",
+      "sha256": "e0ef64d1d290dcd2755ca23d2bf9a7f12f8e55d768e861751a74bd2c96146f74"
+    },
+    {
+      "label": "tiny keyboard focus and zoom",
+      "file": "terminal-11091-Mh9G8z/0007.png",
+      "sha256": "e0ef64d1d290dcd2755ca23d2bf9a7f12f8e55d768e861751a74bd2c96146f74"
+    },
+    {
+      "label": "tiny keyboard focus and zoom",
+      "file": "terminal-11091-Mh9G8z/0010.png",
+      "sha256": "e0ef64d1d290dcd2755ca23d2bf9a7f12f8e55d768e861751a74bd2c96146f74"
+    },
+    {
+      "label": "copy selection",
+      "file": "terminal-11091-ySh8z7/0052.png",
+      "sha256": "7f0329b4fe74fc02bb1494031807cf15a952c993e337468b8476815baf4a5d46"
+    },
+    {
+      "label": "tiny popup",
+      "file": "terminal-11091-ySh8z7/0101.png",
+      "sha256": "cb981697d8414b466e9c87cf72c70612aac1fa682f515221ec1e02376d810bf1"
+    },
+    {
+      "label": "Escape restores only A",
+      "file": "terminal-10833-TkLhuo/0013.png",
+      "sha256": "014c6347802aa15ad69ba7fe63664c541d582825904a9b6466a160a6d59ab3d2"
+    },
+    {
+      "label": "A and B independently scrolled",
+      "file": "terminal-10833-TkLhuo/0011.png",
+      "sha256": "8f3c4fbf257ab57a9d1460d6508dfc75ef13203c1a9a99f31964a35a12ec14e2"
+    }
+  ]
+}

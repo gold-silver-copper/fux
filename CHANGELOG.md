@@ -1,5 +1,98 @@
 # Changelog
 
+## Unreleased
+
+- Complete mouse Close workflows for panes, tabs and workspaces with clickable confirm/cancel
+  rows, outside-click cancellation and captured releases. Stale or unpainted dialogs cannot
+  reuse a previous menu's click targets.
+
+- Allow keyboard focus navigation while zoomed and next/previous wraparound with a single
+  pane. Navigation availability follows the focused pane rather than visible split count.
+
+- Complete mouse interaction in tab/workspace choosers: wheel navigation, destination clicks
+  and outside-click cancellation, with captured releases kept out of terminal applications.
+
+- Add explicit transfer `--focus`/`--no-focus` and API focus controls. No-focus preserves
+  destination zoom; focused transfers reveal/select the moved pane with atomic navigation
+  history. Transfers carrying viewers enforce destination capacity before movement.
+
+- Add `--ratio` to existing-tab transfers through `layout to-tab`, `transfer-pane` and their
+  APIs. The existing target keeps its requested share for every insertion direction, while
+  the moved pane retains its process and identity.
+
+- Add initial split/new `--ratio` and `--focus`/`--no-focus` controls. No-focus creation preserves
+  selection, zoom and queued-input ownership; focused creation selects hidden target tabs for
+  workspace controls and reveals the new pane without changing other viewers' selections.
+
+- Add per-pane right-click policy (`auto`, `fux`, `pane`), controlled by prefix `*`, the pane
+  menu, `pane-input` CLI/API and split/new creation options. Policy follows live pane movement;
+  Alt-right-click always opens the menu. Layout imports preserve the current policy.
+
+- Add last-focus navigation through prefix `!`, CLI `focus last` and the control API.
+  Attached viewers retain private history across tabs/workspaces; workspace control connections
+  use scoped default history. Deleted targets and full destination workspaces reject safely.
+
+- Add `fux layout TAB inspect PANE` and the read-only layout `inspect` API for coherent pane
+  rectangles, directional neighbors, outer-edge flags and zoom visibility with layout identity.
+  Inspection shares directional focus rules and preserves processes, layout and private focus.
+
+- Keep EOF processes locatable for owned cleanup while explicitly reporting that they no longer
+  accept input. Moved `zor run` timeout cleanup now terminates processes that close their terminal
+  descriptors; verified server replacement does not turn a completed run into cleanup failure.
+- Use one coherent manager identity check for native worker liveness, avoiding false retirement
+  when a pane moves between route discovery and workspace observation.
+
+- Allow active `zor run` panes to move between workspaces. Final output/status retain launch
+  identity; timeout cleanup follows only the owned pane and preserves destination processes
+  and any replacement of the original workspace.
+
+- Release managed-launch creation pins only after exact pane/PID identity is durable. Attached
+  managed panes can move and retain prompt delivery, reconciliation and stop/final evidence.
+  Lost release requests/replies retry without spawning; explicit workspace pins remain protected.
+
+- Let newly adopted zor tasks follow panes across workspace moves, retaining exact server/pane/PID
+  and launch attribution. Route-aware live requests and final evidence preserve task ownership;
+  managed launch pins remain until creation recovery can safely follow movement.
+
+- Preserve delivered prompt input sequences during workspace moves while permanently failing
+  unused reservations. Add manager receipt reads keyed by server/pane/operation, used by zor
+  reconciliation after the originating workspace socket disappears.
+
+- Add read-only `locate-pane PANE --instance INSTANCE` and manager `pane-location` lookup.
+  It returns the current workspace/tab and immutable launch attribution for the same live
+  pane/PID, including after the original workspace retires.
+
+- Add shared workspace display labels through prefix `=`, the workspace menu and guarded
+  `workspace rename` CLI/API. Labels appear in the bar and choosers, survive archive restore,
+  and preserve workspace routes and live processes. Unchanged labels add no delta-frame bytes.
+
+- Avoid emulator and PTY resize requests when layout changes only move a pane's position.
+  Equal-sized swaps still publish the new arrangement to viewers.
+
+- Add workspace close confirmation through prefix `q`, the workspace menu and guarded
+  `fux workspace close NAME --instance INSTANCE --stream STREAM`. Full attachment frames carry
+  the workspace lifetime so stale confirmations cannot target a replacement with the same name.
+  Closing affects only that workspace and detaches its viewers.
+
+- Add an explicit pane swap chooser through prefix `.` and the pane context menu. Keyboard and
+  mouse selection use captured pane IDs and a layout revision, allowing nonadjacent swaps
+  without intermediate moves while preserving both processes.
+
+- Add contextual pane/tab/workspace menus with keyboard navigation, mouse selection, disabled
+  reasons and captured target identities. Ordinary application right-clicks remain available;
+  Alt-right-click explicitly opens the pane menu. Prefix `?`, `'` and backtick open the menus
+  from the keyboard. Tab close confirmation describes all of the targeted tab's panes even
+  when that tab is not selected.
+
+- Add manual pane labels through prefix `;`, `fux rename-pane`, and the guarded `rename-pane`
+  control request. Labels stay separate from application titles, follow live pane moves and
+  clear back to the current application title. Renaming preserves PTYs, processes and contents.
+  Listings and viewer/history updates expose the label independently.
+- Include manual pane labels in complete layout exports and workspace archives. Imports restore
+  labels atomically with geometry and zoom, apply pane-ID remapping, and reject duplicate,
+  foreign or invalid labels. Bare tree imports preserve current labels; renames advance the
+  layout revision to prevent stale imports from overwriting newer names.
+
 ## 0.10.0 - 2026-09-11
 
 Breaking release: retention durations become the caller's policy under fux-enforced ceilings.

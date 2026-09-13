@@ -1,0 +1,22 @@
+   Compiling fux v0.10.0 (/Users/kisaczka/Desktop/code/fux/crates/fux)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.34s
+     Running unittests src/lib.rs (target/debug/deps/fux-ac01031fe3ff3cd2)
+
+running 1 test
+test client::render::tests::copy_exit_remains_visible_at_standard_and_narrow_widths ... FAILED
+
+failures:
+
+---- client::render::tests::copy_exit_remains_visible_at_standard_and_narrow_widths stdout ----
+
+thread 'client::render::tests::copy_exit_remains_visible_at_standard_and_narrow_widths' (15032321) panicked at crates/fux/src/client/render.rs:764:17:
+missing visible exit at width 40: Copy · live · arrows/hjkl move · Space s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    client::render::tests::copy_exit_remains_visible_at_standard_and_narrow_widths
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 187 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p fux --lib`

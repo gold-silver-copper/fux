@@ -12,6 +12,11 @@ pub const MIN_RATIO: u16 = 500;
 pub const MAX_RATIO: u16 = RATIO_SCALE - MIN_RATIO;
 /// Absolute ceiling on leaves per tree; the configured pane limit is usually lower.
 pub const MAX_LEAVES: usize = 256;
+/// Maximum root-to-leaf edge count, including imported layouts.
+pub const MAX_DEPTH: usize = 64;
+
+mod edit;
+pub use edit::{LayoutDocument, LayoutNode};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -44,6 +49,20 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// Directional navigation remains defined before any viewer supplies a usable area.
+    #[must_use]
+    pub fn navigation_area(self) -> Self {
+        if self.width == 0 || self.height == 0 {
+            Self {
+                x: 0,
+                y: 0,
+                width: 1000,
+                height: 1000,
+            }
+        } else {
+            self
+        }
+    }
     #[must_use]
     pub fn contains(self, x: u16, y: u16) -> bool {
         x >= self.x
@@ -109,6 +128,12 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
         self.find_leaf(pane).is_some()
     }
 
+    /// First pane in traversal order, without allocating the full leaf list.
+    #[must_use]
+    pub fn first(&self) -> Option<L> {
+        self.root.and_then(|root| self.first_leaf(root))
+    }
+
     /// Leaves in depth-first order (first child before second).
     #[must_use]
     pub fn leaves(&self) -> Vec<L> {
@@ -140,6 +165,15 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
         }
         Self::check_ratio(ratio)?;
         let target_id = self.find_leaf(target).ok_or(LayoutError::MissingPane)?;
+        let mut ancestor = target_id;
+        let mut depth = 0;
+        while let Some((parent, _, _)) = self.parent(ancestor) {
+            depth += 1;
+            ancestor = parent;
+        }
+        if depth >= MAX_DEPTH {
+            return Err(LayoutError::Limit);
+        }
         let old = self
             .node(target_id)
             .copied()
@@ -319,7 +353,7 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
         };
         let mut seen_nodes = HashSet::new();
         let mut panes = HashSet::new();
-        self.validate_node(root, &mut seen_nodes, &mut panes)?;
+        self.validate_node(root, &mut seen_nodes, &mut panes, 0)?;
         if seen_nodes.len() != self.nodes.iter().filter(|node| node.is_some()).count() {
             return Err(LayoutError::MissingNode);
         }
@@ -335,7 +369,11 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
         id: NodeId,
         seen: &mut HashSet<NodeId>,
         panes: &mut HashSet<L>,
+        depth: usize,
     ) -> Result<(), LayoutError> {
+        if depth > MAX_DEPTH {
+            return Err(LayoutError::Limit);
+        }
         if !seen.insert(id) {
             return Err(LayoutError::Cycle);
         }
@@ -357,8 +395,8 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
                 if first == second {
                     return Err(LayoutError::Cycle);
                 }
-                self.validate_node(*first, seen, panes)?;
-                self.validate_node(*second, seen, panes)
+                self.validate_node(*first, seen, panes, depth + 1)?;
+                self.validate_node(*second, seen, panes, depth + 1)
             }
         }
     }
@@ -377,43 +415,7 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
                 first,
                 second,
             } => {
-                let extent = match axis {
-                    Axis::Horizontal => rect.width,
-                    Axis::Vertical => rect.height,
-                };
-                // One cell between the siblings carries the separator.
-                let gap = u16::from(extent > 0);
-                let usable = extent.saturating_sub(gap);
-                let first_extent = u16::try_from(
-                    u32::from(usable) * u32::from(ratio.get()) / u32::from(RATIO_SCALE),
-                )
-                .unwrap_or(usable);
-                let second_extent = usable.saturating_sub(first_extent);
-                let second_start = first_extent.saturating_add(gap);
-                let (a, b) = match axis {
-                    Axis::Horizontal => (
-                        Rect {
-                            width: first_extent,
-                            ..rect
-                        },
-                        Rect {
-                            x: rect.x.saturating_add(second_start),
-                            width: second_extent,
-                            ..rect
-                        },
-                    ),
-                    Axis::Vertical => (
-                        Rect {
-                            height: first_extent,
-                            ..rect
-                        },
-                        Rect {
-                            y: rect.y.saturating_add(second_start),
-                            height: second_extent,
-                            ..rect
-                        },
-                    ),
-                };
+                let (a, b) = split_rect(rect, *axis, *ratio);
                 self.geometry_node(*first, a, out)?;
                 self.geometry_node(*second, b, out)?;
             }
@@ -492,6 +494,45 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
         } else {
             Err(LayoutError::InvalidRatio)
         }
+    }
+}
+
+fn split_rect(rect: Rect, axis: Axis, ratio: NonZeroU16) -> (Rect, Rect) {
+    let extent = match axis {
+        Axis::Horizontal => rect.width,
+        Axis::Vertical => rect.height,
+    };
+    // One cell between the siblings carries the separator.
+    let gap = u16::from(extent > 0);
+    let usable = extent.saturating_sub(gap);
+    let first_extent =
+        u16::try_from(u32::from(usable) * u32::from(ratio.get()) / u32::from(RATIO_SCALE))
+            .unwrap_or(usable);
+    let second_extent = usable.saturating_sub(first_extent);
+    let second_start = first_extent.saturating_add(gap);
+    match axis {
+        Axis::Horizontal => (
+            Rect {
+                width: first_extent,
+                ..rect
+            },
+            Rect {
+                x: rect.x.saturating_add(second_start),
+                width: second_extent,
+                ..rect
+            },
+        ),
+        Axis::Vertical => (
+            Rect {
+                height: first_extent,
+                ..rect
+            },
+            Rect {
+                y: rect.y.saturating_add(second_start),
+                height: second_extent,
+                ..rect
+            },
+        ),
     }
 }
 

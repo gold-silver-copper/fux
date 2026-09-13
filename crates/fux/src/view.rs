@@ -244,6 +244,37 @@ impl PaneModes {
     }
 }
 
+/// Ownership of ordinary right-clicks in a pane; Alt-right-click always opens fux's menu.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RightClickPolicy {
+    #[default]
+    Auto,
+    Fux,
+    Pane,
+}
+
+impl RightClickPolicy {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Fux => "fux",
+            Self::Pane => "pane",
+        }
+    }
+
+    pub fn is_auto(&self) -> bool {
+        *self == Self::Auto
+    }
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Fux,
+            Self::Fux => Self::Pane,
+            Self::Pane => Self::Auto,
+        }
+    }
+}
+
 /// One rendered pane surface, either the live screen or a private history viewport.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PaneView {
@@ -253,6 +284,10 @@ pub struct PaneView {
     pub cursor: Cursor,
     pub modes: PaneModes,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "RightClickPolicy::is_auto")]
+    pub right_click: RightClickPolicy,
     /// One flag per row; true means the row continues into the next without a newline.
     pub wrapped_rows: Vec<bool>,
     /// History rows above the live screen that this view starts at (0 = live).
@@ -301,6 +336,8 @@ impl PaneView {
             },
             modes: PaneModes::from_vt100(screen),
             title: title.to_owned(),
+            label: None,
+            right_click: RightClickPolicy::Auto,
             wrapped_rows: (0..rows).map(|row| screen.row_wrapped(row)).collect(),
             offset,
             exit,
@@ -321,6 +358,9 @@ impl PaneView {
             && self.cells.len() == usize::from(self.rows) * usize::from(self.columns)
             && self.wrapped_rows.len() == usize::from(self.rows)
             && self.title.len() <= MAX_TITLE_BYTES
+            && self.label.as_ref().is_none_or(|label| {
+                label.len() <= MAX_LABEL_BYTES && !label.chars().any(char::is_control)
+            })
     }
 
     /// A view from a full update; every row must be carried exactly once. Nothing is allocated
@@ -362,12 +402,18 @@ impl PaneView {
         self.cursor = update.cursor;
         self.modes = update.modes;
         self.title.clone_from(&update.title);
+        self.label.clone_from(&update.label);
+        self.right_click = update.right_click;
         self.offset = update.offset;
         self.exit = update.exit;
     }
 
     fn apply_rows(&mut self, update: &PaneUpdate) -> Result<(), PaneViewError> {
-        if update.title.len() > MAX_TITLE_BYTES {
+        if update.title.len() > MAX_TITLE_BYTES
+            || update.label.as_ref().is_some_and(|label| {
+                label.len() > MAX_LABEL_BYTES || label.chars().any(char::is_control)
+            })
+        {
             return Err(PaneViewError);
         }
         let columns = usize::from(self.columns);
@@ -459,6 +505,9 @@ impl PaneView {
 pub struct TabEntry {
     pub id: TabId,
     pub label: String,
+    pub layout_generation: u64,
+    /// Deterministic insertion target for transfers from another tab.
+    pub first_pane: Option<PaneId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -472,9 +521,15 @@ pub struct PaneRect {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Frame {
+    pub viewer: crate::ids::ViewerId,
+    pub server_instance: String,
     pub workspace: String,
+    pub workspace_stream: u64,
+    pub workspace_label: Option<String>,
     /// Increases with every published frame for this viewer; mouse events echo it.
     pub generation: u64,
+    pub layout_generation: u64,
+    pub zoomed: Option<PaneId>,
     pub tabs: Vec<TabEntry>,
     pub active_tab: Option<TabId>,
     pub focused: Option<PaneId>,
@@ -488,12 +543,33 @@ pub struct Frame {
     pub message: Option<String>,
 }
 
+/// Sparse workspace presentation. An explicit null label clears a previous manual label.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspacePresentation {
+    pub label: Option<String>,
+}
+
+fn valid_workspace_label(label: Option<&str>) -> bool {
+    label.is_none_or(|label| label.len() <= 128 && !label.chars().any(char::is_control))
+}
+
 impl Frame {
     #[must_use]
+    pub fn workspace_display_name(&self) -> &str {
+        self.workspace_label.as_deref().unwrap_or(&self.workspace)
+    }
+
+    #[must_use]
     pub fn valid(&self) -> bool {
-        self.tabs.len() <= MAX_TABS
+        valid_workspace_label(self.workspace_label.as_deref())
+            && self
+                .zoomed
+                .is_none_or(|pane| self.focused == Some(pane) && self.layout.len() == 1)
+            && self.tabs.len() <= MAX_TABS
             && self.panes.len() <= MAX_PANES
             && self.layout.len() <= MAX_PANES
+            && self.server_instance.len() <= 128
             && self.workspace.len() <= 64
             && self
                 .tabs
@@ -548,9 +624,28 @@ impl Frame {
                 }
             }
         }
+        if let Some(viewer) = update.viewer {
+            self.viewer = viewer;
+        }
+        if let Some(instance) = update.server_instance {
+            self.server_instance = instance;
+        }
         self.workspace = update.workspace;
+        if update.full {
+            self.workspace_label = None;
+        }
+        if let Some(presentation) = update.workspace_presentation {
+            self.workspace_label = presentation.label;
+        }
+        if let Some(stream) = update.workspace_stream {
+            self.workspace_stream = stream;
+        }
         self.generation = update.generation;
-        self.tabs = update.tabs;
+        self.layout_generation = update.layout_generation;
+        self.zoomed = update.zoomed;
+        if let Some(tabs) = update.tabs {
+            self.tabs = tabs;
+        }
         self.active_tab = update.active_tab;
         self.focused = update.focused;
         self.layout = update.layout;
@@ -765,6 +860,10 @@ pub struct PaneUpdate {
     pub cursor: Cursor,
     pub modes: PaneModes,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "RightClickPolicy::is_auto")]
+    pub right_click: RightClickPolicy,
     #[serde(default, skip_serializing_if = "is_false")]
     pub full: bool,
     /// The carried rows, each followed in `cells` by `len` wire cells.
@@ -796,6 +895,9 @@ impl PaneUpdate {
             && self.lines.len() <= usize::from(self.rows)
             && self.cells.len() <= self.lines.len().saturating_mul(usize::from(self.columns))
             && self.title.len() <= MAX_TITLE_BYTES
+            && self.label.as_ref().is_none_or(|label| {
+                label.len() <= MAX_LABEL_BYTES && !label.chars().any(char::is_control)
+            })
     }
 
     /// A full update of a vt100 screen (history views and tests).
@@ -820,6 +922,8 @@ impl PaneUpdate {
             },
             modes: PaneModes::from_vt100(screen),
             title: title.to_owned(),
+            label: None,
+            right_click: RightClickPolicy::Auto,
             full: true,
             lines: Vec::with_capacity(usize::from(rows)),
             cells: Vec::new(),
@@ -893,6 +997,8 @@ impl PaneUpdate {
         self.cursor = newer.cursor;
         self.modes = newer.modes;
         self.title = newer.title;
+        self.label = newer.label;
+        self.right_click = newer.right_click;
         self.offset = newer.offset;
         self.exit = newer.exit;
     }
@@ -903,9 +1009,21 @@ impl PaneUpdate {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrameUpdate {
+    /// Connection identity is required on full frames and inherited by ordinary deltas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer: Option<crate::ids::ViewerId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_instance: Option<String>,
     pub workspace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_stream: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_presentation: Option<WorkspacePresentation>,
     pub generation: u64,
-    pub tabs: Vec<TabEntry>,
+    pub layout_generation: u64,
+    pub zoomed: Option<PaneId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabs: Option<Vec<TabEntry>>,
     pub active_tab: Option<TabId>,
     pub focused: Option<PaneId>,
     pub layout: Vec<PaneRect>,
@@ -957,9 +1075,21 @@ impl FrameUpdate {
     /// pane is allocated.
     #[must_use]
     pub fn within_bounds(&self, held: &Frame) -> bool {
-        if self.panes.len() > MAX_PANES
+        if self
+            .workspace_presentation
+            .as_ref()
+            .is_some_and(|presentation| !valid_workspace_label(presentation.label.as_deref()))
+            || self.panes.len() > MAX_PANES
+            || self
+                .server_instance
+                .as_ref()
+                .is_some_and(|instance| instance.len() > 128)
+            || self.viewer.is_some() != self.server_instance.is_some()
+            || self.viewer.is_some() != self.workspace_stream.is_some()
+            || self.workspace_stream == Some(0)
+            || (self.full && (self.viewer.is_none() || self.tabs.is_none()))
             || self.layout.len() > MAX_PANES
-            || self.tabs.len() > MAX_TABS
+            || self.tabs.as_ref().is_some_and(|tabs| tabs.len() > MAX_TABS)
         {
             return false;
         }
@@ -1012,9 +1142,25 @@ impl FrameUpdate {
                 }
             }
         }
+        if newer.viewer.is_some() {
+            self.viewer = newer.viewer;
+        }
+        if newer.server_instance.is_some() {
+            self.server_instance = newer.server_instance;
+        }
         self.workspace = newer.workspace;
+        if newer.workspace_presentation.is_some() {
+            self.workspace_presentation = newer.workspace_presentation;
+        }
+        if newer.workspace_stream.is_some() {
+            self.workspace_stream = newer.workspace_stream;
+        }
         self.generation = newer.generation;
-        self.tabs = newer.tabs;
+        self.layout_generation = newer.layout_generation;
+        self.zoomed = newer.zoomed;
+        if newer.tabs.is_some() {
+            self.tabs = newer.tabs;
+        }
         self.active_tab = newer.active_tab;
         self.focused = newer.focused;
         self.layout = newer.layout;
@@ -1028,6 +1174,231 @@ impl FrameUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_labels_are_sparse_clearable_and_validated_before_apply() {
+        let mut frame = Frame::default();
+        let named = FrameUpdate {
+            workspace_presentation: Some(WorkspacePresentation {
+                label: Some("Build 界".into()),
+            }),
+            ..FrameUpdate::default()
+        };
+        assert!(frame.apply(named.clone()).is_ok());
+        assert!(frame.apply(FrameUpdate::default()).is_ok());
+        assert_eq!(frame.workspace_label.as_deref(), Some("Build 界"));
+        let clear = FrameUpdate {
+            workspace_presentation: Some(WorkspacePresentation { label: None }),
+            ..FrameUpdate::default()
+        };
+        let mut merged = named;
+        merged.merge(clear);
+        merged.merge(FrameUpdate::default());
+        assert!(frame.apply(merged).is_ok());
+        assert_eq!(frame.workspace_label, None);
+        for label in ["bad\nlabel".to_owned(), "x".repeat(129)] {
+            let before = frame.clone();
+            assert!(
+                frame
+                    .apply(FrameUpdate {
+                        workspace_presentation: Some(WorkspacePresentation { label: Some(label) }),
+                        ..FrameUpdate::default()
+                    })
+                    .is_err()
+            );
+            assert_eq!(frame, before);
+        }
+        frame.workspace_label = Some("old workspace".into());
+        assert!(
+            frame
+                .apply(FrameUpdate {
+                    full: true,
+                    viewer: Some(crate::ids::ViewerId(1)),
+                    server_instance: Some("instance".into()),
+                    workspace_stream: Some(2),
+                    tabs: Some(Vec::new()),
+                    ..FrameUpdate::default()
+                })
+                .is_ok()
+        );
+        assert_eq!(frame.workspace_label, None);
+    }
+
+    #[test]
+    fn pane_label_clearing_survives_coalescing_without_touching_application_title()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut parser = vt100::Parser::new(2, 8, 0);
+        parser.process(b"content");
+        let mut full = PaneUpdate::full_from_screen(parser.screen(), "application", 0, None)?;
+        full.label = Some("manual".into());
+        let mut view = PaneView::from_update(&full)?;
+        let clear = PaneUpdate {
+            rows: 2,
+            columns: 8,
+            title: "new title".into(),
+            ..PaneUpdate::default()
+        };
+        view.apply(&clear)?;
+        full.merge(clear);
+        assert_eq!(PaneView::from_update(&full)?, view);
+        assert_eq!(view.label, None);
+        assert_eq!(view.title, "new title");
+        let before = view.clone();
+        for label in ["x".repeat(MAX_LABEL_BYTES + 1), "bad\x1b".into()] {
+            let invalid = PaneUpdate {
+                label: Some(label),
+                ..PaneUpdate::default()
+            };
+            assert!(!invalid.within_bounds());
+            assert!(view.apply(&invalid).is_err());
+            assert_eq!(view, before);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sparse_connection_identity_survives_wire_roundtrip_and_coalescing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let full = FrameUpdate {
+            full: true,
+            server_instance: Some("instance".into()),
+            workspace_stream: Some(1),
+            viewer: Some(crate::ids::ViewerId(7)),
+            workspace: "default".into(),
+            tabs: Some(vec![TabEntry {
+                id: TabId(1),
+                label: "main".into(),
+                layout_generation: 5,
+                first_pane: None,
+            }]),
+            generation: 1,
+            ..FrameUpdate::default()
+        };
+        let delta = FrameUpdate {
+            workspace: "default".into(),
+            generation: 2,
+            ..FrameUpdate::default()
+        };
+        let encoded = serde_json::to_value(&delta)?;
+        assert!(encoded.get("viewer").is_none());
+        assert!(encoded.get("server_instance").is_none());
+        assert!(encoded.get("tabs").is_none());
+        assert!(encoded.get("workspace_stream").is_none());
+        let delta: FrameUpdate = serde_json::from_value(encoded)?;
+        let mut direct = Frame::default();
+        direct.apply(full.clone())?;
+        direct.apply(delta.clone())?;
+        assert_eq!(direct.viewer, crate::ids::ViewerId(7));
+        assert_eq!(direct.server_instance, "instance");
+        assert_eq!(direct.workspace_stream, 1);
+        assert_eq!(direct.tabs.len(), 1);
+        let mut merged = full;
+        merged.merge(delta);
+        let mut coalesced = Frame::default();
+        coalesced.apply(merged)?;
+        assert_eq!(coalesced, direct);
+        let clear = FrameUpdate {
+            tabs: Some(Vec::new()),
+            workspace: "default".into(),
+            generation: 3,
+            ..FrameUpdate::default()
+        };
+        let mut compacted = clear.clone();
+        compacted.merge(FrameUpdate {
+            workspace: "default".into(),
+            generation: 4,
+            ..FrameUpdate::default()
+        });
+        direct.apply(compacted)?;
+        assert!(
+            direct.tabs.is_empty(),
+            "an explicit empty catalog survives a later omitted catalog"
+        );
+        let before = direct.clone();
+        for stream in [None, Some(0)] {
+            assert!(
+                direct
+                    .apply(FrameUpdate {
+                        full: true,
+                        viewer: Some(crate::ids::ViewerId(7)),
+                        server_instance: Some("instance".into()),
+                        workspace_stream: stream,
+                        tabs: Some(Vec::new()),
+                        ..FrameUpdate::default()
+                    })
+                    .is_err()
+            );
+            assert_eq!(direct, before);
+        }
+        assert!(
+            direct
+                .apply(FrameUpdate {
+                    full: true,
+                    ..FrameUpdate::default()
+                })
+                .is_err()
+        );
+        assert_eq!(direct, before);
+        assert!(
+            direct
+                .apply(FrameUpdate {
+                    full: true,
+                    viewer: Some(crate::ids::ViewerId(7)),
+                    server_instance: Some("instance".into()),
+                    workspace_stream: Some(1),
+                    ..FrameUpdate::default()
+                })
+                .is_err()
+        );
+        assert_eq!(direct, before);
+        assert!(
+            direct
+                .apply(FrameUpdate {
+                    viewer: Some(crate::ids::ViewerId(9)),
+                    ..FrameUpdate::default()
+                })
+                .is_err()
+        );
+        assert_eq!(direct, before);
+        let replacement = FrameUpdate {
+            full: true,
+            viewer: Some(crate::ids::ViewerId(9)),
+            server_instance: Some("replacement".into()),
+            workspace_stream: Some(2),
+            tabs: Some(Vec::new()),
+            ..FrameUpdate::default()
+        };
+        direct.apply(replacement)?;
+        assert_eq!(direct.viewer, crate::ids::ViewerId(9));
+        assert_eq!(direct.server_instance, "replacement");
+        assert_eq!(direct.workspace_stream, 2);
+        assert!(direct.tabs.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn coalesced_updates_keep_latest_layout_revision_and_zoom() {
+        let mut queued = FrameUpdate::default();
+        queued.merge(FrameUpdate {
+            server_instance: Some("observed-instance".into()),
+            workspace_stream: Some(1),
+            viewer: Some(crate::ids::ViewerId(7)),
+            layout_generation: 4,
+            zoomed: Some(PaneId(7)),
+            ..FrameUpdate::default()
+        });
+        assert_eq!(queued.layout_generation, 4);
+        assert_eq!(queued.server_instance.as_deref(), Some("observed-instance"));
+        assert_eq!(queued.viewer, Some(crate::ids::ViewerId(7)));
+        assert_eq!(queued.zoomed, Some(PaneId(7)));
+        queued.merge(FrameUpdate {
+            layout_generation: 5,
+            zoomed: None,
+            ..FrameUpdate::default()
+        });
+        assert_eq!(queued.layout_generation, 5);
+        assert_eq!(queued.zoomed, None);
+    }
 
     #[test]
     fn full_updates_round_trip_to_the_screen_view() {

@@ -57,6 +57,7 @@ impl Session {
         world.init_resource::<resources::ShuttingDown>();
         world.init_resource::<ServerIdentity>();
         world.init_resource::<resources::WorkspaceCounter>();
+        world.init_resource::<resources::WorkspaceOrder>();
         world.init_resource::<Messages<Inbound>>();
         world.init_resource::<Messages<Effect>>();
         let mut schedule = Schedule::new(Step);
@@ -199,6 +200,9 @@ impl Session {
             tab.layout
                 .validate()
                 .map_err(|error| format!("tab {} layout: {error}", tab.id))?;
+            if tab.zoomed.is_some_and(|pane| !tab.layout.contains(pane)) {
+                return Err(format!("tab {} zoom references a missing pane", tab.id));
+            }
             let workspace = self
                 .world
                 .get::<components::Workspace>(tab.workspace)
@@ -242,6 +246,20 @@ impl Session {
         {
             if ids.pane(pane.id) != Some(entity) {
                 return Err(format!("pane {} is not registered", pane.id));
+            }
+            if self
+                .world
+                .get::<components::Workspace>(pane.routing_workspace)
+                .is_none()
+                || self
+                    .world
+                    .get::<components::Tab>(pane.tab)
+                    .is_some_and(|tab| tab.workspace != pane.routing_workspace)
+            {
+                return Err(format!(
+                    "pane {} has inconsistent workspace routing",
+                    pane.id
+                ));
             }
             // A tab may close ahead of its panes' exit reports; only a terminating pane may
             // outlive its tab, and it leaves as soon as the adapter reports the exit.

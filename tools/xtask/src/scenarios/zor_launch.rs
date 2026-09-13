@@ -267,6 +267,28 @@ pub fn run(fux: &Path, zor: &Path) -> Result<()> {
                 && pending["verification"]["status"] == "unverified",
             "unattached result overclaim"
         );
+        p.update(|faults| faults.drop_pin_before = true);
+        reject!("launch-reconcile", "lost");
+        let committed = t!("inspect", "lost");
+        ensure!(
+            committed["launch"]["phase"] == "attached",
+            "pin release preceded durable attachment"
+        );
+        let committed_pane = &committed["session"]["target"]["pane"];
+        ensure!(
+            h.panes()?
+                .iter()
+                .any(|pane| &pane["id"] == committed_pane && pane["fixed_workspace"] == true),
+            "dropped release changed pin"
+        );
+        p.update(|faults| faults.drop_pin_reply = true);
+        reject!("launch-reconcile", "lost");
+        ensure!(
+            h.panes()?
+                .iter()
+                .any(|pane| &pane["id"] == committed_pane && pane["fixed_workspace"] == false),
+            "lost release reply did not release creation pin"
+        );
         let recovered = t!("launch-reconcile", "lost");
         ensure!(
             recovered["launch"]["phase"] == "attached" && p.faults().creates == 1,
@@ -333,7 +355,7 @@ pub fn run(fux: &Path, zor: &Path) -> Result<()> {
         );
         p.update(|f| {
             f.unavailable = false;
-            f.list_failures = 1;
+            f.observation_failures = 1;
         });
         reject!("stop", "stopped");
         ensure!(
@@ -548,6 +570,43 @@ pub fn run(fux: &Path, zor: &Path) -> Result<()> {
                 && closed["task"]["outcome"] == "cancelled"
                 && f(&closed, "/prompts")? == f(&cancelled, "/prompts")?,
             "cancelled close rewrote history"
+        );
+        // Force process exit after durable attachment but before creation-pin
+        // release. Success must come from retained exit evidence, not a retry
+        // that creates another process or ignores a failed release blindly.
+        p.update(|f| {
+            f.mode = Mode::Normal;
+            f.exit_before_pin = true;
+        });
+        let before = p.faults().creates;
+        let exited = h.start("exit-before-pin", Some(&runtime), &argv, true)?;
+        ensure!(
+            exited["launch"]["phase"] == "closed"
+                && exited["attempt"]["state"] == "finished"
+                && !exited["launch"]["final_evidence"].is_null()
+                && exited["task"]["outcome"] == "open"
+                && p.faults().creates == before + 1
+                && h.start("exit-before-pin", Some(&runtime), &argv, true)? == exited
+                && p.faults().creates == before + 1,
+            "exit before pin release lost evidence or duplicated launch"
+        );
+        p.update(|f| f.drop_pin_before = true);
+        h.start("exit-during-reconcile", Some(&runtime), &argv, false)?;
+        let attached = t!("inspect", "exit-during-reconcile");
+        ensure!(
+            attached["launch"]["phase"] == "attached",
+            "missing durable attachment"
+        );
+        let before = p.faults().creates;
+        p.update(|f| f.exit_before_pin = true);
+        let reconciled = t!("launch-reconcile", "exit-during-reconcile");
+        ensure!(
+            reconciled["launch"]["phase"] == "closed"
+                && reconciled["attempt"]["state"] == "finished"
+                && reconciled["session"] == attached["session"]
+                && reconciled["task"] == attached["task"]
+                && p.faults().creates == before,
+            "exit between verification and release lost identity or duplicated creation"
         );
         p.update(|f| {
             f.mode = Mode::WaitExit;

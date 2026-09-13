@@ -21,16 +21,35 @@ pub enum ScrollBy {
 pub enum InputEvent {
     /// Ordinary pane input, byte-exact (paste delimiters included).
     Bytes(Vec<u8>),
+    /// A disambiguated lone Escape, distinct from paste and literal-prefix bytes.
+    Escape,
     /// A configured command key was pressed after the prefix.
     Command(Action),
     /// A complete SGR mouse report outside command mode.
     Mouse(MouseEvent, Vec<u8>),
+    /// A mouse report owned by the visible command popup.
+    PopupMouse(MouseEvent),
     /// Prefix then an unbound key: command mode stays active and the popup is revealed.
     Unknown,
     /// Prefix then Esc, or Esc while the popup is open.
     Cancel,
     /// Up/Down (one row) or PageUp/PageDown (one screenful) while the popup is open.
     Scroll(ScrollBy),
+}
+
+/// Consume a paste delimiter incrementally, retaining overlapping ESC prefixes.
+/// Returned bytes are literal paste content; the delimiter itself is reported separately.
+pub(super) fn paste_byte(pending: &mut Vec<u8>, byte: u8) -> (Vec<u8>, bool) {
+    pending.push(byte);
+    if pending == PASTE_END {
+        pending.clear();
+        return (Vec::new(), true);
+    }
+    let mut literal = Vec::new();
+    while !PASTE_END.starts_with(pending) {
+        literal.push(pending.remove(0));
+    }
+    (literal, false)
 }
 
 /// A stateful classifier over one viewer's raw terminal input.
@@ -107,6 +126,16 @@ impl PrefixFilter {
 
     /// Resolves a lone Escape (or a trailing one) after the disambiguation delay.
     pub fn resolve_escape(&mut self) -> Vec<InputEvent> {
+        self.resolve_history_escape(false)
+    }
+
+    /// Escape dismisses active history even when Escape is also the configured prefix.
+    /// A subsequent Escape with no history follows the configured prefix normally.
+    pub fn resolve_history_escape(&mut self, history: bool) -> Vec<InputEvent> {
+        if history && !self.command_pending && !self.paste && self.sequence == [27] {
+            self.sequence.clear();
+            return vec![InputEvent::Escape];
+        }
         if !self.escape_pending() {
             return Vec::new();
         }
@@ -129,17 +158,14 @@ impl PrefixFilter {
 
     fn feed_byte(&mut self, byte: u8, events: &mut Vec<InputEvent>) {
         if self.paste {
-            // Inside a paste only the end delimiter matters; everything is pane input.
-            self.sequence.push(byte);
-            if PASTE_END.starts_with(&self.sequence) {
-                if self.sequence == PASTE_END {
-                    events.push(InputEvent::Bytes(std::mem::take(&mut self.sequence)));
-                    self.paste = false;
-                }
-                return;
+            let (literal, ended) = paste_byte(&mut self.sequence, byte);
+            if !literal.is_empty() {
+                events.push(InputEvent::Bytes(literal));
             }
-            let drained = std::mem::take(&mut self.sequence);
-            events.push(InputEvent::Bytes(drained));
+            if ended {
+                events.push(InputEvent::Bytes(PASTE_END.to_vec()));
+                self.paste = false;
+            }
             return;
         }
         if !self.sequence.is_empty() || byte == 0x1b {
@@ -204,6 +230,10 @@ impl PrefixFilter {
             return;
         }
         self.reveal = true;
+        if let Some(mouse) = MouseEvent::parse(sequence) {
+            events.push(InputEvent::PopupMouse(mouse));
+            return;
+        }
         events.push(match sequence {
             b"\x1b[B" | b"\x1bOB" => InputEvent::Scroll(ScrollBy::Rows(1)),
             b"\x1b[A" | b"\x1bOA" => InputEvent::Scroll(ScrollBy::Rows(-1)),
@@ -244,7 +274,11 @@ impl PrefixFilter {
             self.reveal = false;
             return;
         }
-        events.push(InputEvent::Bytes(vec![byte]));
+        events.push(if byte == 27 && resolved_escape {
+            InputEvent::Escape
+        } else {
+            InputEvent::Bytes(vec![byte])
+        });
     }
 }
 
@@ -266,6 +300,55 @@ mod tests {
 
     fn fresh() -> PrefixFilter {
         PrefixFilter::new(ClientBindings::default())
+    }
+
+    #[test]
+    fn escape_prefix_dismisses_history_before_entering_commands() {
+        let mut filter = PrefixFilter::new(ClientBindings::new(27, [(b'x', Action::ClosePane)]));
+        assert!(filter.feed(b"\x1b").is_empty());
+        assert_eq!(
+            filter.resolve_history_escape(true),
+            vec![InputEvent::Escape]
+        );
+        assert!(!filter.command_pending());
+        filter.feed(b"\x1b");
+        assert!(filter.resolve_history_escape(false).is_empty());
+        assert!(filter.command_pending());
+    }
+
+    #[test]
+    fn overlapping_paste_end_prefixes_preserve_bytes_and_release_ownership() {
+        let payload = b"\x1b[200~a\x1b\x1b[201~";
+        for split in 0..=payload.len() {
+            let mut filter = fresh();
+            let mut events = filter.feed(&payload[..split]);
+            events.extend(filter.feed(&payload[split..]));
+            let bytes = events
+                .into_iter()
+                .flat_map(|event| match event {
+                    InputEvent::Bytes(bytes) => bytes,
+                    other => panic!("unexpected {other:?}"),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(bytes, payload);
+            assert_eq!(
+                filter.feed(b"\x01|"),
+                vec![InputEvent::Command(Action::SplitSide)]
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_disambiguated_escape_can_dismiss_history() {
+        let mut filter = fresh();
+        assert!(filter.feed(b"\x1b").is_empty());
+        assert_eq!(filter.resolve_escape(), vec![InputEvent::Escape]);
+        assert_eq!(
+            filter.feed(b"\x1bx"),
+            vec![InputEvent::Bytes(b"\x1bx".to_vec())]
+        );
+        let paste = b"\x1b[200~\x1bx\x01\x1b[201~";
+        assert_eq!(filter.feed(paste), vec![InputEvent::Bytes(paste.to_vec())]);
     }
 
     #[test]
@@ -300,9 +383,9 @@ mod tests {
         );
         assert!(!filter.command_pending());
         assert_eq!(filter.feed(b"\x01\x01"), vec![InputEvent::Bytes(vec![1])]);
-        assert_eq!(filter.feed(b"\x01!"), vec![InputEvent::Unknown]);
+        assert_eq!(filter.feed(b"\x010"), vec![InputEvent::Unknown]);
         assert!(filter.command_pending() && filter.revealed());
-        assert_eq!(filter.feed(b"?"), vec![InputEvent::Unknown]);
+        assert_eq!(filter.feed(b"0"), vec![InputEvent::Unknown]);
         assert_eq!(
             filter.feed(b"\x1b[B"),
             vec![InputEvent::Scroll(ScrollBy::Rows(1))]
@@ -388,6 +471,59 @@ mod tests {
                         .iter()
                         .all(|event| matches!(event, InputEvent::Bytes(_) | InputEvent::Mouse(..)))
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_sequences_and_commands_survive_every_read_boundary() {
+        for prefix in [1, 2, b'P', 27] {
+            let make =
+                || PrefixFilter::new(ClientBindings::new(prefix, [(b'x', Action::ClosePane)]));
+            let mut paste = b"\x1b[200~".to_vec();
+            paste.extend([prefix, b'x']);
+            paste.extend("界\x1b\x1b[201~".as_bytes());
+            for payload in [
+                b"\x1b[1;2A".to_vec(),
+                b"\x1bOP".to_vec(),
+                b"\x1bx".to_vec(),
+                "界é".as_bytes().to_vec(),
+                b"\x1b[<0;3;4M\x1b[<0;3;4m".to_vec(),
+                paste,
+            ] {
+                for split in 0..=payload.len() {
+                    let (head, tail) = payload.split_at(split);
+                    let mut filter = make();
+                    let mut events = filter.feed(head);
+                    events.extend(filter.feed(tail));
+                    events.extend(filter.resolve_escape());
+                    let mut bytes = Vec::new();
+                    for event in events {
+                        match event {
+                            InputEvent::Bytes(raw) | InputEvent::Mouse(_, raw) => bytes.extend(raw),
+                            other => panic!(
+                                "unexpected {other:?}, prefix {prefix}, split {split}, payload {payload:?}"
+                            ),
+                        }
+                    }
+                    assert_eq!(bytes, payload, "prefix {prefix}, split {split}");
+                    assert!(!filter.command_pending());
+                }
+            }
+            if prefix != 27 {
+                for split in 0..=2 {
+                    let mut filter = make();
+                    let command = [prefix, b'x'];
+                    let (head, tail) = command.split_at(split);
+                    let mut events = filter.feed(head);
+                    events.extend(filter.feed(tail));
+                    assert_eq!(events, vec![InputEvent::Command(Action::ClosePane)]);
+                    let literal = [prefix, prefix];
+                    let (head, tail) = literal.split_at(split);
+                    let mut events = filter.feed(head);
+                    events.extend(filter.feed(tail));
+                    assert_eq!(events, vec![InputEvent::Bytes(vec![prefix])]);
+                }
             }
         }
     }

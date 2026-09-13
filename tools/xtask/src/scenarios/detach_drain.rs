@@ -24,22 +24,33 @@ struct Drain {
     thread: Option<std::thread::JoinHandle<Result<()>>>,
 }
 impl Drain {
-    fn start(fd: std::os::fd::OwnedFd) -> Result<Self> {
+    fn start(fd: std::os::fd::OwnedFd, binary: &Path) -> Result<Self> {
         nix::fcntl::fcntl(
             &fd,
             nix::fcntl::FcntlArg::F_SETFL(nix::fcntl::OFlag::O_NONBLOCK),
         )?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
+        let binary = binary.to_owned();
         let thread = std::thread::spawn(move || {
+            let mut visual =
+                crate::support::visual::Capture::new(&binary, &["detach-drain"], 12, 48)?;
             let mut bytes = [0; 65536];
             while !stopping.load(Ordering::Relaxed) {
                 match nix::unistd::read(&fd, &mut bytes) {
                     Ok(0) | Err(nix::errno::Errno::EIO) => break,
-                    Ok(_) | Err(nix::errno::Errno::EAGAIN) => {}
+                    Ok(count) => {
+                        if let Some(visual) = &mut visual {
+                            visual.feed(&bytes[..count])?;
+                        }
+                    }
+                    Err(nix::errno::Errno::EAGAIN) => {}
                     Err(error) => return Err(error.into()),
                 }
                 std::thread::sleep(Duration::from_millis(10));
+            }
+            if let Some(visual) = &mut visual {
+                visual.checkpoint("detach-drain-complete")?;
             }
             Ok(())
         });
@@ -85,7 +96,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
     let pty = crate::support::pty::open(12, 48)?;
-    let mut drain = Drain::start(pty.master.try_clone()?)?;
+    let mut drain = Drain::start(pty.master.try_clone()?, binary)?;
     let mut child = Guard(
         root.command(binary)
             .args(["attach", "--socket"])

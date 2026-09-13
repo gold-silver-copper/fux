@@ -97,6 +97,44 @@ jobs:
       - if: runner.os == 'Linux'
         run: cargo +${{ matrix.rust }} test --manifest-path crates/zor/tools/xtask/Cargo.toml --locked
 
+  betamax:
+    name: Betamax headless terminal rendering
+    runs-on: ubuntu-latest
+    env:
+      FUX_BETAMAX_DIR: ${{ github.workspace }}/target/betamax
+      FUX_BETAMAX_FONT: Noto Sans Mono CJK SC
+      FUX_REQUIRE_ZOR_BIN: "1"
+      ZOR_BIN: ${{ github.workspace }}/target/debug/zor
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install native renderer toolchain and fonts
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          python3 -m venv "$RUNNER_TEMP/betamax-tools"
+          "$RUNNER_TEMP/betamax-tools/bin/pip" install ziglang==0.15.2
+          "$RUNNER_TEMP/betamax-tools/bin/python" -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)' >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
+      - name: Verify and build the rendering harness
+        run: |
+          cargo +stable fmt --manifest-path tools/xtask/Cargo.toml --check
+          cargo +stable clippy --manifest-path tools/xtask/Cargo.toml --features betamax --all-targets --locked -- -D warnings
+          cargo +stable test --manifest-path tools/xtask/Cargo.toml --features betamax --locked -- --test-threads=1
+          cargo +stable build --manifest-path tools/xtask/Cargo.toml --features betamax --target-dir target/rust-harness --locked
+          cargo +stable build --locked -p zor --no-default-features --features cli --bin zor
+      - name: Run all headless real-process scenarios with rendering enabled
+        run: cargo +stable test -p fux --locked --no-fail-fast --test local_cli --test automation_integration -- --test-threads=1
+      - name: Index rendered checkpoints
+        if: always()
+        run: target/rust-harness/debug/fux-xtask betamax-report "$FUX_BETAMAX_DIR"
+      - name: Retain PNGs, terminal states and raw VT evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: betamax-terminal-evidence
+          path: target/betamax
+          if-no-files-found: error
+
   android-cross-check:
     name: Android aarch64 cross-check (not runtime coverage)
     runs-on: ubuntu-latest

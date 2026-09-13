@@ -36,8 +36,9 @@ strict (`deny_unknown_fields`); `id` is an unsigned integer echoed in the reply.
 
 | Command | Fields | Result |
 |---|---|---|
-| `split` | `axis` (`horizontal`/`vertical`), `final_retain_ms` (nonzero; clamped to `final_retention_ms`), `target?`, `cwd?`, `argv?`, `env?`, `rows?`, `columns?` | `pane` |
-| `focus` | `target`: `left`/`right`/`up`/`down` or `{"pane":ID}` | unit |
+| `split` | `axis` (`horizontal`/`vertical`), `final_retain_ms` (nonzero; clamped to `final_retention_ms`), `target?`, `cwd?`, `argv?`, `env?`, `rows?`, `columns?`, `right_click?` (`auto` default, `fux`, `pane`), `ratio?` (500–9500, default 5000), `focus?` (default true) | `pane` |
+| `pane-input` | required `instance`, `pane`, `right_click` (`auto`/`fux`/`pane`) | `pane` |
+| `focus` | `target`: `left`/`right`/`up`/`down`, `next`/`previous`/`last`, or `{"pane":ID}` | pane |
 | `kill` | `pane` | unit (the pane leaves the layout now; `pane.closed` follows the exit report) |
 | `resize` | `pane`, `delta` (non-zero) | unit |
 | `send-keys` | `pane`, `keys` (at most 64 KiB), `notation?` (`escapes` default, or `keys`) | unit |
@@ -189,6 +190,16 @@ integration, task state, checks and verified results belong to zor. fux ignores 
 agent reports and exposes no pane agent state or `pane.agent` event. Terminal output,
 input delivery and process exit are observations, not verified task completion.
 
+## Pane geometry inspection
+
+`{"command":"layout","id":1,"tab":1,"action":{"operation":"inspect","pane":2}}`
+returns a `pane-geometry` result with `geometry`: server/tab/pane identity, layout generation,
+canonical document, current area, underlying pane rectangle, zoom presentation rectangle,
+directional neighbors and outer-edge flags. It is read-only and workspace-scoped, requires no
+mutation guards and uses the same navigation algorithm as focus. Empty/headless geometry and zoom
+semantics are specified in the [pane/layout guide](pane-layout-controls.md). An optional server
+instance guard remains enforced; unsettled viewer geometry fails with `conflict`.
+
 ## Manager requests
 
 Same preface, separate strict schema selected by the socket:
@@ -210,6 +221,15 @@ manager uses a separate bootstrap schema because its attach reply
 carries a descriptor (socket paths) the shared control schema deliberately does not.
 `resolve` with `null` applies the default rule: create `default` when nothing exists, otherwise the
 most recently attached workspace. `kill` deliberately terminates that workspace's panes; nothing else does.
+
+`pane-location` requires `instance` and `pane` and returns a `pane-location` envelope wrapping
+an ID-zero control reply. Its location includes pane/PID, current workspace/stream/tab/layout
+revision, immutable origin workspace/stream and `accepts_input`. A process whose terminal reached
+EOF remains locatable with `accepts_input: false` until termination removes it from the layout;
+EOF does not establish process exit. Live input consumers require true. Missing/removed panes
+return `not-found`, and a different server instance returns `conflict`. This manager-only read does
+not grant workspace connections authority over foreign panes. See the [pane/layout contract](pane-layout-controls.md)
+for transfer and creation-pin release semantics.
 
 `create` creates only when the name is absent; it never attaches to an existing workspace.
 `final` returns a `final` manager envelope containing a control reply. A retained record
@@ -251,3 +271,27 @@ workspace `kill`. The fixture-child suite covers bounded control framing; the Ru
 `observer` scenario checks that malformed control clients leave panes and valid clients
 working. The Rust `protocol-rejection` scenario separately verifies that a rejected
 attachment hello leaves terminal settings and screen mode untouched.
+
+`pane-input` changes the existing pane's ordinary right-click ownership. It is scoped to the
+workspace connection and observed server instance. A changed policy advances layout generation
+and publishes viewer metadata without terminal input, resize or process replacement. Repeating
+an unchanged policy is a no-op. `list` includes `panes[].right_click` for non-default policies;
+omission means `auto`. Live movement preserves policy; layout imports leave it unchanged.
+
+Split `ratio` is the existing/first pane's share on a 10000 scale. It is validated before spawn
+reservation and retained until the new pane is inserted. `focus:false` preserves default and
+viewer selections and shared zoom. `focus:true` selects the target tab/new pane for the requester
+and workspace default, clears zoom, and leaves other attached viewers' private selections alone.
+
+A transfer's existing-tab `destination` accepts `ratio` (integer 500–9500, default 5000),
+representing the existing target pane's share on a 10000 scale regardless of insertion side.
+This applies equally to workspace layout transfer and manager cross-workspace transfer. New-tab
+destinations do not accept a ratio. Validation precedes movement and new workspace allocation.
+
+Layout transfer and manager `WorkspaceTransfer` accept `focus` (default false). False preserves
+destination zoom and existing selections, with normal source-removal fallback. True clears
+destination zoom and selects the moved pane in the destination workspace default. An attached
+layout requester is selected too; workspace-control requests do not select existing viewers.
+Manager `follow` implies focused transfer and moves only the named viewer, subject to destination
+viewer limits checked before mutation. Atomic focused moves retain navigation history without
+recording temporary source fallback. A new workspace selects its sole pane regardless of focus.

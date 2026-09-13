@@ -1,0 +1,14 @@
+[
+  {
+    "at": "2026-09-13T09:53:37.527443+00:00",
+    "exit": 0,
+    "stdout": "Processes: 793 total, 4 running, 789 sleeping, 4009 threads \n2026/09/13 02:53:36\nLoad Avg: 3.56, 4.55, 7.21 \nCPU usage: 5.62% user, 16.45% sys, 77.92% idle \nSharedLibs: 797M resident, 126M data, 97M linkedit.\nMemRegions: 141082 total, 6185M resident, 420M private, 27G shared.\nPhysMem: 48G used (2225M wired, 2886M compressor), 15G unused.\nVM: 325T vsize, 6144M framework vsize, 1237552(0) swapins, 1365460(0) swapouts.\nNetworks: packets: 34010250/33G in, 20892927/14G out.\nDisks: 269881963/2381G read, 111886836/3933G written.\n\n\nProcesses: 793 total, 4 running, 789 sleeping, 4013 threads \n2026/09/13 02:53:37\nLoad Avg: 3.56, 4.55, 7.21 \nCPU usage: 5.40% user, 10.96% sys, 83.62% idle \nSharedLibs: 797M resident, 126M data, 97M linkedit.\nMemRegions: 0 total, 0B resident, 420M private, 27G shared.\nPhysMem: 48G used (2227M wired, 2886M compressor), 15G unused.\nVM: 325T vsize, 6144M framework vsize, 1237552(0) swapins, 1365460(0) swapouts.\nNetworks: packets: 34010291/33G in, 20892973/14G out.\nDisks: 269887526/2381G read, 111887278/3933G written.\n\n\n",
+    "stderr": ""
+  },
+  {
+    "at": "2026-09-13T09:53:43.812438+00:00",
+    "exit": 0,
+    "stdout": "Processes: 793 total, 3 running, 790 sleeping, 3946 threads \n2026/09/13 02:53:42\nLoad Avg: 3.43, 4.50, 7.18 \nCPU usage: 4.1% user, 12.94% sys, 83.3% idle \nSharedLibs: 797M resident, 126M data, 97M linkedit.\nMemRegions: 140953 total, 6182M resident, 420M private, 27G shared.\nPhysMem: 48G used (2230M wired, 2886M compressor), 15G unused.\nVM: 325T vsize, 6144M framework vsize, 1237552(0) swapins, 1365460(0) swapouts.\nNetworks: packets: 34010536/33G in, 20893222/14G out.\nDisks: 269913151/2381G read, 111889168/3933G written.\n\n\nProcesses: 793 total, 3 running, 1 stuck, 789 sleeping, 3933 threads \n2026/09/13 02:53:43\nLoad Avg: 3.43, 4.50, 7.18 \nCPU usage: 3.94% user, 9.36% sys, 86.68% idle \nSharedLibs: 797M resident, 126M data, 97M linkedit.\nMemRegions: 0 total, 0B resident, 420M private, 27G shared.\nPhysMem: 48G used (2230M wired, 2886M compressor), 15G unused.\nVM: 325T vsize, 6144M framework vsize, 1237552(0) swapins, 1365460(0) swapouts.\nNetworks: packets: 34010576/33G in, 20893262/14G out.\nDisks: 269913729/2381G read, 111889814/3933G written.\n\n\n",
+    "stderr": ""
+  }
+]

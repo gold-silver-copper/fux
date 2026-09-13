@@ -289,6 +289,10 @@ pub fn run(h: &Harness<'_>, m: &Managed) -> Result<Value> {
 fn overload(h: &Harness<'_>) -> Result<()> {
     let proxy_root = h.root.path().join("proxy");
     fs::create_dir(&proxy_root)?;
+    std::os::unix::fs::symlink(
+        h.root.path().join("fux/manager.sock"),
+        proxy_root.join("manager.sock"),
+    )?;
     let mut proxy = Proxy::new(
         &proxy_root.join(format!("{}.sock", s(&h.handle["workspace"])?)),
         h.root.control(),

@@ -1,0 +1,13 @@
+{
+  "crates/fux/src/client/control_traces.rs": "a02ddbd93c691070d1c613c966da7952548490021e1cb139db233e7466d5116c",
+  "crates/fux/src/client/controller.rs": "3186f552c033ad0bd76fd1111ebc9d32a521211bb092c8fcfff5f4e6ba86cb21",
+  "tools/xtask/src/scenarios/viewer.rs": "7cf715f5f44252ba8aa3b432cd4b314678f70bac07b014be3b2b73a9b68f390f",
+  "tools/xtask/src/scenarios/mod.rs": "b333a5c3ec48fc5df44cd10ec00195e7bf877659913930462d88be46589c01a0",
+  "tools/xtask/src/scenarios/viewer/tiny.rs": "63f3471d1ec0850a06e551a13a252b667755ad1fb339b02be0a93717ecb77622",
+  "tools/xtask/src/scenarios/viewer/manager.rs": "31cbf754b893cc840ee332bb6eca2056cb07e70b701c66d68d775d835723d640",
+  "tools/xtask/src/scenarios/viewer/history.rs": "c46d7247afe4c1f51b8721261d1e2297180461718489f4a31a4417f602f05708",
+  "tools/xtask/src/scenarios/viewer/mouse.rs": "eda2a14513c055ccd677e095902c09f71b3ac269b5a7b25fe9901dfbba834405",
+  "tools/xtask/src/scenarios/viewer/transfer.rs": "130623ae0b89b73fc5eb8d0e72061617fef9f5dcfdf2fe29e3fee6a2f4b5c190",
+  "/tmp/fux-codebase-work/harness/debug/fux-xtask": "32b071b7b1611893aa4522f5670c5dcebf0e20f1126837d706f8f0d644d70b75",
+  "/tmp/fux-codebase-work/build/debug/fux": "b20e454a6dd60ceb76f87d0ba2efcb9f8224d03c33fb0d6775f6eca9ac51d9de"
+}

@@ -1,0 +1,34 @@
+{
+  "reply": "final",
+  "result": {
+    "id": 0,
+    "status": "completed",
+    "result": {
+      "kind": "final",
+      "value": {
+        "record": {
+          "pane": 2,
+          "workspace": "origin",
+          "stream": 7,
+          "command": [
+            "cat"
+          ],
+          "cwd": "/tmp",
+          "exit_status": 0,
+          "input_sequence": 4,
+          "capture": {
+            "text": "done",
+            "revision": 3,
+            "rows": 24,
+            "columns": 80,
+            "scrollback_offset": 0,
+            "title": "",
+            "progress": null,
+            "unchanged": false,
+            "truncated": false
+          }
+        }
+      }
+    }
+  }
+}

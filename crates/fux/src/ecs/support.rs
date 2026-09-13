@@ -49,6 +49,9 @@ pub struct Effects<'w, 's> {
 }
 
 impl Effects<'_, '_> {
+    pub fn workspace_stream(&self, workspace: Entity) -> Option<u64> {
+        self.logs.get(workspace).ok().map(|log| log.cursor().stream)
+    }
     pub fn emit(&mut self, effect: Effect) {
         self.writer.write(effect);
     }
@@ -213,18 +216,12 @@ pub fn pane_in_layout(world: &World, pane: Entity) -> bool {
         .is_some_and(|tab| tab.layout.contains(pane))
 }
 
-/// Every pane reserved in this workspace lifetime, including panes whose tab already closed.
+/// Every pane currently owned by this workspace, including panes whose tab already closed.
 pub fn panes_in_workspace(world: &mut World, workspace: Entity) -> Vec<Entity> {
-    let Some(stream) = world
-        .get::<super::events::EventLog>(workspace)
-        .map(|log| log.cursor().stream)
-    else {
-        return Vec::new();
-    };
     world
         .query::<(Entity, &Pane)>()
         .iter(world)
-        .filter(|(_, pane)| pane.workspace_stream == stream)
+        .filter(|(_, pane)| pane.routing_workspace == workspace)
         .map(|(entity, _)| entity)
         .collect()
 }
@@ -258,7 +255,41 @@ pub fn viewers_of_workspace(world: &mut World, workspace: Entity) -> Vec<Entity>
     })
 }
 
+/// Observe effective focus after a discrete layout/selection edit, including shared zoom.
+/// Terminal output never calls this helper.
+pub fn refresh_focus_history(world: &mut World, workspace: Entity) {
+    let focused = world.get::<Workspace>(workspace).and_then(|component| {
+        component
+            .selection
+            .tab
+            .and_then(|tab| focus_in_tab(world, &component.selection, tab))
+    });
+    if let Some(mut component) = world.get_mut::<Workspace>(workspace) {
+        component.selection.history.observe(focused);
+    }
+    let updates: Vec<_> = world
+        .query::<(Entity, &Viewer)>()
+        .iter(world)
+        .filter(|(_, viewer)| viewer.workspace == workspace && !viewer.detaching)
+        .map(|(entity, viewer)| {
+            (
+                entity,
+                viewer
+                    .selection
+                    .tab
+                    .and_then(|tab| focus_in_tab(world, &viewer.selection, tab)),
+            )
+        })
+        .collect();
+    for (entity, focused) in updates {
+        if let Some(mut viewer) = world.get_mut::<Viewer>(entity) {
+            viewer.selection.history.observe(focused);
+        }
+    }
+}
+
 pub fn mark_workspace_dirty(world: &mut World, workspace: Entity) {
+    refresh_focus_history(world, workspace);
     event(world, workspace, control::Event::WorkspaceChanged { id: 0 });
     each_viewer(
         world,
@@ -269,6 +300,7 @@ pub fn mark_workspace_dirty(world: &mut World, workspace: Entity) {
 
 pub fn mark_tab_dirty(world: &mut World, tab: Entity) {
     if let Some(workspace) = tab_workspace(world, tab) {
+        refresh_focus_history(world, workspace);
         event(world, workspace, control::Event::WorkspaceChanged { id: 0 });
     }
     each_viewer(
@@ -344,6 +376,10 @@ pub fn despawn_tab(world: &mut World, tab: Entity) {
 
 /// Removes a workspace entity and its name; its tabs and panes must already be gone.
 pub fn despawn_workspace(world: &mut World, workspace: Entity) {
+    world
+        .resource_mut::<super::resources::WorkspaceOrder>()
+        .0
+        .retain(|entry| *entry != workspace);
     if let Some(name) = world
         .get::<Workspace>(workspace)
         .map(|workspace| workspace.name.clone())
@@ -355,13 +391,7 @@ pub fn despawn_workspace(world: &mut World, workspace: Entity) {
 
 /// The pane a selection focuses in `tab`, falling back to the tab's first leaf.
 pub fn focus_in_tab(world: &World, selection: &Selection, tab: Entity) -> Option<Entity> {
-    let layout = &world.get::<Tab>(tab)?.layout;
-    selection
-        .focus
-        .get(&tab)
-        .copied()
-        .filter(|pane| layout.contains(*pane))
-        .or_else(|| layout.leaves().first().copied())
+    selection.focused_in(tab, world.get::<Tab>(tab)?)
 }
 
 /// Removes `pane` from its tab's layout and returns the pane that inherits focus.
@@ -373,7 +403,11 @@ pub fn remove_from_layout(world: &mut World, pane: Entity) -> Option<Option<Enti
             return None;
         }
         let next = tab_component.layout.close(pane).ok()?;
+        if tab_component.zoomed == Some(pane) {
+            tab_component.zoomed = None;
+        }
         tab_component.layout_changed = true;
+        tab_component.layout_generation = tab_component.layout_generation.saturating_add(1);
         next
     };
     retarget_focus(world, tab, pane, next);

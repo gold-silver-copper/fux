@@ -1,0 +1,96 @@
+    Checking fux-xtask v0.1.0 (/Users/kisaczka/Desktop/code/fux/tools/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.71s
+   Compiling fux-xtask v0.1.0 (/Users/kisaczka/Desktop/code/fux/tools/xtask)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.57s
+     Running unittests src/lib.rs (target/rust-harness/debug/deps/fux_xtask-4a113bfb04d239b4)
+
+running 36 tests
+test support::contention::tests::contention_cannot_satisfy_an_expected_semantic_rejection ... ok
+test support::contention::tests::cli_busy_requires_exact_exit_and_stderr ... ok
+test support::contention::tests::expired_deadline_never_calls_and_transport_errors_never_retry ... ok
+test support::attachment_measure::tests::rejects_oversize_before_reading_body ... ok
+test support::contention::tests::original_deadline_survives_busy_retries ... ok
+test support::contention::tests::non_idempotent_effect_then_busy_cannot_replay ... ok
+test support::contention::tests::api_busy_checks_envelope_and_incarnation ... ok
+test scenarios::event_sync::tests::replay_accepts_new_output_but_rejects_duplicate_and_foreign_cursors ... ok
+test support::process::tests::failed_kill_still_reaches_other_owners ... ok
+test support::launch_proxy::tests::final_and_event_faults_preserve_original_injections ... ok
+test support::process::tests::timeout_falls_back_and_reaps_every_remaining_owner ... ok
+test support::attachment_measure::tests::fragmented_frames_and_every_delta_are_observed ... ok
+test support::failure::tests::collects_only_selected_diagnostics_and_rejects_fifo ... ok
+test support::retry_proxy::tests::partial_reply_is_not_lost_reply_evidence ... ok
+test support::pty::tests::originals_do_not_leak_through_exec ... ok
+test support::local::tests::isolated_root_matches_private_python_mkdtemp_permissions ... ok
+test support::service::tests::retained_reply_is_read_after_service_closes_connection ... ok
+test support::failure::tests::private_artifact_preserves_screen_but_not_input_contents ... ok
+test support::failure::tests::oversized_recording_reports_omissions_and_bounds_event_retention ... ok
+test support::process::tests::terminate_of_a_reaped_child_does_not_signal_its_old_pid ... ok
+test support::local::tests::truncated_diagnostic_cannot_establish_negative_evidence ... ok
+test scenarios::viewer::manager::tests::unfinished_osc_is_bounded_across_terminal_reads ... ok
+test support::terminal::tests::cleanup_reaps_a_terminal_with_output_in_flight ... ok
+test support::traffic_proxy::tests::malformed_preface_is_not_silently_recorded_as_valid_traffic ... ok
+test scenarios::zor_check_workers::tests::held_admission_replays_only_the_same_intent_after_busy ... ok
+test support::launch_proxy::tests::close_cancels_partial_front_handshake ... ok
+test support::task_proxy::tests::close_cancels_partial_front_handshake ... ok
+test support::traffic_proxy::tests::forwards_capture_and_subscription_bytes_and_stops_idle_handlers ... ok
+test support::visual::enabled::tests::hidden_cursor_does_not_leave_a_block_in_the_raster ... ok
+test support::visual::enabled::tests::wide_glyph_second_cell_is_not_painted_over ... ok
+test support::visual::enabled::tests::live_resize_preserves_alternate_and_primary_buffers ... ok
+test support::visual::enabled::tests::raw_vt_renders_styles_wide_text_and_cursor_in_a_bounded_png ... ok
+test support::visual::enabled::tests::box_drawing_connects_across_cells_and_font_weights ... ok
+test support::visual::enabled::tests::checkpoints_require_completed_synchronized_frames ... ok
+test support::visual::enabled::tests::deferred_render_replays_chunked_vt_and_live_resizes_exactly ... ok
+test support::failure::tests::failed_scenario_keeps_terminal_evidence_after_fixture_teardown ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+     Running unittests src/main.rs (target/rust-harness/debug/deps/fux_xtask-ceb2fdb1ec9dcef4)
+
+running 36 tests
+test dependencies::tests::invalid_profiles_fail_before_repository_access ... ok
+test dependencies::tests::headless_keeps_local_commands_and_only_skips_named_network_cases ... ok
+test evidence::tests::fresh_captures_validate_current_sources_and_reject_wrong_hashes ... ok
+test evidence::tests::workflow ... ok
+test evidence::setup::tests::retained_and_negative_cases ... ok
+test evidence::setup::tests::historical_setup_cannot_validate_current_sources ... ok
+test evidence::resources::tests::retained_sources_reject_changed_or_missing_entries ... ok
+test evidence::resources::tests::retained_and_negative_cases ... ok
+test evidence::freshness::tests::retained_and_negative_cases ... ok
+test evidence::traffic::tests::retained_and_negative_cases ... ok
+test dependencies::tests::edits_after_copy_cannot_be_fingerprinted_as_the_reconstructed_input ... ok
+test evidence::traffic::tests::historical_sources_are_explicit_and_complete ... ok
+test evidence::freshness::tests::historical_sources_are_explicit_and_complete ... ok
+test gate_process::tests::success_cleans_leftover_group_while_leader_identity_is_reserved ... ok
+test evidence::tests::historical_workflow_is_not_current_evidence ... ok
+test gate_process::tests::actual_check_gets_eof_instead_of_callers_input_and_failure_is_retained ... ok
+test headless_evidence::tests::archived_headless_sources_are_not_current ... ok
+test gate_process::tests::output_limit_is_a_failure_with_bounded_diagnostics ... ok
+test headless_evidence::tests::rust_capture_requires_every_source_hash ... ok
+test measure::tests::decimal_reporting_preserves_binary_float_rounding ... ok
+test evidence::screens::tests::archived_screen_provenance_is_not_current ... ok
+test measure::tests::startup_retries_only_absent_or_refused_sockets ... ok
+test measure_memory::tests::negative_rss_deltas_use_floor_division ... ok
+test package::tests::package_selection_and_invalid_metadata ... ok
+test setup_capture::tests::reuse_requires_both_service_identities ... ok
+test headless_evidence::tests::retained_and_original_mutations ... ok
+test gate_record::tests::runner_infrastructure_errors_never_produce_reusable_checkpoints ... ok
+test measure::tests::quiet_timeouts_keep_partial_frames_and_reject_oversized_prefixes ... ok
+test headless_performance::tests::reader_decodes_fragmented_frames_and_counts_received_bytes ... ok
+test gate_record::tests::actual_interruption_is_persisted_and_unstarted_checks_remain_not_run ... ok
+test gate_record::tests::input_changes_during_run_and_uncheckpointed_crashes_refuse_reuse ... ok
+test gate_process::tests::timeout_and_interrupt_stop_the_actual_command_and_descendants ... ok
+test evidence::screens::tests::retained_and_negative_cases ... ok
+test dependencies::tests::real_git_pin_rejects_other_commits_and_local_changes ... ok
+test gate_record::tests::actual_gate_reuses_only_passing_checks_and_retries_failure ... ok
+test gate_record::tests::changed_inputs_missing_logs_and_changed_artifacts_cannot_count_as_passing ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+
+   Doc-tests fux_xtask
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling fux-xtask v0.1.0 (/Users/kisaczka/Desktop/code/fux/tools/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.19s

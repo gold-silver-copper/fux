@@ -411,3 +411,127 @@ pub(super) fn run(fux: &Path, zor: &Path) -> Result<()> {
     );
     Ok(())
 }
+
+/// Exercise resume's shared attachment branch with real processes and a synthetic
+/// adapter. This proves orchestration identity, not a provider's session restore.
+pub(super) fn resume(fux: &Path, zor: &Path) -> Result<()> {
+    use crate::support::launch_proxy::{Mode, Proxy};
+    let node = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|path| path.join("node"))
+        .find(|path| {
+            path.is_file() && fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+        })
+        .context("node required for resume adapter fixture")?
+        .canonicalize()?;
+    let root = Root::new("zresume-attach-rs-", &["/bin/cat".into()])?;
+    let worker = root.path().join("worker.mjs");
+    fs::write(&worker, include_str!("producer-worker.mjs"))?;
+    let server = root.server(fux)?;
+    let mut h = Harness { root, zor, server };
+    let instance =
+        completed(&h.root.control(), json!({"id":1,"command":"list"}))?["instance"].clone();
+    let runtime = h.root.path().join("proxy");
+    fs::create_dir(&runtime)?;
+    let proxy = Proxy::start(
+        &runtime,
+        &h.root.control(),
+        &h.root.path().join("fux/manager.sock"),
+        instance.clone(),
+    )?;
+    proxy.update(|faults| faults.mode = Mode::Normal);
+    let scenario = (|| -> Result<()> {
+        let instance_text = instance.as_str().context("instance")?;
+        let original = h.task(
+            &[
+                "start",
+                "worker",
+                "--title",
+                "resume attachment fixture",
+                "--integration",
+                "opencode",
+                "--instance",
+                instance_text,
+                "--workspace",
+                "default",
+                "--runtime",
+                runtime.to_str().context("runtime")?,
+                "--cwd",
+                h.root.path().to_str().context("cwd")?,
+                "--",
+                node.to_str().context("node")?,
+                worker.to_str().context("worker")?,
+            ],
+            None,
+        )?;
+        h.until(|h| Ok(h.profile()?["producer"].as_str().map(str::to_owned)))?;
+        h.submit("completed", "respond")?;
+        h.response("completed")?;
+        h.prepare("unsent", "must not replay")?;
+        let before = h.inspect()?;
+        completed(
+            &h.root.control(),
+            json!({"id":1,"command":"kill","instance":instance,"pane":original["session"]["target"]["pane"]}),
+        )?;
+        h.until(|h| {
+            let reply = crate::support::local::rpc(
+                &h.root.path().join("fux/manager.sock"),
+                json!({"request":"final", "instance":instance, "pane":original["session"]["target"]["pane"]}),
+            )?;
+            ensure!(reply["reply"] == "final", "unexpected final reply");
+            Ok((reply["result"]["status"] == "completed").then_some(()))
+        })?;
+        h.until(|h| {
+            let closed = h.task(&["launch-reconcile", "worker"], None)?;
+            Ok((closed["launch"]["phase"] == "closed").then_some(()))
+        })?;
+        let closed = h.inspect()?;
+        let creates = proxy.faults().creates;
+        proxy.update(|faults| faults.exit_before_pin = true);
+        let args = [
+            "resume",
+            "worker",
+            "--operation",
+            "resume-one",
+            "--instance",
+            instance_text,
+        ];
+        let resumed = h.task(&args, None)?;
+        ensure!(
+            resumed["launch"]["phase"] == "closed"
+                && resumed["attempt"]["state"] == "finished"
+                && resumed["task"]["outcome"] == "open"
+                && resumed["attempt"]["id"] != original["attempt"]["id"]
+                && resumed["session"]["target"]["pane"] != original["session"]["target"]["pane"]
+                && resumed["launch"]["final_evidence"]["input_sequence"] == 0,
+            "resume exit must close the new attempt without replay or task success"
+        );
+        let state: Value =
+            serde_json::from_slice(&fs::read(h.root.path().join("state/zor/journal.json"))?)?;
+        ensure!(
+            state["launches"]["resume-one"]["final_evidence"] == closed["launch"]["final_evidence"]
+                && state["launches"]["resume-one"]["session"] == closed["session"]["id"]
+                && state["prompts"]["unsent"]
+                    == before["prompts"]
+                        .as_array()
+                        .context("prompts")?
+                        .iter()
+                        .find(|p| p["id"] == "unsent")
+                        .context("unsent")?
+                        .clone(),
+            "resume rewrote archived final evidence or unsent prompt"
+        );
+        ensure!(
+            h.task(&args, None)? == resumed && proxy.faults().creates == creates + 1,
+            "resume retry changed identity or duplicated creation"
+        );
+        h.task(&["stop", "resume-one"], Some("historical"))?;
+        Ok(())
+    })();
+    drop(proxy);
+    h.server.finish()?;
+    scenario?;
+    println!(
+        "PASS resumed attachment exit-before-pin, archived evidence, stable retry and no input replay"
+    );
+    Ok(())
+}

@@ -45,8 +45,8 @@ with anything but a hello is reported as an error naming the session server and 
 ## Frame updates
 
 A `state` message carries an update to the viewer's frame; the viewer keeps the frame and applies
-updates in order. Every update carries the viewer's metadata in full: `workspace`, `generation`
-(increases with every update; `mouse` reports echo it), `tabs` (id, label), `active_tab`,
+updates in order. Every update carries `workspace`, `generation`
+(increases with every update; `mouse` reports echo it), `layout_generation`, `zoomed`, `active_tab`,
 `focused`, `layout` (pane id and content rectangle: the viewer's last row is the bar, siblings are
 separated by one cell, there is no frame around a pane), `exit_code` and `message`. `panes` holds
 only the panes that changed since the viewer's previous update, keyed by pane id; a pane listed
@@ -54,12 +54,38 @@ in `layout` but absent from `panes` is unchanged, and a pane the viewer holds th
 in `layout` is dropped. `full: true` means the viewer holds nothing yet (attach, workspace
 switch): every visible pane is carried in full and the viewer discards whatever it held.
 
+Full updates also require `viewer`, `server_instance`, `workspace_stream` and `tabs`. Ordinary deltas omit unchanged
+connection identity and tab catalogs; omitted fields retain the held values. An explicit `tabs: []`
+clears the catalog. Each tab carries its ID, label, layout generation and first pane for guarded
+transfers. The three identity fields must be present together; `workspace_stream` is a nonzero
+workspace lifetime, matching its event cursor. Workspace switches replace it in a full update.
+Coalescing retains earlier
+identity/catalog values when later deltas omit them; a newer full update replaces the entire state.
+Malformed full updates, zero workspace lifetimes or incomplete identity groups are rejected
+before applying pane changes. The viewer uses this lifetime to guard workspace close confirmations
+and display-label edits.
+
+`workspace_presentation` is a sparse object containing an optional `label`. Full frames publish
+it; deltas omit it when unchanged. Omission in a delta inherits the held label, while
+`{"workspace_presentation":{"label":null}}` explicitly clears it. A full frame without the
+object clears any previous workspace label. Coalescing retains the latest explicit object.
+Labels are bounded to 128 UTF-8 bytes without control characters and validated before applying
+the frame. The materialized frame's `workspace_label` affects display only; `workspace` and
+`workspace_stream` remain the routing and lifetime identities.
+
 A pane update carries `rows`, `columns`, `cursor`, `modes`, `title`, `offset`, `exit` and the
 carried rows: `lines` lists `{row, wrapped, len}` in row order and `cells` holds the rows' cells
 back to back, `len` wire cells per line. With `full: true` every row is carried exactly once and
 the viewer builds the pane from scratch; otherwise the pane's `rows` and `columns` must match
 what the viewer holds and the carried rows replace those rows. A pane whose size changed is
 always sent in full.
+
+Pane metadata also includes an optional manual `label`, independent of the application's
+`title`. Omission or null means no manual label (including clearing a previous label), unlike
+the inheritable connection/catalog fields above. Every carried pane update replaces its label;
+coalescing keeps the latest value, including a clear. Names are bounded to 128 UTF-8 bytes and
+contain no control characters. A label-only change can carry no terminal rows and does not
+advance the terminal output sequence. History views carry the current label too.
 
 A wire cell is `{"text":"a"}` for text (`kind` present only for `wide-leading`), `{}` for one
 blank default cell, `{"run":40}` for a run of blank cells, `{"kind":"wide-continuation"}` for the
@@ -97,3 +123,10 @@ carried rows, which is where an echoed input lands.
   panes of the attachment's current workspace (a foreign pane reads as `view: null`).
 
 Workspace and manager commands use the separate [control protocol](local-control-protocol.md).
+
+Pane updates and private history replies carry optional `right_click` metadata: `auto` (the
+default), `fux`, or `pane`. Omission means `auto`, including clearing a previously held explicit
+policy; it does not inherit a non-default value. Coalescing retains the newer metadata. A policy
+change publishes an update even when the grid sequence has not advanced. Ordinary output with
+unchanged default policy adds no serialized policy field. Viewer mouse routing uses this shared
+pane policy; Alt-right-click remains an explicit fux menu override in every mode.

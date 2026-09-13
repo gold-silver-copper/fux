@@ -507,12 +507,7 @@ pub(super) fn disarm(store: &mut Store, id: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(4);
     submit::verify_target(&target, deadline)?;
     if !arm.disarm_requested {
-        let response = submit::request(
-            &target,
-            "input-status",
-            json!({"operation":receipt.operation}),
-            deadline,
-        )?;
+        let response = submit::input_status(&target, receipt.operation, deadline)?;
         let (phase, current) =
             submit::receipt(response, &target, Some(receipt), prompt.text.len() + 1)?;
         anyhow::ensure!(
@@ -521,8 +516,7 @@ pub(super) fn disarm(store: &mut Store, id: &str) -> Result<()> {
         );
         store.transaction(|journal| {
             let prompt = journal.prompts.get_mut(id).context("prompt missing")?;
-            prompt.delivery = phase;
-            prompt.receipt = Some(current);
+            prompt.record_delivery(phase, current)?;
             prompt.arm.as_mut().context("arm missing")?.disarm_requested = true;
             Ok(())
         })?;

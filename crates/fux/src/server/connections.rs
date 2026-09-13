@@ -508,11 +508,43 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
         }
     };
     let action = match request {
+        crate::daemon::ManagerRequest::ReleasePanePin {
+            instance,
+            pane,
+            pid,
+        } => ManagerAction::ReleasePanePin {
+            instance,
+            pane,
+            pid,
+        },
+        crate::daemon::ManagerRequest::InputStatus {
+            instance,
+            pane,
+            operation,
+        } => ManagerAction::InputStatus {
+            instance,
+            pane,
+            operation,
+        },
+        crate::daemon::ManagerRequest::PaneLocation { instance, pane } => {
+            ManagerAction::PaneLocation { instance, pane }
+        }
         crate::daemon::ManagerRequest::Final { instance, pane } => {
             ManagerAction::Final { instance, pane }
         }
         crate::daemon::ManagerRequest::Create { name } => ManagerAction::Create { name },
+        crate::daemon::ManagerRequest::ApplyLayout { expected, archive } => {
+            ManagerAction::ApplyLayout { expected, archive }
+        }
+        crate::daemon::ManagerRequest::ExportLayout => ManagerAction::ExportLayout,
+        crate::daemon::ManagerRequest::Catalog => ManagerAction::Catalog,
         crate::daemon::ManagerRequest::List => ManagerAction::List,
+        crate::daemon::ManagerRequest::Transfer { transfer } => {
+            ManagerAction::Transfer { transfer }
+        }
+        crate::daemon::ManagerRequest::Reorder { name, before } => {
+            ManagerAction::Reorder { name, before }
+        }
         crate::daemon::ManagerRequest::Info => ManagerAction::Info,
         crate::daemon::ManagerRequest::Resolve { name } => ManagerAction::Resolve { name },
         crate::daemon::ManagerRequest::Kill { name } => ManagerAction::Kill { name },
@@ -539,6 +571,18 @@ async fn serve_manager_connection(mut stream: UnixStream, owner: Owner) -> anyho
         _ => ManagerOutcome::Failed("manager request was not answered".into()),
     };
     let reply = match outcome {
+        ManagerOutcome::LayoutArchive(archive) => {
+            crate::daemon::ManagerReply::LayoutArchive { archive }
+        }
+        ManagerOutcome::ReleasePanePin(result) => {
+            crate::daemon::ManagerReply::ReleasePanePin { result }
+        }
+        ManagerOutcome::InputStatus(result) => crate::daemon::ManagerReply::InputStatus { result },
+        ManagerOutcome::PaneLocation(result) => {
+            crate::daemon::ManagerReply::PaneLocation { result }
+        }
+        ManagerOutcome::Catalog(catalog) => crate::daemon::ManagerReply::Catalog { catalog },
+        ManagerOutcome::Layout(result) => crate::daemon::ManagerReply::Layout { result },
         ManagerOutcome::Final(result) => crate::daemon::ManagerReply::Final { result },
         ManagerOutcome::Names(names) => crate::daemon::ManagerReply::Names { names },
         ManagerOutcome::Info(info) => crate::daemon::ManagerReply::Info { info },

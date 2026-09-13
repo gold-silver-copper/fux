@@ -1,0 +1,115 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running tests/automation_integration.rs (target/debug/deps/automation_integration-8ba9a3af34947e4b)
+
+running 23 tests
+test independent_zor_observes_fux_panes_through_the_control_protocol ...     Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+ok
+test test_owned_processes ... ok
+test test_zor_contention ... ok
+test zor_bindings ... ok
+test zor_changes ... ok
+test zor_check_workers ... ok
+test zor_checks ... ok
+test zor_dashboard ... ok
+test zor_events ... ok
+test zor_group_scheduler ... 
+thread 'zor_group_scheduler' (12936694) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_group_scheduler
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "adopt", "route-alias", "--title", "same pane via alias", "--runtime", "/tmp/zgroup-rs-UmJWcw/alternate", "--instance", "7b9973cfe32ff6466562cc937971b7b3", "--workspace", "default", "--pane", "2"]: zor: connect control socket: No such file or directory (os error 2)
+
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test zor_groups ... 
+thread 'zor_groups' (12936916) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_groups
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "adopt", "route-alias", "--title", "same pane via alias", "--runtime", "/tmp/zgroup-rs-PViv9g/alternate", "--instance", "3cf9c4a78d03e0c1366a1f1c3065fcd7", "--workspace", "default", "--pane", "2"]: zor: connect control socket: No such file or directory (os error 2)
+
+
+FAILED
+test zor_headless ... ok
+test zor_launch ... ok
+test zor_native ... ok
+test zor_pane_layout ... ok
+test zor_producers ... ok
+test zor_recovery ... 
+thread 'zor_recovery' (12938756) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_recovery
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "launch-reconcile", "untouched"]: {"artifact_captures":[],"artifact_policy":{"collected_count":0,"required_count":0,"sealed":false},"artifacts":[],"attempt":{"id":"7f40b882fd924dfe8f9e7d1122f3ad02","session":"b8384597860117a855d495f5e2fcfec7","state":"active","task":"untouched"},"check_policy":{"passed_count":0,"required_count":0,"sealed":false},"checks":[],"generation":24,"launch":{"agent":null,"argv":["/bin/cat"],"created_ms":1789264437435,"cwd":"/private/tmp/zrecover-rs-e6wdgk","event_sequence":14,"final_evidence":null,"id":"untouched","instance":"a49125d9a8027a3f39d5a6082c7ceaa7","integration":null,"marker":"f88f8898c9e773ce8994fbebb28e5cdf","pane":5,"phase":"attached","problem":null,"requested_cwd":"/tmp/zrecover-rs-e6wdgk","requested_runtime":"/tmp/zrecover-rs-e6wdgk/fux","resume":null,"runtime":"/private/tmp/zrecover-rs-e6wdgk/fux","session":"b8384597860117a855d495f5e2fcfec7","stop_requested":false,"stream":1,"task":null,"title":"untouched","workspace":"default","worktree":null},"prompts":[],"session":{"agent":null,"created_ms":1789264437435,"id":"b8384597860117a855d495f5e2fcfec7","launch":"untouched","ownership":"managed","target":{"instance":"a49125d9a8027a3f39d5a6082c7ceaa7","origin":{"stream":1,"workspace":"default"},"pane":5,"pid":81500,"runtime":"/private/tmp/zrecover-rs-e6wdgk/fux","stream":1,"workspace":"default"}},"task":{"attempt":"7f40b882fd924dfe8f9e7d1122f3ad02","created_ms":1789264437435,"id":"untouched","outcome":"open","requested_runtime":"/tmp/zrecover-rs-e6wdgk/fux","required_artifacts":{},"required_checks":{},"title":"untouched"},"verification":null}
+ 
+
+FAILED
+test zor_run ... ok
+test zor_service ... 
+thread 'zor_service' (12939564) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_service
+stdout:
+
+stderr:
+fux-xtask: CLI ["--state-directory", "/tmp/zsvc-J4ogBh/tasks", "task", "adopt", "slow-task", "--title", "slow fixture", "--instance", "1fbe3f1d726b512dc79a3305a4ea09a2", "--workspace", "default", "--pane", "1", "--runtime", "/tmp/zsvc-J4ogBh/proxy"]: zor: connect control socket: No such file or directory (os error 2)
+
+
+FAILED
+test zor_sources ... ok
+test zor_tasks ... ok
+test zor_workflow ... ok
+test zor_worktree ... ok
+
+failures:
+
+failures:
+    zor_group_scheduler
+    zor_groups
+    zor_recovery
+    zor_service
+
+test result: FAILED. 19 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 221.94s
+
+error: test failed, to rerun pass `-p fux --test automation_integration`
+     Running tests/local_cli.rs (target/debug/deps/local_cli-5d538c6250de02fd)
+
+running 14 tests
+test a_full_agent_session_runs_headlessly_over_the_control_protocol ... ok
+test detach_sends_preceding_input_waits_for_exit_and_drops_the_suffix ... ok
+test empty_arguments_regressions ... ok
+test event_sync_regressions ... ok
+test final_records_regressions ... ok
+test incompatible_manager_rejection_preserves_existing_sessions ... ok
+test input_receipts_regressions ... ok
+test isolated_local_attachment_has_no_keys_and_preserves_sessions ... ok
+test isolated_tty_cold_start_and_detach_need_no_credentials ... 
+thread 'isolated_tty_cold_start_and_detach_need_no_credentials' (12945844) panicked at crates/fux/tests/local_cli.rs:11:5:
+local-tty failed
+stdout:
+
+stderr:
+fux-xtask: checkpoint cold-start is inside an unfinished synchronized frame; owned child 84333 wait timed out
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test real_viewer_scenarios_cover_the_interaction_contract ... ok
+test rejected_handshake_leaves_the_terminal_untouched ... ok
+test utf8_capture_regressions ... ok
+test viewer_input_survives_two_workspace_moves_and_source_cleanup ... ok
+test workspace_transfer_preserves_process_after_source_cleanup ... ok
+
+failures:
+
+failures:
+    isolated_tty_cold_start_and_detach_need_no_credentials
+
+test result: FAILED. 13 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.02s
+
+error: test failed, to rerun pass `-p fux --test local_cli`
+error: 2 targets failed:
+    `-p fux --test automation_integration`
+    `-p fux --test local_cli`

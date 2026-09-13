@@ -533,9 +533,9 @@ pub fn run(fux: &Path, zor: &Path) -> Result<()> {
             "500"
         );
         t!("reserve", "late");
-        p.update(|f| f.delay_list = Duration::from_millis(700));
+        p.update(|f| f.delay_observation = Duration::from_millis(700));
         reject!("submit", "late");
-        p.update(|f| f.delay_list = Duration::ZERO);
+        p.update(|f| f.delay_observation = Duration::ZERO);
         ensure!(
             h.capture()?["input_sequence"] == 2,
             "slow target check bypassed deadline"
@@ -888,7 +888,7 @@ pub fn run(fux: &Path, zor: &Path) -> Result<()> {
         );
         let before_budget = t!("inspect", "crash");
         p.update(|f| {
-            f.delay_list = Duration::from_millis(400);
+            f.delay_observation = Duration::from_millis(400);
             f.drop_delayed = true;
         });
         ensure!(
@@ -900,7 +900,7 @@ pub fn run(fux: &Path, zor: &Path) -> Result<()> {
             "capture timeout changed coordination"
         );
         p.update(|f| {
-            f.delay_list = Duration::ZERO;
+            f.delay_observation = Duration::ZERO;
             f.drop_delayed = false;
         });
         let mut waiter = h.waiter("follow")?;
@@ -965,14 +965,14 @@ pub fn run(fux: &Path, zor: &Path) -> Result<()> {
         );
         h.delivered("wait-crash-op")?;
         p.reset_hold();
-        p.update(|f| f.hold_list = true);
+        p.update(|f| f.hold_observation = true);
         let mut waiter = h.waiter("wait-crash-op")?;
         until(Duration::from_secs(5), || Ok(p.accepted().then_some(())))?;
 
         waiter.child.0.kill()?;
         waiter.finish(Duration::from_secs(3))?;
         p.release();
-        p.update(|f| f.hold_list = false);
+        p.update(|f| f.hold_observation = false);
         let resumed_wait = t!("wait", "wait-crash-op", "--follow", "--timeout-ms", "100");
         let retained_task = t!("inspect", "wait-crash");
         ensure!(

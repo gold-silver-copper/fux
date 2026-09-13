@@ -59,6 +59,36 @@ pub enum Request {
         /// How long the pane's final record is retained after it closes, in milliseconds;
         /// nonzero, clamped to [`MAX_FINAL_RETENTION_MS`].
         final_retain_ms: u64,
+        /// Pin this pane to its launch workspace until the exact process releases its creation pin.
+        #[serde(default)]
+        fixed_workspace: bool,
+        #[serde(default)]
+        right_click: crate::view::RightClickPolicy,
+        /// Share of usable split extent retained by the existing pane (500..=9500).
+        #[serde(default = "default_split_ratio")]
+        ratio: u16,
+        #[serde(default = "default_split_focus")]
+        focus: bool,
+    },
+    /// Permanently constrain an existing live pane to its current workspace.
+    FixWorkspace {
+        id: RequestId,
+        instance: Option<String>,
+        stream: u64,
+        pane: PaneId,
+    },
+    /// Set a manual pane label; an empty name restores the application title.
+    RenamePane {
+        id: RequestId,
+        instance: Option<String>,
+        pane: PaneId,
+        name: String,
+    },
+    PaneInput {
+        id: RequestId,
+        instance: Option<String>,
+        pane: PaneId,
+        right_click: crate::view::RightClickPolicy,
     },
     Focus {
         id: RequestId,
@@ -78,6 +108,16 @@ pub enum Request {
         instance: Option<String>,
         pane: PaneId,
         delta: i16,
+    },
+    /// Inspect or atomically edit one tab layout. Mutations require its observed generation.
+    Layout {
+        id: RequestId,
+        #[serde(default)]
+        instance: Option<String>,
+        tab: TabId,
+        #[serde(default)]
+        generation: Option<u64>,
+        action: LayoutAction,
     },
     SendKeys {
         id: RequestId,
@@ -174,9 +214,13 @@ impl Request {
             | Self::InputSubmit { id, .. }
             | Self::InputStatus { id, .. }
             | Self::Split { id, .. }
+            | Self::FixWorkspace { id, .. }
+            | Self::RenamePane { id, .. }
+            | Self::PaneInput { id, .. }
             | Self::Focus { id, .. }
             | Self::Kill { id, .. }
             | Self::Resize { id, .. }
+            | Self::Layout { id, .. }
             | Self::SendKeys { id, .. }
             | Self::Capture { id, .. }
             | Self::List { id, .. }
@@ -188,6 +232,31 @@ impl Request {
         }
     }
 
+    pub fn set_id(&mut self, request_id: RequestId) {
+        let id = match self {
+            Self::InputReserve { id, .. }
+            | Self::InputSubmit { id, .. }
+            | Self::InputStatus { id, .. }
+            | Self::Split { id, .. }
+            | Self::FixWorkspace { id, .. }
+            | Self::RenamePane { id, .. }
+            | Self::PaneInput { id, .. }
+            | Self::Focus { id, .. }
+            | Self::Kill { id, .. }
+            | Self::Resize { id, .. }
+            | Self::Layout { id, .. }
+            | Self::SendKeys { id, .. }
+            | Self::Capture { id, .. }
+            | Self::List { id, .. }
+            | Self::Info { id, .. }
+            | Self::Tab { id, .. }
+            | Self::Workspace { id, .. }
+            | Self::Events { id, .. }
+            | Self::Subscribe { id, .. } => id,
+        };
+        *id = request_id;
+    }
+
     /// Optional precondition scoped to the discovered server incarnation.
     pub fn instance(&self) -> Option<&str> {
         match self {
@@ -195,9 +264,13 @@ impl Request {
             | Self::InputSubmit { instance, .. }
             | Self::InputStatus { instance, .. }
             | Self::Split { instance, .. }
+            | Self::FixWorkspace { instance, .. }
+            | Self::RenamePane { instance, .. }
+            | Self::PaneInput { instance, .. }
             | Self::Focus { instance, .. }
             | Self::Kill { instance, .. }
             | Self::Resize { instance, .. }
+            | Self::Layout { instance, .. }
             | Self::SendKeys { instance, .. }
             | Self::Capture { instance, .. }
             | Self::List { instance, .. }
@@ -222,7 +295,10 @@ impl Request {
         }
         if matches!(
             self,
-            Self::InputReserve { .. }
+            Self::FixWorkspace { .. }
+                | Self::RenamePane { .. }
+                | Self::PaneInput { .. }
+                | Self::InputReserve { .. }
                 | Self::InputSubmit { .. }
                 | Self::InputStatus { .. }
                 | Self::Events { .. }
@@ -248,8 +324,12 @@ impl Request {
                 cwd,
                 env,
                 final_retain_ms,
+                ratio,
                 ..
             } => {
+                if !(crate::layout::MIN_RATIO..=crate::layout::MAX_RATIO).contains(ratio) {
+                    return Err(ControlError::invalid(id, "split ratio must be 500..=9500"));
+                }
                 if *final_retain_ms == 0 {
                     return Err(ControlError::invalid(id, "final_retain_ms must be nonzero"));
                 }
@@ -335,6 +415,42 @@ impl Request {
                     ));
                 }
             }
+            Self::Layout {
+                action:
+                    LayoutAction::Transfer {
+                        destination: PaneDestination::NewTab { label: Some(name) },
+                        ..
+                    },
+                ..
+            } => validate_label(id, name)?,
+            Self::Layout {
+                action:
+                    LayoutAction::Transfer {
+                        destination: PaneDestination::Tab { ratio, .. },
+                        ..
+                    },
+                ..
+            } if !(crate::layout::MIN_RATIO..=crate::layout::MAX_RATIO).contains(ratio) => {
+                return Err(ControlError::invalid(
+                    id,
+                    "transfer ratio must be 500..=9500",
+                ));
+            }
+            Self::RenamePane { name, .. } => validate_label(id, name)?,
+            Self::Workspace {
+                instance,
+                stream,
+                action: WorkspaceAction::Rename { label },
+                ..
+            } => {
+                if instance.is_none() || stream.is_none_or(|stream| stream == 0) {
+                    return Err(ControlError::invalid(
+                        id,
+                        "workspace rename requires instance and nonzero stream",
+                    ));
+                }
+                validate_label(id, label)?;
+            }
             Self::Tab {
                 action: TabAction::New { name: Some(name) } | TabAction::Rename { name, .. },
                 ..
@@ -419,6 +535,9 @@ pub struct InfoLimits {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum FocusTarget {
     Pane(PaneId),
+    Last,
+    Next,
+    Previous,
     Left,
     Right,
     Up,
@@ -426,8 +545,244 @@ pub enum FocusTarget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum PaneDestination {
+    Tab {
+        tab: TabId,
+        generation: u64,
+        target: PaneId,
+        /// Existing target pane share on a 10000 scale, independent of insertion side.
+        #[serde(default = "default_split_ratio")]
+        ratio: u16,
+    },
+    NewTab {
+        label: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum WorkspaceDestination {
+    Existing { name: String, stream: u64 },
+    New { name: String },
+}
+
+/// Current routing for an existing process, separate from its immutable launch attribution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaneLocation {
+    pub instance: String,
+    pub pane: PaneId,
+    pub pid: u32,
+    /// False after PTY EOF, while the process may still require termination.
+    pub accepts_input: bool,
+    pub workspace: String,
+    pub stream: u64,
+    pub origin_workspace: String,
+    pub origin_stream: u64,
+    pub tab: TabId,
+    pub layout_generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceCatalog {
+    pub instance: String,
+    pub entries: Vec<WorkspaceRoute>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceRoute {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub stream: u64,
+}
+
+/// Manager-authorized transfer across workspace routes on one server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTransfer {
+    /// Select the moved pane in the destination workspace default.
+    #[serde(default)]
+    pub focus: bool,
+    /// An attached viewer to move with the pane; must still be on the source tab.
+    #[serde(default)]
+    pub follow: Option<crate::ids::ViewerId>,
+    pub instance: String,
+    pub source: TabId,
+    pub generation: u64,
+    pub pane: PaneId,
+    pub workspace: WorkspaceDestination,
+    pub destination: PaneDestination,
+    pub side: crate::layout::Direction,
+}
+
+/// All layout changes operate on existing panes; none launch processes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LayoutAction {
+    /// Inspect underlying pane geometry and navigation without mutating focus or layout.
+    Inspect {
+        pane: PaneId,
+    },
+    Transfer {
+        /// Select the moved pane for the requester and workspace default.
+        #[serde(default)]
+        focus: bool,
+        pane: PaneId,
+        destination: PaneDestination,
+        side: crate::layout::Direction,
+    },
+    ResizeBorder {
+        column: u16,
+        row: u16,
+        to_column: u16,
+        to_row: u16,
+    },
+    Export,
+    SwapDirection {
+        pane: PaneId,
+        direction: crate::layout::Direction,
+    },
+    MoveDirection {
+        pane: PaneId,
+        direction: crate::layout::Direction,
+    },
+    Zoom {
+        pane: Option<PaneId>,
+    },
+    Swap {
+        pane: PaneId,
+        target: PaneId,
+    },
+    Relocate {
+        pane: PaneId,
+        target: PaneId,
+        side: crate::layout::Direction,
+    },
+    ResizeToward {
+        pane: PaneId,
+        direction: crate::layout::Direction,
+        delta: i16,
+    },
+    SetRatio {
+        split: crate::layout::NodeId,
+        ratio: u16,
+    },
+    Apply {
+        document: crate::layout::LayoutDocument<PaneId>,
+        /// Optional complete mapping from document pane IDs to existing destination pane IDs.
+        #[serde(default)]
+        remap: Vec<(PaneId, PaneId)>,
+        #[serde(default)]
+        zoom: LayoutZoom,
+        /// None preserves labels; a list replaces all source pane labels (omitted panes clear).
+        #[serde(default)]
+        labels: Option<PaneLabels>,
+    },
+}
+
+impl LayoutAction {
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        matches!(self, Self::Export | Self::Inspect { .. })
+    }
+}
+
+/// Directional neighbors follow the same rules as the focus operation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaneNeighbors {
+    pub left: Option<PaneId>,
+    pub right: Option<PaneId>,
+    pub up: Option<PaneId>,
+    pub down: Option<PaneId>,
+}
+
+/// Contact with the outer edges of the underlying layout area; empty rectangles have no edges.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaneEdges {
+    pub left: bool,
+    pub right: bool,
+    pub up: bool,
+    pub down: bool,
+}
+
+/// Coherent geometry and navigation snapshot. Zoom never discards the underlying rectangle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaneGeometry {
+    pub instance: String,
+    pub tab: TabId,
+    pub generation: u64,
+    pub pane: PaneId,
+    pub area: crate::layout::Rect,
+    pub navigation_area: crate::layout::Rect,
+    pub rect: crate::layout::Rect,
+    pub visible_rect: Option<crate::layout::Rect>,
+    pub neighbors: PaneNeighbors,
+    pub edges: PaneEdges,
+    pub zoomed: Option<PaneId>,
+    pub document: crate::layout::LayoutDocument<PaneId>,
+}
+
+/// Manual labels keyed by pane ID; exports use ascending IDs and omit unlabelled panes.
+pub type PaneLabels = Vec<(PaneId, String)>;
+
+/// Geometry-only imports preserve zoom; complete snapshots explicitly restore it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum LayoutZoom {
+    #[default]
+    Preserve,
+    Set {
+        pane: Option<PaneId>,
+    },
+}
+
+/// Existing-process presentation state. Vector order is workspace/tab presentation order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutArchive {
+    pub version: u32,
+    pub instance: String,
+    pub workspaces: Vec<WorkspaceLayout>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceLayout {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub stream: u64,
+    pub selected: Option<TabId>,
+    pub tabs: Vec<TabLayout>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TabLayout {
+    pub id: TabId,
+    pub label: String,
+    pub generation: u64,
+    /// Saved default focus beneath shared zoom; attached viewers retain private selections.
+    pub focused: Option<PaneId>,
+    pub zoomed: Option<PaneId>,
+    pub labels: PaneLabels,
+    pub document: crate::layout::LayoutDocument<PaneId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum TabAction {
+    Reorder {
+        tab: TabId,
+        before: Option<TabId>,
+    },
     New {
         #[serde(default)]
         name: Option<String>,
@@ -459,6 +814,10 @@ pub enum TabTarget {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum WorkspaceAction {
     List,
+    /// Set the connected workspace display label; empty restores its routing name.
+    Rename {
+        label: String,
+    },
     New {
         #[serde(default)]
         name: Option<String>,
@@ -514,6 +873,20 @@ impl Reply {
     deny_unknown_fields
 )]
 pub enum CommandResult {
+    PaneGeometry {
+        geometry: Box<PaneGeometry>,
+    },
+    PaneLocation {
+        location: PaneLocation,
+    },
+    Layout {
+        instance: String,
+        tab: TabId,
+        generation: u64,
+        document: crate::layout::LayoutDocument<PaneId>,
+        zoomed: Option<PaneId>,
+        labels: PaneLabels,
+    },
     Final {
         record: Box<FinalRecord>,
     },
@@ -594,6 +967,8 @@ pub enum InputState {
 pub struct WorkspaceSummary {
     pub event_cursor: EventCursor,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub focused: bool,
     pub viewers: u32,
     pub tabs: Vec<TabSummary>,
@@ -612,17 +987,26 @@ pub struct TabSummary {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PaneSummary {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::view::RightClickPolicy::is_auto"
+    )]
+    pub right_click: crate::view::RightClickPolicy,
     pub id: PaneId,
     pub command: Vec<String>,
     pub pid: Option<u32>,
     pub cwd: PathBuf,
     pub title: String,
+    /// Manual label, independent of the application title; absent when cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// The output sequence: advances whenever the visible screen, cursor, modes, title or exit
     /// status changed; `capture` and `pane.output` report the same counter.
     pub seq: u64,
     /// Terminal capture revision; independent of the grid sequence.
     pub revision: u64,
     pub input_sequence: u64,
+    pub fixed_workspace: bool,
     pub geometry: Rect,
     pub focused: bool,
     pub cursor: crate::view::Cursor,
@@ -1249,4 +1633,11 @@ pub struct FinalRecord {
     pub exit_status: Option<u32>,
     pub input_sequence: u64,
     pub capture: crate::terminal::CaptureSnapshot,
+}
+
+fn default_split_ratio() -> u16 {
+    crate::layout::RATIO_SCALE / 2
+}
+fn default_split_focus() -> bool {
+    true
 }

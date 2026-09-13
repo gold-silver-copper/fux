@@ -2,7 +2,7 @@
 //! Never discovers a "current prompt" from text or turns application claims into verification.
 use super::{model::*, store::Store, submit};
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -100,12 +100,7 @@ pub fn run(root: &Path, operation: &str, token: &str, request: Bind) -> Result<V
     // Status only: recover acceptance after a lost submit reply without ever typing.
     // Keep the journal lock through identity, receipt, and binding publication.
     let deadline = Instant::now() + Duration::from_secs(4);
-    let response = submit::request(
-        &target,
-        "input-status",
-        json!({"operation":old.operation}),
-        deadline,
-    )?;
+    let response = submit::input_status(&target, old.operation, deadline)?;
     let (delivery, receipt) = submit::receipt(response, &target, Some(old), prompt.text.len() + 1)?;
     anyhow::ensure!(
         matches!(delivery, Delivery::Queued | Delivery::Delivered),
@@ -133,8 +128,7 @@ pub fn run(root: &Path, operation: &str, token: &str, request: Bind) -> Result<V
             .prompts
             .get_mut(operation)
             .context("prompt missing")?;
-        prompt.delivery = delivery;
-        prompt.receipt = Some(receipt);
+        prompt.record_delivery(delivery, receipt)?;
         prompt.report_binding = Some(binding.clone());
         Ok(())
     })?;

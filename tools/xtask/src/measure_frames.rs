@@ -150,12 +150,15 @@ fn measure(binary: &Path, config: &str, keystrokes: usize) -> Result<Value> {
         let burst = begin.elapsed().as_secs_f64();
         drain_all(&mut viewers, Duration::from_millis(300))?;
         let cpu_burst = cpu(pid)? - cpu_before;
+        let latency_samples_s = latencies.clone();
+        let frame_byte_samples = byte_counts.clone();
         let latency_median = median(&mut latencies);
         // Preserve Python's rank-minus-one percentile, including its -1 index for N=1.
         let rank = (keystrokes as f64 * 0.95) as usize;
         let p95 = latencies[if rank == 0 { keystrokes - 1 } else { rank - 1 }];
         let bytes_median = median(&mut byte_counts) as u64;
         Ok(json!({"config":config,
+            "latency_samples_s":latency_samples_s,"frame_byte_samples":frame_byte_samples,
             "keystroke_bytes_median":bytes_median,"keystroke_bytes_max":byte_counts[keystrokes-1] as u64,
             "keystroke_latency_median_ms":round(latency_median*1000.,2),"keystroke_latency_p95_ms":round(p95*1000.,2),
             "server_cpu_s_per_1000_keystrokes":round(cpu_keys*1000./keystrokes as f64,3),

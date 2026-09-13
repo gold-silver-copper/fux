@@ -1,0 +1,89 @@
+   Compiling fux v0.10.0 (/Users/kisaczka/Desktop/code/fux/crates/fux)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.36s
+     Running tests/automation_integration.rs (target/debug/deps/automation_integration-8ba9a3af34947e4b)
+
+running 23 tests
+test independent_zor_observes_fux_panes_through_the_control_protocol ... ok
+test test_owned_processes ... ok
+test test_zor_contention ... ok
+test zor_bindings ... ok
+test zor_changes ... ok
+test zor_check_workers ... ok
+test zor_checks ... ok
+test zor_dashboard ... ok
+test zor_events ... ok
+test zor_group_scheduler ... 
+thread 'zor_group_scheduler' (14362873) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_group_scheduler
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "adopt", "route-alias", "--title", "same pane via alias", "--runtime", "/tmp/zgroup-rs-sxX6z0/alternate", "--instance", "ee4989affcbcf44f915d0016f8123cac", "--workspace", "default", "--pane", "2"]: zor: connect control socket: No such file or directory (os error 2)
+
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test zor_groups ... 
+thread 'zor_groups' (14363527) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_groups
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "adopt", "route-alias", "--title", "same pane via alias", "--runtime", "/tmp/zgroup-rs-6q8imz/alternate", "--instance", "5d2dd7d87fff1a2c121a83e569dd59ae", "--workspace", "default", "--pane", "2"]: zor: connect control socket: No such file or directory (os error 2)
+
+
+FAILED
+test zor_headless ... 
+thread 'zor_headless' (14363961) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_headless
+stdout:
+
+stderr:
+fux-xtask: headless start: zor: workspace pin release incomplete; reconcile the existing launch: {"reply":"release-pane-pin","result":{"error":{"code":"not-found","message":"live pane not found"},"id":0,"status":"failed"}}
+
+
+FAILED
+test zor_launch ... ok
+test zor_native ... ok
+test zor_pane_layout ... ok
+test zor_producers ... ok
+test zor_recovery ... 
+thread 'zor_recovery' (14366426) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_recovery
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "launch-reconcile", "untouched"]: {"artifact_captures":[],"artifact_policy":{"collected_count":0,"required_count":0,"sealed":false},"artifacts":[],"attempt":{"id":"1e3f60844322425a57e23aba18983e34","session":"e1bb25b7ce29b3b0938849fa3393fc34","state":"active","task":"untouched"},"check_policy":{"passed_count":0,"required_count":0,"sealed":false},"checks":[],"generation":24,"launch":{"agent":null,"argv":["/bin/cat"],"created_ms":1789274715013,"cwd":"/private/tmp/zrecover-rs-vGCDhN","event_sequence":14,"final_evidence":null,"id":"untouched","instance":"624e4183d564d01ddc64d1f34506d9b0","integration":null,"marker":"a170d3c1d0a05156e4d85aeea2a3b36b","pane":5,"phase":"attached","problem":null,"requested_cwd":"/tmp/zrecover-rs-vGCDhN","requested_runtime":"/tmp/zrecover-rs-vGCDhN/fux","resume":null,"runtime":"/private/tmp/zrecover-rs-vGCDhN/fux","session":"e1bb25b7ce29b3b0938849fa3393fc34","stop_requested":false,"stream":1,"task":null,"title":"untouched","workspace":"default","worktree":null},"prompts":[],"session":{"agent":null,"created_ms":1789274715013,"id":"e1bb25b7ce29b3b0938849fa3393fc34","launch":"untouched","ownership":"managed","target":{"instance":"624e4183d564d01ddc64d1f34506d9b0","origin":{"stream":1,"workspace":"default"},"pane":5,"pid":65267,"runtime":"/private/tmp/zrecover-rs-vGCDhN/fux","stream":1,"workspace":"default"}},"task":{"attempt":"1e3f60844322425a57e23aba18983e34","created_ms":1789274715013,"id":"untouched","outcome":"open","requested_runtime":"/tmp/zrecover-rs-vGCDhN/fux","required_artifacts":{},"required_checks":{},"title":"untouched"},"verification":null}
+ 
+
+FAILED
+test zor_run ... ok
+test zor_service ... 
+thread 'zor_service' (14369154) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_service
+stdout:
+
+stderr:
+fux-xtask: CLI ["--state-directory", "/tmp/zsvc-vGyobZ/tasks", "task", "adopt", "slow-task", "--title", "slow fixture", "--instance", "61c2d47bcbb6e4c7ffb18be3a9a60067", "--workspace", "default", "--pane", "1", "--runtime", "/tmp/zsvc-vGyobZ/proxy"]: zor: connect control socket: No such file or directory (os error 2)
+
+
+FAILED
+test zor_sources ... ok
+test zor_tasks ... ok
+test zor_workflow ... ok
+test zor_worktree ... ok
+
+failures:
+
+failures:
+    zor_group_scheduler
+    zor_groups
+    zor_headless
+    zor_recovery
+    zor_service
+
+test result: FAILED. 18 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 240.59s
+
+error: test failed, to rerun pass `-p fux --test automation_integration`
+error: 1 target failed:
+    `-p fux --test automation_integration`

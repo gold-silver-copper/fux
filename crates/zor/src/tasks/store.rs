@@ -193,11 +193,16 @@ impl Store {
         fs::rename(&guard.path, self.root.join("journal.json"))?;
         // Rename is already externally visible; a sync failure is an uncertain commit. In-memory
         // state must match it, and callers retry their stable operation ID rather than new input.
-        self.journal = next;
-        File::open(&self.root)?.sync_all().context(
+        let previous = std::mem::replace(&mut self.journal, next);
+        let synced = File::open(&self.root).and_then(|directory| directory.sync_all());
+        super::diagnostics::journal(&self.root, &previous, &self.journal, synced.is_ok());
+        synced.context(
             "zor journal was renamed but directory sync failed; commit durability uncertain",
         )?;
         Ok(result)
+    }
+    pub(super) fn recovery_observed(&self, id: &str, succeeded: bool) {
+        super::diagnostics::recovery(&self.root, &self.journal, id, succeeded);
     }
 }
 // Persist links for user-owned ancestors too, including a newly created first-use hierarchy.

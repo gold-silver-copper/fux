@@ -1,0 +1,11 @@
+{
+  "reply": "final",
+  "result": {
+    "id": 0,
+    "status": "failed",
+    "error": {
+      "code": "expired",
+      "message": "fixture failure"
+    }
+  }
+}

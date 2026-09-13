@@ -374,7 +374,9 @@ impl Proxy {
                 ensure!(&preface == b"FUX\n", "proxy preface");
                 peer.write_all(&preface)?;
                 let req = line(&mut peer, 1048576, Duration::from_secs(3))?;
-                if req["command"] == "list" && b.swap(false, Ordering::SeqCst) {
+                // Hold the actual reservation, independent of whether target
+                // discovery uses workspace listing or the manager location API.
+                if req["command"] == "input-reserve" && b.swap(false, Ordering::SeqCst) {
                     d.store(true, Ordering::SeqCst);
                     until(Duration::from_secs(3), || {
                         Ok(r.load(Ordering::SeqCst).then_some(()))

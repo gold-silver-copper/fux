@@ -1,0 +1,314 @@
+[
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0000.png",
+    "label": "reporting app ready",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0001.png",
+    "label": "two reporting apps",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0002.png",
+    "label": "Shift browses left reporting app",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0003.png",
+    "label": "Shift browses right reporting app",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0004.png",
+    "label": "typing reaches focused reporting app",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0005.png",
+    "label": "right history before buffer switch",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0006.png",
+    "label": "alternate entry invalidates right history only",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0007.png",
+    "label": "Shift history in alternate buffer",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0008.png",
+    "label": "primary return invalidates alternate history",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0009.png",
+    "label": "Escape restores final history without commands",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0010.png",
+    "label": "active left selection before lost release",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0011.png",
+    "label": "fresh click recovers capture and reaches app",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0012.png",
+    "label": "popup before auxiliary press",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0013.png",
+    "label": "popup dismisses before auxiliary release",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0014.png",
+    "label": "popup before auxiliary press",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0015.png",
+    "label": "popup keyboard command before auxiliary release",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0016.png",
+    "label": "copy dismisses after auxiliary release",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0017.png",
+    "label": "popup before auxiliary press",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0018.png",
+    "label": "popup dismisses before auxiliary release",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0019.png",
+    "label": "popup before auxiliary press",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0020.png",
+    "label": "popup keyboard command before auxiliary release",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0021.png",
+    "label": "copy dismisses after auxiliary release",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0022.png",
+    "label": "selection before q or copy finish",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0023.png",
+    "label": "q or successful copy returns normal",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0024.png",
+    "label": "selection before q or copy finish",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0025.png",
+    "label": "q or successful copy returns normal",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0026.png",
+    "label": "exact input after q or copy finish",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0027.png",
+    "label": "both histories before literal paste",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0028.png",
+    "label": "byte-exact paste reaches focused app",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0029.png",
+    "label": "history dismissal after paste",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0030.png",
+    "label": "copy owns unfinished paste",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0031.png",
+    "label": "buffer switch dismisses copy during paste",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0032.png",
+    "label": "next input follows drained cancelled paste",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0033.png",
+    "label": "primary buffer restored after paste drain",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0034.png",
+    "label": "nested reporting app layout",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0035.png",
+    "label": "nested A history",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0036.png",
+    "label": "nested C history beside A",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0037.png",
+    "label": "nested return to A preserves C",
+    "size": [
+      800,
+      480
+    ]
+  },
+  {
+    "png": "target/betamax-ux-copy-paste-v3/terminal-70264-bw5As6/0038.png",
+    "label": "nested B alternate screen",
+    "size": [
+      800,
+      480
+    ]
+  }
+]

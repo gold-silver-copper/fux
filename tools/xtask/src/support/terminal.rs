@@ -13,6 +13,8 @@ pub struct Terminal {
     pty: nix::pty::OpenptyResult,
     raw: Vec<u8>,
     escapes: regex::bytes::Regex,
+    visual: Option<super::visual::Capture>,
+    failure: Option<usize>,
 }
 impl Terminal {
     pub fn start(root: &Root, binary: &Path) -> Result<Self> {
@@ -59,6 +61,8 @@ impl Terminal {
             r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b[=>]",
         )?;
         Ok(Self {
+            failure: super::failure::terminal(rows, columns),
+            visual: super::visual::Capture::new(binary, args, rows, columns)?,
             child: Guard(command.spawn()?),
             pty,
             raw: Vec::new(),
@@ -71,6 +75,10 @@ impl Terminal {
             match nix::unistd::read(&self.pty.master, &mut bytes) {
                 Ok(0) | Err(nix::errno::Errno::EIO | nix::errno::Errno::EAGAIN) => return Ok(()),
                 Ok(count) => {
+                    super::failure::output(self.failure, &bytes[..count]);
+                    if let Some(visual) = &mut self.visual {
+                        visual.feed(&bytes[..count])?;
+                    }
                     self.raw.extend_from_slice(&bytes[..count]);
                     ensure!(self.raw.len() <= 16 * 1024 * 1024, "terminal output bound");
                 }
@@ -99,7 +107,13 @@ impl Terminal {
             }
             match nix::unistd::read(&self.pty.master, &mut bytes) {
                 Ok(0) | Err(nix::errno::Errno::EIO) => return Ok(()),
-                Ok(count) => output(&bytes[..count]),
+                Ok(count) => {
+                    super::failure::output(self.failure, &bytes[..count]);
+                    if let Some(visual) = &mut self.visual {
+                        visual.feed(&bytes[..count])?;
+                    }
+                    output(&bytes[..count]);
+                }
                 Err(nix::errno::Errno::EAGAIN | nix::errno::Errno::EINTR) => continue,
                 Err(error) => return Err(error.into()),
             }
@@ -107,6 +121,7 @@ impl Terminal {
         Ok(())
     }
     pub fn send(&self, bytes: &[u8]) -> Result<()> {
+        super::failure::input(self.failure, bytes);
         ensure!(
             nix::unistd::write(&self.pty.master, bytes)? == bytes.len(),
             "terminal input short write"
@@ -117,11 +132,32 @@ impl Terminal {
         std::mem::take(&mut self.raw)
     }
     pub fn close(&mut self) -> Result<()> {
+        let captured = (|| {
+            self.pump()?;
+            self.checkpoint("terminal-close")
+        })();
         if self.child.0.try_wait()?.is_none() {
             self.child.0.kill()?;
-            super::process::wait(&mut self.child.0, Duration::from_secs(3))?;
+            // Keep servicing the PTY while reaping, as wait() does for natural
+            // exits. Killing a viewer does not prove its output is quiescent.
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                self.pump()?;
+                if self.child.0.try_wait()?.is_some() {
+                    break;
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "owned terminal child {} wait timed out",
+                    self.child.0.id()
+                );
+                std::thread::sleep(
+                    Duration::from_millis(10)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
         }
-        Ok(())
+        captured.map(|_| ())
     }
     pub fn resize(&mut self, rows: u16, columns: u16) -> Result<()> {
         use std::os::fd::AsRawFd;
@@ -129,6 +165,9 @@ impl Terminal {
             self.child.0.try_wait()?.is_none(),
             "resize after viewer exit"
         );
+        if let Some(visual) = &mut self.visual {
+            visual.resize(rows, columns)?;
+        }
         let size = libc::winsize {
             ws_row: rows,
             ws_col: columns,
@@ -139,6 +178,7 @@ impl Terminal {
         if unsafe { libc::ioctl(self.pty.master.as_raw_fd(), libc::TIOCSWINSZ, &size) } == -1 {
             return Err(std::io::Error::last_os_error().into());
         }
+        super::failure::resize(self.failure, rows, columns);
         nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(i32::try_from(self.child.0.id())?),
             nix::sys::signal::Signal::SIGWINCH,
@@ -154,6 +194,7 @@ impl Terminal {
                 .windows(needle.len())
                 .any(|window| window == needle.as_bytes())
             {
+                self.checkpoint(needle)?;
                 return Ok(());
             }
             ensure!(
@@ -170,11 +211,62 @@ impl Terminal {
             Ok(self.child.0.try_wait()?)
         })
     }
+    pub fn checkpoint(&mut self, label: &str) -> Result<Option<String>> {
+        super::failure::checkpoint(self.failure, label);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.frame_pending()? {
+            self.pump()?;
+            ensure!(
+                Instant::now() < deadline,
+                "unfinished synchronized frame at {label}"
+            );
+            if self.frame_pending()? {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        match &mut self.visual {
+            Some(visual) => visual.checkpoint(label),
+            None => Ok(None),
+        }
+    }
+    pub fn frame_pending(&self) -> Result<bool> {
+        self.visual
+            .as_ref()
+            .map_or(Ok(false), super::visual::Capture::frame_pending)
+    }
 }
 impl Drop for Terminal {
     fn drop(&mut self) {
         if let Err(error) = self.close() {
             eprintln!("terminal cleanup: {error:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_reaps_a_terminal_with_output_in_flight() -> Result<()> {
+        let root = Root::new("fterm-reap-", &["/bin/cat".into()])?;
+        let mut terminal = Terminal::start_with_args(
+            &root,
+            Path::new("/bin/sh"),
+            &[
+                "-c",
+                "printf READY; read line; printf '%262144s' x; exec sleep 30",
+            ],
+        )?;
+        terminal.wait_for("READY", Duration::from_secs(3))?;
+        terminal.send(b"go\n")?;
+        terminal.close()?;
+        ensure!(
+            terminal.child.0.try_wait()?.is_some(),
+            "cleanup left the child running"
+        );
+        // Repeated owner/drop cleanup must also succeed after the child was reaped.
+        terminal.close()?;
+        Ok(())
     }
 }

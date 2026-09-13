@@ -19,52 +19,22 @@ pub(super) fn run_store(store: &mut Store, id: &str) -> Result<Value> {
         .get(id)
         .context("stop requires a managed launch; adoption grants no termination authority")?
         .clone();
-    anyhow::ensure!(
-        launch.task.is_none(),
-        "historical launch is not the current task stop target"
-    );
-    anyhow::ensure!(
-        matches!(launch.phase, LaunchPhase::Attached | LaunchPhase::Closed),
-        "launch has no reconciled ownership; reconcile it before requesting stop"
-    );
-    let session = launch
-        .session
-        .as_ref()
-        .and_then(|id| store.journal().sessions.get(id))
-        .context("managed session missing")?;
-    anyhow::ensure!(
-        session.ownership == Ownership::Managed && session.launch.as_deref() == Some(id),
-        "session is not owned by this launch"
-    );
-    let target = session.target.clone();
+    let target = store.journal().managed_stop_target(id)?;
     if !launch.stop_requested {
-        store.transaction(|journal| {
-            if journal
-                .tasks
-                .get(id)
-                .is_none_or(|task| task.outcome != TaskOutcome::Verified)
-            {
-                super::cancel_journal(journal, id)?;
-            }
-            journal
-                .launches
-                .get_mut(id)
-                .context("launch missing")?
-                .stop_requested = true;
-            Ok(())
-        })?;
+        store.transaction(|journal| journal.request_managed_stop(id))?;
     }
     if launch.phase == LaunchPhase::Closed {
         return super::inspect_journal(store.journal(), id);
     }
-    // Only the recorded live handle may be closed. A stale incarnation, workspace,
-    // pane or PID is never replaced with a newly discovered target.
+    // Only the recorded live handle may be closed. Routing may move, but a stale
+    // server, pane or PID is never replaced with a newly discovered target.
     if submit::verify_target(&target, Instant::now() + Duration::from_secs(2)).is_err() {
         return confirmed(launch::reconcile_store(store, id)?);
     }
-    let killed = crate::fux::completed_until(
-        &target.runtime.join(format!("{}.sock", target.workspace)),
-        json!({"command":"kill","id":1,"instance":target.instance,"pane":target.pane}),
+    let killed = submit::request(
+        &target,
+        "kill",
+        json!({"pane":target.pane}),
         Instant::now() + Duration::from_secs(2),
     )
     .and_then(|reply| {

@@ -1,0 +1,15 @@
+{
+  "crates/fux/src/client/control_traces.rs": "162037d9c5fbe607ed59a4864e219f940544999e3f7e07ab2ca059a4f79c9b5d",
+  "tools/xtask/src/scenarios/mod.rs": "26fd206a9ec33a16cb2a8bc53c4a3de73de092292d352712d019bf71e6252b8a",
+  "tools/xtask/src/scenarios/viewer.rs": "a7dc1679ecb81209e34f3d6d259d0baa95293c14cb37c77baa65340ecb17c2e6",
+  "tools/xtask/src/support/terminal.rs": "a7fc0fe96ec6855e6ac06fa32249d32a69ebe6bef268bb9ea2db45c5140aad38",
+  "tools/xtask/src/scenarios/viewer/gesture.rs": "334f1e4924f497d0106078435c4332f60346a569aa59890d52b79fb0f03bed20",
+  "tools/xtask/src/scenarios/viewer/tiny.rs": "63f3471d1ec0850a06e551a13a252b667755ad1fb339b02be0a93717ecb77622",
+  "tools/xtask/src/scenarios/viewer/manager.rs": "31cbf754b893cc840ee332bb6eca2056cb07e70b701c66d68d775d835723d640",
+  "tools/xtask/src/scenarios/viewer/history.rs": "7ecf83f3dd48ce885bde7d130e5ee5965572e29ad6a20e92ac1a027b12b28185",
+  "tools/xtask/src/scenarios/viewer/modal.rs": "30712556b28c0e7b58f4ccf47c3c6477874b8303fb9ca6626cdd9fbebd2abfde",
+  "tools/xtask/src/scenarios/viewer/mouse.rs": "eda2a14513c055ccd677e095902c09f71b3ac269b5a7b25fe9901dfbba834405",
+  "tools/xtask/src/scenarios/viewer/transfer.rs": "130623ae0b89b73fc5eb8d0e72061617fef9f5dcfdf2fe29e3fee6a2f4b5c190",
+  "/tmp/fux-codebase-work/harness/debug/fux-xtask": "bb199c2c42741e3fd9f1ed78b2b0ef24cb64229355ef1b0aa3cb4e023ffd1dc1",
+  "/tmp/fux-codebase-work/build/debug/fux": "b20e454a6dd60ceb76f87d0ba2efcb9f8224d03c33fb0d6775f6eca9ac51d9de"
+}

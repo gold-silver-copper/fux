@@ -675,6 +675,7 @@ mod tests {
     fn explicit_state_requires_current_heartbeat_and_current_input_epoch() -> Result<()> {
         let mut integration = Integration {
             target: Target {
+                origin: None,
                 runtime: "/tmp/fixture".into(),
                 instance: "server".into(),
                 workspace: "default".into(),

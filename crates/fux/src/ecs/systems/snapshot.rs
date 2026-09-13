@@ -22,6 +22,7 @@ pub struct Pacing<'w> {
 /// Everything the snapshot reads besides the viewer being published.
 #[derive(bevy_ecs::system::SystemParam)]
 pub struct Scene<'w, 's> {
+    identity: Res<'w, crate::ecs::resources::ServerIdentity>,
     workspaces: Query<'w, 's, &'static Workspace>,
     members: Query<'w, 's, &'static Tabs>,
     tabs: Query<'w, 's, &'static Tab>,
@@ -52,6 +53,14 @@ pub fn refresh_grids(
     for mut viewer in &mut viewers {
         if viewer.detaching {
             continue;
+        }
+        if viewer.dirty {
+            let focused = viewer.selection.tab.and_then(|tab| {
+                tabs.get(tab)
+                    .ok()
+                    .and_then(|component| viewer.selection.focused_in(tab, component))
+            });
+            viewer.selection.history.observe(focused);
         }
         let shown: Vec<Entity> = viewer
             .selection
@@ -169,7 +178,19 @@ pub fn publish_frames(
             continue;
         }
         if needs_frame {
-            let frame = build_frame(&scene, &mut viewer, retiring.and_then(|r| r.exit_code));
+            let stream = if viewer.sent.is_empty() {
+                effects
+                    .workspace_stream(viewer.workspace)
+                    .unwrap_or_default()
+            } else {
+                0 // Ordinary deltas inherit the lifetime; no event-log lookup is needed.
+            };
+            let frame = build_frame(
+                &scene,
+                &mut viewer,
+                retiring.and_then(|r| r.exit_code),
+                stream,
+            );
             effects.emit(Effect::ToViewer {
                 viewer: id,
                 message: ServerMessage::State {
@@ -199,7 +220,12 @@ pub fn publish_frames(
     }
 }
 
-fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> FrameUpdate {
+fn build_frame(
+    scene: &Scene,
+    viewer: &mut Viewer,
+    exit_code: Option<u32>,
+    stream: u64,
+) -> FrameUpdate {
     let name = scene
         .workspaces
         .get(viewer.workspace)
@@ -216,6 +242,12 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
         .map(|tab| TabEntry {
             id: tab.id,
             label: tab.label.clone(),
+            layout_generation: tab.layout_generation,
+            first_pane: tab
+                .layout
+                .first()
+                .and_then(|pane| scene.panes.get(pane).ok())
+                .map(|pane| pane.id),
         })
         .collect();
     let active = viewer
@@ -228,6 +260,12 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
         .unwrap_or_default();
     // A viewer that holds nothing yet (attach, workspace switch) gets every pane in full.
     let full = viewer.sent.is_empty();
+    let tabs = if full || tabs != viewer.sent_tabs {
+        viewer.sent_tabs = tabs.clone();
+        Some(tabs)
+    } else {
+        None
+    };
     let mut layout = Vec::with_capacity(geometry.len());
     let mut panes = std::collections::BTreeMap::new();
     for (pane, rect) in &geometry {
@@ -249,35 +287,71 @@ fn build_frame(scene: &Scene, viewer: &mut Viewer, exit_code: Option<u32>) -> Fr
             .filter(|sent| (sent.rows, sent.columns) == (rows, columns));
         let since = held.map(|sent| sent.seq);
         let seq = grid.seq();
-        if since.is_some_and(|since| seq <= since) {
+        if since.is_some_and(|since| seq <= since)
+            && held.is_some_and(|sent| {
+                sent.label == component.label && sent.right_click == component.right_click
+            })
+        {
             continue;
         }
-        panes.insert(component.id, grid.update(since));
-        viewer
-            .sent
-            .insert(component.id, Sent { rows, columns, seq });
+        let mut update = grid.update(since);
+        update.label = component.label.clone();
+        update.right_click = component.right_click;
+        panes.insert(component.id, update);
+        viewer.sent.insert(
+            component.id,
+            Sent {
+                rows,
+                columns,
+                seq,
+                label: component.label.clone(),
+                right_click: component.right_click,
+            },
+        );
     }
     viewer
         .sent
         .retain(|id, _| layout.iter().any(|entry| entry.pane == *id));
     let focused = active
         .and_then(|(tab, component)| {
-            viewer
-                .selection
-                .focus
-                .get(&tab)
-                .copied()
-                .filter(|pane| component.layout.contains(*pane))
-                .or_else(|| component.layout.leaves().first().copied())
+            component.zoomed.or_else(|| {
+                viewer
+                    .selection
+                    .focus
+                    .get(&tab)
+                    .copied()
+                    .filter(|pane| component.layout.contains(*pane))
+                    .or_else(|| component.layout.leaves().first().copied())
+            })
         })
         .and_then(|pane| scene.panes.get(pane).ok())
         .map(|pane| pane.id)
         .filter(|id| layout.iter().any(|entry| entry.pane == *id));
+    let label = scene
+        .workspaces
+        .get(viewer.workspace)
+        .ok()
+        .and_then(|workspace| workspace.label.clone());
+    let workspace_presentation = if full || viewer.sent_workspace_label != label {
+        viewer.sent_workspace_label = label.clone();
+        Some(crate::view::WorkspacePresentation { label })
+    } else {
+        None
+    };
     viewer.generation = viewer.generation.wrapping_add(1);
     viewer.layout = geometry;
     FrameUpdate {
+        viewer: full.then_some(viewer.id),
+        server_instance: full.then(|| scene.identity.instance_nonce.clone()),
         workspace: name,
+        workspace_stream: full.then_some(stream),
+        workspace_presentation,
         generation: viewer.generation,
+        layout_generation: active.map_or(0, |(_, tab)| tab.layout_generation),
+        zoomed: active
+            .and_then(|(_, tab)| tab.zoomed)
+            .and_then(|pane| scene.panes.get(pane).ok())
+            .map(|pane| pane.id),
         tabs,
         active_tab: active.map(|(_, tab)| tab.id),
         focused,

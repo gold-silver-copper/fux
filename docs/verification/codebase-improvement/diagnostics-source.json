@@ -1,0 +1,13 @@
+{
+  "crates/fux/src/main.rs": "0ce96e22925d93b791e0708b3c38e187b6a78787af2ca78daf1e379d4c5bc6de",
+  "crates/fux/src/client/controller.rs": "6b4888a89331d010bc85539bfa737eddaae98261a2cfe5f219ea77208fa1a36d",
+  "crates/fux/src/client/effects.rs": "71c818945372dd5e52938f8ba00813fb428100988369cdbf3b904b59cd7c54e1",
+  "crates/fux/src/client/read_window.rs": "e0a77ab04594cf9855e2eb8c88f0e9245a512f408f8318d4bad1e2cfa929e089",
+  "tools/xtask/src/support/failure.rs": "3ae44d2d542e4519f7ad25fc8bf35c8df44a779112a91beb28d48e2304a10c80",
+  "tools/xtask/src/support/local.rs": "e4cca178ac018ccd47279935fc3a3118d23622b7a7d6b33e7620b16a47218c77",
+  "tools/xtask/src/support/terminal.rs": "a8ec41a28030b63eef03bd29fad77a9e303826758e674ef226bf38401970c14c",
+  "tools/xtask/src/support/mod.rs": "5b30f6efd8c4441d6d270a143e9ef9e74d50058166e7f0b9d718ce74377290f6",
+  "tools/xtask/src/scenarios/mod.rs": "79584dfdb9f73b1304e4ecdf8ac332ffba2cd0f212d258e20429321aaba89677",
+  "/tmp/fux-codebase-work/harness/debug/fux-xtask": "be19308501c196d1149b1338efe9d8a359b7f927917d0137e9ff51b44bc5ee50",
+  "/tmp/fux-codebase-work/build/debug/fux": "08bb559fcc1a2af0fbb14a57dc21e1a23f4ffd41817bf9ef7eab813b1994c02b"
+}

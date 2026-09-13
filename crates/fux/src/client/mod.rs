@@ -2,11 +2,19 @@
 //! connection. The server frame is the only shared truth; everything here is a view of it.
 
 pub mod backend;
+mod capture;
+mod context;
 pub mod controller;
 pub mod copy;
+mod drag;
+mod effects;
 pub mod hints;
+mod history;
 pub mod input;
+mod interaction;
 pub mod io;
+mod popup;
+mod read_window;
 pub mod render;
 pub mod screen;
 pub mod text;
@@ -92,9 +100,37 @@ impl Connection {
     }
 }
 
-enum Outstanding {
-    Control,
-    View,
+struct WaitingCommand {
+    action: Action,
+    target: Option<Frame>,
+    epoch: u64,
+    origin: effects::Identity,
+    follows_workspace: bool,
+}
+
+struct OutstandingControl {
+    request: u64,
+    navigates_workspace: bool,
+    deadline: tokio::time::Instant,
+}
+
+async fn send_control(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    mut request: Request,
+    next: &mut u64,
+) -> anyhow::Result<OutstandingControl> {
+    let id = *next;
+    *next = next
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("control request IDs exhausted"))?;
+    request.set_id(id);
+    let navigates_workspace = effects::navigates_workspace(&request);
+    send(writer, &ClientMessage::Control { request }).await?;
+    Ok(OutstandingControl {
+        request: id,
+        navigates_workspace,
+        deadline: tokio::time::Instant::now() + FRAME_TIMEOUT,
+    })
 }
 
 /// Attaches to a workspace socket and runs the viewer until detach, workspace retirement or a
@@ -170,9 +206,16 @@ async fn run(
     let mut frame: Option<Frame> = None;
     let mut pending: VecDeque<u8> = VecDeque::new();
     let mut resolved: VecDeque<InputEvent> = VecDeque::new();
-    let mut outstanding: Option<Outstanding> = None;
+    let mut outstanding: Option<OutstandingControl> = None;
+    let mut next_control = 1;
+    let mut reads = read_window::ReadWindow::default();
     let mut hint_scroll: usize = 0;
+    let mut popup = popup::Popup::default();
     let mut lookups = tokio::task::JoinSet::new();
+    let mut manager_commands = tokio::task::JoinSet::new();
+    let mut manager_mutations = 0usize;
+    let mut effects = effects::Queue::default();
+    let mut waiting_command: Option<WaitingCommand> = None;
     let mut detaching = false;
     let (rows, cols) = screen.size()?;
     send(
@@ -189,9 +232,8 @@ async fn run(
             filter.escape_pending() || controller.escape_pending(),
             tokio::time::Instant::now(),
         );
-        let request_deadline = outstanding
-            .as_ref()
-            .map(|_| tokio::time::Instant::now() + FRAME_TIMEOUT);
+        let request_deadline = outstanding.as_ref().map(|pending| pending.deadline);
+        let history_deadline = reads.deadline();
         let notice_deadline = controller
             .notice_deadline(std::time::Instant::now())
             .map(tokio::time::Instant::from_std);
@@ -200,6 +242,25 @@ async fn run(
             _ = interrupt.recv() => break Ok(None),
             _ = terminate.recv() => break Ok(None),
             _ = hangup.recv() => break Ok(None),
+            () = at(escape_deadline) => {
+                if controller.owns_input() { controller.resolve_escape(); }
+                else {
+                    // Resolved events are dispatched as they are; feeding the bytes back through
+                    // the filter would buffer the Escape again and never deliver it.
+                    resolved.extend(filter.resolve_history_escape(controller.has_history()));
+                }
+            }
+            () = at(history_deadline) => {
+                for (request, pane) in reads.expire(tokio::time::Instant::now()) {
+                    controller.history_failed(request, pane);
+                }
+            }
+            () = at(request_deadline) => {
+                break Err(anyhow::anyhow!("session server did not answer a request in time"));
+            }
+            () = std::future::ready(()), if waiting_command.is_some()
+                && controller.waiting_command_ready() && outstanding.is_none()
+                && manager_mutations == 0 && effects.is_empty() => {}
             message = message_rx.recv() => {
                 let Some(message) = message else { break Err(anyhow::anyhow!("session server disconnected")) };
                 match message? {
@@ -218,19 +279,17 @@ async fn run(
                     }
                     ServerMessage::Bindings { bindings } => filter.configure(bindings),
                     ServerMessage::Reply { reply } => {
-                        if matches!(outstanding, Some(Outstanding::Control)) {
+                        if outstanding.as_ref().is_some_and(|pending| pending.request == reply.id()) {
                             outstanding = None;
-                        }
-                        if let Reply::Failed { error, .. } = reply {
-                            controller.report_error(error.message);
-                            filter.show_commands();
+                            if let Reply::Failed { error, .. } = reply {
+                                controller.report_error(error.message);
+                            }
                         }
                     }
                     ServerMessage::View { reply } => {
-                        if matches!(outstanding, Some(Outstanding::View)) {
-                            outstanding = None;
+                        if reads.complete(reply.request, reply.pane) {
+                            controller.install_view(reply);
                         }
-                        controller.install_view(reply);
                     }
                     ServerMessage::Exited { code } => break Ok(code),
                     ServerMessage::Error { message } => break Err(anyhow::anyhow!("{message}")),
@@ -250,22 +309,39 @@ async fn run(
                 send(&mut writer, &ClientMessage::Resize { rows, columns: cols }).await?;
                 screen.invalidate();
             }
+            Some(result) = manager_commands.join_next(), if !manager_commands.is_empty() => {
+                let (epoch, mutating, result) = result.map_err(anyhow::Error::from)?;
+                if mutating { manager_mutations = manager_mutations.saturating_sub(1); }
+                if epoch != controller.interaction_epoch() {
+                    // Old results cannot reopen a dialog or replay input into its replacement.
+                    if mutating {
+                        match result {
+                            Ok(crate::daemon::ManagerReply::Failed { message }) => controller.report_error(message),
+                            Ok(crate::daemon::ManagerReply::Layout { result: crate::proto::control::Reply::Failed { error, .. } }) => controller.report_error(error.message),
+                            Err(error) => controller.report_error(format!("Earlier workspace operation failed: {error}")),
+                            Ok(_) => controller.report_info("Earlier workspace operation completed"),
+                        }
+                    }
+                } else { match result {
+                    Ok(crate::daemon::ManagerReply::Catalog { catalog }) => {
+                        controller.destinations_loaded(catalog);
+                        for byte in controller.take_loading_input().into_iter().rev() { pending.push_front(byte); }
+                    }
+                    Ok(crate::daemon::ManagerReply::Names { .. }) => controller.report_info("Workspace order updated"),
+                    Ok(crate::daemon::ManagerReply::Layout { result: crate::proto::control::Reply::Completed { .. } }) => controller.report_info("Pane moved to workspace"),
+                    Ok(crate::daemon::ManagerReply::Layout { result: crate::proto::control::Reply::Failed { error, .. } }) => controller.report_error(error.message),
+                    Ok(crate::daemon::ManagerReply::Failed { message }) => controller.manager_failed(message),
+                    Ok(_) => controller.manager_failed("Unexpected manager reply"),
+                    Err(error) => controller.manager_failed(format!("Manager request failed; inspect before retrying: {error}")),
+                }}
+            }
             Some(result) = lookups.join_next(), if !lookups.is_empty() => {
                 let current = frame.as_ref().map(|frame| frame.workspace.clone()).unwrap_or_default();
-                controller.workspaces_loaded(result.map_err(anyhow::Error::from).and_then(|result| result), &current);
-                let replay = controller.take_loading_input();
-                for byte in replay.into_iter().rev() { pending.push_front(byte); }
-            }
-            () = at(escape_deadline) => {
-                if controller.owns_input() { controller.resolve_escape(); }
-                else {
-                    // Resolved events are dispatched as they are; feeding the bytes back through
-                    // the filter would buffer the Escape again and never deliver it.
-                    resolved.extend(filter.resolve_escape());
+                let (epoch, result) = result.map_err(anyhow::Error::from)?;
+                if controller.workspaces_loaded_for(epoch, result, &current) {
+                    let replay = controller.take_loading_input();
+                    for byte in replay.into_iter().rev() { pending.push_front(byte); }
                 }
-            }
-            () = at(request_deadline) => {
-                break Err(anyhow::anyhow!("session server did not answer a request in time"));
             }
             () = at(notice_deadline) => {
                 // The bar notice timed out; repaint without it.
@@ -277,19 +353,60 @@ async fn run(
             continue;
         };
         let mut pane_bytes = Vec::new();
-        while outstanding.is_none() && !detaching {
-            let events = if let Some(event) = resolved.pop_front() {
+        while !detaching {
+            if waiting_command
+                .as_ref()
+                .is_some_and(|waiting| waiting.epoch != controller.interaction_epoch())
+            {
+                waiting_command = None;
+            }
+            if waiting_command.as_ref().is_some_and(|waiting| {
+                !waiting.follows_workspace && waiting.origin != effects::Identity::of(current)
+            }) {
+                waiting_command = None;
+                controller.cancel_waiting_command();
+                controller.report_error("Waiting command discarded: its workspace changed");
+            }
+            let ready = outstanding.is_none() && manager_mutations == 0 && effects.is_empty();
+            let resumed = if ready && controller.waiting_command_ready() {
+                waiting_command.take().map(|waiting| {
+                    let replay = controller.finish_waiting_command();
+                    (waiting.action, waiting.target, replay)
+                })
+            } else {
+                None
+            };
+            let contextual = controller.take_action();
+            let events = if let Some((action, _, _)) = &resumed {
+                vec![InputEvent::Command(*action)]
+            } else if let Some((action, _)) = &contextual {
+                vec![InputEvent::Command(*action)]
+            } else if let Some(event) = resolved.pop_front() {
                 vec![event]
             } else {
                 let Some(byte) = pending.pop_front() else {
                     break;
                 };
-                if controller.owns_input() {
+                if byte != 27 && byte == filter.bindings().prefix() && controller.prefix_from_copy()
+                {
+                    filter.feed(&[byte])
+                } else if controller.owns_input() {
                     controller.clear_error();
                     if let Some(request) = controller.feed(byte, current) {
-                        flush(&mut writer, &mut pane_bytes).await?;
-                        send(&mut writer, &ClientMessage::Control { request }).await?;
-                        outstanding = Some(Outstanding::Control);
+                        effects.input(
+                            &mut pane_bytes,
+                            (manager_mutations > 0 || effects.manager_pending()).then_some(current),
+                        )?;
+                        effects.push(effects::Effect::Control(request), Some(current))?;
+                        if let Some(action) = controller.wait_for_layout_reply() {
+                            waiting_command = Some(WaitingCommand {
+                                action,
+                                target: Some(current.clone()),
+                                epoch: controller.interaction_epoch(),
+                                origin: effects::Identity::of(current),
+                                follows_workspace: false,
+                            });
+                        }
                     }
                     Vec::new()
                 } else {
@@ -306,53 +423,135 @@ async fn run(
                     match event {
                         InputEvent::Bytes(bytes) => {
                             controller.clear_error();
+                            controller.resume_input(current);
                             pane_bytes.extend(bytes);
                         }
+                        InputEvent::Escape => {
+                            if !controller.dismiss_history() {
+                                pane_bytes.push(27);
+                            }
+                        }
                         InputEvent::Command(action) => {
-                            flush(&mut writer, &mut pane_bytes).await?;
+                            if let Some(button) = popup.take_capture() {
+                                controller.adopt_popup_capture(button);
+                            }
+                            effects.input(
+                                &mut pane_bytes,
+                                (manager_mutations > 0 || effects.manager_pending())
+                                    .then_some(current),
+                            )?;
                             controller.clear_error();
-                            match dispatch(
+                            let target = resumed
+                                .as_ref()
+                                .and_then(|(_, target, _)| target.as_ref())
+                                .or_else(|| contextual.as_ref().map(|(_, target)| target));
+                            if (outstanding.is_some()
+                                || manager_mutations > 0
+                                || !effects.is_empty())
+                                && !matches!(action, Action::CopyMode | Action::Detach)
+                            {
+                                controller.wait_for_command();
+                                waiting_command = Some(WaitingCommand {
+                                    action,
+                                    target: target.cloned(),
+                                    epoch: controller.interaction_epoch(),
+                                    origin: effects::Identity::of(current),
+                                    follows_workspace: target.is_none()
+                                        && (effects.navigates_workspace()
+                                            || outstanding.as_ref().is_some_and(|pending| {
+                                                pending.navigates_workspace
+                                            })),
+                                });
+                                continue;
+                            }
+                            let outcome = dispatch(
                                 action,
-                                current,
+                                target.unwrap_or(current),
                                 &mut controller,
-                                &mut filter,
                                 workspaces_enabled,
                                 final_retain_ms,
-                            ) {
+                            );
+                            // A contextual command can have waited while its pane/tab
+                            // disappeared. Validate its new local mode against live state
+                            // before replaying any buffered text into it.
+                            controller.reconcile(current);
+                            if (matches!(outcome, Dispatch::Send(_) | Dispatch::Detach)
+                                || controller.owns_input())
+                                && let Some((_, _, replay)) = &resumed
+                            {
+                                for byte in replay.iter().rev() {
+                                    pending.push_front(*byte);
+                                }
+                            }
+                            match outcome {
                                 Dispatch::Send(request) => {
-                                    send(&mut writer, &ClientMessage::Control { request }).await?;
-                                    outstanding = Some(Outstanding::Control);
+                                    effects
+                                        .push(effects::Effect::Control(request), Some(current))?;
                                 }
                                 Dispatch::Detach => {
-                                    send(&mut writer, &ClientMessage::Detach).await?;
+                                    effects.push(effects::Effect::Detach, None)?;
                                     detaching = true;
                                     pending.clear();
                                 }
                                 Dispatch::LoadWorkspaces => {
-                                    if let Some(path) = options.manager_socket.clone()
-                                        && lookups.is_empty()
-                                    {
-                                        lookups.spawn_blocking(move || {
-                                            crate::daemon::workspace_names(&path)
-                                        });
+                                    if let Some(path) = options.manager_socket.clone() {
+                                        if lookups.len() < 8 {
+                                            let epoch = controller.interaction_epoch();
+                                            lookups.spawn_blocking(move || {
+                                                (epoch, crate::daemon::workspace_entries(&path))
+                                            });
+                                        } else {
+                                            controller.workspaces_loaded(
+                                                Err(anyhow::anyhow!(
+                                                    "Too many pending workspace lookups"
+                                                )),
+                                                &current.workspace,
+                                            );
+                                        }
                                     }
                                 }
                                 Dispatch::Local => {}
                             }
                         }
+                        InputEvent::PopupMouse(event) => match popup.mouse(event) {
+                            popup::Outcome::Ignore => {}
+                            popup::Outcome::Dismiss => {
+                                filter.cancel();
+                                hint_scroll = 0;
+                            }
+                            popup::Outcome::Scroll(rows) => {
+                                resolved.push_back(InputEvent::Scroll(ScrollBy::Rows(rows)))
+                            }
+                            popup::Outcome::Command(action) => {
+                                filter.cancel();
+                                resolved.push_back(InputEvent::Command(action));
+                            }
+                        },
+                        InputEvent::Mouse(event, _) if popup.consume_tail(event) => {}
                         InputEvent::Mouse(event, raw) => match controller.mouse(event, current) {
                             MouseDisposition::Local | MouseDisposition::Ignore => {}
+                            MouseDisposition::Request(request) => {
+                                effects.input(
+                                    &mut pane_bytes,
+                                    (manager_mutations > 0 || effects.manager_pending())
+                                        .then_some(current),
+                                )?;
+                                effects.push(effects::Effect::Control(request), Some(current))?;
+                            }
                             MouseDisposition::Forward => {
-                                flush(&mut writer, &mut pane_bytes).await?;
+                                effects.input(
+                                    &mut pane_bytes,
+                                    (manager_mutations > 0 || effects.manager_pending())
+                                        .then_some(current),
+                                )?;
                                 let _ = raw;
-                                send(
-                                    &mut writer,
-                                    &ClientMessage::Mouse {
+                                effects.push(
+                                    effects::Effect::Mouse {
                                         event,
                                         generation: current.generation,
                                     },
-                                )
-                                .await?;
+                                    Some(current),
+                                )?;
                             }
                         },
                         InputEvent::Unknown => {
@@ -380,16 +579,39 @@ async fn run(
                             };
                             let limit = i64::try_from(column.max_scroll(rows)).unwrap_or(0);
                             hint_scroll = usize::try_from(
-                                (i64::try_from(hint_scroll).unwrap_or(0) + delta).clamp(0, limit),
+                                (i64::try_from(hint_scroll).unwrap_or(0).min(limit) + delta)
+                                    .clamp(0, limit),
                             )
                             .unwrap_or(0);
                         }
                     }
                 }
             }
-            if controller.take_back() {
-                filter.show_commands();
-                hint_scroll = 0;
+            if let Some(event) = controller.take_forwarded_mouse() {
+                effects.input(
+                    &mut pane_bytes,
+                    (manager_mutations > 0 || effects.manager_pending()).then_some(current),
+                )?;
+                effects.push(
+                    effects::Effect::Mouse {
+                        event,
+                        generation: current.generation,
+                    },
+                    Some(current),
+                )?;
+            }
+            if let Some(request) = controller.take_manager_request() {
+                effects.input(
+                    &mut pane_bytes,
+                    (manager_mutations > 0 || effects.manager_pending()).then_some(current),
+                )?;
+                effects.push(
+                    effects::Effect::Manager {
+                        request,
+                        epoch: controller.interaction_epoch(),
+                    },
+                    Some(current),
+                )?;
             }
             if let Some(text) = controller.take_copied() {
                 match screen.copy_to_clipboard(&text)? {
@@ -405,24 +627,59 @@ async fn run(
                     ),
                 }
             }
-            if let Some((request, pane, offset)) = controller.take_read() {
-                flush(&mut writer, &mut pane_bytes).await?;
-                send(
-                    &mut writer,
-                    &ClientMessage::View {
-                        request,
-                        pane,
-                        offset,
-                    },
-                )
-                .await?;
-                outstanding = Some(Outstanding::View);
+        }
+        effects.input(
+            &mut pane_bytes,
+            (manager_mutations > 0 || effects.manager_pending()).then_some(current),
+        )?;
+        while outstanding.is_none() && manager_mutations == 0 {
+            let Some(effect) = effects.pop(current) else {
+                break;
+            };
+            match effect {
+                Err(message) => controller.report_error(message),
+                Ok(effects::Effect::Input(mut bytes)) => flush(&mut writer, &mut bytes).await?,
+                Ok(effects::Effect::Control(request)) => {
+                    outstanding =
+                        Some(send_control(&mut writer, request, &mut next_control).await?);
+                }
+                Ok(effects::Effect::Manager { request, epoch }) => {
+                    if let Some(path) = options.manager_socket.clone() {
+                        if manager_commands.len() < 8 {
+                            let mutating =
+                                !matches!(request, crate::daemon::ManagerRequest::Catalog);
+                            if mutating {
+                                manager_mutations += 1;
+                            }
+                            manager_commands.spawn_blocking(move || {
+                                (
+                                    epoch,
+                                    mutating,
+                                    crate::daemon::manager_request(&path, &request),
+                                )
+                            });
+                        } else {
+                            controller.manager_failed("Too many pending manager operations");
+                        }
+                    } else {
+                        controller.report_error(
+                            "Manager commands are not available through this attachment",
+                        );
+                    }
+                }
+                Ok(effects::Effect::Mouse { event, generation }) => {
+                    send(&mut writer, &ClientMessage::Mouse { event, generation }).await?;
+                }
+                Ok(effects::Effect::Detach) => send(&mut writer, &ClientMessage::Detach).await?,
             }
         }
-        flush(&mut writer, &mut pane_bytes).await?;
-        if let Some((request, pane, offset)) = controller.take_read()
-            && outstanding.is_none()
-        {
+        // Drain/coalesce ready input before issuing history reads. Each pane can have
+        // one outstanding read, and the bounded window never owns keyboard input.
+        reads.retain(|request, pane| controller.history_pending(request, pane));
+        while reads.has_capacity() {
+            let Some((request, pane, offset)) = controller.take_read() else {
+                break;
+            };
             send(
                 &mut writer,
                 &ClientMessage::View {
@@ -432,21 +689,37 @@ async fn run(
                 },
             )
             .await?;
-            outstanding = Some(Outstanding::View);
-        }
-        if controller.take_back() {
-            filter.show_commands();
-            hint_scroll = 0;
+            reads.insert(request, pane, tokio::time::Instant::now());
         }
         // Paint once per loop turn, after every ready event has been applied.
-        let panel = controller.panel().or_else(|| {
-            filter.popup_visible().then(|| {
-                HintPanel::commands(filter.bindings(), workspaces_enabled, hint_scroll, current)
-            })
-        });
-        let local = controller.local_view();
+        let panel = if filter.popup_visible() {
+            Some(HintPanel::commands(
+                filter.bindings(),
+                workspaces_enabled,
+                hint_scroll,
+                current,
+            ))
+        } else {
+            controller
+                .drag_panel(current)
+                .or_else(|| controller.panel())
+        };
+        let local = controller.local_views();
         let notice = controller.notice(std::time::Instant::now());
-        screen.render(current, local.as_ref(), panel.as_ref(), notice.as_ref())?;
+        let tab_regions = screen.render(current, Some(&local), panel.as_ref(), notice.as_ref())?;
+        popup.painted(
+            &tab_regions,
+            filter.popup_visible().then_some(panel.as_ref()).flatten(),
+        );
+        if controller.set_regions(tab_regions) {
+            // Remove the cancelled preview immediately, even if the panes produce no output.
+            let notice = controller.notice(std::time::Instant::now());
+            let local = controller.local_views();
+            let panel = controller.panel();
+            let tab_regions =
+                screen.render(current, Some(&local), panel.as_ref(), notice.as_ref())?;
+            controller.set_regions(tab_regions);
+        }
     };
     reader_task.abort();
     let _ = reader_task.await;
@@ -498,13 +771,11 @@ fn dispatch(
     action: Action,
     frame: &Frame,
     controller: &mut Controller,
-    filter: &mut PrefixFilter,
     workspaces: bool,
     final_retain_ms: u64,
 ) -> Dispatch {
     if let Some(reason) = action.unavailable(frame, workspaces) {
         controller.report_error(reason);
-        filter.show_commands();
         return Dispatch::Local;
     }
     match action {
@@ -525,19 +796,61 @@ fn dispatch(
             rows: None,
             columns: None,
             final_retain_ms,
+            fixed_workspace: false,
+            right_click: Default::default(),
+            ratio: 5000,
+            focus: true,
         }),
-        Action::FocusLeft | Action::FocusRight | Action::FocusUp | Action::FocusDown => {
-            Dispatch::Send(Request::Focus {
-                instance: None,
+        Action::FocusLeft
+        | Action::FocusRight
+        | Action::FocusUp
+        | Action::FocusDown
+        | Action::FocusNext
+        | Action::FocusPrevious
+        | Action::FocusLast => Dispatch::Send(Request::Focus {
+            instance: None,
+            id: 0,
+            target: match action {
+                Action::FocusLast => FocusTarget::Last,
+                Action::FocusNext => FocusTarget::Next,
+                Action::FocusPrevious => FocusTarget::Previous,
+                Action::FocusLeft => FocusTarget::Left,
+                Action::FocusRight => FocusTarget::Right,
+                Action::FocusUp => FocusTarget::Up,
+                _ => FocusTarget::Down,
+            },
+        }),
+        Action::Zoom => match frame.active_tab {
+            Some(tab) => Dispatch::Send(Request::Layout {
                 id: 0,
-                target: match action {
-                    Action::FocusLeft => FocusTarget::Left,
-                    Action::FocusRight => FocusTarget::Right,
-                    Action::FocusUp => FocusTarget::Up,
-                    _ => FocusTarget::Down,
+                instance: None,
+                tab,
+                generation: Some(frame.layout_generation),
+                action: crate::proto::control::LayoutAction::Zoom {
+                    pane: if frame.zoomed.is_some() {
+                        None
+                    } else {
+                        frame.focused
+                    },
                 },
-            })
-        }
+            }),
+            None => Dispatch::Local,
+        },
+        Action::MoveToNewTab => match frame.focused.zip(frame.active_tab) {
+            Some((pane, tab)) => Dispatch::Send(Request::Layout {
+                id: 0,
+                instance: None,
+                tab,
+                generation: Some(frame.layout_generation),
+                action: crate::proto::control::LayoutAction::Transfer {
+                    focus: false,
+                    pane,
+                    destination: crate::proto::control::PaneDestination::NewTab { label: None },
+                    side: crate::layout::Direction::Right,
+                },
+            }),
+            None => Dispatch::Local,
+        },
         Action::NewTab | Action::NextTab | Action::PreviousTab => Dispatch::Send(Request::Tab {
             instance: None,
             id: 0,
@@ -547,20 +860,46 @@ fn dispatch(
                 _ => TabAction::Previous,
             },
         }),
-        Action::ChooseWorkspace => {
+        Action::CycleRightClick => {
+            match frame
+                .focused
+                .and_then(|pane| frame.pane(pane).map(|view| (pane, view)))
+            {
+                Some((pane, view)) => Dispatch::Send(Request::PaneInput {
+                    id: 0,
+                    instance: Some(frame.server_instance.clone()),
+                    pane,
+                    right_click: view.right_click.next(),
+                }),
+                None => Dispatch::Local,
+            }
+        }
+        Action::ChooseWorkspace | Action::ReorderWorkspace => {
             controller.enter(action, frame);
             Dispatch::LoadWorkspaces
         }
-        Action::CopyMode
+        Action::PaneMenu
+        | Action::TabMenu
+        | Action::WorkspaceMenu
+        | Action::RenameWorkspace
+        | Action::CloseWorkspace
+        | Action::CopyMode
         | Action::ChooseTab
+        | Action::MoveToTab
+        | Action::ReorderTab
+        | Action::RenamePane
         | Action::RenameTab
         | Action::CloseTab
         | Action::ClosePane
         | Action::ResizeMode
-        | Action::NewWorkspace => {
+        | Action::SwapMode
+        | Action::SwapPane
+        | Action::MoveMode
+        | Action::NewWorkspace
+        | Action::MoveToNewWorkspace
+        | Action::MoveToWorkspace => {
             if !controller.enter(action, frame) {
                 controller.report_error("That command is not available right now");
-                filter.show_commands();
             }
             Dispatch::Local
         }

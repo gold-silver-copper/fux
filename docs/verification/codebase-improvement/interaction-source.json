@@ -1,0 +1,20 @@
+{
+  "crates/fux/src/client/copy.rs": "ce72830524af129751642d8c168d9a38c99dd99e8d64a452e2d779c4c0f3877a",
+  "crates/fux/src/client/popup.rs": "7a5113aced87089efa98f0e9da368ea46d55065665ae8b3fd29299fa50b5284d",
+  "crates/fux/src/client/drag.rs": "bfd8f90ef9f6fb851dff4515d2418d56f53cdc5914628c014daab3e4e4121db8",
+  "crates/fux/src/client/io.rs": "0a283055afac4b14bda4751c2cc2ac4823cb26068a98a1b054e645639dff358f",
+  "crates/fux/src/client/controller.rs": "8e55a7882ed6d086f89b7821f5bb5f7b030ce6a9cbd874f9569d9d0c921dfc4e",
+  "crates/fux/src/client/backend.rs": "43e53ca1a96abf708213dcb426bfae3b448aafc4146c4b81fcd6c466e8f1f339",
+  "crates/fux/src/client/render.rs": "1f5f918a4be6f993dc1a445700ba8e2f848b750e3e446446379b59ad078223f4",
+  "crates/fux/src/client/interaction.rs": "537295fd2d43648183014ccdde46b0b1effe08dec2ad9e504c97c3fa59279943",
+  "crates/fux/src/client/effects.rs": "882ae1dfc6e1c1147110016cbf7b0aa32a46908ef76e4c6cc5006b05e907752d",
+  "crates/fux/src/client/screen.rs": "b902a088292e6586f6b93f278658f96eb40da1747123a3a3e2321997e8c57906",
+  "crates/fux/src/client/mod.rs": "da2171b8e679a37f668a9776c19eac6d3135416b875a539910665d20e26bf301",
+  "crates/fux/src/client/history.rs": "c8ed20180d3c0924b33c745d29d5160cb72650ee1a03c650ddb3f2a68d03c0a0",
+  "crates/fux/src/client/read_window.rs": "b09eab3322a992b69fcef3bd2860190494764637ab34fd75aec03191cd5b0dd0",
+  "crates/fux/src/client/hints.rs": "8673c7e5a0f4558ced4e3f9c84476a3fe67ba3fc913de30568c42a3d1193d92b",
+  "crates/fux/src/client/text.rs": "fc3a576d152448a2acb1e783b8b00bf8b44fa1520ed90a40db0d5e13dd15cde3",
+  "crates/fux/src/client/input.rs": "52b8f639a96e9fefb11e6782356b6d0d96d2ac34b0bc421a74a3c784cffaf33e",
+  "crates/fux/src/client/context.rs": "4cf2a7edf330b0e0f595d11c7b439f6ab0fee105ce7e65692fb5464952e653e5",
+  "crates/fux/src/client/capture.rs": "2ae4c95c9e0c5f0d9f62b0c28ecf1626ab18b9653d50daf1ffed21ae2e87d43e"
+}

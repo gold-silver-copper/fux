@@ -92,6 +92,41 @@ pub fn status(
     })
 }
 
+/// Manager authority can read retained evidence after the originating route disappears.
+/// This never rebinds a reservation or permits submission from another workspace.
+pub fn manager_status(
+    world: &World,
+    instance: &str,
+    pane: crate::ids::PaneId,
+    operation: u64,
+) -> Result<CommandResult, Reply> {
+    if instance
+        != world
+            .resource::<crate::ecs::resources::ServerIdentity>()
+            .instance_nonce
+    {
+        return Err(failure(0, ErrorCode::Conflict, "server instance changed"));
+    }
+    let record = world
+        .resource::<InputOperations>()
+        .records
+        .get(&operation)
+        .filter(|record| {
+            record.receipt.pane == pane
+                && record.receipt.expires_ms > world.resource::<Clock>().now_ms
+        })
+        .ok_or_else(|| {
+            failure(
+                0,
+                ErrorCode::Expired,
+                "input operation unavailable or expired; delivery outcome is unknown",
+            )
+        })?;
+    Ok(CommandResult::Input {
+        receipt: record.receipt.clone(),
+    })
+}
+
 fn record(
     world: &World,
     workspace: Entity,
@@ -136,6 +171,13 @@ pub fn submit(
             ))
         };
     }
+    if record.receipt.state != InputState::Reserved {
+        return Err(failure(
+            id,
+            ErrorCode::Conflict,
+            "reservation is no longer usable; reserve again explicitly",
+        ));
+    }
     if bytes.is_empty() {
         return Err(failure(
             id,
@@ -149,6 +191,13 @@ pub fn submit(
         .resource::<Ids>()
         .pane(pane)
         .ok_or_else(|| failure(id, ErrorCode::NotFound, "pane no longer exists"))?;
+    if crate::ecs::support::pane_workspace(world, entity) != Some(workspace) {
+        return Err(failure(
+            id,
+            ErrorCode::Conflict,
+            "pane changed workspace; reserve on its current route",
+        ));
+    }
     let mut component = world
         .get_mut::<Pane>(entity)
         .ok_or_else(|| failure(id, ErrorCode::NotFound, "pane no longer exists"))?;

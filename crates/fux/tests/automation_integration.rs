@@ -86,6 +86,7 @@ scenarios!(
     zor_tasks,
     zor_bindings,
     zor_producers,
+    zor_resume,
     zor_launch,
     zor_headless,
     zor_native,
@@ -100,3 +101,8 @@ scenarios!(
     zor_recovery,
     zor_dashboard
 );
+
+#[test]
+fn zor_pane_layout() {
+    run("zor_pane_layout");
+}

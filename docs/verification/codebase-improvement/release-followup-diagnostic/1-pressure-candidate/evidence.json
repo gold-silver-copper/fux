@@ -1,0 +1,1350 @@
+{
+  "calibration": {
+    "clock_cpu_ns": 200005000,
+    "converted_cpu_ns": 200001292,
+    "ratio": 0.999981,
+    "timebase_denom": 3,
+    "timebase_numer": 125
+  },
+  "geometry": [
+    80,
+    24
+  ],
+  "platform": "Darwin kisaczkas-MacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:24 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6020 arm64",
+  "provenance": {
+    "fux_sha256": "f4e264410ceaa496bf0c8693df14f5efe61fc275b6e2013759d175c430e90053",
+    "harness_kind": "rust-headless-performance",
+    "harness_sha256": "f9cc0592a856999d4a196634f1feff5eec5f013974118f7604c0a9ac1a68afa9",
+    "sampler_sha256": "f9fd441eef48829761b9ecb9019db88777f9b9c8df04b7b7e71c875e313b77e7",
+    "sources": {
+      "tools/xtask/src/headless_performance.rs": "f9cc0592a856999d4a196634f1feff5eec5f013974118f7604c0a9ac1a68afa9",
+      "tools/xtask/src/performance-worker.c": "ef403a98cc39a8d17804dd04ce9cfe29dd84bf7b970a6693495e65153f52c716",
+      "tools/xtask/src/support/attachment.rs": "d2e23db9b94a2620b460b69fda3a3682a6140bb9ab6a17ab1b5f01900da73c55",
+      "tools/xtask/src/support/local.rs": "920c6b3f2c20301bbdd250f98f80da432d6d7ebc165c023637bd322b2ba1b872",
+      "tools/xtask/src/support/process.rs": "2f4d5f3594b2a0e31f05121f0c82a43e042694add7f38559b508787f84ead144"
+    },
+    "zor_sha256": "d814cea954851b0c75f144801d039b8fef6a6ba0d84bf78bd4b73c349f196965"
+  },
+  "repetitions": 1,
+  "resource_limit": "Owned-process CPU/RSS only; unavailable on this harness platform if null. No allocation or internal queue counters.",
+  "results": [
+    {
+      "geometry": [
+        80,
+        24
+      ],
+      "owner_exits": {
+        "fux": 0,
+        "zor": 0
+      },
+      "pane_rects": [
+        {
+          "height": 23,
+          "width": 80,
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "panes": 1,
+      "passed": true,
+      "phases": [
+        {
+          "after": {
+            "monotonic": 1.575782,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 3178832,
+                "pid": 66945,
+                "rss_bytes": 7634944,
+                "start_abstime": 2080726641520,
+                "system_ticks": 148835,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 51480
+              },
+              "zor": {
+                "footprint_bytes": 21234024,
+                "pid": 66947,
+                "rss_bytes": 24608768,
+                "start_abstime": 2080727354914,
+                "system_ticks": 156342,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 802630
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 0.429637375,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 3178832,
+                "pid": 66945,
+                "rss_bytes": 7634944,
+                "start_abstime": 2080726641520,
+                "system_ticks": 148835,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 51480
+              },
+              "zor": {
+                "footprint_bytes": 21234024,
+                "pid": 66947,
+                "rss_bytes": 24608768,
+                "start_abstime": 2080727354914,
+                "system_ticks": 136068,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 792606
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              }
+            ]
+          },
+          "name": "idle",
+          "visible_ms": null,
+          "workload_ms": 1002.17
+        },
+        {
+          "after": {
+            "monotonic": 1.771698667,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 6406528,
+                "pid": 66945,
+                "rss_bytes": 10878976,
+                "start_abstime": 2080726641520,
+                "system_ticks": 213641,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 143117
+              },
+              "zor": {
+                "footprint_bytes": 21266792,
+                "pid": 66947,
+                "rss_bytes": 24690688,
+                "start_abstime": 2080727354914,
+                "system_ticks": 183828,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 811695
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 32100,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 32100
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 1.607322167,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 3178832,
+                "pid": 66945,
+                "rss_bytes": 7634944,
+                "start_abstime": 2080726641520,
+                "system_ticks": 148835,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 51480
+              },
+              "zor": {
+                "footprint_bytes": 21234024,
+                "pid": 66947,
+                "rss_bytes": 24608768,
+                "start_abstime": 2080727354914,
+                "system_ticks": 157537,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 803081
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              }
+            ]
+          },
+          "name": "B01",
+          "visible_ms": 29.15375,
+          "workload_ms": 29.15375
+        },
+        {
+          "after": {
+            "monotonic": 3.24852,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 6947200,
+                "pid": 66945,
+                "rss_bytes": 11419648,
+                "start_abstime": 2080726641520,
+                "system_ticks": 389786,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 1041848
+              },
+              "zor": {
+                "footprint_bytes": 21283176,
+                "pid": 66947,
+                "rss_bytes": 24707072,
+                "start_abstime": 2080727354914,
+                "system_ticks": 276162,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 848665
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 1041348,
+                "frames": 106,
+                "pending_high_water_bytes": 10039,
+                "received_bytes": 1041348
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 1.798850792,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 6406528,
+                "pid": 66945,
+                "rss_bytes": 10878976,
+                "start_abstime": 2080726641520,
+                "system_ticks": 213641,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 143117
+              },
+              "zor": {
+                "footprint_bytes": 21266792,
+                "pid": 66947,
+                "rss_bytes": 24690688,
+                "start_abstime": 2080727354914,
+                "system_ticks": 184748,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 812223
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 32100,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 32100
+              }
+            ]
+          },
+          "name": "S01",
+          "visible_ms": 1314.660084,
+          "workload_ms": 1314.660084
+        }
+      ],
+      "repetition": 1,
+      "slow": false,
+      "viewers": 1,
+      "worker_exit_confirmed": true
+    },
+    {
+      "geometry": [
+        80,
+        24
+      ],
+      "owner_exits": {
+        "fux": 0,
+        "zor": 0
+      },
+      "pane_rects": [
+        {
+          "height": 23,
+          "width": 80,
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "panes": 1,
+      "passed": true,
+      "phases": [
+        {
+          "after": {
+            "monotonic": 1.593141375,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 3309880,
+                "pid": 66999,
+                "rss_bytes": 7798784,
+                "start_abstime": 2080841231991,
+                "system_ticks": 115178,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 78252
+              },
+              "zor": {
+                "footprint_bytes": 21807464,
+                "pid": 67001,
+                "rss_bytes": 25182208,
+                "start_abstime": 2080841917534,
+                "system_ticks": 108127,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 940056
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              },
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              },
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              },
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 2273,
+                "received_bytes": 2289
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 0.4468095,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 3309880,
+                "pid": 66999,
+                "rss_bytes": 7798784,
+                "start_abstime": 2080841231991,
+                "system_ticks": 115178,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 78252
+              },
+              "zor": {
+                "footprint_bytes": 21807464,
+                "pid": 67001,
+                "rss_bytes": 25182208,
+                "start_abstime": 2080841917534,
+                "system_ticks": 92180,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 929667
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              },
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              },
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              },
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 2273,
+                "received_bytes": 2289
+              }
+            ]
+          },
+          "name": "idle",
+          "visible_ms": null,
+          "workload_ms": 1010.035042
+        },
+        {
+          "after": {
+            "monotonic": 1.782696542,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 6701416,
+                "pid": 66999,
+                "rss_bytes": 11206656,
+                "start_abstime": 2080841231991,
+                "system_ticks": 194748,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 177000
+              },
+              "zor": {
+                "footprint_bytes": 21873000,
+                "pid": 67001,
+                "rss_bytes": 25296896,
+                "start_abstime": 2080841917534,
+                "system_ticks": 128038,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 947721
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 22629,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 22629
+              },
+              {
+                "decoded_frame_bytes": 22629,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 22629
+              },
+              {
+                "decoded_frame_bytes": 22629,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 22629
+              },
+              {
+                "decoded_frame_bytes": 22629,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 22629
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 1.621203333,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 3309880,
+                "pid": 66999,
+                "rss_bytes": 7798784,
+                "start_abstime": 2080841231991,
+                "system_ticks": 115178,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 78252
+              },
+              "zor": {
+                "footprint_bytes": 21807464,
+                "pid": 67001,
+                "rss_bytes": 25182208,
+                "start_abstime": 2080841917534,
+                "system_ticks": 108666,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 940375
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              },
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              },
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 1462,
+                "received_bytes": 2289
+              },
+              {
+                "decoded_frame_bytes": 2289,
+                "frames": 1,
+                "pending_high_water_bytes": 2273,
+                "received_bytes": 2289
+              }
+            ]
+          },
+          "name": "B01",
+          "visible_ms": 26.675042,
+          "workload_ms": 26.675042
+        },
+        {
+          "after": {
+            "monotonic": 3.25656925,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 7422312,
+                "pid": 66999,
+                "rss_bytes": 11927552,
+                "start_abstime": 2080841231991,
+                "system_ticks": 443184,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 1919813
+              },
+              "zor": {
+                "footprint_bytes": 21922152,
+                "pid": 67001,
+                "rss_bytes": 25346048,
+                "start_abstime": 2080841917534,
+                "system_ticks": 203114,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 979766
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 1022503,
+                "frames": 105,
+                "pending_high_water_bytes": 10039,
+                "received_bytes": 1022503
+              },
+              {
+                "decoded_frame_bytes": 1022503,
+                "frames": 105,
+                "pending_high_water_bytes": 10039,
+                "received_bytes": 1022503
+              },
+              {
+                "decoded_frame_bytes": 1022503,
+                "frames": 105,
+                "pending_high_water_bytes": 10039,
+                "received_bytes": 1022503
+              },
+              {
+                "decoded_frame_bytes": 1022503,
+                "frames": 105,
+                "pending_high_water_bytes": 10039,
+                "received_bytes": 1022503
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 1.80832125,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 6701416,
+                "pid": 66999,
+                "rss_bytes": 11206656,
+                "start_abstime": 2080841231991,
+                "system_ticks": 194748,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 177000
+              },
+              "zor": {
+                "footprint_bytes": 21873000,
+                "pid": 67001,
+                "rss_bytes": 25296896,
+                "start_abstime": 2080841917534,
+                "system_ticks": 128235,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 947864
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 22629,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 22629
+              },
+              {
+                "decoded_frame_bytes": 22629,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 22629
+              },
+              {
+                "decoded_frame_bytes": 22629,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 22629
+              },
+              {
+                "decoded_frame_bytes": 22629,
+                "frames": 4,
+                "pending_high_water_bytes": 10037,
+                "received_bytes": 22629
+              }
+            ]
+          },
+          "name": "S01",
+          "visible_ms": 1311.786583,
+          "workload_ms": 1311.786583
+        }
+      ],
+      "repetition": 1,
+      "slow": false,
+      "viewers": 4,
+      "worker_exit_confirmed": true
+    },
+    {
+      "geometry": [
+        80,
+        24
+      ],
+      "owner_exits": {
+        "fux": 0,
+        "zor": 0
+      },
+      "pane_rects": [
+        {
+          "height": 23,
+          "width": 39,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "height": 23,
+          "width": 19,
+          "x": 40,
+          "y": 0
+        },
+        {
+          "height": 23,
+          "width": 9,
+          "x": 60,
+          "y": 0
+        },
+        {
+          "height": 23,
+          "width": 10,
+          "x": 70,
+          "y": 0
+        }
+      ],
+      "panes": 4,
+      "passed": true,
+      "phases": [
+        {
+          "after": {
+            "monotonic": 1.579429583,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 4358528,
+                "pid": 67070,
+                "rss_bytes": 8880128,
+                "start_abstime": 2080962788337,
+                "system_ticks": 189190,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 85518
+              },
+              "zor": {
+                "footprint_bytes": 21283176,
+                "pid": 67075,
+                "rss_bytes": 24657920,
+                "start_abstime": 2080963661038,
+                "system_ticks": 79602,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 785428
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 0.433571167,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 4358528,
+                "pid": 67070,
+                "rss_bytes": 8880128,
+                "start_abstime": 2080962788337,
+                "system_ticks": 189190,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 85518
+              },
+              "zor": {
+                "footprint_bytes": 21283176,
+                "pid": 67075,
+                "rss_bytes": 24657920,
+                "start_abstime": 2080963661038,
+                "system_ticks": 64467,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 774457
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              }
+            ]
+          },
+          "name": "idle",
+          "visible_ms": null,
+          "workload_ms": 1007.238459
+        },
+        {
+          "after": {
+            "monotonic": 1.791141,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 10863000,
+                "pid": 67070,
+                "rss_bytes": 15400960,
+                "start_abstime": 2080962788337,
+                "system_ticks": 414725,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 380491
+              },
+              "zor": {
+                "footprint_bytes": 21348712,
+                "pid": 67075,
+                "rss_bytes": 24772608,
+                "start_abstime": 2080963661038,
+                "system_ticks": 112714,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 796898
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 68590,
+                "frames": 6,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 68590
+              },
+              {
+                "decoded_frame_bytes": 68590,
+                "frames": 6,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 68590
+              },
+              {
+                "decoded_frame_bytes": 68590,
+                "frames": 6,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 68590
+              },
+              {
+                "decoded_frame_bytes": 68590,
+                "frames": 6,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 68590
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 1.604744083,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 4358528,
+                "pid": 67070,
+                "rss_bytes": 8880128,
+                "start_abstime": 2080962788337,
+                "system_ticks": 189190,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 85518
+              },
+              "zor": {
+                "footprint_bytes": 21283176,
+                "pid": 67075,
+                "rss_bytes": 24657920,
+                "start_abstime": 2080963661038,
+                "system_ticks": 79952,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 785595
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              }
+            ]
+          },
+          "name": "B01",
+          "visible_ms": 49.207333,
+          "workload_ms": 49.207333
+        },
+        {
+          "after": {
+            "monotonic": 3.332670375,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 11944344,
+                "pid": 67070,
+                "rss_bytes": 16498688,
+                "start_abstime": 2080962788337,
+                "system_ticks": 815422,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 2996948
+              },
+              "zor": {
+                "footprint_bytes": 21414272,
+                "pid": 67075,
+                "rss_bytes": 24821760,
+                "start_abstime": 2080963661038,
+                "system_ticks": 201489,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 831311
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 1672417,
+                "frames": 156,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 1672417
+              },
+              {
+                "decoded_frame_bytes": 1672417,
+                "frames": 156,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 1672417
+              },
+              {
+                "decoded_frame_bytes": 1672417,
+                "frames": 156,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 1672417
+              },
+              {
+                "decoded_frame_bytes": 1672417,
+                "frames": 156,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 1672417
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 1.815888792,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 10863000,
+                "pid": 67070,
+                "rss_bytes": 15400960,
+                "start_abstime": 2080962788337,
+                "system_ticks": 414725,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 380491
+              },
+              "zor": {
+                "footprint_bytes": 21348712,
+                "pid": 67075,
+                "rss_bytes": 24772608,
+                "start_abstime": 2080963661038,
+                "system_ticks": 112714,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 796898
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 68590,
+                "frames": 6,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 68590
+              },
+              {
+                "decoded_frame_bytes": 68590,
+                "frames": 6,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 68590
+              },
+              {
+                "decoded_frame_bytes": 68590,
+                "frames": 6,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 68590
+              },
+              {
+                "decoded_frame_bytes": 68590,
+                "frames": 6,
+                "pending_high_water_bytes": 19551,
+                "received_bytes": 68590
+              }
+            ]
+          },
+          "name": "S01",
+          "visible_ms": 1377.9150419999999,
+          "workload_ms": 1377.9150419999999
+        }
+      ],
+      "repetition": 1,
+      "slow": false,
+      "viewers": 4,
+      "worker_exit_confirmed": true
+    },
+    {
+      "geometry": [
+        80,
+        24
+      ],
+      "owner_exits": {
+        "fux": 0,
+        "zor": 0
+      },
+      "pane_rects": [
+        {
+          "height": 23,
+          "width": 39,
+          "x": 0,
+          "y": 0
+        },
+        {
+          "height": 23,
+          "width": 19,
+          "x": 40,
+          "y": 0
+        },
+        {
+          "height": 23,
+          "width": 9,
+          "x": 60,
+          "y": 0
+        },
+        {
+          "height": 23,
+          "width": 10,
+          "x": 70,
+          "y": 0
+        }
+      ],
+      "panes": 4,
+      "passed": true,
+      "phases": [
+        {
+          "after": {
+            "monotonic": 1.6105245419999998,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 4194640,
+                "pid": 67144,
+                "rss_bytes": 8749056,
+                "start_abstime": 2081087063108,
+                "system_ticks": 165833,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 78543
+              },
+              "zor": {
+                "footprint_bytes": 21283152,
+                "pid": 67149,
+                "rss_bytes": 24674304,
+                "start_abstime": 2081089057329,
+                "system_ticks": 85178,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 781723
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 5481,
+                "received_bytes": 5497
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 0.477310042,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 4194640,
+                "pid": 67144,
+                "rss_bytes": 8749056,
+                "start_abstime": 2081087063108,
+                "system_ticks": 165833,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 78543
+              },
+              "zor": {
+                "footprint_bytes": 21283152,
+                "pid": 67149,
+                "rss_bytes": 24674304,
+                "start_abstime": 2081089057329,
+                "system_ticks": 69605,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 771917
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 5481,
+                "received_bytes": 5497
+              }
+            ]
+          },
+          "name": "idle",
+          "visible_ms": null,
+          "workload_ms": 1000.782125
+        },
+        {
+          "after": {
+            "monotonic": 1.8492375829999999,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 10928488,
+                "pid": 67144,
+                "rss_bytes": 15499264,
+                "start_abstime": 2081087063108,
+                "system_ticks": 321603,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 276151
+              },
+              "zor": {
+                "footprint_bytes": 21332304,
+                "pid": 67149,
+                "rss_bytes": 24772608,
+                "start_abstime": 2081089057329,
+                "system_ticks": 108454,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 790006
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 55935,
+                "frames": 6,
+                "pending_high_water_bytes": 21690,
+                "received_bytes": 55935
+              },
+              {
+                "decoded_frame_bytes": 55935,
+                "frames": 6,
+                "pending_high_water_bytes": 21690,
+                "received_bytes": 55935
+              },
+              {
+                "decoded_frame_bytes": 55935,
+                "frames": 6,
+                "pending_high_water_bytes": 21690,
+                "received_bytes": 55935
+              },
+              {
+                "decoded_frame_bytes": 37858,
+                "frames": 4,
+                "pending_high_water_bytes": 21446,
+                "received_bytes": 37858
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 1.6375972920000001,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 4194640,
+                "pid": 67144,
+                "rss_bytes": 8749056,
+                "start_abstime": 2081087063108,
+                "system_ticks": 165833,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 78543
+              },
+              "zor": {
+                "footprint_bytes": 21283152,
+                "pid": 67149,
+                "rss_bytes": 24674304,
+                "start_abstime": 2081089057329,
+                "system_ticks": 85328,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 781765
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 4670,
+                "received_bytes": 5497
+              },
+              {
+                "decoded_frame_bytes": 5497,
+                "frames": 1,
+                "pending_high_water_bytes": 5481,
+                "received_bytes": 5497
+              }
+            ]
+          },
+          "name": "B01",
+          "visible_ms": 78.485083,
+          "workload_ms": 78.485083
+        },
+        {
+          "after": {
+            "monotonic": 3.442726042,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 12190056,
+                "pid": 67144,
+                "rss_bytes": 16777216,
+                "start_abstime": 2081087063108,
+                "system_ticks": 669281,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 2333650
+              },
+              "zor": {
+                "footprint_bytes": 21446992,
+                "pid": 67149,
+                "rss_bytes": 24887296,
+                "start_abstime": 2081089057329,
+                "system_ticks": 200690,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 826376
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 1661182,
+                "frames": 157,
+                "pending_high_water_bytes": 21690,
+                "received_bytes": 1661182
+              },
+              {
+                "decoded_frame_bytes": 1661182,
+                "frames": 157,
+                "pending_high_water_bytes": 21690,
+                "received_bytes": 1661182
+              },
+              {
+                "decoded_frame_bytes": 1661182,
+                "frames": 157,
+                "pending_high_water_bytes": 21690,
+                "received_bytes": 1661182
+              },
+              {
+                "decoded_frame_bytes": 696362,
+                "frames": 47,
+                "pending_high_water_bytes": 21446,
+                "received_bytes": 696362
+              }
+            ]
+          },
+          "before": {
+            "monotonic": 1.8852190420000001,
+            "owners": {
+              "fux": {
+                "footprint_bytes": 10928488,
+                "pid": 67144,
+                "rss_bytes": 15499264,
+                "start_abstime": 2081087063108,
+                "system_ticks": 321603,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 276151
+              },
+              "zor": {
+                "footprint_bytes": 21332304,
+                "pid": 67149,
+                "rss_bytes": 24772608,
+                "start_abstime": 2081089057329,
+                "system_ticks": 108911,
+                "timebase_denom": 3,
+                "timebase_numer": 125,
+                "user_ticks": 790429
+              }
+            },
+            "viewers": [
+              {
+                "decoded_frame_bytes": 55935,
+                "frames": 6,
+                "pending_high_water_bytes": 21690,
+                "received_bytes": 55935
+              },
+              {
+                "decoded_frame_bytes": 55935,
+                "frames": 6,
+                "pending_high_water_bytes": 21690,
+                "received_bytes": 55935
+              },
+              {
+                "decoded_frame_bytes": 55935,
+                "frames": 6,
+                "pending_high_water_bytes": 21690,
+                "received_bytes": 55935
+              },
+              {
+                "decoded_frame_bytes": 37858,
+                "frames": 4,
+                "pending_high_water_bytes": 21446,
+                "received_bytes": 37858
+              }
+            ]
+          },
+          "name": "S01",
+          "visible_ms": 1422.2910419999998,
+          "workload_ms": 1422.2910419999998
+        }
+      ],
+      "repetition": 1,
+      "slow": true,
+      "viewers": 4,
+      "worker_exit_confirmed": true
+    }
+  ],
+  "schema": 1,
+  "synthetic": true
+}

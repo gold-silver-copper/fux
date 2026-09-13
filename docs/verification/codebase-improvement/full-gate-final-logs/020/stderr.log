@@ -1,0 +1,4 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/main.rs (/tmp/fux-codebase-work/build/debug/deps/fux_fixture_child-10c230f5c9943157)
+     Running tests/binary.rs (/tmp/fux-codebase-work/build/debug/deps/binary-9e2c9ab059caa786)
+     Running tests/lifecycle.rs (/tmp/fux-codebase-work/build/debug/deps/lifecycle-e47b73fa89105940)

@@ -31,25 +31,39 @@ pub fn resolve_layout(
         if !component.layout_changed && area == component.area {
             continue;
         }
+        if component.area != area {
+            component.layout_generation = component.layout_generation.saturating_add(1);
+        }
         component.area = area;
-        let geometry = component.layout.geometry(area).unwrap_or_default();
+        let geometry = component
+            .zoomed
+            .filter(|pane| component.layout.contains(*pane))
+            .map_or_else(
+                || component.layout.geometry(area).unwrap_or_default(),
+                |pane| vec![(pane, area)],
+            );
         for (pane, rect) in &geometry {
             let Ok(mut pane) = panes.get_mut(*pane) else {
                 continue;
             };
             let (rows, cols) = Pane::terminal_size(*rect);
-            if pane.rect == *rect && pane.terminal.size() == (rows, cols) {
+            let size_changed = pane.terminal.size() != (rows, cols);
+            if pane.rect == *rect && !size_changed {
                 continue;
             }
             pane.rect = *rect;
-            pane.terminal.resize(rows, cols);
-            pane.dirty = true;
-            if matches!(pane.state, PaneState::Live { .. }) {
-                effects.emit(Effect::ResizePty {
-                    pane: pane.id,
-                    rows,
-                    cols,
-                });
+            // Position belongs to the layout frame, not the terminal grid. Moving an
+            // unchanged grid must not resize its emulator or notify the child PTY.
+            if size_changed {
+                pane.terminal.resize(rows, cols);
+                pane.dirty = true;
+                if matches!(pane.state, PaneState::Live { .. }) {
+                    effects.emit(Effect::ResizePty {
+                        pane: pane.id,
+                        rows,
+                        cols,
+                    });
+                }
             }
         }
         if component.geometry != geometry
@@ -64,7 +78,9 @@ pub fn resolve_layout(
         component.geometry = geometry;
         component.layout_changed = false;
         for mut viewer in &mut viewers {
-            if showing(&viewer) {
+            // Every viewer carries the tab catalog's transfer targets and revisions, including
+            // tabs it is not currently showing. Ordinary pane output does not enter this path.
+            if viewer.workspace == component.workspace && !viewer.detaching {
                 viewer.dirty = true;
             }
         }

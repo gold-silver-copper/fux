@@ -1,0 +1,198 @@
+{
+  "diagnostics": [
+    {
+      "kind": "fux",
+      "tail": "2026-09-13T08:40:00.614999Z DEBUG fux::diagnostics: pid=99357 event=\"effect_queued\" bytes=239 entries=1 request=Some(0)\n2026-09-13T08:40:00.736478Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_enter\" action=RenamePane epoch=0 instance=074d8d3122168c151a2b47031032d025 viewer=1 pane=Some(2) stream=1\n2026-09-13T08:40:00.809397Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_end\" epoch=1 active=true\n2026-09-13T08:40:00.838672Z DEBUG fux::diagnostics: pid=99357 event=\"effect_queued\" bytes=12 entries=1 request=None\n2026-09-13T08:40:00.896388Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_enter\" action=RenameTab epoch=2 instance=074d8d3122168c151a2b47031032d025 viewer=1 pane=Some(2) stream=1\n2026-09-13T08:40:00.971798Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_end\" epoch=3 active=true\n2026-09-13T08:40:01.003610Z DEBUG fux::diagnostics: pid=99357 event=\"effect_queued\" bytes=12 entries=1 request=None\n2026-09-13T08:40:01.060674Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_enter\" action=ClosePane epoch=4 instance=074d8d3122168c151a2b47031032d025 viewer=1 pane=Some(2) stream=1\n2026-09-13T08:40:01.134476Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_end\" epoch=5 active=true\n2026-09-13T08:40:01.162158Z DEBUG fux::diagnostics: pid=99357 event=\"effect_queued\" bytes=12 entries=1 request=None\n2026-09-13T08:40:01.222894Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_enter\" action=ResizeMode epoch=6 instance=074d8d3122168c151a2b47031032d025 viewer=1 pane=Some(2) stream=1\n2026-09-13T08:40:01.297906Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_end\" epoch=7 active=true\n2026-09-13T08:40:01.330648Z DEBUG fux::diagnostics: pid=99357 event=\"effect_queued\" bytes=12 entries=1 request=None\n2026-09-13T08:40:01.388386Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_enter\" action=CopyMode epoch=8 instance=074d8d3122168c151a2b47031032d025 viewer=1 pane=Some(2) stream=1\n2026-09-13T08:40:01.462199Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_end\" epoch=9 active=true\n2026-09-13T08:40:01.488685Z DEBUG fux::diagnostics: pid=99357 event=\"effect_queued\" bytes=12 entries=1 request=None\n2026-09-13T08:40:01.551760Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_enter\" action=PaneMenu epoch=10 instance=074d8d3122168c151a2b47031032d025 viewer=1 pane=Some(2) stream=1\n2026-09-13T08:40:01.621894Z DEBUG fux::diagnostics: pid=99357 event=\"interaction_end\" epoch=11 active=true\n2026-09-13T08:40:01.656660Z DEBUG fux::diagnostics: pid=99357 event=\"effect_queued\" bytes=12 entries=1 request=None\n",
+      "truncated": false
+    }
+  ],
+  "dropped_diagnostics": 0,
+  "dropped_rpc": 0,
+  "dropped_terminals": 0,
+  "error": "injected failure after scenario teardown",
+  "identity": {
+    "arguments": [
+      "viewer-modals",
+      "/tmp/fux-codebase-work/build/debug/fux"
+    ],
+    "binaries": [
+      {
+        "identity": {
+          "sha256": "08bb559fcc1a2af0fbb14a57dc21e1a23f4ffd41817bf9ef7eab813b1994c02b"
+        },
+        "path": "/tmp/fux-codebase-work/build/debug/fux"
+      }
+    ],
+    "scenario": "viewer-modals",
+    "seed": null,
+    "source_observed_before_run": {
+      "files": 1052,
+      "revision": "1792223ea4a24905501823203b585e50906f0d38",
+      "scope": "tracked and nonignored untracked regular files, excluding docs/verification",
+      "worktree_sha256": "047cad2991ff000f570ca7254fe34b694992162a65c93fa0d6046a5238b9365e"
+    }
+  },
+  "note": "Final fixture screen, not a visual approval. Input records contain lengths/hashes only.",
+  "rpc": [],
+  "terminals": [
+    {
+      "columns": 80,
+      "dropped_events": 0,
+      "events": [
+        {
+          "checkpoint": "modal fixture ready"
+        },
+        {
+          "input_bytes": 2,
+          "sha256": "7f2dce06acdeea2633ff324e5cb502ee2a42d979278d8926a2e4e5728592fd87"
+        },
+        {
+          "checkpoint": "modal two panes"
+        },
+        {
+          "checkpoint": "modal focus ready"
+        },
+        {
+          "input_bytes": 2,
+          "sha256": "d20b702303d7d7c8afe50344d66a8a711bae14259a5668ccc9cbe64dd464b945"
+        },
+        {
+          "checkpoint": "Rename pane"
+        },
+        {
+          "input_bytes": 1,
+          "sha256": "77adfc95029e73b173f60e556f915b0cd8850848111358b1c370fb7c154e61fd"
+        },
+        {
+          "checkpoint": "one Escape dismisses modal"
+        },
+        {
+          "input_bytes": 12,
+          "sha256": "c28446082819bab89ad3712e0e89f559d44148f245469c77dc6449724bfffa17"
+        },
+        {
+          "checkpoint": "normal application input after dismissal"
+        },
+        {
+          "input_bytes": 2,
+          "sha256": "08037e79bb41c0f1eda6751f0dabb5293ca2d5bf949cee256a7eab6e52cdf64d"
+        },
+        {
+          "checkpoint": "Rename tab"
+        },
+        {
+          "input_bytes": 1,
+          "sha256": "77adfc95029e73b173f60e556f915b0cd8850848111358b1c370fb7c154e61fd"
+        },
+        {
+          "checkpoint": "one Escape dismisses modal"
+        },
+        {
+          "input_bytes": 12,
+          "sha256": "d774b75a9f2fa0e1050b74f9f723cd5a563f5f90cbbab9059200e08c045bee82"
+        },
+        {
+          "checkpoint": "normal application input after dismissal"
+        },
+        {
+          "input_bytes": 2,
+          "sha256": "23c86a8aded0ad81f8111bb07e6ec0ffb00ce5bfef001417c07243f43fd70b2f"
+        },
+        {
+          "checkpoint": "Close pane"
+        },
+        {
+          "input_bytes": 1,
+          "sha256": "77adfc95029e73b173f60e556f915b0cd8850848111358b1c370fb7c154e61fd"
+        },
+        {
+          "checkpoint": "one Escape dismisses modal"
+        },
+        {
+          "input_bytes": 12,
+          "sha256": "d33c7230972ed2a2dc63a08ce9bd28a02121c8d85a782b5ce06ed71aa0540216"
+        },
+        {
+          "checkpoint": "normal application input after dismissal"
+        },
+        {
+          "input_bytes": 2,
+          "sha256": "a92bb60b61e305ddd888015189d6591b0eab0233bbfa9aa2040a58aeec1c2cb1"
+        },
+        {
+          "checkpoint": "Resize"
+        },
+        {
+          "input_bytes": 1,
+          "sha256": "77adfc95029e73b173f60e556f915b0cd8850848111358b1c370fb7c154e61fd"
+        },
+        {
+          "checkpoint": "one Escape dismisses modal"
+        },
+        {
+          "input_bytes": 12,
+          "sha256": "a53f3aa4e4bf9827f980b26254bf7384903aca46277c70d7216822531ea14049"
+        },
+        {
+          "checkpoint": "normal application input after dismissal"
+        },
+        {
+          "input_bytes": 2,
+          "sha256": "e3bdfed22a97b3e5ed935cfed3c8b6c44d0706f1cfa4136413eeae1fe57c53ce"
+        },
+        {
+          "checkpoint": "Copy ·"
+        },
+        {
+          "input_bytes": 1,
+          "sha256": "77adfc95029e73b173f60e556f915b0cd8850848111358b1c370fb7c154e61fd"
+        },
+        {
+          "checkpoint": "one Escape dismisses modal"
+        },
+        {
+          "input_bytes": 12,
+          "sha256": "b8c8a485e225a4ab7e3a7f81ac4e5db9fed9ac661615bf923511c0baa6782e71"
+        },
+        {
+          "checkpoint": "normal application input after dismissal"
+        },
+        {
+          "input_bytes": 2,
+          "sha256": "b317dbeddf90f0f35bb88ea4ba4bd76b137568b277a355c9ed0615070d7ddbca"
+        },
+        {
+          "checkpoint": "Pane 2 actions"
+        },
+        {
+          "input_bytes": 1,
+          "sha256": "77adfc95029e73b173f60e556f915b0cd8850848111358b1c370fb7c154e61fd"
+        },
+        {
+          "checkpoint": "one Escape dismisses modal"
+        },
+        {
+          "input_bytes": 12,
+          "sha256": "01a7d07d35ca39f539802208d338781d6f6ef43cf2d80eeba3ee711ec20bfb7f"
+        },
+        {
+          "checkpoint": "normal application input after dismissal"
+        },
+        {
+          "checkpoint": "terminal-close"
+        },
+        {
+          "checkpoint": "terminal-close"
+        }
+      ],
+      "id": 0,
+      "last_checkpoint": "terminal-close",
+      "output_bytes": 76611,
+      "rows": 24,
+      "screen": "READY                                  │READY\n                                       │NORMAL-0\n                                       │\n                                       │NORMAL-1\n                                       │\n                                       │NORMAL-2\n                                       │\n                                       │NORMAL-3                                \n                                       │                                        \n                                       │NORMAL-4                                \n                                       │                                        \n                                       │NORMAL-5                                \n                                       │                                        \n                                       │                                        \n                                       │                                        \n                                       │                                        \n                                       │                                        \n                                       │                                        \n                                       │                                        \n                                       │                                        \n                                       │                                        \n                                       │                                        \n                                       │                                        \n default │ main                                                             │ 2 ",
+      "screen_omitted": false,
+      "screen_truncated": false
+    }
+  ],
+  "version": 1
+}

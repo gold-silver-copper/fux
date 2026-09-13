@@ -1,0 +1,24 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running tests/automation_integration.rs (target/debug/deps/automation_integration-8ba9a3af34947e4b)
+
+running 1 test
+test zor_recovery ... 
+thread 'zor_recovery' (15697190) panicked at crates/fux/tests/automation_integration.rs:63:5:
+zor_recovery
+stdout:
+
+stderr:
+fux-xtask: CLI ["task", "launch-reconcile", "untouched"]: {"artifact_captures":[],"artifact_policy":{"collected_count":0,"required_count":0,"sealed":false},"artifacts":[],"attempt":{"id":"800cf0366af9ca54a76adfc1586d99fd","session":"6debc476d3159983bbc02bd8a38c82c7","state":"active","task":"untouched"},"check_policy":{"passed_count":0,"required_count":0,"sealed":false},"checks":[],"generation":24,"launch":{"agent":null,"argv":["/bin/cat"],"created_ms":1789283131415,"cwd":"/private/tmp/zrecover-rs-Fsmpqx","event_sequence":14,"final_evidence":null,"id":"untouched","instance":"3e0b7be42d88c556bc9985ab4631a001","integration":null,"marker":"9298332f65fc24b5a7ac76d59e559965","pane":5,"phase":"attached","problem":null,"requested_cwd":"/tmp/zrecover-rs-Fsmpqx","requested_runtime":"/tmp/zrecover-rs-Fsmpqx/fux","resume":null,"runtime":"/private/tmp/zrecover-rs-Fsmpqx/fux","session":"6debc476d3159983bbc02bd8a38c82c7","stop_requested":false,"stream":1,"task":null,"title":"untouched","workspace":"default","worktree":null},"prompts":[],"session":{"agent":null,"created_ms":1789283131415,"id":"6debc476d3159983bbc02bd8a38c82c7","launch":"untouched","ownership":"managed","target":{"instance":"3e0b7be42d88c556bc9985ab4631a001","origin":{"stream":1,"workspace":"default"},"pane":5,"pid":79097,"runtime":"/private/tmp/zrecover-rs-Fsmpqx/fux","stream":1,"workspace":"default"}},"task":{"attempt":"800cf0366af9ca54a76adfc1586d99fd","created_ms":1789283131415,"id":"untouched","outcome":"open","requested_runtime":"/tmp/zrecover-rs-Fsmpqx/fux","required_artifacts":{},"required_checks":{},"title":"untouched"},"verification":null}
+ 
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    zor_recovery
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 22 filtered out; finished in 8.18s
+
+error: test failed, to rerun pass `-p fux --test automation_integration`
