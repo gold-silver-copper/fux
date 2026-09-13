@@ -1,0 +1,19 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running tests/structure.rs (/tmp/fux-codebase-work/build/debug/deps/structure-61d13de2bf9f6d7d)
+
+running 12 tests
+test dependency_and_ci_surfaces_keep_the_verification_layers_enabled ... ok
+test ordinary_ci_runs_pinned_composition_without_optional_prerequisites ... ok
+test standalone_ci_and_release_are_independent_of_the_explicit_composition_job ... ok
+test wire_events_have_the_documented_dotted_spellings_exactly_twice ... ok
+test fux_client::client_layer_cannot_import_task_policy_through_paths_or_grouped_renames ... ok
+test fux_client::surface_guard_rejects_nested_and_renamed_json_but_allows_private_wire_helpers ... ok
+test ecs_is_the_only_authoritative_model ... ok
+test production_spawns_exist_only_in_reviewed_owner_modules ... ok
+test fux_client::fux_client_cannot_export_untyped_requests_or_reply_payloads ... ok
+test no_placeholder_escape_hatches_in_source_or_tests ... ok
+test project_dependencies_and_application_imports_respect_ownership ... ok
+test channels_stay_bounded_and_ecs_systems_never_block_on_the_operating_system ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

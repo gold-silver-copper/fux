@@ -7,7 +7,7 @@
 Its library can parse and format the OSC 7877 wire protocol without default features or the
 CLI runtime. The PTY wrapper that publishes observed agent state without fux is the
 `zor <command>` subcommand behind the off-by-default `wrap` Cargo feature
-(a default `cargo install zor` includes it; fux builds zor with `--no-default-features --features cli`, which has no `wrap` subcommand).
+(enable it with `cargo install zor --features wrap`; the default CLI has no wrapper).
 
 [Durable prompt groups](GROUPS.md) coordinate bounded admission and verified dependencies
 across existing managed tasks through explicit steps or opt-in `task group-run` service advancement. Agent orchestration
@@ -72,7 +72,7 @@ fixtures up to 4 MiB.
 
 ```sh
 cargo run -- agents
-cargo run -- your-command   # PTY wrapper (feature `wrap`, on by default)
+cargo run --features wrap -- your-command   # opt-in PTY wrapper
 ```
 
 See `DESIGN.md` for the architecture and full protocol contract.

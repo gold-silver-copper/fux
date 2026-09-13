@@ -1,8 +1,8 @@
 //! Reconciled passive observation across fux workspaces. This module never owns pane processes.
-pub(crate) mod events;
+pub(crate) use crate::fux::subscription as events;
 
 use serde::Serialize;
-use serde_json::{Value, json};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -98,18 +98,7 @@ impl Registry {
         let deadline = started + Duration::from_secs(2);
         let mut problems = BTreeMap::new();
         let mut observations = Vec::new();
-        let mut names = match crate::fux::request_until(
-            &runtime.join("manager.sock"),
-            json!({"request":"list"}),
-            deadline,
-        )
-        .and_then(|reply| {
-            reply
-                .get("names")
-                .and_then(Value::as_array)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("manager did not return workspace names"))
-        }) {
+        let mut names = match crate::fux::manager::names(runtime, deadline) {
             Ok(names) if names.len() <= 64 => names,
             Ok(_) => {
                 problems.insert("manager".into(), "workspace limit exceeded".into());
@@ -137,14 +126,18 @@ impl Registry {
                 );
                 break;
             }
-            let Some(name) = name.as_str().filter(|name| safe_name(name)) else {
-                problems.insert("manager".into(), "unsafe workspace name".into());
-                continue;
-            };
+            let name = name.as_str();
             if !visited.insert(name.to_owned()) {
                 continue;
             }
-            let socket = runtime.join(format!("{name}.sock"));
+            let socket = crate::fux::endpoint::Endpoint::new(runtime).workspace(name);
+            let socket = match socket {
+                Ok(socket) => socket,
+                Err(error) => {
+                    problems.insert(name.into(), error.to_string());
+                    continue;
+                }
+            };
             let result = self.workspace(&socket, name, sets, forced, &mut observations, deadline);
             match result {
                 Ok(boundary) => {
@@ -188,57 +181,17 @@ impl Registry {
             .next()
             .map(|b| b.instance.clone())
             .or_else(|| out.first().map(|entry| entry.handle.instance.clone()));
-        let reply = crate::fux::completed_until(
-            socket,
-            json!({"command":"list","id":1,"instance":expected}),
-            deadline,
-        )?;
-        let value = reply
-            .pointer("/result/value")
-            .ok_or_else(|| anyhow::anyhow!("invalid listing"))?;
-        let instance = value
-            .get("instance")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty() && s.len() <= 128)
-            .ok_or_else(|| anyhow::anyhow!("missing server incarnation"))?;
-        anyhow::ensure!(
-            expected
-                .as_deref()
-                .is_none_or(|expected| expected == instance),
-            "server changed during discovery; retry the scan"
-        );
-        let workspaces = value
-            .get("workspaces")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("invalid workspaces"))?;
-        anyhow::ensure!(workspaces.len() == 1, "expected one workspace");
-        let workspace = workspaces
+        let listing = crate::fux::snapshot::list(socket, expected.as_deref(), deadline)?;
+        let instance = listing.instance.as_str();
+        let workspace = listing
+            .workspaces
             .first()
             .ok_or_else(|| anyhow::anyhow!("workspace missing"))?;
-        anyhow::ensure!(
-            workspace.get("name").and_then(Value::as_str) == Some(name),
-            "workspace identity mismatch"
-        );
-        let stream = workspace
-            .pointer("/event_cursor/stream")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("fux lacks synchronized observation API"))?;
-        anyhow::ensure!(stream != 0, "invalid workspace event stream");
-        let sequence = workspace
-            .pointer("/event_cursor/sequence")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("missing event sequence"))?;
-        let tabs = workspace
-            .get("tabs")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("missing tabs"))?;
-        anyhow::ensure!(tabs.len() <= 32, "too many tabs");
-        for tab in tabs {
-            let panes = tab
-                .get("panes")
-                .and_then(Value::as_array)
-                .ok_or_else(|| anyhow::anyhow!("missing panes"))?;
-            for pane in panes {
+        anyhow::ensure!(workspace.name == name, "workspace identity mismatch");
+        let stream = workspace.event_cursor.stream;
+        let sequence = workspace.event_cursor.sequence;
+        for tab in &workspace.tabs {
+            for pane in &tab.panes {
                 anyhow::ensure!(
                     Instant::now() < deadline,
                     "workspace scan time budget exceeded"
@@ -247,15 +200,8 @@ impl Registry {
                     out.len() < MAX_OBSERVED_PANES,
                     "observer capacity ({MAX_OBSERVED_PANES} panes) exceeded"
                 );
-                let id = pane
-                    .get("id")
-                    .and_then(Value::as_u64)
-                    .and_then(|n| u32::try_from(n).ok())
-                    .ok_or_else(|| anyhow::anyhow!("invalid pane id"))?;
-                let pid = pane
-                    .get("pid")
-                    .and_then(Value::as_u64)
-                    .and_then(|n| u32::try_from(n).ok());
+                let id = pane.id;
+                let pid = pane.pid;
                 let handle = Handle {
                     instance: instance.into(),
                     workspace: name.into(),
@@ -263,14 +209,8 @@ impl Registry {
                     pane: id,
                     pid,
                 };
-                let revision = pane
-                    .get("revision")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| anyhow::anyhow!("missing revision"))?;
-                let input_sequence = pane
-                    .get("input_sequence")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| anyhow::anyhow!("missing input sequence"))?;
+                let revision = pane.revision;
+                let input_sequence = pane.input_sequence;
                 let detected = forced
                     .map(|agent| {
                         (
@@ -315,15 +255,15 @@ impl Registry {
                         observation.rule = cached.rule.clone();
                     } else {
                         match capture(socket, &handle, deadline).and_then(|value| {
-                            let actual = value
-                                .get("revision")
-                                .and_then(Value::as_u64)
-                                .ok_or_else(|| anyhow::anyhow!("capture missing revision"))?;
-                            let input = value
-                                .get("input_sequence")
-                                .and_then(Value::as_u64)
-                                .ok_or_else(|| anyhow::anyhow!("capture missing input sequence"))?;
-                            let screen = crate::rules::view::Captured::from_capture(&value)?;
+                            let actual = value.revision;
+                            let input = value.input_sequence;
+                            anyhow::ensure!(
+                                !value.truncated && !value.unchanged,
+                                "capture evidence incomplete"
+                            );
+                            let screen = value
+                                .screen
+                                .ok_or_else(|| anyhow::anyhow!("capture screen missing"))?;
                             Ok((crate::rules::evaluate(set, &screen), actual, input))
                         }) {
                             Ok((verdict, actual, input)) => {
@@ -416,25 +356,12 @@ pub(crate) fn invalidate_snapshot(snapshot: &mut Snapshot, changes: &BTreeMap<St
     }
 }
 
-fn capture(socket: &Path, handle: &Handle, deadline: Instant) -> anyhow::Result<Value> {
-    crate::fux::completed_until(
-        socket,
-        json!({"command":"capture","id":2,"instance":handle.instance,
-        "pane":handle.pane,"format":"cells","max_bytes":131072}),
-        deadline,
-    )?
-    .pointer("/result/value")
-    .cloned()
-    .ok_or_else(|| anyhow::anyhow!("invalid capture"))
-}
-
-fn safe_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 128
-        && !matches!(name, "." | "..")
-        && !name
-            .chars()
-            .any(|c| c.is_control() || c == '/' || c == '\\')
+fn capture(
+    socket: &Path,
+    handle: &Handle,
+    deadline: Instant,
+) -> anyhow::Result<crate::fux::capture::Cells> {
+    crate::fux::capture::cells(socket, Some(&handle.instance), handle.pane, None, deadline)
 }
 
 pub fn run(
@@ -552,9 +479,9 @@ mod tests {
     #[test]
     fn discovery_names_cannot_escape_the_runtime() {
         for name in ["", ".", "..", "../secret", "a/b", "a\\b", "\n"] {
-            assert!(!safe_name(name));
+            assert!(!crate::fux::endpoint::valid_name(name));
         }
-        assert!(safe_name("project-1"));
-        assert!(!safe_name(&"a".repeat(129)));
+        assert!(crate::fux::endpoint::valid_name("project-1"));
+        assert!(!crate::fux::endpoint::valid_name(&"a".repeat(129)));
     }
 }

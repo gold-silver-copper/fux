@@ -1,11 +1,10 @@
 //! Optional observation of a multiplexer-owned pane through its local control interface.
 //! This process never spawns, signals, or owns the observed command.
+#[cfg(test)]
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
-
-use crate::fux::completed as request;
 
 pub fn run(
     socket: &Path,
@@ -28,7 +27,11 @@ pub fn run(
     let mut cache = CaptureCache::default();
     let mut instance: Option<String> = None;
     loop {
-        let listing = match request(socket, json!({"command":"list","id":1,"instance":instance})) {
+        let listing = match crate::fux::snapshot::list(
+            socket,
+            instance.as_deref(),
+            Instant::now() + Duration::from_secs(6),
+        ) {
             Ok(value) => value,
             Err(_) if Instant::now() < startup => {
                 std::thread::sleep(Duration::from_millis(100));
@@ -36,49 +39,26 @@ pub fn run(
             }
             Err(error) => return Err(error),
         };
-        let observed_instance = listing
-            .pointer("/result/value/instance")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("listing has no server instance"))?;
-        anyhow::ensure!(
-            instance
-                .as_deref()
-                .is_none_or(|expected| expected == observed_instance),
-            "server instance changed during observation"
-        );
-        instance = Some(observed_instance.to_owned());
+        instance = Some(listing.instance.clone());
         let panes = listing
-            .pointer("/result/value/workspaces")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .flat_map(|workspace| {
-                workspace
-                    .get("tabs")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-            })
-            .flat_map(|tab| {
-                tab.get("panes")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-            });
-        let Some(pane) = panes
-            .into_iter()
-            .find(|pane| pane.get("id").and_then(Value::as_u64) == Some(u64::from(pane_id)))
-        else {
+            .workspaces
+            .iter()
+            .flat_map(|space| &space.tabs)
+            .flat_map(|tab| &tab.panes);
+        let Some(pane) = panes.into_iter().find(|pane| pane.id == pane_id) else {
             return Ok(0);
         };
-        if pane.get("pid").and_then(Value::as_u64) != Some(u64::from(expected_pid)) {
+        if pane.pid != Some(expected_pid) {
             return Ok(0);
         }
-        cache.refresh(pane.get("revision").and_then(Value::as_u64), |revision| {
-            let response = request(socket,
-                json!({"command":"capture","id":2,"pane":pane_id,"format":"cells","max_bytes":131072,"if_revision":revision,"instance":instance}))?;
-            response.pointer("/result/value").cloned()
-                .ok_or_else(|| anyhow::anyhow!("invalid capture response"))
+        cache.refresh(Some(pane.revision), |revision| {
+            crate::fux::capture::cells(
+                socket,
+                instance.as_deref(),
+                pane_id,
+                revision,
+                Instant::now() + Duration::from_secs(6),
+            )
         })?;
         let job =
             crate::platform::foreground_pgid(pid, None).map(|pgid| crate::platform::job(pid, pgid));
@@ -165,30 +145,21 @@ impl CaptureCache {
     fn refresh(
         &mut self,
         listed: Option<u64>,
-        mut fetch: impl FnMut(Option<u64>) -> anyhow::Result<Value>,
+        mut fetch: impl FnMut(Option<u64>) -> anyhow::Result<crate::fux::capture::Cells>,
     ) -> anyhow::Result<()> {
         if listed.is_some() && listed == self.revision {
             return Ok(());
         }
         let value = fetch(self.revision)?;
-        let revision = value
-            .get("revision")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("capture is missing revision"))?;
-        if value.get("unchanged").and_then(Value::as_bool) == Some(true) {
+        let revision = value.revision;
+        if value.unchanged {
             anyhow::ensure!(
                 self.revision == Some(revision),
                 "unexpected unchanged capture"
             );
             return Ok(());
         }
-        if value.get("truncated").and_then(Value::as_bool) == Some(true) {
-            // Valid but incomplete evidence is unavailable, not an observer failure. Remember
-            // the revision to avoid repeatedly recapturing it, and recover on new output/size.
-            self.screen = None;
-        } else {
-            self.screen = Some(crate::rules::view::Captured::from_capture(&value)?);
-        }
+        self.screen = value.screen;
         self.revision = Some(revision);
         Ok(())
     }
@@ -200,7 +171,7 @@ mod tests {
     use super::*;
     use crate::rules::view::ScreenView;
 
-    fn complete(revision: u64, rows: u16, columns: u16) -> Value {
+    fn complete(revision: u64, rows: u16, columns: u16) -> crate::fux::capture::Cells {
         let mut cells: Vec<Value> = "ready".chars().map(|c| json!({"text":c})).collect();
         cells.push(json!({"run":columns - 5}));
         let lines: Vec<Value> = (0..rows)
@@ -209,9 +180,10 @@ mod tests {
                 _ => json!({"row":row,"wrapped":false,"cells":[{"run":columns}]}),
             })
             .collect();
-        json!({"revision":revision,"input_sequence":1,"seq":1,
+        crate::fux::capture::fixture_cells(json!({"revision":revision,"input_sequence":1,"seq":1,
             "rows":rows,"columns":columns,"cursor":{"row":0,"column":5,"hidden":false},
-            "title":"","progress":null,"truncated":false,"unchanged":false,"lines":lines})
+            "title":"","progress":null,"truncated":false,"unchanged":false,"lines":lines}))
+        .expect("capture")
     }
 
     #[test]
@@ -237,7 +209,10 @@ mod tests {
         assert_eq!(calls, 0, "idle panes must not request capture");
         cache
             .refresh(Some(3), |_| {
-                Ok(json!({"revision":3,"truncated":true,"unchanged":false,"lines":[]}))
+                let mut value = complete(3, 8, 20);
+                value.truncated = true;
+                value.screen = None;
+                Ok(value)
             })
             .expect("truncation is recoverable");
         assert!(cache.screen.is_none(), "old evidence must be invalidated");
@@ -260,7 +235,11 @@ mod tests {
         );
         assert!(
             CaptureCache::default()
-                .refresh(None, |_| Ok(json!({"revision":1,"unchanged":true})))
+                .refresh(None, |_| {
+                    let mut value = complete(1, 8, 20);
+                    value.unchanged = true;
+                    Ok(value)
+                })
                 .is_err()
         );
     }

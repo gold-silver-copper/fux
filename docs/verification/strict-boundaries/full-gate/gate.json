@@ -1,0 +1,584 @@
+{
+  "checks": [
+    {
+      "elapsed_ms": 873,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 1231,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 2100,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 214,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 16608,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 8018,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 224,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 12688,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 311,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 420,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 380,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 9588,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 355,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 288,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 17013,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 595923,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 95168,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 8253,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 71513,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 372,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 203,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 65686,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 10066,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 3629,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 8106,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 26889,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 37963,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 268,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 79,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 71,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 69,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 71,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 65,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 73,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 1193,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 91,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 100,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 120,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 71,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 146,
+      "exit_code": 0,
+      "state": "passed"
+    },
+    {
+      "elapsed_ms": 200,
+      "exit_code": 0,
+      "state": "passed"
+    }
+  ],
+  "commands": [
+    [
+      "cargo",
+      "+stable",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "fmt",
+      "--manifest-path",
+      "tools/xtask/Cargo.toml",
+      "--check"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "run",
+      "--locked",
+      "--manifest-path",
+      "tools/xtask/Cargo.toml",
+      "--",
+      "verify-boundaries"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "fmt",
+      "--manifest-path",
+      "crates/zor/tools/xtask/Cargo.toml",
+      "--check"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "clippy",
+      "-p",
+      "zor",
+      "--all-targets",
+      "--locked",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "clippy",
+      "-p",
+      "zor",
+      "--all-targets",
+      "--locked",
+      "--no-default-features",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "clippy",
+      "-p",
+      "zor",
+      "--all-targets",
+      "--locked",
+      "--no-default-features",
+      "--features",
+      "cli",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "clippy",
+      "--manifest-path",
+      "crates/zor/tools/xtask/Cargo.toml",
+      "--target-dir",
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "clippy",
+      "--manifest-path",
+      "tools/xtask/Cargo.toml",
+      "--target-dir",
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness",
+      "--features",
+      "betamax",
+      "--all-targets",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "build",
+      "--locked",
+      "-p",
+      "fux",
+      "--bin",
+      "fux"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "build",
+      "--locked",
+      "-p",
+      "zor",
+      "--no-default-features",
+      "--features",
+      "cli",
+      "--bin",
+      "zor"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "build",
+      "--manifest-path",
+      "tools/xtask/Cargo.toml",
+      "--target-dir",
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness",
+      "--features",
+      "betamax",
+      "--locked"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "build",
+      "--manifest-path",
+      "crates/zor/tools/xtask/Cargo.toml",
+      "--target-dir",
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures",
+      "--bins",
+      "--locked"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "test",
+      "--manifest-path",
+      "tools/xtask/Cargo.toml",
+      "--target-dir",
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness",
+      "--features",
+      "betamax",
+      "--locked",
+      "--",
+      "--test-threads=1"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "test",
+      "--workspace",
+      "--locked",
+      "--no-fail-fast",
+      "--",
+      "--test-threads=1"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "test",
+      "-p",
+      "zor",
+      "--locked",
+      "--all-features",
+      "--",
+      "--test-threads=1"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "test",
+      "-p",
+      "zor",
+      "--locked",
+      "--no-default-features",
+      "--",
+      "--test-threads=1"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "test",
+      "-p",
+      "zor",
+      "--locked",
+      "--no-default-features",
+      "--features",
+      "cli",
+      "--",
+      "--test-threads=1"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "test",
+      "--manifest-path",
+      "crates/zor/tools/xtask/Cargo.toml",
+      "--target-dir",
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures",
+      "--locked",
+      "--",
+      "--test-threads=1"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "clippy",
+      "--manifest-path",
+      "crates/fux/tests/verify/fixture-child/Cargo.toml",
+      "--locked",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "test",
+      "--manifest-path",
+      "crates/fux/tests/verify/fixture-child/Cargo.toml",
+      "--locked",
+      "--",
+      "--test-threads=1"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "doc",
+      "--workspace",
+      "--no-deps",
+      "--locked"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "doc",
+      "-p",
+      "zor",
+      "--no-deps",
+      "--all-features",
+      "--locked"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "package",
+      "--locked",
+      "--allow-dirty",
+      "-p",
+      "fux",
+      "-p",
+      "local-ipc"
+    ],
+    [
+      "cargo",
+      "+stable",
+      "package",
+      "--locked",
+      "--allow-dirty",
+      "-p",
+      "zor",
+      "-p",
+      "local-ipc"
+    ],
+    [
+      "node",
+      "crates/zor/tools/test_opencode_adapter.mjs"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask",
+      "verify-opencode-integration"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask",
+      "verify-opencode-resume"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask",
+      "verify-zor-resume"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask",
+      "verify-lifecycle"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask",
+      "verify-codex-authenticated"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask",
+      "verify-claude-authenticated"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-zor-fixtures/debug/zor-xtask",
+      "verify-opencode-events"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask",
+      "verify-detection-screens"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask",
+      "verify-controller-setup"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask",
+      "verify-resources"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask",
+      "verify-capture-traffic"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask",
+      "verify-workflow"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask",
+      "verify-detection-freshness"
+    ],
+    [
+      "/Users/kisaczka/Desktop/code/fux/target/rust-harness/debug/fux-xtask",
+      "verify-headless-performance"
+    ]
+  ],
+  "complete": true,
+  "profile": "full",
+  "render": {
+    "elapsed_ms": 191453,
+    "exit_code": 0,
+    "state": "passed"
+  },
+  "running": null,
+  "source_after": {
+    "files": 1087,
+    "revision": "5997e22cc2f2969cb8778fba3c487f364a0f15a9",
+    "scope": "tracked and nonignored untracked regular files, excluding docs/verification",
+    "worktree_sha256": "c40f7a372409e92618759b91ed64894f02c423416c9d24a6e8a721525d6c5bfc"
+  },
+  "source_before": {
+    "files": 1087,
+    "revision": "5997e22cc2f2969cb8778fba3c487f364a0f15a9",
+    "scope": "tracked and nonignored untracked regular files, excluding docs/verification",
+    "worktree_sha256": "c40f7a372409e92618759b91ed64894f02c423416c9d24a6e8a721525d6c5bfc"
+  }
+}

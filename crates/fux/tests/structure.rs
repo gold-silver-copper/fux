@@ -2,6 +2,9 @@
 //! stay bounded, owner programs stay independent, and CI keeps the verification layers enabled.
 #![allow(clippy::expect_used, clippy::panic)]
 
+#[path = "structure/fux_client.rs"]
+mod fux_client;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -180,6 +183,39 @@ fn dependency_and_ci_surfaces_keep_the_verification_layers_enabled() {
     assert!(manifest.contains("rust-version = \"1.95\""));
 }
 
+#[test]
+fn ordinary_ci_runs_pinned_composition_without_optional_prerequisites() {
+    let workflow = read(&root(".github/workflows/ci.yml"));
+    let composition = workflow
+        .split("  cross-repository:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("  package:\n").next())
+        .expect("explicit composition job");
+    assert!(
+        !composition
+            .lines()
+            .any(|line| line.trim_start().starts_with("if:")),
+        "composition cannot silently skip"
+    );
+    for required in [
+        "dependencies apply",
+        "dependencies verify",
+        "KOH_REQUIRE_FUX_BIN: \"1\"",
+        "KOH_REQUIRE_ZOR_BIN: \"1\"",
+        "--test gateway",
+        "--lib gateway::",
+        "--test pty",
+        "--test admission",
+        "--test e2e_loopback",
+    ] {
+        assert!(
+            composition.contains(required),
+            "missing composition gate: {required}"
+        );
+    }
+    assert!(workflow.contains("-- verify-boundaries"));
+}
+
 /// Repository root: the fux crate lives at `crates/fux` of a virtual workspace.
 fn root(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -188,7 +224,7 @@ fn root(path: &str) -> PathBuf {
 }
 
 #[test]
-fn default_ci_and_release_verification_require_only_fux() {
+fn standalone_ci_and_release_are_independent_of_the_explicit_composition_job() {
     for path in [
         ".github/workflows/ci.yml",
         ".github/workflows/nightly.yml",

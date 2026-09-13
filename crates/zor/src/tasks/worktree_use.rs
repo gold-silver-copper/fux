@@ -1,22 +1,12 @@
 //! Bounded local fux pane census for owned-worktree removal.
 use super::model::{Journal, LaunchPhase, Target};
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
-use std::{
-    collections::BTreeSet,
-    fs,
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{collections::BTreeSet, fs, path::Path, time::Instant};
 
 pub(super) fn check(target: &Target, path: &Path, deadline: Instant) -> Result<()> {
     let pane = super::submit::target_pane(target, deadline)
         .context("session use is uncertain; removal refused")?;
-    let cwd = PathBuf::from(
-        pane.get("cwd")
-            .and_then(Value::as_str)
-            .context("session cwd unavailable; removal refused")?,
-    );
+    let cwd = pane.cwd;
     anyhow::ensure!(cwd.is_absolute(), "session cwd is not absolute");
     let canonical = fs::canonicalize(&cwd).context("session cwd uncertain; removal refused")?;
     anyhow::ensure!(
@@ -78,7 +68,8 @@ pub(super) fn unadopted(journal: &Journal, path: &Path, deadline: Instant) -> Re
 }
 
 fn discover(runtime: &Path, deadline: Instant) -> Result<Vec<Target>> {
-    let manager = runtime.join("manager.sock");
+    let endpoint = crate::fux::endpoint::Endpoint::new(runtime);
+    let manager = endpoint.manager();
     if !manager.try_exists()? {
         // Standalone worktrees remain usable with no fux runtime. A partial
         // runtime containing sockets is uncertain, not proof that no pane exists.
@@ -97,78 +88,29 @@ fn discover(runtime: &Path, deadline: Instant) -> Result<Vec<Target>> {
             }
         }
     }
-    let response = crate::fux::request_until(&manager, json!({"request":"list"}), deadline)
+    let names = crate::fux::manager::names(runtime, deadline)
         .context("fux pane discovery unavailable; removal refused")?;
-    let names = response
-        .get("names")
-        .and_then(Value::as_array)
-        .context("invalid workspace discovery")?;
-    anyhow::ensure!(names.len() <= 64, "workspace inspection limit exceeded");
     let mut targets = Vec::new();
     let mut seen = BTreeSet::new();
     let mut instance: Option<String> = None;
     for name in names {
-        let name = name
-            .as_str()
-            .filter(|name| super::model::workspace(name))
-            .context("invalid workspace name")?;
-        anyhow::ensure!(seen.insert(name), "duplicate workspace discovery");
-        let response = crate::fux::completed_until(
-            &runtime.join(format!("{name}.sock")),
-            json!({"id":1,"command":"list","instance":instance}),
-            deadline,
-        )?;
-        let listing = response
-            .pointer("/result/value")
-            .context("missing pane listing")?;
-        let current = listing
-            .get("instance")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty() && value.len() <= 128)
-            .context("invalid server instance")?;
+        let name = name.as_str();
         anyhow::ensure!(
-            instance.as_deref().is_none_or(|value| value == current),
-            "fux server changed during discovery"
+            seen.insert(name.to_owned()),
+            "duplicate workspace discovery"
         );
+        let listing =
+            crate::fux::snapshot::list(&endpoint.workspace(name)?, instance.as_deref(), deadline)?;
+        let current = listing.instance.as_str();
         instance = Some(current.to_owned());
-        let spaces = listing
-            .get("workspaces")
-            .and_then(Value::as_array)
-            .context("invalid workspaces")?;
-        anyhow::ensure!(spaces.len() == 1, "unexpected workspace count");
-        let space = spaces.first().context("missing workspace")?;
-        anyhow::ensure!(
-            space.get("name").and_then(Value::as_str) == Some(name),
-            "workspace changed during discovery"
-        );
-        let stream = space
-            .pointer("/event_cursor/stream")
-            .and_then(Value::as_u64)
-            .filter(|value| *value > 0)
-            .context("missing workspace lifetime")?;
-        let tabs = space
-            .get("tabs")
-            .and_then(Value::as_array)
-            .context("invalid tabs")?;
-        anyhow::ensure!(tabs.len() <= 32, "tab inspection limit exceeded");
-        for tab in tabs {
-            for pane in tab
-                .get("panes")
-                .and_then(Value::as_array)
-                .context("invalid panes")?
-            {
+        let space = listing.workspaces.first().context("missing workspace")?;
+        anyhow::ensure!(space.name == name, "workspace changed during discovery");
+        let stream = space.event_cursor.stream;
+        for tab in &space.tabs {
+            for pane in &tab.panes {
                 anyhow::ensure!(targets.len() < 256, "pane inspection limit exceeded");
-                let pane_id = pane
-                    .get("id")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| u32::try_from(value).ok())
-                    .context("invalid pane ID")?;
-                let pid = pane
-                    .get("pid")
-                    .and_then(Value::as_u64)
-                    .and_then(|value| u32::try_from(value).ok())
-                    .filter(|value| *value > 0)
-                    .context("missing pane process")?;
+                let pane_id = pane.id;
+                let pid = pane.pid.context("missing pane process")?;
                 targets.push(Target {
                     origin: None,
                     runtime: runtime.to_owned(),

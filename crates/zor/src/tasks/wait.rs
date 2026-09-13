@@ -252,21 +252,9 @@ fn evaluate(
         .as_ref()
         .context("delivery receipt unavailable")?;
     let deadline = limit.min(Instant::now() + Duration::from_secs(4));
-    let live = (|| -> Result<Value> {
-        submit::verify_target(target, deadline)?;
-        submit::request(
-            target,
-            "capture",
-            json!({"pane":target.pane,"max_bytes":1}),
-            deadline,
-        )
-    })();
+    let live = submit::capture_input_sequence(target, deadline);
     match live {
-        Ok(capture) => {
-            let sequence = capture
-                .pointer("/result/value/input_sequence")
-                .and_then(Value::as_u64)
-                .context("capture input sequence missing")?;
+        Ok(sequence) => {
             anyhow::ensure!(
                 sequence == receipt.input_sequence,
                 "intervening input weakened prompt correlation"

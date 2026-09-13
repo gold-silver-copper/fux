@@ -1,7 +1,7 @@
 //! Explicit termination of a recorded managed pane. Adopted resources are never targets.
 use super::{launch, model::*, store::Store, submit};
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -31,19 +31,11 @@ pub(super) fn run_store(store: &mut Store, id: &str) -> Result<Value> {
     if submit::verify_target(&target, Instant::now() + Duration::from_secs(2)).is_err() {
         return confirmed(launch::reconcile_store(store, id)?);
     }
-    let killed = submit::request(
+    let killed = submit::mutate(
         &target,
-        "kill",
-        json!({"pane":target.pane}),
+        crate::fux::pane::Action::Kill,
         Instant::now() + Duration::from_secs(2),
-    )
-    .and_then(|reply| {
-        anyhow::ensure!(
-            reply.get("id").and_then(Value::as_u64) == Some(1),
-            "kill reply ID mismatch"
-        );
-        Ok(())
-    });
+    );
     // A completed kill reply accepts closure; only retained final evidence proves
     // release. Lost replies also reconcile without changing the recorded target.
     match launch::reconcile_store(store, id) {

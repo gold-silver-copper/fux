@@ -1,0 +1,20 @@
+{
+  "status": "completed",
+  "id": 3,
+  "result": {
+    "kind": "capture",
+    "value": {
+      "text": "$ echo hi\nhi\n",
+      "seq": 12,
+      "input_sequence": 3,
+      "revision": 15,
+      "rows": 24,
+      "columns": 80,
+      "scrollback_offset": 0,
+      "title": "",
+      "progress": null,
+      "unchanged": false,
+      "truncated": false
+    }
+  }
+}

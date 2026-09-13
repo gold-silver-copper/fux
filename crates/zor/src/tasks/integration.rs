@@ -145,8 +145,11 @@ fn rpc(
     let mut bytes = serde_json::to_vec(&request)?;
     anyhow::ensure!(bytes.len() <= 131072, "adapter request limit exceeded");
     bytes.push(b'\n');
-    let mut stream = crate::fux::connect(&integration.socket, deadline)?;
-    crate::fux::same_user(&stream)?;
+    let mut stream = local_ipc::connect_until(&integration.socket, deadline)?;
+    anyhow::ensure!(
+        local_ipc::peer_is_current_user(&stream)?,
+        "adapter peer belongs to another user"
+    );
     let remaining = || {
         deadline
             .checked_duration_since(Instant::now())

@@ -1,0 +1,3 @@
+Command: target/rust-harness/debug/fux-xtask dependencies verify
+Exit: 0
+Output: koh: verify complete

@@ -61,6 +61,67 @@ fn every_protocol_fixture_round_trips_through_its_type() {
     assert!(total >= 20, "expected the fixture set, found {total}");
 }
 
+#[test]
+fn zor_capture_decoders_use_the_producer_fixtures() {
+    for name in ["reply_completed_capture.json", "reply_completed_cells.json"] {
+        let producer = fixtures_dir().join("control").join(name);
+        let consumer = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../zor/tests/fixtures/capture")
+            .join(name);
+        assert_eq!(
+            std::fs::read(&producer).expect("producer capture"),
+            std::fs::read(&consumer).expect("consumer capture"),
+            "capture fixture drift: {name}"
+        );
+        round_trip::<fux::proto::control::Reply>(&producer);
+    }
+}
+
+#[test]
+fn zor_typed_client_fixtures_match_the_producer_schema() {
+    for name in [
+        "request_focus_client.json",
+        "reply_focus_client.json",
+        "request_split_client.json",
+        "reply_split_client.json",
+        "request_events_client.json",
+        "reply_events_client.json",
+    ] {
+        let producer = fixtures_dir().join("control").join(name);
+        let consumer = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../zor/tests/fixtures/control")
+            .join(name);
+        assert_eq!(
+            std::fs::read(&producer).expect("producer fixture"),
+            std::fs::read(&consumer).expect("client fixture")
+        );
+        if name.starts_with("request") {
+            round_trip::<fux::proto::control::Request>(&producer);
+        } else {
+            round_trip::<fux::proto::control::Reply>(&producer);
+        }
+    }
+}
+
+#[test]
+fn zor_creation_fixtures_match_the_manager_producer() {
+    for name in ["request_create_client.json", "reply_create_client.json"] {
+        let producer = fixtures_dir().join("manager").join(name);
+        let consumer = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../zor/tests/fixtures/manager")
+            .join(name);
+        assert_eq!(
+            std::fs::read(&producer).expect("producer"),
+            std::fs::read(consumer).expect("consumer")
+        );
+        if name.starts_with("request") {
+            round_trip::<fux::daemon::ManagerRequest>(&producer);
+        } else {
+            round_trip::<fux::daemon::ManagerReply>(&producer);
+        }
+    }
+}
+
 /// The `info` fixture publishes the live retention ceilings, and zor's copy of it (which pins
 /// zor's retention policy in `crates/zor/src/fux.rs`) is byte-identical to fux's.
 #[test]

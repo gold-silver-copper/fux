@@ -1,0 +1,10 @@
+{
+  "reply": "attach",
+  "descriptor": {
+    "stream": 1,
+    "name": "run",
+    "pid": 123,
+    "instance_nonce": "owner",
+    "socket_path": "/tmp/runtime/run.attach.sock"
+  }
+}

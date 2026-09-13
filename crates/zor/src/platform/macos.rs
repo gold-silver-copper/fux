@@ -263,19 +263,19 @@ pub fn set_raw(fd: i32) -> io::Result<Guard> {
         Ok(Guard { fd, original })
     }
 }
-pub fn winsize(fd: i32) -> portable_pty::PtySize {
+pub fn winsize(fd: i32) -> super::TerminalSize {
     unsafe {
         // SAFETY: ioctl writes to a correctly sized winsize value.
         let mut size: libc::winsize = std::mem::zeroed();
         if libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) == 0 {
-            portable_pty::PtySize {
+            super::TerminalSize {
                 rows: size.ws_row.max(1),
                 cols: size.ws_col.max(1),
                 pixel_width: size.ws_xpixel,
                 pixel_height: size.ws_ypixel,
             }
         } else {
-            portable_pty::PtySize {
+            super::TerminalSize {
                 rows: 24,
                 cols: 80,
                 pixel_width: 0,

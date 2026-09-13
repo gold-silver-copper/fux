@@ -1,0 +1,58 @@
+   Compiling rustix v1.1.4
+   Compiling thiserror v1.0.69
+   Compiling nix v0.28.0
+   Compiling vte v0.15.0
+   Compiling serial2 v0.2.37
+   Compiling unicode-width v0.2.2
+   Compiling downcast-rs v1.2.1
+   Compiling shell-words v1.1.1
+   Compiling filedescriptor v0.8.3
+   Compiling vt100 v0.16.2
+   Compiling portable-pty v0.9.0
+   Compiling termina v0.3.3
+   Compiling tempfile v3.27.0
+   Compiling rusty-fork v0.3.1
+   Compiling proptest v1.11.0
+   Compiling koh v0.12.1 (/tmp/strict-fux-koh-zor/koh-dev)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.10s
+     Running tests/admission.rs (/tmp/strict-fux-koh-zor/koh-build/debug/deps/admission-fe6496c63feac725)
+
+running 2 tests
+test admit_unblocks_await_admission ... ok
+test reject_surfaces_as_error ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+     Running tests/e2e_loopback.rs (/tmp/strict-fux-koh-zor/koh-build/debug/deps/e2e_loopback-9049be6aaf60bc2c)
+
+running 1 test
+test full_session_over_loopback_pty ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+     Running tests/e2e_pty_binary.rs (/tmp/strict-fux-koh-zor/koh-build/debug/deps/e2e_pty_binary-b6de822bd28fdaaf)
+
+running 1 test
+test real_client_binary_renders_over_pty ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.46s
+
+     Running tests/pty.rs (/tmp/strict-fux-koh-zor/koh-build/debug/deps/pty-6a334bad5571a1aa)
+
+running 13 tests
+test argv_tail_reaches_the_child ... ok
+test dropping_pty_eofs_child_and_stops_writer ... ok
+test external_signal_retains_shell_style_exit_status ... ok
+test graceful_group_shutdown_kills_hup_immune_descendant_after_leader_exits ... ok
+test graceful_group_shutdown_preserves_the_leaders_shell_status ... ok
+test interactive_shell_echoes_input ... ok
+test osc_progress_from_a_real_child_reaches_the_pty_host ... ok
+test process_group_teardown_closes_descendant_held_pty ... ok
+test reaped_child_is_not_signaled_again ... ok
+test shutdown_joins_both_io_threads_without_deadlock ... ok
+test spawned_child_exposes_a_real_process_id ... ok
+test spawns_and_streams_output ... ok
+test write_input_takes_shared_ref_and_preserves_order ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.42s
+

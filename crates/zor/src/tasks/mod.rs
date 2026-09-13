@@ -99,46 +99,25 @@ pub fn adopt(root: &Path, mut request: Adopt) -> Result<Value> {
         "task ID belongs to a managed launch"
     );
     request.runtime = std::fs::canonicalize(&requested_runtime).context("resolve fux runtime")?;
-    let listing = crate::fux::completed_until(
-        &request.runtime.join(format!("{}.sock", request.workspace)),
-        json!({"command":"list","id":1,"instance":request.instance}),
+    let endpoint = crate::fux::endpoint::Endpoint::new(&request.runtime);
+    let listing = crate::fux::snapshot::list(
+        &endpoint.workspace(&request.workspace)?,
+        Some(&request.instance),
         Instant::now() + Duration::from_secs(2),
     )?;
-    let listing = listing
-        .pointer("/result/value")
-        .ok_or_else(|| anyhow::anyhow!("invalid fux listing"))?;
-    anyhow::ensure!(
-        listing.get("instance").and_then(Value::as_str) == Some(&request.instance),
-        "fux instance changed during adoption"
-    );
     let workspace = listing
-        .get("workspaces")
-        .and_then(Value::as_array)
-        .and_then(|spaces| {
-            spaces
-                .iter()
-                .find(|space| space.get("name").and_then(Value::as_str) == Some(&request.workspace))
-        })
-        .ok_or_else(|| anyhow::anyhow!("workspace missing"))?;
-    let stream = workspace
-        .pointer("/event_cursor/stream")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("workspace stream missing"))?;
+        .workspaces
+        .iter()
+        .find(|space| space.name == request.workspace)
+        .context("workspace missing")?;
+    let stream = workspace.event_cursor.stream;
     let pane = workspace
-        .get("tabs")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|tab| tab.get("panes").and_then(Value::as_array))
-        .flatten()
-        .find(|pane| pane.get("id").and_then(Value::as_u64) == Some(u64::from(request.pane)))
-        .ok_or_else(|| anyhow::anyhow!("pane missing"))?;
-    let pid = pane
-        .get("pid")
-        .and_then(Value::as_u64)
-        .and_then(|pid| u32::try_from(pid).ok())
-        .filter(|pid| *pid > 0)
-        .ok_or_else(|| anyhow::anyhow!("pane has no running process"))?;
+        .tabs
+        .iter()
+        .flat_map(|tab| &tab.panes)
+        .find(|pane| pane.id == request.pane)
+        .context("pane missing")?;
+    let pid = pane.pid.context("pane has no running process")?;
     let mut target = Target {
         origin: None,
         runtime: request.runtime,

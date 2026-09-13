@@ -1,0 +1,8 @@
+{
+  "command": "focus",
+  "id": 1,
+  "instance": "owner",
+  "target": {
+    "pane": 4
+  }
+}

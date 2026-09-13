@@ -127,7 +127,7 @@ pub struct Options {
 
 pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
     let system = NativePtySystem::default();
-    let initial_size = clamp_size(crate::platform::winsize(0));
+    let initial_size = clamp_size(pty_size(crate::platform::winsize(0)));
     let mut raw_guard = crate::platform::set_raw(0).ok();
     let pair = system.openpty(initial_size).context("open pty")?;
     let mut builder = CommandBuilder::new(command);
@@ -355,7 +355,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
         // Some PTY hosts update the wrapper's controlling terminal without delivering SIGWINCH
         // to its process group. Polling alongside the already bounded 50 ms event wait keeps the
         // child PTY authoritative on those hosts while the signal path remains the fast path.
-        let observed_size = clamp_size(crate::platform::winsize(0));
+        let observed_size = clamp_size(pty_size(crate::platform::winsize(0)));
         if observed_size.rows != current_size.rows || observed_size.cols != current_size.cols {
             restore_on_error(
                 pair.master.resize(observed_size).context("resize pty"),
@@ -374,7 +374,7 @@ pub fn run(command: &str, argv: &[String], options: Options) -> Result<u8> {
             Ok(Message::Eof) => break,
             Ok(Message::Signal(signal)) => {
                 if signal == signal_hook::consts::SIGWINCH {
-                    let size = clamp_size(crate::platform::winsize(0));
+                    let size = clamp_size(pty_size(crate::platform::winsize(0)));
                     restore_on_error(
                         pair.master.resize(size).context("resize pty"),
                         &titles,
@@ -900,6 +900,15 @@ pub fn run_transparent(command: &str, argv: &[String]) -> Result<u8> {
         .code()
         .unwrap_or_else(|| 128_i32.saturating_add(status.signal().unwrap_or_default()));
     Ok(u8::try_from(code).unwrap_or(u8::MAX))
+}
+
+fn pty_size(size: crate::platform::TerminalSize) -> portable_pty::PtySize {
+    portable_pty::PtySize {
+        rows: size.rows,
+        cols: size.cols,
+        pixel_width: size.pixel_width,
+        pixel_height: size.pixel_height,
+    }
 }
 
 #[cfg(test)]

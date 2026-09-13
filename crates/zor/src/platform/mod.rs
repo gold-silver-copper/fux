@@ -30,3 +30,12 @@ pub(crate) struct ProcessRef {
 pub use linux::{Guard, foreground_pgid, job, leader, process_cwd, set_raw, winsize};
 #[cfg(target_os = "macos")]
 pub use macos::{Guard, foreground_pgid, job, leader, process_cwd, set_raw, winsize};
+
+/// Terminal geometry independent of any PTY allocation library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalSize {
+    pub rows: u16,
+    pub cols: u16,
+    pub pixel_width: u16,
+    pub pixel_height: u16,
+}

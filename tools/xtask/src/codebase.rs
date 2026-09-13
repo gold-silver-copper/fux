@@ -17,6 +17,16 @@ fn plan(full: bool) -> Vec<Vec<String>> {
         "tools/xtask/Cargo.toml",
         "--check",
     ]);
+    add(&[
+        "cargo",
+        "+stable",
+        "run",
+        "--locked",
+        "--manifest-path",
+        "tools/xtask/Cargo.toml",
+        "--",
+        "verify-boundaries",
+    ]);
     if full {
         add(&[
             "cargo",

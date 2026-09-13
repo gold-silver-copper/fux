@@ -1,0 +1,31 @@
+{
+  "size": [
+    20,
+    3
+  ],
+  "total_rows": 3,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 19,
+    "y": 2,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "zor dashboard  live\n> ! blocked      ob\npassive state block\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "zor dashboard  live"
+    ],
+    [
+      "> ! blocked      ob"
+    ],
+    [
+      "passive state block"
+    ]
+  ],
+  "scrollback": []
+}

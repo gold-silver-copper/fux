@@ -1,5 +1,12 @@
 # The Shape of zor
 
+> Historical proposal (3 September 2026), retained for design context. The architecture
+> described below is superseded: fux does not consume agent-state OSC or embed koh's shell
+> model. Zor's default CLI observes and controls fux through a typed local client; the
+> standalone PTY wrapper is opt-in via `--features wrap`. See the current
+> [service ownership contract](../../docs/service-ownership-contract.md) and
+> [README](README.md) for supported behavior and installation.
+
 A small dedicated program that runs a shell or an agent in a pty, watches what the agent draws,
 and announces the agent's state, **working**, **blocked**, **idle**, or **none**, in-band as an
 escape sequence and out-of-band as event lines. It knows nothing about multiplexers. fux consumes
@@ -39,11 +46,10 @@ detection is a property of the pane and not of how the user typed the command.
 
 ## Surface
 
-The wrapper is the `zor <command>` subcommand, compiled only with the `wrap` Cargo feature, which is
-on by default for `cargo install zor`; fux builds zor with `--no-default-features --features
-cli`, and that build observes fux panes, runs
-the service and the durable task CLI, and has no `wrap` subcommand at all. There is no bare
-`zor <command>` form; `--rules` and `--agent` are zor's global flags and precede `wrap`.
+The standalone `zor <command>` wrapper is compiled only with the opt-in `wrap`
+Cargo feature (`cargo install zor --features wrap`). Default builds observe fux panes
+and provide the service and durable task CLI without a PTY wrapper. The following
+wrapper examples require `wrap`; global flags precede the wrapped command.
 
 ```sh
 zor [options] [--] <command> [args…]  # run <command> in a pty; default: $SHELL -l
@@ -438,8 +444,8 @@ agent, zor accepts 21337 as a self-report alongside 7877 and the contract docume
 
 ## Decisions
 
-- Pure Rust, MIT. `zor` depends on portable-pty, regex, serde, toml, libc; only the `wrap`
-  feature depends on vt100. Not on koh.
+- Pure Rust, MIT. `zor` depends on regex, serde, toml, libc; only the `wrap`
+  feature depends on portable-pty and vt100. Not on koh.
 - Passthrough first: write before parse, never answer queries, insert only in ground state.
 - Wrap the shell, identify by process tree with herdr's normalisation and scoring; `ZOR_AGENT`
   in a process environment and `--agent` short-circuit it.

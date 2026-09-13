@@ -154,14 +154,8 @@ pub fn run(root: &Path, task_id: &str, operation: &str, instance: &str) -> Resul
         "resume cwd changed"
     );
     let workspace = super::launch::listing(&launch, Instant::now() + Duration::from_secs(2))?;
-    launch.stream = workspace
-        .pointer("/event_cursor/stream")
-        .and_then(Value::as_u64)
-        .context("workspace stream missing")?;
-    launch.event_sequence = workspace
-        .pointer("/event_cursor/sequence")
-        .and_then(Value::as_u64)
-        .context("workspace sequence missing")?;
+    launch.stream = workspace.event_cursor.stream;
+    launch.event_sequence = workspace.event_cursor.sequence;
     store.transaction(|journal| {
         journal.launches.insert(operation.into(), launch);
         Ok(())

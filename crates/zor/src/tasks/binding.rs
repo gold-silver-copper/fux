@@ -108,7 +108,7 @@ pub fn run(root: &Path, operation: &str, token: &str, request: Bind) -> Result<V
     );
     let pane = submit::target_pane(&target, deadline)?;
     anyhow::ensure!(
-        pane.get("input_sequence").and_then(Value::as_u64) == Some(receipt.input_sequence),
+        pane.input_sequence == receipt.input_sequence,
         "intervening input weakened message binding"
     );
     let bound_ms = super::now_ms()?;

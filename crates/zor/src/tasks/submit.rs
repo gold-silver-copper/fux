@@ -1,7 +1,7 @@
 //! Durable terminal input coordination. Receipts establish PTY delivery only.
 use super::{model::*, store::Store};
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -103,34 +103,22 @@ pub(super) fn input_status(
     )
 }
 
-pub(super) fn request(
+pub(super) fn mutate(
     target: &Target,
-    command: &str,
-    fields: Value,
+    action: crate::fux::pane::Action,
     deadline: Instant,
-) -> Result<Value> {
+) -> Result<()> {
     let location = super::route::locate(target, deadline)?;
-    let mut value = json!({"command":command,"id":1,"instance":target.instance});
-    value
-        .as_object_mut()
-        .context("request object")?
-        .extend(fields.as_object().context("fields object")?.clone());
-    let response = crate::fux::completed_until(
-        &target.runtime.join(format!("{}.sock", location.workspace)),
-        value,
-        deadline,
-    )?;
-    anyhow::ensure!(
-        response.get("id").and_then(Value::as_u64) == Some(1),
-        "fux response ID mismatch"
-    );
-    if command == "list" {
-        let mut routed = target.clone();
-        routed.workspace = location.workspace;
-        routed.stream = location.stream;
-        validate_target_reply(&routed, &response)?;
-    }
-    Ok(response)
+    let socket =
+        crate::fux::endpoint::Endpoint::new(&target.runtime).workspace(&location.workspace)?;
+    crate::fux::pane::act(&socket, &target.instance, target.pane, action, deadline)
+}
+
+pub(super) fn capture_input_sequence(target: &Target, deadline: Instant) -> Result<u64> {
+    let location = super::route::locate(target, deadline)?;
+    let socket =
+        crate::fux::endpoint::Endpoint::new(&target.runtime).workspace(&location.workspace)?;
+    crate::fux::capture::input_sequence(&socket, &target.instance, target.pane, deadline)
 }
 
 pub(super) fn verify_target(target: &Target, deadline: Instant) -> Result<()> {
@@ -139,59 +127,43 @@ pub(super) fn verify_target(target: &Target, deadline: Instant) -> Result<()> {
     super::route::locate(target, deadline).map(|_| ())
 }
 
-pub(super) fn target_pane(target: &Target, deadline: Instant) -> Result<Value> {
-    let response = request(target, "list", json!({}), deadline)?;
-    response
-        .pointer("/result/value/workspaces")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|workspace| workspace.get("tabs").and_then(Value::as_array))
-        .flatten()
-        .filter_map(|tab| tab.get("panes").and_then(Value::as_array))
-        .flatten()
-        .find(|pane| pane.get("id").and_then(Value::as_u64) == Some(u64::from(target.pane)))
-        .cloned()
-        .context("validated pane missing")
+pub(super) fn target_pane(
+    target: &Target,
+    deadline: Instant,
+) -> Result<crate::fux::snapshot::PaneSummary> {
+    let location = super::route::locate(target, deadline)?;
+    let socket =
+        crate::fux::endpoint::Endpoint::new(&target.runtime).workspace(&location.workspace)?;
+    let listing = crate::fux::snapshot::list(&socket, Some(&target.instance), deadline)?;
+    let mut routed = target.clone();
+    routed.workspace = location.workspace;
+    routed.stream = location.stream;
+    validate_target_reply(&routed, &listing)
 }
 
-// Pure identity validation; the effectful caller owns socket negotiation and its deadline.
-fn validate_target_reply(target: &Target, response: &Value) -> Result<Value> {
-    let listing = response
-        .pointer("/result/value")
-        .context("missing listing")?;
-    anyhow::ensure!(
-        listing.get("instance").and_then(Value::as_str) == Some(&target.instance),
-        "server changed"
-    );
+// Process authority is independent of the current route and belongs to task policy.
+fn validate_target_reply(
+    target: &Target,
+    listing: &crate::fux::snapshot::Listing,
+) -> Result<crate::fux::snapshot::PaneSummary> {
+    anyhow::ensure!(listing.instance == target.instance, "server changed");
     let workspace = listing
-        .get("workspaces")
-        .and_then(Value::as_array)
-        .and_then(|spaces| {
-            spaces
-                .iter()
-                .find(|space| space.get("name").and_then(Value::as_str) == Some(&target.workspace))
-        })
+        .workspaces
+        .iter()
+        .find(|space| space.name == target.workspace)
         .context("workspace lost")?;
     anyhow::ensure!(
-        workspace
-            .pointer("/event_cursor/stream")
-            .and_then(Value::as_u64)
-            == Some(target.stream),
+        workspace.event_cursor.stream == target.stream,
         "workspace replaced"
     );
     let pane = workspace
-        .get("tabs")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|tab| tab.get("panes").and_then(Value::as_array))
-        .flatten()
-        .find(|pane| pane.get("id").and_then(Value::as_u64) == Some(u64::from(target.pane)))
+        .tabs
+        .iter()
+        .flat_map(|tab| &tab.panes)
+        .find(|pane| pane.id == target.pane)
         .context("pane lost")?;
     anyhow::ensure!(
-        target.pid.is_some()
-            && pane.get("pid").and_then(Value::as_u64) == target.pid.map(u64::from),
+        target.pid.is_some() && pane.pid == target.pid,
         "pane process replaced"
     );
     Ok(pane.clone())
@@ -288,7 +260,8 @@ pub(super) fn run_until(
             let retain_ms = input_retain_ms(&prompt, super::now_ms()?);
             let location = super::route::locate(&target, deadline)?;
             let response = crate::fux::input::reserve(
-                &target.runtime.join(format!("{}.sock", location.workspace)),
+                &crate::fux::endpoint::Endpoint::new(&target.runtime)
+                    .workspace(&location.workspace)?,
                 &target.instance,
                 target.pane,
                 retain_ms,
@@ -320,7 +293,7 @@ pub(super) fn run_until(
         let submission_deadline = deadline.min(input_deadline(&current)?);
         let location = super::route::locate(&target, submission_deadline)?;
         let response = crate::fux::input::submit(
-            &target.runtime.join(format!("{}.sock", location.workspace)),
+            &crate::fux::endpoint::Endpoint::new(&target.runtime).workspace(&location.workspace)?,
             &target.instance,
             old.operation,
             &encoded,
@@ -385,28 +358,44 @@ mod tests {
             origin: None,
             runtime: "/tmp/fixture".into(),
             instance: "owner".into(),
-            workspace: "default".into(),
-            stream: 3,
-            pane: 4,
-            pid: Some(5),
+            workspace: "main".into(),
+            stream: 2,
+            pane: 1,
+            pid: Some(42),
         };
-        let reply = json!({"result":{"value":{"instance":"owner","workspaces":[{
-            "name":"default","event_cursor":{"stream":3},"tabs":[{"panes":[{"id":4,"pid":5}]}]
-        }]}}});
-        assert!(validate_target_reply(&target, &reply).is_ok());
-        for (pointer, replacement) in [
-            ("/result/value/instance", json!("replacement")),
-            ("/result/value/workspaces/0/name", json!("foreign")),
-            ("/result/value/workspaces/0/event_cursor/stream", json!(9)),
-            ("/result/value/workspaces/0/tabs/0/panes/0/id", json!(9)),
-            ("/result/value/workspaces/0/tabs/0/panes/0/pid", json!(9)),
-            ("/result/value/workspaces/0/tabs/0/panes/0/pid", Value::Null),
-        ] {
-            let mut changed = reply.clone();
-            *changed.pointer_mut(pointer).context("fixture pointer")? = replacement;
+        let listing = crate::fux::snapshot::fixture_listing()?;
+        assert!(validate_target_reply(&target, &listing).is_ok());
+        for case in 0..6 {
+            let mut changed = listing.clone();
+            if case == 0 {
+                changed.instance = "replacement".into();
+            }
+            let workspace = changed.workspaces.first_mut().context("workspace")?;
+            if case == 1 {
+                workspace.name = "foreign".into();
+            }
+            if case == 2 {
+                workspace.event_cursor.stream = 9;
+            }
+            let pane = workspace
+                .tabs
+                .first_mut()
+                .context("tab")?
+                .panes
+                .first_mut()
+                .context("pane")?;
+            if case == 3 {
+                pane.id = 9;
+            }
+            if case == 4 {
+                pane.pid = Some(9);
+            }
+            if case == 5 {
+                pane.pid = None;
+            }
             assert!(
                 validate_target_reply(&target, &changed).is_err(),
-                "{pointer}"
+                "accepted replacement {case}"
             );
         }
         Ok(())

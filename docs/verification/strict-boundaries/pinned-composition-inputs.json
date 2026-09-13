@@ -1,0 +1,20 @@
+{
+  "source": {
+    "files": 1087,
+    "revision": "5997e22cc2f2969cb8778fba3c487f364a0f15a9",
+    "scope": "tracked and nonignored untracked regular files, excluding docs/verification",
+    "worktree_sha256": "c40f7a372409e92618759b91ed64894f02c423416c9d24a6e8a721525d6c5bfc"
+  },
+  "pin": "f6a335237c25aefde9b93290b19a8d909598a95d",
+  "binaries": {
+    "fux": {
+      "path": "/tmp/strict-fux-koh-zor/pinned-binaries/fux",
+      "sha256": "27b22860faca164c6156d0d81ef71c703cffd8dbba9c7356700667108f496c39"
+    },
+    "zor": {
+      "path": "/tmp/strict-fux-koh-zor/pinned-binaries/zor",
+      "sha256": "811efcebb3a451af413891b458fbad1b1198413086c6eb0d5663ef57144622c1"
+    }
+  },
+  "notes": "Copies of the CLI binaries built in gate checks 10 and 11, retained to avoid replacement by later feature builds."
+}

@@ -266,17 +266,9 @@ pub fn record(
     let deadline = Instant::now() + Duration::from_secs(2);
     submit::verify_target(&target, deadline)?;
     if let Some(input_sequence) = input_sequence {
-        let capture = submit::request(
-            &target,
-            "capture",
-            json!({"pane":target.pane,"max_bytes":1}),
-            deadline,
-        )?;
+        let captured_sequence = submit::capture_input_sequence(&target, deadline)?;
         anyhow::ensure!(
-            capture
-                .pointer("/result/value/input_sequence")
-                .and_then(Value::as_u64)
-                == Some(input_sequence),
+            captured_sequence == input_sequence,
             "intervening input invalidated adapter observation"
         );
     }

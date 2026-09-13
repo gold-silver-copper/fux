@@ -1,0 +1,36 @@
+   Compiling koh v0.12.1 (/Users/kisaczka/Desktop/code/fux/references/koh)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.08s
+     Running tests/admission.rs (/tmp/strict-fux-koh-zor/koh-build/debug/deps/admission-294ed50e4292eefd)
+
+running 2 tests
+test admit_unblocks_await_admission ... ok
+test reject_surfaces_as_error ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/e2e_loopback.rs (/tmp/strict-fux-koh-zor/koh-build/debug/deps/e2e_loopback-32a010d65ddbb79d)
+
+running 1 test
+test full_session_over_loopback_pty ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.90s
+
+     Running tests/pty.rs (/tmp/strict-fux-koh-zor/koh-build/debug/deps/pty-451227119e238787)
+
+running 13 tests
+test spawned_child_exposes_a_real_process_id ... ok
+test argv_tail_reaches_the_child ... ok
+test osc_progress_from_a_real_child_reaches_the_pty_host ... ok
+test reaped_child_is_not_signaled_again ... ok
+test graceful_group_shutdown_preserves_the_leaders_shell_status ... ok
+test spawns_and_streams_output ... ok
+test external_signal_retains_shell_style_exit_status ... ok
+test graceful_group_shutdown_kills_hup_immune_descendant_after_leader_exits ... ok
+test process_group_teardown_closes_descendant_held_pty ... ok
+test dropping_pty_eofs_child_and_stops_writer ... ok
+test shutdown_joins_both_io_threads_without_deadlock ... ok
+test write_input_takes_shared_ref_and_preserves_order ... ok
+test interactive_shell_echoes_input ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+

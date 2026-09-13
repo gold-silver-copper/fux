@@ -1,0 +1,114 @@
+{
+  "objective": "execute strict-fux-koh-zor-boundaries-prompt.md",
+  "local_status": "complete",
+  "requirements": [
+    {
+      "section": "1 typed client",
+      "evidence": [
+        "crates/zor/src/fux",
+        "crates/fux/tests/structure/fux_client.rs",
+        "full-gate/015/stdout.log"
+      ],
+      "result": "passed"
+    },
+    {
+      "section": "2 absolute deadlines",
+      "evidence": [
+        "deadline-before.log",
+        "deadline-after.log",
+        "full-gate/015/stdout.log"
+      ],
+      "result": "passed"
+    },
+    {
+      "section": "3 optional zor wrapper",
+      "evidence": [
+        "crates/zor/Cargo.toml",
+        "full-gate/gate.json",
+        "dependency-matrix.log"
+      ],
+      "result": "passed"
+    },
+    {
+      "section": "4 koh gateway isolation and standalone shell",
+      "evidence": [
+        "koh-gateway-isolation.patch",
+        "koh-provenance.json",
+        "koh-final-composition.log",
+        "koh-shell-tests.log",
+        "dependency-matrix.log"
+      ],
+      "result": "passed as verified local patch"
+    },
+    {
+      "section": "5 identity and remote supervision contract",
+      "evidence": [
+        "docs/service-ownership-contract.md",
+        "crates/zor/src/fux/endpoint.rs",
+        "koh-final-composition.log"
+      ],
+      "result": "passed"
+    },
+    {
+      "section": "6 structural and behavioral enforcement",
+      "evidence": [
+        "crates/fux/tests/structure/fux_client.rs",
+        "tools/xtask/src/boundaries.rs",
+        "full-gate/015/stdout.log"
+      ],
+      "result": "passed"
+    },
+    {
+      "section": "7 ordinary composition CI",
+      "evidence": [
+        ".github/workflows/ci.yml",
+        "pinned-gateway.log",
+        "pinned-reconnect.log",
+        "pinned-shell.log",
+        "pinned-provenance-check.txt",
+        "README.md"
+      ],
+      "result": "implemented with published gateway-only pin; targeted local publication verification"
+    },
+    {
+      "section": "behavioral acceptance 1-11",
+      "evidence": [
+        "docs/strict-boundary-implementation.md#behavioral-acceptance-evidence",
+        "full-gate/015/stdout.log",
+        "koh-final-composition.log",
+        "zor-stop.log"
+      ],
+      "result": "passed"
+    },
+    {
+      "section": "verification, separate review and handoff",
+      "evidence": [
+        "full-gate/gate.json",
+        "docs/strict-boundary-implementation.md",
+        "README.md",
+        "koh-provenance.json",
+        "dashboard"
+      ],
+      "result": "passed"
+    }
+  ],
+  "review": "Separate self-review; confirmed findings corrected and affected checks rerun. No independent agent reviewer.",
+  "external_steps_not_performed": [
+    "Inspect completed hosted CI",
+    "Configure branch protection if desired"
+  ],
+  "publication_basis": "User authorized commit and push all; koh published and fux pin/gateway-only CI activated.",
+  "post_gate_source_changes": [
+    "docs/strict-boundary-implementation.md: consolidated results",
+    "crates/zor/DESIGN.md: historical-proposal notice",
+    "tools/xtask/companions.json: published koh pin",
+    ".github/workflows/ci.yml: gateway-only flags and dependency check"
+  ],
+  "limitations": [
+    "Two optional installed Codex probes ignored",
+    "Retained authenticated/performance evidence checks are not new live model calls or release benchmarks",
+    "Three dashboard checkpoint images manually reviewed; all 412 rendered successfully",
+    "Three-target dependency resolution does not mean three-target runtime execution"
+  ],
+  "published_koh_commit": "da712875e4f527b718abe44e9d68f94048e916c7"
+}

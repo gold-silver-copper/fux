@@ -514,9 +514,9 @@ pub enum ReportKind {
     ResponseObserved,
 }
 
-/// `zor [FLAGS] <program> [args...]` wraps a program; `zor [FLAGS] <subcommand> ...` runs one
-/// of zor's own commands; `zor [FLAGS] -- <program> [args...]` always wraps, even when the
-/// program is named like a subcommand; bare `zor` wraps `$SHELL -l`.
+/// Agent observation and task coordination over fux.
+/// With the opt-in `wrap` feature, `zor [FLAGS] <program> [args...]` wraps a program,
+/// `zor -- <program>` escapes built-in command names, and bare `zor` wraps `$SHELL -l`.
 #[derive(Debug, Parser)]
 #[command(version, about, trailing_var_arg = true, subcommand_required = false)]
 pub struct Cli {

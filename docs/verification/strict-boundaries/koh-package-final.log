@@ -1,0 +1,30 @@
+   Packaging koh v0.12.1 (/tmp/strict-fux-koh-zor/koh-dev)
+warning: ignoring example `chaos` as `examples/chaos.rs` is not included in the published package
+warning: ignoring test `admission` as `tests/admission.rs` is not included in the published package
+warning: ignoring test `android_emulator` as `tests/android_emulator.rs` is not included in the published package
+warning: ignoring test `android_security` as `tests/android_security.rs` is not included in the published package
+warning: ignoring test `android_stress` as `tests/android_stress.rs` is not included in the published package
+warning: ignoring test `bell_hook` as `tests/bell_hook.rs` is not included in the published package
+warning: ignoring test `e2e_generic_host` as `tests/e2e_generic_host.rs` is not included in the published package
+warning: ignoring test `e2e_loopback` as `tests/e2e_loopback.rs` is not included in the published package
+warning: ignoring test `e2e_pty_binary` as `tests/e2e_pty_binary.rs` is not included in the published package
+warning: ignoring test `e2e_reconnect` as `tests/e2e_reconnect.rs` is not included in the published package
+warning: ignoring test `embed_contract` as `tests/embed_contract.rs` is not included in the published package
+warning: ignoring test `exit_status` as `tests/exit_status.rs` is not included in the published package
+warning: ignoring test `gateway` as `tests/gateway.rs` is not included in the published package
+warning: ignoring test `integration` as `tests/integration.rs` is not included in the published package
+warning: ignoring test `key_creation_race` as `tests/key_creation_race.rs` is not included in the published package
+warning: ignoring test `parity` as `tests/parity.rs` is not included in the published package
+warning: ignoring test `pty` as `tests/pty.rs` is not included in the published package
+warning: ignoring test `reattach` as `tests/reattach.rs` is not included in the published package
+warning: ignoring test `shared_session` as `tests/shared_session.rs` is not included in the published package
+warning: ignoring test `ssp_over_iroh` as `tests/ssp_over_iroh.rs` is not included in the published package
+warning: ignoring test `transport_fault_matrix` as `tests/transport_fault_matrix.rs` is not included in the published package
+    Updating crates.io index
+warning: package `chacha20 v0.10.0` in Cargo.lock is yanked in registry `crates-io`, consider updating to a version that is not yanked
+warning: package `der v0.8.0` in Cargo.lock is yanked in registry `crates-io`, consider updating to a version that is not yanked
+warning: package `spin v0.10.0` in Cargo.lock is yanked in registry `crates-io`, consider updating to a version that is not yanked
+    Packaged 51 files, 909.2KiB (253.0KiB compressed)
+   Verifying koh v0.12.1 (/tmp/strict-fux-koh-zor/koh-dev)
+   Compiling koh v0.12.1 (/tmp/strict-fux-koh-zor/koh-build/package/koh-0.12.1)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.34s

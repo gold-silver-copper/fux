@@ -1,0 +1,50 @@
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 15 tests
+test authenticated::tests::claude ... ok
+test authenticated::tests::codex ... ok
+test capture_authenticated::tests::secret_material_is_refused_and_previews_are_redacted ... ok
+test capture_integration::tests::full_adapter_backlog_cannot_block_capture_cleanup ... ok
+test capture_native::tests::complete_records_only_and_event_limit ... ok
+test capture_startup::tests::duration_rejected_before_filesystem_and_spawn ... ok
+test capture_startup::tests::original_publication_and_cleanup_failure_matrix ... ok
+test integration::tests::retained_contracts_and_original_mutations ... ok
+test lifecycle::tests::retained_traces_and_all_original_negative_cases ... ok
+test native_events::tests::retained_and_negative_cases ... ok
+test native_provider::tests::plain_tool_and_continuation_keep_stop_finish_and_owned_path ... ok
+test reload_fixture::tests::substitutes_only_the_final_plugin_and_preserves_other_configuration ... ok
+test resume::tests::native ... ok
+test resume::tests::zor ... ok
+test resume_proxy::tests::forwards_requests_and_drops_only_creation_reply ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+

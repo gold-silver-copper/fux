@@ -26,33 +26,15 @@ fn captured(text: &str, rows: u16, columns: u16) -> Captured {
         wrapped.pop();
     }
     let start = wrapped.len().saturating_sub(usize::from(rows));
-    let mut lines: Vec<serde_json::Value> = wrapped
+    let mut lines: Vec<String> = wrapped
         .get(start..)
         .unwrap_or_default()
         .iter()
-        .enumerate()
-        .map(|(row, chars)| {
-            let mut cells: Vec<serde_json::Value> = chars
-                .iter()
-                .map(|c| serde_json::json!({"text": c.to_string()}))
-                .collect();
-            if chars.len() < width {
-                cells.push(serde_json::json!({"run": width - chars.len()}));
-            }
-            serde_json::json!({"row": row, "wrapped": false, "cells": cells})
-        })
+        .map(|chars| chars.iter().collect())
         .collect();
-    while lines.len() < usize::from(rows) {
-        lines.push(
-            serde_json::json!({"row": lines.len(), "wrapped": false, "cells": [{"run": width}]}),
-        );
-    }
-    Captured::from_capture(&serde_json::json!({
-        "seq": 1, "input_sequence": 1, "revision": 1, "rows": rows, "columns": columns,
-        "cursor": {"row": 0, "column": 0, "hidden": false}, "title": "", "progress": null,
-        "unchanged": false, "truncated": false, "lines": lines,
-    }))
-    .expect("fixture capture is valid")
+    lines.resize(usize::from(rows), String::new());
+    Captured::from_lines(rows, columns, lines, String::new(), None)
+        .expect("fixture screen is valid")
 }
 
 struct Screen(String);

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The standalone PTY wrapper now requires the opt-in `wrap` feature. Default CLI builds
+  exclude production PTY allocation and terminal-emulator dependencies; dashboard geometry
+  uses an independent terminal-size type. Install the wrapper with `cargo install zor --features wrap`.
+- `zor run` uses the shared absolute-deadline RPC reader, so partial reply progress cannot
+  renew the request deadline.
+
 ## 0.5.0 - 2026-09-11
 
 - Requires fux 0.10.0: `input-reserve` and `split` carry zor's retention policy under fux's

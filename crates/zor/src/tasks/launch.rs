@@ -1,7 +1,7 @@
 //! Durable managed creation intent. Ambiguous creation is reconciled, never blindly repeated.
 use super::{model::*, store::Store};
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -70,42 +70,26 @@ pub(super) fn command(launch: &Launch) -> Vec<String> {
     argv.extend(launch.argv.clone());
     argv
 }
-pub(super) fn listing(launch: &Launch, deadline: Instant) -> Result<Value> {
-    let response = crate::fux::completed_until(
-        &launch.runtime.join(format!("{}.sock", launch.workspace)),
-        json!({"command":"list","id":1,"instance":launch.instance}),
+pub(super) fn listing(
+    launch: &Launch,
+    deadline: Instant,
+) -> Result<crate::fux::snapshot::WorkspaceSummary> {
+    let endpoint = crate::fux::endpoint::Endpoint::new(&launch.runtime);
+    let listing = crate::fux::snapshot::list(
+        &endpoint.workspace(&launch.workspace)?,
+        Some(&launch.instance),
         deadline,
     )?;
-    anyhow::ensure!(
-        response.get("id").and_then(Value::as_u64) == Some(1),
-        "fux reply ID mismatch"
-    );
-    let listing = response
-        .pointer("/result/value")
-        .context("missing fux listing")?;
-    anyhow::ensure!(
-        listing.get("instance").and_then(Value::as_str) == Some(&launch.instance),
-        "fux incarnation changed"
-    );
     let workspace = listing
-        .get("workspaces")
-        .and_then(Value::as_array)
-        .and_then(|spaces| {
-            spaces
-                .iter()
-                .find(|space| space.get("name").and_then(Value::as_str) == Some(&launch.workspace))
-        })
+        .workspaces
+        .into_iter()
+        .find(|space| space.name == launch.workspace)
         .context("launch workspace unavailable")?;
-    if launch.stream != 0 {
-        anyhow::ensure!(
-            workspace
-                .pointer("/event_cursor/stream")
-                .and_then(Value::as_u64)
-                == Some(launch.stream),
-            "launch workspace lifetime changed"
-        );
-    }
-    Ok(workspace.clone())
+    anyhow::ensure!(
+        launch.stream == 0 || workspace.event_cursor.stream == launch.stream,
+        "launch workspace lifetime changed"
+    );
+    Ok(workspace)
 }
 
 pub fn start(root: &Path, request: Start) -> Result<Value> {
@@ -199,14 +183,8 @@ pub fn start(root: &Path, request: Start) -> Result<Value> {
             "launch cwd belongs to a worktree with removal intent"
         );
         let workspace = listing(&launch, Instant::now() + Duration::from_secs(2))?;
-        launch.stream = workspace
-            .pointer("/event_cursor/stream")
-            .and_then(Value::as_u64)
-            .context("workspace stream missing")?;
-        launch.event_sequence = workspace
-            .pointer("/event_cursor/sequence")
-            .and_then(Value::as_u64)
-            .context("workspace sequence missing")?;
+        launch.stream = workspace.event_cursor.stream;
+        launch.event_sequence = workspace.event_cursor.sequence;
         store.transaction(|journal| {
             journal.launches.insert(launch.id.clone(), launch);
             Ok(())
@@ -247,27 +225,30 @@ pub(super) fn submit_prepared(root: &Path, store: &mut Store, id: &str) -> Resul
                 .context("launch missing")?
                 .begin_submission()
         })?;
-        let response = crate::fux::completed_until(
-            &launch.runtime.join(format!("{}.sock", launch.workspace)),
-            json!({"command":"split","axis":"horizontal","id":1,"instance":launch.instance,"stream":launch.stream,"cwd":launch.cwd,"argv":command(&launch),"fixed_workspace":true,"final_retain_ms":LAUNCH_FINAL_RETAIN_MS}),
+        let response = crate::fux::pane::split(
+            &crate::fux::endpoint::Endpoint::new(&launch.runtime).workspace(&launch.workspace)?,
+            &launch.instance,
+            crate::fux::pane::Spawn {
+                stream: launch.stream,
+                cwd: Some(&launch.cwd),
+                argv: &command(&launch),
+                env: &[],
+                rows: None,
+                columns: None,
+                fixed_workspace: true,
+                final_retain_ms: LAUNCH_FINAL_RETAIN_MS,
+            },
             Instant::now() + Duration::from_secs(6),
         );
         match response {
-            Ok(response) => {
-                if let Some(pane) = response
-                    .pointer("/result/value/pane")
-                    .and_then(Value::as_u64)
-                    .and_then(|p| u32::try_from(p).ok())
-                    .filter(|p| *p > 0)
-                {
-                    store.transaction(|journal| {
-                        journal
-                            .launches
-                            .get_mut(id)
-                            .context("launch missing")?
-                            .record_created_pane(pane)
-                    })?;
-                }
+            Ok(pane) => {
+                store.transaction(|journal| {
+                    journal
+                        .launches
+                        .get_mut(id)
+                        .context("launch missing")?
+                        .record_created_pane(pane)
+                })?;
             }
             Err(error) => {
                 uncertain(store, id, &error)?;
@@ -316,38 +297,24 @@ fn reconcile_locked(store: &mut Store, id: &str) -> Result<Value> {
     }
     let result = (|| -> Result<()> {
         let workspace = listing(&launch, Instant::now() + Duration::from_secs(2))?;
-        let expected = serde_json::to_value(command(&launch))?;
+        let expected = command(&launch);
         let panes: Vec<_> = workspace
-            .get("tabs")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|tab| tab.get("panes").and_then(Value::as_array))
-            .flatten()
-            .filter(|pane| pane.get("command") == Some(&expected))
+            .tabs
+            .iter()
+            .flat_map(|tab| &tab.panes)
+            .filter(|pane| pane.command == expected)
             .collect();
         anyhow::ensure!(
             panes.len() == 1,
             "launch marker has no unique live pane; creation may be pending, closed or lost"
         );
         let pane = panes.first().context("launch pane missing")?;
-        let pane_id = pane
-            .get("id")
-            .and_then(Value::as_u64)
-            .and_then(|p| u32::try_from(p).ok())
-            .filter(|p| *p > 0)
-            .context("invalid pane ID")?;
+        let pane_id = pane.id;
         anyhow::ensure!(
-            launch.pane.is_none_or(|expected| expected == pane_id)
-                && pane.get("cwd") == Some(&serde_json::to_value(&launch.cwd)?),
+            launch.pane.is_none_or(|expected| expected == pane_id) && pane.cwd == launch.cwd,
             "launch pane identity/cwd mismatch"
         );
-        let pid = pane
-            .get("pid")
-            .and_then(Value::as_u64)
-            .and_then(|p| u32::try_from(p).ok())
-            .filter(|p| *p > 0)
-            .context("launch process is no longer live")?;
+        let pid = pane.pid.context("launch process is no longer live")?;
         attach(store, &launch, pane_id, Some(pid), None)
     })();
     if let Err(live_error) = result {
@@ -461,18 +428,9 @@ fn reconcile_attached(store: &mut Store, launch: &Launch) -> Result<Value> {
 /// Same-user live listing, deliberately unpinned only to identify a replacement.
 /// No pane from this response can become the retained session's target.
 fn replacement_instance(target: &Target) -> Option<String> {
-    let response = crate::fux::request_until(
-        &target.runtime.join("manager.sock"),
-        json!({"request":"info"}),
-        Instant::now() + Duration::from_secs(2),
-    )
-    .ok()?;
-    if response.get("reply").and_then(Value::as_str) != Some("info") {
-        return None;
-    }
-    let instance = response.pointer("/info/instance_nonce")?.as_str()?;
-    (!instance.is_empty() && instance.len() <= 128 && instance != target.instance)
-        .then(|| instance.to_owned())
+    let info =
+        crate::fux::info::manager(&target.runtime, Instant::now() + Duration::from_secs(2)).ok()?;
+    (info.instance_nonce != target.instance).then_some(info.instance_nonce)
 }
 
 fn attach(
@@ -558,47 +516,21 @@ fn recover_final(launch: &Launch) -> Result<(u32, LaunchFinal)> {
     let pane = if let Some(pane) = launch.pane {
         pane
     } else {
-        let response = crate::fux::completed_until(
-            &launch.runtime.join(format!("{}.sock", launch.workspace)),
-            json!({"command":"events","id":1,"instance":launch.instance,
-                "after":{"stream":launch.stream,"sequence":launch.event_sequence}}),
+        let replay = crate::fux::events::replay(
+            &crate::fux::endpoint::Endpoint::new(&launch.runtime).workspace(&launch.workspace)?,
+            &launch.instance,
+            crate::fux::events::Cursor {
+                stream: launch.stream,
+                sequence: launch.event_sequence,
+            },
             deadline,
         )?;
-        anyhow::ensure!(
-            response.get("id").and_then(Value::as_u64) == Some(1),
-            "event reply ID mismatch"
-        );
-        let replay = response
-            .pointer("/result/value")
-            .context("event replay missing")?;
-        anyhow::ensure!(
-            replay.pointer("/cursor/stream").and_then(Value::as_u64) == Some(launch.stream),
-            "event stream changed"
-        );
-        let events = replay
-            .get("events")
-            .and_then(Value::as_array)
-            .context("event replay missing")?;
-        let expected = serde_json::to_value(command(launch))?;
+        let expected = command(launch);
         let mut found = None;
-        for event in events {
-            if event.get("event").and_then(Value::as_str) == Some("pane.opened")
-                && event.get("command") == Some(&expected)
+        for event in replay.events {
+            if let crate::fux::events::Event::PaneOpened { pane, command, .. } = event
+                && command == expected
             {
-                anyhow::ensure!(
-                    event.pointer("/cursor/stream").and_then(Value::as_u64) == Some(launch.stream)
-                        && event
-                            .pointer("/cursor/sequence")
-                            .and_then(Value::as_u64)
-                            .is_some_and(|s| s > launch.event_sequence),
-                    "launch event cursor mismatch"
-                );
-                let pane = event
-                    .get("pane")
-                    .and_then(Value::as_u64)
-                    .and_then(|p| u32::try_from(p).ok())
-                    .filter(|p| *p > 0)
-                    .context("invalid launch event pane")?;
                 anyhow::ensure!(
                     found.is_none(),
                     "launch marker has multiple creation events"

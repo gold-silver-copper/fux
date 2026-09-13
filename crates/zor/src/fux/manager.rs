@@ -17,6 +17,10 @@ enum Operation {
 #[derive(Serialize)]
 #[serde(tag = "request", rename_all = "kebab-case")]
 enum Request<'a> {
+    List,
+    Create {
+        name: &'a str,
+    },
     PaneLocation {
         instance: &'a str,
         pane: u32,
@@ -35,6 +39,113 @@ enum Request<'a> {
         pane: u32,
         pid: u32,
     },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Descriptor {
+    pub stream: u64,
+    pub name: String,
+    pub pid: u32,
+    pub instance_nonce: String,
+    pub socket_path: std::path::PathBuf,
+}
+#[derive(Deserialize)]
+#[serde(tag = "reply", rename_all = "kebab-case", deny_unknown_fields)]
+enum CreationReply {
+    Attach { descriptor: Descriptor },
+    Failed { message: String },
+}
+use super::error::Refused as CreationRefused;
+
+fn decode_creation(value: Value, name: &str) -> Result<Descriptor> {
+    super::error::reply(|| {
+        match serde_json::from_value(value).context("invalid workspace creation reply")? {
+            CreationReply::Attach { descriptor } => {
+                ensure!(
+                    descriptor.name == name && super::endpoint::valid_name(name),
+                    "created workspace name mismatch"
+                );
+                ensure!(
+                    descriptor.stream != 0 && descriptor.pid != 0,
+                    "invalid workspace descriptor identity"
+                );
+                ensure!(
+                    !descriptor.instance_nonce.is_empty()
+                        && descriptor.instance_nonce.len() <= 128
+                        && !descriptor
+                            .instance_nonce
+                            .chars()
+                            .any(|c| c.is_whitespace() || c == '\0'),
+                    "invalid workspace instance"
+                );
+                ensure!(
+                    descriptor.socket_path.is_absolute(),
+                    "invalid workspace attachment path"
+                );
+                Ok(descriptor)
+            }
+            CreationReply::Failed { message } => Err(CreationRefused(message).into()),
+        }
+    })
+}
+
+/// Decodes the manager envelope printed by the fux CLI; startup authority stays in the caller.
+pub(crate) fn created_from_cli(bytes: &[u8], name: &str) -> Result<Descriptor> {
+    super::error::reply(|| {
+        ensure!(
+            bytes.len() <= super::MAX_REPLY,
+            "workspace creation reply exceeds limit"
+        );
+        decode_creation(
+            serde_json::from_slice(bytes).context("invalid fux CLI reply")?,
+            name,
+        )
+    })
+}
+
+pub(crate) fn create(runtime: &Path, name: &str, deadline: Instant) -> Result<Descriptor> {
+    ensure!(super::endpoint::valid_name(name), "invalid workspace name");
+    decode_creation(
+        super::request_until(
+            &super::endpoint::Endpoint::new(runtime).manager(),
+            serde_json::to_value(Request::Create { name })?,
+            deadline,
+        )?,
+        name,
+    )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "reply", rename_all = "kebab-case", deny_unknown_fields)]
+enum DiscoveryReply {
+    Names { names: Vec<String> },
+    Failed { message: String },
+}
+
+fn decode_names(value: Value) -> Result<Vec<String>> {
+    super::error::reply(|| {
+        match serde_json::from_value(value).context("invalid workspace discovery reply")? {
+            DiscoveryReply::Names { names } => {
+                ensure!(names.len() <= 64, "workspace discovery limit exceeded");
+                let mut seen = std::collections::BTreeSet::new();
+                for name in &names {
+                    ensure!(super::endpoint::valid_name(name), "invalid workspace name");
+                    ensure!(seen.insert(name), "duplicate workspace discovery");
+                }
+                Ok(names)
+            }
+            DiscoveryReply::Failed { message } => Err(super::error::Refused(message).into()),
+        }
+    })
+}
+
+pub(crate) fn names(runtime: &Path, deadline: Instant) -> Result<Vec<String>> {
+    decode_names(super::request_until(
+        &super::endpoint::Endpoint::new(runtime).manager(),
+        serde_json::to_value(Request::List)?,
+        deadline,
+    )?)
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,24 +211,11 @@ pub(crate) enum FinalOutcome {
     Pending,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RemoteError {
-    code: String,
-    message: String,
-}
-impl std::fmt::Display for RemoteError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
-    }
-}
-impl std::error::Error for RemoteError {}
+use super::error::RemoteFailure as RemoteError;
 
 /// Only validated remote failures expose a code; malformed envelopes never do.
 pub(crate) fn remote_code(error: &anyhow::Error) -> Option<&str> {
-    error
-        .downcast_ref::<RemoteError>()
-        .map(|error| error.code.as_str())
+    super::error::remote_code(error)
 }
 
 #[derive(Deserialize)]
@@ -134,28 +232,30 @@ struct Envelope {
 }
 
 fn decode(value: Value, expected: Operation) -> Result<Payload> {
-    let envelope: Envelope = serde_json::from_value(value).context("invalid manager reply")?;
-    ensure!(envelope.reply == expected, "unexpected manager operation");
-    match envelope.result {
-        ControlReply::Completed { id, result } => {
-            ensure!(id == 0, "unexpected manager request identity");
-            ensure!(
-                matches!(
-                    (&result, expected),
-                    (Payload::Unit, Operation::ReleasePanePin)
-                        | (Payload::Input { .. }, Operation::InputStatus)
-                        | (Payload::Final { .. }, Operation::Final)
-                        | (Payload::PaneLocation { .. }, Operation::PaneLocation)
-                ),
-                "unexpected manager result kind"
-            );
-            Ok(result)
+    super::error::reply(|| {
+        let envelope: Envelope = serde_json::from_value(value).context("invalid manager reply")?;
+        ensure!(envelope.reply == expected, "unexpected manager operation");
+        match envelope.result {
+            ControlReply::Completed { id, result } => {
+                ensure!(id == 0, "unexpected manager request identity");
+                ensure!(
+                    matches!(
+                        (&result, expected),
+                        (Payload::Unit, Operation::ReleasePanePin)
+                            | (Payload::Input { .. }, Operation::InputStatus)
+                            | (Payload::Final { .. }, Operation::Final)
+                            | (Payload::PaneLocation { .. }, Operation::PaneLocation)
+                    ),
+                    "unexpected manager result kind"
+                );
+                Ok(result)
+            }
+            ControlReply::Failed { id, error } => {
+                ensure!(id == 0, "unexpected manager request identity");
+                Err(error.into())
+            }
         }
-        ControlReply::Failed { id, error } => {
-            ensure!(id == 0, "unexpected manager request identity");
-            Err(error.into())
-        }
-    }
+    })
 }
 
 pub(crate) fn locate(
@@ -165,7 +265,11 @@ pub(crate) fn locate(
     deadline: Instant,
 ) -> Result<Location> {
     let request = serde_json::to_value(Request::PaneLocation { instance, pane })?;
-    let reply = super::request_until(&runtime.join("manager.sock"), request, deadline)?;
+    let reply = super::request_until(
+        &super::endpoint::Endpoint::new(runtime).manager(),
+        request,
+        deadline,
+    )?;
     match decode(reply, Operation::PaneLocation)? {
         Payload::PaneLocation { location } => Ok(location),
         _ => anyhow::bail!("unexpected location result"),
@@ -184,7 +288,11 @@ pub(crate) fn release_pin(
         pane,
         pid,
     })?;
-    let reply = super::request_until(&runtime.join("manager.sock"), request, deadline)?;
+    let reply = super::request_until(
+        &super::endpoint::Endpoint::new(runtime).manager(),
+        request,
+        deadline,
+    )?;
     decode(reply, Operation::ReleasePanePin)?;
     Ok(())
 }
@@ -196,12 +304,16 @@ pub(crate) fn final_record(
     deadline: Instant,
 ) -> Result<FinalOutcome> {
     let request = serde_json::to_value(Request::Final { instance, pane })?;
-    let reply = super::request_until(&runtime.join("manager.sock"), request, deadline)?;
+    let reply = super::request_until(
+        &super::endpoint::Endpoint::new(runtime).manager(),
+        request,
+        deadline,
+    )?;
     decode_final(reply)
 }
 
 fn decode_final(reply: Value) -> Result<FinalOutcome> {
-    match decode(reply, Operation::Final) {
+    super::error::reply(|| match decode(reply, Operation::Final) {
         Ok(Payload::Final { record }) => Ok(FinalOutcome::Record(record)),
         Ok(_) => anyhow::bail!("unexpected final result"),
         Err(error) => {
@@ -210,13 +322,13 @@ fn decode_final(reply: Value) -> Result<FinalOutcome> {
                 .map(|error| error.code.as_str())
             {
                 Some("pending") => Ok(FinalOutcome::Pending),
-                Some("evicted") => anyhow::bail!(
-                    "fux dropped the final record under load before its retention elapsed; the exit evidence is lost and cannot be retried ({error})"
-                ),
+                Some("evicted") => Err(error.context(
+                    "fux dropped the final record under load before its retention elapsed; the exit evidence is lost and cannot be retried"
+                )),
                 _ => Err(error.context("final evidence unavailable")),
             }
         }
-    }
+    })
 }
 
 pub(crate) fn input_status(
@@ -231,7 +343,11 @@ pub(crate) fn input_status(
         pane,
         operation,
     })?;
-    let reply = super::request_until(&runtime.join("manager.sock"), request, deadline)?;
+    let reply = super::request_until(
+        &super::endpoint::Endpoint::new(runtime).manager(),
+        request,
+        deadline,
+    )?;
     match decode(reply, Operation::InputStatus)? {
         Payload::Input { receipt } => Ok(receipt),
         _ => anyhow::bail!("unexpected input status result"),
@@ -239,25 +355,93 @@ pub(crate) fn input_status(
 }
 
 pub(super) fn decode_input_control(reply: Value) -> Result<super::input::Receipt> {
-    match serde_json::from_value::<ControlReply>(reply).context("invalid input reply")? {
-        ControlReply::Completed {
-            id,
-            result: Payload::Input { receipt },
-        } => {
-            ensure!(id == 1, "unexpected input request identity");
-            Ok(receipt)
+    super::error::reply(|| {
+        match serde_json::from_value::<ControlReply>(reply).context("invalid input reply")? {
+            ControlReply::Completed {
+                id,
+                result: Payload::Input { receipt },
+            } => {
+                ensure!(id == 1, "unexpected input request identity");
+                Ok(receipt)
+            }
+            ControlReply::Failed { id, error } => {
+                ensure!(id == 1, "unexpected input request identity");
+                Err(error.into())
+            }
+            _ => anyhow::bail!("unexpected input result kind"),
         }
-        ControlReply::Failed { id, error } => {
-            ensure!(id == 1, "unexpected input request identity");
-            Err(error.into())
-        }
-        _ => anyhow::bail!("unexpected input result kind"),
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creation_requires_complete_descriptor_and_matching_name() -> Result<()> {
+        use serde_json::json;
+        let request: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/manager/request_create_client.json"
+        ))?;
+        assert_eq!(
+            serde_json::to_value(Request::Create { name: "run" })?,
+            request
+        );
+        let bytes = include_bytes!("../../tests/fixtures/manager/reply_create_client.json");
+        let descriptor = created_from_cli(bytes, "run")?;
+        assert_eq!(descriptor.stream, 1);
+        assert_eq!(descriptor.instance_nonce, "owner");
+        assert!(created_from_cli(bytes, "other").is_err());
+        let valid: Value = serde_json::from_slice(bytes)?;
+        for (path, value) in [
+            ("/reply", json!("names")),
+            ("/descriptor/stream", json!(0)),
+            ("/descriptor/pid", json!(0)),
+            ("/descriptor/instance_nonce", json!("")),
+            ("/descriptor/instance_nonce", json!("with space")),
+            ("/descriptor/socket_path", json!("relative")),
+            ("/descriptor/name", json!("other")),
+        ] {
+            let mut invalid = valid.clone();
+            *invalid.pointer_mut(path).context("fixture field")? = value;
+            assert!(decode_creation(invalid, "run").is_err(), "accepted {path}");
+        }
+        for field in ["stream", "pid", "instance_nonce", "socket_path", "name"] {
+            let mut invalid = valid.clone();
+            invalid
+                .get_mut("descriptor")
+                .and_then(Value::as_object_mut)
+                .context("descriptor")?
+                .remove(field);
+            assert!(decode_creation(invalid, "run").is_err(), "missing {field}");
+        }
+        let error = decode_creation(json!({"reply":"failed","message":"exists"}), "run")
+            .err()
+            .context("expected refusal")?;
+        assert!(error.downcast_ref::<CreationRefused>().is_some());
+        assert!(created_from_cli(b"not json", "run").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_requires_exact_reply_and_safe_unique_names() -> Result<()> {
+        assert_eq!(
+            decode_names(serde_json::json!({"reply":"names","names":["one","two"]}))?,
+            vec!["one", "two"]
+        );
+        for invalid in [
+            serde_json::json!({"names":[]}),
+            serde_json::json!({"reply":"info","names":[]}),
+            serde_json::json!({"reply":"names","names":[],"extra":true}),
+            serde_json::json!({"reply":"names","names":["../escape"]}),
+            serde_json::json!({"reply":"names","names":["one","one"]}),
+            serde_json::json!({"reply":"names","names":[null]}),
+            serde_json::json!({"reply":"failed","message":"unavailable"}),
+        ] {
+            assert!(decode_names(invalid).is_err());
+        }
+        Ok(())
+    }
     use serde_json::json;
 
     #[test]

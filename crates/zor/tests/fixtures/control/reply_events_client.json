@@ -1,0 +1,38 @@
+{
+  "status": "completed",
+  "id": 1,
+  "result": {
+    "kind": "events",
+    "value": {
+      "cursor": {
+        "stream": 2,
+        "sequence": 12
+      },
+      "events": [
+        {
+          "event": "pane.opened",
+          "id": 0,
+          "cursor": {
+            "stream": 2,
+            "sequence": 11
+          },
+          "pane": 4,
+          "tab": 1,
+          "command": [
+            "/bin/sh"
+          ]
+        },
+        {
+          "event": "pane.closed",
+          "id": 0,
+          "cursor": {
+            "stream": 2,
+            "sequence": 12
+          },
+          "pane": 4,
+          "exit_status": 0
+        }
+      ]
+    }
+  }
+}

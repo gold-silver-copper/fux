@@ -6,11 +6,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-    inputs:
-      integrations:
-        description: Verify the optional koh process integration
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -77,6 +72,8 @@ jobs:
       - run: cargo +${{ matrix.rust }} check -p zor --no-default-features --all-targets --locked
       - run: cargo +${{ matrix.rust }} doc --workspace --no-deps --locked
       - run: cargo +${{ matrix.rust }} doc -p zor --no-deps --all-features --locked
+      - name: Verify resolved ownership and feature dependency closures
+        run: cargo +stable run --locked --manifest-path tools/xtask/Cargo.toml -- verify-boundaries
       - name: Check zor protocol-layer isolation
         run: '! grep -rE "crate::(emit|platform|pty|rules|screen|state)" crates/zor/src/osc.rs'
       - name: Check zor rules and state layering
@@ -150,8 +147,7 @@ jobs:
       - run: cargo check -p zor --no-default-features --target aarch64-linux-android --locked
 
   cross-repository:
-    name: Optional koh integration
-    if: github.event_name == 'workflow_dispatch' && inputs.integrations
+    name: Pinned koh composition
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -162,19 +158,26 @@ jobs:
       - run: |
           cargo build --locked -p fux --bin fux
           cargo build --locked -p zor --no-default-features --features cli --bin zor
+      - name: Verify gateway-only dependency closure
+        run: cargo run --locked --manifest-path tools/xtask/Cargo.toml -- verify-boundaries --koh references/koh
       - name: Verify koh gateway against the exact fux and zor binaries
         env:
           FUX_BIN: ${{ github.workspace }}/target/debug/fux
           ZOR_BIN: ${{ github.workspace }}/target/debug/zor
           KOH_REQUIRE_FUX_BIN: "1"
           KOH_REQUIRE_ZOR_BIN: "1"
-        run: cargo test --manifest-path references/koh/Cargo.toml --test gateway --locked
+        run: cargo test --manifest-path references/koh/Cargo.toml --no-default-features --features cli,gateway --test gateway --locked
       - name: Verify gateway reconnect with the exact fux binary
         env:
           FUX_BIN: ${{ github.workspace }}/target/debug/fux
           KOH_REQUIRE_FUX_BIN: "1"
         run: |
-          cargo test --manifest-path references/koh/Cargo.toml --lib gateway:: --locked
+          cargo test --manifest-path references/koh/Cargo.toml --no-default-features --features cli,gateway --lib gateway:: --locked
+
+      - name: Verify standalone koh shell and generic admission
+        run: cargo test --manifest-path references/koh/Cargo.toml --locked --test pty --test admission --test e2e_loopback
+      - name: Recheck companion provenance after testing
+        run: cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify
 
   package:
     name: Standalone package

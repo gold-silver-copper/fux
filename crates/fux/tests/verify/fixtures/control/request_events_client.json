@@ -1,0 +1,9 @@
+{
+  "command": "events",
+  "id": 1,
+  "instance": "owner",
+  "after": {
+    "stream": 2,
+    "sequence": 10
+  }
+}

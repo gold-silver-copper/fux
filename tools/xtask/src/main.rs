@@ -1,4 +1,5 @@
 //! Repository development tooling, never linked into the fux runtime.
+mod boundaries;
 mod codebase;
 mod dependencies;
 mod evidence;
@@ -31,6 +32,7 @@ fn main() -> std::process::ExitCode {
     let result = (|| -> anyhow::Result<()> {
         let mut args = std::env::args().skip(1);
         match args.next().as_deref() {
+            Some("verify-boundaries") => boundaries::run(args.collect()),
             Some("verify-codebase") => codebase::run(args.collect()),
             Some("dependencies") => dependencies::run(args.collect()),
             Some("scenario") => fux_xtask::scenarios::run(args.collect()),

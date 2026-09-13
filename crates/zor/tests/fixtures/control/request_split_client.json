@@ -1,0 +1,23 @@
+{
+  "command": "split",
+  "id": 1,
+  "instance": "owner",
+  "axis": "horizontal",
+  "stream": 2,
+  "cwd": "/tmp",
+  "argv": [
+    "/bin/sh",
+    "-c",
+    "printf literal"
+  ],
+  "env": [
+    [
+      "ROLE",
+      "fixture"
+    ]
+  ],
+  "rows": 24,
+  "columns": 80,
+  "fixed_workspace": true,
+  "final_retain_ms": 60000
+}

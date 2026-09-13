@@ -368,7 +368,10 @@ pub fn run_daemon(
 ) -> Result<u8> {
     // The bootstrap socket is inherited as stdin, never located by a PID/path race.
     let mut channel = UnixStream::from(std::io::stdin().as_fd().try_clone_to_owned()?);
-    crate::fux::same_user(&channel)?;
+    anyhow::ensure!(
+        local_ipc::peer_is_current_user(&channel)?,
+        "bootstrap peer belongs to another user"
+    );
     channel.set_read_timeout(Some(Duration::from_secs(3)))?;
     channel.set_write_timeout(Some(Duration::from_secs(3)))?;
     let result = nix::unistd::setsid()
@@ -572,7 +575,9 @@ fn serve(
         for _ in 0..MAX_CLIENTS {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    if clients.len() >= MAX_CLIENTS || crate::fux::same_user(&stream).is_err() {
+                    if clients.len() >= MAX_CLIENTS
+                        || !local_ipc::peer_is_current_user(&stream).unwrap_or(false)
+                    {
                         continue;
                     }
                     stream.set_nonblocking(true)?;
@@ -668,9 +673,12 @@ fn request(root: &Path, value: Value) -> Result<Value> {
 }
 
 fn request_until(root: &Path, value: Value, deadline: Instant) -> Result<Value> {
-    let mut stream = crate::fux::connect(&root.join("control.sock"), deadline)
+    let mut stream = local_ipc::connect_until(&root.join("control.sock"), deadline)
         .context("zor service unavailable; start `zor serve` with the same --directory")?;
-    crate::fux::same_user(&stream)?;
+    anyhow::ensure!(
+        local_ipc::peer_is_current_user(&stream)?,
+        "service socket belongs to another user"
+    );
     let mut bytes = serde_json::to_vec(&value)?;
     bytes.push(b'\n');
     local_ipc::write_all_until(

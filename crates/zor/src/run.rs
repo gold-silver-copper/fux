@@ -5,13 +5,9 @@
 //! is durable and no zor service is involved. Cleanup owns the created workspace and exact
 //! launched pane, including when that pane moves to another workspace.
 use anyhow::{Context, Result, bail};
-use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-/// The largest reply frame a run reads; fux's own frame limit.
-const MAX_REPLY: usize = 1024 * 1024;
 
 /// A run reads the record within its own poll loop, so the record only has to outlive the last
 /// `final` poll before the run's deadline: one request round trip after `--timeout`.
@@ -94,43 +90,18 @@ pub fn run(request: Run) -> Result<u8> {
 /// Creation is create-only in the manager, so a name that already exists is refused rather
 /// than borrowed.
 fn create_workspace(runtime: &Path, name: &str, deadline: Instant) -> Result<Owned> {
-    let manager = runtime.join("manager.sock");
-    let control = runtime.join(format!("{name}.sock"));
+    let endpoint = crate::fux::endpoint::Endpoint::new(runtime);
+    let control = endpoint.workspace(name)?;
     let limit = deadline.min(Instant::now() + Duration::from_secs(15));
-    let reply = match exchange(&manager, &json!({"request":"create","name":name}), limit) {
-        Ok(reply) => reply,
+    let descriptor = match crate::fux::manager::create(runtime, name, limit) {
+        Ok(descriptor) => descriptor,
         Err(error) if no_server(&error) => start_server(name, deadline)?,
         Err(error) => return Err(error),
     };
-    let descriptor = match reply.get("reply").and_then(Value::as_str) {
-        Some("attach") => reply
-            .get("descriptor")
-            .context("attach descriptor missing")?,
-        Some("failed") => bail!(
-            "run requires a fresh workspace: {}",
-            reply.get("message").and_then(Value::as_str).unwrap_or("")
-        ),
-        _ => bail!("manager did not confirm workspace creation: {reply}"),
-    };
-    let stream = descriptor
-        .get("stream")
-        .and_then(Value::as_u64)
-        .filter(|stream| *stream > 0)
-        .context("workspace descriptor without a stream")?;
-    let instance = descriptor
-        .get("instance_nonce")
-        .and_then(Value::as_str)
-        .filter(|nonce| !nonce.is_empty())
-        .context("workspace descriptor without an instance")?
-        .to_owned();
-    anyhow::ensure!(
-        descriptor.get("name").and_then(Value::as_str) == Some(name),
-        "manager created a different workspace"
-    );
     Ok(Owned {
         name: name.to_owned(),
-        stream,
-        instance,
+        stream: descriptor.stream,
+        instance: descriptor.instance_nonce,
         control,
         pane: None,
     })
@@ -140,7 +111,7 @@ fn create_workspace(runtime: &Path, name: &str, deadline: Instant) -> Result<Own
 /// is the run's. The descriptor it prints must carry stream 1, the mark of a fresh server's
 /// first workspace; anything else means another server won startup and the name was resolved
 /// against it, which a run never borrows.
-fn start_server(name: &str, deadline: Instant) -> Result<Value> {
+fn start_server(name: &str, deadline: Instant) -> Result<crate::fux::manager::Descriptor> {
     let mut command = std::process::Command::new("fux");
     command.args(["workspace", "new", name]);
     let output = crate::platform::process::run_command(&mut command, deadline)
@@ -150,13 +121,12 @@ fn start_server(name: &str, deadline: Instant) -> Result<Value> {
         "fux session server startup failed: {}",
         String::from_utf8_lossy(&output.stderr).trim()
     );
-    let reply: Value = serde_json::from_slice(&output.stdout)
-        .context("fux workspace new did not print a manager reply")?;
+    let descriptor = crate::fux::manager::created_from_cli(&output.stdout, name)?;
     anyhow::ensure!(
-        reply.pointer("/descriptor/stream").and_then(Value::as_u64) == Some(1),
+        descriptor.stream == 1,
         "initial workspace was replaced during startup"
     );
-    Ok(reply)
+    Ok(descriptor)
 }
 
 fn run_in_workspace(
@@ -178,28 +148,21 @@ fn run_in_workspace(
             })
     };
     remaining()?;
-    let split = exchange(
+    let pane = u64::from(crate::fux::pane::split(
         &owned.control,
-        &json!({"command":"split","id":2,"instance":owned.instance,"stream":owned.stream,
-            "axis":"horizontal","cwd":cwd,"argv":request.argv,"env":request.env,
-            "rows":request.rows,"columns":request.columns,
-            "fixed_workspace":true,"final_retain_ms":final_retain_ms(request.timeout_ms)}),
+        &owned.instance,
+        crate::fux::pane::Spawn {
+            stream: owned.stream,
+            cwd: cwd.as_deref(),
+            argv: &request.argv,
+            env: &request.env,
+            rows: request.rows,
+            columns: request.columns,
+            fixed_workspace: true,
+            final_retain_ms: final_retain_ms(request.timeout_ms),
+        },
         deadline,
-    )?;
-    let pane = match split.get("status").and_then(Value::as_str) {
-        Some("completed") => split
-            .pointer("/result/value/pane")
-            .and_then(Value::as_u64)
-            .context("split reply without a pane")?,
-        Some("failed") => bail!(
-            "run could not start the command: {}",
-            split
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-        ),
-        _ => bail!("unexpected split reply: {split}"),
-    };
+    )?);
     owned.pane = Some(pane);
     let mut released = false;
     // The manager retains authoritative evidence even when the pane exits before its launch
@@ -280,12 +243,8 @@ fn pane_location(
                 match crate::fux::manager::remote_code(&error) {
                     Some("not-found") => return Ok(None),
                     Some("conflict") => {
-                        let info = exchange(
-                            &runtime.join("manager.sock"),
-                            &json!({"request":"info"}),
-                            deadline,
-                        )?;
-                        if different_instance(owned, &info)? {
+                        let info = crate::fux::info::manager(runtime, deadline)?;
+                        if info.instance_nonce != owned.instance {
                             return Ok(None);
                         }
                     }
@@ -296,20 +255,6 @@ fn pane_location(
         };
     validate_location(owned, &location)?;
     Ok(Some(location))
-}
-
-/// Replacement discovery releases old ownership; it never grants authority over the new server.
-fn different_instance(owned: &Owned, info: &Value) -> Result<bool> {
-    anyhow::ensure!(
-        info.get("reply").and_then(Value::as_str) == Some("info"),
-        "unexpected server info: {info}"
-    );
-    let instance = info
-        .pointer("/info/instance_nonce")
-        .and_then(Value::as_str)
-        .filter(|instance| !instance.is_empty())
-        .context("server info without instance")?;
-    Ok(instance != owned.instance)
 }
 
 fn validate_location(owned: &Owned, location: &crate::fux::manager::Location) -> Result<()> {
@@ -338,19 +283,17 @@ fn release_pane(runtime: &Path, owned: &Owned) -> Result<()> {
             Err(error) if no_server(&error) => return Ok(()),
             Err(error) => return Err(error),
         };
-        let reply = exchange(
-            &runtime.join(format!("{}.sock", location.workspace)),
-            &json!({"command":"kill","id":4,"instance":owned.instance,"pane":location.pane}),
+        let reply = crate::fux::pane::act(
+            &crate::fux::endpoint::Endpoint::new(runtime).workspace(&location.workspace)?,
+            &owned.instance,
+            location.pane,
+            crate::fux::pane::Action::Kill,
             deadline,
         );
         match reply {
-            Ok(reply) if reply.get("status").and_then(Value::as_str) == Some("completed") => {
-                return Ok(());
-            }
-            Ok(reply)
-                if reply.pointer("/error/code").and_then(Value::as_str) == Some("not-found") => {}
+            Ok(()) => return Ok(()),
+            Err(error) if crate::fux::pane::remote_code(&error) == Some("not-found") => (),
             Err(error) if no_server(&error) => (),
-            Ok(reply) => bail!("run pane cleanup failed: {reply}"),
             Err(error) => return Err(error),
         }
         anyhow::ensure!(
@@ -364,65 +307,30 @@ fn release_pane(runtime: &Path, owned: &Owned) -> Result<()> {
 /// Kills the owned workspace, pinned to its instance and stream. A listener that is already gone,
 /// a replaced workspace or a missing one all mean there is nothing of ours left to release.
 fn release_workspace(owned: &Owned) -> Result<()> {
-    let reply = match exchange(
+    match crate::fux::pane::kill_workspace(
         &owned.control,
-        &json!({"command":"workspace","id":3,"instance":owned.instance,"stream":owned.stream,
-            "action":{"kill":{"name":owned.name}}}),
+        &owned.instance,
+        owned.stream,
+        &owned.name,
         Instant::now() + Duration::from_secs(5),
     ) {
-        Ok(reply) => reply,
-        Err(error) if no_server(&error) => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    match (
-        reply.get("status").and_then(Value::as_str),
-        reply.pointer("/error/code").and_then(Value::as_str),
-    ) {
-        (Some("completed"), _) => Ok(()),
-        (Some("failed"), Some("conflict" | "not-found")) => Ok(()),
-        _ => bail!("owned workspace was not released: {reply}"),
+        Ok(()) => Ok(()),
+        Err(error) if no_server(&error) => Ok(()),
+        Err(error)
+            if matches!(
+                crate::fux::pane::remote_code(&error),
+                Some("conflict" | "not-found")
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error.context("owned workspace was not released")),
     }
-}
-
-/// One request and its reply on a fresh authenticated connection, every read bounded by
-/// `deadline` (the reply to a launch or a final poll may legitimately take longer than the
-/// fixed window the generic client uses).
-fn exchange(socket: &Path, request: &Value, deadline: Instant) -> Result<Value> {
-    let remaining = || {
-        deadline
-            .checked_duration_since(Instant::now())
-            .filter(|left| !left.is_zero())
-            .context("fux request deadline exceeded")
-    };
-    let mut stream = crate::fux::control(socket, deadline)?;
-    stream.set_write_timeout(Some(remaining()?.min(Duration::from_secs(2))))?;
-    serde_json::to_writer(&mut stream, request)?;
-    stream.write_all(b"\n")?;
-    stream.set_read_timeout(Some(remaining()?))?;
-    let mut reader = BufReader::new(stream.take(MAX_REPLY as u64 + 1));
-    let mut line = Vec::new();
-    reader
-        .read_until(b'\n', &mut line)
-        .context("read control response")?;
-    anyhow::ensure!(line.len() <= MAX_REPLY, "control response exceeds limit");
-    anyhow::ensure!(
-        line.pop() == Some(b'\n'),
-        "control socket closed before a response"
-    );
-    serde_json::from_slice(&line).context("decode control response")
 }
 
 /// No session server is listening (as opposed to one that answered badly).
 fn no_server(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
-        .any(|error| {
-            matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            )
-        })
+    crate::fux::error::is_unavailable(error)
 }
 
 /// `NAME=VALUE` pairs from the command line.
@@ -442,6 +350,7 @@ pub fn env_pairs(values: Vec<String>) -> Result<Vec<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn moved_run_location_requires_original_launch_identity() -> Result<()> {
@@ -452,22 +361,6 @@ mod tests {
             control: "/unused/launch.sock".into(),
             pane: Some(3),
         };
-        assert!(!different_instance(
-            &owned,
-            &json!({"reply":"info","info":{"instance_nonce":"server"}})
-        )?);
-        assert!(different_instance(
-            &owned,
-            &json!({"reply":"info","info":{"instance_nonce":"replacement"}})
-        )?);
-        assert!(
-            different_instance(
-                &owned,
-                &json!({"reply":"info","info":{"instance_nonce":""}})
-            )
-            .is_err()
-        );
-        assert!(different_instance(&owned, &json!({"reply":"failed"})).is_err());
         let valid = json!({"instance":"server","pane":3,"pid":4,"accepts_input":true,"workspace":"destination",
             "stream":9,"origin_workspace":"launch","origin_stream":2,"tab":1,"layout_generation":1});
         validate_location(&owned, &serde_json::from_value(valid.clone())?)?;
@@ -522,13 +415,10 @@ mod tests {
     #[test]
     fn a_missing_socket_is_no_server_and_a_refusal_is_not() {
         let missing = std::env::temp_dir().join(format!("zor-run-missing-{}", std::process::id()));
-        let error = exchange(
-            &missing,
-            &json!({"request":"list"}),
-            Instant::now() + Duration::from_secs(1),
-        )
-        .err()
-        .map(|error| no_server(&error));
+        let error =
+            crate::fux::manager::create(&missing, "test", Instant::now() + Duration::from_secs(1))
+                .err()
+                .map(|error| no_server(&error));
         assert_eq!(error, Some(true));
         assert!(!no_server(&anyhow::anyhow!(
             "run requires a fresh workspace"

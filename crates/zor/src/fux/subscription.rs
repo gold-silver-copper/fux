@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Read,
     os::{fd::AsFd, unix::net::UnixStream},
     path::Path,
     time::{Duration, Instant},
@@ -26,26 +26,47 @@ pub(crate) struct Boundary {
     pub instance: String,
     pub cursor: Cursor,
 }
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+enum Acceptance {
+    Accepted {
+        id: u64,
+    },
+    Failed {
+        id: u64,
+        error: super::error::RemoteFailure,
+    },
+}
+
+fn accept(frame: Value) -> Result<()> {
+    super::error::reply(|| {
+        match serde_json::from_value(frame).context("invalid subscription acceptance")? {
+            Acceptance::Accepted { id } => {
+                anyhow::ensure!(id == 1, "subscription request ID mismatch");
+                Ok(())
+            }
+            Acceptance::Failed { id, error } => {
+                anyhow::ensure!(id == 1, "subscription refusal ID mismatch");
+                Err(error.into())
+            }
+        }
+    })
+}
+
 struct Peer {
     socket: UnixStream,
     boundary: Boundary,
     buffer: Vec<u8>,
+    partial_since: Option<Instant>,
 }
 impl Peer {
     fn open(path: &Path, boundary: &Boundary, deadline: Instant) -> Result<Self> {
         let mut socket = crate::fux::control(path, deadline).context("negotiate event control")?;
-        socket
-            .set_write_timeout(Some(
-                deadline
-                    .checked_duration_since(Instant::now())
-                    .context("subscription deadline")?,
-            ))
-            .context("set subscription write timeout")?;
-        writeln!(
-            socket,
-            "{}",
-            json!({"id":1,"command":"subscribe","instance":boundary.instance,"after":boundary.cursor})
+        let mut request = serde_json::to_vec(
+            &json!({"id":1,"command":"subscribe","instance":boundary.instance,"after":boundary.cursor}),
         )?;
+        request.push(b'\n');
+        local_ipc::write_all_until(&mut socket, &request, deadline)?;
         socket
             .set_nonblocking(true)
             .context("nonblocking subscription")?;
@@ -53,14 +74,11 @@ impl Peer {
             socket,
             boundary: boundary.clone(),
             buffer: Vec::new(),
+            partial_since: None,
         };
         loop {
             if let Some(frame) = peer.frame()? {
-                anyhow::ensure!(
-                    frame.get("id").and_then(Value::as_u64) == Some(1)
-                        && frame.get("status").and_then(Value::as_str) == Some("accepted"),
-                    "subscription rejected (gap or incompatible response)"
-                );
+                accept(frame)?;
                 return Ok(peer);
             }
             let remaining = deadline
@@ -78,6 +96,7 @@ impl Peer {
         }
     }
     fn read(&mut self) -> Result<usize> {
+        self.check_partial_deadline()?;
         let mut bytes = [0; 8192];
         let n = match self.socket.read(&mut bytes) {
             Ok(0) => anyhow::bail!("event stream closed; continuity lost"),
@@ -98,14 +117,30 @@ impl Peer {
         );
         self.buffer
             .extend_from_slice(bytes.get(..n).context("event read size")?);
+        if self.buffer.contains(&b'\n') {
+            self.partial_since = None;
+        } else if self.partial_since.is_none() {
+            self.partial_since = Some(Instant::now());
+        }
         Ok(n)
     }
+    fn check_partial_deadline(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.partial_since
+                .is_none_or(|start| start.elapsed() < Duration::from_secs(2)),
+            "partial event frame deadline exceeded"
+        );
+        Ok(())
+    }
     fn frame(&mut self) -> Result<Option<Value>> {
+        self.check_partial_deadline()?;
         if let Some(end) = self.buffer.iter().position(|b| *b == b'\n') {
             anyhow::ensure!(end <= MAX_FRAME, "event frame limit exceeded");
             let frame =
                 serde_json::from_slice(self.buffer.get(..end).context("event frame range")?)?;
             self.buffer.drain(..=end);
+            self.partial_since =
+                (!self.buffer.is_empty() && !self.buffer.contains(&b'\n')).then(Instant::now);
             Ok(Some(frame))
         } else {
             anyhow::ensure!(self.buffer.len() <= MAX_FRAME, "event frame limit exceeded");
@@ -133,6 +168,10 @@ impl Peer {
                 | "tab.closed"
                 | "workspace.changed"
         );
+        if observed {
+            let _: super::events::Event =
+                serde_json::from_value(frame.clone()).context("malformed known event")?;
+        }
         let cursor: Cursor =
             serde_json::from_value(frame.get("cursor").context("missing event cursor")?.clone())?;
         anyhow::ensure!(
@@ -196,7 +235,13 @@ impl Events {
                 boundaries
                     .get(&name)
                     .context("missing listing boundary")
-                    .and_then(|b| Peer::open(&runtime.join(format!("{name}.sock")), b, deadline))
+                    .and_then(|b| {
+                        Peer::open(
+                            &super::endpoint::Endpoint::new(runtime).workspace(&name)?,
+                            b,
+                            deadline,
+                        )
+                    })
             };
             match result {
                 Ok(peer) => {
@@ -316,6 +361,66 @@ impl Events {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn subscription_refusal_is_distinct_from_malformed_acceptance() -> Result<()> {
+        use super::super::error::{Kind, kind, remote_code};
+        accept(json!({"status":"accepted","id":1}))?;
+        let refused =
+            accept(json!({"status":"failed","id":1,"error":{"code":"gap","message":"expired"}}))
+                .err()
+                .context("refusal")?;
+        assert_eq!(kind(&refused), Some(Kind::RemoteFailure));
+        assert_eq!(remote_code(&refused), Some("gap"));
+        for frame in [
+            json!({"status":"accepted","id":2}),
+            json!({"status":"failed","id":2,"error":{"code":"gap","message":"expired"}}),
+            json!({"status":"failed","id":1,"error":{"code":"gap"}}),
+            json!({"status":"completed","id":1,"result":{"kind":"unit"}}),
+        ] {
+            let error = accept(frame).err().context("malformed acceptance")?;
+            assert_eq!(kind(&error), Some(Kind::MalformedReply));
+            assert_eq!(remote_code(&error), None);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn partial_frame_deadline_does_not_expire_idle_or_complete_buffered_frames() -> Result<()> {
+        let (mut peer, mut writer) = peer();
+        assert_eq!(peer.read()?, 0);
+        assert!(
+            peer.partial_since.is_none(),
+            "idle subscriptions have no partial deadline"
+        );
+        writer.write_all(b"{\"id\":1")?;
+        assert!(peer.read()? > 0);
+        let started = peer.partial_since.context("partial start")?;
+        writer.write_all(b" ")?;
+        peer.read()?;
+        assert_eq!(
+            peer.partial_since,
+            Some(started),
+            "progress renewed deadline"
+        );
+        peer.partial_since = Some(Instant::now() - Duration::from_secs(3));
+        writer.write_all(b"}\n")?;
+        assert!(peer.read().is_err(), "late completion bypassed deadline");
+        assert!(peer.frame().is_err());
+
+        let (mut complete, mut writer) = self::peer();
+        writer.write_all(b"{\"id\":1}\n{\"id\":2}\n")?;
+        complete.read()?;
+        assert!(complete.partial_since.is_none());
+        complete.frame()?;
+        assert!(
+            complete.partial_since.is_none(),
+            "already-complete replay was timed as partial"
+        );
+        assert!(complete.frame()?.is_some());
+        Ok(())
+    }
     fn peer() -> (Peer, UnixStream) {
         let (socket, writer) = UnixStream::pair().expect("socket pair");
         socket.set_nonblocking(true).expect("nonblocking");
@@ -330,6 +435,7 @@ mod tests {
                     },
                 },
                 buffer: Vec::new(),
+                partial_since: None,
             },
             writer,
         )
@@ -504,6 +610,7 @@ mod tests {
 #[allow(clippy::expect_used)]
 mod overdue_tests {
     use super::*;
+    use std::io::Write;
     #[test]
     fn stalled_setup_cannot_skip_the_nonblocking_drain_of_healthy_streams() {
         use std::os::unix::net::UnixListener;
@@ -553,6 +660,7 @@ mod overdue_tests {
                 socket,
                 boundary: boundary.clone(),
                 buffer: Vec::new(),
+                partial_since: None,
             },
         );
         let boundaries = BTreeMap::from([

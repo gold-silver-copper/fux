@@ -1,0 +1,8 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.62s
+     Running unittests src/lib.rs (/tmp/fux-codebase-work/build/debug/deps/zor-385204d3199db3aa)
+     Running unittests src/main.rs (/tmp/fux-codebase-work/build/debug/deps/zor-2e28e0805e18e724)
+     Running tests/bundled_rules.rs (/tmp/fux-codebase-work/build/debug/deps/bundled_rules-f361c48f172274be)
+     Running tests/cli.rs (/tmp/fux-codebase-work/build/debug/deps/cli-393f47e36b696dfd)
+     Running tests/osc.rs (/tmp/fux-codebase-work/build/debug/deps/osc-d395f85b080489cb)
+     Running tests/wrap.rs (/tmp/fux-codebase-work/build/debug/deps/wrap-e98601c635946e18)

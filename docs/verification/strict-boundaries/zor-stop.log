@@ -1,0 +1,1 @@
+PASS: stopping zor serve preserves the existing local attachment and shell state
