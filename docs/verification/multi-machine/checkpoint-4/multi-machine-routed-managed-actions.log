@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-4/routed-tasks.py", line 118, in <module>
-    stopped = json.loads(run('ZOR_BIN', *routed_first, 'task', 'stop', 'managed').stdout)
-                         ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-4/routed-tasks.py", line 28, in run
-    assert result.returncode == expected, (args, result.returncode, result.stderr)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: (('--machine', 'remote', '--koh-binary', '/private/tmp/strict-fux-koh-zor/koh-build/debug/koh', 'task', 'stop', 'managed'), 1, 'zor: machine remote (147885502b5a7c6ff390da5605df64be), transport Some(SessionEnded): supervision result unconfirmed; inspect the same task/attempt before an explicit retry; request was not replayed: zor service refused request: task-failed\n')

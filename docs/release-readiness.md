@@ -1,28 +1,26 @@
 # Release readiness
 
-fux 0.3.0 builds, tests and packages from a clean checkout with no other program, source tree,
-key or graphical environment. Nothing in the rewrite authorizes a commit, tag, release or
-registry publication; those remain separate user decisions.
+fux builds, tests and packages from a clean checkout with no other program, source tree, key or
+graphical environment. Nothing in the tree authorizes a commit, tag, release or registry
+publication; those remain separate user decisions.
 
 ## Evidence
 
-Local verification on macOS is recorded command by command in
-[ecs-acceptance.md](ecs-acceptance.md): formatting, strict Clippy, root tests, rustdoc, MSRV 1.95
-compilation, the fixture-child suite, the packaged-binary verifier, the reconstructed koh and zor
-integrations and the performance measurements against the 0.2.1 baseline.
+The gate is the command list in the README's "Verification" section plus the real koh and zor
+integrations with explicit binary paths. What has been accepted, and where the dated evidence
+lives in history, is indexed in [verification.md](verification.md).
 
 Configured CI (`ci.yml`: Linux and macOS hosts, MSRV job, Android cross-compilation check,
-package job, optional cross-repository job; `nightly.yml` with 2048 randomized cases;
-`release-verify.yml`) describes what hosted runs would execute. No hosted run of this tree was
-requested, so configured jobs are not executed evidence.
+package job, optional cross-repository job; `nightly.yml` with randomized cases;
+`release-verify.yml`) describes what hosted runs execute. A configured job is not evidence
+until it has run on the tree being released.
 
 ## Limits
 
-- Runtime evidence exists for macOS only. Linux is compiled and tested only when CI runs; Android
-  is a compilation cross-check, not runtime coverage.
+- Runtime evidence covers macOS and targeted Linux ARM64; Android is a compilation cross-check.
 - Terminal-emulator specific behaviour (OSC 52 handling, reserved mouse gestures) needs manual
   checks per emulator.
-- Relay/NAT behaviour and mobile suspend/resume are koh's scope and were not exercised here.
-- Attachment protocol v5 and control protocol `FUXCTL2` are incompatible with 0.2.x, 0.3.0 and 0.3.1 servers. An
-  interactive `fux` offers to stop the old server after an explicit typed confirmation (terminating
-  its panes), or shows how to run alongside it; it never stops one without that confirmation.
+- Relay/NAT behaviour and mobile suspend/resume are koh's scope.
+- The protocols carry no version numbers. An interactive `fux` offers to stop an incompatible
+  older server after an explicit typed confirmation (terminating its panes), or shows how to run
+  alongside it; it never stops one without that confirmation.

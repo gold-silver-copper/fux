@@ -1,1 +1,0 @@
-PASS separate-read detach sends preceding input, waits for exit and drops the suffix

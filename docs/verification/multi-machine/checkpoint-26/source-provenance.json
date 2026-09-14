@@ -1,9 +1,0 @@
-{
-  "sha256": {
-    "crates/zor/src/dashboard/handoff.rs": "4d89b615f035ca00a7297633d63153c8c1ee0ee90534bb2e27acb81c9a250cf0",
-    "crates/zor/src/dashboard/multi.rs": "9cd9335e0ca543fecba1de3a5b3fb7e408d5b392f5c8b83274796103a4ac76ae",
-    "docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py": "1b5f61ea69c5205e6d5a9834b17ec09ccc8f78f5432507c5af6c3b0c38e3ea2c"
-  },
-  "command": "FUX_BIN=/tmp/fux-multi-machine-build/debug/fux ZOR_BIN=/tmp/fux-multi-machine-build/debug/zor KOH_BIN=/tmp/strict-fux-koh-zor/koh-build/debug/koh python3 docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py --dashboard-resume --columns 40 --rows 16 --artifacts-dir docs/verification/multi-machine/checkpoint-26/status",
-  "scope": "Read-only dashboard resume-status, retained intent and remote absence, byte-identical task/intent state, full 40x16 handoff regression. One actual status PTY frame imported, replayed, rendered and visually inspected."
-}

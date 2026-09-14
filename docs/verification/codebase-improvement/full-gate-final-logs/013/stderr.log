@@ -1,4 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
-     Running unittests src/lib.rs (target/rust-harness/debug/deps/fux_xtask-4a113bfb04d239b4)
-     Running unittests src/main.rs (target/rust-harness/debug/deps/fux_xtask-ceb2fdb1ec9dcef4)
-   Doc-tests fux_xtask

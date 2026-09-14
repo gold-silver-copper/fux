@@ -1,7 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 161, in <module>
-    target_capture = control(hosts[0][0], dict(command='capture', pane=hosts[0][2]['id'], workspace='agent', max_bytes=65536))
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 68, in control
-    assert reply['status'] == 'completed', reply
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: {'status': 'failed', 'id': 1, 'error': {'code': 'invalid-json', 'message': 'unknown field `workspace`, expected one of `id`, `instance`, `pane`, `attrs`, `scrollback`, `max_bytes`, `format`, `if_revision`'}}

@@ -1,5 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 535, in <module>
-    before[3] &= ~getattr(termios,'PENDIN',0)
-    ~~~~~~^^^
-KeyError: 3

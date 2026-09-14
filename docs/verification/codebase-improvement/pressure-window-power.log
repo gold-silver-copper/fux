@@ -1,3 +1,0 @@
-2026-09-13 03:13:31 -0700 Assertions          	PID 55525(caffeinate) Summary PreventUserIdleSystemSleep "caffeinate command-line tool" 31:34:09  id:0x0x1000084d4 [System: PrevIdle]          
-2026-09-13 03:13:44 -0700 Assertions          	PID 199(PowerUIAgent) Created MaintenanceWake "com.apple.obc" 00:00:00  id:0x0xd000097ec [System: PrevIdle SRPrevSleep kCPU]          
-2026-09-13 03:13:44 -0700 Assertions          	PID 199(PowerUIAgent) Released MaintenanceWake "com.apple.obc" 00:00:00  id:0x0xd000097ec [System: PrevIdle]          

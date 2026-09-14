@@ -1,8 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.37s
-     Running tests/automation_integration.rs (target/debug/deps/automation_integration-8ba9a3af34947e4b)
-
-running 1 test
-test zor_recovery ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 14.20s
-

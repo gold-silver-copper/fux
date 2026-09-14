@@ -1,8 +1,0 @@
-[
-  {
-    "at": "2026-09-13T10:02:16.294545+00:00",
-    "exit": 0,
-    "stdout": "Processes: 784 total, 4 running, 780 sleeping, 3892 threads \n2026/09/13 03:02:15\nLoad Avg: 2.74, 3.05, 5.18 \nCPU usage: 8.49% user, 21.22% sys, 70.28% idle \nSharedLibs: 801M resident, 126M data, 98M linkedit.\nMemRegions: 140320 total, 6135M resident, 412M private, 27G shared.\nPhysMem: 48G used (2235M wired, 2880M compressor), 15G unused.\nVM: 321T vsize, 6144M framework vsize, 1237552(0) swapins, 1365460(0) swapouts.\nNetworks: packets: 34024570/33G in, 20906917/14G out.\nDisks: 272149055/2390G read, 112148162/3934G written.\n\n\nProcesses: 784 total, 4 running, 780 sleeping, 3877 threads \n2026/09/13 03:02:16\nLoad Avg: 2.68, 3.03, 5.16 \nCPU usage: 5.45% user, 7.95% sys, 86.59% idle \nSharedLibs: 801M resident, 126M data, 98M linkedit.\nMemRegions: 0 total, 0B resident, 412M private, 27G shared.\nPhysMem: 48G used (2231M wired, 2880M compressor), 15G unused.\nVM: 321T vsize, 6144M framework vsize, 1237552(0) swapins, 1365460(0) swapouts.\nNetworks: packets: 34024572/33G in, 20906920/14G out.\nDisks: 272150864/2390G read, 112148482/3934G written.\n\n\n",
-    "stderr": ""
-  }
-]

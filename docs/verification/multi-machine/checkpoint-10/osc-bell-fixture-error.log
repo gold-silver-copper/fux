@@ -1,5 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 345, in <module>
-    assert captured.count(b'\x07') == len(first_notices), 'bell and desktop coalescing diverged'
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: bell and desktop coalescing diverged

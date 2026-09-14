@@ -1,7 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
-     Running unittests src/lib.rs (/tmp/fux-codebase-work/build/debug/deps/zor-0744bc31aa645b1a)
-     Running unittests src/main.rs (/tmp/fux-codebase-work/build/debug/deps/zor-eceb1f7f437f69fc)
-     Running tests/bundled_rules.rs (/tmp/fux-codebase-work/build/debug/deps/bundled_rules-5631ce536c0526cc)
-     Running tests/cli.rs (/tmp/fux-codebase-work/build/debug/deps/cli-c4b49efff46ef367)
-     Running tests/osc.rs (/tmp/fux-codebase-work/build/debug/deps/osc-dc6d518067b73b0f)
-     Running tests/wrap.rs (/tmp/fux-codebase-work/build/debug/deps/wrap-673bbe89872b9077)

@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 196, in <module>
-    after = termios.tcgetattr(slave)
-termios.error: (25, 'Inappropriate ioctl for device')
