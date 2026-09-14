@@ -240,20 +240,21 @@ fn processes() -> Result<Vec<(i32, i32, i32, String)>> {
     ensure!(listing.status.success(), "ps failed");
     Ok(String::from_utf8_lossy(&listing.stdout)
         .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            Some((
-                parts.next()?.parse().ok()?,
-                parts.next()?.parse().ok()?,
-                parts.next()?.parse().ok()?,
-                line.trim_start()
-                    .splitn(4, char::is_whitespace)
-                    .nth(3)
-                    .unwrap_or_default()
-                    .to_owned(),
-            ))
-        })
+        .filter_map(process_row)
         .collect())
+}
+/// One `ps -o pid=,ppid=,pgid=,command=` row. procps pads the numeric columns with runs of
+/// spaces, so the command is what follows the third field, not the fourth single-space split.
+fn process_row(line: &str) -> Option<(i32, i32, i32, String)> {
+    let mut rest = line.trim_start();
+    let mut field = || {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (value, tail) = rest.split_at(end);
+        rest = tail.trim_start();
+        value.parse().ok()
+    };
+    let (pid, ppid, pgid) = (field()?, field()?, field()?);
+    Some((pid, ppid, pgid, rest.to_owned()))
 }
 /// Owned koh connect helpers for one endpoint and credential, identified by their arguments.
 fn gateways(endpoint: &str, key: &str) -> Result<BTreeSet<i32>> {
@@ -921,4 +922,26 @@ fn viewer_pid(terminal: &Terminal, fux: &Path) -> Result<i32> {
         "viewer left the controlling terminal's foreground group"
     );
     Ok(viewers[0].0)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn process_rows_keep_the_whole_command_under_column_padding() {
+        let padded = "   1052     831     829 /work/fux attach --socket /tmp/proxy.sock";
+        assert_eq!(
+            super::process_row(padded),
+            Some((
+                1052,
+                831,
+                829,
+                "/work/fux attach --socket /tmp/proxy.sock".into()
+            ))
+        );
+        assert_eq!(
+            super::process_row("7 1 7 /bin/sh -c true"),
+            Some((7, 1, 7, "/bin/sh -c true".into()))
+        );
+        assert_eq!(super::process_row("  12  1"), None);
+    }
 }
