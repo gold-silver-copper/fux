@@ -9,23 +9,25 @@ use crate::ecs::resources::{
     Clock, Ids, Limits, Registry, ServerIdentity, ShuttingDown, WorkspaceCounter,
 };
 use crate::ecs::support::{
-    Effects, ViewerExit, effect, failed, focus_in_tab, mark_tab_dirty, mark_workspace_dirty,
-    member_tabs, pane_entity, pane_tab, pane_workspace, reply, retire, sanitize_notice,
-    terminate_pane, viewer_entity, viewers_of_workspace, workspace_entity, write_pane,
+    Effects, Failure, ViewerExit, attached_viewers, despawn_viewer, effect, focus_in_tab,
+    mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity, pane_tab, pane_workspace,
+    reply, retire, tab_entity, terminate_pane, viewer_entity, workspace_entity, write_pane,
 };
 use crate::ecs::systems::creation::reserve_workspace;
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
-use crate::ids::{PaneId, ViewerId};
+use crate::ids::{PaneId, TabId, ViewerId};
 use crate::proto::attach::{MouseEvent, ServerMessage, ViewReply};
 use crate::proto::control::{
-    self, CommandResult, ErrorCode, PaneSummary, Reply, Request, TabSummary, WorkspaceSummary,
+    self, CommandResult, ErrorCode, PaneSummary, Reply, Request, RequestId, TabSummary,
+    WorkspaceSummary,
 };
 use crate::view::{MouseEncoding, MouseMode, PaneModes, PaneUpdate};
 use bevy_ecs::prelude::*;
 use std::collections::{BTreeMap, VecDeque};
 
 use super::requests_control::{
-    focus, kill, pane_in_workspace, resize, set_right_click, split, tab_action, workspace_action,
+    SplitSpec, focus, kill, pane_in_workspace, resize, split, tab_action, update_pane_field,
+    workspace_action,
 };
 
 /// Ingest: viewer arrivals and departures and the shutdown flag. Spawns apply at the sync point
@@ -135,10 +137,7 @@ pub fn apply_attachments(
                         let admitted = want.instance == identity.instance_nonce
                             && &want.workspace == workspace
                             && resolved.is_some_and(|(_, pane)| {
-                                pane.routing_workspace == entity
-                                    && pane.workspace_stream == want.stream
-                                    && pane.state.pid() == Some(want.pid)
-                                    && pane.state.accepts_input()
+                                pane.routing_workspace == entity && pane.is_required_process(want)
                             });
                         if !admitted {
                             refuse(
@@ -222,93 +221,77 @@ pub fn apply_attachments(
     }
 }
 
-pub fn despawn_viewer(world: &mut World, viewer: Entity) {
-    let Some(id) = world.get::<Viewer>(viewer).map(|viewer| viewer.id) else {
-        return;
-    };
-    world.resource_mut::<Ids>().viewers.remove(&id);
-    world.despawn(viewer);
-    effect(world, Effect::CloseViewer { viewer: id });
-}
-
 pub fn apply_requests(world: &mut World) {
-    let inbound: Vec<Inbound> = world
-        .resource::<Messages<Inbound>>()
-        .iter_current_update_messages()
-        .filter(|message| {
-            matches!(
-                message,
-                Inbound::ViewerRequest { .. }
-                    | Inbound::ControlRequest { .. }
-                    | Inbound::Manager { .. }
-            )
-        })
-        .cloned()
-        .collect();
     let queue_limit = world.resource::<Limits>().viewer_queue;
-    for message in inbound {
-        match message {
-            Inbound::ViewerRequest { viewer, request } => {
-                let Some(entity) = viewer_entity(world, viewer) else {
-                    continue;
-                };
-                let overflow = world
-                    .get_mut::<Viewer>(entity)
-                    .is_some_and(|mut component| {
-                        if component.detaching {
-                            return false;
-                        }
-                        if component.queue.len() >= queue_limit {
-                            return true;
-                        }
-                        component.queue.push_back(request);
-                        false
-                    });
-                if overflow {
-                    effect(
-                        world,
-                        Effect::ToViewer {
-                            viewer,
-                            message: ServerMessage::Error {
-                                message:
-                                    "viewer request queue overflowed while a pane was starting"
-                                        .into(),
+    // The batch is read in place: nothing under `apply_control` or `apply_manager` touches
+    // `Messages<Inbound>`, so only what a handler keeps (a queued viewer request) is copied.
+    world.resource_scope::<Messages<Inbound>, _>(|world, inbound| {
+        for message in inbound.iter_current_update_messages() {
+            match message {
+                Inbound::ViewerRequest { viewer, request } => {
+                    let Some(entity) = viewer_entity(world, *viewer) else {
+                        continue;
+                    };
+                    let overflow = world
+                        .get_mut::<Viewer>(entity)
+                        .is_some_and(|mut component| {
+                            if component.detaching {
+                                return false;
+                            }
+                            if component.queue.len() >= queue_limit {
+                                return true;
+                            }
+                            component.queue.push_back(request.clone());
+                            false
+                        });
+                    if overflow {
+                        effect(
+                            world,
+                            Effect::ToViewer {
+                                viewer: *viewer,
+                                message: ServerMessage::Error {
+                                    message:
+                                        "viewer request queue overflowed while a pane was starting"
+                                            .into(),
+                                },
                             },
-                        },
-                    );
-                    despawn_viewer(world, entity);
-                }
-            }
-            Inbound::ControlRequest {
-                workspace,
-                request,
-                token,
-            } => {
-                let requester = Requester::Control(token);
-                let id = request.id();
-                // A workspace that has not opened yet (initial pane still starting) or is
-                // retiring has no control socket of its own; a request naming it can only come
-                // through another workspace's socket and must not mutate the reservation.
-                let open = workspace_entity(world, &workspace).filter(|entity| {
-                    world
-                        .get::<Workspace>(*entity)
-                        .is_some_and(|workspace| workspace.open && workspace.retiring.is_none())
-                });
-                match open {
-                    Some(entity) => {
-                        apply_control(world, requester, Target::Workspace(entity), request);
+                        );
+                        despawn_viewer(world, entity);
                     }
-                    None => reply(
-                        world,
-                        requester,
-                        failed(id, ErrorCode::NotFound, "workspace is not open"),
-                    ),
                 }
+                Inbound::ControlRequest {
+                    workspace,
+                    request,
+                    token,
+                } => {
+                    let requester = Requester::Control(*token);
+                    // A workspace that has not opened yet (initial pane still starting) or is
+                    // retiring has no control socket of its own; a request naming it can only
+                    // come through another workspace's socket and must not mutate the
+                    // reservation.
+                    let open = workspace_entity(world, workspace).filter(|entity| {
+                        world
+                            .get::<Workspace>(*entity)
+                            .is_some_and(|workspace| workspace.open && workspace.retiring.is_none())
+                    });
+                    match open {
+                        Some(entity) => {
+                            apply_control(world, requester, Target::Workspace(entity), request);
+                        }
+                        None => reply(
+                            world,
+                            requester,
+                            Failure::not_found("workspace is not open").reply(request.id()),
+                        ),
+                    }
+                }
+                Inbound::Manager { request, token } => {
+                    apply_manager(world, request.clone(), *token);
+                }
+                _ => {}
             }
-            Inbound::Manager { request, token } => apply_manager(world, request, token),
-            _ => {}
         }
-    }
+    });
 }
 
 /// Applies queued requests in arrival order per viewer, stopping at a creation barrier.
@@ -345,21 +328,18 @@ pub fn drain_viewer_queues(world: &mut World) {
 /// its original workspace route and not hidden by a shared zoom. Ordinary viewers always remain.
 /// Returns whether the viewer is retained; a lost target closes the viewer without a fallback.
 fn retain_required_process(world: &mut World, viewer: Entity) -> bool {
-    let Some((id, workspace, required)) = world.get::<Viewer>(viewer).and_then(|component| {
-        component
-            .required_process
-            .clone()
-            .map(|required| (component.id, component.workspace, required))
-    }) else {
+    let Some(component) = world.get::<Viewer>(viewer) else {
         return true;
     };
+    let Some(required) = component.required_process.as_ref() else {
+        return true;
+    };
+    let (id, workspace) = (component.id, component.workspace);
     let live = pane_entity(world, required.pane).is_some_and(|pane| {
         pane_workspace(world, pane) == Some(workspace)
-            && world.get::<Pane>(pane).is_some_and(|component| {
-                component.workspace_stream == required.stream
-                    && component.state.pid() == Some(required.pid)
-                    && component.state.accepts_input()
-            })
+            && world
+                .get::<Pane>(pane)
+                .is_some_and(|component| component.is_required_process(required))
             && pane_tab(world, pane)
                 .and_then(|tab| world.get::<Tab>(tab))
                 .is_none_or(|tab| tab.zoomed.is_none_or(|zoomed| zoomed == pane))
@@ -410,7 +390,7 @@ fn apply_viewer_request(world: &mut World, viewer: Entity, id: ViewerId, request
                 world,
                 Requester::Viewer(id),
                 Target::Viewer(viewer),
-                request,
+                &request,
             );
         }
         ViewerRequest::View {
@@ -598,13 +578,51 @@ pub fn encode_mouse(event: MouseEvent, column: u16, row: u16, modes: PaneModes) 
     Some(bytes)
 }
 
+/// Who asked, which request, and the workspace and viewer the request applies to.
 pub(super) struct Context {
     pub(super) requester: Requester,
+    pub(super) id: RequestId,
     pub(super) workspace: Entity,
     pub(super) viewer: Option<Entity>,
 }
 
 impl Context {
+    /// A pane of this workspace, by public id.
+    pub(super) fn pane<'w>(
+        &self,
+        world: &'w World,
+        id: PaneId,
+    ) -> Result<(Entity, &'w Pane), Failure> {
+        pane_in_workspace(world, self, id)
+            .and_then(|entity| world.get::<Pane>(entity).map(|pane| (entity, pane)))
+            .ok_or_else(|| Failure::not_found("pane not found"))
+    }
+
+    /// A pane of this workspace whose process has started.
+    pub(super) fn live_pane<'w>(
+        &self,
+        world: &'w World,
+        id: PaneId,
+    ) -> Result<(Entity, &'w Pane), Failure> {
+        let (entity, pane) = self.pane(world, id)?;
+        if matches!(pane.state, PaneState::Starting) {
+            return Err(Failure::not_found("pane not found"));
+        }
+        Ok((entity, pane))
+    }
+
+    /// A tab of this workspace, by public id.
+    pub(super) fn tab<'w>(
+        &self,
+        world: &'w World,
+        id: TabId,
+    ) -> Result<(Entity, &'w Tab), Failure> {
+        tab_entity(world, id)
+            .filter(|tab| crate::ecs::support::is_member(world, self.workspace, *tab))
+            .and_then(|entity| world.get::<Tab>(entity).map(|tab| (entity, tab)))
+            .ok_or_else(|| Failure::not_found("tab not found"))
+    }
+
     pub(super) fn selection(&self, world: &World) -> Selection {
         self.viewer
             .and_then(|viewer| world.get::<Viewer>(viewer))
@@ -645,25 +663,8 @@ impl Context {
     }
 }
 
-fn apply_control(world: &mut World, requester: Requester, target: Target, request: Request) {
+fn apply_control(world: &mut World, requester: Requester, target: Target, request: &Request) {
     let id = request.id();
-    if let Err(error) = request.validate() {
-        return reply(world, requester, control::error_reply(&error));
-    }
-    if request
-        .instance()
-        .is_some_and(|instance| instance != world.resource::<ServerIdentity>().instance_nonce)
-    {
-        return reply(
-            world,
-            requester,
-            failed(
-                id,
-                ErrorCode::Conflict,
-                "server instance changed; rediscover before retrying",
-            ),
-        );
-    }
     let context = match target {
         Target::Viewer(viewer) => {
             let Some(workspace) = world.get::<Viewer>(viewer).map(|viewer| viewer.workspace) else {
@@ -671,43 +672,54 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             };
             Context {
                 requester,
+                id,
                 workspace,
                 viewer: Some(viewer),
             }
         }
         Target::Workspace(workspace) => Context {
             requester,
+            id,
             workspace,
             viewer: None,
         },
     };
+    let reply_value = match control(world, &context, request) {
+        Ok(Outcome::Now(result)) => Reply::Completed { id, result },
+        Ok(Outcome::Deferred) => return,
+        Err(failure) => failure.reply(id),
+    };
+    reply(world, requester, reply_value);
+}
+
+/// Checks the request against the server instance and the workspace's state, then applies it.
+fn control(world: &mut World, context: &Context, request: &Request) -> Result<Outcome, Failure> {
+    request.validate().map_err(|error| Failure::from(&error))?;
+    if request
+        .instance()
+        .is_some_and(|instance| instance != world.resource::<ServerIdentity>().instance_nonce)
+    {
+        return Err(Failure::conflict(
+            "server instance changed; rediscover before retrying",
+        ));
+    }
     if context.viewer.is_none()
         && matches!(
-            &request,
+            request,
             Request::Layout { action, instance: None, .. }
                 if !matches!(action, control::LayoutAction::Export | control::LayoutAction::Inspect { .. })
         )
     {
-        return reply(
-            world,
-            requester,
-            failed(
-                id,
-                ErrorCode::InvalidRequest,
-                "layout changes require the exported server instance",
-            ),
-        );
+        return Err(Failure::invalid(
+            "layout changes require the exported server instance",
+        ));
     }
     if world.resource::<ShuttingDown>().0
         || world
             .get::<Workspace>(context.workspace)
             .is_none_or(|workspace| workspace.retiring.is_some())
     {
-        return reply(
-            world,
-            requester,
-            failed(id, ErrorCode::Conflict, "workspace is shutting down"),
-        );
+        return Err(Failure::conflict("workspace is shutting down"));
     }
     if let Request::Split {
         stream: Some(expected),
@@ -719,126 +731,68 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
     }
     | Request::FixWorkspace {
         stream: expected, ..
-    } = &request
+    } = request
         && world
             .get::<crate::ecs::events::EventLog>(context.workspace)
             .is_none_or(|log| log.cursor().stream != *expected)
     {
-        return reply(
-            world,
-            requester,
-            failed(
-                id,
-                ErrorCode::Conflict,
-                "workspace lifetime changed; refresh its identity and retry",
-            ),
-        );
+        return Err(Failure::conflict(
+            "workspace lifetime changed; refresh its identity and retry",
+        ));
     }
-    let result = match request {
-        Request::Split {
-            axis,
-            target,
-            cwd,
-            argv,
-            env,
-            rows,
-            columns,
-            final_retain_ms,
-            fixed_workspace,
-            right_click,
-            ratio,
-            focus,
-            ..
-        } => {
-            let Some(result) = split(
-                world,
-                &context,
-                id,
-                axis,
-                target,
-                cwd,
-                argv,
-                env,
-                rows,
-                columns,
-                final_retain_ms,
-                fixed_workspace,
-                right_click,
-                ratio,
-                focus,
-            )
-            .settled() else {
-                return;
-            };
-            result
+    let now = |result: Result<CommandResult, Failure>| result.map(Outcome::Now);
+    match request {
+        Request::Split { .. } => {
+            let spec = SplitSpec::from_request(request)
+                .ok_or_else(|| Failure::invalid("not a split request"))?;
+            split(world, context, spec)
         }
-        Request::FixWorkspace { pane, .. } => match pane_in_workspace(world, &context, pane) {
-            Some(entity) => {
-                if let Some(mut component) = world.get_mut::<Pane>(entity) {
-                    component.workspace_pin = crate::ecs::components::WorkspacePin::Explicit;
-                }
-                mark_workspace_dirty(world, context.workspace);
-                Ok(CommandResult::Unit)
+        Request::FixWorkspace { pane, .. } => now((|| {
+            let entity = context.pane(world, *pane)?.0;
+            if let Some(mut component) = world.get_mut::<Pane>(entity) {
+                component.workspace_pin = crate::ecs::components::WorkspacePin::Explicit;
             }
-            None => Err(failed(
-                id,
-                ErrorCode::NotFound,
-                "pane not found in this workspace",
-            )),
-        },
+            mark_workspace_dirty(world, context.workspace);
+            Ok(CommandResult::Unit)
+        })()),
         Request::PaneInput {
             pane, right_click, ..
-        } => set_right_click(world, &context, id, pane, right_click),
+        } => now(update_pane_field(
+            world,
+            context,
+            *pane,
+            *right_click,
+            |pane| &mut pane.right_click,
+        )),
         Request::RenamePane { pane, name, .. } => {
-            let result = pane_in_workspace(world, &context, pane)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane no longer exists"));
-            result.and_then(|entity| {
-                let label = (!name.is_empty()).then_some(name);
-                let component = world
-                    .get::<Pane>(entity)
-                    .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane no longer exists"))?;
-                if component.label == label {
-                    return Ok(CommandResult::Pane { pane });
-                }
-                let tab = component.tab;
-                let revision = world
-                    .get::<Tab>(tab)
-                    .and_then(|tab| tab.layout_generation.checked_add(1))
-                    .ok_or_else(|| failed(id, ErrorCode::Limit, "layout generation exhausted"))?;
-                let changed = world.get_mut::<Pane>(entity).is_some_and(|mut component| {
-                    if component.label == label {
-                        return false;
-                    }
-                    component.label = label;
-                    true
-                });
-                if changed {
-                    if let Some(mut tab) = world.get_mut::<Tab>(tab) {
-                        tab.layout_generation = revision;
-                    }
-                    mark_workspace_dirty(world, context.workspace);
-                }
-                Ok(CommandResult::Pane { pane })
-            })
+            let label = (!name.is_empty()).then(|| name.clone());
+            now(update_pane_field(world, context, *pane, label, |pane| {
+                &mut pane.label
+            }))
         }
-        Request::Focus { target, .. } => focus(world, &context, id, target),
-        Request::Kill { pane, .. } => kill(world, &context, id, pane),
-        Request::Resize { pane, delta, .. } => resize(world, &context, id, pane, delta),
+        Request::Focus { target, .. } => now(focus(world, context, *target)),
+        Request::Kill { pane, .. } => now(kill(world, context, *pane)),
+        Request::Resize { pane, delta, .. } => now(resize(world, context, *pane, *delta)),
         Request::Layout {
             tab,
             generation,
             action,
             ..
         } => {
-            let focus = match &action {
+            let focus = match action {
                 control::LayoutAction::Transfer {
                     focus: true, pane, ..
                 } => Some(*pane),
                 _ => None,
             };
             let history = context.selection(world).history;
-            let result =
-                super::layout_control::apply(world, context.workspace, id, tab, generation, action);
+            let result = super::layout_control::apply(
+                world,
+                context.workspace,
+                *tab,
+                *generation,
+                action.clone(),
+            );
             if result.is_ok()
                 && let Some(pane) = focus
                 && let Some(entity) = pane_entity(world, pane)
@@ -852,46 +806,37 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
                 }
                 context.select(world, tab, Some(entity));
             }
-            result
+            now(result)
         }
         Request::SendKeys {
             pane,
             keys,
             notation,
             ..
-        } => {
+        } => now((|| {
             let bytes =
-                control::decode_keys(&keys, notation).map_err(|error| control::error_reply(&error));
-            bytes.and_then(|bytes| {
-                let entity = pane_in_workspace(world, &context, pane)
-                    .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-                if write_pane(world, entity, &bytes) {
-                    Ok(CommandResult::Unit)
-                } else {
-                    Err(failed(
-                        id,
-                        ErrorCode::Conflict,
-                        "pane is not accepting input",
-                    ))
-                }
-            })
-        }
+                control::decode_keys(keys, *notation).map_err(|error| Failure::from(&error))?;
+            let entity = context.pane(world, *pane)?.0;
+            if write_pane(world, entity, &bytes) {
+                Ok(CommandResult::Unit)
+            } else {
+                Err(Failure::conflict("pane is not accepting input"))
+            }
+        })()),
         Request::InputReserve {
             pane, retain_ms, ..
-        } => {
-            let entity = pane_in_workspace(world, &context, pane)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"));
-            entity.and_then(|entity| {
-                super::input::reserve(world, context.workspace, entity, retain_ms, id)
-            })
-        }
+        } => now((|| {
+            let entity = context.pane(world, *pane)?.0;
+            super::input::reserve(world, context.workspace, entity, *retain_ms)
+        })()),
         Request::InputSubmit {
             operation, keys, ..
-        } => control::decode_key_bytes(&keys)
-            .map_err(|error| control::error_reply(&error))
-            .and_then(|bytes| super::input::submit(world, context.workspace, operation, bytes, id)),
+        } => now((|| {
+            let bytes = control::decode_key_bytes(keys).map_err(|error| Failure::from(&error))?;
+            super::input::submit(world, context.workspace, *operation, bytes)
+        })()),
         Request::InputStatus { operation, .. } => {
-            super::input::status(world, context.workspace, operation, id)
+            now(super::input::status(world, context.workspace, *operation))
         }
         Request::Capture {
             pane,
@@ -901,98 +846,80 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             format,
             if_revision,
             ..
-        } => {
-            let entity = pane_in_workspace(world, &context, pane);
-            match entity.and_then(|entity| world.get_mut::<Pane>(entity)) {
-                Some(mut component) if !matches!(component.state, PaneState::Starting) => {
-                    component.refresh();
-                    let max_bytes = max_bytes.min(control::MAX_CAPTURE_BYTES);
-                    let seq = component.terminal.grid().seq();
-                    match format {
-                        control::CaptureFormat::Text => {
-                            let capture = component.terminal.capture_snapshot(
-                                usize::try_from(scrollback).unwrap_or(usize::MAX),
-                                attrs,
-                                max_bytes,
-                                if_revision,
-                            );
-                            Ok(CommandResult::Capture {
-                                capture: Box::new(capture),
-                                seq,
-                                input_sequence: component.input_sequence,
-                            })
-                        }
-                        control::CaptureFormat::Cells => {
-                            let terminal = &component.terminal;
-                            let grid = terminal.grid();
-                            let revision = terminal.revision();
-                            let unchanged = if_revision == Some(revision);
-                            let (lines, truncated) = if unchanged {
-                                (Vec::new(), false)
-                            } else {
-                                grid.capture_lines(max_bytes)
-                            };
-                            let (rows, columns) = grid.size();
-                            Ok(CommandResult::Cells {
-                                seq,
-                                input_sequence: component.input_sequence,
-                                revision,
-                                rows,
-                                columns,
-                                cursor: grid.cursor(),
-                                title: terminal.title().to_owned(),
-                                progress: terminal.progress().map(|p| (p.state, p.percent)),
-                                unchanged,
-                                truncated,
-                                lines,
-                            })
-                        }
-                    }
+        } => now((|| {
+            let entity = context.live_pane(world, *pane)?.0;
+            let mut component = world
+                .get_mut::<Pane>(entity)
+                .ok_or_else(|| Failure::not_found("pane not found"))?;
+            component.refresh();
+            let max_bytes = (*max_bytes).min(control::MAX_CAPTURE_BYTES);
+            let seq = component.terminal.grid().seq();
+            match format {
+                control::CaptureFormat::Text => {
+                    let capture = component.terminal.capture_snapshot(
+                        usize::try_from(*scrollback).unwrap_or(usize::MAX),
+                        *attrs,
+                        max_bytes,
+                        *if_revision,
+                    );
+                    Ok(CommandResult::Capture {
+                        capture: Box::new(capture),
+                        seq,
+                        input_sequence: component.input_sequence,
+                    })
                 }
-                _ => Err(failed(id, ErrorCode::NotFound, "pane not found")),
+                control::CaptureFormat::Cells => {
+                    let terminal = &component.terminal;
+                    let grid = terminal.grid();
+                    let revision = terminal.revision();
+                    let unchanged = *if_revision == Some(revision);
+                    let (lines, truncated) = if unchanged {
+                        (Vec::new(), false)
+                    } else {
+                        grid.capture_lines(max_bytes)
+                    };
+                    let (rows, columns) = grid.size();
+                    Ok(CommandResult::Cells {
+                        seq,
+                        input_sequence: component.input_sequence,
+                        revision,
+                        rows,
+                        columns,
+                        cursor: grid.cursor(),
+                        title: terminal.title().to_owned(),
+                        progress: terminal.progress().map(|p| (p.state, p.percent)),
+                        unchanged,
+                        truncated,
+                        lines,
+                    })
+                }
             }
+        })()),
+        Request::List { .. } => {
+            let selection = context.selection(world);
+            Ok(Outcome::Now(CommandResult::Listing {
+                instance: world.resource::<ServerIdentity>().instance_nonce.clone(),
+                workspaces: vec![summarize(world, context.workspace, &selection)],
+            }))
         }
-        Request::List { .. } => Ok(CommandResult::Listing {
-            instance: world.resource::<ServerIdentity>().instance_nonce.clone(),
-            workspaces: vec![summarize(world, &context)],
-        }),
-        Request::Info { .. } => Ok(CommandResult::Info {
+        Request::Info { .. } => Ok(Outcome::Now(CommandResult::Info {
             info: Box::new(server_info(world, Some(context.workspace))),
-        }),
-        Request::Tab { action, .. } => {
-            let Some(result) = tab_action(world, &context, id, action).settled() else {
-                return;
-            };
-            result
-        }
-        Request::Workspace { action, .. } => {
-            let Some(result) = workspace_action(world, &context, id, action).settled() else {
-                return;
-            };
-            result
-        }
-        Request::Events { after, .. } => {
-            match world
-                .get::<crate::ecs::events::EventLog>(context.workspace)
-                .and_then(|log| log.replay(after).map(|events| (log.cursor(), events)))
-            {
-                Some((cursor, events)) => Ok(CommandResult::Events { cursor, events }),
-                None => Err(failed(
-                    id,
+        })),
+        Request::Tab { action, .. } => tab_action(world, context, action.clone()),
+        Request::Workspace { action, .. } => workspace_action(world, context, action.clone()),
+        Request::Events { after, .. } => world
+            .get::<crate::ecs::events::EventLog>(context.workspace)
+            .and_then(|log| log.replay(*after).map(|events| (log.cursor(), events)))
+            .map(|(cursor, events)| Outcome::Now(CommandResult::Events { cursor, events }))
+            .ok_or_else(|| {
+                Failure::new(
                     ErrorCode::Gap,
                     "event cursor is no longer replayable; relist",
-                )),
-            }
-        }
-        Request::Subscribe { .. } => Err(failed(
-            id,
-            ErrorCode::InvalidRequest,
+                )
+            }),
+        Request::Subscribe { .. } => Err(Failure::invalid(
             "subscriptions are only available on the control socket",
         )),
-    };
-    match result {
-        Ok(result) => reply(world, requester, Reply::Completed { id, result }),
-        Err(reply_value) => reply(world, requester, reply_value),
     }
 }
 
@@ -1001,21 +928,6 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
 pub enum Outcome {
     Now(CommandResult),
     Deferred,
-}
-
-trait Settled {
-    /// `None` when the reply is deferred, so the caller returns without replying.
-    fn settled(self) -> Option<Result<CommandResult, Reply>>;
-}
-
-impl Settled for Result<Outcome, Reply> {
-    fn settled(self) -> Option<Result<CommandResult, Reply>> {
-        match self {
-            Ok(Outcome::Now(result)) => Some(Ok(result)),
-            Ok(Outcome::Deferred) => None,
-            Err(reply) => Some(Err(reply)),
-        }
-    }
 }
 
 /// Moves an attached viewer to another workspace over the same connection.
@@ -1093,10 +1005,10 @@ fn manager_failed(world: &mut World, token: u64, message: impl Into<String>) {
 }
 
 /// A control-style result as the `id: 0` reply a manager wrapper carries.
-fn control_reply(result: Result<CommandResult, Reply>) -> Reply {
+fn control_reply(result: Result<CommandResult, Failure>) -> Reply {
     match result {
         Ok(result) => Reply::Completed { id: 0, result },
-        Err(reply) => reply,
+        Err(failure) => failure.reply(0),
     }
 }
 
@@ -1105,32 +1017,31 @@ fn locate_pane(
     world: &World,
     instance: &str,
     pane: PaneId,
-) -> Result<control::PaneLocation, Reply> {
+) -> Result<control::PaneLocation, Failure> {
     if instance != world.resource::<ServerIdentity>().instance_nonce {
-        return Err(failed(0, ErrorCode::Conflict, "server instance changed"));
+        return Err(Failure::conflict("server instance changed"));
     }
-    let entity = pane_entity(world, pane)
-        .ok_or_else(|| failed(0, ErrorCode::NotFound, "live pane not found"))?;
+    let entity = pane_entity(world, pane).ok_or_else(|| Failure::not_found("pane not found"))?;
     let component = world
         .get::<Pane>(entity)
         .filter(|pane| matches!(pane.state, PaneState::Live { .. } | PaneState::Eof { .. }))
-        .ok_or_else(|| failed(0, ErrorCode::NotFound, "live pane not found"))?;
+        .ok_or_else(|| Failure::not_found("pane not found"))?;
     let pid = component
         .state
         .pid()
-        .ok_or_else(|| failed(0, ErrorCode::Conflict, "pane process is unavailable"))?;
+        .ok_or_else(|| Failure::conflict("pane process is unavailable"))?;
     let workspace = world
         .get::<Workspace>(component.routing_workspace)
         .filter(|workspace| workspace.open && workspace.retiring.is_none())
-        .ok_or_else(|| failed(0, ErrorCode::NotFound, "workspace unavailable"))?;
+        .ok_or_else(|| Failure::not_found("workspace unavailable"))?;
     let tab = world
         .get::<Tab>(component.tab)
         .filter(|tab| tab.workspace == component.routing_workspace && tab.layout.contains(entity))
-        .ok_or_else(|| failed(0, ErrorCode::NotFound, "pane is no longer in its layout"))?;
+        .ok_or_else(|| Failure::not_found("pane is no longer in its layout"))?;
     let stream = world
         .get::<crate::ecs::events::EventLog>(component.routing_workspace)
         .map(|log| log.cursor().stream)
-        .ok_or_else(|| failed(0, ErrorCode::NotFound, "workspace stream unavailable"))?;
+        .ok_or_else(|| Failure::not_found("workspace stream unavailable"))?;
     Ok(control::PaneLocation {
         instance: instance.to_owned(),
         pane,
@@ -1150,30 +1061,21 @@ fn release_pane_pin(
     instance: &str,
     pane: PaneId,
     pid: u32,
-) -> Result<CommandResult, Reply> {
+) -> Result<CommandResult, Failure> {
     let location = locate_pane(world, instance, pane)?;
     if !location.accepts_input {
-        return Err(failed(
-            0,
-            ErrorCode::NotFound,
-            "pane no longer accepts input",
-        ));
+        return Err(Failure::not_found("pane no longer accepts input"));
     }
     if pid == 0 || location.pid != pid {
-        return Err(failed(0, ErrorCode::Conflict, "pane process changed"));
+        return Err(Failure::conflict("pane process changed"));
     }
-    let entity =
-        pane_entity(world, pane).ok_or_else(|| failed(0, ErrorCode::NotFound, "pane missing"))?;
+    let entity = pane_entity(world, pane).ok_or_else(|| Failure::not_found("pane not found"))?;
     let mut component = world
         .get_mut::<Pane>(entity)
-        .ok_or_else(|| failed(0, ErrorCode::NotFound, "pane missing"))?;
+        .ok_or_else(|| Failure::not_found("pane not found"))?;
     match component.workspace_pin {
         crate::ecs::components::WorkspacePin::Explicit => {
-            return Err(failed(
-                0,
-                ErrorCode::Conflict,
-                "pane has an explicit workspace pin",
-            ));
+            return Err(Failure::conflict("pane has an explicit workspace pin"));
         }
         crate::ecs::components::WorkspacePin::None => return Ok(CommandResult::Unit),
         crate::ecs::components::WorkspacePin::Creation => {}
@@ -1248,8 +1150,8 @@ fn apply_manager(world: &mut World, request: ManagerRequest, token: u64) {
             if world.resource::<ShuttingDown>().0 {
                 return manager_failed(world, token, "server is shutting down");
             }
-            if let Err(reply) = reserve_workspace(world, name, Requester::Manager(token), 0) {
-                manager_failed(world, token, creation_failure(reply));
+            if let Err(failure) = reserve_workspace(world, name, Requester::Manager(token), 0) {
+                manager_failed(world, token, failure);
             }
         }
         ManagerRequest::ApplyLayout { expected, archive } => {
@@ -1337,17 +1239,10 @@ fn apply_manager(world: &mut World, request: ManagerRequest, token: u64) {
                 return manager(world, token, outcome);
             }
             let name = name.unwrap_or_else(|| next_workspace_name(world));
-            if let Err(reply) = reserve_workspace(world, name, requester, 0) {
-                manager_failed(world, token, creation_failure(reply));
+            if let Err(failure) = reserve_workspace(world, name, requester, 0) {
+                manager_failed(world, token, failure);
             }
         }
-    }
-}
-
-fn creation_failure(reply: Reply) -> String {
-    match reply {
-        Reply::Failed { error, .. } => error.message,
-        _ => "workspace creation failed".into(),
     }
 }
 
@@ -1358,16 +1253,16 @@ pub(super) fn ordered_workspaces(world: &mut World) -> Vec<(String, Entity)> {
         .filter(|(_, workspace)| workspace.open && workspace.retiring.is_none())
         .map(|(entity, workspace)| (workspace.name.clone(), entity))
         .collect();
-    let order = &world.resource::<crate::ecs::resources::WorkspaceOrder>().0;
-    entries.sort_by(|(a_name, a), (b_name, b)| {
-        let rank = |entity| {
-            order
-                .iter()
-                .position(|item| *item == entity)
-                .unwrap_or(usize::MAX)
-        };
-        rank(*a).cmp(&rank(*b)).then_with(|| a_name.cmp(b_name))
-    });
+    let rank: BTreeMap<Entity, usize> = world
+        .resource::<crate::ecs::resources::WorkspaceOrder>()
+        .0
+        .iter()
+        .enumerate()
+        .map(|(index, entity)| (*entity, index))
+        .collect();
+    let rank = |entity: &Entity| rank.get(entity).copied().unwrap_or(usize::MAX);
+    entries
+        .sort_by(|(a_name, a), (b_name, b)| rank(a).cmp(&rank(b)).then_with(|| a_name.cmp(b_name)));
     entries
 }
 
@@ -1395,12 +1290,11 @@ pub(super) fn list_workspaces(world: &mut World) -> Vec<WorkspaceSummary> {
     entities
         .into_iter()
         .map(|workspace| {
-            let context = Context {
-                requester: Requester::Control(0),
-                workspace,
-                viewer: None,
-            };
-            summarize(world, &context)
+            let selection = world
+                .get::<Workspace>(workspace)
+                .map(|workspace| workspace.selection.clone())
+                .unwrap_or_default();
+            summarize(world, workspace, &selection)
         })
         .collect()
 }
@@ -1428,13 +1322,13 @@ pub fn server_info(world: &World, workspace: Option<Entity>) -> control::ServerI
     }
 }
 
-fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
-    let selection = context.selection(world);
+/// The listing of one workspace as `selection` sees it (focused tab and panes).
+fn summarize(world: &mut World, workspace: Entity, selection: &Selection) -> WorkspaceSummary {
     let name = world
-        .get::<Workspace>(context.workspace)
+        .get::<Workspace>(workspace)
         .map(|workspace| workspace.name.clone())
         .unwrap_or_default();
-    let tabs = member_tabs(world, context.workspace);
+    let tabs = member_tabs(world, workspace);
     // A listing reports current sequences: bring every dirty pane's grid up to date first.
     let shown: Vec<Entity> = tabs
         .iter()
@@ -1446,14 +1340,13 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
             component.refresh();
         }
     }
-    let viewers =
-        u32::try_from(viewers_of_workspace(world, context.workspace).len()).unwrap_or(u32::MAX);
+    let viewers = u32::try_from(attached_viewers(world, workspace)).unwrap_or(u32::MAX);
     let tabs = tabs
         .iter()
         .enumerate()
         .filter_map(|(index, tab)| {
             let component = world.get::<Tab>(*tab)?;
-            let focused_pane = focus_in_tab(world, &selection, *tab);
+            let focused_pane = focus_in_tab(world, selection, *tab);
             let panes = component
                 .layout
                 .leaves()
@@ -1497,22 +1390,15 @@ fn summarize(world: &mut World, context: &Context) -> WorkspaceSummary {
         .collect();
     WorkspaceSummary {
         event_cursor: world
-            .get::<crate::ecs::events::EventLog>(context.workspace)
+            .get::<crate::ecs::events::EventLog>(workspace)
             .map(crate::ecs::events::EventLog::cursor)
             .unwrap_or_default(),
         name,
         label: world
-            .get::<Workspace>(context.workspace)
+            .get::<Workspace>(workspace)
             .and_then(|workspace| workspace.label.clone()),
         focused: true,
         viewers,
         tabs,
-    }
-}
-
-pub fn notice(world: &mut World, viewer: Entity, message: &str) {
-    if let Some(mut component) = world.get_mut::<Viewer>(viewer) {
-        component.notice = Some(sanitize_notice(message));
-        component.dirty = true;
     }
 }

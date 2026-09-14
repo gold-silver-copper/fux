@@ -5,12 +5,12 @@ use crate::ecs::components::{Creation, Pane, PaneState, Tab, Tabs, Viewer, Works
 use crate::ecs::messages::Effect;
 use crate::ecs::resources::{Clock, Deadlines, Ids, Limits, ShuttingDown};
 use crate::ecs::support::{
-    close_tab, despawn_pane, despawn_tab, despawn_workspace, effect, fail_creations,
-    mark_workspace_dirty, member_tabs, pane_closed, pane_id, pane_in_layout, pane_workspace,
-    panes_in_workspace, remove_from_layout, retire, tab_workspace, terminate_pane,
-    viewers_of_workspace, viewers_where,
+    close_tab, despawn_pane, despawn_tab, despawn_viewer, despawn_workspace, effect,
+    fail_creations, mark_workspace_dirty, member_tabs, pane_closed, pane_id, pane_in_layout,
+    pane_workspace, panes_in_workspace, remove_from_layout, retire, tab_workspace, terminate_pane,
+    viewers_where,
 };
-use crate::ecs::systems::requests::{despawn_viewer, kill_workspace};
+use crate::ecs::systems::requests::kill_workspace;
 use bevy_ecs::prelude::*;
 
 /// SIGHUP is followed by SIGKILL after this many milliseconds.
@@ -20,7 +20,7 @@ pub fn resolve_lifecycle(world: &mut World) {
     super::input::expire(world);
     super::final_records::expire(world);
     let now = world.resource::<Clock>().now_ms;
-    let limits = world.resource::<Limits>().clone();
+    let limits = *world.resource::<Limits>();
     if world.resource::<ShuttingDown>().0 {
         let workspaces: Vec<Entity> = world
             .query::<(Entity, &Workspace)>()
@@ -149,14 +149,13 @@ fn finalize_retirements(world: &mut World, now: u64, grace_ms: u64) {
         })
         .collect();
     for (workspace, since) in retiring {
-        let viewers = viewers_of_workspace(world, workspace);
         // Viewers still attached are waiting to paint the final frame; the snapshot phase marks
         // them detaching after publishing it.
         let waiting = world
             .query::<&Viewer>()
             .iter(world)
-            .any(|viewer| viewer.workspace == workspace && !viewer.detaching);
-        if (waiting || !viewers.is_empty()) && now.saturating_sub(since) < grace_ms {
+            .any(|viewer| viewer.attached_to(workspace));
+        if waiting && now.saturating_sub(since) < grace_ms {
             world
                 .resource_mut::<Deadlines>()
                 .propose(since.saturating_add(grace_ms));

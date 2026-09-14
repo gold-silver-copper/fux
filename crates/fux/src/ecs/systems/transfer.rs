@@ -2,38 +2,43 @@
 use crate::ecs::components::{Creation, Pane, Tab, TabOf};
 use crate::ecs::resources::{Clock, Limits};
 use crate::ecs::support::{
-    close_tab, event, failed, is_member, mark_tab_dirty, mark_workspace_dirty, member_tabs,
-    pane_entity, retarget_focus, tab_entity,
+    Failure, close_tab, event, is_member, mark_tab_dirty, mark_workspace_dirty, member_tabs,
+    pane_entity, retarget_focus, tab_entity, tab_id,
 };
 use crate::ids::PaneId;
 use crate::layout::{Axis, Direction, LayoutTree};
-use crate::proto::control::{
-    CommandResult, ErrorCode, Event, LayoutAction, PaneDestination, Reply,
-};
+use crate::proto::control::{CommandResult, Event, LayoutAction, PaneDestination};
 use bevy_ecs::prelude::*;
 
-#[allow(clippy::too_many_arguments)]
+/// One pane move: `pane` leaves the layout of `source` for `destination`, on `side` of the
+/// destination pane, focusing it when `focus` is set.
+pub struct MoveSpec {
+    pub source: Entity,
+    pub pane: PaneId,
+    pub destination: PaneDestination,
+    pub side: Direction,
+    pub focus: bool,
+}
+
 fn move_pane(
     world: &mut World,
     workspace: Entity,
     destination_workspace: Entity,
-    id: u64,
-    source: Entity,
-    pane: PaneId,
-    destination: PaneDestination,
-    side: Direction,
-    focus: bool,
-) -> Result<CommandResult, Reply> {
+    spec: MoveSpec,
+) -> Result<CommandResult, Failure> {
+    let MoveSpec {
+        source,
+        pane,
+        destination,
+        side,
+        focus,
+    } = spec;
     let target_ratio = match &destination {
         PaneDestination::Tab { ratio, .. } => *ratio,
         PaneDestination::NewTab { .. } => crate::layout::RATIO_SCALE / 2,
     };
     if !(crate::layout::MIN_RATIO..=crate::layout::MAX_RATIO).contains(&target_ratio) {
-        return Err(failed(
-            id,
-            ErrorCode::InvalidRequest,
-            "transfer ratio must be 500..=9500",
-        ));
+        return Err(Failure::invalid("transfer ratio must be 500..=9500"));
     }
     let entity = pane_entity(world, pane)
         .filter(|entity| {
@@ -41,26 +46,18 @@ fn move_pane(
                 .get::<Pane>(*entity)
                 .is_some_and(|pane| pane.tab == source && pane.state.accepts_input())
         })
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "live source pane not found"))?;
+        .ok_or_else(|| Failure::not_found("live source pane not found"))?;
     if workspace != destination_workspace {
         if world
             .get::<Pane>(entity)
             .is_some_and(|pane| pane.workspace_pin.is_fixed())
         {
-            return Err(failed(
-                id,
-                ErrorCode::Conflict,
-                "pane is fixed to its current workspace",
-            ));
+            return Err(Failure::conflict("pane is fixed to its current workspace"));
         }
         if crate::ecs::support::panes_in_workspace(world, destination_workspace).len()
             >= world.resource::<Limits>().max_panes
         {
-            return Err(failed(
-                id,
-                ErrorCode::Limit,
-                "configured destination pane limit reached",
-            ));
+            return Err(Failure::limit("configured destination pane limit reached"));
         }
         if world
             .resource::<crate::ecs::resources::InputOperations>()
@@ -71,24 +68,22 @@ fn move_pane(
                     && record.receipt.state == crate::proto::control::InputState::Queued
             })
         {
-            return Err(failed(
-                id,
-                ErrorCode::Conflict,
+            return Err(Failure::conflict(
                 "tracked input is still queued for this pane",
             ));
         }
     }
     let source_component = world
         .get::<Tab>(source)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "source tab not found"))?;
+        .ok_or_else(|| Failure::not_found("source tab not found"))?;
     let mut source_tree = source_component.layout.clone();
     let source_generation = source_component
         .layout_generation
         .checked_add(1)
-        .ok_or_else(|| failed(id, ErrorCode::Limit, "layout generation exhausted"))?;
+        .ok_or_else(|| Failure::limit("layout generation exhausted"))?;
     let next_focus = source_tree
         .close(entity)
-        .map_err(|error| failed(id, ErrorCode::Conflict, error.to_string()))?;
+        .map_err(|error| Failure::conflict(error.to_string()))?;
     let (existing, mut destination_tree, target) = match &destination {
         PaneDestination::Tab {
             tab,
@@ -99,33 +94,27 @@ fn move_pane(
             let target_tab = tab_entity(world, *tab)
                 .filter(|tab| *tab != source && is_member(world, destination_workspace, *tab))
                 .ok_or_else(|| {
-                    failed(
-                        id,
-                        ErrorCode::NotFound,
+                    Failure::not_found(
                         "destination must be another tab in the destination workspace",
                     )
                 })?;
-            super::layout_control::ensure_settled(world, target_tab, id)?;
+            super::layout_control::ensure_settled(world, target_tab)?;
             let component = world
                 .get::<Tab>(target_tab)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "destination tab not found"))?;
+                .ok_or_else(|| Failure::not_found("destination tab not found"))?;
             if component.layout_generation != *generation {
-                return Err(failed(
-                    id,
-                    ErrorCode::Conflict,
-                    "destination layout changed",
-                ));
+                return Err(Failure::conflict("destination layout changed"));
             }
             let target = pane_entity(world, *target)
                 .filter(|target| component.layout.contains(*target))
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "destination pane not found"))?;
+                .ok_or_else(|| Failure::not_found("destination pane not found"))?;
             (Some(target_tab), component.layout.clone(), Some(target))
         }
         PaneDestination::NewTab { .. } => {
             if member_tabs(world, destination_workspace).len()
                 >= world.resource::<Limits>().max_tabs
             {
-                return Err(failed(id, ErrorCode::Limit, "configured tab limit reached"));
+                return Err(Failure::limit("configured tab limit reached"));
             }
             (None, LayoutTree::new(entity), None)
         }
@@ -135,9 +124,7 @@ fn move_pane(
         .iter(world)
         .any(|(pane, _)| pane.tab == source || existing == Some(pane.tab));
     if pending {
-        return Err(failed(
-            id,
-            ErrorCode::Conflict,
+        return Err(Failure::conflict(
             "a pane is still starting in an affected tab",
         ));
     }
@@ -153,20 +140,20 @@ fn move_pane(
             target_ratio
         };
         let ratio = std::num::NonZeroU16::new(first_ratio)
-            .ok_or_else(|| failed(id, ErrorCode::InvalidRequest, "invalid transfer ratio"))?;
+            .ok_or_else(|| Failure::invalid("invalid transfer ratio"))?;
         destination_tree
             .split(target, entity, axis, ratio)
-            .map_err(|error| failed(id, ErrorCode::Conflict, error.to_string()))?;
+            .map_err(|error| Failure::conflict(error.to_string()))?;
         if matches!(side, Direction::Left | Direction::Up) {
             destination_tree
                 .swap(entity, target)
-                .map_err(|error| failed(id, ErrorCode::Conflict, error.to_string()))?;
+                .map_err(|error| Failure::conflict(error.to_string()))?;
         }
     }
     let destination_generation = existing
         .and_then(|tab| world.get::<Tab>(tab))
         .map_or(Some(1), |tab| tab.layout_generation.checked_add(1))
-        .ok_or_else(|| failed(id, ErrorCode::Limit, "destination generation exhausted"))?;
+        .ok_or_else(|| Failure::limit("destination generation exhausted"))?;
     // Everything fallible is checked before publishing either layout. Creating a new tab allocates
     // only an ECS entity and public ID; it never starts a replacement pane process.
     let destination_tab = match (existing, destination) {
@@ -174,7 +161,7 @@ fn move_pane(
         (None, PaneDestination::NewTab { label }) => {
             super::creation::reserve_tab(world, destination_workspace, label)?
         }
-        _ => return Err(failed(id, ErrorCode::NotFound, "destination unavailable")),
+        _ => return Err(Failure::not_found("destination unavailable")),
     };
     if let Some(mut tab) = world.get_mut::<Tab>(source) {
         tab.layout = source_tree;
@@ -220,10 +207,8 @@ fn move_pane(
             }
         }
     }
-    let destination_id = world
-        .get::<Tab>(destination_tab)
-        .map(|tab| tab.id)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "destination disappeared"))?;
+    let destination_id = tab_id(world, destination_tab)
+        .ok_or_else(|| Failure::not_found("destination disappeared"))?;
     if existing.is_none() {
         world
             .entity_mut(destination_tab)
@@ -256,7 +241,6 @@ fn move_pane(
     super::layout_control::apply(
         world,
         destination_workspace,
-        id,
         destination_id,
         None,
         LayoutAction::Export,
@@ -264,28 +248,12 @@ fn move_pane(
 }
 
 /// Workspace control connections cannot broaden their own routing authority.
-#[allow(clippy::too_many_arguments)]
 pub fn within_workspace(
     world: &mut World,
     workspace: Entity,
-    id: u64,
-    source: Entity,
-    pane: PaneId,
-    destination: PaneDestination,
-    side: Direction,
-    focus: bool,
-) -> Result<CommandResult, Reply> {
-    move_pane(
-        world,
-        workspace,
-        workspace,
-        id,
-        source,
-        pane,
-        destination,
-        side,
-        focus,
-    )
+    spec: MoveSpec,
+) -> Result<CommandResult, Failure> {
+    move_pane(world, workspace, workspace, spec)
 }
 
 /// Only the manager endpoint calls this entry point. Both workspace lifetimes and all layout
@@ -293,13 +261,12 @@ pub fn within_workspace(
 pub fn across_workspaces(
     world: &mut World,
     transfer: crate::proto::control::WorkspaceTransfer,
-) -> Result<CommandResult, Reply> {
+) -> Result<CommandResult, Failure> {
     use crate::ecs::components::Workspace;
     use crate::ecs::resources::{ServerIdentity, ShuttingDown};
     use crate::ecs::support::workspace_entity;
-    let id = 0;
     let request = crate::proto::control::Request::Layout {
-        id,
+        id: 0,
         instance: Some(transfer.instance.clone()),
         tab: transfer.source,
         generation: Some(transfer.generation),
@@ -310,37 +277,27 @@ pub fn across_workspaces(
             side: transfer.side,
         },
     };
-    request
-        .validate()
-        .map_err(|error| crate::proto::control::error_reply(&error))?;
+    request.validate().map_err(|error| Failure::from(&error))?;
     if world.resource::<ShuttingDown>().0
         || world.resource::<ServerIdentity>().instance_nonce != transfer.instance
     {
-        return Err(failed(
-            id,
-            ErrorCode::Conflict,
-            "server changed or is shutting down",
-        ));
+        return Err(Failure::conflict("server changed or is shutting down"));
     }
     let source = tab_entity(world, transfer.source)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "source tab not found"))?;
-    super::layout_control::ensure_settled(world, source, id)?;
+        .ok_or_else(|| Failure::not_found("source tab not found"))?;
+    super::layout_control::ensure_settled(world, source)?;
     let component = world
         .get::<Tab>(source)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "source tab not found"))?;
+        .ok_or_else(|| Failure::not_found("source tab not found"))?;
     if component.layout_generation != transfer.generation {
-        return Err(failed(id, ErrorCode::Conflict, "source layout changed"));
+        return Err(Failure::conflict("source layout changed"));
     }
     let workspace = component.workspace;
     if world
         .get::<Workspace>(workspace)
         .is_none_or(|component| !component.open || component.retiring.is_some())
     {
-        return Err(failed(
-            id,
-            ErrorCode::Conflict,
-            "source workspace is not open",
-        ));
+        return Err(Failure::conflict("source workspace is not open"));
     }
     let following = transfer
         .follow
@@ -355,13 +312,7 @@ pub fn across_workspaces(
                                 && viewer.selection.tab == Some(source)
                         })
                 })
-                .ok_or_else(|| {
-                    failed(
-                        0,
-                        ErrorCode::Conflict,
-                        "following viewer changed tab or disconnected",
-                    )
-                })
+                .ok_or_else(|| Failure::conflict("following viewer changed tab or disconnected"))
         })
         .transpose()?;
     // Following is one atomic focus outcome; do not retain the source fallback as history.
@@ -378,53 +329,39 @@ pub fn across_workspaces(
                         .get::<crate::ecs::events::EventLog>(*entity)
                         .is_some_and(|log| log.cursor().stream == stream)
                 })
-                .ok_or_else(|| {
-                    failed(
-                        id,
-                        ErrorCode::Conflict,
-                        "destination workspace lifetime changed",
-                    )
-                })?;
+                .ok_or_else(|| Failure::conflict("destination workspace lifetime changed"))?;
             if world
                 .get::<Workspace>(entity)
                 .is_none_or(|component| !component.open || component.retiring.is_some())
             {
-                return Err(failed(
-                    id,
-                    ErrorCode::Conflict,
-                    "destination workspace is not open",
-                ));
+                return Err(Failure::conflict("destination workspace is not open"));
             }
             (entity, false)
         }
         crate::proto::control::WorkspaceDestination::New { name } => {
             if !matches!(transfer.destination, PaneDestination::NewTab { .. }) {
-                return Err(failed(
-                    id,
-                    ErrorCode::InvalidRequest,
+                return Err(Failure::invalid(
                     "a new workspace requires a new tab destination",
                 ));
             }
-            (
-                super::creation::reserve_empty_workspace(world, name, id)?,
-                true,
-            )
+            (super::creation::reserve_empty_workspace(world, name)?, true)
         }
     };
     let admission = following.map_or(Ok(()), |viewer| {
-        super::requests_control::check_viewer_admission(world, viewer, destination, id)
+        super::requests_control::check_viewer_admission(world, viewer, destination)
     });
     let result = admission.and_then(|()| {
         move_pane(
             world,
             workspace,
             destination,
-            id,
-            source,
-            transfer.pane,
-            transfer.destination,
-            transfer.side,
-            transfer.focus || following.is_some(),
+            MoveSpec {
+                source,
+                pane: transfer.pane,
+                destination: transfer.destination,
+                side: transfer.side,
+                focus: transfer.focus || following.is_some(),
+            },
         )
     });
     if created {

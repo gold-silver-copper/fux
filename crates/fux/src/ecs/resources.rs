@@ -5,7 +5,7 @@ use bevy_ecs::prelude::*;
 use std::collections::{BTreeMap, VecDeque};
 
 /// Resource budgets. Fixed ceilings live in `view`/`config`; these are the configured values.
-#[derive(Resource, Clone, Debug)]
+#[derive(Resource, Clone, Copy, Debug)]
 pub struct Limits {
     pub max_workspaces: usize,
     pub max_tabs: usize,

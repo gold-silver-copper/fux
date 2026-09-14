@@ -280,6 +280,14 @@ impl Pane {
             .refresh_grid(&self.published_title, self.state.exit_code())
     }
 
+    /// Whether this pane is the live, input-accepting process an exact attachment named.
+    #[must_use]
+    pub fn is_required_process(&self, want: &crate::proto::attach::InitialTarget) -> bool {
+        self.workspace_stream == want.stream
+            && self.state.pid() == Some(want.pid)
+            && self.state.accepts_input()
+    }
+
     /// Inner terminal size for an outer rectangle; never below the emulator minimum.
     #[must_use]
     pub fn terminal_size(rect: Rect) -> (u16, u16) {

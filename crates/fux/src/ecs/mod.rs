@@ -150,19 +150,6 @@ impl Session {
         &self.world
     }
 
-    /// Names of open workspaces, sorted.
-    pub fn workspace_names(&mut self) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .world
-            .query::<&components::Workspace>()
-            .iter(&self.world)
-            .filter(|workspace| workspace.open && workspace.retiring.is_none())
-            .map(|workspace| workspace.name.clone())
-            .collect();
-        names.sort();
-        names
-    }
-
     pub fn entity_counts(&mut self) -> EntityCounts {
         EntityCounts {
             workspaces: self

@@ -137,8 +137,65 @@ pub fn reply(world: &mut World, requester: Requester, reply: Reply) {
     }
 }
 
-pub fn failed(id: RequestId, code: ErrorCode, message: impl Into<String>) -> Reply {
-    Reply::failed(id, code, message)
+/// Why a handler refused a request. The request id is attached once, where the reply is sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+impl Failure {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotFound, message)
+    }
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Conflict, message)
+    }
+    pub fn limit(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Limit, message)
+    }
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidRequest, message)
+    }
+    /// The wire reply for request `id`.
+    pub fn reply(self, id: RequestId) -> Reply {
+        Reply::failed(id, self.code, self.message)
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<Failure> for String {
+    fn from(failure: Failure) -> Self {
+        failure.message
+    }
+}
+
+impl From<&control::ControlError> for Failure {
+    fn from(error: &control::ControlError) -> Self {
+        Self::new(error.code, error.message.clone())
+    }
+}
+
+/// Removes a viewer now (exclusive systems): releases its id, despawns it and closes its outbox
+/// after the messages already queued for it.
+pub fn despawn_viewer(world: &mut World, viewer: Entity) {
+    let Some(id) = world.get::<Viewer>(viewer).map(|viewer| viewer.id) else {
+        return;
+    };
+    world.resource_mut::<Ids>().viewers.remove(&id);
+    world.despawn(viewer);
+    effect(world, Effect::CloseViewer { viewer: id });
 }
 
 /// Answers every waiting requester with the reply `make` builds for its request id.
@@ -248,10 +305,13 @@ pub fn each_viewer(
     }
 }
 
-pub fn viewers_of_workspace(world: &mut World, workspace: Entity) -> Vec<Entity> {
-    viewers_where(world, |viewer| {
-        viewer.workspace == workspace && !viewer.detaching
-    })
+/// How many viewers are attached to `workspace` and not detaching.
+pub fn attached_viewers(world: &mut World, workspace: Entity) -> usize {
+    world
+        .query::<&Viewer>()
+        .iter(world)
+        .filter(|viewer| viewer.attached_to(workspace))
+        .count()
 }
 
 /// Observe effective focus after a discrete layout/selection edit, including shared zoom.
@@ -541,7 +601,7 @@ pub fn fail_creations(world: &mut World, panes: &[Entity], reason: &str, despawn
         };
         clear_barriers(world, entity);
         reply_all(world, creation.requesters, |id| {
-            failed(id, control::ErrorCode::Conflict, reason)
+            Failure::conflict(reason).reply(id)
         });
         if despawn {
             despawn_pane(world, entity);

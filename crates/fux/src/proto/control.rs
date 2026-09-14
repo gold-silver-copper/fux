@@ -537,7 +537,7 @@ pub struct InfoLimits {
     pub final_retention_ms: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum FocusTarget {
     Pane(PaneId),
