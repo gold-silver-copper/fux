@@ -218,7 +218,7 @@ cargo test --manifest-path crates/fux/tests/verify/fixture-child/Cargo.toml --lo
 crates/fux/tests/verify/release-package.sh
 ```
 
-Deterministic ECS tests inject events and time (`crates/fux/tests/ecs.rs`, including randomized
+Deterministic ECS tests inject events and time (`crates/fux/tests/ecs/`, including randomized
 command sequences); real-process scenarios use disposable HOME/XDG directories and owned
 processes only (`crates/fux/tests/local_cli.rs`, the fixture-child suite). The real zor
 integration (`cargo test -p fux --test automation_integration`) builds `crates/zor` from this
