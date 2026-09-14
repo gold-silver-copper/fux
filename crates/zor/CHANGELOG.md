@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 - Unreleased
+## 0.6.0 - 2026-09-14
 
 - Requires fux 0.11.0: a `cells` capture carries each non-default style as
   `[foreground, background, attributes]` (colours `null`, a palette index or `[r, g, b]`;

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.0 - Unreleased
+## 0.11.0 - 2026-09-14
 
 Simplification pass (`docs/codebase-simplification.md` records every batch, its line count and
 its behaviour differences).

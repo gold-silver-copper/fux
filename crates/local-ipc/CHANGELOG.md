@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-09-14
 
 - `read_exact_until`: full read of a fixed-size buffer under one absolute deadline (added after
   0.2.0 was published, which is why 0.2.0 tarballs could not build fux).
