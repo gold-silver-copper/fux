@@ -124,7 +124,14 @@ impl Remote {
         let view: Value = serde_json::from_slice(&output(
             &self.root,
             &self.zor,
-            &["--machine", "resume-host", "--koh-binary", &koh, "dashboard", "--once"],
+            &[
+                "--machine",
+                "resume-host",
+                "--koh-binary",
+                &koh,
+                "dashboard",
+                "--once",
+            ],
         )?)?;
         let index = view["view"]["rows"]
             .as_array()
@@ -167,7 +174,11 @@ impl Remote {
         // replies. The header and the finished new attempt are visible at the top; the
         // long launch JSON (phase closed) scrolls below the fold and is asserted through
         // the service inspection this function returns.
-        terminal.wait_for_since("resume-host / worker / attempt", mark, Duration::from_secs(30))?;
+        terminal.wait_for_since(
+            "resume-host / worker / attempt",
+            mark,
+            Duration::from_secs(30),
+        )?;
         terminal.wait_for_since("\"state\": \"finished\"", mark, wait)?;
         terminal.checkpoint("remote-resume-success")?;
         ensure!(

@@ -421,7 +421,10 @@ pub(super) fn resume(
     lose_reply: bool,
     dashboard: bool,
 ) -> Result<()> {
-    ensure!(!(lose_reply && dashboard), "dashboard resume uses the delivered-reply gateway");
+    ensure!(
+        !(lose_reply && dashboard),
+        "dashboard resume uses the delivered-reply gateway"
+    );
     use crate::support::launch_proxy::{Mode, Proxy};
     let node = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|path| path.join("node"))
