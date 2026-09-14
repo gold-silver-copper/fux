@@ -1,0 +1,68 @@
+[?1049h[?25l[2J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  e: error  R: reload  q: quit[K
+Local:unavailable  first:unavailable  second:unavailable[K
+No observed rows in this scope[K
+Local: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  e: error  R: reload  q: quit[K
+Local:live  first:unavailable  second:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 722ms; passive rule none; no identified supported foreground agent[K
+first: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  e: error  R: reload  q: quit[K
+Local:live  first:unavailable  second:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 1976ms; passive rule none; no identified supported foreground agent[K
+first: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  e: error  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> Local            unknown      default / 1: unclassified[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+  first            open         same: first task[K
+  second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+  second           open         same: second task[K
+Local: passive state unknown; age at fetch <= 1976ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | Local | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  e: error  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 1976ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  e: error  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+  first            open         same: first task[K
+first: passive state unknown; age at fetch <= 716ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  e: error  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+[J[HResume | Enter submit | Esc cancel[K
+Resume selected task[K
+Type: OPERATION_ID FUX_INSTANCE[K
+> [K
+Backspace: edit[K
+Keep the stable operation ID to reconcile an unknown outcome.[K
+Service checks provider/session eligibility; no prompt replay.[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  e: error  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+[J[HResume | Enter submit | Esc cancel[K
+Resume selected task[K
+Type: OPERATION_ID FUX_INSTANCE[K
+> [K
+Backspace: edit[K
+Keep the stable operation ID to reconcile an unknown outcome.[K
+Service checks provider/session eligibility; no prompt replay.[K
+[J[HResume | Enter submit | Esc cancel[K
+Resume selected task[K
+Type: OPERATION_ID FUX_INSTANCE[K
+> ui-resume-refusal a7f4af40f415d2f6d05fc762a4aef18b[K
+Backspace: edit[K
+Keep the stable operation ID to reconcile an unknown outcome.[K
+Service checks provider/session eligibility; no prompt replay.[K
+[J

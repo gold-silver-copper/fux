@@ -1,0 +1,30 @@
+[?1049h[?25l[2J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  q: quit[K
+Local:unavailable  renamed:unavailable  second:unavailable  unconfigured:unavailable[K
+No observed rows in this scope[K
+Local: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  q: quit[K
+Local:live  renamed:unavailable  second:unavailable  unconfigured:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 1245ms; passive rule none; no identified supported foreground agent[K
+renamed: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  q: quit[K
+Local:live  renamed:unavailable  second:unavailable  unconfigured:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 2504ms; passive rule none; no identified supported foreground agent[K
+renamed: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  q: quit[K
+Local:live  renamed:live  second:live  unconfigured:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+  renamed          unknown      default / 1: unclassified[K
+  second           unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 2504ms; passive rule none; no identified supported foreground agent[K
+unconfigured: No control binding; configure machine control[K
+[J[Hzor dashboard | Local | Tab: machine  j/k: row  Enter: inspect  q: quit[K
+Local:live  renamed:live  second:live  unconfigured:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 2504ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | renamed | Tab: machine  j/k: row  Enter: inspect  q: quit[K
+Local:live  renamed:live  second:live  unconfigured:unavailable[K
+> renamed          unknown      default / 1: unclassified[K
+renamed: passive state unknown; age at fetch <= 3021ms; passive rule none; no identified supported foreground agent[K
+[J

@@ -1,0 +1,1 @@
+PASS: two viewers, verbatim input, same shell PID after detach/reattach, no keys and no server network sockets

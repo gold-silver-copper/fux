@@ -61,6 +61,7 @@ impl EscapeTimer {
 const MAX_PENDING_INPUT: usize = 64 * 1024;
 
 pub struct AttachOptions {
+    pub initial: Option<crate::proto::attach::InitialTarget>,
     /// Manager socket for workspace choosing/creation; `None` for explicit socket attachments.
     pub manager_socket: Option<PathBuf>,
 }
@@ -72,6 +73,14 @@ pub struct Connection {
 
 impl Connection {
     pub async fn connect(path: &Path, rows: u16, columns: u16) -> anyhow::Result<Self> {
+        Self::connect_target(path, rows, columns, None).await
+    }
+    pub async fn connect_target(
+        path: &Path,
+        rows: u16,
+        columns: u16,
+        initial: Option<crate::proto::attach::InitialTarget>,
+    ) -> anyhow::Result<Self> {
         crate::proto::socket::check_private_socket_path(path)?;
         let stream = tokio::time::timeout(FRAME_TIMEOUT, UnixStream::connect(path)).await??;
         let stream = stream.into_std()?;
@@ -79,7 +88,11 @@ impl Connection {
         let mut stream = UnixStream::from_std(stream)?;
         write_frame(
             &mut stream,
-            &ClientMessage::Hello { rows, columns },
+            &ClientMessage::Hello {
+                rows,
+                columns,
+                initial,
+            },
             MAX_CLIENT_FRAME,
         )
         .await?;
@@ -133,13 +146,29 @@ async fn send_control(
     })
 }
 
-/// Attaches to a workspace socket and runs the viewer until detach, workspace retirement or a
-/// signal. Returns the exit code to propagate (`None` for detach).
+/// Generic viewer termination evidence for a supervising process.
+#[derive(serde::Serialize)]
+pub struct AttachExit {
+    pub fux_attach_exit: u8,
+    pub code: Option<u32>,
+    pub detached: bool,
+}
+
+/// Run a viewer and return its optional process exit code.
 pub async fn attach(
     socket: &Path,
     config: &Config,
     options: AttachOptions,
 ) -> anyhow::Result<Option<u32>> {
+    Ok(attach_reported(socket, config, options).await?.code)
+}
+
+/// Run a viewer while preserving explicit detach evidence separately from its exit code.
+pub async fn attach_reported(
+    socket: &Path,
+    config: &Config,
+    options: AttachOptions,
+) -> anyhow::Result<AttachExit> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -149,10 +178,10 @@ pub async fn attach(
         .and_then(|backend| backend::TerminalBackend::size(&backend))
         .unwrap_or((24, 80));
     let connection = tokio::select! {
-        result = Connection::connect(socket, rows, cols) => result?,
-        _ = interrupt.recv() => return Ok(None),
-        _ = terminate.recv() => return Ok(None),
-        _ = hangup.recv() => return Ok(None),
+        result = Connection::connect_target(socket, rows, cols, options.initial.clone()) => result?,
+        _ = interrupt.recv() => return Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
+        _ = terminate.recv() => return Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
+        _ = hangup.recv() => return Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
     };
     // Negotiation succeeded: only now does the terminal enter raw mode.
     let mut screen = Screen::enter_default(
@@ -188,7 +217,7 @@ async fn run(
     interrupt: &mut tokio::signal::unix::Signal,
     terminate: &mut tokio::signal::unix::Signal,
     hangup: &mut tokio::signal::unix::Signal,
-) -> anyhow::Result<Option<u32>> {
+) -> anyhow::Result<AttachExit> {
     let (mut reader, mut writer) = connection.stream.into_split();
     let (message_tx, mut message_rx) = mpsc::channel::<std::io::Result<ServerMessage>>(4);
     let reader_task = tokio::spawn(async move {
@@ -239,9 +268,9 @@ async fn run(
             .map(tokio::time::Instant::from_std);
         tokio::select! {
             biased;
-            _ = interrupt.recv() => break Ok(None),
-            _ = terminate.recv() => break Ok(None),
-            _ = hangup.recv() => break Ok(None),
+            _ = interrupt.recv() => break Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
+            _ = terminate.recv() => break Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
+            _ = hangup.recv() => break Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
             () = at(escape_deadline) => {
                 if controller.owns_input() { controller.resolve_escape(); }
                 else {
@@ -291,13 +320,13 @@ async fn run(
                             controller.install_view(reply);
                         }
                     }
-                    ServerMessage::Exited { code } => break Ok(code),
+                    ServerMessage::Exited { code } => break Ok(AttachExit { fux_attach_exit: 1, code, detached: detaching && code.is_none() }),
                     ServerMessage::Error { message } => break Err(anyhow::anyhow!("{message}")),
                     ServerMessage::Hello { .. } => break Err(anyhow::anyhow!("unexpected server hello")),
                 }
             }
             chunk = io.input_rx.recv() => {
-                let Some(chunk) = chunk else { break Ok(None) };
+                let Some(chunk) = chunk else { break Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }) };
                 if detaching { continue; }
                 if pending.len() + chunk.len() > MAX_PENDING_INPUT {
                     break Err(anyhow::anyhow!("input buffered beyond limit while waiting for the server"));
@@ -520,7 +549,7 @@ async fn run(
                                 hint_scroll = 0;
                             }
                             popup::Outcome::Scroll(rows) => {
-                                resolved.push_back(InputEvent::Scroll(ScrollBy::Rows(rows)))
+                                resolved.push_back(InputEvent::Scroll(ScrollBy::Rows(rows)));
                             }
                             popup::Outcome::Command(action) => {
                                 filter.cancel();

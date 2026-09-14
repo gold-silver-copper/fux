@@ -710,7 +710,7 @@ const fn rat_to_vt(color: Color) -> vt100::Color {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::panic)]
+#[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use crate::ids::TabId;

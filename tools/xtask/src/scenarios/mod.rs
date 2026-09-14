@@ -4,6 +4,7 @@ mod control_workflow;
 mod detach_drain;
 mod event_sync;
 mod events_proxy;
+mod exact_attachment;
 mod final_records;
 mod history_delay;
 mod input_receipts;
@@ -14,6 +15,8 @@ mod mouse_app;
 mod observer;
 mod pane_layout;
 mod rejection;
+mod resume_remote;
+mod resume_reply_gate;
 mod service_fixture;
 mod service_tasks;
 mod service_worktrees;
@@ -28,6 +31,7 @@ mod zor_events;
 mod zor_groups;
 mod zor_headless;
 mod zor_launch;
+mod zor_multi_machine;
 mod zor_native;
 mod zor_producers;
 mod zor_recovery;
@@ -73,6 +77,7 @@ fn run_inner(args: &[String]) -> Result<()> {
             Some(&Path::new(args.get(2).context("missing zor binary")?).canonicalize()?),
         ),
         "local-attachment" => local_attachment::run(&binary),
+        "exact-attachment" => exact_attachment::run(&binary),
         "local-tty" => local_tty::run(&binary),
         "detach-drain" => detach_drain::run(&binary),
         "control-workflow" => control_workflow::run(&binary),
@@ -146,6 +151,35 @@ fn run_inner(args: &[String]) -> Result<()> {
         "zor-resume" => zor_producers::resume(
             &binary,
             &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
+            None,
+            false,
+            false,
+        ),
+        "zor-remote-resume" => zor_producers::resume(
+            &binary,
+            &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
+            Some(&Path::new(args.get(3).context("missing koh binary")?).canonicalize()?),
+            false,
+            false,
+        ),
+        "zor-remote-resume-lost-reply" => zor_producers::resume(
+            &binary,
+            &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
+            Some(&Path::new(args.get(3).context("missing koh binary")?).canonicalize()?),
+            true,
+            false,
+        ),
+        "zor-remote-resume-dashboard" => zor_producers::resume(
+            &binary,
+            &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
+            Some(&Path::new(args.get(3).context("missing koh binary")?).canonicalize()?),
+            false,
+            true,
+        ),
+        "zor-multi-machine" => zor_multi_machine::run(
+            &binary,
+            &Path::new(args.get(2).context("missing zor binary")?).canonicalize()?,
+            &Path::new(args.get(3).context("missing koh binary")?).canonicalize()?,
         ),
         "zor-recovery" => zor_recovery::run(
             &binary,

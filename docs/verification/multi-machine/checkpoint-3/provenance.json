@@ -1,0 +1,19 @@
+{
+  "binaries": {
+    "fux": {
+      "path": "/private/tmp/fux-codebase-work/build/debug/fux",
+      "sha256": "40cf5578320ca4631496ef4e679a33d51d33932d02c28713f256d1bc903c3bba"
+    },
+    "zor": {
+      "path": "/private/tmp/fux-multi-machine-build/debug/zor",
+      "sha256": "9ec30ecf20fcab30175588676f561500fc36d4393e26bb0b4e3c52353a712da7"
+    },
+    "koh": {
+      "path": "/private/tmp/strict-fux-koh-zor/koh-build/debug/koh",
+      "sha256": "f46181de8bdb54744dd229a3ddf717096eefd3510358487585b65de6b99a24c9"
+    }
+  },
+  "fux_zor_base": "02e719090c606c5f0aa5d9b8cb1b7841315738a4",
+  "koh_base": "da712875e4f527b718abe44e9d68f94048e916c7",
+  "note": "zor and koh contain uncommitted development changes; companion reference remains clean. See checkpoint 2 koh patch and current source worktree."
+}

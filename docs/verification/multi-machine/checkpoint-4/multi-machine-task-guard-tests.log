@@ -1,0 +1,9 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.45s
+     Running unittests src/lib.rs (/tmp/fux-multi-machine-build/debug/deps/zor-bf4fea0c3b0fc4dc)
+
+running 1 test
+test tasks::supervise::tests::stale_attempt_or_process_cannot_cancel_replacement_and_cancel_preserves_session ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 176 filtered out; finished in 0.09s
+

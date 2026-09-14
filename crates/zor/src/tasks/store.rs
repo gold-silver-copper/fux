@@ -47,6 +47,10 @@ pub struct Store {
     root: PathBuf,
     _lock: nix::fcntl::Flock<File>,
     journal: Journal,
+    // The state directory's ancestry is durable once any commit has fsynced it. Re-walking and
+    // fsyncing every user-owned ancestor on each transaction is redundant after that, so the
+    // first commit pays for it and later commits sync only the state directory after the rename.
+    ancestry_synced: bool,
 }
 impl Store {
     pub fn open(root: &Path) -> Result<Self> {
@@ -106,6 +110,7 @@ impl Store {
             root: root.into(),
             _lock: lock,
             journal,
+            ancestry_synced: false,
         })
     }
     pub fn journal(&self) -> &Journal {
@@ -177,7 +182,9 @@ impl Store {
             bytes.len() + next.check_reserve_bytes() <= MAX_BYTES,
             "zor journal byte limit exceeded; forget unused tasks"
         );
-        sync_ancestry(&self.root)?;
+        if !self.ancestry_synced {
+            sync_ancestry(&self.root)?;
+        }
         let temporary = self.root.join(format!(".journal-{}.tmp", nonce()?));
         let mut file = OpenOptions::new()
             .write(true)
@@ -199,6 +206,9 @@ impl Store {
         synced.context(
             "zor journal was renamed but directory sync failed; commit durability uncertain",
         )?;
+        // The state directory and its ancestry are now durable; later commits sync only the
+        // state directory after their rename.
+        self.ancestry_synced = true;
         Ok(result)
     }
     pub(super) fn recovery_observed(&self, id: &str, succeeded: bool) {
@@ -297,7 +307,6 @@ impl Drop for Temporary {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};

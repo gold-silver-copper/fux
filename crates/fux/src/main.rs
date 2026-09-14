@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
-
+// This binary is the CLI output surface: it prints command results as JSON to stdout and
+// diagnostics to stderr. The library modules stay strict; only this entrypoint may print.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 mod layout_cli;
 
 use std::path::PathBuf;
@@ -20,6 +22,34 @@ struct Cli {
     command: Option<Command>,
 }
 
+#[derive(Debug, Args)]
+struct AttachTargetArgs {
+    #[arg(long, requires_all = ["target_workspace", "target_stream", "target_pane", "target_pid"])]
+    target_instance: Option<String>,
+    #[arg(long, requires = "target_instance")]
+    target_workspace: Option<String>,
+    #[arg(long, requires = "target_instance")]
+    target_stream: Option<u64>,
+    #[arg(long, requires = "target_instance")]
+    target_pane: Option<u32>,
+    #[arg(long, requires = "target_instance")]
+    target_pid: Option<u32>,
+}
+impl AttachTargetArgs {
+    fn value(self) -> Result<Option<fux::proto::attach::InitialTarget>> {
+        let Some(instance) = self.target_instance else {
+            return Ok(None);
+        };
+        Ok(Some(fux::proto::attach::InitialTarget {
+            instance,
+            workspace: self.target_workspace.context("target workspace required")?,
+            stream: self.target_stream.context("target stream required")?,
+            pane: fux::ids::PaneId(self.target_pane.context("target pane required")?),
+            pid: self.target_pid.context("target PID required")?,
+        }))
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Locate a live pane by server identity, independently of its current workspace.
@@ -30,6 +60,11 @@ enum Command {
     Attach {
         #[arg(long)]
         socket: PathBuf,
+        /// Emit a bounded JSON exit report on stderr for a supervising controller.
+        #[arg(long)]
+        report_exit: bool,
+        #[command(flatten)]
+        target: AttachTargetArgs,
     },
     /// Show the configured prefix and keybindings.
     Bindings,
@@ -285,17 +320,25 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             fux::server::run(config, paths, options).await?;
             Ok(ExitCode::SUCCESS)
         }
-        Some(Command::Attach { socket }) => {
+        Some(Command::Attach {
+            socket,
+            target,
+            report_exit,
+        }) => {
             let config = fux::config::Config::load()?;
-            let code = fux::client::attach(
+            let outcome = fux::client::attach_reported(
                 &socket,
                 &config,
                 fux::client::AttachOptions {
+                    initial: target.value()?,
                     manager_socket: None,
                 },
             )
             .await?;
-            Ok(code.map_or(ExitCode::SUCCESS, exit_code))
+            if report_exit {
+                eprintln!("{}", serde_json::to_string(&outcome)?);
+            }
+            Ok(outcome.code.map_or(ExitCode::SUCCESS, exit_code))
         }
         Some(Command::Bindings) => {
             let config = fux::config::Config::load()?;
@@ -416,6 +459,7 @@ async fn attach(name: Option<&str>) -> Result<ExitCode> {
         &descriptor.socket_path,
         &config,
         fux::client::AttachOptions {
+            initial: None,
             manager_socket: Some(paths.manager_socket.clone()),
         },
     )
@@ -502,7 +546,7 @@ fn start_server(paths: &fux::daemon::DaemonPaths, name: &str) -> Result<fux::dae
 
 fn workspace_command(arguments: Vec<String>) -> Result<ExitCode> {
     let paths = fux::daemon::DaemonPaths::discover()?;
-    let action = arguments.first().map(String::as_str).unwrap_or("list");
+    let action = arguments.first().map_or("list", String::as_str);
     if action == "rename" {
         let args = WorkspaceRenameArgs::try_parse_from(
             std::iter::once("workspace rename".to_owned()).chain(arguments.into_iter().skip(1)),

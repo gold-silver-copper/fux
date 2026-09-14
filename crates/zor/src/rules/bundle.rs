@@ -162,7 +162,6 @@ pub fn read_bounded_utf8(path: &Path, limit: usize) -> Result<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

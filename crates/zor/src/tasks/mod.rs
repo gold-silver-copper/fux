@@ -1,5 +1,6 @@
 //! Durable task coordination in zor. Adoption/prepare operations never own or write a PTY.
 pub mod artifact;
+mod attachment;
 pub mod binding;
 pub mod capabilities;
 pub mod changes;
@@ -25,6 +26,7 @@ pub mod source;
 pub mod stop;
 pub mod store;
 pub mod submit;
+pub mod supervise;
 pub mod verify;
 pub mod wait;
 pub mod worktree;
@@ -57,7 +59,7 @@ pub(crate) fn now_ms() -> Result<u64> {
     )?)
 }
 pub fn state_root(root: Option<PathBuf>) -> Result<PathBuf> {
-    root.map(Ok).unwrap_or_else(store::directory)
+    root.map_or_else(store::directory, Ok)
 }
 
 pub fn adopt(root: &Path, mut request: Adopt) -> Result<Value> {
@@ -139,8 +141,7 @@ pub fn adopt(root: &Path, mut request: Adopt) -> Result<Value> {
                 && session.target == target
                 && session.agent == request.agent
         })
-        .map(|session| Ok(session.id.clone()))
-        .unwrap_or_else(store::nonce)?;
+        .map_or_else(store::nonce, |session| Ok(session.id.clone()))?;
     let attempt_id = store::nonce()?;
     store.transaction(|journal| {
         journal

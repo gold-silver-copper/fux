@@ -1,0 +1,58 @@
+[?1049h[?25l[2J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:unavailable  first:unavailable  second:unavailable[K
+No observed rows in this scope[K
+first: Connecting[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:unavailable  second:unavailable[K
+No observed rows in this scope[K
+first: Connecting[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> first            unknown      agent / 2: codex[K
+  first            unknown      agent / 3: codex[K
+  first            unknown      default / 1: codex[K
+  first            open         same: first task[K
+first: passive state unknown; age at fetch <= 992ms; passive rule none; agent observation; not task completion[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: codex[K
+> first            unknown      agent / 3: codex[K
+  first            unknown      default / 1: codex[K
+  first            open         same: first task[K
+first: passive state unknown; age at fetch <= 992ms; passive rule none; agent observation; not task completion[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: codex[K
+> first            unknown      agent / 3: codex[K
+  first            unknown      default / 1: codex[K
+  first            open         same: first task[K
+first: passive state unknown; age at fetch <= 992ms; passive rule none; agent observation; not task completion[K
+Action unavailable: task-only action unavailable for an observed agent[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: codex[K
+> first            unknown      agent / 3: codex[K
+  first            unknown      default / 1: codex[K
+  first            open         same: first task[K
+first: passive state unknown; age at fetch <= 992ms; passive rule none; agent observation; not task completion[K
+first / agent / pane 3: preparing action...[K
+[J[HInspection/result | j/k scroll | Esc back[K
+first / observed agent / pane 3[K
+{[K
+  "handle": {[K
+    "instance": "cfbf3a85ee4fe74e667003e7f19e2f8a",[K
+    "workspace": "agent",[K
+    "stream": 2,[K
+    "pane": 3,[K
+    "pid": 98097[K
+  },[K
+  "age_upper_bound_ms": 811,[K
+  "revision": 2,[K
+  "input_sequence": 0,[K
+  "agent": "codex",[K
+  "detected_pid": 98097,[K
+  "state": "unknown",[K
+  "rule": null,[K
+  "problem": null[K
+}[K
+[J

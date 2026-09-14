@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 392, in <module>
+    index = next(i for i,row in enumerate(current_rows) if (row.get('expected') or {}).get('task') == 'same')
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 392, in <genexpr>
+    index = next(i for i,row in enumerate(current_rows) if (row.get('expected') or {}).get('task') == 'same')
+                                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'get'

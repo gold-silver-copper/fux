@@ -1,0 +1,55 @@
+{
+  "acks": [
+    {
+      "accepted": 1,
+      "id": 1
+    },
+    {
+      "accepted": 2,
+      "id": 2
+    },
+    {
+      "accepted": 3,
+      "id": 3
+    }
+  ],
+  "effects": "xxx",
+  "before_expiry": 4,
+  "after_expiry": 4,
+  "fresh_attachment": 5,
+  "pane": {
+    "id": 2,
+    "command": [
+      "/bin/sh",
+      "-l"
+    ],
+    "pid": 400,
+    "cwd": "/private/tmp/zmh-8n9nnmwu",
+    "title": "",
+    "seq": 3,
+    "revision": 2,
+    "input_sequence": 0,
+    "fixed_workspace": false,
+    "geometry": {
+      "x": 0,
+      "y": 0,
+      "width": 80,
+      "height": 23
+    },
+    "focused": true,
+    "cursor": {
+      "row": 0,
+      "column": 34,
+      "hidden": false
+    },
+    "modes": {
+      "alternate_screen": false,
+      "application_keypad": false,
+      "application_cursor": false,
+      "bracketed_paste": false,
+      "mouse_mode": "none",
+      "mouse_encoding": "default"
+    },
+    "exit_status": null
+  }
+}

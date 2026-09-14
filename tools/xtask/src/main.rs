@@ -36,6 +36,23 @@ fn main() -> std::process::ExitCode {
             Some("verify-codebase") => codebase::run(args.collect()),
             Some("dependencies") => dependencies::run(args.collect()),
             Some("scenario") => fux_xtask::scenarios::run(args.collect()),
+            Some("betamax-record") => {
+                let usage =
+                    || anyhow::anyhow!("usage: betamax-record BINARY RECORDING ROWS COLUMNS LABEL");
+                let binary = args.next().ok_or_else(usage)?;
+                let recording = args.next().ok_or_else(usage)?;
+                let rows = args.next().ok_or_else(usage)?.parse()?;
+                let columns = args.next().ok_or_else(usage)?.parse()?;
+                let label = args.next().ok_or_else(usage)?;
+                anyhow::ensure!(args.next().is_none(), "{}", usage());
+                fux_xtask::support::visual::import_recording(
+                    std::path::Path::new(&binary),
+                    std::path::Path::new(&recording),
+                    rows,
+                    columns,
+                    &label,
+                )
+            }
             Some("betamax-report") => {
                 fux_xtask::support::visual::report(std::path::Path::new(&args.next().ok_or_else(
                     || anyhow::anyhow!("betamax-report requires an artifact directory"),

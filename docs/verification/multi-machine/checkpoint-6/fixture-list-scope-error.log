@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 85, in <module>
+    workspace = next(ws for ws in listing['workspaces'] if ws['name'] == 'agent')
+StopIteration

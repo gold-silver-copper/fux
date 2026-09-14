@@ -73,7 +73,7 @@ pub fn run(
             if let Some(change) = loss.update(detected.clone(), shell) {
                 match change {
                     crate::platform::probe::Detection::AgentFound { id, .. } => {
-                        active_agent = Some(id)
+                        active_agent = Some(id);
                     }
                     crate::platform::probe::Detection::Exited { agent } => {
                         active_agent = Some(agent);
@@ -166,7 +166,6 @@ impl CaptureCache {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::rules::view::ScreenView;

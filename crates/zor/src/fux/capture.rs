@@ -305,7 +305,7 @@ fn expand_row(cells: &[WireCell], columns: u16) -> anyhow::Result<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::indexing_slicing)]
+#[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use crate::rules::view::ScreenView;

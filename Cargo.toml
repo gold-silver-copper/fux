@@ -16,3 +16,41 @@ exclude = [
 [workspace.package]
 edition = "2024"
 license = "MIT"
+
+# One shared lint baseline for every shipped crate; members opt in with `lints.workspace = true`.
+# fux and local-ipc additionally keep `#![forbid(unsafe_code)]` in source (stricter than deny);
+# zor keeps `#![deny(unsafe_code)]` with reviewed, per-block `#[allow(unsafe_code)]`.
+[workspace.lints.rust]
+dead_code = "deny"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Batch B: terminal-program output discipline (test code exempt via clippy.toml).
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Batch C: idiom cleanups.
+clone_on_ref_ptr = "deny"
+implicit_clone = "deny"
+semicolon_if_nothing_returned = "deny"
+manual_let_else = "deny"
+uninlined_format_args = "deny"
+str_to_string = "deny"
+map_unwrap_or = "deny"
+explicit_iter_loop = "deny"
+# Batch A: correctness and safety.
+exit = "deny"
+mem_forget = "deny"
+float_cmp = "deny"
+lossy_float_literal = "deny"
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"

@@ -413,8 +413,7 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                 .unwrap_or_default();
             let stream = world
                 .get::<crate::ecs::events::EventLog>(workspace)
-                .map(|log| log.cursor().stream)
-                .unwrap_or(0);
+                .map_or(0, |log| log.cursor().stream);
             effect(
                 world,
                 Effect::WorkspaceOpened {

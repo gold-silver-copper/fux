@@ -35,7 +35,7 @@ fn retry_busy<T>(
         ensure!(!cancelled.load(Ordering::Relaxed), "native owner stopped");
         match action() {
             Err(error) if error.is::<store::Busy>() && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10))
+                std::thread::sleep(Duration::from_millis(10));
             }
             result => return result,
         }
@@ -117,7 +117,7 @@ pub fn run(root: &Path, task: &str, argv: Vec<String>) -> Result<u8> {
     ] {
         signals
             .0
-            .push(signal_hook::flag::register(signal, cancelled.clone())?);
+            .push(signal_hook::flag::register(signal, Arc::clone(&cancelled))?);
     }
     let marker = std::env::var("ZOR_LAUNCH_ID").context("native launch marker missing")?;
     ensure!(crate::tasks::model::id(task), "invalid native task ID");
@@ -146,7 +146,8 @@ pub fn run(root: &Path, task: &str, argv: Vec<String>) -> Result<u8> {
     );
     let mut command = Command::new(argv.first().context("native executable missing")?);
     command.args(argv.get(1..).context("native arguments missing")?);
-    let mut native = Session::open_cancellable(command, &cwd, None, deadline, cancelled.clone())?;
+    let mut native =
+        Session::open_cancellable(command, &cwd, None, deadline, Arc::clone(&cancelled))?;
     let mut producer = store::nonce()?;
     let storage = native
         .rollout
@@ -219,7 +220,7 @@ pub fn run(root: &Path, task: &str, argv: Vec<String>) -> Result<u8> {
                 &cwd,
                 Some(&action.thread),
                 deadline,
-                cancelled.clone(),
+                Arc::clone(&cancelled),
             )?;
             action.storage.verify_resumed(
                 replacement

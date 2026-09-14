@@ -2,7 +2,7 @@
 //! barriers, control-socket requests and manager requests. Every request resolves public ids at
 //! execution time and validates kind, membership and liveness.
 
-use crate::ecs::components::{CreationKind, Pane, PaneState, Selection, Tab, Viewer, Workspace};
+use crate::ecs::components::{FocusHistory, Pane, PaneState, Selection, Tab, Viewer, Workspace};
 use crate::ecs::messages::{
     Effect, Inbound, ManagerAction, ManagerOutcome, Requester, ViewerRequest,
 };
@@ -10,23 +10,24 @@ use crate::ecs::resources::{
     Clock, Ids, Limits, Registry, ServerIdentity, ShuttingDown, WorkspaceCounter,
 };
 use crate::ecs::support::{
-    Effects, ViewerExit, close_tab, despawn_tab, effect, failed, focus_in_tab, is_member,
-    mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity, pane_id, pane_in_layout,
-    pane_tab, pane_workspace, remove_from_layout, reply, retire, sanitize_notice, tab_entity,
-    tab_id, terminate_pane, viewer_entity, viewers_of_workspace, workspace_entity, write_pane,
+    Effects, ViewerExit, effect, failed, focus_in_tab, mark_tab_dirty, mark_workspace_dirty,
+    member_tabs, pane_entity, pane_tab, pane_workspace, reply, retire, sanitize_notice,
+    terminate_pane, viewer_entity, viewers_of_workspace, workspace_entity, write_pane,
 };
-use crate::ecs::systems::creation::{NewPane, reserve_pane, reserve_tab, reserve_workspace};
+use crate::ecs::systems::creation::reserve_workspace;
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
 use crate::ids::{PaneId, ViewerId};
-use crate::layout::{Axis, Direction};
 use crate::proto::attach::{MouseEvent, ServerMessage, ViewReply};
 use crate::proto::control::{
-    self, CommandResult, ErrorCode, FocusTarget, PaneSummary, Reply, Request, TabAction,
-    TabSummary, WorkspaceAction, WorkspaceSummary,
+    self, CommandResult, ErrorCode, PaneSummary, Reply, Request, TabSummary, WorkspaceSummary,
 };
 use crate::view::{MouseEncoding, MouseMode, PaneModes, PaneUpdate};
 use bevy_ecs::prelude::*;
 use std::collections::{BTreeMap, VecDeque};
+
+use super::requests_control::{
+    focus, kill, pane_in_workspace, resize, set_right_click, split, tab_action, workspace_action,
+};
 
 /// Ingest: viewer arrivals and departures and the shutdown flag. Spawns apply at the sync point
 /// before the requests phase, so a viewer's first queued requests find its entity.
@@ -40,6 +41,8 @@ pub struct Arrivals<'w, 's> {
     clock: Res<'w, Clock>,
     shutting_down: ResMut<'w, ShuttingDown>,
     registry: Res<'w, Registry>,
+    identity: Res<'w, ServerIdentity>,
+    panes: Query<'w, 's, &'static Pane>,
     workspaces: Query<'w, 's, &'static mut Workspace>,
     viewers: Query<'w, 's, &'static Viewer>,
 }
@@ -57,6 +60,8 @@ pub fn apply_attachments(
         clock,
         shutting_down,
         registry,
+        identity,
+        panes,
         workspaces,
         viewers,
     } = &mut arrivals;
@@ -69,6 +74,7 @@ pub fn apply_attachments(
     for message in inbound.read() {
         match message {
             Inbound::ViewerAttached {
+                initial,
                 viewer: id,
                 workspace,
                 rows,
@@ -117,13 +123,50 @@ pub fn apply_attachments(
                     continue;
                 }
                 target.last_attached = clock.step;
+                // An exact attachment names a live process the owner must confirm before it
+                // admits the viewer; a stale, moved or forged target is refused, never attached
+                // to a fallback pane. The selected pane is set only on the arriving viewer.
+                let mut selection = target.selection.for_viewer();
+                let required = match initial {
+                    None => None,
+                    Some(want) => {
+                        let resolved = ids
+                            .pane(want.pane)
+                            .and_then(|entity| panes.get(entity).ok().map(|pane| (entity, pane)));
+                        let admitted = want.instance == identity.instance_nonce
+                            && &want.workspace == workspace
+                            && resolved.is_some_and(|(_, pane)| {
+                                pane.routing_workspace == entity
+                                    && pane.workspace_stream == want.stream
+                                    && pane.state.pid() == Some(want.pid)
+                                    && pane.state.accepts_input()
+                            });
+                        if !admitted {
+                            refuse(
+                                &mut effects,
+                                "exact attachment target is stale, moved or unavailable",
+                            );
+                            continue;
+                        }
+                        if let Some((pane_entity, pane)) = resolved {
+                            selection.tab = Some(pane.tab);
+                            selection.set_focus(pane.tab, pane_entity);
+                            selection.history = FocusHistory {
+                                current: Some(pane_entity),
+                                previous: None,
+                            };
+                        }
+                        Some(want.clone())
+                    }
+                };
                 let viewer = commands
                     .spawn(Viewer {
+                        required_process: required,
                         id,
                         workspace: entity,
                         rows: *rows,
                         cols: *cols,
-                        selection: target.selection.for_viewer(),
+                        selection,
                         queue: VecDeque::new(),
                         barrier: None,
                         generation: 0,
@@ -144,6 +187,12 @@ pub fn apply_attachments(
                     .id();
                 ids.viewers.insert(id, viewer);
                 arrived.push((id, viewer, entity, workspace.clone()));
+                // Admission is confirmed: the accepted hello precedes the bindings and the
+                // first state frame. A refused exact target never reaches this point.
+                effects.emit(Effect::ToViewer {
+                    viewer: id,
+                    message: ServerMessage::Hello {},
+                });
                 effects.emit(Effect::ToViewer {
                     viewer: id,
                     message: ServerMessage::Bindings {
@@ -206,7 +255,7 @@ pub fn apply_requests(world: &mut World) {
                 };
                 let overflow = world
                     .get_mut::<Viewer>(entity)
-                    .map(|mut component| {
+                    .is_some_and(|mut component| {
                         if component.detaching {
                             return false;
                         }
@@ -215,8 +264,7 @@ pub fn apply_requests(world: &mut World) {
                         }
                         component.queue.push_back(request);
                         false
-                    })
-                    .unwrap_or(false);
+                    });
                 if overflow {
                     effect(
                         world,
@@ -277,6 +325,12 @@ pub fn drain_viewer_queues(world: &mut World) {
         viewers.into_iter().map(|(_, entity)| entity).collect()
     };
     for viewer in viewers {
+        // An exact attachment is bound to one live process. If that process exited, moved
+        // workspace, stopped accepting input or was hidden by a shared zoom, the viewer closes
+        // instead of letting its queued input reach a sibling pane.
+        if !retain_required_process(world, viewer) {
+            continue;
+        }
         while let Some((id, request)) = world.get_mut::<Viewer>(viewer).and_then(|mut component| {
             if component.barrier.is_some() || component.detaching {
                 return None;
@@ -287,6 +341,45 @@ pub fn drain_viewer_queues(world: &mut World) {
             apply_viewer_request(world, viewer, id, request);
         }
     }
+}
+
+/// Keeps an exact attachment only while its named process is the live, input-accepting pane on
+/// its original workspace route and not hidden by a shared zoom. Ordinary viewers always remain.
+/// Returns whether the viewer is retained; a lost target closes the viewer without a fallback.
+fn retain_required_process(world: &mut World, viewer: Entity) -> bool {
+    let Some((id, workspace, required)) = world.get::<Viewer>(viewer).and_then(|component| {
+        component
+            .required_process
+            .clone()
+            .map(|required| (component.id, component.workspace, required))
+    }) else {
+        return true;
+    };
+    let live = pane_entity(world, required.pane).is_some_and(|pane| {
+        pane_workspace(world, pane) == Some(workspace)
+            && world.get::<Pane>(pane).is_some_and(|component| {
+                component.workspace_stream == required.stream
+                    && component.state.pid() == Some(required.pid)
+                    && component.state.accepts_input()
+            })
+            && pane_tab(world, pane)
+                .and_then(|tab| world.get::<Tab>(tab))
+                .is_none_or(|tab| tab.zoomed.is_none_or(|zoomed| zoomed == pane))
+    });
+    if live {
+        return true;
+    }
+    effect(
+        world,
+        Effect::ToViewer {
+            viewer: id,
+            message: ServerMessage::Error {
+                message: "the attached process exited or moved; no fallback pane".into(),
+            },
+        },
+    );
+    despawn_viewer(world, viewer);
+    false
 }
 
 enum Target {
@@ -507,14 +600,14 @@ pub fn encode_mouse(event: MouseEvent, column: u16, row: u16, modes: PaneModes) 
     Some(bytes)
 }
 
-struct Context {
-    requester: Requester,
-    workspace: Entity,
-    viewer: Option<Entity>,
+pub(super) struct Context {
+    pub(super) requester: Requester,
+    pub(super) workspace: Entity,
+    pub(super) viewer: Option<Entity>,
 }
 
 impl Context {
-    fn selection(&self, world: &World) -> Selection {
+    pub(super) fn selection(&self, world: &World) -> Selection {
         self.viewer
             .and_then(|viewer| world.get::<Viewer>(viewer))
             .map(|viewer| viewer.selection.clone())
@@ -526,13 +619,13 @@ impl Context {
             .unwrap_or_default()
     }
 
-    fn select_tab(&self, world: &mut World, tab: Entity) {
+    pub(super) fn select_tab(&self, world: &mut World, tab: Entity) {
         let focus = focus_in_tab(world, &self.selection(world), tab);
         self.select(world, tab, focus);
     }
 
     /// The requester (and the workspace default) shows `tab`, focusing `focus` when given.
-    fn select(&self, world: &mut World, tab: Entity, focus: Option<Entity>) {
+    pub(super) fn select(&self, world: &mut World, tab: Entity, focus: Option<Entity>) {
         if let Some(mut component) = world.get_mut::<Tab>(tab)
             && component.zoomed.is_some()
             && focus != component.zoomed
@@ -887,500 +980,6 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
     }
 }
 
-fn set_right_click(
-    world: &mut World,
-    context: &Context,
-    id: u64,
-    pane: PaneId,
-    right_click: crate::view::RightClickPolicy,
-) -> Result<CommandResult, Reply> {
-    let entity = pane_in_workspace(world, context, pane)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane no longer exists"))?;
-    let component = world
-        .get::<Pane>(entity)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane no longer exists"))?;
-    if component.right_click == right_click {
-        Ok(CommandResult::Pane { pane })
-    } else {
-        let tab = component.tab;
-        let revision = world
-            .get::<Tab>(tab)
-            .and_then(|tab| tab.layout_generation.checked_add(1))
-            .ok_or_else(|| failed(id, ErrorCode::Limit, "layout generation exhausted"))?;
-        if let Some(mut component) = world.get_mut::<Pane>(entity) {
-            component.right_click = right_click;
-        }
-        if let Some(mut component) = world.get_mut::<Tab>(tab) {
-            component.layout_generation = revision;
-        }
-        mark_workspace_dirty(world, context.workspace);
-        Ok(CommandResult::Pane { pane })
-    }
-}
-
-/// A pane id that belongs to the requester's workspace.
-fn pane_in_workspace(world: &World, context: &Context, pane: PaneId) -> Option<Entity> {
-    let entity = pane_entity(world, pane)?;
-    (pane_workspace(world, entity)? == context.workspace).then_some(entity)
-}
-
-fn tab_in_workspace(world: &World, context: &Context, tab: crate::ids::TabId) -> Option<Entity> {
-    let entity = tab_entity(world, tab)?;
-    is_member(world, context.workspace, entity).then_some(entity)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn split(
-    world: &mut World,
-    context: &Context,
-    id: u64,
-    axis: Axis,
-    target: Option<PaneId>,
-    cwd: Option<std::path::PathBuf>,
-    argv: Vec<String>,
-    env: Vec<(String, String)>,
-    rows: Option<u16>,
-    columns: Option<u16>,
-    final_retain_ms: u64,
-    fixed_workspace: bool,
-    right_click: crate::view::RightClickPolicy,
-    ratio: u16,
-    focus: bool,
-) -> Result<CommandResult, Reply> {
-    let ratio = std::num::NonZeroU16::new(ratio)
-        .filter(|ratio| {
-            (crate::layout::MIN_RATIO..=crate::layout::MAX_RATIO).contains(&ratio.get())
-        })
-        .ok_or_else(|| {
-            failed(
-                id,
-                ErrorCode::InvalidRequest,
-                "split ratio must be 500..=9500",
-            )
-        })?;
-    let selection = context.selection(world);
-    let target = match target {
-        Some(pane) => pane_in_workspace(world, context, pane)
-            .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?,
-        None => selection
-            .tab
-            .and_then(|tab| focus_in_tab(world, &selection, tab))
-            .filter(|pane| pane_in_layout(world, *pane))
-            .ok_or_else(|| failed(id, ErrorCode::NotFound, "no focused pane to split"))?,
-    };
-    let tab =
-        pane_tab(world, target).ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-    let base = world
-        .get::<Pane>(target)
-        .map(|pane| pane.terminal.size())
-        .unwrap_or((24, 80));
-    // Estimate the new (second) pane's initial extent using the requested ratio.
-    let second = |extent: u16| {
-        let usable = extent.saturating_sub(1);
-        let first =
-            u32::from(usable) * u32::from(ratio.get()) / u32::from(crate::layout::RATIO_SCALE);
-        usable.saturating_sub(u16::try_from(first).unwrap_or(usable))
-    };
-    let initial = match axis {
-        Axis::Horizontal => (base.0, second(base.1)),
-        Axis::Vertical => (second(base.0), base.1),
-    };
-    // A requested size wins where no viewer resizes the tab (a headless workspace).
-    let size = (rows.unwrap_or(initial.0), columns.unwrap_or(initial.1));
-    reserve_pane(
-        world,
-        context.workspace,
-        NewPane {
-            argv,
-            cwd,
-            env,
-            requester: context.requester,
-            request_id: id,
-            final_retain_ms,
-            fixed_workspace,
-            right_click,
-        },
-        CreationKind::Split {
-            tab,
-            target,
-            axis,
-            ratio,
-            focus,
-        },
-        size,
-    )?;
-    // The reply follows the spawn report.
-    Ok(CommandResult::Pane { pane: PaneId(0) })
-}
-
-fn focus(
-    world: &mut World,
-    context: &Context,
-    id: u64,
-    target: FocusTarget,
-) -> Result<CommandResult, Reply> {
-    crate::ecs::support::refresh_focus_history(world, context.workspace);
-    let selection = context.selection(world);
-    match target {
-        FocusTarget::Last => {
-            let entity = selection
-                .history
-                .previous
-                .filter(|entity| Some(*entity) != selection.history.current)
-                .filter(|entity| pane_in_layout(world, *entity))
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "no previous pane"))?;
-            let workspace = pane_workspace(world, entity)
-                .filter(|workspace| *workspace == context.workspace || context.viewer.is_some())
-                .filter(|workspace| {
-                    world
-                        .get::<Workspace>(*workspace)
-                        .is_some_and(|workspace| workspace.open && workspace.retiring.is_none())
-                })
-                .ok_or_else(|| {
-                    failed(
-                        id,
-                        ErrorCode::NotFound,
-                        "previous pane is unavailable in this workspace",
-                    )
-                })?;
-            let tab = pane_tab(world, entity)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "previous pane is unavailable"))?;
-            let pane = pane_id(world, entity)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "previous pane is unavailable"))?;
-            if let Some(viewer) = context.viewer {
-                check_viewer_admission(world, viewer, workspace, id)?;
-                switch_viewer_workspace(world, viewer, workspace);
-            }
-            Context {
-                requester: context.requester,
-                workspace,
-                viewer: context.viewer,
-            }
-            .select(world, tab, Some(entity));
-            Ok(CommandResult::Pane { pane })
-        }
-        FocusTarget::Pane(pane) => {
-            let entity = pane_in_workspace(world, context, pane)
-                .filter(|pane| pane_in_layout(world, *pane))
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-            let tab = pane_tab(world, entity)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-            context.select(world, tab, Some(entity));
-            Ok(CommandResult::Pane { pane })
-        }
-        FocusTarget::Next | FocusTarget::Previous => {
-            let tab = selection
-                .tab
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "no active tab"))?;
-            let current = focus_in_tab(world, &selection, tab)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "no focused pane"))?;
-            let next = world
-                .get::<Tab>(tab)
-                .and_then(|component| component.layout.cycle(current, target == FocusTarget::Next))
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "no next pane"))?;
-            context.select(world, tab, Some(next));
-            Ok(CommandResult::Pane {
-                pane: pane_id(world, next).unwrap_or_default(),
-            })
-        }
-        directional => {
-            let direction = match directional {
-                FocusTarget::Left => Direction::Left,
-                FocusTarget::Right => Direction::Right,
-                FocusTarget::Up => Direction::Up,
-                FocusTarget::Down
-                | FocusTarget::Pane(_)
-                | FocusTarget::Next
-                | FocusTarget::Previous
-                | FocusTarget::Last => Direction::Down,
-            };
-            let tab = selection
-                .tab
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "no active tab"))?;
-            let current = focus_in_tab(world, &selection, tab)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "no focused pane"))?;
-            let next = world
-                .get::<Tab>(tab)
-                .and_then(|component| {
-                    let area = component.area.navigation_area();
-                    component.layout.neighbour(current, direction, area)
-                })
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "no pane in that direction"))?;
-            context.select(world, tab, Some(next));
-            let pane = pane_id(world, next).unwrap_or_default();
-            Ok(CommandResult::Pane { pane })
-        }
-    }
-}
-
-fn kill(
-    world: &mut World,
-    context: &Context,
-    id: u64,
-    pane: PaneId,
-) -> Result<CommandResult, Reply> {
-    let entity = pane_in_workspace(world, context, pane)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-    if world
-        .get::<Pane>(entity)
-        .is_some_and(|pane| matches!(pane.state, PaneState::Starting))
-    {
-        return Err(failed(id, ErrorCode::Conflict, "pane is still starting"));
-    }
-    let now = world.resource::<Clock>().now_ms;
-    let tab = pane_tab(world, entity);
-    remove_from_layout(world, entity);
-    // An already exited pane has nothing to wait for: the lifecycle phase publishes pane.closed
-    // and despawns it.
-    terminate_pane(world, entity, now, TERMINATE_GRACE_MS);
-    if let Some(tab) = tab
-        && world
-            .get::<Tab>(tab)
-            .is_some_and(|tab| tab.layout.is_empty())
-    {
-        close_tab(world, tab, now, TERMINATE_GRACE_MS);
-    }
-    Ok(CommandResult::Unit)
-}
-
-fn resize(
-    world: &mut World,
-    context: &Context,
-    id: u64,
-    pane: PaneId,
-    delta: i16,
-) -> Result<CommandResult, Reply> {
-    let entity = pane_in_workspace(world, context, pane)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-    let tab =
-        pane_tab(world, entity).ok_or_else(|| failed(id, ErrorCode::NotFound, "pane not found"))?;
-    let resized = world
-        .get_mut::<Tab>(tab)
-        .map(|mut component| {
-            let ok = component.layout.resize(entity, delta).is_ok();
-            component.layout_changed |= ok;
-            if ok {
-                component.layout_generation = component.layout_generation.saturating_add(1);
-            }
-            ok
-        })
-        .unwrap_or(false);
-    if resized {
-        Ok(CommandResult::Unit)
-    } else {
-        Err(failed(id, ErrorCode::Conflict, "pane cannot be resized"))
-    }
-}
-
-fn tab_action(
-    world: &mut World,
-    context: &Context,
-    id: u64,
-    action: TabAction,
-) -> Result<CommandResult, Reply> {
-    let tabs = member_tabs(world, context.workspace);
-    let selection = context.selection(world);
-    match action {
-        TabAction::Reorder { tab, before } => {
-            let entity = tab_in_workspace(world, context, tab)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
-            let before = before
-                .map(|tab| {
-                    tab_in_workspace(world, context, tab)
-                        .ok_or_else(|| failed(id, ErrorCode::NotFound, "reference tab not found"))
-                })
-                .transpose()?;
-            if !world
-                .get_mut::<crate::ecs::components::Tabs>(context.workspace)
-                .is_some_and(|mut tabs| tabs.place_before(entity, before))
-            {
-                return Err(failed(id, ErrorCode::Conflict, "tab order changed"));
-            }
-            mark_workspace_dirty(world, context.workspace);
-            Ok(CommandResult::Tab { tab })
-        }
-        TabAction::New { name } => {
-            let limit = world.resource::<Limits>().max_tabs;
-            if tabs.len() >= limit {
-                return Err(failed(id, ErrorCode::Limit, "configured tab limit reached"));
-            }
-            let tab = reserve_tab(world, context.workspace, name)?;
-            let size = selection
-                .focused()
-                .and_then(|pane| world.get::<Pane>(pane))
-                .map(|pane| pane.terminal.size())
-                .unwrap_or((24, 80));
-            if let Err(reply) = reserve_pane(
-                world,
-                context.workspace,
-                NewPane {
-                    argv: Vec::new(),
-                    cwd: None,
-                    env: Vec::new(),
-                    requester: context.requester,
-                    request_id: id,
-                    final_retain_ms: world.resource::<Limits>().final_retain_ms,
-                    fixed_workspace: false,
-                    right_click: Default::default(),
-                },
-                CreationKind::NewTab { tab },
-                size,
-            ) {
-                despawn_tab(world, tab);
-                return Err(reply);
-            }
-            Ok(CommandResult::Pane { pane: PaneId(0) })
-        }
-        TabAction::Next | TabAction::Previous => {
-            if tabs.is_empty() {
-                return Err(failed(id, ErrorCode::NotFound, "no tabs"));
-            }
-            let current = selection
-                .tab
-                .and_then(|tab| tabs.iter().position(|entry| *entry == tab))
-                .unwrap_or(0);
-            let index = if matches!(action, TabAction::Next) {
-                (current + 1) % tabs.len()
-            } else {
-                current.checked_sub(1).unwrap_or(tabs.len() - 1)
-            };
-            let tab = *tabs
-                .get(index)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
-            context.select_tab(world, tab);
-            Ok(CommandResult::Tab {
-                tab: tab_id(world, tab).unwrap_or_default(),
-            })
-        }
-        TabAction::Select { target } => {
-            let entity = match target {
-                control::TabTarget::Index(index) => *usize::try_from(index)
-                    .ok()
-                    .and_then(|index| tabs.get(index))
-                    .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?,
-                control::TabTarget::Id(tab) => tab_in_workspace(world, context, tab)
-                    .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab no longer exists"))?,
-            };
-            context.select_tab(world, entity);
-            Ok(CommandResult::Tab {
-                tab: tab_id(world, entity).unwrap_or_default(),
-            })
-        }
-        TabAction::Rename { tab, name } => {
-            let entity = tab_in_workspace(world, context, tab)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab no longer exists"))?;
-            if let Some(mut component) = world.get_mut::<Tab>(entity) {
-                component.label = name;
-            }
-            mark_workspace_dirty(world, context.workspace);
-            Ok(CommandResult::Tab { tab })
-        }
-        TabAction::Close { tab } => {
-            let entity = tab_in_workspace(world, context, tab)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab no longer exists"))?;
-            let now = world.resource::<Clock>().now_ms;
-            close_tab(world, entity, now, TERMINATE_GRACE_MS);
-            Ok(CommandResult::Tab { tab })
-        }
-    }
-}
-
-fn workspace_action(
-    world: &mut World,
-    context: &Context,
-    id: u64,
-    action: WorkspaceAction,
-) -> Result<CommandResult, Reply> {
-    match action {
-        WorkspaceAction::Rename { label } => {
-            let label = (!label.is_empty()).then_some(label);
-            let mut workspace = world
-                .get_mut::<Workspace>(context.workspace)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "workspace does not exist"))?;
-            let name = workspace.name.clone();
-            let changed = workspace.label != label;
-            workspace.label = label;
-            if changed {
-                mark_workspace_dirty(world, context.workspace);
-            }
-            Ok(CommandResult::Workspace { name })
-        }
-        WorkspaceAction::List => Ok(CommandResult::Listing {
-            instance: world.resource::<ServerIdentity>().instance_nonce.clone(),
-            workspaces: list_workspaces(world),
-        }),
-        WorkspaceAction::New { name } => {
-            let name = match name {
-                Some(name) => name,
-                None => next_workspace_name(world),
-            };
-            reserve_workspace(world, name, context.requester, id)?;
-            Ok(CommandResult::Pane { pane: PaneId(0) })
-        }
-        WorkspaceAction::Kill { name } => {
-            let entity = workspace_entity(world, &name)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "workspace does not exist"))?;
-            if entity != context.workspace {
-                return Err(failed(
-                    id,
-                    ErrorCode::Unauthorized,
-                    "a workspace connection may only kill its own workspace; use `fux workspace kill`",
-                ));
-            }
-            kill_workspace(world, entity);
-            Ok(CommandResult::Workspace { name })
-        }
-        WorkspaceAction::Select { name } => {
-            let viewer = context.viewer.ok_or_else(|| {
-                failed(
-                    id,
-                    ErrorCode::InvalidRequest,
-                    "only attached viewers switch workspaces",
-                )
-            })?;
-            let entity = workspace_entity(world, &name)
-                .filter(|entity| {
-                    world
-                        .get::<Workspace>(*entity)
-                        .is_some_and(|workspace| workspace.open && workspace.retiring.is_none())
-                })
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "workspace does not exist"))?;
-            check_viewer_admission(world, viewer, entity, id)?;
-            switch_viewer_workspace(world, viewer, entity);
-            crate::ecs::support::refresh_focus_history(world, entity);
-            Ok(CommandResult::Workspace { name })
-        }
-    }
-}
-
-pub(super) fn check_viewer_admission(
-    world: &mut World,
-    viewer: Entity,
-    workspace: Entity,
-    id: u64,
-) -> Result<(), Reply> {
-    if world
-        .get::<Viewer>(viewer)
-        .is_some_and(|v| v.workspace == workspace)
-    {
-        return Ok(());
-    }
-    let limit = world.resource::<Limits>().max_viewers;
-    let occupied = world
-        .query::<&Viewer>()
-        .iter(world)
-        .filter(|other| other.workspace == workspace)
-        .count();
-    if occupied >= limit {
-        return Err(failed(
-            id,
-            ErrorCode::Limit,
-            "that workspace already has the maximum number of viewers",
-        ));
-    }
-    Ok(())
-}
-
 /// Moves an attached viewer to another workspace over the same connection.
 pub fn switch_viewer_workspace(world: &mut World, viewer: Entity, workspace: Entity) {
     let Some(previous) = world.get::<Viewer>(viewer).map(|viewer| viewer.workspace) else {
@@ -1717,8 +1316,7 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
                     Some(name) => ManagerOutcome::Attach {
                         stream: world
                             .get::<crate::ecs::events::EventLog>(entity)
-                            .map(|log| log.cursor().stream)
-                            .unwrap_or(0),
+                            .map_or(0, |log| log.cursor().stream),
                         name,
                         created: false,
                     },
@@ -1774,7 +1372,7 @@ fn most_recent_workspace(world: &mut World) -> Option<Entity> {
         .map(|(entity, _)| entity)
 }
 
-fn list_workspaces(world: &mut World) -> Vec<WorkspaceSummary> {
+pub(super) fn list_workspaces(world: &mut World) -> Vec<WorkspaceSummary> {
     let entities: Vec<Entity> = ordered_workspaces(world)
         .into_iter()
         .map(|(_, entity)| entity)

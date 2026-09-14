@@ -1,0 +1,16 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.15s
+     Running unittests src/lib.rs (/tmp/fux-multi-machine-build/debug/deps/zor-bf4fea0c3b0fc4dc)
+
+running 8 tests
+test service::client::tests::unavailable_proxy_does_not_create_a_local_service_directory ... ok
+test service::client::tests::overview_cannot_join_different_service_incarnations ... ok
+test service::client::tests::capabilities_are_explicit_and_bounded ... ok
+test service::client::tests::reads_validate_correlation_schema_and_remote_failure_provenance ... ok
+test service::client::tests::task_reads_reject_cross_task_links_and_wrong_service_identity ... ok
+test service::client::tests::busy_reads_retry_within_deadline_but_supervision_is_sent_once ... ok
+test service::client::tests::malformed_frames_and_oversize_never_produce_a_view ... ok
+test service::client::tests::partial_progress_cannot_renew_the_absolute_request_deadline ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 170 filtered out; finished in 0.16s
+

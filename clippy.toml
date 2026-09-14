@@ -1,0 +1,7 @@
+# Assertions, unwrap/expect and panics are the normal idiom in tests; the strict production
+# lints (unwrap_used, expect_used, panic, panic_in_result_fn, dbg_macro) ignore test code so
+# they need no per-test `#[allow]`. Production code must still use the checked forms.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true

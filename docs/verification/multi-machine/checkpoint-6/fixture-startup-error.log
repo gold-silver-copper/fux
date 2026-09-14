@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 80, in <module>
+    until(lambda: (path/'zor/control.sock').exists() and (path/'fux/control.sock').exists())
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 49, in until
+    assert time.monotonic() < deadline, 'condition timeout'
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: condition timeout

@@ -1,4 +1,7 @@
 //! Zor-owned local observation service. No pane lifecycle authority is acquired by observation.
+pub mod client;
+pub(crate) mod observed;
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -25,6 +28,17 @@ const MAX_REQUEST: usize = 256 * 1024;
 const MAX_RESPONSE: usize = 512 * 1024;
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(3);
 const STALE_AFTER: Duration = Duration::from_secs(5);
+const FEATURES: &[&str] = &[
+    "observed-attachment-v1",
+    "snapshot-v1",
+    "overview-v1",
+    "supervision-v1",
+    "task-read-v1",
+    "task-supervise-v1",
+    "task-resume-v1",
+    "task-resume-status-v1",
+    "task-attachment-v1",
+];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +54,8 @@ struct Request {
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum Operation {
+    Supervision,
+    Capabilities,
     Snapshot,
     Ping,
     Shutdown,
@@ -53,6 +69,22 @@ struct Published {
     snapshot: crate::watch::Snapshot,
 }
 impl Published {
+    fn permits_observed_attachment(&self, handle: &crate::watch::Handle, now: Instant) -> bool {
+        self.at
+            .is_some_and(|at| now.saturating_duration_since(at) <= STALE_AFTER)
+            && handle.pid.is_some_and(|pid| pid > 0)
+            && self.snapshot.observations.iter().any(|observation| {
+                observation.handle == *handle
+                    && observation.agent.is_some()
+                    && observation.problem.is_none()
+                    && self.at.is_some_and(|at| {
+                        Duration::from_millis(observation.age_upper_bound_ms)
+                            .saturating_add(now.saturating_duration_since(at))
+                            <= STALE_AFTER
+                    })
+            })
+    }
+
     fn response(&self, instance: &str, id: u64, now: Instant) -> Value {
         let age = self.at.map(|at| now.saturating_duration_since(at));
         let age_ms = age.map_or(0, millis);
@@ -198,6 +230,7 @@ struct Client {
     output: Option<Vec<u8>>,
     written: usize,
     pending: Option<std::sync::mpsc::Receiver<Value>>,
+    pending_supervision: bool,
 }
 impl Client {
     fn advance(
@@ -212,8 +245,35 @@ impl Client {
         }
         if let Some(pending) = &self.pending {
             match pending.try_recv() {
-                Ok(response) => {
+                Ok(mut response) => {
                     self.pending = None;
+                    if self.pending_supervision
+                        && response.get("status").and_then(Value::as_str) == Some("completed")
+                    {
+                        let Some(id) = response.get("id").and_then(Value::as_u64) else {
+                            return false;
+                        };
+                        let Some(overview) = response.get("value") else {
+                            return false;
+                        };
+                        response = match shared.lock() {
+                            Ok(published) => {
+                                let mut observation =
+                                    published.response(instance, id, Instant::now());
+                                if let Some(object) = observation.as_object_mut() {
+                                    object.remove("v");
+                                    object.remove("id");
+                                    object.remove("status");
+                                }
+                                json!({"v":1,"id":id,"status":"completed",
+                                    "service_instance":instance,"features":FEATURES,
+                                    "observation":observation,"overview":overview})
+                            }
+                            Err(_) => {
+                                json!({"v":1,"id":id,"status":"failed","error":"observer-failed"})
+                            }
+                        };
+                    }
                     self.output = encode(response);
                     if self.output.is_none() {
                         return false;
@@ -273,11 +333,8 @@ impl Client {
         stop: &AtomicBool,
         tasks: &crate::service_tasks::Worker,
     ) -> Option<Value> {
-        let request = match serde_json::from_slice::<Request>(&self.input) {
-            Ok(request) => request,
-            Err(_) => {
-                return Some(json!({"v":1,"id":null,"status":"failed","error":"invalid-request"}));
-            }
+        let Ok(request) = serde_json::from_slice::<Request>(&self.input) else {
+            return Some(json!({"v":1,"id":null,"status":"failed","error":"invalid-request"}));
         };
         if request.v != 1 {
             return Some(
@@ -297,6 +354,24 @@ impl Client {
             );
         }
         Some(match request.op {
+            Operation::Supervision => {
+                // One bounded read avoids three retained transport sessions per poll.
+                // Task data stays on its worker; no journal I/O enters the socket loop.
+                match tasks.submit(
+                    crate::service_tasks::Request::Overview {},
+                    request.id,
+                    self.deadline,
+                ) {
+                    Ok(receiver) => {
+                        self.pending = Some(receiver);
+                        self.pending_supervision = true;
+                        return None;
+                    }
+                    Err(_) => {
+                        json!({"v":1,"id":request.id,"status":"failed","service_instance":instance,"error":"task-overloaded"})
+                    }
+                }
+            }
             Operation::Task => {
                 if request.service_instance.as_deref() != Some(instance) {
                     return Some(
@@ -304,7 +379,23 @@ impl Client {
                     );
                 }
                 let task = request.task?;
-                let deadline = self.deadline + Duration::from_secs(12);
+                if let crate::service_tasks::Request::ObservedAttachment { handle } = &task {
+                    let eligible = shared.lock().is_ok_and(|published| {
+                        published.permits_observed_attachment(handle, Instant::now())
+                    });
+                    if !eligible {
+                        return Some(json!({"v":1,"id":request.id,"status":"failed",
+                            "service_instance":instance,"error":"observed-agent-stale-or-replaced"}));
+                    }
+                }
+                let deadline = if matches!(
+                    &task,
+                    crate::service_tasks::Request::ObservedAttachment { .. }
+                ) {
+                    self.deadline
+                } else {
+                    self.deadline + Duration::from_secs(12)
+                };
                 match tasks.submit(task, request.id, deadline) {
                     Ok(receiver) => {
                         self.pending = Some(receiver);
@@ -324,6 +415,10 @@ impl Client {
                 }
                 stop.store(true, Ordering::Release);
                 json!({"v":1,"id":request.id,"status":"completed","service_instance":instance,"stopping":true})
+            }
+            Operation::Capabilities => {
+                json!({"v":1,"id":request.id,"status":"completed","service_instance":instance,
+                    "features":FEATURES})
             }
             Operation::Ping => {
                 json!({"v":1,"id":request.id,"status":"completed","service_instance":instance})
@@ -404,13 +499,13 @@ fn run_inner(
     if let Some(agent) = forced {
         crate::osc::AgentId::new(agent)?;
     }
-    let runtime = runtime.map(Ok).unwrap_or_else(crate::fux::runtime)?;
+    let runtime = runtime.map_or_else(crate::fux::runtime, Ok)?;
     anyhow::ensure!(runtime.is_absolute(), "fux runtime must be absolute");
     anyhow::ensure!(
         state.as_ref().is_none_or(|path| path.is_absolute()),
         "zor state directory must be absolute"
     );
-    let root = root.map(Ok).unwrap_or_else(directory)?;
+    let root = root.map_or_else(directory, Ok)?;
     let endpoint = Endpoint::bind(&root)?;
     let instance = local_ipc::random_token()?;
     let mut catalog = crate::rules::bundle::Catalog::load(extra)?;
@@ -447,7 +542,7 @@ fn run_inner(
                         }
                         Err(error) => {
                             reload_problem =
-                                Some(error.to_string().chars().take(256).collect::<String>())
+                                Some(error.to_string().chars().take(256).collect::<String>());
                         }
                     }
                 }
@@ -588,6 +683,7 @@ fn serve(
                         output: None,
                         written: 0,
                         pending: None,
+                        pending_supervision: false,
                     });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -600,13 +696,13 @@ fn serve(
 }
 
 pub fn status(root: Option<PathBuf>) -> Result<Value> {
-    let root = root.map(Ok).unwrap_or_else(directory)?;
+    let root = root.map_or_else(directory, Ok)?;
     anyhow::ensure!(root.is_absolute(), "zor service directory must be absolute");
     request(&root, json!({"v":1,"id":1,"op":"snapshot"}))
 }
 
 pub(crate) fn overview(root: Option<PathBuf>, instance: &str) -> Result<Value> {
-    let root = root.map(Ok).unwrap_or_else(directory)?;
+    let root = root.map_or_else(directory, Ok)?;
     request(
         &root,
         json!({"v":1,"id":1,"op":"task","service_instance":instance,
@@ -615,7 +711,7 @@ pub(crate) fn overview(root: Option<PathBuf>, instance: &str) -> Result<Value> {
 }
 
 pub fn shutdown(root: Option<PathBuf>) -> Result<Value> {
-    let root = root.map(Ok).unwrap_or_else(directory)?;
+    let root = root.map_or_else(directory, Ok)?;
     let current = status(Some(root.clone()))?;
     let instance = current
         .get("service_instance")
@@ -656,7 +752,7 @@ pub fn run_group(
         std::fs::canonicalize(actual)? == std::fs::canonicalize(state)?,
         "zor service uses a different task state directory; select its matching --directory"
     );
-    let root = root.map(Ok).unwrap_or_else(directory)?;
+    let root = root.map_or_else(directory, Ok)?;
     let response = request(
         &root,
         json!({"v":1,"id":1,"op":"task","service_instance":instance,
@@ -673,43 +769,12 @@ fn request(root: &Path, value: Value) -> Result<Value> {
 }
 
 fn request_until(root: &Path, value: Value, deadline: Instant) -> Result<Value> {
-    let mut stream = local_ipc::connect_until(&root.join("control.sock"), deadline)
-        .context("zor service unavailable; start `zor serve` with the same --directory")?;
-    anyhow::ensure!(
-        local_ipc::peer_is_current_user(&stream)?,
-        "service socket belongs to another user"
-    );
-    let mut bytes = serde_json::to_vec(&value)?;
-    bytes.push(b'\n');
-    local_ipc::write_all_until(
-        &mut stream,
-        &bytes,
-        deadline.min(Instant::now() + Duration::from_secs(1)),
-    )?;
-    let output = local_ipc::FrameReader::new(MAX_RESPONSE)
-        .next_frame(&mut stream, deadline)
-        .map_err(|error| match error {
-            local_ipc::FrameError::TimedOut => anyhow::anyhow!("zor service request timed out"),
-            local_ipc::FrameError::Closed => anyhow::anyhow!("zor service closed before replying"),
-            local_ipc::FrameError::Oversize => {
-                anyhow::anyhow!("zor service response exceeds limit")
-            }
-            local_ipc::FrameError::Io(error) => error.into(),
-        })?;
-    let response: Value = serde_json::from_slice(&output)?;
-    if response.get("v") == Some(&json!(1))
-        && response.get("id") == Some(&json!(1))
-        && response.get("status") == Some(&json!("failed"))
-        && response.get("error") == Some(&json!("task-busy"))
-    {
-        return Err(crate::tasks::store::Busy.into());
-    }
-    anyhow::ensure!(
-        response.get("v") == Some(&json!(1))
-            && response.get("id") == Some(&json!(1))
-            && response.get("status") == Some(&json!("completed")),
-        "incompatible or failed zor service response"
-    );
+    let id = value.get("id").cloned().context("request correlation ID")?;
+    let mut response = client::exchange(&root.join("control.sock"), value, deadline)?;
+    let body = response.as_object_mut().context("response object")?;
+    body.insert("v".into(), json!(1));
+    body.insert("id".into(), id);
+    body.insert("status".into(), json!("completed"));
     Ok(response)
 }
 
@@ -721,7 +786,7 @@ pub fn ensure(
     forced: Option<&str>,
     state: Option<PathBuf>,
 ) -> Result<Value> {
-    let root = root.map(Ok).unwrap_or_else(directory)?;
+    let root = root.map_or_else(directory, Ok)?;
     private_directory(&root)?;
     match status(Some(root.clone())) {
         Ok(response) => return Ok(response),
@@ -938,10 +1003,56 @@ fn startup_frame(channel: &mut UnixStream, deadline: Instant) -> Result<Value> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn observed_attachment_requires_fresh_exact_identified_evidence_and_rejects_paths() {
+        let now = Instant::now();
+        let handle = crate::watch::Handle {
+            instance: "fux-one".into(),
+            workspace: "agent".into(),
+            stream: 1,
+            pane: 2,
+            pid: Some(3),
+        };
+        let mut published = Published {
+            at: Some(now),
+            ..Published::default()
+        };
+        published
+            .snapshot
+            .observations
+            .push(crate::watch::Observation {
+                handle: handle.clone(),
+                age_upper_bound_ms: 4999,
+                revision: 1,
+                input_sequence: 0,
+                agent: Some("codex".into()),
+                detected_pid: Some(3),
+                state: "unknown".into(),
+                rule: None,
+                problem: None,
+            });
+        assert!(published.permits_observed_attachment(&handle, now));
+        assert!(!published.permits_observed_attachment(&handle, now + Duration::from_millis(2)));
+        let replacement = crate::watch::Handle {
+            pid: Some(4),
+            ..handle.clone()
+        };
+        assert!(!published.permits_observed_attachment(&replacement, now));
+        published
+            .snapshot
+            .observations
+            .first_mut()
+            .expect("observation")
+            .agent = None;
+        assert!(!published.permits_observed_attachment(&handle, now));
+        assert!(serde_json::from_value::<crate::service_tasks::Request>(json!({
+            "action":"observed-attachment","handle":{"instance":"fux-one","workspace":"agent","stream":1,"pane":2,"pid":3,"runtime":"/arbitrary/socket"}
+        })).is_err());
+    }
 
     #[test]
     fn concurrent_starter_waits_for_winner_socket_but_not_invalid_replies() {

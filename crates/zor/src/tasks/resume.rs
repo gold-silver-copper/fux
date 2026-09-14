@@ -7,12 +7,100 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Retained evidence only. An absent record does not authorize replay or a new operation.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationStatus {
+    pub generation: u64,
+    pub task: String,
+    pub operation: String,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub record: Option<OperationRecord>,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationRecord {
+    pub launch: String,
+    pub phase: LaunchPhase,
+    pub instance: String,
+    pub previous_attempt: String,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub session: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub pane: Option<u32>,
+}
+
+pub fn operation_status(root: &Path, task: &str, operation: &str) -> Result<OperationStatus> {
+    anyhow::ensure!(
+        id(task) && id(operation) && task != operation,
+        "invalid task/resume operation identity"
+    );
+    let store = Store::open(root)?;
+    let journal = store.journal();
+    anyhow::ensure!(journal.tasks.contains_key(task), "resume task missing");
+    let mut found = journal.launches.values().filter_map(|launch| {
+        launch
+            .resume
+            .as_ref()
+            .filter(|resume| resume.operation == operation)
+            .map(|resume| (launch, resume))
+    });
+    let record = if let Some((launch, resume)) = found.next() {
+        anyhow::ensure!(
+            launch.task_id() == task,
+            "resume operation belongs to another task"
+        );
+        anyhow::ensure!(
+            found.next().is_none(),
+            "ambiguous retained resume operation"
+        );
+        Some(OperationRecord {
+            launch: launch.id.clone(),
+            phase: launch.phase.clone(),
+            instance: launch.instance.clone(),
+            previous_attempt: resume.previous_attempt.clone(),
+            session: launch.session.clone(),
+            pane: launch.pane,
+        })
+    } else {
+        None
+    };
+    Ok(OperationStatus {
+        generation: journal.generation,
+        task: task.into(),
+        operation: operation.into(),
+        record,
+    })
+}
+
 pub fn run(root: &Path, task_id: &str, operation: &str, instance: &str) -> Result<Value> {
+    run_with_expected(root, task_id, operation, instance, None)
+}
+
+pub(crate) fn guarded(
+    root: &Path,
+    expected: &super::supervise::Expected,
+    operation: &str,
+    instance: &str,
+) -> Result<Value> {
+    run_with_expected(root, &expected.task, operation, instance, Some(expected))
+}
+
+fn run_with_expected(
+    root: &Path,
+    task_id: &str,
+    operation: &str,
+    instance: &str,
+    expected: Option<&super::supervise::Expected>,
+) -> Result<Value> {
     anyhow::ensure!(
         id(operation) && operation != task_id,
         "resume requires a distinct stable operation ID"
     );
     let mut store = Store::open(root)?;
+    if let Some(expected) = expected {
+        expected.validate(store.journal())?;
+    }
     if let Some(existing) = store
         .journal()
         .launches

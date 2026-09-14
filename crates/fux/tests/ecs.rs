@@ -1411,6 +1411,7 @@ impl Harness {
         let viewer = ViewerId(self.next_viewer);
         self.next_viewer += 1;
         self.step(vec![Inbound::ViewerAttached {
+            initial: None,
             viewer,
             workspace: workspace.into(),
             rows,
@@ -1784,6 +1785,147 @@ fn natural_exit_of_one_pane_closes_it_and_of_a_tab_moves_viewers() {
             .any(|(_, event)| matches!(event, Event::TabClosed { tab: TabId(2), .. }))
     );
     assert!(harness.closed.is_empty(), "workspace survives");
+}
+
+#[test]
+fn exact_initial_attachment_selects_only_its_viewer_and_rejects_stale_identity() {
+    use fux::proto::attach::InitialTarget;
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let alice = h.attach("default", 24, 80);
+    h.control(alice, split(1, Axis::Horizontal));
+    h.complete_spawns();
+    let bob = h.attach("default", 24, 80);
+    assert_eq!(h.last_frame(bob).focused, Some(PaneId(2)));
+    let initial = InitialTarget {
+        instance: "test-instance".into(),
+        workspace: "default".into(),
+        stream: workspace_stream(&mut h, "default"),
+        pane: PaneId(1),
+        pid: 101,
+    };
+    let viewer = ViewerId(h.next_viewer);
+    h.next_viewer += 1;
+    h.step(vec![Inbound::ViewerAttached {
+        viewer,
+        workspace: "default".into(),
+        rows: 24,
+        cols: 80,
+        initial: Some(initial.clone()),
+    }]);
+    assert_eq!(h.last_frame(viewer).focused, Some(PaneId(1)));
+    assert_eq!(h.last_frame(bob).focused, Some(PaneId(2)));
+    let ordinary = h.attach("default", 24, 80);
+    assert_eq!(
+        h.last_frame(ordinary).focused,
+        Some(PaneId(2)),
+        "exact attach changed workspace defaults"
+    );
+    h.request(viewer, ViewerRequest::Input(b"targeted".to_vec()));
+    assert_eq!(h.written.last(), Some(&(PaneId(1), b"targeted".to_vec())));
+    for field in 0..5 {
+        let mut stale = initial.clone();
+        match field {
+            0 => stale.instance = "old".into(),
+            1 => stale.workspace = "other".into(),
+            2 => stale.stream += 1,
+            3 => stale.pane = PaneId(99),
+            _ => stale.pid += 1,
+        }
+        let rejected = ViewerId(h.next_viewer);
+        h.next_viewer += 1;
+        let written = h.written.len();
+        h.step(vec![
+            Inbound::ViewerAttached {
+                viewer: rejected,
+                workspace: "default".into(),
+                rows: 24,
+                cols: 80,
+                initial: Some(stale),
+            },
+            Inbound::ViewerRequest {
+                viewer: rejected,
+                request: ViewerRequest::Input(b"must-not-deliver".to_vec()),
+            },
+        ]);
+        assert_eq!(h.written.len(), written);
+        assert!(h.messages.get(&rejected).is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| matches!(message, ServerMessage::Error { .. }))
+        }));
+        assert!(!h.messages.get(&rejected).is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| matches!(message, ServerMessage::Hello {}))
+        }));
+    }
+    let written = h.written.len();
+    h.step(vec![
+        Inbound::PaneExited {
+            pane: PaneId(1),
+            code: 0,
+        },
+        Inbound::ViewerRequest {
+            viewer,
+            request: ViewerRequest::Input(b"not-to-sibling".to_vec()),
+        },
+    ]);
+    assert_eq!(
+        h.written.len(),
+        written,
+        "exited target redirected input to its sibling"
+    );
+    assert!(h.messages.get(&viewer).is_some_and(|messages| {
+        messages
+            .iter()
+            .any(|message| matches!(message, ServerMessage::Error { .. }))
+    }));
+}
+
+#[test]
+fn exact_attachment_closes_when_shared_zoom_hides_its_required_pane() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let controller = h.attach("default", 24, 80);
+    h.control(controller, split(1, Axis::Horizontal));
+    h.complete_spawns();
+    let initial = fux::proto::attach::InitialTarget {
+        instance: "test-instance".into(),
+        workspace: "default".into(),
+        stream: workspace_stream(&mut h, "default"),
+        pane: PaneId(1),
+        pid: 101,
+    };
+    let viewer = ViewerId(h.next_viewer);
+    h.next_viewer += 1;
+    h.step(vec![Inbound::ViewerAttached {
+        viewer,
+        workspace: "default".into(),
+        rows: 24,
+        cols: 80,
+        initial: Some(initial),
+    }]);
+    h.control(
+        controller,
+        layout_request(
+            Some(h.last_frame(controller).layout_generation),
+            fux::proto::control::LayoutAction::Zoom {
+                pane: Some(PaneId(2)),
+            },
+        ),
+    );
+    let count = h.written.len();
+    h.request(
+        viewer,
+        ViewerRequest::Input(b"must-not-reach-zoomed-sibling".to_vec()),
+    );
+    assert_eq!(h.written.len(), count);
+    assert!(h.messages.get(&viewer).is_some_and(|messages| {
+        messages
+            .iter()
+            .any(|message| matches!(message, ServerMessage::Error { .. }))
+    }));
 }
 
 #[test]
@@ -2546,6 +2688,7 @@ fn a_viewer_leaving_in_its_arrival_step_is_released_and_the_limit_counts_the_bat
     let ghost = ViewerId(500);
     let effects = harness.step(vec![
         Inbound::ViewerAttached {
+            initial: None,
             viewer: ghost,
             workspace: "default".into(),
             rows: 10,
@@ -2569,6 +2712,7 @@ fn a_viewer_leaving_in_its_arrival_step_is_released_and_the_limit_counts_the_bat
     // One step with more arrivals than the limit admits only up to the limit.
     let batch: Vec<Inbound> = (0..66)
         .map(|index| Inbound::ViewerAttached {
+            initial: None,
             viewer: ViewerId(1_000 + index),
             workspace: "default".into(),
             rows: 24,
@@ -2594,6 +2738,7 @@ fn a_viewer_leaving_in_its_arrival_step_is_released_and_the_limit_counts_the_bat
     let effects = harness.step(vec![
         Inbound::ViewerGone { viewer },
         Inbound::ViewerAttached {
+            initial: None,
             viewer: ViewerId(2_000),
             workspace: "default".into(),
             rows: 24,
@@ -3124,6 +3269,7 @@ mod randomized {
                         let viewer = ViewerId(harness.next_viewer);
                         harness.next_viewer += 1;
                         harness.step(vec![Inbound::ViewerAttached {
+            initial: None,
                             viewer,
                             workspace: NAMES[usize::from(workspace)].to_owned(),
                             rows,

@@ -1,0 +1,59 @@
+[?1049h[?25l[2J[Hzor dashboard | first[K
+Tab machines | j/k rows | ? help | q quit[K
+0/3 machines live[K
+No observed rows in this scope[K
+first: Connecting[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows | ? help | q quit[K
+1/3 machines live[K
+No observed rows in this scope[K
+first: Connecting[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows | ? help | q quit[K
+3/3 machines live[K
+> first [unknown] agent / 2: unclassified[K
+  first [unknown] default / 1: unclassified[K
+  first [open] same: first task[K
+first: passive state unknown; age at fetch <= 884ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows | ? help | q quit[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassified[K
+  first [unknown] default / 1: unclassified[K
+> first [open] same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent [K
+unclassified[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows | ? help | q quit[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassified[K
+  first [unknown] default / 1: unclassified[K
+> first [open] same: first task[K
+first / same: preparing action...[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent [K
+unclassified[K
+[J[HInspection/result | j/k scroll | Esc back[K
+first / same / attempt 7cb5a2834678a56e4a487ccb6c2b11d5[K
+{[K
+  "artifact_captures": [],[K
+  "artifact_policy": {[K
+    "collected_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "artifacts": [],[K
+  "attempt": {[K
+    "id": "7cb5a2834678a56e4a487ccb6c2b11d5",[K
+    "session": "c157cc0fb10fb14af79d0321a201f32a",[K
+    "state": "active",[K
+    "task": "same"[K
+  },[K
+  "check_policy": {[K
+    "passed_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "checks": [],[K
+  "generation": 1,[K
+  "launch": null,[K[J

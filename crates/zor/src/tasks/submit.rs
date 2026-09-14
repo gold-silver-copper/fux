@@ -349,7 +349,6 @@ fn check_deadline(prompt: &Prompt) -> Result<()> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     #[test]

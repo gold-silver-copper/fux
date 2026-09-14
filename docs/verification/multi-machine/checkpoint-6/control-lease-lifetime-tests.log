@@ -1,0 +1,11 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.46s
+     Running unittests src/lib.rs (/tmp/fux-multi-machine-build/debug/deps/zor-bf4fea0c3b0fc4dc)
+
+running 3 tests
+test machines::connection::tests::directory_cleanup_removes_owned_entries_but_preserves_unknown_files ... ok
+test machines::connection::tests::status_rejects_unsafe_malformed_and_regressed_evidence ... ok
+test machines::connection::tests::retiring_a_control_connection_preserves_only_existing_leases ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 180 filtered out; finished in 0.03s
+

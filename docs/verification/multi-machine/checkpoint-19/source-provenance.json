@@ -1,0 +1,14 @@
+{
+  "sha256": {
+    "crates/zor/src/dashboard/multi.rs": "33c1cb4f64a68aea90a1983dd9d082f403578a7dda9b1068b3623b770d8dc8cf",
+    "crates/zor/src/dashboard/handoff.rs": "64d4b0d05d18a21b4fbc52c618f16ce186e99917cffbdb5f6836e57fc954d15f",
+    "docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py": "070d034cbfedbe9d4d74c3d67e248982a4546b4c6ebb1725cc3ee101a59c472c"
+  },
+  "commands": [
+    "cargo +stable test -p zor --lib",
+    "cargo +stable clippy -p zor --all-targets -- -D warnings",
+    "dashboard-handoff.py --dashboard-resume --artifacts-dir docs/verification/multi-machine/checkpoint-19/dashboard-resume-final"
+  ],
+  "visual_review": "Two real 180x30 PTY frames imported, replayed, rendered and individually inspected; form controls and complete refusal reason readable.",
+  "remaining": "Successful dashboard resume, narrow form, durable unknown-operation tracking and lost replies are not yet verified."
+}

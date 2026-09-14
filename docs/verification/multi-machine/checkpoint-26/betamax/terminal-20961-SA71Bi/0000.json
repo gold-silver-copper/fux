@@ -1,0 +1,70 @@
+{
+  "size": [
+    40,
+    16
+  ],
+  "total_rows": 16,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 35,
+    "y": 15,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "j/k scroll | Esc back\nfirst / same / operation\nui-resume-refusal\nRead only; an absent record does not\nauthorize replay.\nRemote evidence:\n{\n  \"generation\": 1,\n  \"task\": \"same\",\n  \"operation\": \"ui-resume-refusal\",\n  \"record\": null\n}\nSaved controller intent:\n{\n  \"machine\":\n\"7c1838ca9404ccf18bc50638f2650e74\",\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "j/k scroll | Esc back"
+    ],
+    [
+      "first / same / operation"
+    ],
+    [
+      "ui-resume-refusal"
+    ],
+    [
+      "Read only; an absent record does not"
+    ],
+    [
+      "authorize replay."
+    ],
+    [
+      "Remote evidence:"
+    ],
+    [
+      "{"
+    ],
+    [
+      "  \"generation\": 1,"
+    ],
+    [
+      "  \"task\": \"same\","
+    ],
+    [
+      "  \"operation\": \"ui-resume-refusal\","
+    ],
+    [
+      "  \"record\": null"
+    ],
+    [
+      "}"
+    ],
+    [
+      "Saved controller intent:"
+    ],
+    [
+      "{"
+    ],
+    [
+      "  \"machine\":"
+    ],
+    [
+      "\"7c1838ca9404ccf18bc50638f2650e74\","
+    ]
+  ],
+  "scrollback": []
+}

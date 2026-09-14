@@ -1,0 +1,58 @@
+{
+  "size": [
+    40,
+    16
+  ],
+  "total_rows": 16,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 0,
+    "y": 12,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "zor dashboard | second\nTab machines | j/k rows\n? help | q quit\n3/3 machines live\n  second [unknown] agent / 2: unclassif\n  second [unknown] default / 1: unclass\n> second [open] same: second task\nsecond / same: action failed: second\nhas no attachment binding for\nworkspace agent; use machine bind\nsecond: Recorded task outcome Open;\ncoordination open; attempt Active;\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "zor dashboard | second"
+    ],
+    [
+      "Tab machines | j/k rows"
+    ],
+    [
+      "? help | q quit"
+    ],
+    [
+      "3/3 machines live"
+    ],
+    [
+      "  second [unknown] agent / 2: unclassif"
+    ],
+    [
+      "  second [unknown] default / 1: unclass"
+    ],
+    [
+      "> second [open] same: second task"
+    ],
+    [
+      "second / same: action failed: second"
+    ],
+    [
+      "has no attachment binding for"
+    ],
+    [
+      "workspace agent; use machine bind"
+    ],
+    [
+      "second: Recorded task outcome Open;"
+    ],
+    [
+      "coordination open; attempt Active;"
+    ]
+  ],
+  "scrollback": []
+}

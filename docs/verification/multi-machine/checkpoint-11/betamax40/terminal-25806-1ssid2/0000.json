@@ -1,0 +1,70 @@
+{
+  "size": [
+    40,
+    16
+  ],
+  "total_rows": 16,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 35,
+    "y": 15,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "j/k scroll | Esc back\nfirst / same / attempt\nac49538127cbe04d429098daf2c06650\n{\n  \"artifact_captures\": [],\n  \"artifact_policy\": {\n    \"collected_count\": 0,\n    \"required_count\": 0,\n    \"sealed\": false\n  },\n  \"artifacts\": [],\n  \"attempt\": {\n    \"id\":\n\"ac49538127cbe04d429098daf2c06650\",\n    \"session\":\n\"51beff3c7b4605f9744509b0348c886f\",\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "j/k scroll | Esc back"
+    ],
+    [
+      "first / same / attempt"
+    ],
+    [
+      "ac49538127cbe04d429098daf2c06650"
+    ],
+    [
+      "{"
+    ],
+    [
+      "  \"artifact_captures\": [],"
+    ],
+    [
+      "  \"artifact_policy\": {"
+    ],
+    [
+      "    \"collected_count\": 0,"
+    ],
+    [
+      "    \"required_count\": 0,"
+    ],
+    [
+      "    \"sealed\": false"
+    ],
+    [
+      "  },"
+    ],
+    [
+      "  \"artifacts\": [],"
+    ],
+    [
+      "  \"attempt\": {"
+    ],
+    [
+      "    \"id\":"
+    ],
+    [
+      "\"ac49538127cbe04d429098daf2c06650\","
+    ],
+    [
+      "    \"session\":"
+    ],
+    [
+      "\"51beff3c7b4605f9744509b0348c886f\","
+    ]
+  ],
+  "scrollback": []
+}

@@ -273,7 +273,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::panic)]
     fn full_socket_drops_instead_of_blocking() {
         // Phase Z §6: a nonblocking full sink increments the drop counter.
         let (writer, _reader) =
@@ -328,7 +327,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::panic)]
     fn nonblocking_file_target_never_concatenates_after_pressure() {
         // Phase Z §6: fd3-style shared descriptors preserve JSONL boundaries under pressure.
         let (mut writer, mut reader) =

@@ -1,4 +1,4 @@
-//! Bounded noninteractive child-process effects. Callers own argv, environment and policy.
+//! Bounded controller-owned child-process effects. Callers own argv, environment and policy.
 use anyhow::{Context, Result};
 use std::{
     io::Read,
@@ -9,6 +9,7 @@ use std::{
 
 const MAX_OUTPUT: usize = 262144;
 pub(crate) struct Running {
+    group: bool,
     child: Option<Child>,
     reaped: bool,
     cleanup_deadline: Option<Instant>,
@@ -16,16 +17,33 @@ pub(crate) struct Running {
 impl Running {
     pub(crate) fn new(child: Child) -> Self {
         Self {
+            group: true,
             child: Some(child),
             reaped: false,
             cleanup_deadline: None,
         }
     }
 
+    /// A foreground viewer shares the controller's terminal process group. Own only its PID.
+    pub(crate) fn foreground(child: Child) -> Self {
+        let mut running = Self::new(child);
+        running.group = false;
+        running
+    }
+
     pub(crate) fn child_mut(&mut self) -> Result<&mut Child> {
         self.child
             .as_mut()
             .context("owned subprocess handle missing")
+    }
+
+    /// Record reaping before a later cleanup can signal a reused process/group ID.
+    pub(crate) fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
+        let status = self.child_mut()?.try_wait()?;
+        if status.is_some() {
+            self.reaped = true;
+        }
+        Ok(status)
     }
 
     /// Signal while the unreaped group leader still reserves its identity.
@@ -38,10 +56,14 @@ impl Running {
             Instant::now() < deadline,
             "owned subprocess cleanup deadline exceeded"
         );
-        let group = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(i32::try_from(self.child_mut()?.id())?),
-            nix::sys::signal::Signal::SIGKILL,
-        );
+        let group = if self.group {
+            nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(i32::try_from(self.child_mut()?.id())?),
+                nix::sys::signal::Signal::SIGKILL,
+            )
+        } else {
+            Ok(())
+        };
         let _ = self.child_mut()?.kill();
         loop {
             if self.child_mut()?.try_wait()?.is_some() {
@@ -70,7 +92,9 @@ impl Drop for Running {
             return;
         };
         // The process group was created by this command. Include its descendants.
-        if let Ok(pid) = i32::try_from(child.id()) {
+        if self.group
+            && let Ok(pid) = i32::try_from(child.id())
+        {
             let _ = nix::sys::signal::killpg(
                 nix::unistd::Pid::from_raw(pid),
                 nix::sys::signal::Signal::SIGKILL,
@@ -177,7 +201,6 @@ pub(crate) fn run_command(command: &mut Command, deadline: Instant) -> Result<Ou
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -211,6 +234,20 @@ mod tests {
         let mut output = vec![0; MAX_OUTPUT - 1];
         assert!(drain(&mut Input(0), &mut output).is_err());
         assert_eq!(output.len(), MAX_OUTPUT - 1);
+    }
+
+    #[test]
+    fn foreground_child_cleanup_preserves_its_shared_process_group() -> Result<()> {
+        let child = Command::new("/bin/sleep").arg("30").spawn()?;
+        let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id())?);
+        let mut child = Running::foreground(child);
+        assert_eq!(nix::unistd::getpgid(Some(pid))?, nix::unistd::getpgrp());
+        child.stop(Instant::now() + Duration::from_secs(2))?;
+        assert!(child.try_wait()?.is_some());
+        assert!(child.reaped);
+        // Repeated cleanup is inert after the child has been reaped.
+        child.stop(Instant::now())?;
+        Ok(())
     }
 
     #[test]

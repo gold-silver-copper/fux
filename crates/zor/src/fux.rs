@@ -103,7 +103,6 @@ pub fn runtime() -> anyhow::Result<PathBuf> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

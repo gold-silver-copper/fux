@@ -124,6 +124,7 @@ pub enum Inbound {
         result: Result<u32, String>,
     },
     ViewerAttached {
+        initial: Option<crate::proto::attach::InitialTarget>,
         viewer: ViewerId,
         workspace: String,
         rows: u16,

@@ -16,6 +16,25 @@ use std::{
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum Request {
+    ObservedAttachment {
+        handle: crate::watch::Handle,
+    },
+    AttachmentTarget {
+        expected: tasks::supervise::Expected,
+    },
+    Supervise {
+        expected: tasks::supervise::Expected,
+        action_kind: tasks::supervise::Action,
+    },
+    ResumeStatus {
+        id: String,
+        operation: String,
+    },
+    GuardedResume {
+        expected: tasks::supervise::Expected,
+        operation: String,
+        instance: String,
+    },
     CodexStart {
         id: String,
         title: String,
@@ -265,6 +284,22 @@ pub(crate) enum Request {
 impl Request {
     fn execute(self, root: &Path, runtime: &Path) -> Result<Value> {
         match self {
+            Self::ObservedAttachment { handle } => {
+                crate::service::observed::resolve(runtime, &handle)
+            }
+            Self::AttachmentTarget { expected } => tasks::supervise::attachment(root, &expected),
+            Self::ResumeStatus { id, operation } => Ok(serde_json::to_value(
+                tasks::resume::operation_status(root, &id, &operation)?,
+            )?),
+            Self::GuardedResume {
+                expected,
+                operation,
+                instance,
+            } => tasks::resume::guarded(root, &expected, &operation, &instance),
+            Self::Supervise {
+                expected,
+                action_kind,
+            } => tasks::supervise::run(root, &expected, action_kind),
             Self::Overview {} => crate::dashboard::overview(root, runtime),
             Self::Recover { after } => tasks::recovery::resume(root, after.as_deref()),
             Self::Handoff {
@@ -717,7 +752,6 @@ impl Drop for Lane {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     #[test]

@@ -213,7 +213,6 @@ impl Journal {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -630,7 +629,7 @@ mod tests {
                         .sessions
                         .get_mut("session")
                         .expect("test fixture or transition")
-                        .ownership = Ownership::Adopted
+                        .ownership = Ownership::Adopted;
                 }
                 1 => {
                     journal
@@ -638,21 +637,21 @@ mod tests {
                         .get_mut("session")
                         .expect("test fixture or transition")
                         .target
-                        .instance = "replacement".into()
+                        .instance = "replacement".into();
                 }
                 2 => {
                     journal
                         .tasks
                         .get_mut("task")
                         .expect("test fixture or transition")
-                        .attempt = "other".into()
+                        .attempt = "other".into();
                 }
                 3 => {
                     journal
                         .attempts
                         .get_mut("attempt")
                         .expect("test fixture or transition")
-                        .task = "other".into()
+                        .task = "other".into();
                 }
                 _ => {
                     journal
@@ -660,7 +659,7 @@ mod tests {
                         .get_mut("session")
                         .expect("test fixture or transition")
                         .target
-                        .pane = 2
+                        .pane = 2;
                 }
             }
             let before = serde_json::to_value(&journal).expect("test fixture or transition");

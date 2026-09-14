@@ -6,6 +6,7 @@ pub mod layout;
 pub mod lifecycle;
 pub mod output;
 pub mod requests;
+mod requests_control;
 pub mod snapshot;
 
 pub mod input;

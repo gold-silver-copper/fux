@@ -380,7 +380,7 @@ impl PaneProcess {
         let chunk = InputChunk {
             bytes: bytes.to_vec(),
             operation,
-            pending: self.pending_input_bytes.clone(),
+            pending: Arc::clone(&self.pending_input_bytes),
         };
         match sender.try_send(chunk) {
             Ok(()) => Ok(()),
@@ -688,7 +688,7 @@ mod tests {
         let chunk = InputChunk {
             bytes: b"abc".to_vec(),
             operation: Some(1),
-            pending: pending.clone(),
+            pending: Arc::clone(&pending),
         };
         drop(chunk);
         assert_eq!(pending.load(Ordering::Acquire), 0);

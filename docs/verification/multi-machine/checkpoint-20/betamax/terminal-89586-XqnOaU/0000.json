@@ -1,0 +1,52 @@
+{
+  "size": [
+    40,
+    16
+  ],
+  "total_rows": 16,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 0,
+    "y": 10,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "Resume | Enter submit | Esc cancel\nResume selected task\nType: OPERATION_ID FUX_INSTANCE\n> ui-resume-refusal\n2446662772e7cfaf5f860fc26885048c\nBackspace: edit\nKeep the stable operation ID to\nreconcile an unknown outcome.\nService checks provider/session\neligibility; no prompt replay.\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "Resume | Enter submit | Esc cancel"
+    ],
+    [
+      "Resume selected task"
+    ],
+    [
+      "Type: OPERATION_ID FUX_INSTANCE"
+    ],
+    [
+      "> ui-resume-refusal"
+    ],
+    [
+      "2446662772e7cfaf5f860fc26885048c"
+    ],
+    [
+      "Backspace: edit"
+    ],
+    [
+      "Keep the stable operation ID to"
+    ],
+    [
+      "reconcile an unknown outcome."
+    ],
+    [
+      "Service checks provider/session"
+    ],
+    [
+      "eligibility; no prompt replay."
+    ]
+  ],
+  "scrollback": []
+}

@@ -1,0 +1,21 @@
+{
+  "size": [
+    180,
+    30
+  ],
+  "total_rows": 30,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 0,
+    "y": 0,
+    "visible": true
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "",
+  "scrollback_text": "",
+  "viewport": [],
+  "scrollback": []
+}

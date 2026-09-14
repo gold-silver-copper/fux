@@ -201,7 +201,7 @@ pub fn parse(input: &[u8]) -> Result<Report, Error> {
                     b"0" => false,
                     b"1" => true,
                     _ => return Err(Error),
-                })
+                });
             }
             b"message" if message.is_none() => message = Some(percent_decode(value)?),
             b"state" | b"agent" | b"seq" | b"visible" | b"exited" | b"message" => {

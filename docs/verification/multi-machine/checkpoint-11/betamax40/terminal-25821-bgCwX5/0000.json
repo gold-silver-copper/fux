@@ -1,0 +1,70 @@
+{
+  "size": [
+    40,
+    16
+  ],
+  "total_rows": 16,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 7,
+    "y": 15,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "j/k scroll | Esc back\nDashboard controls\nTab: cycle machines and All machines\nj/k: select a row\nEnter/i: inspect task or observed agent\na: attach exact pane; Ctrl-A d detaches\nr: task result\nc: cancel task coordination\ns: stop managed task\nl: reconcile retained task evidence\nR: reload machine catalog\nEsc: cancel preparation or close detail\nq: close detail or quit dashboard\nActions require fresh evidence.\nTask-only actions refuse observed\nagents.\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "j/k scroll | Esc back"
+    ],
+    [
+      "Dashboard controls"
+    ],
+    [
+      "Tab: cycle machines and All machines"
+    ],
+    [
+      "j/k: select a row"
+    ],
+    [
+      "Enter/i: inspect task or observed agent"
+    ],
+    [
+      "a: attach exact pane; Ctrl-A d detaches"
+    ],
+    [
+      "r: task result"
+    ],
+    [
+      "c: cancel task coordination"
+    ],
+    [
+      "s: stop managed task"
+    ],
+    [
+      "l: reconcile retained task evidence"
+    ],
+    [
+      "R: reload machine catalog"
+    ],
+    [
+      "Esc: cancel preparation or close detail"
+    ],
+    [
+      "q: close detail or quit dashboard"
+    ],
+    [
+      "Actions require fresh evidence."
+    ],
+    [
+      "Task-only actions refuse observed"
+    ],
+    [
+      "agents."
+    ]
+  ],
+  "scrollback": []
+}

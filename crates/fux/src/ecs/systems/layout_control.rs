@@ -140,7 +140,7 @@ pub fn apply(
         }
         LayoutAction::Zoom { pane } => zoomed = pane.map(resolve).transpose()?,
         LayoutAction::Swap { pane, target } => {
-            next.swap(resolve(pane)?, resolve(target)?).map_err(error)?
+            next.swap(resolve(pane)?, resolve(target)?).map_err(error)?;
         }
         LayoutAction::Relocate { pane, target, side } => next
             .relocate(resolve(pane)?, resolve(target)?, side)

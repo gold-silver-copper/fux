@@ -1423,7 +1423,7 @@ fn extract_id(frame: &[u8]) -> Option<RequestId> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+    #![allow(clippy::indexing_slicing)]
     use super::*;
 
     #[test]

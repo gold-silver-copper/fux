@@ -1,0 +1,9 @@
+   Compiling fux v0.10.0 (/Users/kisaczka/Desktop/code/fux/crates/fux)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.29s
+     Running tests/ecs.rs (/tmp/fux-multi-machine-build/debug/deps/ecs-6b7fe0723e91fde9)
+
+running 1 test
+test exact_attachment_closes_when_shared_zoom_hides_its_required_pane ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 83 filtered out; finished in 0.02s
+

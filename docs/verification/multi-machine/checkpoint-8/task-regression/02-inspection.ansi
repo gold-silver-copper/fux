@@ -1,0 +1,61 @@
+[?1049h[?25l[2J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:unavailable  first:unavailable  second:unavailable[K
+No observed rows in this scope[K
+first: Connecting[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:unavailable  second:unavailable[K
+No observed rows in this scope[K
+first: Connecting[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:unavailable  second:unavailable[K
+No observed rows in this scope[K
+first: frame deadline passed[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:live  second:live[K
+> first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+  first            open         same: first task[K
+first: passive state unknown; age at fetch <= 3206ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+first / same: preparing action...[K
+[J[HInspection/result | j/k scroll | Esc back[K
+first / same / attempt 9ffe18beb26775f03d8ea52e115ab911[K
+{[K
+  "artifact_captures": [],[K
+  "artifact_policy": {[K
+    "collected_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "artifacts": [],[K
+  "attempt": {[K
+    "id": "9ffe18beb26775f03d8ea52e115ab911",[K
+    "session": "d82a6710bc320f84c6553ca6ada02284",[K
+    "state": "active",[K
+    "task": "same"[K
+  },[K
+  "check_policy": {[K
+    "passed_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "checks": [],[K
+  "generation": 1,[K
+  "launch": null,[K
+  "prompts": [],[K
+  "session": {[K
+    "agent": null,[K
+    "created_ms": 1789335036683,[K
+    "id": "d82a6710bc320f84c6553ca6ada02284",[K
+    "launch": null,[K[J

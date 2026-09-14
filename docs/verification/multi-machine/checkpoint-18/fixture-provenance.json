@@ -1,0 +1,7 @@
+{
+  "fixture": "docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py",
+  "sha256": "7fb6aa3fc58769230a77c9b3afaf5bbf74121611f17610c79af08635f992bda9",
+  "command": "FUX_BIN=/tmp/fux-multi-machine-build/debug/fux ZOR_BIN=/tmp/fux-multi-machine-build/debug/zor KOH_BIN=/tmp/strict-fux-koh-zor/koh-build/debug/koh python3 docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py --restart-controller --artifacts-dir docs/verification/multi-machine/checkpoint-18/controller-restart",
+  "scope": "Graceful controller shutdown and fresh process/PTY restart; not SIGKILL or restart during an in-flight mutation.",
+  "visual_review": "One actual 180x30 PTY frame imported, replayed, rendered and inspected. All three machines live, separate same-name tasks, fresh Local selection, readable controls and state."
+}

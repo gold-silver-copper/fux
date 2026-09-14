@@ -1,0 +1,12 @@
+{
+  "args": [
+    "17-zor-restarted"
+  ],
+  "backend": "betamax-core 0.1.11 / libghostty-vt",
+  "binary": "/tmp/fux-multi-machine-build/debug/zor",
+  "columns": 180,
+  "font": "Noto Sans Mono CJK SC",
+  "font_size": 16,
+  "resize": "live Ghostty terminal and canvas resize; buffers preserved",
+  "rows": 30
+}

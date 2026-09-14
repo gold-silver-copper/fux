@@ -1,0 +1,215 @@
+{
+  "machines": [
+    {
+      "fresh": true,
+      "id": "local",
+      "name": "Local",
+      "observed_age_ms": 479,
+      "problem": null,
+      "view": {
+        "observation_sequence": 5,
+        "problems": [],
+        "rows": [
+          {
+            "age_upper_bound_ms": 887,
+            "attention": true,
+            "detail": "passive state unknown; age at fetch <= 887ms; passive rule none; no identified supported foreground agent",
+            "evidence": {
+              "rule": null,
+              "source": "passive"
+            },
+            "expected": null,
+            "key": "pane:bf4c89373e42ba0bbdb54ebdfcc77d56:default:1:1",
+            "kind": "observation",
+            "label": "default / 1: unclassified",
+            "status": "unknown",
+            "target": null,
+            "task_outcome": null
+          }
+        ],
+        "service_instance": "39337879b7c8c3e811704d1572312294",
+        "stale": false,
+        "state_directory": "/tmp/zmh-ehzkll0p/state/zor",
+        "task_generation": null
+      }
+    },
+    {
+      "fresh": true,
+      "id": "167d826d686767b3361705588eb76c4c",
+      "name": "first",
+      "observed_age_ms": 8,
+      "problem": null,
+      "view": {
+        "observation_sequence": 4,
+        "problems": [],
+        "rows": [
+          {
+            "age_upper_bound_ms": 2019,
+            "attention": true,
+            "detail": "passive state unknown; age at fetch <= 2019ms; passive rule none; no identified supported foreground agent",
+            "evidence": {
+              "rule": null,
+              "source": "passive"
+            },
+            "expected": null,
+            "key": "pane:21d42deefbe25f19092c0778c689df48:agent:2:2",
+            "kind": "observation",
+            "label": "agent / 2: unclassified",
+            "status": "unknown",
+            "target": null,
+            "task_outcome": null
+          },
+          {
+            "age_upper_bound_ms": 2019,
+            "attention": true,
+            "detail": "passive state unknown; age at fetch <= 2019ms; passive rule none; no identified supported foreground agent",
+            "evidence": {
+              "rule": null,
+              "source": "passive"
+            },
+            "expected": null,
+            "key": "pane:21d42deefbe25f19092c0778c689df48:default:1:1",
+            "kind": "observation",
+            "label": "default / 1: unclassified",
+            "status": "unknown",
+            "target": null,
+            "task_outcome": null
+          },
+          {
+            "age_upper_bound_ms": null,
+            "attention": false,
+            "detail": "Recorded task outcome Open; coordination open; attempt Active; agent unclassified",
+            "evidence": null,
+            "expected": {
+              "attempt": "79464ede6bec5e6b7b2e39f5c93b917a",
+              "session": "2ed08594c8d79fa7c329484b9f881cb3",
+              "target": {
+                "instance": "21d42deefbe25f19092c0778c689df48",
+                "origin": {
+                  "stream": 2,
+                  "workspace": "agent"
+                },
+                "pane": 2,
+                "pid": 4209,
+                "runtime": "/private/tmp/zmh-ehzkll0p/first/fux",
+                "stream": 2,
+                "workspace": "agent"
+              },
+              "task": "same"
+            },
+            "key": "task:same",
+            "kind": "task",
+            "label": "same: first task",
+            "status": "open",
+            "target": {
+              "instance": "21d42deefbe25f19092c0778c689df48",
+              "origin": {
+                "stream": 2,
+                "workspace": "agent"
+              },
+              "pane": 2,
+              "pid": 4209,
+              "runtime": "/private/tmp/zmh-ehzkll0p/first/fux",
+              "stream": 2,
+              "workspace": "agent"
+            },
+            "task_outcome": "open"
+          }
+        ],
+        "service_instance": "13c719738133057d1abe6a32669f2623",
+        "stale": false,
+        "state_directory": "/tmp/zmh-ehzkll0p/first/state/zor",
+        "task_generation": 1
+      }
+    },
+    {
+      "fresh": true,
+      "id": "ebdec196fb9c9d9aa8753583d46d8198",
+      "name": "second",
+      "observed_age_ms": 130,
+      "problem": null,
+      "view": {
+        "observation_sequence": 2,
+        "problems": [],
+        "rows": [
+          {
+            "age_upper_bound_ms": 2987,
+            "attention": true,
+            "detail": "passive state unknown; age at fetch <= 2987ms; passive rule none; no identified supported foreground agent",
+            "evidence": {
+              "rule": null,
+              "source": "passive"
+            },
+            "expected": null,
+            "key": "pane:7df2ce577f16d3a0336878cb06653cc4:agent:2:2",
+            "kind": "observation",
+            "label": "agent / 2: unclassified",
+            "status": "unknown",
+            "target": null,
+            "task_outcome": null
+          },
+          {
+            "age_upper_bound_ms": 2987,
+            "attention": true,
+            "detail": "passive state unknown; age at fetch <= 2987ms; passive rule none; no identified supported foreground agent",
+            "evidence": {
+              "rule": null,
+              "source": "passive"
+            },
+            "expected": null,
+            "key": "pane:7df2ce577f16d3a0336878cb06653cc4:default:1:1",
+            "kind": "observation",
+            "label": "default / 1: unclassified",
+            "status": "unknown",
+            "target": null,
+            "task_outcome": null
+          },
+          {
+            "age_upper_bound_ms": null,
+            "attention": false,
+            "detail": "Recorded task outcome Open; coordination open; attempt Active; agent unclassified",
+            "evidence": null,
+            "expected": {
+              "attempt": "0138f34a79e2d8b6009588d1556d194e",
+              "session": "22a1d07b19c81e88b3bbede485fa21ef",
+              "target": {
+                "instance": "7df2ce577f16d3a0336878cb06653cc4",
+                "origin": {
+                  "stream": 2,
+                  "workspace": "agent"
+                },
+                "pane": 2,
+                "pid": 4298,
+                "runtime": "/private/tmp/zmh-ehzkll0p/second/fux",
+                "stream": 2,
+                "workspace": "agent"
+              },
+              "task": "same"
+            },
+            "key": "task:same",
+            "kind": "task",
+            "label": "same: second task",
+            "status": "open",
+            "target": {
+              "instance": "7df2ce577f16d3a0336878cb06653cc4",
+              "origin": {
+                "stream": 2,
+                "workspace": "agent"
+              },
+              "pane": 2,
+              "pid": 4298,
+              "runtime": "/private/tmp/zmh-ehzkll0p/second/fux",
+              "stream": 2,
+              "workspace": "agent"
+            },
+            "task_outcome": "open"
+          }
+        ],
+        "service_instance": "5fc459a898350be4234fcf0aebcd0498",
+        "stale": false,
+        "state_directory": "/tmp/zmh-ehzkll0p/second/state/zor",
+        "task_generation": 1
+      }
+    }
+  ]
+}

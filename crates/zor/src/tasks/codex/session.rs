@@ -173,9 +173,13 @@ mod tests {
                 .context("installed provider has not exposed a rollout path")?;
             let storage = super::super::storage::Storage::capture(rollout)?;
             storage.verify_resumed(rollout)?;
-            println!(
-                "installed thread/start reported a persistent thread and verifiable local storage namespace; no turn sent"
-            );
+            // Intended CLI probe output surface for `task codex-start`.
+            #[allow(clippy::print_stdout)]
+            {
+                println!(
+                    "installed thread/start reported a persistent thread and verifiable local storage namespace; no turn sent"
+                );
+            }
             Ok(())
         })();
         session

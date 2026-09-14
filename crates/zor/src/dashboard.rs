@@ -1,5 +1,7 @@
 //! Zor-owned attention view. Fux provides only terminal and navigation primitives.
 mod attention;
+mod handoff;
+pub mod multi;
 mod terminal;
 use crate::tasks::{model::*, store::Store};
 use anyhow::{Context, Result};
@@ -7,10 +9,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-const MAX_OVERVIEW_ROWS: usize = MAX_TASKS * 2 + crate::tasks::group::MAX_GROUPS;
+pub(crate) const MAX_OVERVIEW_ROWS: usize = MAX_TASKS * 2 + crate::tasks::group::MAX_GROUPS;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Row {
+    #[serde(default)]
+    pub expected: Option<crate::tasks::supervise::Expected>,
     pub key: String,
     pub kind: String,
     pub label: String,
@@ -25,20 +29,20 @@ pub struct Row {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Integration {
-    target: Target,
-    producer: Option<String>,
-    heartbeat: Value,
+pub(crate) struct Integration {
+    pub(crate) target: Target,
+    pub(crate) producer: Option<String>,
+    pub(crate) heartbeat: Value,
 }
 
 #[derive(Serialize, Deserialize)]
-struct NativeIntegration {
-    target: Target,
-    operation: String,
-    producer: String,
-    phase: String,
-    fresh: bool,
-    age_ms: Option<u64>,
+pub(crate) struct NativeIntegration {
+    pub(crate) target: Target,
+    pub(crate) operation: String,
+    pub(crate) producer: String,
+    pub(crate) phase: String,
+    pub(crate) fresh: bool,
+    pub(crate) age_ms: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct View {
@@ -123,6 +127,12 @@ pub(crate) fn overview(root: &Path, runtime: &Path) -> Result<Value> {
             status
         };
         rows.push(Row {
+            expected: Some(crate::tasks::supervise::Expected {
+                task: task.id.clone(),
+                attempt: attempt.id.clone(),
+                session: session.id.clone(),
+                target: session.target.clone(),
+            }),
             evidence: None,
             key: format!("task:{}", task.id),
             kind: "task".into(),
@@ -134,28 +144,28 @@ pub(crate) fn overview(root: &Path, runtime: &Path) -> Result<Value> {
                 || input
                 || (task.outcome == TaskOutcome::Open && (check_failed || capture_failed))
                 || task.outcome == TaskOutcome::Failed,
-            detail: verification
-                .map(|record| {
-                    format!(
-                        "Verified source {}; {} checks, {} artifacts",
-                        record.source,
-                        record.checks.len(),
-                        record.artifacts.len()
-                    )
-                })
-                .unwrap_or_else(|| {
+            detail: verification.map_or_else(
+                || {
                     format!(
                         "Recorded task outcome {:?}; coordination {status}; attempt {:?}; agent {}",
                         task.outcome,
                         attempt.state,
                         session.agent.as_deref().unwrap_or("unclassified")
                     )
-                })
-                + &launch
-                    .and_then(|launch| launch.problem.clone())
-                    .or(worktree_problem)
-                    .map(|problem| format!("; {problem}"))
-                    .unwrap_or_default(),
+                },
+                |record| {
+                    format!(
+                        "Verified source {}; {} checks, {} artifacts",
+                        record.source,
+                        record.checks.len(),
+                        record.artifacts.len()
+                    )
+                },
+            ) + &launch
+                .and_then(|launch| launch.problem.clone())
+                .or(worktree_problem)
+                .map(|problem| format!("; {problem}"))
+                .unwrap_or_default(),
             age_upper_bound_ms: None,
             target: if launch.is_some_and(|launch| launch.phase == LaunchPhase::Closed) {
                 None
@@ -170,6 +180,7 @@ pub(crate) fn overview(root: &Path, runtime: &Path) -> Result<Value> {
         .filter(|launch| !journal.tasks.contains_key(launch.task_id()))
     {
         rows.push(Row {
+            expected: None,
             evidence: None,
             key: format!("launch:{}", launch.id),
             age_upper_bound_ms: None,
@@ -211,6 +222,7 @@ pub(crate) fn overview(root: &Path, runtime: &Path) -> Result<Value> {
             .get("retirement_pending")
             .context("group retirement IDs missing")?;
         rows.push(Row {
+            expected: None,
             key: format!("group:{}", group.id),
             kind: "group".into(),
             label: group.id.clone(),
@@ -336,8 +348,7 @@ fn integrated_state(
     let state = if fresh && correlated {
         claim
             .as_ref()
-            .map(|claim| claim.state.as_str())
-            .unwrap_or("unknown")
+            .map_or("unknown", |claim| claim.state.as_str())
     } else {
         "unknown"
     };
@@ -352,88 +363,40 @@ fn integrated_state(
 }
 
 pub fn snapshot(directory: Option<PathBuf>) -> Result<View> {
-    let began = std::time::Instant::now();
-    let status = crate::service::status(directory.clone())?;
-    let instance = status
-        .get("service_instance")
-        .and_then(Value::as_str)
-        .context("service identity missing")?;
-    let tasks = crate::service::overview(directory, instance)?;
-    let elapsed = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
-    compose(&status, &tasks, elapsed)
+    crate::service::client::Client::local(directory)?
+        .view(std::time::Instant::now() + std::time::Duration::from_secs(6))
 }
 
-fn compose(status: &Value, tasks: &Value, elapsed: u64) -> Result<View> {
-    let instance = status
-        .get("service_instance")
-        .and_then(Value::as_str)
-        .context("service identity missing")?;
-    let value = tasks.get("value").context("task overview missing")?;
-    let runtime: PathBuf =
-        serde_json::from_value(value.get("runtime").context("runtime missing")?.clone())?;
-    let mut rows: Vec<Row> =
-        serde_json::from_value(value.get("rows").context("task rows missing")?.clone())?;
-    anyhow::ensure!(
-        rows.len() <= MAX_OVERVIEW_ROWS,
-        "task overview exceeds row limit"
-    );
-    let integrations: Vec<Integration> = serde_json::from_value(
-        value
-            .get("integrations")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
-    )?;
-    anyhow::ensure!(
-        integrations.len() <= MAX_TASKS,
-        "integration overview limit"
-    );
-    let native_integrations: Vec<NativeIntegration> = serde_json::from_value(
-        value
-            .get("native_integrations")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
-    )?;
-    anyhow::ensure!(
-        native_integrations.len() <= MAX_TASKS,
-        "native integration overview limit"
-    );
-    let stale = status.get("stale").and_then(Value::as_bool).unwrap_or(true) || elapsed > 5000;
-    let observations = status
-        .pointer("/snapshot/observations")
-        .and_then(Value::as_array)
-        .context("observations missing")?;
-    anyhow::ensure!(
-        observations.len() <= crate::watch::MAX_OBSERVED_PANES,
-        "observation row limit exceeded"
-    );
+pub(crate) fn compose_typed(
+    status: &crate::service::client::Snapshot,
+    tasks: &crate::service::client::Overview,
+    elapsed: u64,
+) -> Result<View> {
+    let instance = &status.service_instance;
+    let runtime = &tasks.runtime;
+    let mut rows = tasks.rows.clone();
+    let integrations = &tasks.integrations;
+    let native_integrations = &tasks.native_integrations;
+    let stale = status.stale || elapsed > 5000;
+    let observations = &status.snapshot.observations;
     for observation in observations {
-        let handle = observation
-            .get("handle")
-            .context("observation handle missing")?;
-        let target: Target = serde_json::from_value(json!({"runtime":runtime,
-            "instance":handle["instance"],"workspace":handle["workspace"],"stream":handle["stream"],
-            "pane":handle["pane"],"pid":handle["pid"]}))?;
-        let agent = observation
-            .get("agent")
-            .and_then(Value::as_str)
-            .unwrap_or("unclassified");
-        let mut age = observation
-            .get("age_upper_bound_ms")
-            .and_then(Value::as_u64)
-            .unwrap_or(u64::MAX)
-            .saturating_add(elapsed);
-        let row_stale = stale
-            || age > 5000
-            || observation
-                .get("problem")
-                .is_some_and(|problem| !problem.is_null());
+        let handle = &observation.handle;
+        let target = Target {
+            runtime: runtime.clone(),
+            instance: handle.instance.clone(),
+            workspace: handle.workspace.clone(),
+            stream: handle.stream,
+            pane: handle.pane,
+            pid: handle.pid,
+            origin: None,
+        };
+        let agent = observation.agent.as_deref().unwrap_or("unclassified");
+        let mut age = observation.age_upper_bound_ms.saturating_add(elapsed);
+        let row_stale = stale || age > 5000 || observation.problem.is_some();
         let passive_state = if row_stale {
             "unknown"
         } else {
-            observation
-                .get("state")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
+            &observation.state
         };
         let matching: Vec<_> = integrations
             .iter()
@@ -473,11 +436,8 @@ fn compose(status: &Value, tasks: &Value, elapsed: u64) -> Result<View> {
                 json!({"source":"codex-native","fresh":false,"problem":"multiple native workers share this target"}),
             )
         } else if let [integration] = matching.as_slice() {
-            let (state, heartbeat_age, mut evidence) = integrated_state(
-                integration,
-                observation.get("input_sequence").and_then(Value::as_u64),
-                elapsed,
-            );
+            let (state, heartbeat_age, mut evidence) =
+                integrated_state(integration, Some(observation.input_sequence), elapsed);
             if let Some(heartbeat_age) = heartbeat_age {
                 age = age.max(heartbeat_age);
             }
@@ -489,7 +449,7 @@ fn compose(status: &Value, tasks: &Value, elapsed: u64) -> Result<View> {
         } else if matching.is_empty() {
             (
                 passive_state.into(),
-                json!({"source":"passive","rule":observation.get("rule")}),
+                json!({"source":"passive","rule":observation.rule}),
             )
         } else {
             (
@@ -508,6 +468,7 @@ fn compose(status: &Value, tasks: &Value, elapsed: u64) -> Result<View> {
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         rows.push(Row {
+            expected: None,
             key: format!(
                 "pane:{}:{}:{}:{}",
                 target.instance, target.workspace, target.stream, target.pane
@@ -519,19 +480,16 @@ fn compose(status: &Value, tasks: &Value, elapsed: u64) -> Result<View> {
             task_outcome: None,
             attention: state == "blocked"
                 || ((!matching.is_empty() || !native_matching.is_empty()) && state == "unknown")
-                || observation.get("problem").is_some_and(|v| !v.is_null()),
+                || observation.problem.is_some(),
             detail: format!(
                 "{} state {}; age at fetch <= {}ms; passive rule {}; {}",
                 source,
                 state,
                 age,
+                observation.rule.as_deref().unwrap_or("none"),
                 observation
-                    .get("rule")
-                    .and_then(Value::as_str)
-                    .unwrap_or("none"),
-                observation
-                    .get("problem")
-                    .and_then(Value::as_str)
+                    .problem
+                    .as_deref()
                     .unwrap_or("agent observation; not task completion")
             ),
             target: if row_stale || target.pid.is_none() {
@@ -544,17 +502,16 @@ fn compose(status: &Value, tasks: &Value, elapsed: u64) -> Result<View> {
     }
     rows.sort_by(|a, b| (!a.attention, &a.kind, &a.key).cmp(&(!b.attention, &b.kind, &b.key)));
     let problems = status
-        .pointer("/snapshot/problems")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flat_map(|map| map.iter())
+        .snapshot
+        .problems
+        .iter()
         .map(|(key, value)| format!("{key}: {value}"))
         .collect();
     Ok(View {
-        service_instance: instance.into(),
-        observation_sequence: status.get("sequence").and_then(Value::as_u64).unwrap_or(0),
-        task_generation: value["generation"].as_u64(),
-        state_directory: serde_json::from_value(value["state_directory"].clone())?,
+        service_instance: instance.clone(),
+        observation_sequence: status.sequence,
+        task_generation: tasks.generation,
+        state_directory: tasks.state_directory.clone(),
         stale,
         rows,
         problems,
@@ -573,6 +530,54 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compose(status: &Value, tasks: &Value, elapsed: u64) -> Result<View> {
+        let mut status = status.clone();
+        status
+            .as_object_mut()
+            .context("status")?
+            .entry("published_age_ms")
+            .or_insert(Value::Null);
+        let observations = status
+            .pointer_mut("/snapshot/observations")
+            .and_then(Value::as_array_mut)
+            .context("observations")?;
+        for row in observations {
+            let row = row.as_object_mut().context("observation")?;
+            for (key, value) in [
+                ("revision", json!(0)),
+                ("input_sequence", json!(0)),
+                ("detected_pid", Value::Null),
+                ("rule", Value::Null),
+            ] {
+                row.entry(key).or_insert(value);
+            }
+        }
+        let snapshot = status
+            .get_mut("snapshot")
+            .and_then(Value::as_object_mut)
+            .context("snapshot")?;
+        for (key, value) in [
+            ("rules_generation", json!(0)),
+            ("scan_duration_ms", json!(0)),
+            ("event_streams", json!(0)),
+            ("event_failures", json!(0)),
+            ("removed", json!([])),
+        ] {
+            snapshot.entry(key).or_insert(value);
+        }
+        let mut overview = tasks.get("value").context("overview")?.clone();
+        overview
+            .as_object_mut()
+            .context("overview object")?
+            .entry("integrations")
+            .or_insert(json!([]));
+        compose_typed(
+            &serde_json::from_value(status)?,
+            &serde_json::from_value(overview)?,
+            elapsed,
+        )
+    }
 
     #[test]
     fn codex_attention_requires_fresh_evidence_and_current_pane_observation() -> Result<()> {

@@ -1,3 +1,6 @@
+//! The opt-in `wrap` PTY wrapper emits its own `zor:` diagnostics to stderr; that is this
+//! module's intended output surface. stdout stays clean for the wrapped program.
+#![allow(clippy::print_stderr)]
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySystem};
 use std::{
@@ -912,7 +915,6 @@ fn pty_size(size: crate::platform::TerminalSize) -> portable_pty::PtySize {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod signal_tests {
     use super::{
         MAX_PTY_COLS, MAX_PTY_ROWS, clamp_size, forward_signal_with_retry,

@@ -289,7 +289,6 @@ pub fn winsize(fd: i32) -> super::TerminalSize {
 mod tests {
     use super::*;
     #[test]
-    #[allow(clippy::panic)]
     fn raw_guard_restores_terminal_attributes() {
         // Phase Z §4: raw mode is restored when its guard drops.
         unsafe {

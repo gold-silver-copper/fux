@@ -1,0 +1,68 @@
+[?1049h[?25l[2J[Hzor dashboard | resume-host | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  U: status  e: error  R: reload  q: quit[K
+Local:unavailable  resume-host:unavailable[K
+No observed rows in this scope[K
+resume-host: Connecting[K
+[J[Hzor dashboard | resume-host | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  U: status  e: error  R: reload  q: quit[K
+Local:unavailable  resume-host:live[K
+> resume-host      unknown      default / 1: unclassified[K
+  resume-host      open         worker: resume attachment fixture[K
+resume-host: passive state unknown; age at fetch <= 2063ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | resume-host | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  U: status  e: error  R: reload  q: quit[K
+Local:unavailable  resume-host:live[K
+  resume-host      unknown      default / 1: unclassified[K
+> resume-host      open         worker: resume attachment fixture[K
+resume-host: Recorded task outcome Open; coordination open; attempt Finished; agent unclassified[K
+[J[HResume | Enter submit | Esc cancel[K
+Resume selected task[K
+Type: OPERATION_ID FUX_INSTANCE[K
+> [K
+Backspace: edit[K
+Keep the stable operation ID to reconcile an unknown outcome.[K
+Service checks provider/session eligibility; no prompt replay.[K
+[J[HResume | Enter submit | Esc cancel[K
+Resume selected task[K
+Type: OPERATION_ID FUX_INSTANCE[K
+> resume-one a5d2897d8826050b0dab709bca67e3aa[K
+Backspace: edit[K
+Keep the stable operation ID to reconcile an unknown outcome.[K
+Service checks provider/session eligibility; no prompt replay.[K
+[J[Hzor dashboard | resume-host | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  U: status  e: error  R: reload  q: quit[K
+Local:unavailable  resume-host:live[K
+  resume-host      unknown      default / 1: unclassified[K
+> resume-host      open         worker: resume attachment fixture[K
+resume-host: Recorded task outcome Open; coordination open; attempt Finished; agent unclassified[K
+resume-host / worker / resume resume-one / fux a5d2897d8826050b0dab709bca67e3aa: preparing action...[K
+[J[HInspection/result | j/k scroll | Esc back[K
+resume-host / worker / attempt 70c0a3e6679c8467cc37e946cf85231b[K
+{[K
+  "artifact_captures": [],[K
+  "artifact_policy": {[K
+    "collected_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "artifacts": [],[K
+  "attempt": {[K
+    "id": "631affd9bab8180016608b2a75629dbf",[K
+    "session": "04368bd543a6924e9228f408c428f7fd",[K
+    "state": "finished",[K
+    "task": "worker"[K
+  },[K
+  "check_policy": {[K
+    "passed_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "checks": [],[K
+  "generation": 21,[K
+  "launch": {[K
+    "agent": null,[K
+    "argv": [[K
+      "/opt/homebrew/Cellar/node/24.10.0/bin/node",[K
+      "/tmp/zresume-attach-rs-TO2wl1/worker.mjs",[K
+      "--session",[K
+      "fixture-root"[K[J[Hzor dashboard | resume-host | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  u: resume  U: status  e: error  R: reload  q: quit[K
+Local:unavailable  resume-host:live[K
+  resume-host      unknown      default / 1: unclassified[K
+  resume-host      open         worker: resume attachment fixture[K
+[J[?25h[?1049l

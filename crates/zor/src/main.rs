@@ -1,3 +1,6 @@
+// This binary is the CLI output surface: it prints command results as JSON to stdout and
+// diagnostics to stderr. The library modules stay strict; only this entrypoint may print.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
@@ -15,9 +18,137 @@ fn main() -> ExitCode {
 
 fn run(mut cli: cli::Cli) -> anyhow::Result<u8> {
     let Some(action) = cli.action.take() else {
+        anyhow::ensure!(
+            cli.machine
+                .as_deref()
+                .is_none_or(|machine| machine.eq_ignore_ascii_case("local")),
+            "remote machine selection requires a supported command"
+        );
         return wrap(&cli, Vec::new());
     };
+    if let (
+        Some(selector),
+        cli::Action::Dashboard {
+            all_machines: false,
+            once: false,
+            directory,
+            bell,
+            notify,
+            notification_command,
+        },
+    ) = (cli.machine.as_deref(), &action)
+    {
+        anyhow::ensure!(
+            cli.state_directory.is_none(),
+            "machine dashboard observes running services; cannot override --state-directory"
+        );
+        anyhow::ensure!(
+            selector.eq_ignore_ascii_case("local") || directory.is_none(),
+            "remote dashboard cannot select a local --directory"
+        );
+        let catalog = zor::machines::Catalog::load(&zor::machines::Catalog::path(
+            cli.machines_file.clone(),
+        )?)?;
+        let scope = if selector.eq_ignore_ascii_case("local") {
+            "local".to_owned()
+        } else {
+            catalog.resolve(selector)?.id.clone()
+        };
+        anyhow::ensure!(
+            std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+            "dashboard requires a terminal; use dashboard --once for JSON"
+        );
+        let sources = zor::dashboard::multi::sources(
+            directory.clone(),
+            catalog,
+            cli.koh_binary.clone().unwrap_or_else(|| "koh".into()),
+        )?;
+        return zor::dashboard::multi::run(
+            sources,
+            false,
+            cli.fux_binary.clone().unwrap_or_else(|| "fux".into()),
+            Some(scope),
+            zor::dashboard::multi::Reload {
+                catalog_path: zor::machines::Catalog::path(cli.machines_file.clone())?,
+                directory: directory.clone(),
+                koh_binary: cli.koh_binary.clone().unwrap_or_else(|| "koh".into()),
+            },
+            zor::dashboard::multi::Notices {
+                bell: *bell,
+                notify: *notify,
+                command: notification_command.clone(),
+            },
+        );
+    }
+    if let Some(machine) = cli.machine.as_deref()
+        && !machine.eq_ignore_ascii_case("local")
+    {
+        return remote_command(&cli, machine, action);
+    }
     match action {
+        cli::Action::Machine { action } => {
+            use zor::machines::Catalog;
+            let path = Catalog::path(cli.machines_file)?;
+            let value = match action {
+                cli::MachineAction::ResumeIntents => serde_json::to_value(
+                    zor::machines::intents::list(&zor::machines::intents::path(&path)?)?,
+                )?,
+                cli::MachineAction::List => {
+                    let catalog = Catalog::load(&path)?;
+                    serde_json::json!({"version":catalog.version,"local":{"id":"local","name":"Local"},"machines":catalog.machines})
+                }
+                cli::MachineAction::Inspect { machine } => {
+                    serde_json::to_value(Catalog::load(&path)?.resolve(&machine)?)?
+                }
+                cli::MachineAction::Add { name, binding } => {
+                    let binding = binding.value()?;
+                    serde_json::to_value(Catalog::edit(&path, |catalog| {
+                        catalog.add(name, binding)
+                    })?)?
+                }
+                cli::MachineAction::Rename { machine, name } => Catalog::edit(&path, |catalog| {
+                    let id = catalog.resolve(&machine)?.id.clone();
+                    catalog.rename(&id, name)?;
+                    serde_json::to_value(catalog.resolve(&id)?).map_err(Into::into)
+                })?,
+                cli::MachineAction::Remove { machine } => {
+                    serde_json::to_value(Catalog::edit(&path, |catalog| catalog.remove(&machine))?)?
+                }
+                cli::MachineAction::Control {
+                    machine,
+                    clear,
+                    binding,
+                } => {
+                    let binding = binding.value()?;
+                    anyhow::ensure!(
+                        clear || binding.is_some(),
+                        "provide --endpoint and --key-file, or --clear"
+                    );
+                    Catalog::edit(&path, |catalog| {
+                        catalog.control(&machine, binding)?;
+                        serde_json::to_value(catalog.resolve(&machine)?).map_err(Into::into)
+                    })?
+                }
+                cli::MachineAction::Bind {
+                    machine,
+                    workspace,
+                    clear,
+                    binding,
+                } => {
+                    let binding = binding.value()?;
+                    anyhow::ensure!(
+                        clear || binding.is_some(),
+                        "provide --endpoint and --key-file, or --clear"
+                    );
+                    Catalog::edit(&path, |catalog| {
+                        catalog.bind(&machine, workspace, binding)?;
+                        serde_json::to_value(catalog.resolve(&machine)?).map_err(Into::into)
+                    })?
+                }
+            };
+            println!("{}", serde_json::to_string(&value)?);
+            Ok(0)
+        }
         cli::Action::Command(command) => wrap(&cli, command),
         cli::Action::CodexWorker { task, argv } => {
             let root = zor::tasks::state_root(cli.state_directory)?;
@@ -77,7 +208,7 @@ fn run(mut cli: cli::Cli) -> anyhow::Result<u8> {
                         cwd,
                         worktree,
                         argv,
-                        runtime: runtime.map(Ok).unwrap_or_else(zor::fux::runtime)?,
+                        runtime: runtime.map_or_else(zor::fux::runtime, Ok)?,
                         agent: Some("codex".into()),
                         integration: None,
                     },
@@ -227,9 +358,12 @@ fn run(mut cli: cli::Cli) -> anyhow::Result<u8> {
                         workspace,
                         cwd,
                         worktree,
-                        runtime: runtime.map(Ok).unwrap_or_else(zor::fux::runtime)?,
+                        runtime: runtime.map_or_else(zor::fux::runtime, Ok)?,
                         agent: cli.agent,
                     },
+                )?,
+                cli::TaskAction::ResumeStatus { id, operation } => serde_json::to_value(
+                    zor::tasks::resume::operation_status(&root, &id, &operation)?,
                 )?,
                 cli::TaskAction::Resume {
                     id,
@@ -254,7 +388,7 @@ fn run(mut cli: cli::Cli) -> anyhow::Result<u8> {
                         instance,
                         workspace,
                         pane,
-                        runtime: runtime.map(Ok).unwrap_or_else(zor::fux::runtime)?,
+                        runtime: runtime.map_or_else(zor::fux::runtime, Ok)?,
                         agent: cli.agent,
                     },
                 )?,
@@ -442,6 +576,7 @@ fn run(mut cli: cli::Cli) -> anyhow::Result<u8> {
             Ok(0)
         }
         cli::Action::Dashboard {
+            all_machines,
             directory,
             once,
             bell,
@@ -452,6 +587,32 @@ fn run(mut cli: cli::Cli) -> anyhow::Result<u8> {
                 once || (std::io::stdin().is_terminal() && std::io::stdout().is_terminal()),
                 "dashboard requires a terminal; use dashboard --once for JSON"
             );
+            if all_machines {
+                let catalog = zor::machines::Catalog::load(&zor::machines::Catalog::path(
+                    cli.machines_file.clone(),
+                )?)?;
+                let sources = zor::dashboard::multi::sources(
+                    directory.clone(),
+                    catalog,
+                    cli.koh_binary.clone().unwrap_or_else(|| "koh".into()),
+                )?;
+                return zor::dashboard::multi::run(
+                    sources,
+                    once,
+                    cli.fux_binary.unwrap_or_else(|| "fux".into()),
+                    None,
+                    zor::dashboard::multi::Reload {
+                        catalog_path: zor::machines::Catalog::path(cli.machines_file.clone())?,
+                        directory,
+                        koh_binary: cli.koh_binary.unwrap_or_else(|| "koh".into()),
+                    },
+                    zor::dashboard::multi::Notices {
+                        bell,
+                        notify,
+                        command: notification_command,
+                    },
+                );
+            }
             zor::service::ensure(
                 directory.clone(),
                 &cli.rules,
@@ -661,4 +822,226 @@ impl zor::rules::view::ScreenView for FixtureView {
     fn size(&self) -> (u16, u16) {
         (u16::try_from(self.lines.len()).unwrap_or(u16::MAX), 0)
     }
+}
+
+/// Remote selection is handled before any local task store or service auto-start path.
+fn remote_command(cli: &cli::Cli, selector: &str, action: cli::Action) -> anyhow::Result<u8> {
+    use anyhow::Context;
+    enum Read {
+        Status,
+        Dashboard,
+        List,
+        Inspect(String),
+        Result(String),
+        Supervise(String, zor::tasks::supervise::Action),
+        ResumeStatus {
+            id: String,
+            operation: String,
+        },
+        Resume {
+            id: String,
+            operation: String,
+            instance: String,
+        },
+    }
+    let read = match action {
+        cli::Action::Status {
+            directory: None,
+            start: false,
+        } => Read::Status,
+        cli::Action::Dashboard {
+            directory: None,
+            once: true,
+            notify: false,
+            notification_command: None,
+            ..
+        } => Read::Dashboard,
+        cli::Action::Task {
+            action: cli::TaskAction::ResumeStatus { id, operation },
+        } => Read::ResumeStatus { id, operation },
+        cli::Action::Task {
+            action:
+                cli::TaskAction::Resume {
+                    id,
+                    operation,
+                    instance,
+                },
+        } => Read::Resume {
+            id,
+            operation,
+            instance,
+        },
+        cli::Action::Task {
+            action: cli::TaskAction::List,
+        } => Read::List,
+        cli::Action::Task {
+            action: cli::TaskAction::Inspect { id },
+        } => Read::Inspect(id),
+        cli::Action::Task {
+            action: cli::TaskAction::Result { id },
+        } => Read::Result(id),
+        cli::Action::Task {
+            action: cli::TaskAction::Cancel { id },
+        } => Read::Supervise(id, zor::tasks::supervise::Action::Cancel),
+        cli::Action::Task {
+            action: cli::TaskAction::Stop { id },
+        } => Read::Supervise(id, zor::tasks::supervise::Action::Stop),
+        cli::Action::Task {
+            action: cli::TaskAction::LaunchReconcile { id },
+        } => Read::Supervise(id, zor::tasks::supervise::Action::Reconcile),
+        _ => anyhow::bail!(
+            "this command is not yet supported for a remote machine; no local fallback was attempted"
+        ),
+    };
+    anyhow::ensure!(
+        cli.state_directory.is_none(),
+        "remote commands cannot select a local --state-directory"
+    );
+    let catalog =
+        zor::machines::Catalog::load(&zor::machines::Catalog::path(cli.machines_file.clone())?)?;
+    let machine = catalog.resolve(selector)?;
+    let binding = machine
+        .control
+        .as_ref()
+        .context("machine has no control binding; use `zor machine control`")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut gateway = zor::machines::connection::Gateway::start(
+        binding,
+        cli.koh_binary
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new("koh")),
+        deadline.min(std::time::Instant::now() + std::time::Duration::from_secs(4)),
+    )?;
+    let client = gateway.client()?;
+    let result = (|| -> anyhow::Result<serde_json::Value> {
+        let capabilities = client.capabilities(deadline)?;
+        anyhow::ensure!(
+            capabilities.features.contains(match &read {
+                Read::Dashboard => "overview-v1",
+                Read::Status => "snapshot-v1",
+                Read::Supervise(..) => "task-supervise-v1",
+                Read::Resume { .. } => "task-resume-v1",
+                Read::ResumeStatus { .. } => "task-resume-status-v1",
+                _ => "task-read-v1",
+            }),
+            "remote service does not support this read operation"
+        );
+        let machine_id = machine.id.clone();
+        let machine = serde_json::json!({"id":machine.id,"name":machine.name});
+        if let Read::ResumeStatus { id, operation } = &read {
+            let instance = &capabilities.service_instance;
+            let value = client.task_resume_status(instance, id, operation, deadline)?;
+            return Ok(
+                serde_json::json!({"machine":machine,"service_instance":instance,"value":value}),
+            );
+        }
+        if let Read::Resume {
+            id,
+            operation,
+            instance: fux_instance,
+        } = &read
+        {
+            anyhow::ensure!(
+                capabilities.features.contains("task-read-v1"),
+                "service lacks guarded task inspection"
+            );
+            let instance = &capabilities.service_instance;
+            let expected = client.task_inspect(instance, id, deadline)?.expected()?;
+            zor::machines::intents::record(
+                &zor::machines::intents::path(&zor::machines::Catalog::path(
+                    cli.machines_file.clone(),
+                )?)?,
+                zor::machines::intents::ResumeIntent {
+                    machine: machine_id,
+                    endpoint: binding.endpoint.clone(),
+                    service_instance: instance.clone(),
+                    operation: operation.clone(),
+                    fux_instance: fux_instance.clone(),
+                    expected: expected.clone(),
+                },
+            )?;
+            let value =
+                client.task_resume(instance, &expected, operation, fux_instance, deadline)?;
+            return Ok(
+                serde_json::json!({"machine":machine,"service_instance":instance,"operation":operation,"value":value}),
+            );
+        }
+        if let Read::Supervise(id, action) = &read {
+            anyhow::ensure!(
+                capabilities.features.contains("task-read-v1"),
+                "service lacks guarded task inspection"
+            );
+            let instance = &capabilities.service_instance;
+            let inspection = client.task_inspect(instance, id, deadline)?;
+            inspection.check_action(*action)?;
+            let expected = inspection.expected()?;
+            let value = client.task_supervise(instance, &expected, *action, deadline)?;
+            return Ok(
+                serde_json::json!({"machine":machine,"service_instance":instance,"value":value}),
+            );
+        }
+        if let Read::List | Read::Inspect(_) | Read::Result(_) = &read {
+            let instance = &capabilities.service_instance;
+            let value = match &read {
+                Read::List => serde_json::to_value(client.task_list(instance, deadline)?)?,
+                Read::Inspect(id) => {
+                    serde_json::to_value(client.task_inspect(instance, id, deadline)?)?
+                }
+                Read::Result(id) => {
+                    serde_json::to_value(client.task_result(instance, id, deadline)?)?
+                }
+                _ => anyhow::bail!("invalid task read"),
+            };
+            return Ok(
+                serde_json::json!({"machine":machine,"service_instance":instance,"value":value}),
+            );
+        }
+        if matches!(read, Read::Dashboard) {
+            let view = client.view(deadline)?;
+            anyhow::ensure!(
+                view.service_instance == capabilities.service_instance,
+                "service restarted during read; refresh required"
+            );
+            Ok(serde_json::json!({"machine":machine,"view":view}))
+        } else {
+            let snapshot = client.snapshot(deadline)?;
+            anyhow::ensure!(
+                snapshot.service_instance == capabilities.service_instance,
+                "service restarted during read; refresh required"
+            );
+            Ok(serde_json::json!({"machine":machine,"snapshot":snapshot}))
+        }
+    })();
+    if result.is_err() {
+        // The status writer follows the socket close. A bounded refresh may reveal its reason;
+        // failure to obtain it stays unknown, never an inferred authorization verdict.
+        for _ in 0..5 {
+            let _ = gateway.poll();
+            if gateway.latest().is_some_and(|status| {
+                matches!(
+                    status.state,
+                    zor::machines::connection::State::Unauthorized
+                        | zor::machines::connection::State::SessionExpired
+                        | zor::machines::connection::State::Rejected
+                        | zor::machines::connection::State::Unavailable
+                )
+            }) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    let value = result.with_context(|| {
+        format!(
+            "machine {} ({}), transport {}",
+            machine.name,
+            machine.id,
+            gateway.transport_description()
+        )
+    })?;
+    println!("{}", serde_json::to_string(&value)?);
+    Ok(0)
 }

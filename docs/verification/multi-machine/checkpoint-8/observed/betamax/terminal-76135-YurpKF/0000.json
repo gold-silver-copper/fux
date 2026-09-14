@@ -1,0 +1,79 @@
+{
+  "size": [
+    180,
+    30
+  ],
+  "total_rows": 30,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 0,
+    "y": 19,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "Inspection/result | j/k scroll | Esc back\nfirst / observed agent / pane 3\n{\n  \"handle\": {\n    \"instance\": \"f631d2076c7a7854f06586da84a2e771\",\n    \"workspace\": \"agent\",\n    \"stream\": 2,\n    \"pane\": 3,\n    \"pid\": 49400\n  },\n  \"age_upper_bound_ms\": 1396,\n  \"revision\": 2,\n  \"input_sequence\": 0,\n  \"agent\": \"codex\",\n  \"detected_pid\": 49400,\n  \"state\": \"unknown\",\n  \"rule\": null,\n  \"problem\": null\n}\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "Inspection/result | j/k scroll | Esc back"
+    ],
+    [
+      "first / observed agent / pane 3"
+    ],
+    [
+      "{"
+    ],
+    [
+      "  \"handle\": {"
+    ],
+    [
+      "    \"instance\": \"f631d2076c7a7854f06586da84a2e771\","
+    ],
+    [
+      "    \"workspace\": \"agent\","
+    ],
+    [
+      "    \"stream\": 2,"
+    ],
+    [
+      "    \"pane\": 3,"
+    ],
+    [
+      "    \"pid\": 49400"
+    ],
+    [
+      "  },"
+    ],
+    [
+      "  \"age_upper_bound_ms\": 1396,"
+    ],
+    [
+      "  \"revision\": 2,"
+    ],
+    [
+      "  \"input_sequence\": 0,"
+    ],
+    [
+      "  \"agent\": \"codex\","
+    ],
+    [
+      "  \"detected_pid\": 49400,"
+    ],
+    [
+      "  \"state\": \"unknown\","
+    ],
+    [
+      "  \"rule\": null,"
+    ],
+    [
+      "  \"problem\": null"
+    ],
+    [
+      "}"
+    ]
+  ],
+  "scrollback": []
+}

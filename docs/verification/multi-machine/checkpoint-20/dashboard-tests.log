@@ -1,0 +1,12 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.53s
+     Running unittests src/lib.rs (/tmp/fux-multi-machine-build/debug/deps/zor-bf4fea0c3b0fc4dc)
+
+running 4 tests
+test dashboard::multi::tests::resume_form_requires_explicit_bounded_identifiers ... ok
+test dashboard::multi::tests::narrow_resume_keeps_input_tail_visible ... ok
+test dashboard::multi::tests::machine_scope_and_narrow_render_keep_unavailability_visible ... ok
+test dashboard::multi::tests::narrow_errors_and_detail_tails_are_reachable_without_horizontal_clipping ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.00s
+

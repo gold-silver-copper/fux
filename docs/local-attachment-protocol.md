@@ -14,7 +14,8 @@ seconds, and writes have a five-second deadline. A partial frame may only be aba
 with its connection. At most 64 attachments (including handshakes) may occupy one workspace.
 
 The client sends `hello` first and must receive the server `hello` before it enters raw mode. The
-protocol carries no version number: the hello is the terminal size, and a server that answers it
+protocol carries no version number: the hello declares terminal size and an optional exact
+initial target. The owner loop validates admission before sending its hello. A server that answers it
 with anything but a hello is reported as an error naming the session server and left running
 (see the control protocol's "Compatibility" section).
 
@@ -29,6 +30,32 @@ with anything but a hello is reported as an error naming the session server and 
 | `{"type":"view","request":9,"pane":1,"offset":40}` | private history read: the pane's viewport starting `offset` rows above the live screen |
 | `{"type":"resize","rows":40,"columns":120}` | the viewer's new terminal size |
 | `{"type":"detach"}` | release the viewport; nothing after it is applied |
+
+## Exact process attachment
+
+An optional `initial` object on hello contains `instance`, `workspace`, `stream`, `pane` and
+`pid`. The owner checks all five against the live pane and the authorized workspace socket.
+The selected pane must accept input and belong to its current layout. A pane hidden by another
+pane's shared zoom is refused; attachment does not change shared layout/zoom state. Missing,
+replaced, moved or incompatible targets receive an error before an accepted hello.
+
+The new viewer selects that pane privately, without changing other viewers or the workspace's
+default focus. Its required process remains associated with the attachment. Process exit,
+loss of input eligibility, a shared zoom hiding the target, or workspace-route changes close
+this exact attachment; queued input
+cannot fall back to a sibling pane. The supervisor must re-resolve and start a fresh attachment.
+Ordinary attachments without `initial` retain their existing navigation/fallback behavior.
+
+The CLI exposes the same contract:
+
+```sh
+fux attach --socket /absolute/path/proxy.sock \
+  --target-instance INSTANCE --target-workspace WORKSPACE --target-stream STREAM \
+  --target-pane PANE --target-pid PID
+```
+
+All five target flags are required together. This is a generic process/viewer contract; fux
+does not interpret tasks or agents and koh does not inspect attachment frames.
 
 ## Server messages (external variant tag)
 
@@ -130,3 +157,17 @@ policy; it does not inherit a non-default value. Coalescing retains the newer me
 change publishes an update even when the grid sequence has not advanced. Ordinary output with
 unchanged default policy adds no serialized policy field. Viewer mouse routing uses this shared
 pane policy; Alt-right-click remains an explicit fux menu override in every mode.
+
+## Supervised viewer exit report
+
+`fux attach --socket PATH --report-exit` emits one JSON line to stderr after a
+successful viewer return: `{"fux_attach_exit":1,"code":null,"detached":true}`.
+`detached` is true only when the viewer requested detach and received a normal
+server exit with no process exit code. Signals, local input closure and unrelated
+server exits do not establish detach. Errors still produce a failing process exit.
+The report contains no terminal payload, task identity or remote policy.
+
+Supervisors must check the child exit status as well as the final report. Zor uses
+this evidence to distinguish requested detach from transport failure when closing
+the local viewer socket races koh's final write. A missing report is not detach
+evidence, and expiry must still be classified through transport status.

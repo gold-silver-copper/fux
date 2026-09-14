@@ -259,7 +259,7 @@ pub fn run(root: &Path, request: Run) -> Result<Value> {
         match Store::open(root) {
             Ok(store) => break store,
             Err(error) if error.is::<Busy>() && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20))
+                std::thread::sleep(Duration::from_millis(20));
             }
             Err(error) => {
                 return Err(

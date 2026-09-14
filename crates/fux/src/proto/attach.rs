@@ -18,6 +18,17 @@ pub const MAX_SERVER_FRAME: usize = 16 << 20;
 pub const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_VIEWERS_PER_WORKSPACE: usize = 64;
 
+/// An initial live process selection within the attachment socket's authorized workspace.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialTarget {
+    pub instance: String,
+    pub workspace: String,
+    pub stream: u64,
+    pub pane: PaneId,
+    pub pid: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ClientMessage {
@@ -25,6 +36,8 @@ pub enum ClientMessage {
     Hello {
         rows: u16,
         columns: u16,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        initial: Option<InitialTarget>,
     },
     /// Byte-exact input for the viewer's focused pane.
     Input {

@@ -358,7 +358,6 @@ impl Events {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -544,7 +543,7 @@ mod tests {
                         if e.kind() == std::io::ErrorKind::WouldBlock
                             && Instant::now() < deadline =>
                     {
-                        std::thread::sleep(Duration::from_millis(1))
+                        std::thread::sleep(Duration::from_millis(1));
                     }
                     Err(e) => return Err(e.into()),
                 }
@@ -607,7 +606,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod overdue_tests {
     use super::*;
     use std::io::Write;
@@ -627,7 +625,7 @@ mod overdue_tests {
                             if e.kind() == std::io::ErrorKind::WouldBlock
                                 && Instant::now() < end =>
                         {
-                            std::thread::sleep(Duration::from_millis(1))
+                            std::thread::sleep(Duration::from_millis(1));
                         }
                         Err(e) => return Err(e.into()),
                     }

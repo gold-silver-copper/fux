@@ -359,7 +359,7 @@ impl HintPanel {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::panic, clippy::string_slice)]
+#[allow(clippy::indexing_slicing, clippy::string_slice)]
 mod tests {
     use super::*;
 

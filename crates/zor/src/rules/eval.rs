@@ -251,7 +251,6 @@ mod tests {
             (10, 20)
         }
     }
-    #[allow(clippy::panic)]
     fn set() -> RuleSet {
         load(
             Path::new("test.toml"),

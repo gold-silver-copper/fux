@@ -13,6 +13,30 @@ pub fn record(binary: &Path, rows: u16, columns: u16, bytes: &[u8], label: &str)
     Ok(())
 }
 
+/// Import a bounded raw PTY recording, preserving the original control sequences.
+/// Unlike optional scenario capture, an explicitly requested import requires Betamax.
+pub fn import_recording(
+    binary: &Path,
+    recording: &Path,
+    rows: u16,
+    columns: u16,
+    label: &str,
+) -> Result<()> {
+    use std::io::Read;
+    anyhow::ensure!(rows > 0 && columns > 0, "recording grid must be nonzero");
+    let mut bytes = Vec::new();
+    std::fs::File::open(recording)?
+        .take(64 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 64 * 1024 * 1024, "recording exceeds 64 MiB");
+    let mut capture = Capture::new(binary, &[label], rows, columns)?.ok_or_else(|| {
+        anyhow::anyhow!("recording import requires the betamax feature and FUX_BETAMAX_DIR")
+    })?;
+    capture.feed(&bytes)?;
+    capture.checkpoint(label)?;
+    Ok(())
+}
+
 /// Index all captured frames without requiring the native rendering feature.
 pub fn report(directory: &Path) -> Result<()> {
     use std::fs;

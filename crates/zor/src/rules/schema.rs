@@ -256,7 +256,7 @@ fn validate_gate(
             path.display()
         )));
     }
-    for value in gate.contains.iter_mut() {
+    for value in &mut gate.contains {
         if value.len() > 512 {
             return Err(Error(format!(
                 "{}: rule {rule_id}: matcher exceeds 512 bytes",

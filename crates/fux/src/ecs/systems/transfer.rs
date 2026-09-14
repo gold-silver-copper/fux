@@ -412,7 +412,7 @@ pub fn across_workspaces(
         }
     };
     let admission = following.map_or(Ok(()), |viewer| {
-        super::requests::check_viewer_admission(world, viewer, destination, id)
+        super::requests_control::check_viewer_admission(world, viewer, destination, id)
     });
     let result = admission.and_then(|()| {
         move_pane(
@@ -446,8 +446,7 @@ pub fn across_workspaces(
                 .unwrap_or_default();
             let stream = world
                 .get::<crate::ecs::events::EventLog>(destination)
-                .map(|log| log.cursor().stream)
-                .unwrap_or(0);
+                .map_or(0, |log| log.cursor().stream);
             crate::ecs::support::effect(
                 world,
                 crate::ecs::messages::Effect::WorkspaceOpened { name, stream },

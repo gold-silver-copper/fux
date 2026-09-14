@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-4/routed-tasks.py", line 59, in <module>
+    pane = listing['workspaces'][0]['tabs'][0]['panes'][0]
+           ~~~~~~~^^^^^^^^^^^^^^
+KeyError: 'workspaces'

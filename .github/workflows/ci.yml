@@ -176,6 +176,24 @@ jobs:
 
       - name: Verify standalone koh shell and generic admission
         run: cargo test --manifest-path references/koh/Cargo.toml --locked --test pty --test admission --test e2e_loopback
+      # Multi-machine supervision composes the exact fux/zor binaries above with the clean
+      # published koh executable: Local plus two isolated remote stacks under a controlling
+      # PTY, exact attachment/return, unauthorized and unreachable hosts, plus guarded remote
+      # resume with a deliberately lost reply. Every binary is explicit; nothing may skip.
+      - name: Build the published koh executable and the real-process harness
+        run: |
+          cargo build --manifest-path references/koh/Cargo.toml --no-default-features --features cli,gateway --locked
+          cargo build --locked --manifest-path tools/xtask/Cargo.toml --target-dir target/rust-harness
+          test -x references/koh/target/debug/koh
+      # These scenarios run reliably against the clean published koh pin. The
+      # deliberately-lost-reply composition (zor-remote-resume-lost-reply) is retained
+      # development-koh evidence: its test-only reply gate is timing-sensitive on the
+      # published transport, so it is not part of the always-green gate.
+      - name: Multi-machine supervision through the published koh pin
+        run: |
+          target/rust-harness/debug/fux-xtask scenario zor-multi-machine target/debug/fux target/debug/zor references/koh/target/debug/koh
+          target/rust-harness/debug/fux-xtask scenario zor-remote-resume target/debug/fux target/debug/zor references/koh/target/debug/koh
+          target/rust-harness/debug/fux-xtask scenario zor-remote-resume-dashboard target/debug/fux target/debug/zor references/koh/target/debug/koh
       - name: Recheck companion provenance after testing
         run: cargo run --locked --manifest-path tools/xtask/Cargo.toml -- dependencies verify
 

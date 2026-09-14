@@ -1,6 +1,8 @@
 //! Required real-zor integration. Explicit binary ownership is mandatory in the combined gate.
 #![cfg(unix)]
 #![allow(clippy::expect_used, clippy::panic)]
+// Integration harness: skip/diagnostic messages to stderr/stdout are expected here.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 mod support;
 
 fn run(script: &str) {

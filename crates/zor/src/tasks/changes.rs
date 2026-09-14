@@ -194,7 +194,6 @@ pub fn collect(root: &Path, task_id: &str, id: &str) -> Result<Value> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     #[test]

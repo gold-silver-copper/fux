@@ -1,0 +1,20 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.07s
+     Running unittests src/lib.rs (/tmp/fux-multi-machine-build/debug/deps/zor-bf4fea0c3b0fc4dc)
+
+running 6 tests
+test service::client::tests::unavailable_proxy_does_not_create_a_local_service_directory ... ok
+test service::client::tests::overview_cannot_join_different_service_incarnations ... ok
+test service::client::tests::capabilities_are_explicit_and_bounded ... ok
+test service::client::tests::reads_validate_correlation_schema_and_remote_failure_provenance ... ok
+test service::client::tests::malformed_frames_and_oversize_never_produce_a_view ... ok
+test service::client::tests::partial_progress_cannot_renew_the_absolute_request_deadline ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 164 filtered out; finished in 0.17s
+
+     Running tests/machines.rs (/tmp/fux-multi-machine-build/debug/deps/machines-4ed0ec74a50340f8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

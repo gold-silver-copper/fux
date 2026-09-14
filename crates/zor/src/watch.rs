@@ -1,7 +1,7 @@
 //! Reconciled passive observation across fux workspaces. This module never owns pane processes.
 pub(crate) use crate::fux::subscription as events;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 pub const MAX_OBSERVED_PANES: usize = 128;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Handle {
     pub instance: String,
     pub workspace: String,
@@ -19,7 +20,7 @@ pub struct Handle {
     pub pid: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Observation {
     pub handle: Handle,
     pub age_upper_bound_ms: u64,
@@ -32,7 +33,7 @@ pub struct Observation {
     pub problem: Option<String>,
 }
 
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub rules_generation: u64,
     pub scan_duration_ms: u64,
@@ -278,7 +279,7 @@ impl Registry {
                             }
                             Err(error) => {
                                 observation.problem =
-                                    Some(error.to_string().chars().take(256).collect())
+                                    Some(error.to_string().chars().take(256).collect());
                             }
                         }
                     }
@@ -373,7 +374,7 @@ pub fn run(
     if let Some(forced) = forced {
         crate::osc::AgentId::new(forced)?;
     }
-    let runtime = runtime.map(Ok).unwrap_or_else(crate::fux::runtime)?;
+    let runtime = runtime.map_or_else(crate::fux::runtime, Ok)?;
     anyhow::ensure!(runtime.is_absolute(), "fux runtime path must be absolute");
     let mut registry = Registry::default();
     let mut catalog = crate::rules::bundle::Catalog::load(extra)?;
@@ -393,7 +394,7 @@ pub fn run(
                     reload_problem = None;
                 }
                 Err(error) => {
-                    reload_problem = Some(error.to_string().chars().take(256).collect::<String>())
+                    reload_problem = Some(error.to_string().chars().take(256).collect::<String>());
                 }
             }
         }

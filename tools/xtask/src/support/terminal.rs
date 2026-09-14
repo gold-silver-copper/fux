@@ -205,6 +205,61 @@ impl Terminal {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+    /// Wait for exact bytes, including escape sequences, at or after `since` (see `raw_len`).
+    pub fn wait_for_raw(&mut self, needle: &[u8], since: usize, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout * super::local::deadline_scale();
+        loop {
+            self.pump()?;
+            if self
+                .raw
+                .get(since..)
+                .is_some_and(|tail| tail.windows(needle.len()).any(|window| window == needle))
+            {
+                return Ok(());
+            }
+            ensure!(
+                self.child.0.try_wait()?.is_none() && Instant::now() < deadline,
+                "terminal missing raw {needle:?}: {}",
+                String::from_utf8_lossy(&self.raw)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    /// Offset of the retained output, for bounding later raw assertions.
+    pub fn raw_len(&mut self) -> Result<usize> {
+        self.pump()?;
+        Ok(self.raw.len())
+    }
+    pub fn raw_contains_since(&mut self, needle: &[u8], since: usize) -> Result<bool> {
+        self.pump()?;
+        Ok(self
+            .raw
+            .get(since..)
+            .is_some_and(|tail| tail.windows(needle.len()).any(|window| window == needle)))
+    }
+    /// Like `wait_for`, but only output at or after `since` counts.
+    pub fn wait_for_since(&mut self, needle: &str, since: usize, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout * super::local::deadline_scale();
+        loop {
+            self.pump()?;
+            let text = self
+                .escapes
+                .replace_all(self.raw.get(since..).unwrap_or_default(), &b""[..]);
+            if text
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+            {
+                self.checkpoint(needle)?;
+                return Ok(());
+            }
+            ensure!(
+                self.child.0.try_wait()?.is_none() && Instant::now() < deadline,
+                "terminal missing {needle:?}: {}",
+                String::from_utf8_lossy(&self.raw)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
     pub fn wait(&mut self, timeout: Duration) -> Result<ExitStatus> {
         super::local::until(timeout, || {
             self.pump()?;

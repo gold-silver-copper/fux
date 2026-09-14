@@ -126,13 +126,13 @@ fn decode(value: serde_json::Value, after: Cursor) -> Result<Replay> {
             previous = cursor.sequence;
             match event {
                 Event::PaneOpened { pane, tab, .. } => {
-                    ensure!(*pane != 0 && *tab != 0, "invalid opened pane identity")
+                    ensure!(*pane != 0 && *tab != 0, "invalid opened pane identity");
                 }
                 Event::PaneClosed { pane, .. } | Event::PaneOutput { pane, .. } => {
-                    ensure!(*pane != 0, "invalid pane identity")
+                    ensure!(*pane != 0, "invalid pane identity");
                 }
                 Event::TabOpened { tab, .. } | Event::TabClosed { tab, .. } => {
-                    ensure!(*tab != 0, "invalid tab identity")
+                    ensure!(*tab != 0, "invalid tab identity");
                 }
                 Event::WorkspaceChanged { .. } => {}
             }

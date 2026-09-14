@@ -1,0 +1,49 @@
+{
+  "size": [
+    80,
+    24
+  ],
+  "total_rows": 24,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 0,
+    "y": 9,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "zor dashboard | first\nTab machines | j/k rows | ? help | q quit\n3/3 machines live\n  first [unknown] agent / 2: unclassified\n  first [unknown] default / 1: unclassified\n> first [open] same: first task\nAttachment ended: viewer ended (signal: 9 (SIGKILL)):\nfirst: Recorded task outcome Open; coordination open; attempt Active; agent\nunclassified\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "zor dashboard | first"
+    ],
+    [
+      "Tab machines | j/k rows | ? help | q quit"
+    ],
+    [
+      "3/3 machines live"
+    ],
+    [
+      "  first [unknown] agent / 2: unclassified"
+    ],
+    [
+      "  first [unknown] default / 1: unclassified"
+    ],
+    [
+      "> first [open] same: first task"
+    ],
+    [
+      "Attachment ended: viewer ended (signal: 9 (SIGKILL)):"
+    ],
+    [
+      "first: Recorded task outcome Open; coordination open; attempt Active; agent"
+    ],
+    [
+      "unclassified"
+    ]
+  ],
+  "scrollback": []
+}

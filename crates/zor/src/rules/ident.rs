@@ -150,7 +150,6 @@ fn basename(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::rules::load;
-    #[allow(clippy::panic)]
     fn sets() -> Vec<RuleSet> {
         vec![
             load(

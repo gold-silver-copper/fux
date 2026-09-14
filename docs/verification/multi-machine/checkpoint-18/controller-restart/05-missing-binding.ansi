@@ -1,0 +1,185 @@
+[?1049h[?25l[2J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:unavailable  first:unavailable  second:unavailable[K
+No observed rows in this scope[K
+Local: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:unavailable  second:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 3058ms; passive rule none; no identified supported foreground agent[K
+first: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:unavailable  second:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 1309ms; passive rule none; no identified supported foreground agent[K
+first: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> Local            unknown      default / 1: unclassified[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+  first            open         same: first task[K
+  second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+  second           open         same: second task[K
+Local: passive state unknown; age at fetch <= 1309ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> Local            unknown      default / 1: unclassified[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+  first            open         same: first task[K
+  second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+  second           open         same: second task[K
+Local: passive state unknown; age at fetch <= 2562ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> Local            unknown      default / 1: unclassified[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+  first            open         same: first task[K
+  second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+  second           open         same: second task[K
+Local: passive state unknown; age at fetch <= 818ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | Local | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 818ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+  first            open         same: first task[K
+first: passive state unknown; age at fetch <= 1323ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+first / same: preparing action...[K
+[J[HInspection/result | j/k scroll | Esc back[K
+first / same / attempt a72abf35740a12528dc021009da13aba[K
+{[K
+  "artifact_captures": [],[K
+  "artifact_policy": {[K
+    "collected_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "artifacts": [],[K
+  "attempt": {[K
+    "id": "a72abf35740a12528dc021009da13aba",[K
+    "session": "409d436fc7dab0ee9341a8bbb4301f42",[K
+    "state": "active",[K
+    "task": "same"[K
+  },[K
+  "check_policy": {[K
+    "passed_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "checks": [],[K
+  "generation": 1,[K
+  "launch": null,[K
+  "prompts": [],[K
+  "session": {[K
+    "agent": null,[K
+    "created_ms": 1789339202716,[K
+    "id": "409d436fc7dab0ee9341a8bbb4301f42",[K
+    "launch": null,[K[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+first / same: preparing action...[K
+[J[?25h[?1049l[?1049h[?25l[?1003h[?1006h]0;>[?1l[?2004l[?2026h[?25l[0m[2J[1;1H[m[39m[49mk[1;2H[m[39m[49mi[1;3H[m[39m[49ms[1;4H[m[39m[49ma[1;5H[m[39m[49mc[1;6H[m[39m[49mz[1;7H[m[39m[49mk[1;8H[m[39m[49ma[1;9H[m[39m[49ms[1;10H[m[39m[49m-[1;11H[m[39m[49mM[1;12H[m[39m[49ma[1;13H[m[39m[49mc[1;14H[m[39m[49mB[1;15H[m[39m[49mo[1;16H[m[39m[49mo[1;17H[m[39m[49mk[1;18H[m[39m[49m-[1;19H[m[39m[49mP[1;20H[m[39m[49mr[1;21H[m[39m[49mo[1;22H[m[39m[49m:[1;23H[m[39m[49m~[1;25H[m[39m[49mk[1;26H[m[39m[49mi[1;27H[m[39m[49ms[1;28H[m[39m[49ma[1;29H[m[39m[49mc[1;30H[m[39m[49mz[1;31H[m[39m[49mk[1;32H[m[39m[49ma[1;33H[m[39m[49m$[30;1H[m[37m[100m [30;2H[m[37m[100ma[30;3H[m[37m[100mg[30;4H[m[37m[100me[30;5H[m[37m[100mn[30;6H[m[37m[100mt[30;7H[m[37m[100m [30;8H[m[37m[100m│[30;9H[m[7m[39m[100m [30;10H[m[7m[39m[100mm[30;11H[m[7m[39m[100ma[30;12H[m[7m[39m[100mi[30;13H[m[7m[39m[100mn[30;14H[m[7m[39m[100m [30;15H[m[37m[100m [30;16H[m[37m[100m [30;17H[m[37m[100m [30;18H[m[37m[100m [30;19H[m[37m[100m [30;20H[m[37m[100m [30;21H[m[37m[100m [30;22H[m[37m[100m [30;23H[m[37m[100m [30;24H[m[37m[100m [30;25H[m[37m[100m [30;26H[m[37m[100m [30;27H[m[37m[100m [30;28H[m[37m[100m [30;29H[m[37m[100m [30;30H[m[37m[100m [30;31H[m[37m[100m [30;32H[m[37m[100m [30;33H[m[37m[100m [30;34H[m[37m[100m [30;35H[m[37m[100m [30;36H[m[37m[100m [30;37H[m[37m[100m [30;38H[m[37m[100m [30;39H[m[37m[100m [30;40H[m[37m[100m [30;41H[m[37m[100m [30;42H[m[37m[100m [30;43H[m[37m[100m [30;44H[m[37m[100m [30;45H[m[37m[100m [30;46H[m[37m[100m [30;47H[m[37m[100m [30;48H[m[37m[100m [30;49H[m[37m[100m [30;50H[m[37m[100m [30;51H[m[37m[100m [30;52H[m[37m[100m [30;53H[m[37m[100m [30;54H[m[37m[100m [30;55H[m[37m[100m [30;56H[m[37m[100m [30;57H[m[37m[100m [30;58H[m[37m[100m [30;59H[m[37m[100m [30;60H[m[37m[100m [30;61H[m[37m[100m [30;62H[m[37m[100m [30;63H[m[37m[100m [30;64H[m[37m[100m [30;65H[m[37m[100m [30;66H[m[37m[100m [30;67H[m[37m[100m [30;68H[m[37m[100m [30;69H[m[37m[100m [30;70H[m[37m[100m [30;71H[m[37m[100m [30;72H[m[37m[100m [30;73H[m[37m[100m [30;74H[m[37m[100m [30;75H[m[37m[100m [30;76H[m[37m[100m [30;77H[m[37m[100m [30;78H[m[37m[100m [30;79H[m[37m[100m [30;80H[m[37m[100m [30;81H[m[37m[100m [30;82H[m[37m[100m [30;83H[m[37m[100m [30;84H[m[37m[100m [30;85H[m[37m[100m [30;86H[m[37m[100m [30;87H[m[37m[100m [30;88H[m[37m[100m [30;89H[m[37m[100m [30;90H[m[37m[100m [30;91H[m[37m[100m [30;92H[m[37m[100m [30;93H[m[37m[100m [30;94H[m[37m[100m [30;95H[m[37m[100m [30;96H[m[37m[100m [30;97H[m[37m[100m [30;98H[m[37m[100m [30;99H[m[37m[100m [30;100H[m[37m[100m [30;101H[m[37m[100m [30;102H[m[37m[100m [30;103H[m[37m[100m [30;104H[m[37m[100m [30;105H[m[37m[100m [30;106H[m[37m[100m [30;107H[m[37m[100m [30;108H[m[37m[100m [30;109H[m[37m[100m [30;110H[m[37m[100m [30;111H[m[37m[100m [30;112H[m[37m[100m [30;113H[m[37m[100m [30;114H[m[37m[100m [30;115H[m[37m[100m [30;116H[m[37m[100m [30;117H[m[37m[100m [30;118H[m[37m[100m [30;119H[m[37m[100m [30;120H[m[37m[100m [30;121H[m[37m[100m [30;122H[m[37m[100m [30;123H[m[37m[100m [30;124H[m[37m[100m [30;125H[m[37m[100m [30;126H[m[37m[100m [30;127H[m[37m[100m [30;128H[m[37m[100m [30;129H[m[37m[100m [30;130H[m[37m[100m [30;131H[m[37m[100m [30;132H[m[37m[100m [30;133H[m[37m[100m [30;134H[m[37m[100m [30;135H[m[37m[100m [30;136H[m[37m[100m [30;137H[m[37m[100m [30;138H[m[37m[100m [30;139H[m[37m[100m [30;140H[m[37m[100m [30;141H[m[37m[100m [30;142H[m[37m[100m [30;143H[m[37m[100m [30;144H[m[37m[100m [30;145H[m[37m[100m [30;146H[m[37m[100m [30;147H[m[37m[100m [30;148H[m[37m[100m [30;149H[m[37m[100m [30;150H[m[37m[100m [30;151H[m[37m[100m [30;152H[m[37m[100m [30;153H[m[37m[100m [30;154H[m[37m[100m [30;155H[m[37m[100m [30;156H[m[37m[100m [30;157H[m[37m[100m [30;158H[m[37m[100m [30;159H[m[37m[100m [30;160H[m[37m[100m [30;161H[m[37m[100m [30;162H[m[37m[100m [30;163H[m[37m[100m [30;164H[m[37m[100m [30;165H[m[37m[100m [30;166H[m[37m[100m [30;167H[m[37m[100m [30;168H[m[37m[100m [30;169H[m[37m[100m [30;170H[m[37m[100m [30;171H[m[37m[100m [30;172H[m[37m[100m [30;173H[m[37m[100m [30;174H[m[37m[100m [30;175H[m[37m[100m [30;176H[m[37m[100m [30;177H[m[37m[100m│[30;178H[m[37m[100m [30;179H[m[37m[100m2[30;180H[m[37m[100m [1;35H[?25h[?2026l[?2026h[?25l[1;35H[?25h[?2026l[?2026h[?25l[1;35H[?25h[?2026l[?2026h[?25l[1;35H[m[39m[49mp[1;36H[m[39m[49mr[1;37H[m[39m[49mi[1;38H[m[39m[49mn[1;39H[m[39m[49mt[1;40H[m[39m[49mf[1;42H[m[39m[49m"[1;43H[m[39m[49mH[1;44H[m[39m[49mA[1;45H[m[39m[49mN[1;46H[m[39m[49mD[1;47H[m[39m[49mO[1;48H[m[39m[49mF[1;49H[m[39m[49mF[1;50H[m[39m[49m_[1;51H[m[39m[49m%[1;52H[m[39m[49ms[1;53H[m[39m[49m\[1;54H[m[39m[49mn[1;55H[m[39m[49m"[1;57H[m[39m[49mO[1;58H[m[39m[49mK[2;1H[m[39m[49mH[2;2H[m[39m[49mA[2;3H[m[39m[49mN[2;4H[m[39m[49mD[2;5H[m[39m[49mO[2;6H[m[39m[49mF[2;7H[m[39m[49mF[2;8H[m[39m[49m_[2;9H[m[39m[49mO[2;10H[m[39m[49mK[3;1H[m[39m[49mk[3;2H[m[39m[49mi[3;3H[m[39m[49ms[3;4H[m[39m[49ma[3;5H[m[39m[49mc[3;6H[m[39m[49mz[3;7H[m[39m[49mk[3;8H[m[39m[49ma[3;9H[m[39m[49ms[3;10H[m[39m[49m-[3;11H[m[39m[49mM[3;12H[m[39m[49ma[3;13H[m[39m[49mc[3;14H[m[39m[49mB[3;15H[m[39m[49mo[3;16H[m[39m[49mo[3;17H[m[39m[49mk[3;18H[m[39m[49m-[3;19H[m[39m[49mP[3;20H[m[39m[49mr[3;21H[m[39m[49mo[3;22H[m[39m[49m:[3;23H[m[39m[49m~[3;25H[m[39m[49mk[3;26H[m[39m[49mi[3;27H[m[39m[49ms[3;28H[m[39m[49ma[3;29H[m[39m[49mc[3;30H[m[39m[49mz[3;31H[m[39m[49mk[3;32H[m[39m[49ma[3;33H[m[39m[49m$[3;35H[?25h[?2026l[?2026h[?25l[3;35H[?25h[?2026l[?2026l[?9l[?2004l[?1000l[?1002l[?1003l[?1005l[?1006l[?1l>[?25h[?1049l[?2026l[?9l[?2004l[?1000l[?1002l[?1003l[?1005l[?1006l[?1l>[0m[?25h[?1049l[?1049h[?25l[2J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+Detached; refreshing the selection[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+first / same: preparing action...[K
+[J[HInspection/result | j/k scroll | Esc back[K
+first / same / attempt a72abf35740a12528dc021009da13aba[K
+{[K
+  "artifact_captures": [],[K
+  "artifact_policy": {[K
+    "collected_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "artifacts": [],[K
+  "attempt": {[K
+    "id": "a72abf35740a12528dc021009da13aba",[K
+    "session": "409d436fc7dab0ee9341a8bbb4301f42",[K
+    "state": "active",[K
+    "task": "same"[K
+  },[K
+  "check_policy": {[K
+    "passed_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "checks": [],[K
+  "generation": 1,[K
+  "launch": null,[K
+  "prompts": [],[K
+  "session": {[K
+    "agent": null,[K
+    "created_ms": 1789339202716,[K
+    "id": "409d436fc7dab0ee9341a8bbb4301f42",[K
+    "launch": null,[K[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+[J[Hzor dashboard | second | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+> second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+  second           open         same: second task[K
+second: passive state unknown; age at fetch <= 1349ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | second | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+> second           open         same: second task[K
+second: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+[J[Hzor dashboard | second | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+> second           open         same: second task[K
+second: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+second / same: preparing action...[K
+[J[Hzor dashboard | second | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit[K
+Local:live  first:live  second:live[K
+  second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+> second           open         same: second task[K
+second: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+second / same: action failed: second has no attachment binding for workspace agent; use machine bind[K
+[J

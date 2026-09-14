@@ -122,27 +122,29 @@ async fn serve_viewer(
 ) -> anyhow::Result<()> {
     let hello: ClientMessage =
         tokio::time::timeout(FRAME_TIMEOUT, read_frame(&mut stream, MAX_CLIENT_FRAME)).await??;
-    let (rows, cols) = match hello {
-        ClientMessage::Hello { rows, columns } => (rows, columns),
-        _ => {
-            write_frame(
-                &mut stream,
-                &ServerMessage::Error {
-                    message: "the first attachment frame must be a hello".into(),
-                },
-                MAX_SERVER_FRAME,
-            )
-            .await?;
-            anyhow::bail!("attachment did not start with a hello");
-        }
+    let ClientMessage::Hello {
+        rows,
+        columns: cols,
+        initial,
+    } = hello
+    else {
+        write_frame(
+            &mut stream,
+            &ServerMessage::Error {
+                message: "the first attachment frame must be a hello".into(),
+            },
+            MAX_SERVER_FRAME,
+        )
+        .await?;
+        anyhow::bail!("attachment did not start with a hello");
     };
-    write_frame(&mut stream, &ServerMessage::Hello {}, MAX_SERVER_FRAME).await?;
     let viewer = ViewerId(owner.viewer_ids.fetch_add(1, Ordering::Relaxed));
     let outbox = ViewerOutbox::default();
     owner.viewer_outboxes.send((viewer, outbox.clone())).await?;
     owner
         .inbound
         .send(Inbound::ViewerAttached {
+            initial,
             viewer,
             workspace,
             rows,
@@ -635,7 +637,7 @@ mod tests {
                 viewer_ids: Arc::new(AtomicU64::new(1)),
             };
             let subscribers = Arc::new(Mutex::new(Vec::new()));
-            let serving = tokio::spawn(serve_control_connection(server, "default".into(), owner, subscribers.clone()));
+            let serving = tokio::spawn(serve_control_connection(server, "default".into(), owner, Arc::clone(&subscribers)));
             client.write_all(CONTROL_PREFACE).await?;
             let mut preface = [0; CONTROL_PREFACE.len()];
             client.read_exact(&mut preface).await?;
@@ -703,7 +705,7 @@ mod tests {
                 server,
                 "default".into(),
                 owner,
-                subscribers.clone(),
+                Arc::clone(&subscribers),
             ));
             let mut client = client;
             client.write_all(CONTROL_PREFACE).await?;

@@ -121,8 +121,7 @@ pub fn reply(world: &mut World, requester: Requester, reply: Reply) {
                 } => super::messages::ManagerOutcome::Attach {
                     stream: workspace_entity(world, &name)
                         .and_then(|entity| world.get::<super::events::EventLog>(entity))
-                        .map(|log| log.cursor().stream)
-                        .unwrap_or(0),
+                        .map_or(0, |log| log.cursor().stream),
                     name,
                     created: true,
                 },

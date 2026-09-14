@@ -327,7 +327,7 @@ mod tests {
         let mut client = Client::spawn_cancellable(
             shell("sleep 30 & wait"),
             Instant::now() + Duration::from_secs(3),
-            cancelled.clone(),
+            Arc::clone(&cancelled),
         )?;
         let notifier = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));

@@ -76,17 +76,5 @@ name = "zor"
 path = "src/main.rs"
 required-features = ["cli"]
 
-[lints.rust]
-dead_code = "deny"
-unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "deny"
-
-[lints.clippy]
-expect_used = "deny"
-indexing_slicing = "deny"
-panic = "deny"
-string_slice = "deny"
-todo = "deny"
-unimplemented = "deny"
-unreachable = "deny"
-unwrap_used = "deny"
+[lints]
+workspace = true

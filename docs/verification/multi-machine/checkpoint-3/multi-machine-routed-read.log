@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-3/routed-read.py", line 59, in <module>
+    run('ZOR_BIN', 'machine', 'rename', 'remote', 'renamed')
+    ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-3/routed-read.py", line 23, in run
+    assert result.returncode == expected, (args, result.returncode, result.stderr)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: (('machine', 'rename', 'remote', 'renamed'), 1, 'zor: this command is not yet supported for a remote machine; no local fallback was attempted\n')

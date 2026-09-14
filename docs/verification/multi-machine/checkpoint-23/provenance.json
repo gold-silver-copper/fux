@@ -1,0 +1,19 @@
+{
+  "sha256": {
+    "tools/xtask/src/scenarios/resume_reply_gate.rs": "11f137524785f2e0b719e856c65dc68528a3cb0b7b7d516b4fa81fa9faead412",
+    "tools/xtask/src/scenarios/resume_remote.rs": "c9b6ca2fefd6bbbf69d29c52c9c72144a20aacda4521db6251da03ce0f7d98df",
+    "tools/xtask/src/scenarios/zor_producers.rs": "265d20be366b9348e119fef309541d9beb21076fc35fc703a6256b4d35a5a05c",
+    "tools/xtask/src/scenarios/mod.rs": "9736e40b6d11a68e251db6043da4baaf8168691e6f439967daa3be425254c8a5",
+    "/tmp/fux-multi-machine-build/debug/fux": "391b0eca538547f260b417962848b2e972ec4d446733ce5961542d24fd7c6282",
+    "/tmp/fux-multi-machine-build/debug/zor": "12a0ca58167670e7da81ccffa68bd1779ef069273a789db01fbb6066140574be",
+    "/tmp/strict-fux-koh-zor/koh-build/debug/koh": "f46181de8bdb54744dd229a3ddf717096eefd3510358487585b65de6b99a24c9",
+    "/tmp/fux-resume-harness/debug/fux-xtask": "924ff97999963ded90c94f7a4eb5ce96f0b6ceb8b67707bcc0ea7a3ac2296848"
+  },
+  "commands": [
+    "/tmp/fux-resume-harness/debug/fux-xtask scenario zor-remote-resume-lost-reply /tmp/fux-multi-machine-build/debug/fux /tmp/fux-multi-machine-build/debug/zor /tmp/strict-fux-koh-zor/koh-build/debug/koh",
+    "cargo +stable clippy --locked --manifest-path tools/xtask/Cargo.toml --target-dir /tmp/fux-resume-harness --all-targets -- -D warnings",
+    "cargo +stable fmt --manifest-path tools/xtask/Cargo.toml --check",
+    "git diff --check"
+  ],
+  "scope": "Real remote CLI and koh forwarding with test-only server-side proxy discarding one completed resume response. Exactly one mutation before read-only recovery; later explicit same-operation retry preserves one pane creation. Synthetic provider fixture. This is lost service reply via stream closure, not a QUIC link reset at the mutation boundary."
+}

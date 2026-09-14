@@ -1,0 +1,10 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.93s
+     Running unittests src/lib.rs (/tmp/fux-multi-machine-build/debug/deps/zor-bf4fea0c3b0fc4dc)
+
+running 2 tests
+test machines::intents::tests::intent_survives_reopen_and_retry_preserves_original_selection ... ok
+test machines::intents::tests::malformed_and_symlinked_logs_block_recording ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 194 filtered out; finished in 0.05s
+

@@ -166,6 +166,7 @@ fn ecs_step_timing() {
     step(
         &mut session,
         vec![Inbound::ViewerAttached {
+            initial: None,
             viewer,
             workspace: "micro".into(),
             rows: 24,

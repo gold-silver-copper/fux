@@ -17,6 +17,11 @@ fn run(scenario: &str) {
 }
 
 #[test]
+fn exact_attachment_selects_only_its_viewer_and_closes_without_input_fallback() {
+    run("exact-attachment");
+}
+
+#[test]
 fn isolated_local_attachment_has_no_keys_and_preserves_sessions() {
     run("local-attachment");
 }

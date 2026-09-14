@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Same-user local socket discipline shared by programs that publish a private Unix socket:
 //! an owned 0700 directory, a 0600 socket inode that is only ever removed by the process that
 //! bound it, kernel-supplied peer credentials, random instance tokens and non-blocking
@@ -281,7 +282,7 @@ pub fn write_all_until(
                 Ok(count) => {
                     bytes = bytes
                         .get(count..)
-                        .ok_or_else(|| io::Error::other("invalid socket write count"))?
+                        .ok_or_else(|| io::Error::other("invalid socket write count"))?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {

@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 103, in <module>
+    extra = control(path, dict(command='split', axis='horizontal', argv=['/bin/sh']))['pane']
+            ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 77, in control
+    assert reply['status'] == 'completed', reply
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'status': 'failed', 'id': 1, 'error': {'code': 'invalid-json', 'message': 'missing field `final_retain_ms`'}}

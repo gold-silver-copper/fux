@@ -1,0 +1,46 @@
+{
+  "size": [
+    180,
+    30
+  ],
+  "total_rows": 30,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 0,
+    "y": 8,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "zor dashboard | second | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit\nLocal:live  first:live  second:live\n  second           unknown      agent / 2: codex\n> second           unknown      agent / 3: codex\n  second           unknown      default / 1: codex\n  second           open         same: second task\nsecond: passive state unknown; age at fetch <= 1695ms; passive rule none; agent observation; not task completion\nsecond / agent / pane 3: action failed: second has no attachment binding for workspace agent; use machine bind\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "zor dashboard | second | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit"
+    ],
+    [
+      "Local:live  first:live  second:live"
+    ],
+    [
+      "  second           unknown      agent / 2: codex"
+    ],
+    [
+      "> second           unknown      agent / 3: codex"
+    ],
+    [
+      "  second           unknown      default / 1: codex"
+    ],
+    [
+      "  second           open         same: second task"
+    ],
+    [
+      "second: passive state unknown; age at fetch <= 1695ms; passive rule none; agent observation; not task completion"
+    ],
+    [
+      "second / agent / pane 3: action failed: second has no attachment binding for workspace agent; use machine bind"
+    ]
+  ],
+  "scrollback": []
+}

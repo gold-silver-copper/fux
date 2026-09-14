@@ -25,7 +25,7 @@ fn command(repo: &Path, args: &[&str], deadline: Instant) -> Result<Vec<u8>> {
 }
 fn line(bytes: Vec<u8>) -> Result<String> {
     let value = String::from_utf8(bytes).context("git returned non-UTF-8 metadata")?;
-    Ok(value.strip_suffix('\n').unwrap_or(&value).to_string())
+    Ok(value.strip_suffix('\n').unwrap_or(&value).to_owned())
 }
 fn identity(path: &Path) -> Result<(u64, u64)> {
     let meta = fs::symlink_metadata(path)?;

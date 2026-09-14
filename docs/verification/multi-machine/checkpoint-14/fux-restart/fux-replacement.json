@@ -1,0 +1,87 @@
+{
+  "old_instance": "bfa6e1ff84b2ae66985f45111e88adb5",
+  "new_instance": "e4ba0ac368a044f25093453f847cdd50",
+  "old_pane": {
+    "id": 2,
+    "command": [
+      "/bin/sh",
+      "-l"
+    ],
+    "pid": 8411,
+    "cwd": "/private/tmp/zmh-w1e8dy6q",
+    "title": "",
+    "seq": 3,
+    "revision": 2,
+    "input_sequence": 0,
+    "fixed_workspace": false,
+    "geometry": {
+      "x": 0,
+      "y": 0,
+      "width": 80,
+      "height": 23
+    },
+    "focused": true,
+    "cursor": {
+      "row": 0,
+      "column": 34,
+      "hidden": false
+    },
+    "modes": {
+      "alternate_screen": false,
+      "application_keypad": false,
+      "application_cursor": false,
+      "bracketed_paste": false,
+      "mouse_mode": "none",
+      "mouse_encoding": "default"
+    },
+    "exit_status": null
+  },
+  "new_pane": {
+    "id": 2,
+    "command": [
+      "/bin/sh",
+      "-l"
+    ],
+    "pid": 8879,
+    "cwd": "/private/tmp/zmh-w1e8dy6q",
+    "title": "",
+    "seq": 3,
+    "revision": 2,
+    "input_sequence": 0,
+    "fixed_workspace": false,
+    "geometry": {
+      "x": 0,
+      "y": 0,
+      "width": 80,
+      "height": 23
+    },
+    "focused": true,
+    "cursor": {
+      "row": 0,
+      "column": 34,
+      "hidden": false
+    },
+    "modes": {
+      "alternate_screen": false,
+      "application_keypad": false,
+      "application_cursor": false,
+      "bracketed_paste": false,
+      "mouse_mode": "none",
+      "mouse_encoding": "default"
+    },
+    "exit_status": null
+  },
+  "capture": {
+    "seq": 3,
+    "input_sequence": 0,
+    "text": "kisaczkas-MacBook-Pro:~ kisaczka$ ",
+    "revision": 2,
+    "rows": 23,
+    "columns": 80,
+    "scrollback_offset": 0,
+    "title": "",
+    "progress": null,
+    "unchanged": false,
+    "truncated": false
+  }
+}

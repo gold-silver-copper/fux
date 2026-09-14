@@ -1,0 +1,9 @@
+{
+  "sha256": {
+    "crates/zor/src/dashboard/multi.rs": "6787cc8386c0f011b5df44c2343c189426cfa3e5e3e69a418a5ede71e6857fd8",
+    "docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py": "cf7cdfbb452e4ba29946ab8f900b91567a4f83b060b7334698d3b27ade5e83ed"
+  },
+  "command": "FUX_BIN=/tmp/fux-multi-machine-build/debug/fux ZOR_BIN=/tmp/fux-multi-machine-build/debug/zor KOH_BIN=/tmp/strict-fux-koh-zor/koh-build/debug/koh python3 docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py --dashboard-resume --columns 40 --rows 16 --artifacts-dir docs/verification/multi-machine/checkpoint-20/narrow-complete",
+  "visual_review": "Three real PTY frames imported, replayed, rendered and inspected: blank form, entered IDs, full refusal detail. All controls, input IDs and refusal reason readable at 40x16.",
+  "unresolved": "One earlier run reported attachment transport unavailable following clean viewer exit. Subsequent runs passed detach; root cause remains unverified. Preserve as an open recovery defect, not a resolved flake."
+}

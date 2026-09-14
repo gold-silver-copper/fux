@@ -1,0 +1,12 @@
+   Compiling zor v0.5.0 (/Users/kisaczka/Desktop/code/fux/crates/zor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.75s
+     Running unittests src/lib.rs (/tmp/fux-multi-machine-build/debug/deps/zor-bf4fea0c3b0fc4dc)
+
+running 4 tests
+test machines::catalog::tests::concurrent_edit_is_rejected_without_lost_update ... ok
+test machines::catalog::tests::malformed_oversize_and_symlink_catalogs_fail_closed ... ok
+test machines::catalog::tests::identity_survives_rename_and_bindings_stay_explicit ... ok
+test machines::catalog::tests::invalid_edits_leave_original_catalog_and_grants_intact ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 160 filtered out; finished in 0.05s
+

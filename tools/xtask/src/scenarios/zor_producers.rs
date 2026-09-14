@@ -414,7 +414,14 @@ pub(super) fn run(fux: &Path, zor: &Path) -> Result<()> {
 
 /// Exercise resume's shared attachment branch with real processes and a synthetic
 /// adapter. This proves orchestration identity, not a provider's session restore.
-pub(super) fn resume(fux: &Path, zor: &Path) -> Result<()> {
+pub(super) fn resume(
+    fux: &Path,
+    zor: &Path,
+    koh: Option<&Path>,
+    lose_reply: bool,
+    dashboard: bool,
+) -> Result<()> {
+    ensure!(!(lose_reply && dashboard), "dashboard resume uses the delivered-reply gateway");
     use crate::support::launch_proxy::{Mode, Proxy};
     let node = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|path| path.join("node"))
@@ -495,7 +502,92 @@ pub(super) fn resume(fux: &Path, zor: &Path) -> Result<()> {
             "--instance",
             instance_text,
         ];
-        let resumed = h.task(&args, None)?;
+        // Exercise the service guard with a real successful transition. A stale
+        // guard must still fail after success, even for a retained operation ID.
+        let service = process::Guard(
+            h.root
+                .command(zor)
+                .arg("serve")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?,
+        );
+        let socket = h.root.path().join("zor/control.sock");
+        crate::support::local::until(Duration::from_secs(5), || Ok(socket.exists().then_some(())))?;
+        let service_instance = super::zor_headless::api(
+            &socket,
+            &json!({"v":1,"id":1,"op":"ping"}),
+        )?["service_instance"]
+            .clone();
+        let request = |inspection: &Value| {
+            json!({
+                "v":1,"id":2,"op":"task","service_instance":service_instance,
+                "task":{"action":"guarded-resume","operation":"resume-one",
+                    "instance":instance_text,"expected":{
+                        "task":inspection["task"]["id"],
+                        "attempt":inspection["attempt"]["id"],
+                        "session":inspection["session"]["id"],
+                        "target":inspection["session"]["target"]
+                    }}
+            })
+        };
+        // Mutations are dispatched once; a timeout is not permission to retry.
+        let mut remote = koh
+            .map(|koh| super::resume_remote::Remote::start(zor, koh, &socket, lose_reply))
+            .transpose()?;
+        let resumed = if let Some(remote) = &mut remote {
+            if lose_reply {
+                let error = remote
+                    .resume(&args)
+                    .expect_err("completed reply must be lost");
+                ensure!(
+                    format!("{error:#}").contains("request was not replayed"),
+                    "unknown outcome missing: {error:#}"
+                );
+                remote.verify_lost_reply(1)?;
+                let intents = remote.retained_intents()?;
+                let intent = intents
+                    .as_array()
+                    .context("controller intents")?
+                    .first()
+                    .context("durable intent missing")?;
+                ensure!(
+                    intents.as_array().is_some_and(|items| items.len() == 1)
+                        && intent["operation"] == "resume-one"
+                        && intent["expected"]["task"] == "worker"
+                        && intent["expected"]["attempt"] == closed["attempt"]["id"]
+                        && intent["fux_instance"] == instance,
+                    "wrong durable pre-dispatch intent: {intents}"
+                );
+                let journal_after_commit = fs::read(h.root.path().join("state/zor/journal.json"))?;
+                let retained =
+                    remote.resume(&["resume-status", "worker", "--operation", "resume-one"])?;
+                ensure!(
+                    retained["record"]["phase"] == "closed",
+                    "lost reply operation was not retained: {retained}"
+                );
+                let inspection = remote.resume(&["inspect", "worker"])?;
+                ensure!(
+                    fs::read(h.root.path().join("state/zor/journal.json"))? == journal_after_commit
+                        && proxy.faults().creates == creates + 1,
+                    "read-only recovery mutated committed operation"
+                );
+                remote.verify_lost_reply(1)?;
+                println!(
+                    "PASS lost completed remote reply: unknown outcome, one mutation, read-only status/inspect recovery"
+                );
+                inspection
+            } else if dashboard {
+                remote.dashboard_resume(fux, "resume-one", instance_text)?
+            } else {
+                remote.resume(&args)?
+            }
+        } else {
+            let reply = super::zor_headless::api(&socket, &request(&closed))?;
+            ensure!(reply["status"] == "completed", "guarded resume: {reply}");
+            reply["value"].clone()
+        };
         ensure!(
             resumed["launch"]["phase"] == "closed"
                 && resumed["attempt"]["state"] == "finished"
@@ -524,6 +616,75 @@ pub(super) fn resume(fux: &Path, zor: &Path) -> Result<()> {
             h.task(&args, None)? == resumed && proxy.faults().creates == creates + 1,
             "resume retry changed identity or duplicated creation"
         );
+        let journal_path = h.root.path().join("state/zor/journal.json");
+        let retained = fs::read(&journal_path)?;
+        let stale = super::zor_headless::api(&socket, &request(&closed))?;
+        ensure!(
+            stale["status"] == "failed"
+                && stale
+                    .to_string()
+                    .contains("selected task/attempt/process changed")
+                && fs::read(&journal_path)? == retained,
+            "stale retained-operation guard mutated state: {stale}"
+        );
+        let repeated = super::zor_headless::api(&socket, &request(&resumed))?;
+        ensure!(
+            repeated["status"] == "completed"
+                && repeated["value"] == resumed
+                && proxy.faults().creates == creates + 1
+                && fs::read(&journal_path)? == retained,
+            "fresh guarded reconciliation duplicated resume: {repeated}"
+        );
+        if let Some(remote) = &mut remote {
+            ensure!(
+                remote.resume(&args)? == resumed
+                    && proxy.faults().creates == creates + 1
+                    && fs::read(&journal_path)? == retained,
+                "remote retained operation duplicated resume"
+            );
+        }
+        let status_request = |operation: &str| {
+            json!({"v":1,"id":3,"op":"task",
+            "service_instance":service_instance,"task":{"action":"resume-status","id":"worker","operation":operation}})
+        };
+        let status_reply = super::zor_headless::api(&socket, &status_request("resume-one"))?;
+        ensure!(
+            status_reply["status"] == "completed",
+            "resume status: {status_reply}"
+        );
+        let status = status_reply["value"].clone();
+        ensure!(
+            status["task"] == "worker"
+                && status["operation"] == "resume-one"
+                && status["record"]["phase"] == "closed"
+                && status["record"]["previous_attempt"] == closed["attempt"]["id"]
+                && status["record"]["instance"] == instance
+                && status["record"]["session"] == resumed["session"]["id"],
+            "wrong retained resume evidence: {status}"
+        );
+        let absent = super::zor_headless::api(&socket, &status_request("not-submitted"))?;
+        ensure!(
+            absent["status"] == "completed" && absent["value"]["record"].is_null(),
+            "missing resume operation did not remain absent: {absent}"
+        );
+        if let Some(remote) = &mut remote {
+            ensure!(
+                remote.resume(&["resume-status", "worker", "--operation", "resume-one"])? == status,
+                "remote resume evidence differs"
+            );
+        }
+        ensure!(
+            fs::read(&journal_path)? == retained && proxy.faults().creates == creates + 1,
+            "resume status read mutated journal or launched a pane"
+        );
+        if let Some(remote) = &mut remote {
+            if lose_reply {
+                remote.verify_lost_reply(2)?;
+            }
+            remote.finish_gate()?;
+        }
+        drop(remote);
+        drop(service);
         h.task(&["stop", "resume-one"], Some("historical"))?;
         Ok(())
     })();
@@ -531,7 +692,7 @@ pub(super) fn resume(fux: &Path, zor: &Path) -> Result<()> {
     h.server.finish()?;
     scenario?;
     println!(
-        "PASS resumed attachment exit-before-pin, archived evidence, stable retry and no input replay"
+        "PASS guarded resume, stale guard refusal, retained operation, exit-before-pin and no input replay"
     );
     Ok(())
 }

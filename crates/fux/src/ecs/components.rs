@@ -323,6 +323,8 @@ pub struct Sent {
 /// An attached viewer: private tab/focus selection, bounded request queue and publication state.
 #[derive(Component)]
 pub struct Viewer {
+    /// Exact-attachment viewers close if their required process exits or changes workspace route.
+    pub required_process: Option<crate::proto::attach::InitialTarget>,
     pub id: ViewerId,
     pub workspace: Entity,
     pub rows: u16,

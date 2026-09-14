@@ -1,0 +1,19 @@
+[?1049h[?25l[2J[Hzor dashboard | first[K
+Tab machines | j/k rows | ? help | q quit[K
+0/3 machines live[K
+No observed rows in this scope[K
+first: Connecting[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows | ? help | q quit[K
+1/3 machines live[K
+No observed rows in this scope[K
+first: Connecting[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows | ? help | q quit[K
+3/3 machines live[K
+> first [unknown] agent / 2: unclassified[K
+  first [unknown] default / 1: unclassified[K
+  first [open] same: first task[K
+first: passive state unknown; age at fetch <= 884ms; passive rule none; no [K
+identified supported foreground agent[K
+[J

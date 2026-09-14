@@ -3,6 +3,11 @@ use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
 pub enum Action {
+    /// Saved remote supervision targets and independently authorized service bindings.
+    Machine {
+        #[command(subcommand)]
+        action: MachineAction,
+    },
     /// Internal headless native worker; requires verified managed fux ownership.
     #[command(hide = true)]
     CodexWorker {
@@ -21,6 +26,9 @@ pub enum Action {
     },
     /// Zor task attention and agent evidence, displayed as an ordinary terminal application.
     Dashboard {
+        /// Observe Local and all saved machines independently.
+        #[arg(long, conflicts_with_all = ["notify", "bell", "machine_selector"])]
+        all_machines: bool,
         #[arg(long)]
         directory: Option<PathBuf>,
         #[arg(long)]
@@ -116,6 +124,80 @@ pub enum Action {
     /// state published as OSC 7877 (`zor claude`, `zor -- status`); see the top-level flags.
     #[command(external_subcommand)]
     Command(Vec<String>),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct MachineBinding {
+    /// Koh server endpoint ID for this one authorized service.
+    #[arg(long, requires = "key_file")]
+    endpoint: Option<String>,
+    /// Absolute path to a koh-owned client key file; key material is never copied.
+    #[arg(long, requires = "endpoint")]
+    key_file: Option<PathBuf>,
+    #[arg(long, requires = "endpoint", conflicts_with = "relay_url")]
+    direct: Option<std::net::SocketAddr>,
+    #[arg(long, requires = "endpoint", conflicts_with = "direct")]
+    relay_url: Option<String>,
+}
+impl MachineBinding {
+    pub fn value(self) -> anyhow::Result<Option<zor::machines::Binding>> {
+        self.endpoint
+            .map(|endpoint| {
+                let binding = zor::machines::Binding {
+                    endpoint,
+                    key_file: self
+                        .key_file
+                        .ok_or_else(|| anyhow::anyhow!("key-file required"))?,
+                    direct: self.direct,
+                    relay_url: self.relay_url,
+                };
+                binding.validate()?;
+                Ok(binding)
+            })
+            .transpose()
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MachineAction {
+    /// List durable controller resume intents; these are not proof of remote completion.
+    ResumeIntents,
+    /// Add a saved machine; an omitted control binding leaves it unconfigured.
+    Add {
+        name: String,
+        #[command(flatten)]
+        binding: MachineBinding,
+    },
+    List,
+    Inspect {
+        machine: String,
+    },
+    Rename {
+        machine: String,
+        name: String,
+    },
+    /// Remove only local configuration, never remote services or tasks.
+    Remove {
+        machine: String,
+    },
+    /// Set or explicitly clear the independently authorized zor control binding.
+    Control {
+        machine: String,
+        #[arg(long, conflicts_with_all = ["endpoint", "key_file", "direct", "relay_url"])]
+        clear: bool,
+        #[command(flatten)]
+        binding: MachineBinding,
+    },
+    /// Set or clear an attachment binding for one exact workspace name.
+    Bind {
+        machine: String,
+        #[arg(long)]
+        workspace: String,
+        #[arg(long, conflicts_with_all = ["endpoint", "key_file", "direct", "relay_url"])]
+        clear: bool,
+        #[command(flatten)]
+        binding: MachineBinding,
+    },
 }
 
 #[cfg(feature = "wrap")]
@@ -365,6 +447,12 @@ pub enum TaskAction {
         #[arg(last = true, required = true)]
         argv: Vec<String>,
     },
+    /// Read retained resume operation evidence without resubmitting it.
+    ResumeStatus {
+        id: String,
+        #[arg(long)]
+        operation: String,
+    },
     /// Explicitly resume a native OpenCode session as a new attempt; never replay a prompt.
     Resume {
         id: String,
@@ -520,6 +608,18 @@ pub enum ReportKind {
 #[derive(Debug, Parser)]
 #[command(version, about, trailing_var_arg = true, subcommand_required = false)]
 pub struct Cli {
+    /// Saved machine name or stable ID; Local is explicit and never a remote fallback.
+    #[arg(long, global = true, id = "machine_selector")]
+    pub machine: Option<String>,
+    /// Koh gateway executable for remote connections (defaults to koh on PATH).
+    #[arg(long, global = true)]
+    pub koh_binary: Option<PathBuf>,
+    /// Fux viewer executable for dashboard attachment (defaults to fux on PATH).
+    #[arg(long, global = true)]
+    pub fux_binary: Option<PathBuf>,
+    /// Private saved-machine catalog (defaults to XDG_CONFIG_HOME/zor/machines.json).
+    #[arg(long, global = true)]
+    pub machines_file: Option<PathBuf>,
     /// Private durable task state (defaults to XDG_STATE_HOME/zor or HOME/.local/state/zor).
     #[arg(long)]
     pub state_directory: Option<PathBuf>,
@@ -569,7 +669,15 @@ impl Cli {
             // Long flags that take a value consume the next token unless written as --flag=value.
             let takes_value = matches!(
                 arg.as_str(),
-                "--state-directory" | "--rules" | "--agent" | "--events" | "--title"
+                "--machine"
+                    | "--koh-binary"
+                    | "--fux-binary"
+                    | "--machines-file"
+                    | "--state-directory"
+                    | "--rules"
+                    | "--agent"
+                    | "--events"
+                    | "--title"
             );
             index += if takes_value { 2 } else { 1 };
         }

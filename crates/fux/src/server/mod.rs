@@ -54,16 +54,20 @@ pub async fn run(
         Ok(state) => {
             report(None);
             if !options.daemon {
-                eprintln!(
-                    "fux: serving {} at {}",
-                    options.name,
-                    state
-                        .adapter
-                        .paths
-                        .attach_socket(&options.name)
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_default()
-                );
+                // Intended stderr surface: the foreground `serve` startup banner.
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!(
+                        "fux: serving {} at {}",
+                        options.name,
+                        state
+                            .adapter
+                            .paths
+                            .attach_socket(&options.name)
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_default()
+                    );
+                }
             }
             run_loop(state).await
         }

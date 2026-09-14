@@ -1,0 +1,43 @@
+{
+  "size": [
+    180,
+    30
+  ],
+  "total_rows": 30,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 0,
+    "y": 7,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "zor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit\nLocal:live  first:live  second:live\n  first            unknown      agent / 2: unclassified\n  first            unknown      default / 1: unclassified\n> first            open         same: first task\nfirst: Recorded task outcome Open; coordination open; attempt Active; agent unclassified\nDetached; refreshing the selected task\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "zor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit"
+    ],
+    [
+      "Local:live  first:live  second:live"
+    ],
+    [
+      "  first            unknown      agent / 2: unclassified"
+    ],
+    [
+      "  first            unknown      default / 1: unclassified"
+    ],
+    [
+      "> first            open         same: first task"
+    ],
+    [
+      "first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified"
+    ],
+    [
+      "Detached; refreshing the selected task"
+    ]
+  ],
+  "scrollback": []
+}

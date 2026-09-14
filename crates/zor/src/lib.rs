@@ -19,6 +19,9 @@ pub mod fux;
 pub mod watch;
 
 #[cfg(feature = "cli")]
+pub mod machines;
+
+#[cfg(feature = "cli")]
 pub mod dashboard;
 #[cfg(feature = "cli")]
 pub mod service;

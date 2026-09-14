@@ -403,7 +403,6 @@ pub(super) fn publish(
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
 mod tests {
     use super::*;
     use crate::view::FrameUpdate;

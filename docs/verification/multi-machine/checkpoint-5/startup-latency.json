@@ -1,0 +1,10 @@
+{
+  "scope": "isolated disposable credential probe after composition helper startup timeout; one local sample per phase; no changed deadlines",
+  "koh_binary": "/tmp/strict-fux-koh-zor/koh-build/debug/koh",
+  "create_seconds": 1.8127916249941336,
+  "unlock_seconds": 1.8105861250078306,
+  "unlock_repeat_seconds": 1.7996058749995427,
+  "gateway_ready_seconds": 1.8246641249861568,
+  "startup_budget_seconds": 4,
+  "interpretation": "Credential unlocking accounts for most isolated startup time; the earlier timeout cause is not proven."
+}

@@ -392,7 +392,7 @@ impl CopySession {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::panic)]
+#[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
 

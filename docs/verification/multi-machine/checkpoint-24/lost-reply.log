@@ -1,0 +1,2 @@
+PASS lost completed remote reply: unknown outcome, one mutation, read-only status/inspect recovery
+PASS guarded resume, stale guard refusal, retained operation, exit-before-pin and no input replay

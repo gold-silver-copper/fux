@@ -105,14 +105,14 @@ fn paint(
     frame.into_bytes()
 }
 
-struct Screen {
+pub(super) struct Screen {
     output: File,
     flags: nix::fcntl::OFlag,
     _raw: crate::platform::Guard,
     signals: Vec<signal_hook::SigId>,
 }
 impl Screen {
-    fn open(stop: &Arc<AtomicBool>) -> Result<Self> {
+    pub(super) fn open(stop: &Arc<AtomicBool>) -> Result<Self> {
         anyhow::ensure!(
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
             "dashboard requires a terminal; use dashboard --once for JSON"
@@ -145,7 +145,7 @@ impl Screen {
         screen.write(b"\x1b[?1049h\x1b[?25l\x1b[2J")?;
         Ok(screen)
     }
-    fn write(&mut self, mut bytes: &[u8]) -> Result<()> {
+    pub(super) fn write(&mut self, mut bytes: &[u8]) -> Result<()> {
         let deadline = Instant::now() + Duration::from_millis(750);
         while !bytes.is_empty() {
             anyhow::ensure!(
@@ -157,7 +157,7 @@ impl Screen {
                 Ok(count) => {
                     bytes = bytes
                         .get(count..)
-                        .ok_or_else(|| anyhow::anyhow!("invalid write count"))?
+                        .ok_or_else(|| anyhow::anyhow!("invalid write count"))?;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     let mut polls = [nix::poll::PollFd::new(
@@ -229,7 +229,7 @@ pub(super) fn run(
     let mut at = Instant::now();
     let mut selected = 0usize;
     let mut attention = false;
-    let mut problem = "Connecting to zor service".to_string();
+    let mut problem = "Connecting to zor service".to_owned();
     let mut notifications = super::attention::Attention::new();
     let mut delivery =
         notify.then(|| crate::platform::notification::Delivery::new(notification_command));

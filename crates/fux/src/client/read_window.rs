@@ -55,7 +55,6 @@ impl ReadWindow {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
 mod tests {
     use super::*;
     #[test]

@@ -1,0 +1,46 @@
+{
+  "size": [
+    180,
+    30
+  ],
+  "total_rows": 30,
+  "scrollback_rows": 0,
+  "cursor": {
+    "x": 0,
+    "y": 8,
+    "visible": false
+  },
+  "default_style": {
+    "fg": "#ffffff",
+    "bg": "#282c34"
+  },
+  "viewport_text": "zor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit\nLocal:live  first:stale  second:live\n  first            stale        agent / 2: unclassified\n  first            stale        default / 1: unclassified\n> first            stale        same: first task\nfirst: Recorded task outcome Open; coordination open; attempt Active; agent unclassified\nfirst / same: preparation cancelled; no task action sent\nfirst: peer closed before a complete frame\n",
+  "scrollback_text": "",
+  "viewport": [
+    [
+      "zor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  R: reload  q: quit"
+    ],
+    [
+      "Local:live  first:stale  second:live"
+    ],
+    [
+      "  first            stale        agent / 2: unclassified"
+    ],
+    [
+      "  first            stale        default / 1: unclassified"
+    ],
+    [
+      "> first            stale        same: first task"
+    ],
+    [
+      "first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified"
+    ],
+    [
+      "first / same: preparation cancelled; no task action sent"
+    ],
+    [
+      "first: peer closed before a complete frame"
+    ]
+  ],
+  "scrollback": []
+}

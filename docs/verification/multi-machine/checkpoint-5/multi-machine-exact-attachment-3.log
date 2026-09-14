@@ -1,0 +1,1 @@
+PASS: exact initial pane, private focus/defaults, stale hello refusal, target-only input and close without sibling fallback

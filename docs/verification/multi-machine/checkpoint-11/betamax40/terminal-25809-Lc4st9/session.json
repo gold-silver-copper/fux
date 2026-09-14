@@ -1,0 +1,12 @@
+{
+  "args": [
+    "05-missing-binding"
+  ],
+  "backend": "betamax-core 0.1.11 / libghostty-vt",
+  "binary": "/tmp/fux-multi-machine-build/debug/zor",
+  "columns": 40,
+  "font": "Noto Sans Mono CJK SC",
+  "font_size": 16,
+  "resize": "live Ghostty terminal and canvas resize; buffers preserved",
+  "rows": 16
+}

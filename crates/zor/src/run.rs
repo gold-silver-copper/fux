@@ -50,8 +50,7 @@ pub fn run(request: Run) -> Result<u8> {
     }
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |since| since.as_nanos());
     let name = request
         .workspace
         .clone()

@@ -207,6 +207,9 @@ fn ordinary_ci_runs_pinned_composition_without_optional_prerequisites() {
         "--test pty",
         "--test admission",
         "--test e2e_loopback",
+        "scenario zor-multi-machine target/debug/fux target/debug/zor references/koh/target/debug/koh",
+        "scenario zor-remote-resume target/debug/fux",
+        "scenario zor-remote-resume-dashboard target/debug/fux",
     ] {
         assert!(
             composition.contains(required),
@@ -376,4 +379,81 @@ fn relative(path: &Path) -> String {
 
 fn strip_test_modules(source: &str) -> &str {
     source.split("#[cfg(test)]").next().unwrap_or(source)
+}
+
+/// The strict lint baseline lives in the workspace manifest and may not silently erode: the
+/// must-have clippy lints stay denied, and no crate- or module-level `#![allow(clippy::...)]`
+/// appears outside the small reviewed set of output-surface and test modules.
+#[test]
+fn lint_baseline_is_enforced_and_not_eroded() {
+    let workspace = read(&root("Cargo.toml"));
+    let (_, lints) = workspace
+        .split_once("[workspace.lints.clippy]")
+        .expect("workspace clippy lints");
+    for required in [
+        "unwrap_used = \"deny\"",
+        "expect_used = \"deny\"",
+        "panic = \"deny\"",
+        "indexing_slicing = \"deny\"",
+        "string_slice = \"deny\"",
+        "todo = \"deny\"",
+        "unimplemented = \"deny\"",
+        "unreachable = \"deny\"",
+        "dbg_macro = \"deny\"",
+        "print_stdout = \"deny\"",
+        "print_stderr = \"deny\"",
+        "exit = \"deny\"",
+        "mem_forget = \"deny\"",
+        "undocumented_unsafe_blocks = \"deny\"",
+    ] {
+        assert!(
+            lints.contains(required),
+            "workspace lint baseline missing: {required}"
+        );
+    }
+    // Every member opts into the shared baseline.
+    for crate_dir in ["crates/fux", "crates/zor", "crates/local-ipc"] {
+        let manifest = read(&root(&format!("{crate_dir}/Cargo.toml")));
+        assert!(
+            manifest.contains("[lints]\nworkspace = true"),
+            "{crate_dir} does not inherit the workspace lints"
+        );
+    }
+    // The only crate/module-level clippy allows permitted: the CLI/wrap output surfaces and the
+    // test module that indexes fixed fixtures. Any new one must be reviewed and added here.
+    let allowed: &[&str] = &[
+        "crates/fux/src/main.rs",
+        "crates/zor/src/main.rs",
+        "crates/zor/src/pty.rs",
+        "crates/fux/src/proto/control.rs",
+        "crates/fux/src/ecs/systems/requests_control.rs",
+    ];
+    for crate_dir in ["crates/fux/src", "crates/zor/src", "crates/local-ipc/src"] {
+        let base = root(crate_dir);
+        let mut stack = vec![base.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).expect("read src dir") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|extension| extension != "rs") {
+                    continue;
+                }
+                if !read(&path).contains("#![allow(clippy::") {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(root(""))
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                assert!(
+                    allowed.iter().any(|ok| relative.ends_with(ok)),
+                    "unreviewed crate/module-level clippy allow in {relative}"
+                );
+            }
+        }
+    }
 }

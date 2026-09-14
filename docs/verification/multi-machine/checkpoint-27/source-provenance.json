@@ -1,0 +1,11 @@
+{
+  "fux_zor_revision": "02e719090c606c5f0aa5d9b8cb1b7841315738a4",
+  "koh_published_pin": "da712875e4f527b718abe44e9d68f94048e916c7",
+  "binaries": {
+    "fux": "a6f293a424b2288c3aa90674273e40f4bda66644c9849ce531fd8f086d04c7f5",
+    "zor": "a41f25d80919190709f5b67ab9bf3bb2ac82549a036290d346dde39d0d2e4f42",
+    "koh_published": "88698a634cbf6ed4418f569711828b6758fffb692958d4b4a834213b595f2d93"
+  },
+  "scenarios": ["zor-multi-machine", "zor-remote-resume", "zor-remote-resume-dashboard"],
+  "lost_reply_published_pin": "3 of 4 passed (loopback timing; retained dev-koh evidence in checkpoints 23-24)"
+}

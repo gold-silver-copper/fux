@@ -1,0 +1,473 @@
+[?1049h[?25l[2J[Hzor dashboard | All machines[K
+Tab machines | j/k rows[K
+? help | q quit[K
+0/3 machines live[K
+No observed rows in this scope[K
+Local: Connecting[K
+[J[Hzor dashboard | All machines[K
+Tab machines | j/k rows[K
+? help | q quit[K
+1/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+first: Connecting[K
+Local: passive state unknown; age at [K
+fetch <= 653ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | All machines[K
+Tab machines | j/k rows[K
+? help | q quit[K
+1/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+first: Connecting[K
+Local: passive state unknown; age at [K
+fetch <= 1907ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | All machines[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+  first [open] same: first task[K
+  second [unknown] agent / 2: unclassif[K
+  second [unknown] default / 1: unclass[K
+  second [open] same: second task[K
+Local: passive state unknown; age at [K
+fetch <= 1907ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | Local[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+Local: passive state unknown; age at [K
+fetch <= 1907ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+> first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+  first [open] same: first task[K
+first: passive state unknown; age at [K
+fetch <= 663ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[HResume | Enter submit | Esc cancel[K
+Resume selected task[K
+Type: OPERATION_ID FUX_INSTANCE[K
+> [K
+Backspace: edit[K
+Keep the stable operation ID to [K
+reconcile an unknown outcome.[K
+Service checks provider/session [K
+eligibility; no prompt replay.[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[HResume | Enter submit | Esc cancel[K
+Resume selected task[K
+Type: OPERATION_ID FUX_INSTANCE[K
+> [K
+Backspace: edit[K
+Keep the stable operation ID to [K
+reconcile an unknown outcome.[K
+Service checks provider/session [K
+eligibility; no prompt replay.[K
+[J[HResume | Enter submit | Esc cancel[K
+Resume selected task[K
+Type: OPERATION_ID FUX_INSTANCE[K
+> ui-resume-refusal [K
+2446662772e7cfaf5f860fc26885048c[K
+Backspace: edit[K
+Keep the stable operation ID to [K
+reconcile an unknown outcome.[K
+Service checks provider/session [K
+eligibility; no prompt replay.[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same / resume [K
+ui-resume-refusal / fux [K
+2446662772e7cfaf5f860fc26885048c: [K
+preparing action...[K
+first: Recorded task outcome Open; [K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same / resume [K
+ui-resume-refusal / fux [K
+2446662772e7cfaf5f860fc26885048c: [K
+outcome unconfirmed; inspect task [K
+before retry: resume result [K
+[J[Hj/k scroll | Esc back[K
+first / same / resume [K
+ui-resume-refusal / fux [K
+2446662772e7cfaf5f860fc26885048c: [K
+outcome unconfirmed; inspect task [K
+before retry: resume result [K
+unconfirmed; inspect the task and [K
+retained operation before an explicit [K
+retry; request was not replayed: zor [K
+service refused request: task-failed: [K
+resume requires a managed task[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same / resume [K
+ui-resume-refusal / fux [K
+2446662772e7cfaf5f860fc26885048c: [K
+outcome unconfirmed; inspect task [K
+before retry: resume result [K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same: preparing action...[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hj/k scroll | Esc back[K
+first / same / attempt [K
+4b12aef9eee85170a934f54e15160990[K
+{[K
+  "artifact_captures": [],[K
+  "artifact_policy": {[K
+    "collected_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "artifacts": [],[K
+  "attempt": {[K
+    "id": [K
+"4b12aef9eee85170a934f54e15160990",[K
+    "session": [K
+"ecfb87ecd6315d4a2334a46034ca3b00",[K[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same: preparing action...[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[?25h[?1049l[?1049h[?25l[?1003h[?1006h]0;>[?1l[?2004l[?2026h[?25l[0m[2J[1;1H[m[39m[49mk[1;2H[m[39m[49mi[1;3H[m[39m[49ms[1;4H[m[39m[49ma[1;5H[m[39m[49mc[1;6H[m[39m[49mz[1;7H[m[39m[49mk[1;8H[m[39m[49ma[1;9H[m[39m[49ms[1;10H[m[39m[49m-[1;11H[m[39m[49mM[1;12H[m[39m[49ma[1;13H[m[39m[49mc[1;14H[m[39m[49mB[1;15H[m[39m[49mo[1;16H[m[39m[49mo[1;17H[m[39m[49mk[1;18H[m[39m[49m-[1;19H[m[39m[49mP[1;20H[m[39m[49mr[1;21H[m[39m[49mo[1;22H[m[39m[49m:[1;23H[m[39m[49m~[1;25H[m[39m[49mk[1;26H[m[39m[49mi[1;27H[m[39m[49ms[1;28H[m[39m[49ma[1;29H[m[39m[49mc[1;30H[m[39m[49mz[1;31H[m[39m[49mk[1;32H[m[39m[49ma[1;33H[m[39m[49m$[16;1H[m[37m[100m [16;2H[m[37m[100ma[16;3H[m[37m[100mg[16;4H[m[37m[100me[16;5H[m[37m[100mn[16;6H[m[37m[100mt[16;7H[m[37m[100m [16;8H[m[37m[100m│[16;9H[m[7m[39m[100m [16;10H[m[7m[39m[100mm[16;11H[m[7m[39m[100ma[16;12H[m[7m[39m[100mi[16;13H[m[7m[39m[100mn[16;14H[m[7m[39m[100m [16;15H[m[37m[100m [16;16H[m[37m[100m [16;17H[m[37m[100m [16;18H[m[37m[100m [16;19H[m[37m[100m [16;20H[m[37m[100m [16;21H[m[37m[100m [16;22H[m[37m[100m [16;23H[m[37m[100m [16;24H[m[37m[100m [16;25H[m[37m[100m [16;26H[m[37m[100m [16;27H[m[37m[100m [16;28H[m[37m[100m [16;29H[m[37m[100m [16;30H[m[37m[100m [16;31H[m[37m[100m [16;32H[m[37m[100m [16;33H[m[37m[100m [16;34H[m[37m[100m [16;35H[m[37m[100m [16;36H[m[37m[100m [16;37H[m[37m[100m│[16;38H[m[37m[100m [16;39H[m[37m[100m2[16;40H[m[37m[100m [1;35H[?25h[?2026l[?2026h[?25l[1;35H[?25h[?2026l[?2026h[?25l[1;35H[?25h[?2026l[?2026h[?25l[1;35H[m[39m[49mp[1;36H[m[39m[49mr[1;37H[m[39m[49mi[1;38H[m[39m[49mn[1;39H[m[39m[49mt[1;40H[m[39m[49mf[2;2H[m[39m[49m"[2;3H[m[39m[49mH[2;4H[m[39m[49mA[2;5H[m[39m[49mN[2;6H[m[39m[49mD[2;7H[m[39m[49mO[2;8H[m[39m[49mF[2;9H[m[39m[49mF[2;10H[m[39m[49m_[2;11H[m[39m[49m%[2;12H[m[39m[49ms[2;13H[m[39m[49m\[2;14H[m[39m[49mn[2;15H[m[39m[49m"[2;17H[m[39m[49mO[2;18H[m[39m[49mK[3;1H[m[39m[49mH[3;2H[m[39m[49mA[3;3H[m[39m[49mN[3;4H[m[39m[49mD[3;5H[m[39m[49mO[3;6H[m[39m[49mF[3;7H[m[39m[49mF[3;8H[m[39m[49m_[3;9H[m[39m[49mO[3;10H[m[39m[49mK[4;1H[m[39m[49mk[4;2H[m[39m[49mi[4;3H[m[39m[49ms[4;4H[m[39m[49ma[4;5H[m[39m[49mc[4;6H[m[39m[49mz[4;7H[m[39m[49mk[4;8H[m[39m[49ma[4;9H[m[39m[49ms[4;10H[m[39m[49m-[4;11H[m[39m[49mM[4;12H[m[39m[49ma[4;13H[m[39m[49mc[4;14H[m[39m[49mB[4;15H[m[39m[49mo[4;16H[m[39m[49mo[4;17H[m[39m[49mk[4;18H[m[39m[49m-[4;19H[m[39m[49mP[4;20H[m[39m[49mr[4;21H[m[39m[49mo[4;22H[m[39m[49m:[4;23H[m[39m[49m~[4;25H[m[39m[49mk[4;26H[m[39m[49mi[4;27H[m[39m[49ms[4;28H[m[39m[49ma[4;29H[m[39m[49mc[4;30H[m[39m[49mz[4;31H[m[39m[49mk[4;32H[m[39m[49ma[4;33H[m[39m[49m$[4;35H[?25h[?2026l[?2026h[?25l[4;35H[?25h[?2026l[?2026l[?9l[?2004l[?1000l[?1002l[?1003l[?1005l[?1006l[?1l>[?25h[?1049l[?2026l[?9l[?2004l[?1000l[?1002l[?1003l[?1005l[?1006l[?1l>[0m[?25h[?1049l[?1049h[?25l[2J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+Detached; refreshing the selection[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same: preparing action...[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hj/k scroll | Esc back[K
+first / same / attempt [K
+4b12aef9eee85170a934f54e15160990[K
+{[K
+  "artifact_captures": [],[K
+  "artifact_policy": {[K
+    "collected_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "artifacts": [],[K
+  "attempt": {[K
+    "id": [K
+"4b12aef9eee85170a934f54e15160990",[K
+    "session": [K
+"ecfb87ecd6315d4a2334a46034ca3b00",[K[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | second[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+> second [unknown] agent / 2: unclassif[K
+  second [unknown] default / 1: unclass[K
+  second [open] same: second task[K
+second: passive state unknown; age at [K
+fetch <= 825ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | second[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+  second [unknown] agent / 2: unclassif[K
+  second [unknown] default / 1: unclass[K
+> second [open] same: second task[K
+second: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | second[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  second [unknown] agent / 2: unclassif[K
+  second [unknown] default / 1: unclass[K
+> second [open] same: second task[K
+second / same: preparing action...[K
+second: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | second[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  second [unknown] agent / 2: unclassif[K
+  second [unknown] default / 1: unclass[K
+> second [open] same: second task[K
+second / same: action failed: second [K
+has no attachment binding for [K
+workspace agent; use machine bind[K
+second: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+[J[Hzor dashboard | All machines[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+  first [open] same: first task[K
+  second [unknown] agent / 2: unclassif[K
+  second [unknown] default / 1: unclass[K
+  second [open] same: second task[K
+Local: passive state unknown; age at [K
+fetch <= 923ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | Local[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+Local: passive state unknown; age at [K
+fetch <= 923ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same: preparing action...[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[?25h[?1049l[?1049h[?25l[?1003h[?1006h]0;>[?1l[?2004l[?2026h[?25l[0m[2J[1;1H[m[39m[49mk[1;2H[m[39m[49mi[1;3H[m[39m[49ms[1;4H[m[39m[49ma[1;5H[m[39m[49mc[1;6H[m[39m[49mz[1;7H[m[39m[49mk[1;8H[m[39m[49ma[1;9H[m[39m[49ms[1;10H[m[39m[49m-[1;11H[m[39m[49mM[1;12H[m[39m[49ma[1;13H[m[39m[49mc[1;14H[m[39m[49mB[1;15H[m[39m[49mo[1;16H[m[39m[49mo[1;17H[m[39m[49mk[1;18H[m[39m[49m-[1;19H[m[39m[49mP[1;20H[m[39m[49mr[1;21H[m[39m[49mo[1;22H[m[39m[49m:[1;23H[m[39m[49m~[1;25H[m[39m[49mk[1;26H[m[39m[49mi[1;27H[m[39m[49ms[1;28H[m[39m[49ma[1;29H[m[39m[49mc[1;30H[m[39m[49mz[1;31H[m[39m[49mk[1;32H[m[39m[49ma[1;33H[m[39m[49m$[1;35H[m[39m[49mp[1;36H[m[39m[49mr[1;37H[m[39m[49mi[1;38H[m[39m[49mn[1;39H[m[39m[49mt[1;40H[m[39m[49mf[2;2H[m[39m[49m"[2;3H[m[39m[49mH[2;4H[m[39m[49mA[2;5H[m[39m[49mN[2;6H[m[39m[49mD[2;7H[m[39m[49mO[2;8H[m[39m[49mF[2;9H[m[39m[49mF[2;10H[m[39m[49m_[2;11H[m[39m[49m%[2;12H[m[39m[49ms[2;13H[m[39m[49m\[2;14H[m[39m[49mn[2;15H[m[39m[49m"[2;17H[m[39m[49mO[2;18H[m[39m[49mK[3;1H[m[39m[49mH[3;2H[m[39m[49mA[3;3H[m[39m[49mN[3;4H[m[39m[49mD[3;5H[m[39m[49mO[3;6H[m[39m[49mF[3;7H[m[39m[49mF[3;8H[m[39m[49m_[3;9H[m[39m[49mO[3;10H[m[39m[49mK[4;1H[m[39m[49mk[4;2H[m[39m[49mi[4;3H[m[39m[49ms[4;4H[m[39m[49ma[4;5H[m[39m[49mc[4;6H[m[39m[49mz[4;7H[m[39m[49mk[4;8H[m[39m[49ma[4;9H[m[39m[49ms[4;10H[m[39m[49m-[4;11H[m[39m[49mM[4;12H[m[39m[49ma[4;13H[m[39m[49mc[4;14H[m[39m[49mB[4;15H[m[39m[49mo[4;16H[m[39m[49mo[4;17H[m[39m[49mk[4;18H[m[39m[49m-[4;19H[m[39m[49mP[4;20H[m[39m[49mr[4;21H[m[39m[49mo[4;22H[m[39m[49m:[4;23H[m[39m[49m~[4;25H[m[39m[49mk[4;26H[m[39m[49mi[4;27H[m[39m[49ms[4;28H[m[39m[49ma[4;29H[m[39m[49mc[4;30H[m[39m[49mz[4;31H[m[39m[49mk[4;32H[m[39m[49ma[4;33H[m[39m[49m$[16;1H[m[37m[100m [16;2H[m[37m[100ma[16;3H[m[37m[100mg[16;4H[m[37m[100me[16;5H[m[37m[100mn[16;6H[m[37m[100mt[16;7H[m[37m[100m [16;8H[m[37m[100m│[16;9H[m[7m[39m[100m [16;10H[m[7m[39m[100mm[16;11H[m[7m[39m[100ma[16;12H[m[7m[39m[100mi[16;13H[m[7m[39m[100mn[16;14H[m[7m[39m[100m [16;15H[m[37m[100m [16;16H[m[37m[100m [16;17H[m[37m[100m [16;18H[m[37m[100m [16;19H[m[37m[100m [16;20H[m[37m[100m [16;21H[m[37m[100m [16;22H[m[37m[100m [16;23H[m[37m[100m [16;24H[m[37m[100m [16;25H[m[37m[100m [16;26H[m[37m[100m [16;27H[m[37m[100m [16;28H[m[37m[100m [16;29H[m[37m[100m [16;30H[m[37m[100m [16;31H[m[37m[100m [16;32H[m[37m[100m [16;33H[m[37m[100m [16;34H[m[37m[100m [16;35H[m[37m[100m [16;36H[m[37m[100m [16;37H[m[37m[100m│[16;38H[m[37m[100m [16;39H[m[37m[100m2[16;40H[m[37m[100m [4;35H[?25h[?2026l[?2026h[?25l[4;35H[?25h[?2026l[?2026l[?9l[?2004l[?1000l[?1002l[?1003l[?1005l[?1006l[?1l>[0m[?25h[?1049l[?1049h[?25l[2J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+Attachment ended: viewer ended [K
+(signal: 9 (SIGKILL)): [K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same: preparing action...[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hj/k scroll | Esc back[K
+first / same / attempt [K
+4b12aef9eee85170a934f54e15160990[K
+{[K
+  "artifact_captures": [],[K
+  "artifact_policy": {[K
+    "collected_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "artifacts": [],[K
+  "attempt": {[K
+    "id": [K
+"4b12aef9eee85170a934f54e15160990",[K
+    "session": [K
+"ecfb87ecd6315d4a2334a46034ca3b00",[K[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same: preparing action...[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+Cancellation requested; an already [K
+sent action may still complete[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same: preparation cancelled; [K
+no task action sent[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[Hj/k scroll | Esc back[K
+Dashboard controls[K
+Tab: cycle machines and All machines[K
+j/k: select a row[K
+Enter/i: inspect task or observed agent[K
+a: attach exact pane; Ctrl-A d detaches[K
+r: task result[K
+e: inspect full status/error[K
+c: cancel task coordination[K
+s: stop managed task[K
+l: reconcile retained task evidence[K
+u: resume task; enter stable operation [K
+ID and explicit fux incarnation[K
+R: reload machine catalog[K
+Esc: cancel preparation or close detail[K
+q: close detail or quit dashboard[K[J[Hj/k scroll | Esc back[K
+Enter/i: inspect task or observed agent[K
+a: attach exact pane; Ctrl-A d detaches[K
+r: task result[K
+e: inspect full status/error[K
+c: cancel task coordination[K
+s: stop managed task[K
+l: reconcile retained task evidence[K
+u: resume task; enter stable operation [K
+ID and explicit fux incarnation[K
+R: reload machine catalog[K
+Esc: cancel preparation or close detail[K
+q: close detail or quit dashboard[K
+Actions require fresh evidence.[K
+Task-only actions refuse observed [K
+agents.[K[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+e: full status/error[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first / same: preparation cancelled; [K
+no task action sent[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[?25h[?1049l

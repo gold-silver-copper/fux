@@ -1,0 +1,18 @@
+{
+  "args": [
+    "--koh-binary",
+    "/private/tmp/koh-published-build/debug/koh",
+    "--fux-binary",
+    "/private/tmp/fux-multi-machine-build/debug/fux",
+    "--machine",
+    "resume-host",
+    "dashboard"
+  ],
+  "backend": "betamax-core 0.1.11 / libghostty-vt",
+  "binary": "/private/tmp/fux-multi-machine-build/debug/zor",
+  "columns": 180,
+  "font": "system monospace",
+  "font_size": 16,
+  "resize": "live Ghostty terminal and canvas resize; buffers preserved",
+  "rows": 30
+}

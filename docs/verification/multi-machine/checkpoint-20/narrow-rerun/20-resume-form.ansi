@@ -1,0 +1,76 @@
+[?1049h[?25l[2J[Hzor dashboard | All machines[K
+Tab machines | j/k rows[K
+? help | q quit[K
+0/3 machines live[K
+No observed rows in this scope[K
+Local: Connecting[K
+[J[Hzor dashboard | All machines[K
+Tab machines | j/k rows[K
+? help | q quit[K
+1/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+first: Connecting[K
+Local: passive state unknown; age at [K
+fetch <= 959ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | All machines[K
+Tab machines | j/k rows[K
+? help | q quit[K
+1/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+first: Connecting[K
+Local: passive state unknown; age at [K
+fetch <= 2211ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | All machines[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+  first [open] same: first task[K
+  second [unknown] agent / 2: unclassif[K
+  second [unknown] default / 1: unclass[K
+  second [open] same: second task[K
+Local: passive state unknown; age at [K
+fetch <= 2211ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | Local[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+> Local [unknown] default / 1: unclassi[K
+Local: passive state unknown; age at [K
+fetch <= 2211ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+> first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+  first [open] same: first task[K
+first: passive state unknown; age at [K
+fetch <= 942ms; passive rule none; no [K
+identified supported foreground agent[K
+[J[Hzor dashboard | first[K
+Tab machines | j/k rows[K
+? help | q quit[K
+3/3 machines live[K
+  first [unknown] agent / 2: unclassifi[K
+  first [unknown] default / 1: unclassi[K
+> first [open] same: first task[K
+first: Recorded task outcome Open; [K
+coordination open; attempt Active; [K
+agent unclassified[K
+[J[HResume | Enter submit | Esc cancel[K
+Resume selected task[K
+Type: OPERATION_ID FUX_INSTANCE[K
+> [K
+Backspace: edit[K
+Keep the stable operation ID to [K
+reconcile an unknown outcome.[K
+Service checks provider/session [K
+eligibility; no prompt replay.[K
+[J

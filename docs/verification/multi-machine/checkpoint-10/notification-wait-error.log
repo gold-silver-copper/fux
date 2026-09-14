@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 309, in <module>
+    until(lambda: sum(int(args[1].split()[0]) for args in notices()) == 2, timeout=12)
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 61, in until
+    assert time.monotonic() < deadline, 'condition timeout'
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: condition timeout

@@ -1,0 +1,85 @@
+[?1049h[?25l[2J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:unavailable  first:unavailable  second:unavailable[K
+No observed rows in this scope[K
+Local: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:unavailable  second:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 1150ms; passive rule none; no identified supported foreground agent[K
+first: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:unavailable  second:unavailable[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 2408ms; passive rule none; no identified supported foreground agent[K
+first: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:unavailable  second:live[K
+> Local            unknown      default / 1: unclassified[K
+  second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+  second           open         same: second task[K
+Local: passive state unknown; age at fetch <= 2408ms; passive rule none; no identified supported foreground agent[K
+first: Connecting[K
+[J[Hzor dashboard | All machines | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:live  second:live[K
+> Local            unknown      default / 1: unclassified[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+  first            open         same: first task[K
+  second           unknown      agent / 2: unclassified[K
+  second           unknown      default / 1: unclassified[K
+  second           open         same: second task[K
+Local: passive state unknown; age at fetch <= 663ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | Local | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:live  second:live[K
+> Local            unknown      default / 1: unclassified[K
+Local: passive state unknown; age at fetch <= 663ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:live  second:live[K
+> first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+  first            open         same: first task[K
+first: passive state unknown; age at fetch <= 1175ms; passive rule none; no identified supported foreground agent[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+[J[Hzor dashboard | first | Tab: machine  j/k: row  Enter: inspect  a: attach  r: result  c: cancel  s: stop  l: reconcile  q: quit[K
+Local:live  first:live  second:live[K
+  first            unknown      agent / 2: unclassified[K
+  first            unknown      default / 1: unclassified[K
+> first            open         same: first task[K
+first: Recorded task outcome Open; coordination open; attempt Active; agent unclassified[K
+first / same: preparing action...[K
+[J[HTask inspection/result | j/k scroll | Esc back[K
+first / same / attempt e4d655f8760d2ba02473127ba6882cec[K
+{[K
+  "artifact_captures": [],[K
+  "artifact_policy": {[K
+    "collected_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "artifacts": [],[K
+  "attempt": {[K
+    "id": "e4d655f8760d2ba02473127ba6882cec",[K
+    "session": "549058ccbec85bebc87f8dc1940fd046",[K
+    "state": "active",[K
+    "task": "same"[K
+  },[K
+  "check_policy": {[K
+    "passed_count": 0,[K
+    "required_count": 0,[K
+    "sealed": false[K
+  },[K
+  "checks": [],[K
+  "generation": 1,[K
+  "launch": null,[K
+  "prompts": [],[K
+  "session": {[K
+    "agent": null,[K
+    "created_ms": 1789333582767,[K
+    "id": "549058ccbec85bebc87f8dc1940fd046",[K
+    "launch": null,[K[J
