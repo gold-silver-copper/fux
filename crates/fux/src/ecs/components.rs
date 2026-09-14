@@ -5,7 +5,9 @@ use crate::ids::{PaneId, TabId, ViewerId};
 use crate::layout::{LayoutTree, Rect};
 use crate::proto::attach::ServerMessage;
 use crate::terminal::ServerTerminal;
+use bevy_ecs::lifecycle::HookContext;
 use bevy_ecs::prelude::*;
+use bevy_ecs::world::DeferredWorld;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 
@@ -96,6 +98,7 @@ impl Selection {
 /// A workspace groups tabs and is the unit koh gateways and zor observers address by name. Its
 /// member tabs are the [`Tabs`] relationship target, kept by the ECS from each tab's [`TabOf`].
 #[derive(Component, Debug)]
+#[component(on_remove = release_workspace_name)]
 pub struct Workspace {
     pub name: String,
     /// User-facing name, independent of the immutable routing identity.
@@ -104,12 +107,23 @@ pub struct Workspace {
     pub selection: Selection,
     /// Step counter of the most recent attachment; the deterministic no-name attach rule.
     pub last_attached: u64,
-    /// The workspace is usable by viewers once its initial pane is live.
-    pub open: bool,
-    pub retiring: Option<Retiring>,
     /// Consecutive automatic tab labels.
     pub tab_counter: u32,
 }
+
+/// The workspace is usable by viewers: its initial pane went live. Absent while reserved.
+#[derive(Component, Debug)]
+pub struct Open;
+
+/// A workspace whose retirement has begun; finalized after the grace period.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Retiring {
+    pub since_ms: u64,
+    pub exit_code: Option<u32>,
+}
+
+/// Query filter for workspaces that accept viewers and requests: open and not retiring.
+pub type Accepting = (With<Open>, Without<Retiring>);
 
 /// Membership of a tab in a workspace. Reserved tabs (a new tab or workspace whose first pane is
 /// still starting) carry no `TabOf` until their completion; the ECS keeps [`Tabs`] in sync.
@@ -151,14 +165,9 @@ impl std::ops::Deref for Tabs {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Retiring {
-    pub since_ms: u64,
-    pub exit_code: Option<u32>,
-}
-
 /// A tab owns one recursive split layout whose leaves are pane entities.
 #[derive(Component, Debug)]
+#[component(on_remove = release_tab_id)]
 pub struct Tab {
     pub id: TabId,
     pub workspace: Entity,
@@ -233,6 +242,7 @@ impl WorkspacePin {
 
 /// A pane is one terminal: its emulator/history, process lifecycle and geometry.
 #[derive(Component)]
+#[component(on_remove = release_pane_id)]
 pub struct Pane {
     /// Current ownership, retained even after its tab closes. Launch attribution stays below.
     pub routing_workspace: Entity,
@@ -280,6 +290,14 @@ impl Pane {
             .refresh_grid(&self.published_title, self.state.exit_code())
     }
 
+    /// Whether this pane is the live, input-accepting process an exact attachment named.
+    #[must_use]
+    pub fn is_required_process(&self, want: &crate::proto::attach::InitialTarget) -> bool {
+        self.workspace_stream == want.stream
+            && self.state.pid() == Some(want.pid)
+            && self.state.accepts_input()
+    }
+
     /// Inner terminal size for an outer rectangle; never below the emulator minimum.
     #[must_use]
     pub fn terminal_size(rect: Rect) -> (u16, u16) {
@@ -322,6 +340,7 @@ pub struct Sent {
 
 /// An attached viewer: private tab/focus selection, bounded request queue and publication state.
 #[derive(Component)]
+#[component(on_remove = release_viewer_id)]
 pub struct Viewer {
     /// Exact-attachment viewers close if their required process exits or changes workspace route.
     pub required_process: Option<crate::proto::attach::InitialTarget>,
@@ -365,5 +384,46 @@ impl Viewer {
     #[must_use]
     pub fn focused(&self) -> Option<Entity> {
         self.selection.focused()
+    }
+
+    /// Whether this viewer currently counts toward `workspace`'s viewer limit: attached to it
+    /// and not already detaching.
+    #[must_use]
+    pub fn attached_to(&self, workspace: Entity) -> bool {
+        self.workspace == workspace && !self.detaching
+    }
+}
+
+// Index maintenance only: the public-id maps in `Ids` follow the entities they name, so no
+// despawn path can forget to release an id. These hooks drive no command and emit no effect.
+fn release_pane_id(mut world: DeferredWorld, context: HookContext) {
+    let id = world.get_mut::<Pane>(context.entity).map(|pane| pane.id);
+    if let (Some(id), Some(mut ids)) = (id, world.get_resource_mut::<super::resources::Ids>()) {
+        ids.panes.remove(&id);
+    }
+}
+
+fn release_tab_id(mut world: DeferredWorld, context: HookContext) {
+    let id = world.get_mut::<Tab>(context.entity).map(|tab| tab.id);
+    if let (Some(id), Some(mut ids)) = (id, world.get_resource_mut::<super::resources::Ids>()) {
+        ids.tabs.remove(&id);
+    }
+}
+
+fn release_viewer_id(mut world: DeferredWorld, context: HookContext) {
+    let id = world
+        .get_mut::<Viewer>(context.entity)
+        .map(|viewer| viewer.id);
+    if let (Some(id), Some(mut ids)) = (id, world.get_resource_mut::<super::resources::Ids>()) {
+        ids.viewers.remove(&id);
+    }
+}
+
+fn release_workspace_name(mut world: DeferredWorld, context: HookContext) {
+    let name = world
+        .get_mut::<Workspace>(context.entity)
+        .map(|workspace| workspace.name.clone());
+    if let (Some(name), Some(mut ids)) = (name, world.get_resource_mut::<super::resources::Ids>()) {
+        ids.workspaces.remove(&name);
     }
 }

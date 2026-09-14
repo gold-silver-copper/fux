@@ -9,7 +9,7 @@ pub mod daemon;
 pub mod ecs;
 pub mod ids;
 pub mod layout;
-pub mod os;
+pub(crate) mod os;
 pub mod proto;
 pub mod server;
 pub mod terminal;

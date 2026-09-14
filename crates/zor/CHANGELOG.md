@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - Unreleased
+
+- Requires fux 0.11.0: a `cells` capture carries each non-default style as
+  `[foreground, background, attributes]` (colours `null`, a palette index or `[r, g, b]`;
+  attributes a bitset). The capture decoder and the shared `reply_completed_cells.json`
+  fixture follow the format; zor still ignores style values.
+- Requires local-ipc 0.3.0.
+- The multi-machine dashboard no longer discards keys that arrive in the same terminal read as
+  a key that changes the screen. Escape followed quickly by `a` or Tab, or `a` followed by
+  Escape to cancel, previously lost the second key on a loaded host.
 
 - The standalone PTY wrapper now requires the opt-in `wrap` feature. Default CLI builds
   exclude production PTY allocation and terminal-emulator dependencies; dashboard geometry

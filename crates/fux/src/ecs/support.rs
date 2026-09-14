@@ -2,10 +2,10 @@
 //! layout membership edits and explicit ownership cascades.
 
 use super::components::{
-    Creation, Pane, PaneState, Retiring, Selection, Tab, TabOf, Tabs, Viewer, Workspace,
+    Creation, Open, Pane, PaneState, Retiring, Selection, Tab, TabOf, Tabs, Viewer, Workspace,
 };
 use super::messages::{Effect, Requester};
-use super::resources::{Clock, Ids, Limits, Registry};
+use super::resources::{Ids, Registry};
 use crate::ids::{PaneId, TabId, ViewerId};
 use crate::layout::Rect;
 use crate::proto::attach::ServerMessage;
@@ -17,24 +17,22 @@ pub fn effect(world: &mut World, effect: Effect) {
     world.resource_mut::<Messages<Effect>>().write(effect);
 }
 
-/// The step's read-only context: clock, limits and the identity registry.
+/// The step's read-only identity registry, for typed systems.
 #[derive(SystemParam)]
 pub struct Step<'w> {
-    pub clock: Res<'w, Clock>,
-    pub limits: Res<'w, Limits>,
     pub ids: Res<'w, Ids>,
 }
 
-/// Deferred viewer removal for typed systems: the entity goes at the next sync point, its id is
-/// released now, and the outbox is closed after the messages already queued for it.
+/// Deferred viewer removal for typed systems: the entity and its id go at the next sync point
+/// (the id map follows the entity through its component hook), and the outbox is closed after
+/// the messages already queued for it.
 #[derive(SystemParam)]
 pub struct ViewerExit<'w, 's> {
     commands: Commands<'w, 's>,
 }
 
 impl ViewerExit<'_, '_> {
-    pub fn despawn(&mut self, ids: &mut Ids, viewer: Entity, id: ViewerId, effects: &mut Effects) {
-        ids.viewers.remove(&id);
+    pub fn despawn(&mut self, viewer: Entity, id: ViewerId, effects: &mut Effects) {
         self.commands.entity(viewer).despawn();
         effects.emit(Effect::CloseViewer { viewer: id });
     }
@@ -126,9 +124,9 @@ pub fn reply(world: &mut World, requester: Requester, reply: Reply) {
                     created: true,
                 },
                 Reply::Failed { error, .. } => {
-                    super::messages::ManagerOutcome::Failed(error.message)
+                    super::messages::ManagerOutcome::failed(error.message)
                 }
-                other => super::messages::ManagerOutcome::Failed(format!(
+                other => super::messages::ManagerOutcome::failed(format!(
                     "unexpected manager result {other:?}"
                 )),
             };
@@ -137,8 +135,64 @@ pub fn reply(world: &mut World, requester: Requester, reply: Reply) {
     }
 }
 
-pub fn failed(id: RequestId, code: ErrorCode, message: impl Into<String>) -> Reply {
-    Reply::failed(id, code, message)
+/// Why a handler refused a request. The request id is attached once, where the reply is sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+impl Failure {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotFound, message)
+    }
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Conflict, message)
+    }
+    pub fn limit(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Limit, message)
+    }
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidRequest, message)
+    }
+    /// The wire reply for request `id`.
+    pub fn reply(self, id: RequestId) -> Reply {
+        Reply::failed(id, self.code, self.message)
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<Failure> for String {
+    fn from(failure: Failure) -> Self {
+        failure.message
+    }
+}
+
+impl From<&control::ControlError> for Failure {
+    fn from(error: &control::ControlError) -> Self {
+        Self::new(error.code, error.message.clone())
+    }
+}
+
+/// Removes a viewer now (exclusive systems): despawns it (releasing its id) and closes its
+/// outbox after the messages already queued for it.
+pub fn despawn_viewer(world: &mut World, viewer: Entity) {
+    let Some(id) = world.get::<Viewer>(viewer).map(|viewer| viewer.id) else {
+        return;
+    };
+    world.despawn(viewer);
+    effect(world, Effect::CloseViewer { viewer: id });
 }
 
 /// Answers every waiting requester with the reply `make` builds for its request id.
@@ -248,10 +302,13 @@ pub fn each_viewer(
     }
 }
 
-pub fn viewers_of_workspace(world: &mut World, workspace: Entity) -> Vec<Entity> {
-    viewers_where(world, |viewer| {
-        viewer.workspace == workspace && !viewer.detaching
-    })
+/// How many viewers are attached to `workspace` and not detaching.
+pub fn attached_viewers(world: &mut World, workspace: Entity) -> usize {
+    world
+        .query::<&Viewer>()
+        .iter(world)
+        .filter(|viewer| viewer.attached_to(workspace))
+        .count()
 }
 
 /// Observe effective focus after a discrete layout/selection edit, including shared zoom.
@@ -339,9 +396,9 @@ pub fn retarget_focus(world: &mut World, tab: Entity, old: Entity, next: Option<
 
 /// Starts a workspace's retirement with `exit_code`; false when one is already under way.
 pub fn retire(world: &mut World, workspace: Entity, now_ms: u64, exit_code: Option<u32>) -> bool {
-    match world.get_mut::<Workspace>(workspace) {
-        Some(mut component) if component.retiring.is_none() => {
-            component.retiring = Some(Retiring {
+    match world.get_entity_mut(workspace) {
+        Ok(mut entity) if !entity.contains::<Retiring>() => {
+            entity.insert(Retiring {
                 since_ms: now_ms,
                 exit_code,
             });
@@ -349,6 +406,27 @@ pub fn retire(world: &mut World, workspace: Entity, now_ms: u64, exit_code: Opti
         }
         _ => false,
     }
+}
+
+/// Whether `workspace` is open and not retiring: it accepts viewers and requests.
+pub fn is_accepting(world: &World, workspace: Entity) -> bool {
+    world
+        .get_entity(workspace)
+        .is_ok_and(|entity| entity.contains::<Open>() && !entity.contains::<Retiring>())
+}
+
+/// Whether `workspace` exists and is not retiring.
+pub fn is_not_retiring(world: &World, workspace: Entity) -> bool {
+    world
+        .get_entity(workspace)
+        .is_ok_and(|entity| !entity.contains::<Retiring>())
+}
+
+/// Whether `workspace` is reserved: neither open nor retiring.
+pub fn is_pending(world: &World, workspace: Entity) -> bool {
+    world
+        .get_entity(workspace)
+        .is_ok_and(|entity| !entity.contains::<Open>() && !entity.contains::<Retiring>())
 }
 
 /// Publishes `pane.closed` for `workspace`.
@@ -365,26 +443,17 @@ pub fn pane_closed(world: &mut World, workspace: Entity, pane: PaneId, code: Opt
     );
 }
 
-/// Removes a tab entity and its id; its panes must already be gone or re-homed.
+/// Removes a tab entity (its id follows); its panes must already be gone or re-homed.
 pub fn despawn_tab(world: &mut World, tab: Entity) {
-    if let Some(id) = tab_id(world, tab) {
-        world.resource_mut::<Ids>().tabs.remove(&id);
-    }
     world.despawn(tab);
 }
 
-/// Removes a workspace entity and its name; its tabs and panes must already be gone.
+/// Removes a workspace entity (its name follows); its tabs and panes must already be gone.
 pub fn despawn_workspace(world: &mut World, workspace: Entity) {
     world
         .resource_mut::<super::resources::WorkspaceOrder>()
         .0
         .retain(|entry| *entry != workspace);
-    if let Some(name) = world
-        .get::<Workspace>(workspace)
-        .map(|workspace| workspace.name.clone())
-    {
-        world.resource_mut::<Ids>().workspaces.remove(&name);
-    }
     world.despawn(workspace);
 }
 
@@ -421,7 +490,6 @@ pub fn despawn_pane(world: &mut World, pane: Entity) {
     let Some(id) = pane_id(world, pane) else {
         return;
     };
-    world.resource_mut::<Ids>().panes.remove(&id);
     clear_barriers(world, pane);
     world.despawn(pane);
     effect(world, Effect::ReleasePane { pane: id });
@@ -541,7 +609,7 @@ pub fn fail_creations(world: &mut World, panes: &[Entity], reason: &str, despawn
         };
         clear_barriers(world, entity);
         reply_all(world, creation.requesters, |id| {
-            failed(id, control::ErrorCode::Conflict, reason)
+            Failure::conflict(reason).reply(id)
         });
         if despawn {
             despawn_pane(world, entity);

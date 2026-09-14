@@ -1,9 +1,9 @@
 //! Snapshot phase: derive one frame per dirty viewer and publish it before the replies it
 //! promises. Detaching viewers and retiring workspaces end with `exited` and a close.
 
-use crate::ecs::components::{Pane, PaneState, Sent, Tab, Tabs, Viewer, Workspace};
+use crate::ecs::components::{Pane, PaneState, Retiring, Sent, Tab, Tabs, Viewer, Workspace};
 use crate::ecs::messages::{Effect, Inbound};
-use crate::ecs::resources::{Clock, Ids};
+use crate::ecs::resources::Clock;
 use crate::ecs::support::{Effects, ViewerExit};
 use crate::proto::attach::ServerMessage;
 use crate::proto::control::Event;
@@ -24,6 +24,7 @@ pub struct Pacing<'w> {
 pub struct Scene<'w, 's> {
     identity: Res<'w, crate::ecs::resources::ServerIdentity>,
     workspaces: Query<'w, 's, &'static Workspace>,
+    retiring: Query<'w, 's, &'static Retiring>,
     members: Query<'w, 's, &'static Tabs>,
     tabs: Query<'w, 's, &'static Tab>,
     panes: Query<'w, 's, &'static Pane>,
@@ -42,6 +43,7 @@ pub fn refresh_grids(
     mut panes: Query<(Entity, &mut Pane)>,
     tabs: Query<&Tab>,
     workspaces: Query<&Workspace>,
+    retiring: Query<(), With<Retiring>>,
     mut pacing: Pacing,
     mut effects: Effects,
 ) {
@@ -68,9 +70,18 @@ pub fn refresh_grids(
             .and_then(|tab| tabs.get(tab).ok())
             .map(|tab| tab.geometry.iter().map(|(pane, _)| *pane).collect())
             .unwrap_or_default();
-        let output = shown
-            .iter()
-            .any(|pane| panes.get(*pane).is_ok_and(|(_, pane)| pane.dirty));
+        // Output is owed when a shown pane is dirty or its grid already holds rows this viewer
+        // was not sent: control reads (list, capture) refresh grids outside this phase and
+        // clear `dirty`, and that output still has to reach the viewer.
+        let output = shown.iter().any(|pane| {
+            panes.get(*pane).is_ok_and(|(_, pane)| {
+                pane.dirty
+                    || viewer
+                        .sent
+                        .get(&pane.id)
+                        .is_some_and(|sent| pane.terminal.grid().seq() > sent.seq)
+            })
+        });
         viewer.pending |= output;
         // Output within two intervals of the viewer's own input is its echo, shown at once.
         let echoing = clock.now_ms
@@ -80,9 +91,7 @@ pub fn refresh_grids(
         let forced = viewer.dirty
             || echoing
             || !viewer.after_frame.is_empty()
-            || workspaces
-                .get(viewer.workspace)
-                .is_ok_and(|workspace| workspace.retiring.is_some());
+            || retiring.contains(viewer.workspace);
         let due_at = viewer.last_frame_ms.saturating_add(frame_interval_ms);
         if forced || clock.now_ms >= due_at {
             viewer.publish_now = true;
@@ -141,7 +150,6 @@ pub fn refresh_grids(
 pub fn publish_frames(
     mut viewers: Query<(Entity, &mut Viewer)>,
     scene: Scene,
-    mut ids: ResMut<Ids>,
     mut exit: ViewerExit,
     mut effects: Effects,
 ) {
@@ -163,14 +171,10 @@ pub fn publish_frames(
                     message: ServerMessage::Exited { code: None },
                 });
             }
-            exit.despawn(&mut ids, entity, id, &mut effects);
+            exit.despawn(entity, id, &mut effects);
             continue;
         }
-        let retiring = scene
-            .workspaces
-            .get(viewer.workspace)
-            .ok()
-            .and_then(|workspace| workspace.retiring);
+        let retiring = scene.retiring.get(viewer.workspace).ok().copied();
         let needs_frame =
             viewer.publish_now && (viewer.dirty || viewer.pending || retiring.is_some());
         viewer.publish_now = false;

@@ -295,12 +295,20 @@ impl Adapter {
         }
     }
 
-    pub fn descriptor_for(
-        &self,
-        name: &str,
-        stream: u64,
-    ) -> Result<Descriptor, crate::daemon::PathError> {
-        descriptor(&self.paths, &self.identity, name, stream)
+    /// Files a reply channel or viewer outbox a socket task registered ahead of its event.
+    pub fn register(&mut self, item: super::connections::Register) {
+        use super::connections::Register;
+        match item {
+            Register::ControlReply(token, sender) => {
+                self.control_replies.insert(token, sender);
+            }
+            Register::ManagerReply(token, sender) => {
+                self.manager_replies.insert(token, sender);
+            }
+            Register::Outbox(viewer, outbox) => {
+                self.viewers.insert(viewer, outbox);
+            }
+        }
     }
 
     pub fn register_workspace(&mut self, open: OpenWorkspace) -> anyhow::Result<()> {

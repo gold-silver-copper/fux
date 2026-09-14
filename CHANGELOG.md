@@ -1,6 +1,49 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 - Unreleased
+
+Simplification pass (`docs/codebase-simplification.md` records every batch, its line count and
+its behaviour differences).
+
+- Fixed a viewer that stopped updating a pane. When a control-socket read (`list`, `capture`)
+  arrived in the same step as paced output, it refreshed the pane grid and cleared the flag
+  frame publication relied on, so that output was never sent until something else changed.
+  Publication now compares each shown pane's grid sequence with what the viewer was sent.
+  The bug predates this release.
+
+- Attachment frames and `cells` captures carry a non-default cell style as
+  `[foreground, background, attributes]` (a colour is `null`, a palette index or `[r, g, b]`;
+  attributes are a bitset: bold 1, dim 2, italic 4, underline 8, inverse 16; unknown bits are
+  rejected). Styled cells shrink from about 110 to about 15 bytes. A 0.10 viewer or consumer
+  cannot decode 0.11 frames or `cells` captures.
+- Public API: `ecs::systems`, `ecs::support`, `os`, `server::adapter`, `server::connections`
+  and the `client` submodules are crate-private; `client::{attach, attach_reported,
+  AttachOptions}` and `server::{run, ServeOptions}` stay public. Removed with no production
+  caller: `Event::kind`, `EventKind`, `ErrorCode::Timeout`, the `ManagerAction`/`ManagerOutcome`
+  mirrors of `ManagerRequest`/`ManagerReply`, `Session::workspace_names`,
+  `LayoutAction::is_read_only`, `LayoutTree::cycle` (now `next_leaf`/`previous_leaf`).
+- Control protocol: the six tracked operations (`fix-workspace`, `rename-pane`, `pane-input`,
+  `input-reserve`, `input-submit`, `input-status`) decode without `instance` and then fail
+  validation with `invalid-request`, like `events` and `split`, instead of a JSON field error.
+  Every frame type is bounded by the 1 MiB limit on write. A viewer whose request queue
+  overflows receives one `CloseViewer`, not two. A detaching viewer no longer counts toward
+  the per-workspace viewer limit on the select/transfer path.
+- CLI: every subcommand is parsed by clap with accurate `--help`; `split`/`new` accept `h`/`v`
+  and a repeatable `--env`; `send-keys` takes exactly one escaped string unless `--keys`;
+  `capture --cells --attrs` is rejected at parse time; invalid key notation in the config is
+  reported by the TOML decoder with the key path; a manager reply carrying a failed nested
+  control reply exits non-zero for every such variant.
+- Viewer: a pasted Enter no longer submits the tab-rename field; a horizontal wheel no longer
+  steps the swap picker or the menu; a chooser press after a stale-target dismissal adopts the
+  left capture uniformly; ESC ESC inside a mode dismisses it after the Escape timeout.
+- Server: a stale manager socket whose probe fails with an unexpected error is reported as an
+  error rather than treated as "not running"; a request from a viewer that vanished in the
+  same step gets no reply rather than a validation reply.
+- Repository: gate logs and dated acceptance reports are no longer tracked
+  (`docs/verification.md` indexes them in history); `tests/ecs.rs` is split by topic.
+- Requires local-ipc 0.3.0.
+
+Previously unreleased:
 
 - Complete mouse Close workflows for panes, tabs and workspaces with clickable confirm/cancel
   rows, outside-click cancellation and captured releases. Stale or unpainted dialogs cannot

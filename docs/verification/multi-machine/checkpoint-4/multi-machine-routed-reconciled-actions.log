@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-4/routed-tasks.py", line 89, in <module>
-    listed = json.loads(run('ZOR_BIN', *routed, 'task', 'list').stdout)
-                        ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-4/routed-tasks.py", line 28, in run
-    assert result.returncode in ((0, 1) if expected is None else (expected,)), (args, result.returncode, result.stderr)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: (('--machine', 'remote', '--koh-binary', '/private/tmp/strict-fux-koh-zor/koh-build/debug/koh', 'task', 'list'), 1, 'zor: machine remote (85c6e18c798460c50861880fc3eb26ac), transport Some(SessionEnded): zor journal is busy; retry the operation ID\n')

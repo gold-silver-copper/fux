@@ -1,5 +1,5 @@
-//! The ordered phases of one step. Every system is exclusive: one logical writer, explicit
-//! ordering, mutations visible immediately to the next phase.
+//! The ordered phases of one step. Most systems are typed; four take `&mut World` because they
+//! must observe their own mutations within the same batch (see docs/design.md "Systems").
 
 pub mod creation;
 pub mod layout;

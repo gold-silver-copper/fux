@@ -358,7 +358,7 @@ pub fn capture(args: Vec<String>) -> Result<()> {
         args.len().is_multiple_of(2),
         "usage: capture-detection-screens --zor PATH --herdr PATH --output NEW_JSON"
     );
-    for pair in args.chunks_exact(2) {
+    for pair in args.as_chunks::<2>().0 {
         ensure!(
             ["--zor", "--herdr", "--output"].contains(&pair[0].as_str()),
             "unknown argument {}",

@@ -1,6 +1,6 @@
 //! CLI for existing-pane layout edits. Exported revisions make concurrent edits explicit.
 use anyhow::{Context, Result, bail};
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use fux::ids::{PaneId, TabId};
 use fux::layout::{Direction, LayoutDocument, NodeId};
 use fux::proto::control::{
@@ -65,7 +65,7 @@ pub struct WorkspaceTransferArgs {
     #[arg(long, requires = "destination_tab")]
     target: Option<u32>,
     #[arg(long, value_enum, default_value = "right")]
-    side: Side,
+    side: Direction,
     /// Existing target's share on a 10000 scale; only applies to an existing tab.
     #[arg(long, requires = "destination_tab", value_parser = clap::value_parser!(u16).range(500..=9500))]
     ratio: Option<u16>,
@@ -111,27 +111,9 @@ impl WorkspaceTransferArgs {
                     }
                 },
                 destination,
-                side: self.side.into(),
+                side: self.side,
             },
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Side {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-impl From<Side> for Direction {
-    fn from(side: Side) -> Self {
-        match side {
-            Side::Left => Self::Left,
-            Side::Right => Self::Right,
-            Side::Up => Self::Up,
-            Side::Down => Self::Down,
-        }
     }
 }
 
@@ -153,7 +135,7 @@ enum Edit {
         destination_generation: u64,
         target: u32,
         #[arg(value_enum)]
-        side: Side,
+        side: Direction,
         /// Existing target pane share on a 10000 scale.
         #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u16).range(500..=9500))]
         ratio: u16,
@@ -169,13 +151,13 @@ enum Edit {
         pane: u32,
         target: u32,
         #[arg(value_enum)]
-        side: Side,
+        side: Direction,
     },
     /// Grow the branch toward a directional boundary (negative delta shrinks).
     Resize {
         pane: u32,
         #[arg(value_enum)]
-        direction: Side,
+        direction: Direction,
         #[arg(allow_hyphen_values = true)]
         delta: i16,
     },
@@ -225,7 +207,7 @@ impl LayoutArgs {
                     generation: destination_generation,
                     target: PaneId(target),
                 },
-                side: side.into(),
+                side,
             },
             Edit::Swap { pane, target } => LayoutAction::Swap {
                 pane: PaneId(pane),
@@ -234,7 +216,7 @@ impl LayoutArgs {
             Edit::Move { pane, target, side } => LayoutAction::Relocate {
                 pane: PaneId(pane),
                 target: PaneId(target),
-                side: side.into(),
+                side,
             },
             Edit::Resize {
                 pane,
@@ -242,7 +224,7 @@ impl LayoutArgs {
                 delta,
             } => LayoutAction::ResizeToward {
                 pane: PaneId(pane),
-                direction: direction.into(),
+                direction,
                 delta,
             },
             Edit::Ratio { split, ratio } => LayoutAction::SetRatio {

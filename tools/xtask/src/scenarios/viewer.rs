@@ -153,6 +153,29 @@ impl Harness {
         }
         Ok(())
     }
+    /// The viewer's screen once no paint has changed it for a short quiet window. A viewer that
+    /// just attached or reacted keeps painting for a while; a snapshot taken mid-way is not a
+    /// baseline to compare against later.
+    fn settled(&mut self, index: usize) -> Result<String> {
+        let quiet = Duration::from_millis(300);
+        let end = Instant::now() + Duration::from_secs(8) * crate::support::local::deadline_scale();
+        let mut last = self.text(index);
+        let mut since = Instant::now();
+        loop {
+            self.pump(0.03)?;
+            let now = self.text(index);
+            if now != last {
+                last = now;
+                since = Instant::now();
+            } else if since.elapsed() >= quiet {
+                return Ok(last);
+            }
+            ensure!(
+                Instant::now() < end,
+                "viewer {index} never settled:\n{last}"
+            );
+        }
+    }
     fn cli(&self, args: &[&str]) -> Result<Value> {
         let mut command = self.root.command(&self.binary);
         command.args(args);
@@ -898,19 +921,19 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     let tab_id = state[1]["id"].to_string();
     let layout_before = h.cli(&["default", "layout", &tab_id, "export"])?;
     h.send(0, b"\x1b[<8;2;2M\x1b[<40;78;3M")?;
+    // The hint and the destination highlight are one drag state; wait for both together.
     h.wait(
-        |h| Ok(h.text(0).contains("release to apply")),
-        "pane drag target",
+        |h| {
+            Ok(h.text(0).contains("release to apply")
+                && h.viewers[0]
+                    .screen
+                    .screen()
+                    .cell(2, 77)
+                    .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)))
+        },
+        "pane drag target and destination highlight",
         8,
     )?;
-    ensure!(
-        h.viewers[0]
-            .screen
-            .screen()
-            .cell(2, 77)
-            .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)),
-        "pane drag did not render its destination highlight"
-    );
     // Neither a right-button release nor a wheel report may commit a left-button drag.
     h.send(0, b"\x1b[<2;78;3m\x1b[<64;78;3M")?;
     h.hold(|h| h.text(0).contains("release to apply"), 0.2)?;
@@ -1382,19 +1405,20 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         3,
         format!("\x1b[<8;2;2M\x1b[<40;{main_column};24M").as_bytes(),
     )?;
+    // The hint and the highlighted destination tab are one drag state; wait for both rather
+    // than sampling the highlight once after the hint's paint.
     h.wait(
-        |h| Ok(h.text(3).contains("to tab main")),
-        "tab drag hint",
+        |h| {
+            Ok(h.text(3).contains("to tab main")
+                && h.viewers[3]
+                    .screen
+                    .screen()
+                    .cell(23, (main_column - 1) as u16)
+                    .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)))
+        },
+        "tab drag hint and drop highlight",
         8,
     )?;
-    ensure!(
-        h.viewers[3]
-            .screen
-            .screen()
-            .cell(23, (main_column - 1) as u16)
-            .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)),
-        "tab drop highlight"
-    );
     h.send(3, format!("\x1b[<0;{main_column};24m").as_bytes())?;
     h.wait(
         |h| {

@@ -94,9 +94,10 @@ the same step report the same `revision`, `seq` and `input_sequence`, so a consu
 evaluate screen rules on the cells without re-emulating the text. Each line carries `row`,
 `wrapped` and `cells` in the viewer's wire encoding: `{"text":"a"}` is a text cell, `{}` a
 blank, `{"run":N}` `N` equal blanks, `kind` is spelled out only for `wide-leading` and
-`wide-continuation`, and `style` (`foreground`, `background`, `bold`, `dim`, `italic`,
-`underline`, `inverse`) only when it is not the default; a line expands to exactly `columns`
-cells. `if_revision` behaves as for text: a matching revision returns the metadata with
+`wide-continuation`, and `style` only when it is not the default: `[foreground, background,
+attributes]`, where a colour is `null` (terminal default), a palette index or `[r, g, b]`, and
+`attributes` is a bitset (bold 1, dim 2, italic 4, underline 8, inverse 16; other bits are
+rejected). A line expands to exactly `columns` cells. `if_revision` behaves as for text: a matching revision returns the metadata with
 `unchanged: true` and no lines. `max_bytes` bounds the JSON encoding of `lines`: lines are
 kept whole, top to bottom, while the encoding stays within the bound; the rest are dropped and
 `truncated` is `true`. `scrollback` and `attrs` are text-form options and are `invalid-request`
@@ -107,10 +108,8 @@ with `cells`.
 {"status":"completed","id":5,"result":{"kind":"cells","value":{"seq":12,"input_sequence":3,"revision":15,
   "rows":2,"columns":8,"cursor":{"row":1,"column":0,"hidden":false},"title":"sh","progress":null,
   "unchanged":false,"truncated":false,"lines":[
-    {"row":0,"wrapped":false,"cells":[{"text":"$"},{},{"text":"日","kind":"wide-leading","style":{"foreground":{"Indexed":1},
-      "background":"Default","bold":true,"dim":false,"italic":false,"underline":false,"inverse":false}},
-      {"kind":"wide-continuation","style":{"foreground":{"Indexed":1},"background":"Default","bold":true,"dim":false,
-      "italic":false,"underline":false,"inverse":false}},{"run":4}]},
+    {"row":0,"wrapped":false,"cells":[{"text":"$"},{},{"text":"日","kind":"wide-leading","style":[1,null,1]},
+      {"kind":"wide-continuation","style":[1,null,1]},{"run":4}]},
     {"row":1,"wrapped":false,"cells":[{"run":8}]}]}}}
 ```
 
@@ -167,7 +166,8 @@ subscription's `id`; records returned by the `events` RPC retain their stored ID
 subscription receives every event of its workspace; what to act on is the consumer's
 selection. Title changes and viewer attachments are not events: a title change advances the
 pane's output sequence (`pane.output`) and is read from `list` or a capture, and viewer
-counts are read from `list`.
+counts are read from `list`. The event name is the `event` field of each record; fux ships no
+separate event-kind type or `timeout` error code, since neither was ever emitted.
 
 `pane.output` retains the grid sequence semantics. Output that changes only capture
 history or metadata emits `workspace.changed` instead. These output invalidations share

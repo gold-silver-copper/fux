@@ -1,8 +1,0 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running unittests src/adapter_fixture.rs (target/rust-zor-fixtures/debug/deps/zor_adapter_fixture-7dfb4d18c832e261)
-     Running unittests src/argv_fixture.rs (target/rust-zor-fixtures/debug/deps/zor_argv_fixture-ef6af72770e14730)
-     Running unittests src/codex_fixture.rs (target/rust-zor-fixtures/debug/deps/zor_codex_fixture-d199ac920cef892f)
-     Running unittests src/lifecycle_fixture.rs (target/rust-zor-fixtures/debug/deps/zor_lifecycle_fixture-02580e92cff04cc0)
-     Running unittests src/notifier_fixture.rs (target/rust-zor-fixtures/debug/deps/zor_notifier_fixture-653ae4bbe3b2e083)
-     Running unittests src/provider_capture_fixture.rs (target/rust-zor-fixtures/debug/deps/zor_provider_capture_fixture-930ca51b250e89c6)
-     Running unittests src/main.rs (target/rust-zor-fixtures/debug/deps/zor_xtask-f5c63e8fd35e92a2)

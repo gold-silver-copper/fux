@@ -60,7 +60,7 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     };
     let live_a = content(&h, 0, false);
     let live_b = content(&h, 0, true);
-    let other = h.text(1);
+    let other = h.settled(1)?;
     let focused = h
         .bar(0)
         .split('│')
@@ -96,7 +96,11 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         content(&h, 0, true) == history_b,
         "A wheel changed B history"
     );
-    ensure!(h.text(1) == other, "history crossed viewers");
+    ensure!(
+        h.text(1) == other,
+        "history crossed viewers:\n{other}\n--- now ---\n{}",
+        h.text(1)
+    );
     ensure!(h.bar(0).ends_with(&focused), "wheel changed keyboard focus");
     h.send(0, b"\x1b")?;
     h.wait(

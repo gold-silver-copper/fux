@@ -5,7 +5,7 @@
 //! `id: title` or a transient notice, on its own background. Panes have no frame; the one-cell gaps the layout leaves
 //! between siblings are drawn as shared separators, bold next to the focused pane.
 
-use super::backend::{CellStyle as BackendStyle, TerminalBackend};
+use super::backend::TerminalBackend;
 use super::hints::HintPanel;
 use super::text;
 use crate::config::StyleColor;
@@ -89,21 +89,23 @@ fn styled(fg: Option<Color>) -> Style {
     fg.map_or_else(Style::default, |fg| Style::default().fg(fg))
 }
 
+/// A composed frame in a fresh buffer, for tests that inspect the result.
+#[cfg(test)]
 pub struct Composed {
     pub buffer: Buffer,
     pub cursor: Option<(u16, u16)>,
-    pub tabs: Vec<(Rect, crate::ids::TabId)>,
-    pub entries: Vec<(Rect, usize)>,
-    pub panel: Option<Rect>,
 }
 
+/// Where the bar's tabs, a panel's entries and the panel itself were painted, for hit testing.
+#[derive(Default)]
 pub struct HitRegions {
     pub tabs: Vec<(Rect, crate::ids::TabId)>,
     pub entries: Vec<(Rect, usize)>,
     pub panel: Option<Rect>,
 }
 
-/// Composes `frame` for a terminal of `rows` x `cols`.
+/// Composes `frame` for a terminal of `rows` x `cols` into a fresh buffer.
+#[cfg(test)]
 pub fn compose(
     frame: &Frame,
     local: Option<&[LocalView<'_>]>,
@@ -114,15 +116,26 @@ pub fn compose(
     cols: u16,
 ) -> Composed {
     let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+    let (cursor, _hits) = compose_into(&mut buffer, frame, local, panel, notice, palette);
+    Composed { buffer, cursor }
+}
+
+/// Composes `frame` into `buffer`, which is resized to `rows` x `cols` and cleared first, so a
+/// caller painting every turn can reuse its buffers instead of allocating them.
+pub fn compose_into(
+    buffer: &mut Buffer,
+    frame: &Frame,
+    local: Option<&[LocalView<'_>]>,
+    panel: Option<&HintPanel>,
+    notice: Option<&Notice>,
+    palette: &Palette,
+) -> (Option<(u16, u16)>, HitRegions) {
+    buffer.reset();
+    let rows = buffer.area.height;
+    let cols = buffer.area.width;
     let mut cursor = None;
     if rows == 0 || cols == 0 {
-        return Composed {
-            buffer,
-            cursor,
-            tabs: Vec::new(),
-            entries: Vec::new(),
-            panel: None,
-        };
+        return (cursor, HitRegions::default());
     }
     for entry in &frame.layout {
         let content = Rect::new(
@@ -137,9 +150,9 @@ pub fn compose(
         };
         let overlay = local.and_then(|views| views.iter().find(|local| local.pane == entry.pane));
         let view = overlay.map_or(pane, |local| local.view);
-        paint_pane(&mut buffer, content, view);
+        paint_pane(buffer, content, view);
         if let Some(local) = overlay {
-            paint_selection(&mut buffer, content, local);
+            paint_selection(buffer, content, local);
             if focused
                 && local.keyboard
                 && local.cursor.0 < content.height
@@ -168,15 +181,15 @@ pub fn compose(
         {
             // The bar reports the focused pane; other exited panes keep a dim marker in their
             // last row so they cannot pass for a quiet live pane.
-            paint_exit_marker(&mut buffer, content, code, palette);
+            paint_exit_marker(buffer, content, code, palette);
         }
     }
-    paint_separators(&mut buffer, frame, palette);
+    paint_separators(buffer, frame, palette);
     if let Some((pane, side)) = panel.and_then(|panel| panel.drop_target) {
-        paint_drop_target(&mut buffer, frame, pane, side);
+        paint_drop_target(buffer, frame, pane, side);
     }
     // The bar is painted last so a stale, taller frame (repainted after a shrink) cannot cover it.
-    let tabs = paint_bar(&mut buffer, frame, notice, palette);
+    let tabs = paint_bar(buffer, frame, notice, palette);
     if let Some(target) = panel.and_then(|panel| panel.drop_tab)
         && let Some((rect, _)) = tabs.iter().find(|(_, tab)| *tab == target)
     {
@@ -191,7 +204,7 @@ pub fn compose(
     if let Some(panel) = panel {
         // Popups sit above the bar, never on it.
         let above_bar = Rect::new(0, 0, cols, rows.saturating_sub(1));
-        let painted = panel.paint_with_bounds(&mut buffer, above_bar);
+        let painted = panel.paint_with_bounds(buffer, above_bar);
         entries = painted.entries;
         panel_bounds = painted.bounds;
         if !panel.is_thin()
@@ -201,13 +214,14 @@ pub fn compose(
             cursor = None;
         }
     }
-    Composed {
-        buffer,
+    (
         cursor,
-        tabs,
-        entries,
-        panel: panel_bounds,
-    }
+        HitRegions {
+            tabs,
+            entries,
+            panel: panel_bounds,
+        },
+    )
 }
 
 /// Preview the insertion side without changing terminal cells or server geometry. Whole wide
@@ -645,18 +659,22 @@ pub fn paint<B: TerminalBackend>(
 ) -> io::Result<()> {
     backend.begin_frame()?;
     let painted: io::Result<()> = (|| {
-        let empty = Buffer::empty(next.area);
         let previous = previous.filter(|previous| previous.area == next.area);
-        if previous.is_none() {
-            // ED uses the current background on BCE terminals. The preceding frame
-            // commonly ends on the colored status bar; reset before treating the
-            // cleared screen as an all-default buffer for the diff below.
-            backend.write_bytes(b"\x1b[0m\x1b[2J")?;
-        }
-        let previous = previous.unwrap_or(&empty);
+        let cleared;
+        let previous = match previous {
+            Some(previous) => previous,
+            None => {
+                // ED uses the current background on BCE terminals. The preceding frame
+                // commonly ends on the colored status bar; reset before treating the
+                // cleared screen as an all-default buffer for the diff below.
+                backend.write_bytes(b"\x1b[0m\x1b[2J")?;
+                cleared = Buffer::empty(next.area);
+                &cleared
+            }
+        };
         for (col, row, cell) in previous.diff(next) {
             backend.move_to(row, col)?;
-            backend.set_style(backend_style(cell))?;
+            backend.set_style(cell.fg, cell.bg, cell.modifier)?;
             backend.print(cell.symbol())?;
         }
         if let Some((row, col)) = cursor {
@@ -671,42 +689,6 @@ pub fn paint<B: TerminalBackend>(
     painted?;
     ended?;
     backend.flush()
-}
-
-fn backend_style(cell: &ratatui_core::buffer::Cell) -> BackendStyle {
-    BackendStyle {
-        fg: rat_to_vt(cell.fg),
-        bg: rat_to_vt(cell.bg),
-        bold: cell.modifier.contains(Modifier::BOLD),
-        dim: cell.modifier.contains(Modifier::DIM),
-        italic: cell.modifier.contains(Modifier::ITALIC),
-        underline: cell.modifier.contains(Modifier::UNDERLINED),
-        inverse: cell.modifier.contains(Modifier::REVERSED),
-    }
-}
-
-const fn rat_to_vt(color: Color) -> vt100::Color {
-    match color {
-        Color::Reset => vt100::Color::Default,
-        Color::Black => vt100::Color::Idx(0),
-        Color::Red => vt100::Color::Idx(1),
-        Color::Green => vt100::Color::Idx(2),
-        Color::Yellow => vt100::Color::Idx(3),
-        Color::Blue => vt100::Color::Idx(4),
-        Color::Magenta => vt100::Color::Idx(5),
-        Color::Cyan => vt100::Color::Idx(6),
-        Color::Gray => vt100::Color::Idx(7),
-        Color::DarkGray => vt100::Color::Idx(8),
-        Color::LightRed => vt100::Color::Idx(9),
-        Color::LightGreen => vt100::Color::Idx(10),
-        Color::LightYellow => vt100::Color::Idx(11),
-        Color::LightBlue => vt100::Color::Idx(12),
-        Color::LightMagenta => vt100::Color::Idx(13),
-        Color::LightCyan => vt100::Color::Idx(14),
-        Color::White => vt100::Color::Idx(15),
-        Color::Indexed(value) => vt100::Color::Idx(value),
-        Color::Rgb(r, g, b) => vt100::Color::Rgb(r, g, b),
-    }
 }
 
 #[cfg(test)]

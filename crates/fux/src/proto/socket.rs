@@ -24,7 +24,7 @@ pub fn bind_local_socket(path: &Path) -> io::Result<BoundSocket> {
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket has no parent"))?;
     ensure_private_directory(directory)?;
-    remove_stale_socket(&path)?;
+    remove_stale_socket(&path, 1)?;
     BoundSocket::bind(&path)
 }
 
@@ -40,7 +40,10 @@ pub fn ensure_private_directory(directory: &Path) -> io::Result<()> {
     })
 }
 
-fn remove_stale_socket(path: &Path) -> io::Result<()> {
+/// Unlinks a socket nobody is listening on, provided it belongs to the owner of its directory
+/// and is still the same inode afterwards. `probes` connect attempts 5 ms apart tolerate a
+/// listener that is being bound concurrently.
+pub(crate) fn remove_stale_socket(path: &Path, probes: u8) -> io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -52,19 +55,24 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
             "refusing to replace a non-socket path",
         ));
     }
-    match UnixStream::connect(path) {
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "socket is already accepting connections",
-            ));
+    for probe in 0..probes.max(1) {
+        if probe > 0 {
+            std::thread::sleep(Duration::from_millis(5));
         }
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
-            ) => {}
-        Err(error) => return Err(error),
+        match UnixStream::connect(path) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    "socket is already accepting connections",
+                ));
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                ) => {}
+            Err(error) => return Err(error),
+        }
     }
     let parent = path
         .parent()
@@ -75,7 +83,11 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
             "stale socket owner differs from runtime directory owner",
         ));
     }
-    let current = fs::symlink_metadata(path)?;
+    let current = match fs::symlink_metadata(path) {
+        Ok(current) => current,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
     if !current.file_type().is_socket()
         || current.dev() != metadata.dev()
         || current.ino() != metadata.ino()
@@ -90,20 +102,14 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
 
 /// Authenticates a connected peer through kernel-supplied credentials.
 pub fn authorize_peer(stream: &UnixStream) -> io::Result<()> {
-    authorize_uid(
-        local_ipc::peer_uid(stream)?,
-        nix::unistd::geteuid().as_raw(),
-    )
-}
-
-fn authorize_uid(peer: u32, owner: u32) -> io::Result<()> {
-    if peer != owner {
-        return Err(io::Error::new(
+    if local_ipc::peer_is_current_user(stream)? {
+        Ok(())
+    } else {
+        Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "local peer belongs to another user",
-        ));
+        ))
     }
-    Ok(())
 }
 
 /// Validates that a client-side socket path lives in a private, owner-matching directory.
@@ -135,8 +141,6 @@ pub fn check_private_socket_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub use local_ipc::{connect_until as connect_local, write_all_until};
-
 /// Client half of control negotiation: authorize the peer, send the preface, expect it back
 /// (the server half lives with the async socket tasks).
 pub fn negotiate_client(stream: &mut UnixStream) -> io::Result<()> {
@@ -150,7 +154,7 @@ pub fn negotiate_client_with_timeout(stream: &mut UnixStream, timeout: Duration)
     }
     authorize_peer(stream)?;
     let deadline = Instant::now() + timeout;
-    write_all_until(stream, CONTROL_PREFACE, deadline)?;
+    local_ipc::write_all_until(stream, CONTROL_PREFACE, deadline)?;
     let mut received = [0; CONTROL_PREFACE.len()];
     local_ipc::read_exact_until(stream, &mut received, deadline)?;
     if &received != CONTROL_PREFACE {
@@ -194,7 +198,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .map_err(io::Error::other)?;
         let start = Instant::now();
-        let result = write_all_until(
+        let result = local_ipc::write_all_until(
             &mut writer,
             &vec![b'x'; 1024 * 1024],
             start + Duration::from_millis(100),
@@ -210,9 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn foreign_uid_is_rejected_and_current_kernel_peer_is_accepted() -> io::Result<()> {
-        assert!(authorize_uid(501, 502).is_err());
-        assert!(authorize_uid(0, 502).is_err());
+    fn current_kernel_peer_is_accepted() -> io::Result<()> {
         let (first, second) = UnixStream::pair()?;
         authorize_peer(&first)?;
         authorize_peer(&second)?;

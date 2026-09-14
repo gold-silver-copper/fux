@@ -95,6 +95,32 @@ pub enum ManagerReply {
     },
 }
 
+impl ManagerReply {
+    /// The process exit status a CLI that printed this reply should end with: failure for a
+    /// failed manager request or a failed nested control reply.
+    #[must_use]
+    pub fn exit_code(&self) -> std::process::ExitCode {
+        match self {
+            Self::Failed { .. } => std::process::ExitCode::FAILURE,
+            Self::ReleasePanePin { result }
+            | Self::InputStatus { result }
+            | Self::PaneLocation { result }
+            | Self::Layout { result }
+            | Self::Final { result } => result.exit_code(),
+            _ => std::process::ExitCode::SUCCESS,
+        }
+    }
+
+    /// The descriptor an `Attach`/`Resolve` request produced; any other reply is an error.
+    pub fn into_descriptor(self) -> Result<super::Descriptor> {
+        match self {
+            Self::Attach { descriptor } => Ok(descriptor),
+            Self::Failed { message } => bail!("session server: {message}"),
+            _ => bail!("unexpected manager reply"),
+        }
+    }
+}
+
 pub const MANAGER_DEADLINE: Duration = Duration::from_secs(15);
 
 pub fn manager_request(path: &Path, request: &ManagerRequest) -> Result<ManagerReply> {
@@ -113,7 +139,7 @@ pub fn manager_request_until(
             .filter(|duration| !duration.is_zero())
             .ok_or_else(|| anyhow::anyhow!("manager request timed out"))
     };
-    let mut stream = crate::proto::socket::connect_local(path, deadline)
+    let mut stream = local_ipc::connect_until(path, deadline)
         .with_context(|| format!("connecting to manager socket {}", path.display()))?;
     crate::proto::socket::negotiate_client_with_timeout(&mut stream, remaining()?)
         .context("authenticating the manager socket and negotiating its control protocol")?;

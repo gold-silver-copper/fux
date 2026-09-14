@@ -184,16 +184,22 @@ impl<L: Copy + Eq + Hash> LayoutTree<L> {
         Ok(())
     }
 
-    /// Depth-first traversal with wraparound, including leaves temporarily hidden by small areas.
-    pub fn cycle(&self, pane: L, forward: bool) -> Option<L> {
+    /// The leaf after `pane` in depth-first order, wrapping around and including leaves
+    /// temporarily hidden by small areas.
+    pub fn next_leaf(&self, pane: L) -> Option<L> {
+        self.cycle(pane, 1)
+    }
+
+    /// The leaf before `pane` in depth-first order, wrapping around.
+    pub fn previous_leaf(&self, pane: L) -> Option<L> {
+        let leaves = self.leaves();
+        self.cycle(pane, leaves.len().saturating_sub(1))
+    }
+
+    fn cycle(&self, pane: L, offset: usize) -> Option<L> {
         let leaves = self.leaves();
         let index = leaves.iter().position(|id| *id == pane)?;
-        let next = if forward {
-            (index + 1) % leaves.len()
-        } else {
-            (index + leaves.len() - 1) % leaves.len()
-        };
-        leaves.get(next).copied()
+        leaves.get((index + offset) % leaves.len()).copied()
     }
 
     /// Nearest ancestor whose boundary lies on the requested side of the pane. Positive delta
@@ -296,8 +302,8 @@ mod tests {
         assert_eq!(tree.leaves(), vec![2, 3, 1]);
         assert!(tree.relocate(1, 3, Direction::Up).is_ok());
         assert_eq!(tree.leaves(), vec![2, 1, 3]);
-        assert_eq!(tree.cycle(3, true), Some(2));
-        assert_eq!(tree.cycle(2, false), Some(3));
+        assert_eq!(tree.next_leaf(3), Some(2));
+        assert_eq!(tree.previous_leaf(2), Some(3));
         let before = tree.clone();
         assert_eq!(
             tree.relocate(1, 999, Direction::Left),

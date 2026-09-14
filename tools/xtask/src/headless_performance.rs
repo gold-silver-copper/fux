@@ -441,7 +441,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "usage: headless-performance --fux PATH --zor PATH --output NEW_JSON [--repetitions 1..5]"
     );
     let mut flags = BTreeMap::new();
-    for p in args.chunks_exact(2) {
+    for p in args.as_chunks::<2>().0 {
         ensure!(
             ["--fux", "--zor", "--output", "--repetitions"].contains(&p[0].as_str()),
             "unknown argument"

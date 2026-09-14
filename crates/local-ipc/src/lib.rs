@@ -104,10 +104,6 @@ impl BoundSocket {
     pub fn listener(&self) -> &UnixListener {
         &self.listener
     }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl Drop for BoundSocket {
@@ -171,7 +167,7 @@ pub fn random_token() -> io::Result<String> {
 /// A close-on-exec, non-blocking stream socket with `connect` initiated. When `pending`, the
 /// caller waits for writability under its own deadline policy, then calls [`Connecting::confirm`].
 #[derive(Debug)]
-pub struct Connecting {
+pub(crate) struct Connecting {
     fd: OwnedFd,
     pending: bool,
 }
@@ -471,16 +467,18 @@ pub fn runtime_directory_from(
     runtime: Option<OsString>,
     home: Option<OsString>,
 ) -> Option<PathBuf> {
-    let absolute = |value: Option<OsString>| {
-        value
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    };
-    if let Some(root) = absolute(runtime) {
+    if let Some(root) = absolute_path(runtime) {
         return Some(root.join(name));
     }
-    macos_fallback(name, absolute(home))
+    macos_fallback(name, absolute_path(home))
+}
+
+/// A non-empty absolute path from an environment value, or `None`.
+pub fn absolute_path(value: Option<OsString>) -> Option<PathBuf> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 
 #[cfg(target_os = "macos")]
@@ -628,7 +626,7 @@ mod tests {
         let path = root.join("s.sock");
         let bound = BoundSocket::bind(&path)?;
         assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
-        assert_eq!(bound.path(), path);
+        assert_eq!(bound.path, path);
         drop(bound);
         assert!(!path.exists());
         let first = BoundSocket::bind(&path)?;

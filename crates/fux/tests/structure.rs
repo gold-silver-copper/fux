@@ -105,7 +105,7 @@ fn ecs_is_the_only_authoritative_model() {
 }
 
 #[test]
-fn wire_events_have_the_documented_dotted_spellings_exactly_twice() {
+fn wire_events_have_the_documented_dotted_spellings_exactly_once() {
     // The unit tests in that file assert the removed names are rejected; only declarations count.
     let source = read(Path::new("src/proto/control.rs"));
     let source = strip_test_modules(&source);
@@ -118,8 +118,8 @@ fn wire_events_have_the_documented_dotted_spellings_exactly_twice() {
     ] {
         assert_eq!(
             source.matches(&format!("rename = \"{name}\"")).count(),
-            2,
-            "control-event invariant: `{name}` must name both Event and EventKind exactly once"
+            1,
+            "control-event invariant: `{name}` must name exactly one Event variant"
         );
     }
     for removed in [
@@ -207,7 +207,8 @@ fn ordinary_ci_runs_pinned_composition_without_optional_prerequisites() {
         "--test pty",
         "--test admission",
         "--test e2e_loopback",
-        "scenario zor-multi-machine target/debug/fux target/debug/zor references/koh/target/debug/koh",
+        "cargo build --release --manifest-path references/koh/Cargo.toml",
+        "scenario zor-multi-machine target/debug/fux target/debug/zor references/koh/target/release/koh",
         "scenario zor-remote-resume target/debug/fux",
         "scenario zor-remote-resume-dashboard target/debug/fux",
     ] {

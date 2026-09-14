@@ -4,10 +4,7 @@
 //! Adapted from koh (MIT); the upstream notice is retained in LICENSES/koh.txt.
 
 use crate::proto::control::CaptureLine;
-use crate::view::{
-    CellKind, CellStyle, Cursor, Line, MAX_CELL_TEXT_BYTES, PaneModes, PaneUpdate, classify,
-    push_wire,
-};
+use crate::view::{Cursor, Line, PaneModes, PaneUpdate, push_vt100};
 use vt100::Screen;
 
 pub const MIN_DIM: u16 = 2;
@@ -248,66 +245,6 @@ fn c1_control_string_introducer(byte: u8) -> Option<ControlStringKind> {
     }
 }
 
-/// One cell of the retained grid: the vt100 cell's text and attributes without its allocation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct GridCell {
-    text: [u8; MAX_CELL_TEXT_BYTES],
-    len: u8,
-    kind: CellKind,
-    style: CellStyle,
-}
-
-impl Default for GridCell {
-    fn default() -> Self {
-        Self {
-            text: [0; MAX_CELL_TEXT_BYTES],
-            len: 0,
-            kind: CellKind::Blank,
-            style: CellStyle::default(),
-        }
-    }
-}
-
-impl GridCell {
-    fn from_vt100(cell: &vt100::Cell) -> Self {
-        let mut text = [0; MAX_CELL_TEXT_BYTES];
-        let (contents, kind) = classify(cell);
-        let contents = contents.as_bytes();
-        let len = contents.len().min(MAX_CELL_TEXT_BYTES);
-        if let (Some(target), Some(source)) = (text.get_mut(..len), contents.get(..len)) {
-            target.copy_from_slice(source);
-        }
-        Self {
-            text,
-            len: u8::try_from(len).unwrap_or(0),
-            kind,
-            style: CellStyle::from_vt100(cell),
-        }
-    }
-
-    fn text(&self) -> &str {
-        self.text
-            .get(..usize::from(self.len))
-            .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .unwrap_or_default()
-    }
-
-    /// Exactly `*self == Self::from_vt100(cell)` for every retained cell (which is canonical:
-    /// zero padding past `len`) without building the copy: the style is compared first because
-    /// it is cheapest, then the classified kind and retained text.
-    fn matches_vt100(&self, cell: &vt100::Cell) -> bool {
-        if self.style != CellStyle::from_vt100(cell) {
-            return false;
-        }
-        let (contents, kind) = classify(cell);
-        let contents = contents.as_bytes();
-        let len = contents.len().min(MAX_CELL_TEXT_BYTES);
-        kind == self.kind
-            && usize::from(self.len) == len
-            && self.text.get(..len) == contents.get(..len)
-    }
-}
-
 /// A copy of what an observer last saw of the pane: the visible screen with the sequence each
 /// row last changed at, plus cursor, modes, title and exit status. The sequence advances once per
 /// refresh that changed anything, so a frame carries only the rows a viewer has not seen and
@@ -316,7 +253,8 @@ impl GridCell {
 pub struct Grid {
     rows: u16,
     columns: u16,
-    cells: Vec<GridCell>,
+    /// Retained vt100 cells (`None` only for a position the screen did not report).
+    cells: Vec<Option<vt100::Cell>>,
     wrapped: Vec<bool>,
     changed: Vec<u64>,
     seq: u64,
@@ -353,7 +291,7 @@ impl Grid {
         if (rows, columns) != (self.rows, self.columns) {
             self.rows = rows;
             self.columns = columns;
-            self.cells = vec![GridCell::default(); usize::from(rows) * width];
+            self.cells = vec![None; usize::from(rows) * width];
             self.wrapped = vec![false; usize::from(rows)];
             self.changed = vec![next; usize::from(rows)];
             for row in 0..rows {
@@ -366,16 +304,9 @@ impl Grid {
                 let start = usize::from(row) * width;
                 let differs = self.wrapped.get(usize::from(row)) != Some(&wrapped)
                     || (0..columns).any(|column| {
-                        match (
-                            self.cells.get(start + usize::from(column)),
-                            screen.cell(row, column),
-                        ) {
-                            (Some(current), Some(fresh)) => !current.matches_vt100(fresh),
-                            // Unreachable while the retained size matches the screen; kept
-                            // defensive: a missing screen cell would be copied as default.
-                            (Some(current), None) => *current != GridCell::default(),
-                            (None, _) => true,
-                        }
+                        self.cells
+                            .get(start + usize::from(column))
+                            .is_none_or(|current| current.as_ref() != screen.cell(row, column))
                     });
                 if differs {
                     self.copy_row(screen, row, width);
@@ -421,7 +352,7 @@ impl Grid {
             let index = usize::from(row);
             let mut cells = Vec::new();
             for cell in self.cells.iter().skip(index * width).take(width) {
-                push_wire(&mut cells, 0, cell.text(), cell.kind, cell.style);
+                push_vt100(&mut cells, 0, cell.as_ref());
             }
             let line = CaptureLine {
                 row,
@@ -429,9 +360,8 @@ impl Grid {
                 cells,
             };
             // Each row is one array element; the separating comma counts toward the bound.
-            let encoded = serde_json::to_vec(&line).map_or(usize::MAX, |json| json.len());
             bytes = bytes
-                .saturating_add(encoded)
+                .saturating_add(line.encoded_len())
                 .saturating_add(usize::from(row > 0));
             if bytes > max_bytes {
                 return (lines, true);
@@ -445,10 +375,7 @@ impl Grid {
         let start = usize::from(row) * width;
         for column in 0..self.columns {
             if let Some(slot) = self.cells.get_mut(start + usize::from(column)) {
-                *slot = screen
-                    .cell(row, column)
-                    .map(GridCell::from_vt100)
-                    .unwrap_or_default();
+                *slot = screen.cell(row, column).cloned();
             }
         }
         if let Some(flag) = self.wrapped.get_mut(usize::from(row)) {
@@ -480,7 +407,7 @@ impl Grid {
             }
             let start = update.cells.len();
             for cell in self.cells.iter().skip(index * width).take(width) {
-                push_wire(&mut update.cells, start, cell.text(), cell.kind, cell.style);
+                push_vt100(&mut update.cells, start, cell.as_ref());
             }
             update.lines.push(Line {
                 row,
@@ -711,66 +638,7 @@ impl ServerTerminal {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    #[allow(clippy::indexing_slicing)]
-    fn grid_cell_match_equals_constructed_comparison() {
-        let mut terminal = ServerTerminal::new(6, 24, 100);
-        terminal.process(
-            "plain \u{1b}[1;31mbold red\u{1b}[0m \u{1b}[4;7mul inv\u{1b}[0m 日本語 e\u{301} \u{1b}[2;3mdim\r\n"
-                .as_bytes(),
-        );
-        terminal.process(
-            "\u{1b}[44mbg\u{1b}[0m x\u{1f600}y \u{1b}[38;5;200m256\u{1b}[0m\r\n".as_bytes(),
-        );
-        terminal.refresh_grid("", None);
-        let screen = terminal.parser.screen();
-        let width = usize::from(terminal.grid.columns);
-        let mut cells = 0;
-        for row in 0..terminal.grid.rows {
-            for column in 0..terminal.grid.columns {
-                let (Some(fresh), Some(current)) = (
-                    screen.cell(row, column),
-                    terminal
-                        .grid
-                        .cells
-                        .get(usize::from(row) * width + usize::from(column))
-                        .copied(),
-                ) else {
-                    // The final count proves every visible cell was actually compared.
-                    continue;
-                };
-                assert!(current.matches_vt100(fresh));
-                assert!(current == GridCell::from_vt100(fresh));
-                // Every field perturbation must be detected exactly as the full comparison.
-                for perturb in 0..4 {
-                    let mut altered = current;
-                    match perturb {
-                        0 => altered.style.bold = !altered.style.bold,
-                        1 => {
-                            altered.kind = if altered.kind == CellKind::Blank {
-                                CellKind::Text
-                            } else {
-                                CellKind::Blank
-                            }
-                        }
-                        2 => altered.len = altered.len.wrapping_add(1),
-                        // Retained cells are canonical (zero padding past `len`), so only
-                        // bytes inside `len` are reachable perturbations.
-                        _ if altered.len > 0 => altered.text[0] = altered.text[0].wrapping_add(1),
-                        _ => altered.style.inverse = !altered.style.inverse,
-                    }
-                    assert_eq!(
-                        altered.matches_vt100(fresh),
-                        altered == GridCell::from_vt100(fresh),
-                        "row {row} column {column} perturb {perturb}"
-                    );
-                }
-                cells += 1;
-            }
-        }
-        assert_eq!(cells, 6 * 24);
-    }
+    use crate::view::CellKind;
 
     #[test]
     fn utf8_remaining_after_equals_full_fold() {

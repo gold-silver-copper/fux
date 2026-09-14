@@ -1,5 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-3/routed-read.py", line 127, in <module>
-    assert termios.tcgetattr(slave) == terminal_before, 'dashboard failed terminal restoration'
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: dashboard failed terminal restoration

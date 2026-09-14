@@ -1,4 +1,0 @@
-    Blocking waiting for file lock on package cache
-    Blocking waiting for file lock on build directory
-    Checking fux v0.10.0 (/Users/kisaczka/Desktop/code/fux/crates/fux)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.78s

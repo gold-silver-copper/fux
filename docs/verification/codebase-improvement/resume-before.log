@@ -1,2 +1,0 @@
-fux-xtask: failure artifacts: /var/folders/3t/6t0byq3s589g86m361mc7p100000gn/T/fux-harness-failure-8vXnfV: task ["launch-reconcile", "worker"]:  zor: managed process lifecycle uncertain; ownership and prompt history retained: final launch evidence unavailable: pane is still live
-

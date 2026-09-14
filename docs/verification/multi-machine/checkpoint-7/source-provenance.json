@@ -1,9 +1,0 @@
-{
-  "base": "02e719090c606c5f0aa5d9b8cb1b7841315738a4",
-  "sha256": {
-    "crates/zor/src/main.rs": "c164027a0e8a9a9eff7f5fcf58171253051715c4b155629b915ff3619cc98a7a",
-    "crates/zor/src/dashboard/multi.rs": "d8670962cc3a55e9d5af01273cf03aa7af0561d92cd1f3faaafe1f5809b47a9e",
-    "crates/zor/tests/machines.rs": "511842846cdd50bbbbfc516c6082d692d79519bc280353510a97e61f5a160646",
-    "docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py": "8aec064c7296efcfbea53f37a96acc09b92124c957ac6b9af9a5abd6c45d6674"
-  }
-}

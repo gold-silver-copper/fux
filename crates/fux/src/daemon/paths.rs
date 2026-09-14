@@ -28,8 +28,8 @@ impl DaemonPaths {
     ) -> Result<Self, PathError> {
         let runtime_dir = local_ipc::runtime_directory_from("fux", runtime, home.clone())
             .ok_or(PathError::MissingRuntime)?;
-        let state = absolute(state)
-            .or_else(|| absolute(home).map(|path| path.join(".local/state")))
+        let state = local_ipc::absolute_path(state)
+            .or_else(|| local_ipc::absolute_path(home).map(|path| path.join(".local/state")))
             .ok_or(PathError::MissingState)?;
         let state_dir = state.join("fux");
         Ok(Self {
@@ -62,7 +62,7 @@ impl DaemonPaths {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum PathError {
     #[error("XDG_RUNTIME_DIR (or HOME on macOS) must be set to an absolute path")]
     MissingRuntime,
@@ -72,24 +72,14 @@ pub enum PathError {
     UnsafeName,
     #[error("{} must be a private directory owned by this user", .0.display())]
     UnsafeDirectory(PathBuf),
-    #[error("{0}")]
-    Io(String),
-}
-
-fn absolute(value: Option<OsString>) -> Option<PathBuf> {
-    value
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 fn private_dir(path: &Path) -> Result<(), PathError> {
-    crate::proto::socket::ensure_private_directory(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::PermissionDenied {
-            PathError::UnsafeDirectory(path.to_owned())
-        } else {
-            PathError::Io(error.to_string())
-        }
+    local_ipc::ensure_private_directory(path).map_err(|error| match error {
+        local_ipc::DirectoryError::Unsafe => PathError::UnsafeDirectory(path.to_owned()),
+        local_ipc::DirectoryError::Io(error) => PathError::Io(error),
     })
 }
 

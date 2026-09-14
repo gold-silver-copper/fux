@@ -3,6 +3,7 @@ use super::requests::ordered_workspaces;
 use crate::ecs::components::{Pane, PaneState, Selection, Tab, Tabs, Viewer, Workspace};
 use crate::ecs::events::EventLog;
 use crate::ecs::resources::ServerIdentity;
+use crate::ecs::support::{pane_id, tab_id};
 use crate::proto::control::{
     CommandResult, LayoutAction, LayoutArchive, TabLayout, WorkspaceLayout,
 };
@@ -21,9 +22,7 @@ pub fn export(world: &mut World) -> Result<LayoutArchive, String> {
             .ok_or("workspace unavailable")?;
         let selection = component.selection.clone();
         let label = component.label.clone();
-        let selected = selection
-            .tab
-            .and_then(|tab| world.get::<Tab>(tab).map(|tab| tab.id));
+        let selected = selection.tab.and_then(|tab| tab_id(world, tab));
         let stream = world
             .get::<EventLog>(workspace)
             .ok_or("workspace stream unavailable")?
@@ -50,10 +49,10 @@ pub fn export(world: &mut World) -> Result<LayoutArchive, String> {
                 .copied()
                 .filter(|pane| tab.layout.contains(*pane))
                 .or_else(|| tab.layout.first())
-                .and_then(|pane| world.get::<Pane>(pane).map(|pane| pane.id));
+                .and_then(|pane| pane_id(world, pane));
             let result =
-                super::layout_control::apply(world, workspace, 0, id, None, LayoutAction::Export)
-                    .map_err(|error| format!("layout export failed: {error:?}"))?;
+                super::layout_control::apply(world, workspace, id, None, LayoutAction::Export)
+                    .map_err(|error| format!("layout export failed: {error}"))?;
             let CommandResult::Layout {
                 generation,
                 zoomed,
@@ -191,8 +190,8 @@ pub fn apply(
         };
         for tab in &mut saved.tabs {
             let entity = *tab_entities.get(&tab.id).ok_or("tab missing")?;
-            super::layout_control::ensure_settled(world, entity, 0)
-                .map_err(|error| format!("layout is not settled: {error:?}"))?;
+            super::layout_control::ensure_settled(world, entity)
+                .map_err(|error| format!("layout is not settled: {error}"))?;
             if tab.label.len() > crate::proto::control::MAX_NAME_BYTES
                 || tab.label.chars().any(char::is_control)
             {

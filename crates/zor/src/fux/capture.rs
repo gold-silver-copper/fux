@@ -56,18 +56,13 @@ enum CellKind {
     WideLeading,
     WideContinuation,
 }
+/// A wire style: `[foreground, background, attributes]`. zor validates the shape and ignores
+/// the values; screen rules act on text and layout, not colour.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Style {
-    foreground: Color,
-    background: Color,
-    bold: bool,
-    dim: bool,
-    italic: bool,
-    underline: bool,
-    inverse: bool,
-}
+struct Style(Color, Color, u8);
+/// `null` for the terminal default, a palette index, or an `[r, g, b]` triple.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
 enum Color {
     #[default]
     Default,

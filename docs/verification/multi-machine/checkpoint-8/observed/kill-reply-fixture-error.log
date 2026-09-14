@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 317, in <module>
-    control(hosts[0][0],dict(command='kill',pane=observed_handle['pane']))
-    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-6/dashboard-handoff.py", line 78, in control
-    return reply['result']['value']
-           ~~~~~~~~~~~~~~~^^^^^^^^^
-KeyError: 'value'

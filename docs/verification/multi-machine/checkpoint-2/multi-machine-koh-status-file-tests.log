@@ -1,9 +1,0 @@
-   Compiling koh v0.12.1 (/tmp/fux-multi-machine/koh-dev)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.06s
-     Running unittests src/lib.rs (/tmp/strict-fux-koh-zor/koh-build/debug/deps/koh-6b216c93f8593ed2)
-
-running 1 test
-test gateway::cli::tests::status_file_is_private_and_refuses_replacement ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 81 filtered out; finished in 0.00s
-

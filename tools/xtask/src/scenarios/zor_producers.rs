@@ -421,7 +421,10 @@ pub(super) fn resume(
     lose_reply: bool,
     dashboard: bool,
 ) -> Result<()> {
-    ensure!(!(lose_reply && dashboard), "dashboard resume uses the delivered-reply gateway");
+    ensure!(
+        !(lose_reply && dashboard),
+        "dashboard resume uses the delivered-reply gateway"
+    );
     use crate::support::launch_proxy::{Mode, Proxy};
     let node = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|path| path.join("node"))
@@ -584,7 +587,12 @@ pub(super) fn resume(
                 remote.resume(&args)?
             }
         } else {
-            let reply = super::zor_headless::api(&socket, &request(&closed))?;
+            // `task-busy` is refused before dispatch and names the operation ID for the retry;
+            // only that reply is resent, with the same operation. Timeouts are never retried.
+            let reply = crate::support::local::until(Duration::from_secs(10), || {
+                let reply = super::zor_headless::api(&socket, &request(&closed))?;
+                Ok((reply["error"] != "task-busy").then_some(reply))
+            })?;
             ensure!(reply["status"] == "completed", "guarded resume: {reply}");
             reply["value"].clone()
         };

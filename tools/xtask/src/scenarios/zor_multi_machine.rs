@@ -134,7 +134,9 @@ impl Stack {
         Ok(if expect_success { out } else { err })
     }
     fn live_json(&self, binary: &Path, args: &[&str], terminal: &mut Terminal) -> Result<Value> {
-        Ok(serde_json::from_slice(&self.live(binary, args, terminal, true)?)?)
+        Ok(serde_json::from_slice(
+            &self.live(binary, args, terminal, true)?,
+        )?)
     }
     fn control(&self, workspace: &str, request: Value) -> Result<Value> {
         let mut request = request;
@@ -196,10 +198,7 @@ fn serve(controller: &Stack, koh: &Path, socket: &Path, key: &Path, allow: &str)
     })?;
     Ok(Served {
         child,
-        endpoint: value["endpoint_id"]
-            .as_str()
-            .context("endpoint id")?
-            .into(),
+        endpoint: value["endpoint_id"].as_str().context("endpoint id")?.into(),
         direct: value["direct_addr"]
             .as_str()
             .context("direct address")?
@@ -241,20 +240,21 @@ fn processes() -> Result<Vec<(i32, i32, i32, String)>> {
     ensure!(listing.status.success(), "ps failed");
     Ok(String::from_utf8_lossy(&listing.stdout)
         .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            Some((
-                parts.next()?.parse().ok()?,
-                parts.next()?.parse().ok()?,
-                parts.next()?.parse().ok()?,
-                line.trim_start()
-                    .splitn(4, char::is_whitespace)
-                    .nth(3)
-                    .unwrap_or_default()
-                    .to_owned(),
-            ))
-        })
+        .filter_map(process_row)
         .collect())
+}
+/// One `ps -o pid=,ppid=,pgid=,command=` row. procps pads the numeric columns with runs of
+/// spaces, so the command is what follows the third field, not the fourth single-space split.
+fn process_row(line: &str) -> Option<(i32, i32, i32, String)> {
+    let mut rest = line.trim_start();
+    let mut field = || {
+        let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let (value, tail) = rest.split_at(end);
+        rest = tail.trim_start();
+        value.parse().ok()
+    };
+    let (pid, ppid, pgid) = (field()?, field()?, field()?);
+    Some((pid, ppid, pgid, rest.to_owned()))
 }
 /// Owned koh connect helpers for one endpoint and credential, identified by their arguments.
 fn gateways(endpoint: &str, key: &str) -> Result<BTreeSet<i32>> {
@@ -312,7 +312,12 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
         let stack = Stack::start(&bins, &format!("zmm-{name}-"))?;
         stack.run(fux, &["workspace", "new", "agent"])?;
         until(Duration::from_secs(10), || {
-            Ok(stack.root.path().join("fux/agent.sock").exists().then_some(()))
+            Ok(stack
+                .root
+                .path()
+                .join("fux/agent.sock")
+                .exists()
+                .then_some(()))
         })?;
         let listing = stack.control("agent", json!({"command":"list"}))?;
         let workspace = listing["workspaces"]
@@ -368,7 +373,11 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
             koh,
             &stack.root.path().join("fux/agent.attach.sock"),
             &controller.root.path().join(format!("{name}-attach.key")),
-            if name == "first" { &identity } else { &stranger },
+            if name == "first" {
+                &identity
+            } else {
+                &stranger
+            },
         )?;
         if name == "first" {
             controller.run(
@@ -398,7 +407,10 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
         });
     }
     let (first, second) = (&remotes[0], &remotes[1]);
-    ensure!(first.instance != second.instance, "remote fux incarnations collide");
+    ensure!(
+        first.instance != second.instance,
+        "remote fux incarnations collide"
+    );
 
     // Unauthorized control: a saved profile whose key is not in the first server's allow list.
     controller.run(
@@ -440,7 +452,10 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
 
     // Profile lifecycle: listing, inspection and rename keep the stable identity.
     let listing: Value = controller.json(zor, &["machine", "list"])?;
-    ensure!(listing["local"]["name"] == "Local", "Local missing from {listing}");
+    ensure!(
+        listing["local"]["name"] == "Local",
+        "Local missing from {listing}"
+    );
     let names: Vec<&str> = listing["machines"]
         .as_array()
         .context("machine list")?
@@ -448,7 +463,10 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
         .filter_map(|machine| machine["name"].as_str())
         .collect();
     for name in ["first", "second", "intruder", "offline"] {
-        ensure!(names.contains(&name), "machine {name} missing from {listing}");
+        ensure!(
+            names.contains(&name),
+            "machine {name} missing from {listing}"
+        );
     }
     let second_before: Value = controller.json(zor, &["machine", "inspect", "second"])?;
     controller.run(zor, &["machine", "rename", "second", "second-renamed"])?;
@@ -459,11 +477,27 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
     );
     controller.run(zor, &["machine", "rename", "second-renamed", "second"])?;
     ensure!(
-        controller.fail(zor, &["machine", "add", "first", "--endpoint", &first.control.endpoint, "--key-file", key_text])?.contains("duplicate machine name"),
+        controller
+            .fail(
+                zor,
+                &[
+                    "machine",
+                    "add",
+                    "first",
+                    "--endpoint",
+                    &first.control.endpoint,
+                    "--key-file",
+                    key_text
+                ]
+            )?
+            .contains("duplicate machine name"),
         "duplicate name accepted"
     );
     ensure!(
-        controller.fail(zor, &["machine", "add", "Local"])?.to_lowercase().contains("local"),
+        controller
+            .fail(zor, &["machine", "add", "Local"])?
+            .to_lowercase()
+            .contains("local"),
         "Local alias shadowing accepted"
     );
 
@@ -471,7 +505,13 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
     // and unreachable profiles fail independently and never resolve to Local.
     let aggregate: Value = controller.json(
         zor,
-        &["--koh-binary", koh_text, "dashboard", "--all-machines", "--once"],
+        &[
+            "--koh-binary",
+            koh_text,
+            "dashboard",
+            "--all-machines",
+            "--once",
+        ],
     )?;
     for name in ["Local", "first", "second"] {
         ensure!(
@@ -503,18 +543,34 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
     );
     let refused = controller.fail(
         zor,
-        &["--machine", "intruder", "--koh-binary", koh_text, "dashboard", "--once"],
+        &[
+            "--machine",
+            "intruder",
+            "--koh-binary",
+            koh_text,
+            "dashboard",
+            "--once",
+        ],
     )?;
     ensure!(
         refused.contains("intruder") && !refused.contains("Local"),
         "unauthorized control did not fail explicitly: {refused}"
     );
     ensure!(
-        controller.fail(zor, &["--machine", "missing-profile", "dashboard", "--once"])?.contains("missing-profile"),
+        controller
+            .fail(
+                zor,
+                &["--machine", "missing-profile", "dashboard", "--once"]
+            )?
+            .contains("missing-profile"),
         "unknown selector did not fail explicitly"
     );
     ensure!(
-        !controller.root.path().join("state/zor/journal.json").exists(),
+        !controller
+            .root
+            .path()
+            .join("state/zor/journal.json")
+            .exists(),
         "remote routing created a controller task store"
     );
 
@@ -550,7 +606,13 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
     terminal.checkpoint("multi-machine-aggregate")?;
     let concurrent = controller.live_json(
         zor,
-        &["--koh-binary", koh_text, "dashboard", "--all-machines", "--once"],
+        &[
+            "--koh-binary",
+            koh_text,
+            "dashboard",
+            "--all-machines",
+            "--once",
+        ],
         &mut terminal,
     )?;
     ensure!(
@@ -580,7 +642,11 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
         control_helpers.0.len() == 1 && control_helpers.1.len() == 1,
         "inspection did not reuse exactly one control helper per machine: {control_helpers:?}"
     );
-    let attach_endpoint = &first.attachment.as_ref().context("first attachment")?.endpoint;
+    let attach_endpoint = &first
+        .attachment
+        .as_ref()
+        .context("first attachment")?
+        .endpoint;
     terminal.wait_for_since("first / same / attempt", mark, WAIT)?;
     terminal.checkpoint("multi-machine-inspection")?;
     terminal.send(b"\x1b")?;
@@ -624,7 +690,9 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
         "detach suffix reached the pane"
     );
     until(Duration::from_secs(5), || {
-        Ok(gateways(attach_endpoint, key_text)?.is_empty().then_some(()))
+        Ok(gateways(attach_endpoint, key_text)?
+            .is_empty()
+            .then_some(()))
     })
     .context("attachment helper was not cleaned up after detach")?;
     mark = terminal.raw_len()?;
@@ -692,7 +760,9 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
         "unauthorized attachment delivered input"
     );
     until(Duration::from_secs(5), || {
-        Ok(gateways(&unauthorized.endpoint, key_text)?.is_empty().then_some(()))
+        Ok(gateways(&unauthorized.endpoint, key_text)?
+            .is_empty()
+            .then_some(()))
     })
     .context("failed attachment helper leaked")?;
 
@@ -747,13 +817,17 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
     mark = terminal.raw_len()?;
     terminal.send(b"R")?;
     terminal.wait_for_since("Machine catalog reloaded", mark, WAIT)?;
-    let names: Vec<String> = controller.live_json(zor, &["machine", "list"], &mut terminal)?["machines"]
-        .as_array()
-        .context("list")?
-        .iter()
-        .filter_map(|machine| machine["name"].as_str().map(str::to_owned))
-        .collect();
-    ensure!(!names.iter().any(|name| name == "intruder"), "removal kept the profile");
+    let names: Vec<String> =
+        controller.live_json(zor, &["machine", "list"], &mut terminal)?["machines"]
+            .as_array()
+            .context("list")?
+            .iter()
+            .filter_map(|machine| machine["name"].as_str().map(str::to_owned))
+            .collect();
+    ensure!(
+        !names.iter().any(|name| name == "intruder"),
+        "removal kept the profile"
+    );
 
     // Quit: terminal restored, helpers cleaned, every remote owner alive and untouched.
     terminal.send(b"q")?;
@@ -800,10 +874,15 @@ pub fn run(fux: &Path, zor: &Path, koh: &Path) -> Result<()> {
             .flat_map(|tab| tab["panes"].as_array().cloned().unwrap_or_default())
             .find(|pane| pane["id"] == remote.pane)
             .context("remote pane disappeared")?;
-        ensure!(pane["pid"] == remote.pid, "remote pane process was replaced");
+        ensure!(
+            pane["pid"] == remote.pid,
+            "remote pane process was replaced"
+        );
         let tasks: Value = remote.stack.json(zor, &["task", "list"])?;
         ensure!(
-            tasks["tasks"].as_array().is_some_and(|tasks| tasks.len() == 1),
+            tasks["tasks"]
+                .as_array()
+                .is_some_and(|tasks| tasks.len() == 1),
             "remote task store changed: {tasks}"
         );
     }
@@ -828,7 +907,10 @@ fn viewer_pid(terminal: &Terminal, fux: &Path) -> Result<i32> {
         .filter(|(_, ppid, _, _)| *ppid == leader)
         .map(|(pid, ..)| *pid)
         .collect();
-    ensure!(controllers.len() == 1, "expected one controller: {controllers:?}");
+    ensure!(
+        controllers.len() == 1,
+        "expected one controller: {controllers:?}"
+    );
     let prefix = format!("{} attach", fux.display());
     let viewers: Vec<&(i32, i32, i32, String)> = rows
         .iter()
@@ -840,4 +922,26 @@ fn viewer_pid(terminal: &Terminal, fux: &Path) -> Result<i32> {
         "viewer left the controlling terminal's foreground group"
     );
     Ok(viewers[0].0)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn process_rows_keep_the_whole_command_under_column_padding() {
+        let padded = "   1052     831     829 /work/fux attach --socket /tmp/proxy.sock";
+        assert_eq!(
+            super::process_row(padded),
+            Some((
+                1052,
+                831,
+                829,
+                "/work/fux attach --socket /tmp/proxy.sock".into()
+            ))
+        );
+        assert_eq!(
+            super::process_row("7 1 7 /bin/sh -c true"),
+            Some((7, 1, 7, "/bin/sh -c true".into()))
+        );
+        assert_eq!(super::process_row("  12  1"), None);
+    }
 }

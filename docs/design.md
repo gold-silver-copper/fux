@@ -91,17 +91,15 @@ Phases are chained system sets; deferred mutations become visible at the sync po
    emit `SpawnPane`.
 4. **Completions**: apply `SpawnCompleted`: place the pane, move the requester's focus, release the
    barrier and drain the queue again, or roll the reservation back and reply `failed`.
-5. **Waits**: resolve conditions after output, requests and spawn completion, before lifecycle
-   removes exited panes.
-6. **Lifecycle**: natural exits (close the pane, close an emptied tab, retire the last pane's
+5. **Lifecycle**: natural exits (close the pane, close an emptied tab, retire the last pane's
    workspace with its status), confirmed closes and kills, retirement grace, workspace kills,
    shutdown, idle detection.
-7. **Layout**: recompute geometry for tabs whose layout or displaying viewers changed, over the
+6. **Layout**: recompute geometry for tabs whose layout or displaying viewers changed, over the
    smallest viewer showing the tab (hidden tabs keep their last area; viewer-less tabs use 80×24).
    The last row of every viewer is the bar, so the pane area is `rows - 1` starting at row 0; siblings in a split are
    separated by exactly one cell, and leaf rectangles are the panes' content areas. Emulators are
    resized and `ResizePty` emitted.
-8. **Snapshot**: `refresh_grids` decides which viewers publish this step and reads the changed
+7. **Snapshot**: `refresh_grids` decides which viewers publish this step and reads the changed
    panes they show once into the panes' retained grids (a copy of the visible cells with the
    step each row last changed in); output-driven frames are paced to one per 8 ms per viewer
    (`Limits.frame_interval_ms`, a deadline wakes the loop for the pending rows), while a frame
@@ -113,9 +111,11 @@ Phases are chained system sets; deferred mutations become visible at the sync po
    holds of each pane (`Viewer.sent`); updates are queued before the replies they promise. Cells
    the frame cannot carry (zero-width or multi-grapheme sequences, control characters) are shown
    as blanks of their style.
-9. **Publish**: control events, deadlines, message clearing, `clear_trackers`.
+8. **Publish**: control events, deadlines, message clearing, `clear_trackers`.
 
-No observers or component hooks drive core commands; process cleanup is explicit.
+No observers or component hooks drive core commands; process cleanup is explicit. The only
+hooks are `on_remove` index maintenance on `Workspace`, `Tab`, `Pane` and `Viewer`, which drop
+the entity's public id from `Ids` so no despawn path can forget it; they emit nothing.
 
 ### Systems
 
@@ -124,18 +124,19 @@ Ingest (`apply_attachments`), output (`apply_pane_output`), layout (`resolve_lay
 `MessageReader` and `Commands`, with `SystemParam` bundles for what they share: `Step` (clock,
 limits, ids), `Effects` (effect and event writer), `ViewerExit` (deferred viewer despawn),
 `Arrivals`, `Scene`. Viewer queues are drained by `drain_viewer_queues` scheduled after the request
-phase and again after completions, not by tail calls. Six scheduled systems currently take
-`&mut World`. Four mutate entities they must observe again within the same phase: `apply_requests` (a request may
-spawn reservations, edit layouts or despawn tabs that the next request in the batch addresses),
-`drain_viewer_queues` (a request may despawn the viewer whose queue is being drained),
-`apply_spawn_completions` (a completion inserts the `TabOf` membership and places a pane that a
-later completion in the batch splits) and `resolve_lifecycle` (closing a tab may retire the
-workspace, which finalizes in the same pass). `resolve_waits` refreshes pane grids and emits
-replies while updating pending waits. `input::apply_completions` reads the current inbound
-batch and updates bounded receipt records. These describe the current implementation, not a
-requirement that all six remain exclusive. Shared mutations live in `ecs::support` (viewer
-scans, cascades, retirement, replies); dirty flags stay explicit because change ticks would fire
-on `get_mut` reads such as history views and captures.
+phase and again after completions, not by tail calls. `input::apply_completions` is also typed:
+it reads the current inbound batch and updates bounded receipt records. Four scheduled systems
+take `&mut World` because each mutates entities it must observe again within the same batch:
+`apply_requests` (a request may spawn reservations, edit layouts or despawn tabs that the next
+request in the batch addresses), `drain_viewer_queues` (a request may despawn the viewer whose
+queue is being drained), `apply_spawn_completions` (a completion inserts the `TabOf` membership
+and places a pane that a later completion in the batch splits) and `resolve_lifecycle` (closing
+a tab may retire the workspace, which finalizes in the same pass). Under the single-threaded
+executor a typed rewrite of these would buy nothing. Shared mutations live in `ecs::support`
+(viewer scans, cascades, retirement, replies). Dirty flags stay explicit for two reasons:
+`Pane.dirty` must survive across steps for a hidden pane whose grid is refreshed only when its
+output event is due, whereas `Changed<T>` is reset by `clear_trackers` every step; and the
+`Viewer`/`Pane` components are coarse enough that `Changed<T>` would fire on every input byte.
 
 ## Ordering guarantees
 
@@ -212,7 +213,7 @@ Terminal revision invalidates coherent conditional text captures across output a
 resize. It is separate from the retained grid sequence, input sequence and event cursor.
 Main's retained grid and changed-row viewer architecture remains authoritative; captures do
 not introduce a second rendering model. See [local-control-protocol.md](local-control-protocol.md)
-for consumer contracts and [native-integration.md](native-integration.md) for verification state.
+for consumer contracts and [verification.md](verification.md) for verification state.
 
 ## Viewer
 
@@ -240,7 +241,7 @@ processes) and checks World invariants after every step, including a randomized 
 test with stale ids, delayed and failed completions, viewer churn and time skips.
 `tests/structure.rs` pins architectural invariants (spawn owners, bounded channels, ECS as the
 only authority, CI surfaces). Real adapters are exercised by `tests/local_cli.rs` and the
-fixture-child binary suite. See [ecs-acceptance.md](ecs-acceptance.md) for evidence.
+fixture-child binary suite. See [verification.md](verification.md) for evidence.
 
 ## History
 

@@ -22,17 +22,21 @@ pub use edit::{LayoutDocument, LayoutNode};
 #[serde(transparent)]
 pub struct NodeId(pub u32);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
 pub enum Axis {
     /// Children sit side by side.
+    #[value(alias = "h")]
     Horizontal,
     /// Children are stacked.
+    #[value(alias = "v")]
     Vertical,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
 pub enum Direction {
     Left,
     Right,

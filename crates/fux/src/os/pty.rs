@@ -7,7 +7,7 @@
 use super::lock;
 use crate::ecs::Inbound;
 use crate::ids::PaneId;
-use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -43,7 +43,6 @@ pub struct PaneProcess {
     writer_tx: Option<SyncSender<InputChunk>>,
     input_cancelled: Arc<AtomicBool>,
     pending_input_bytes: Arc<AtomicUsize>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
     pid: u32,
     reaped: Arc<AtomicBool>,
     gate: Arc<ReapGate>,
@@ -223,7 +222,6 @@ impl PaneProcess {
             .spawn_command(command)
             .map_err(|error| io::Error::other(format!("spawning pane command: {error}")))?;
         drop(pair.slave);
-        let killer = child.clone_killer();
         let Some(pid) = child.process_id() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -237,7 +235,7 @@ impl PaneProcess {
             let _ = child.wait();
             io::Error::other(what.to_owned())
         };
-        let mut reader = clone_master(pair.master.as_ref())
+        let reader = clone_master(pair.master.as_ref())
             .map_err(|error| abort(&mut child, &format!("pty reader: {error}")))?;
         let file = clone_master(pair.master.as_ref())
             .map_err(|error| abort(&mut child, &format!("pty writer: {error}")))?;
@@ -252,7 +250,7 @@ impl PaneProcess {
         )
         .map_err(|error| abort(&mut child, &format!("pty nonblocking: {error}")))?;
         let input_cancelled = Arc::new(AtomicBool::new(false));
-        let mut writer = InputWriter {
+        let writer = InputWriter {
             file,
             cancelled: Arc::clone(&input_cancelled),
         };
@@ -262,52 +260,7 @@ impl PaneProcess {
         let reader_handle = std::thread::Builder::new()
             .name(format!("fux-pane-{}", pane.0))
             .spawn(move || {
-                let mut buffer = [0_u8; READ_CHUNK];
-                loop {
-                    match reader.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(count) => {
-                            let Some(chunk) = buffer.get(..count) else {
-                                break;
-                            };
-                            if events
-                                .blocking_send(Inbound::PaneOutput {
-                                    pane,
-                                    bytes: chunk.to_vec(),
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                            if wait_for_pty(&reader, nix::poll::PollFlags::POLLIN).is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                // No further reads are possible; retaining this descriptor can keep the
-                // controlling terminal open while the child is trying to finish exiting.
-                drop(reader);
-                let _ = events.blocking_send(Inbound::PaneEof { pane });
-                // EOF only says the slave closed; wait for the real status before reporting exit.
-                // Reaping is polled under the gate (a blocking `wait` would reap the leader the
-                // moment SIGHUP lands) so a termination in progress keeps the group id alive
-                // until it has escalated.
-                let mut interval = Duration::from_millis(5);
-                let code = loop {
-                    match reader_gate.reap_if_released(|| child.try_wait()) {
-                        Ok(Some(status)) => break exit_code(&status),
-                        Ok(None) => {
-                            std::thread::sleep(interval);
-                            interval = (interval * 2).min(Duration::from_millis(250));
-                        }
-                        Err(_) => break u32::MAX,
-                    }
-                };
+                let code = reader_pump(pane, reader, &events, &reader_gate, &mut child);
                 reader_reaped.store(true, Ordering::SeqCst);
                 let _ = events.blocking_send(Inbound::PaneExited { pane, code });
             })?;
@@ -315,33 +268,12 @@ impl PaneProcess {
         let (writer_tx, writer_rx) = sync_channel::<InputChunk>(WRITE_CHANNEL_DEPTH);
         let writer_handle = std::thread::Builder::new()
             .name(format!("fux-pane-input-{}", pane.0))
-            .spawn(move || {
-                let mut failed = false;
-                while let Ok(chunk) = writer_rx.recv() {
-                    let (bytes_written, error) = if failed {
-                        (0, Some("PTY input writer closed".into()))
-                    } else {
-                        deliver_input(&mut writer, &chunk.bytes)
-                    };
-                    failed |= error.is_some();
-                    if let Some(operation) = chunk.operation {
-                        let _ = input_events.blocking_send(Inbound::InputCompleted {
-                            pane,
-                            operation,
-                            bytes_written,
-                            error,
-                        });
-                    }
-                    // After failure continue draining/rejecting: a sender racing the first
-                    // error must still receive a completion, never a silently dropped chunk.
-                }
-            })?;
+            .spawn(move || writer_pump(pane, writer, &writer_rx, &input_events))?;
         Ok(Self {
             master: Some(pair.master),
             writer_tx: Some(writer_tx),
             input_cancelled,
             pending_input_bytes,
-            killer,
             pid,
             reaped,
             gate,
@@ -417,7 +349,6 @@ impl PaneProcess {
             pid: self.pid,
             reaped: Arc::clone(&self.reaped),
             gate: Arc::clone(&self.gate),
-            killer: self.killer.clone_killer(),
         }
     }
 
@@ -452,7 +383,7 @@ impl Drop for PaneProcess {
         self.input_cancelled.store(true, Ordering::Release);
         // Without an explicit join the child must still die so the reader thread sees EOF.
         if !self.reaped() {
-            let _ = self.killer.kill();
+            let _ = kill_process(self.pid, nix::sys::signal::Signal::SIGHUP);
             let _ = kill_group(self.pid, nix::sys::signal::Signal::SIGKILL);
         }
     }
@@ -466,7 +397,6 @@ pub struct ProcessGroup {
     pid: u32,
     reaped: Arc<AtomicBool>,
     gate: Arc<ReapGate>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
 impl ProcessGroup {
@@ -480,7 +410,7 @@ impl ProcessGroup {
             return;
         }
         if kill_group(self.pid, nix::sys::signal::Signal::SIGHUP).is_err() {
-            let _ = self.killer.kill();
+            let _ = kill_process(self.pid, nix::sys::signal::Signal::SIGHUP);
         }
         std::thread::sleep(grace);
         let _ = kill_group(self.pid, nix::sys::signal::Signal::SIGKILL);
@@ -488,9 +418,98 @@ impl ProcessGroup {
     }
 }
 
+/// Pumps PTY output to the owner until EOF, then reaps the child under the gate and returns its
+/// exit code.
+fn reader_pump(
+    pane: PaneId,
+    mut reader: std::fs::File,
+    events: &mpsc::Sender<Inbound>,
+    gate: &ReapGate,
+    child: &mut Box<dyn portable_pty::Child + Send + Sync>,
+) -> u32 {
+    let mut buffer = [0_u8; READ_CHUNK];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                let Some(chunk) = buffer.get(..count) else {
+                    break;
+                };
+                if events
+                    .blocking_send(Inbound::PaneOutput {
+                        pane,
+                        bytes: chunk.to_vec(),
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if wait_for_pty(&reader, nix::poll::PollFlags::POLLIN).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    // No further reads are possible; retaining this descriptor can keep the controlling
+    // terminal open while the child is trying to finish exiting.
+    drop(reader);
+    let _ = events.blocking_send(Inbound::PaneEof { pane });
+    // EOF only says the slave closed; wait for the real status before reporting exit. Reaping
+    // is polled under the gate (a blocking `wait` would reap the leader the moment SIGHUP
+    // lands) so a termination in progress keeps the group id alive until it has escalated.
+    let mut interval = Duration::from_millis(5);
+    loop {
+        match gate.reap_if_released(|| child.try_wait()) {
+            Ok(Some(status)) => break exit_code(&status),
+            Ok(None) => {
+                std::thread::sleep(interval);
+                interval = (interval * 2).min(Duration::from_millis(250));
+            }
+            Err(_) => break u32::MAX,
+        }
+    }
+}
+
+/// Delivers queued input chunks in order and reports tracked completions. After the first
+/// failure every later chunk is rejected but still answered, so a sender racing the error never
+/// loses its completion.
+fn writer_pump(
+    pane: PaneId,
+    mut writer: InputWriter,
+    chunks: &std::sync::mpsc::Receiver<InputChunk>,
+    events: &mpsc::Sender<Inbound>,
+) {
+    let mut failed = false;
+    while let Ok(chunk) = chunks.recv() {
+        let (bytes_written, error) = if failed {
+            (0, Some("PTY input writer closed".into()))
+        } else {
+            deliver_input(&mut writer, &chunk.bytes)
+        };
+        failed |= error.is_some();
+        if let Some(operation) = chunk.operation {
+            let _ = events.blocking_send(Inbound::InputCompleted {
+                pane,
+                operation,
+                bytes_written,
+                error,
+            });
+        }
+    }
+}
+
 fn kill_group(pid: u32, signal: nix::sys::signal::Signal) -> io::Result<()> {
     let pid = i32::try_from(pid).map_err(|_| io::Error::other("pid out of range"))?;
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pid), signal).map_err(io::Error::other)
+}
+
+fn kill_process(pid: u32, signal: nix::sys::signal::Signal) -> io::Result<()> {
+    let pid = i32::try_from(pid).map_err(|_| io::Error::other("pid out of range"))?;
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), signal).map_err(io::Error::other)
 }
 
 fn exit_code(status: &portable_pty::ExitStatus) -> u32 {
@@ -546,16 +565,6 @@ mod tests {
                 None
             }
         }
-        #[derive(Debug)]
-        struct NoProcess;
-        impl ChildKiller for NoProcess {
-            fn kill(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-            fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
-                Box::new(Self)
-            }
-        }
         let (closed, wait_closed) = std::sync::mpsc::channel();
         let reaped = Arc::new(AtomicBool::new(false));
         let reader_reaped = Arc::clone(&reaped);
@@ -573,7 +582,6 @@ mod tests {
             writer_tx: None,
             input_cancelled: Arc::new(AtomicBool::new(false)),
             pending_input_bytes: Arc::new(AtomicUsize::new(0)),
-            killer: Box::new(NoProcess),
             // Fails checked PID conversion; no OS process is ever signalled by this test.
             pid: u32::MAX,
             reaped: Arc::clone(&reaped),

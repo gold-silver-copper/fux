@@ -1,16 +1,18 @@
 //! Lifecycle phase: natural exits, confirmed closes, tab and workspace retirement, shutdown.
 //! Ownership cascades are explicit despawns; the adapter releases OS handles per `ReleasePane`.
 
-use crate::ecs::components::{Creation, Pane, PaneState, Tab, Tabs, Viewer, Workspace};
+use crate::ecs::components::{
+    Accepting, Creation, Pane, PaneState, Retiring, Tab, Tabs, Viewer, Workspace,
+};
 use crate::ecs::messages::Effect;
 use crate::ecs::resources::{Clock, Deadlines, Ids, Limits, ShuttingDown};
 use crate::ecs::support::{
-    close_tab, despawn_pane, despawn_tab, despawn_workspace, effect, fail_creations,
-    mark_workspace_dirty, member_tabs, pane_closed, pane_id, pane_in_layout, pane_workspace,
-    panes_in_workspace, remove_from_layout, retire, tab_workspace, terminate_pane,
-    viewers_of_workspace, viewers_where,
+    close_tab, despawn_pane, despawn_tab, despawn_viewer, despawn_workspace, effect,
+    fail_creations, mark_workspace_dirty, member_tabs, pane_closed, pane_id, pane_in_layout,
+    pane_workspace, panes_in_workspace, remove_from_layout, retire, tab_workspace, terminate_pane,
+    viewers_where,
 };
-use crate::ecs::systems::requests::{despawn_viewer, kill_workspace};
+use crate::ecs::systems::requests::kill_workspace;
 use bevy_ecs::prelude::*;
 
 /// SIGHUP is followed by SIGKILL after this many milliseconds.
@@ -20,13 +22,11 @@ pub fn resolve_lifecycle(world: &mut World) {
     super::input::expire(world);
     super::final_records::expire(world);
     let now = world.resource::<Clock>().now_ms;
-    let limits = world.resource::<Limits>().clone();
+    let limits = *world.resource::<Limits>();
     if world.resource::<ShuttingDown>().0 {
         let workspaces: Vec<Entity> = world
-            .query::<(Entity, &Workspace)>()
+            .query_filtered::<Entity, (With<Workspace>, Without<Retiring>)>()
             .iter(world)
-            .filter(|(_, workspace)| workspace.retiring.is_none())
-            .map(|(entity, _)| entity)
             .collect();
         for workspace in workspaces {
             kill_workspace(world, workspace);
@@ -125,12 +125,8 @@ fn drop_overdue_terminations(world: &mut World, now: u64, deadline_ms: u64) {
 /// relationship hook's removal at once; a `Commands`-based removal would leave an empty target.
 fn retire_empty_workspaces(world: &mut World, now: u64) {
     let empty: Vec<Entity> = world
-        .query::<(Entity, &Workspace)>()
+        .query_filtered::<Entity, (Accepting, Without<Tabs>)>()
         .iter(world)
-        .filter(|(entity, workspace)| {
-            workspace.open && workspace.retiring.is_none() && world.get::<Tabs>(*entity).is_none()
-        })
-        .map(|(entity, _)| entity)
         .collect();
     for workspace in empty {
         retire(world, workspace, now, Some(0));
@@ -140,23 +136,18 @@ fn retire_empty_workspaces(world: &mut World, now: u64) {
 
 fn finalize_retirements(world: &mut World, now: u64, grace_ms: u64) {
     let retiring: Vec<(Entity, u64)> = world
-        .query::<(Entity, &Workspace)>()
+        .query::<(Entity, &Retiring)>()
         .iter(world)
-        .filter_map(|(entity, workspace)| {
-            workspace
-                .retiring
-                .map(|retiring| (entity, retiring.since_ms))
-        })
+        .map(|(entity, retiring)| (entity, retiring.since_ms))
         .collect();
     for (workspace, since) in retiring {
-        let viewers = viewers_of_workspace(world, workspace);
         // Viewers still attached are waiting to paint the final frame; the snapshot phase marks
         // them detaching after publishing it.
         let waiting = world
             .query::<&Viewer>()
             .iter(world)
-            .any(|viewer| viewer.workspace == workspace && !viewer.detaching);
-        if (waiting || !viewers.is_empty()) && now.saturating_sub(since) < grace_ms {
+            .any(|viewer| viewer.attached_to(workspace));
+        if waiting && now.saturating_sub(since) < grace_ms {
             world
                 .resource_mut::<Deadlines>()
                 .propose(since.saturating_add(grace_ms));

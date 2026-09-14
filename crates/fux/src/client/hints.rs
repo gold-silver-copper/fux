@@ -82,7 +82,10 @@ impl HintPanel {
                 entries.push(group.label().to_owned());
                 previous = Some(group);
             }
-            if action.unavailable(frame, workspaces).is_some() {
+            if action
+                .unavailable(frame, crate::commands::Target::of(frame), workspaces)
+                .is_some()
+            {
                 disabled.insert(entries.len());
             }
             actions.insert(entries.len(), action);
@@ -240,6 +243,7 @@ impl HintPanel {
 
     /// Paints the column at the bottom-right of `area` (the compositor passes everything above
     /// the bar), or a thin full-width row for transient hints.
+    #[cfg(test)]
     pub fn paint(&self, buffer: &mut Buffer, area: Rect) -> Vec<(Rect, usize)> {
         self.paint_with_bounds(buffer, area).entries
     }

@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-5/routed-attachment-targets.py", line 89, in <module>
-    listed = json.loads(run('ZOR_BIN', *routed, 'task', 'list').stdout)
-                        ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/kisaczka/Desktop/code/fux/docs/verification/multi-machine/checkpoint-5/routed-attachment-targets.py", line 28, in run
-    assert result.returncode in ((0, 1) if expected is None else (expected,)), (args, result.returncode, result.stderr)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: (('--machine', 'remote', '--koh-binary', '/private/tmp/strict-fux-koh-zor/koh-build/debug/koh', 'task', 'list'), 1, 'zor: koh helper startup timed out; a gateway with --status-file support and noninteractive credentials is required\n')

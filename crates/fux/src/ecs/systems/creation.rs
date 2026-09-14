@@ -2,14 +2,15 @@
 //! either inserts the new pane where it was requested or rolls the reservation back.
 
 use crate::ecs::components::{
-    Creation, CreationKind, Pane, PaneState, Selection, Tab, TabOf, Viewer, Workspace,
+    Creation, CreationKind, Open, Pane, PaneState, Selection, Tab, TabOf, Viewer, Workspace,
 };
 use crate::ecs::messages::{Effect, Inbound, Requester};
 use crate::ecs::resources::{Clock, Ids, Limits};
 use crate::ecs::support::{
-    clear_barriers, default_command, despawn_pane, despawn_tab, despawn_workspace, effect, event,
-    failed, focus_in_tab, mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity,
-    panes_in_workspace, reply, reply_all, tab_area, tab_workspace, terminate_pane, viewer_entity,
+    Failure, clear_barriers, default_command, despawn_pane, despawn_tab, despawn_workspace, effect,
+    event, focus_in_tab, is_not_retiring, is_pending, mark_tab_dirty, mark_workspace_dirty,
+    member_tabs, pane_entity, panes_in_workspace, reply, reply_all, tab_area, tab_id,
+    tab_workspace, terminate_pane, viewer_entity,
 };
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
 use crate::ecs::systems::requests::switch_viewer_workspace;
@@ -40,24 +41,16 @@ pub fn reserve_pane(
     mut new: NewPane,
     kind: CreationKind,
     size: (u16, u16),
-) -> Result<Entity, Reply> {
-    let limits = world.resource::<Limits>().clone();
+) -> Result<Entity, Failure> {
+    let limits = *world.resource::<Limits>();
     if new.final_retain_ms == 0 {
-        return Err(failed(
-            new.request_id,
-            ErrorCode::InvalidRequest,
-            "final_retain_ms must be nonzero",
-        ));
+        return Err(Failure::invalid("final_retain_ms must be nonzero"));
     }
     let final_retain_ms = new
         .final_retain_ms
         .min(crate::proto::control::MAX_FINAL_RETENTION_MS);
     if panes_in_workspace(world, workspace).len() >= limits.max_panes {
-        return Err(failed(
-            new.request_id,
-            ErrorCode::Limit,
-            "configured pane limit reached",
-        ));
+        return Err(Failure::limit("configured pane limit reached"));
     }
     let env = std::mem::take(&mut new.env);
     let argv = if new.argv.is_empty() {
@@ -65,13 +58,10 @@ pub fn reserve_pane(
     } else {
         std::mem::take(&mut new.argv)
     };
-    let id = world.resource_mut::<Ids>().next_pane().ok_or_else(|| {
-        failed(
-            new.request_id,
-            ErrorCode::Limit,
-            "pane identifiers exhausted",
-        )
-    })?;
+    let id = world
+        .resource_mut::<Ids>()
+        .next_pane()
+        .ok_or_else(|| Failure::limit("pane identifiers exhausted"))?;
     let tab = match &kind {
         CreationKind::Split { tab, .. }
         | CreationKind::NewTab { tab }
@@ -85,17 +75,11 @@ pub fn reserve_pane(
     let workspace_name = world
         .get::<Workspace>(workspace)
         .map(|workspace| workspace.name.clone())
-        .ok_or_else(|| failed(new.request_id, ErrorCode::NotFound, "workspace disappeared"))?;
+        .ok_or_else(|| Failure::not_found("workspace disappeared"))?;
     let workspace_stream = world
         .get::<crate::ecs::events::EventLog>(workspace)
         .map(crate::ecs::events::EventLog::cursor)
-        .ok_or_else(|| {
-            failed(
-                new.request_id,
-                ErrorCode::Internal,
-                "workspace stream missing",
-            )
-        })?
+        .ok_or_else(|| Failure::new(ErrorCode::Internal, "workspace stream missing"))?
         .stream;
     let entity = world
         .spawn((
@@ -162,10 +146,10 @@ pub fn reserve_tab(
     world: &mut World,
     workspace: Entity,
     label: Option<String>,
-) -> Result<Entity, Reply> {
+) -> Result<Entity, Failure> {
     let ids = world.resource_mut::<Ids>().next_tab();
     let Some(id) = ids else {
-        return Err(failed(0, ErrorCode::Limit, "tab identifiers exhausted"));
+        return Err(Failure::limit("tab identifiers exhausted"));
     };
     let label = label.unwrap_or_else(|| {
         world
@@ -204,9 +188,9 @@ pub fn reserve_workspace(
     name: String,
     requester: Requester,
     request_id: RequestId,
-) -> Result<Entity, Reply> {
-    let limits = world.resource::<Limits>().clone();
-    let workspace = reserve_empty_workspace(world, name, request_id)?;
+) -> Result<Entity, Failure> {
+    let limits = *world.resource::<Limits>();
+    let workspace = reserve_empty_workspace(world, name)?;
     let tab = match reserve_tab(world, workspace, None) {
         Ok(tab) => tab,
         Err(reply) => {
@@ -240,39 +224,38 @@ pub fn reserve_workspace(
 }
 
 pub fn apply_spawn_completions(world: &mut World) {
-    let completions: Vec<(PaneId, Result<u32, String>)> = world
-        .resource::<Messages<Inbound>>()
-        .iter_current_update_messages()
-        .filter_map(|message| match message {
-            Inbound::SpawnCompleted { pane, result } => Some((*pane, result.clone())),
-            _ => None,
-        })
-        .collect();
-    for (id, result) in completions {
-        let Some(entity) = pane_entity(world, id) else {
-            // The reservation was released (workspace killed, shutdown) before the process
-            // reported in. Nothing owns it any more, so the adapter must stop and reap it.
-            if result.is_ok() {
-                effect(
-                    world,
-                    Effect::Terminate {
-                        pane: id,
-                        grace_ms: TERMINATE_GRACE_MS,
-                    },
-                );
-                effect(world, Effect::ReleasePane { pane: id });
+    // The batch is read in place: the completion handlers never touch `Messages<Inbound>`.
+    world.resource_scope::<Messages<Inbound>, _>(|world, inbound| {
+        for message in inbound.iter_current_update_messages() {
+            let Inbound::SpawnCompleted { pane: id, result } = message else {
+                continue;
+            };
+            let id = *id;
+            let Some(entity) = pane_entity(world, id) else {
+                // The reservation was released (workspace killed, shutdown) before the process
+                // reported in. Nothing owns it any more, so the adapter must stop and reap it.
+                if result.is_ok() {
+                    effect(
+                        world,
+                        Effect::Terminate {
+                            pane: id,
+                            grace_ms: TERMINATE_GRACE_MS,
+                        },
+                    );
+                    effect(world, Effect::ReleasePane { pane: id });
+                }
+                continue;
+            };
+            let Some(creation) = world.entity_mut(entity).take::<Creation>() else {
+                continue;
+            };
+            clear_barriers(world, entity);
+            match result {
+                Ok(pid) => complete(world, entity, id, *pid, creation),
+                Err(message) => roll_back(world, entity, creation, message),
             }
-            continue;
-        };
-        let Some(creation) = world.entity_mut(entity).take::<Creation>() else {
-            continue;
-        };
-        clear_barriers(world, entity);
-        match result {
-            Ok(pid) => complete(world, entity, id, pid, creation),
-            Err(message) => roll_back(world, entity, creation, &message),
         }
-    }
+    });
 }
 
 fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: Creation) {
@@ -348,9 +331,7 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
             });
         }
         CreationKind::NewTab { .. } => {
-            let open = world
-                .get::<Workspace>(workspace)
-                .is_some_and(|workspace| workspace.retiring.is_none());
+            let open = is_not_retiring(world, workspace);
             let tab_limit = world.resource::<Limits>().max_tabs;
             if !open || member_tabs(world, workspace).len() >= tab_limit {
                 let reason = if open {
@@ -362,7 +343,7 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                 return abandon(world, entity, pid, &requesters, reason);
             }
             place_first_pane(world, tab, entity, pid);
-            let tab_id = world.get::<Tab>(tab).map(|tab| tab.id).unwrap_or_default();
+            let tab_id = tab_id(world, tab).unwrap_or_default();
             let label = world
                 .get::<Tab>(tab)
                 .map(|tab| tab.label.clone())
@@ -389,10 +370,7 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
             });
         }
         CreationKind::Workspace { .. } => {
-            if world
-                .get::<Workspace>(workspace)
-                .is_none_or(|workspace| workspace.retiring.is_some())
-            {
+            if !is_not_retiring(world, workspace) {
                 return abandon(
                     world,
                     entity,
@@ -407,10 +385,10 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                 .get_mut::<Workspace>(workspace)
                 .map(|mut component| {
                     component.selection.select(tab, Some(entity));
-                    component.open = true;
                     component.name.clone()
                 })
                 .unwrap_or_default();
+            world.entity_mut(workspace).insert(Open);
             let stream = world
                 .get::<crate::ecs::events::EventLog>(workspace)
                 .map_or(0, |log| log.cursor().stream);
@@ -491,7 +469,7 @@ fn announce_pane(world: &mut World, workspace: Entity, tab: Entity, pane: Entity
         .get::<Pane>(pane)
         .map(|pane| pane.argv.clone())
         .unwrap_or_default();
-    let tab_id: TabId = world.get::<Tab>(tab).map(|tab| tab.id).unwrap_or_default();
+    let tab_id: TabId = tab_id(world, tab).unwrap_or_default();
     event(
         world,
         workspace,
@@ -520,7 +498,7 @@ fn abandon(
     let now = world.resource::<Clock>().now_ms;
     terminate_pane(world, entity, now, TERMINATE_GRACE_MS);
     reply_all(world, requesters.iter().copied(), |id| {
-        failed(id, ErrorCode::Conflict, reason)
+        Failure::conflict(reason).reply(id)
     });
 }
 
@@ -537,11 +515,11 @@ fn roll_back(world: &mut World, entity: Entity, creation: Creation, message: &st
     }
     despawn_pane(world, entity);
     reply_all(world, creation.requesters, |id| {
-        failed(
-            id,
+        Failure::new(
             ErrorCode::Internal,
             format!("could not start the pane: {message}"),
         )
+        .reply(id)
     });
 }
 
@@ -570,42 +548,27 @@ pub fn join_pending_workspace(
 
 /// Whether a workspace is still waiting for its initial pane.
 pub fn workspace_pending(world: &World, workspace: Entity) -> bool {
-    world
-        .get::<Workspace>(workspace)
-        .is_some_and(|workspace| !workspace.open && workspace.retiring.is_none())
+    is_pending(world, workspace)
 }
 
 /// Reserve a workspace identity without creating a process or publishing an endpoint.
 /// The caller must either populate/open it within this request or roll the reservation back.
-pub fn reserve_empty_workspace(
-    world: &mut World,
-    name: String,
-    request_id: RequestId,
-) -> Result<Entity, Reply> {
+pub fn reserve_empty_workspace(world: &mut World, name: String) -> Result<Entity, Failure> {
     crate::ids::validate_workspace_name(&name)
-        .map_err(|error| failed(request_id, ErrorCode::InvalidRequest, error.to_string()))?;
-    let limits = world.resource::<Limits>().clone();
+        .map_err(|error| Failure::invalid(error.to_string()))?;
+    let limits = *world.resource::<Limits>();
     if world.resource::<Ids>().workspaces.len() >= limits.max_workspaces {
-        return Err(failed(
-            request_id,
-            ErrorCode::Limit,
-            "configured workspace limit reached",
-        ));
+        return Err(Failure::limit("configured workspace limit reached"));
     }
     if world.resource::<Ids>().workspace(&name).is_some() {
-        return Err(failed(
-            request_id,
-            ErrorCode::Conflict,
-            format!("workspace {name} already exists"),
-        ));
+        return Err(Failure::conflict(format!(
+            "workspace {name} already exists"
+        )));
     }
-    let stream = world.resource_mut::<Ids>().next_stream().ok_or_else(|| {
-        failed(
-            request_id,
-            ErrorCode::Limit,
-            "workspace stream IDs exhausted",
-        )
-    })?;
+    let stream = world
+        .resource_mut::<Ids>()
+        .next_stream()
+        .ok_or_else(|| Failure::limit("workspace stream IDs exhausted"))?;
     let step = world.resource::<Clock>().step;
     let workspace = world
         .spawn(Workspace {
@@ -613,8 +576,6 @@ pub fn reserve_empty_workspace(
             label: None,
             selection: Selection::default(),
             last_attached: step,
-            open: false,
-            retiring: None,
             tab_counter: 0,
         })
         .id();

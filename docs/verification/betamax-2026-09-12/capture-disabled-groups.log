@@ -1,2 +1,0 @@
-fux-xtask: CLI ["task", "adopt", "route-alias", "--title", "same pane via alias", "--runtime", "/tmp/zgroup-rs-Tz7STv/alternate", "--instance", "a339e2d40e8878b2152321f34f1b5bcd", "--workspace", "default", "--pane", "2"]: zor: connect control socket: No such file or directory (os error 2)
-

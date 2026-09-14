@@ -464,6 +464,10 @@ pub fn run(
     let mut remembered = std::collections::BTreeMap::<Option<String>, Selection>::new();
     let mut problem = String::new();
     let mut last = Vec::new();
+    // Bytes read but not yet handled. A key that changes what is on screen stops the byte loop
+    // so the next key is interpreted against the new state; the rest of that read waits here
+    // instead of being discarded, exactly as if it had arrived in a later read.
+    let mut typeahead: Vec<u8> = Vec::new();
     let mut loading = None;
     let mut attention = super::attention::Machines::new();
     let mut delivery = notices
@@ -526,10 +530,14 @@ pub fn run(
                         );
                     }
                     Ok(Outcome::Viewer(viewer)) if !cancelled && selected == action_selection => {
+                        // Input typed ahead of the handoff belongs to neither the dashboard nor
+                        // the viewer, matching the terminal flush on both sides of the viewer.
+                        typeahead.clear();
                         super::handoff::flush_input()?;
                         drop(delivery.take());
                         drop(screen.take());
                         let outcome = viewer.run(&fux_binary, &stop);
+                        typeahead.clear();
                         super::handoff::flush_input()?;
                         screen = Some(super::terminal::Screen::open(&stop)?);
                         delivery = notices.notify.then(|| {
@@ -633,21 +641,27 @@ pub fn run(
                     .write(&frame)?;
                 last = frame;
             }
-            let mut polls = [nix::poll::PollFd::new(
-                input.as_fd(),
-                nix::poll::PollFlags::POLLIN,
-            )];
-            match nix::poll::poll(&mut polls, 100_u16) {
-                Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
-                Err(error) => return Err(error.into()),
-                Ok(_) => {}
+            if typeahead.is_empty() {
+                let mut polls = [nix::poll::PollFd::new(
+                    input.as_fd(),
+                    nix::poll::PollFlags::POLLIN,
+                )];
+                match nix::poll::poll(&mut polls, 100_u16) {
+                    Ok(0) | Err(nix::errno::Errno::EINTR) => continue,
+                    Err(error) => return Err(error.into()),
+                    Ok(_) => {}
+                }
+                let mut bytes = [0; 64];
+                let count = input.read(&mut bytes)?;
+                if count == 0 {
+                    break;
+                }
+                typeahead.extend_from_slice(bytes.get(..count).context("input read count")?);
             }
-            let mut bytes = [0; 64];
-            let count = input.read(&mut bytes)?;
-            if count == 0 {
-                break;
-            }
-            for byte in bytes.iter().take(count) {
+            let batch = std::mem::take(&mut typeahead);
+            let mut handled = 0;
+            for byte in &batch {
+                handled += 1;
                 let mut resume_action = None;
                 let mut dispatched_byte = *byte;
                 if let Some((selection, text, read_only)) = &mut resume_input {
@@ -861,6 +875,7 @@ pub fn run(
                     _ => {}
                 }
             }
+            typeahead.extend_from_slice(batch.get(handled..).unwrap_or_default());
         }
         Ok(0)
     })();

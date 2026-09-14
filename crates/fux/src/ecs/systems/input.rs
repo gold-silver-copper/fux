@@ -4,15 +4,11 @@ use crate::ecs::messages::{Effect, Inbound};
 use crate::ecs::resources::{
     Clock, Deadlines, Ids, InputOperations, InputRecord, MAX_INPUT_OPERATIONS,
 };
-use crate::ecs::support::effect;
+use crate::ecs::support::{Failure, effect};
 use crate::proto::control::{
-    CommandResult, ErrorCode, InputReceipt, InputState, MAX_INPUT_RETENTION_MS, Reply,
+    CommandResult, ErrorCode, InputReceipt, InputState, MAX_INPUT_RETENTION_MS,
 };
 use bevy_ecs::prelude::*;
-
-fn failure(id: u64, code: ErrorCode, message: &str) -> Reply {
-    Reply::failed(id, code, message)
-}
 
 /// `retain_ms` is the caller's retention: zero is rejected, larger values are clamped to
 /// [`MAX_INPUT_RETENTION_MS`], and the receipt's `expires_ms` reflects the clamp.
@@ -21,26 +17,17 @@ pub fn reserve(
     workspace: Entity,
     pane: Entity,
     retain_ms: u64,
-    id: u64,
-) -> Result<CommandResult, Reply> {
+) -> Result<CommandResult, Failure> {
     if retain_ms == 0 {
-        return Err(failure(
-            id,
-            ErrorCode::InvalidRequest,
-            "retain_ms must be nonzero",
-        ));
+        return Err(Failure::invalid("retain_ms must be nonzero"));
     }
     let retain_ms = retain_ms.min(MAX_INPUT_RETENTION_MS);
     expire(world);
     let component = world
         .get::<Pane>(pane)
-        .ok_or_else(|| failure(id, ErrorCode::NotFound, "pane not found"))?;
+        .ok_or_else(|| Failure::not_found("pane not found"))?;
     if !component.state.accepts_input() {
-        return Err(failure(
-            id,
-            ErrorCode::Conflict,
-            "pane is not accepting input",
-        ));
+        return Err(Failure::conflict("pane is not accepting input"));
     }
     let mut receipt = InputReceipt {
         operation: 0,
@@ -54,16 +41,14 @@ pub fn reserve(
     };
     let mut operations = world.resource_mut::<InputOperations>();
     if operations.records.len() >= MAX_INPUT_OPERATIONS {
-        return Err(failure(
-            id,
-            ErrorCode::Limit,
+        return Err(Failure::limit(
             "input receipt capacity reached; wait for expiry",
         ));
     }
     let operation = operations
         .next
         .checked_add(1)
-        .ok_or_else(|| failure(id, ErrorCode::Limit, "input operation ids exhausted"))?;
+        .ok_or_else(|| Failure::limit("input operation ids exhausted"))?;
     operations.next = operation;
     receipt.operation = operation;
     operations.records.insert(
@@ -80,13 +65,8 @@ pub fn reserve(
     Ok(CommandResult::Input { receipt })
 }
 
-pub fn status(
-    world: &World,
-    workspace: Entity,
-    operation: u64,
-    id: u64,
-) -> Result<CommandResult, Reply> {
-    let record = record(world, workspace, operation, id)?;
+pub fn status(world: &World, workspace: Entity, operation: u64) -> Result<CommandResult, Failure> {
+    let record = record(world, workspace, operation)?;
     Ok(CommandResult::Input {
         receipt: record.receipt.clone(),
     })
@@ -99,13 +79,13 @@ pub fn manager_status(
     instance: &str,
     pane: crate::ids::PaneId,
     operation: u64,
-) -> Result<CommandResult, Reply> {
+) -> Result<CommandResult, Failure> {
     if instance
         != world
             .resource::<crate::ecs::resources::ServerIdentity>()
             .instance_nonce
     {
-        return Err(failure(0, ErrorCode::Conflict, "server instance changed"));
+        return Err(Failure::conflict("server instance changed"));
     }
     let record = world
         .resource::<InputOperations>()
@@ -116,8 +96,7 @@ pub fn manager_status(
                 && record.receipt.expires_ms > world.resource::<Clock>().now_ms
         })
         .ok_or_else(|| {
-            failure(
-                0,
+            Failure::new(
                 ErrorCode::Expired,
                 "input operation unavailable or expired; delivery outcome is unknown",
             )
@@ -127,12 +106,7 @@ pub fn manager_status(
     })
 }
 
-fn record(
-    world: &World,
-    workspace: Entity,
-    operation: u64,
-    id: u64,
-) -> Result<&InputRecord, Reply> {
+fn record(world: &World, workspace: Entity, operation: u64) -> Result<&InputRecord, Failure> {
     world
         .resource::<InputOperations>()
         .records
@@ -142,8 +116,7 @@ fn record(
                 && record.receipt.expires_ms > world.resource::<Clock>().now_ms
         })
         .ok_or_else(|| {
-            failure(
-                id,
+            Failure::new(
                 ErrorCode::Expired,
                 "input operation unavailable or expired; delivery outcome is unknown",
             )
@@ -155,69 +128,56 @@ pub fn submit(
     workspace: Entity,
     operation: u64,
     bytes: Vec<u8>,
-    id: u64,
-) -> Result<CommandResult, Reply> {
-    let record = record(world, workspace, operation, id)?;
+) -> Result<CommandResult, Failure> {
+    let record = record(world, workspace, operation)?;
     if let Some(submitted) = &record.bytes {
         return if submitted == &bytes {
             Ok(CommandResult::Input {
                 receipt: record.receipt.clone(),
             })
         } else {
-            Err(failure(
-                id,
-                ErrorCode::Conflict,
+            Err(Failure::conflict(
                 "operation already submitted with different bytes",
             ))
         };
     }
     if record.receipt.state != InputState::Reserved {
-        return Err(failure(
-            id,
-            ErrorCode::Conflict,
+        return Err(Failure::conflict(
             "reservation is no longer usable; reserve again explicitly",
         ));
     }
     if bytes.is_empty() {
-        return Err(failure(
-            id,
-            ErrorCode::InvalidRequest,
-            "input must not be empty",
-        ));
+        return Err(Failure::invalid("input must not be empty"));
     }
     let pane = record.receipt.pane;
     let sequence = record.receipt.input_sequence;
     let entity = world
         .resource::<Ids>()
         .pane(pane)
-        .ok_or_else(|| failure(id, ErrorCode::NotFound, "pane no longer exists"))?;
+        .ok_or_else(|| Failure::not_found("pane no longer exists"))?;
     if crate::ecs::support::pane_workspace(world, entity) != Some(workspace) {
-        return Err(failure(
-            id,
-            ErrorCode::Conflict,
+        return Err(Failure::conflict(
             "pane changed workspace; reserve on its current route",
         ));
     }
     let mut component = world
         .get_mut::<Pane>(entity)
-        .ok_or_else(|| failure(id, ErrorCode::NotFound, "pane no longer exists"))?;
+        .ok_or_else(|| Failure::not_found("pane no longer exists"))?;
     if !component.state.accepts_input() || component.input_sequence != sequence {
-        return Err(failure(
-            id,
-            ErrorCode::Conflict,
+        return Err(Failure::conflict(
             "pane stopped accepting input or another writer intervened; reserve again explicitly",
         ));
     }
     let next = sequence
         .checked_add(1)
-        .ok_or_else(|| failure(id, ErrorCode::Limit, "input sequence exhausted"))?;
+        .ok_or_else(|| Failure::limit("input sequence exhausted"))?;
     component.input_sequence = next;
     let revision = component.terminal.revision();
     let mut operations = world.resource_mut::<InputOperations>();
     let record = operations
         .records
         .get_mut(&operation)
-        .ok_or_else(|| failure(id, ErrorCode::Expired, "operation expired"))?;
+        .ok_or_else(|| Failure::new(ErrorCode::Expired, "operation expired"))?;
     record.receipt.input_sequence = next;
     record.receipt.revision = revision;
     record.receipt.state = InputState::Queued;

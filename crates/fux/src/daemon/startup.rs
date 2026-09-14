@@ -27,7 +27,9 @@ impl ManagerLock {
     pub fn bind(paths: &DaemonPaths) -> io::Result<Self> {
         paths.prepare().map_err(io::Error::other)?;
         let _bind_lock = acquire_lock(&paths.runtime_dir, "manager.bind.lock")?;
-        remove_stale_manager_socket(&paths.manager_socket, &paths.runtime_dir)?;
+        // A concurrently elected listener can be visible just before connect succeeds; probe
+        // three times before treating the socket as stale.
+        crate::proto::socket::remove_stale_socket(&paths.manager_socket, 3)?;
         Ok(Self {
             socket: local_ipc::BoundSocket::bind(&paths.manager_socket)?,
         })
@@ -87,51 +89,6 @@ fn acquire_lock(runtime_dir: &Path, name: &str) -> io::Result<nix::fcntl::Flock<
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-}
-
-fn remove_stale_manager_socket(path: &Path, owner_dir: &Path) -> io::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(value) => value,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if !metadata.file_type().is_socket() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "manager path is not a socket",
-        ));
-    }
-    // A concurrently elected listener can be visible just before connect succeeds; retry briefly.
-    for _ in 0..3 {
-        if UnixStream::connect(path).is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "a fux session server is already running",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    if metadata.uid() != fs::metadata(owner_dir)?.uid() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "stale manager socket owner mismatch",
-        ));
-    }
-    let current = match fs::symlink_metadata(path) {
-        Ok(current) => current,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if !current.file_type().is_socket()
-        || current.dev() != metadata.dev()
-        || current.ino() != metadata.ino()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            "manager socket changed during stale recovery",
-        ));
-    }
-    fs::remove_file(path)
 }
 
 /// Environment handed to a background server: application and credential keys removed.
@@ -324,25 +281,11 @@ fn channel_owner(path: &Path) -> Option<u32> {
         .map(|metadata| metadata.uid())
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
 fn same_user(stream: &UnixStream, expected: Option<u32>) -> bool {
-    nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)
+    local_ipc::peer_uid(stream)
         .ok()
         .zip(expected)
-        .is_some_and(|(credentials, uid)| credentials.uid() == uid)
-}
-
-#[cfg(target_os = "macos")]
-fn same_user(stream: &UnixStream, expected: Option<u32>) -> bool {
-    nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::LocalPeerCred)
-        .ok()
-        .zip(expected)
-        .is_some_and(|(credentials, uid)| credentials.uid() == uid)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
-fn same_user(stream: &UnixStream, expected: Option<u32>) -> bool {
-    crate::proto::socket::authorize_peer(stream).is_ok() && expected.is_some()
+        .is_some_and(|(peer, uid)| peer == uid)
 }
 
 #[cfg(test)]

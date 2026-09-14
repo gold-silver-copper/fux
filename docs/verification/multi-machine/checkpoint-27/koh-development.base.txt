@@ -1,4 +1,0 @@
-koh dev base: da712875e4f527b718abe44e9d68f94048e916c7
-21321db5a072a6b15f31bc1fd58482579c0c4031cc2f99a58812cf5b58b354d9  docs/verification/multi-machine/checkpoint-27/koh-development.patch
-da712875e4f527b718abe44e9d68f94048e916c7
-git apply --check: OK

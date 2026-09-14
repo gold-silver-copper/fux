@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
+- `read_exact_until`: full read of a fixed-size buffer under one absolute deadline (added after
+  0.2.0 was published, which is why 0.2.0 tarballs could not build fux).
+- `absolute_path`: the shared "absolute or relative to the working directory" resolution that
+  `runtime_directory_from` uses, so callers stop duplicating it.
+- `Connecting` is crate-private; `connect_until` is the public entry point.
+- `BoundSocket::path` removed (no caller outside the crate's tests).
+
 ## 0.2.0 - 2026-09-11
 
 - `connect_until`: deadline-bounded connect over `Connecting` (poll loop to an absolute

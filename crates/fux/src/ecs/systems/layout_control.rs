@@ -1,40 +1,73 @@
 //! Atomic existing-pane layout mutations shared by viewers and control clients.
 
 use crate::ecs::components::{Pane, Tab, Viewer};
-use crate::ecs::support::{failed, is_member, mark_tab_dirty, tab_entity};
+use crate::ecs::support::{Failure, is_member, mark_tab_dirty, pane_id, tab_entity};
 use crate::ids::TabId;
 use crate::layout::{LayoutDocument, LayoutNode, LayoutTree};
-use crate::proto::control::{CommandResult, ErrorCode, LayoutAction, Reply};
+use crate::proto::control::{CommandResult, LayoutAction};
 use bevy_ecs::prelude::*;
 
 pub fn apply(
     world: &mut World,
     workspace: Entity,
-    id: u64,
     tab_id: TabId,
     generation: Option<u64>,
     action: LayoutAction,
-) -> Result<CommandResult, Reply> {
+) -> Result<CommandResult, Failure> {
     let tab = tab_entity(world, tab_id)
         .filter(|tab| is_member(world, workspace, *tab))
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
-    if !matches!(action, LayoutAction::Export) {
-        ensure_settled(world, tab, id)?;
+        .ok_or_else(|| Failure::not_found("tab not found"))?;
+    match action {
+        LayoutAction::Export => read(world, tab, tab_id, None),
+        LayoutAction::Inspect { pane } => {
+            ensure_settled(world, tab)?;
+            read(world, tab, tab_id, Some(pane))
+        }
+        action => edit(world, workspace, tab, tab_id, generation, action),
     }
+}
+
+/// Export the tab, or inspect one of its panes. Never touches the World.
+fn read(
+    world: &mut World,
+    tab: Entity,
+    tab_id: TabId,
+    inspect_pane: Option<crate::ids::PaneId>,
+) -> Result<CommandResult, Failure> {
     let component = world
         .get::<Tab>(tab)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
-    if let LayoutAction::Inspect { pane } = &action {
-        return inspect(world, component, id, *pane);
+        .ok_or_else(|| Failure::not_found("tab not found"))?;
+    match inspect_pane {
+        Some(pane) => inspect(world, component, pane),
+        None => export(world, tab, tab_id),
     }
+}
+
+/// Apply one mutation against the generation the client observed.
+fn edit(
+    world: &mut World,
+    workspace: Entity,
+    tab: Entity,
+    tab_id: TabId,
+    generation: Option<u64>,
+    action: LayoutAction,
+) -> Result<CommandResult, Failure> {
+    ensure_settled(world, tab)?;
+    let component = world
+        .get::<Tab>(tab)
+        .ok_or_else(|| Failure::not_found("tab not found"))?;
     let revision = component.layout_generation;
+    if generation != Some(revision) {
+        return Err(Failure::conflict(
+            "layout changed; export and retry with its generation",
+        ));
+    }
     let mut zoomed = component.zoomed;
     let mut label_plan = Vec::new();
-    let error =
-        |err: crate::layout::LayoutError| failed(id, ErrorCode::InvalidRequest, err.to_string());
+    let error = |err: crate::layout::LayoutError| Failure::invalid(err.to_string());
     let current = component
         .layout
-        .document(|entity| world.get::<Pane>(entity).map(|pane| pane.id))
+        .document(|entity| pane_id(world, entity))
         .map_err(error)?;
     let panes: Vec<_> = component
         .layout
@@ -46,15 +79,8 @@ pub fn apply(
         panes
             .iter()
             .find_map(|(id, entity)| (*id == pane).then_some(*entity))
-            .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane does not belong to this tab"))
+            .ok_or_else(|| Failure::not_found("pane does not belong to this tab"))
     };
-    if !action.is_read_only() && generation != Some(revision) {
-        return Err(failed(
-            id,
-            ErrorCode::Conflict,
-            "layout changed; export and retry with its generation",
-        ));
-    }
     // Public split indices refer to the canonical exported document, not arena allocation IDs.
     let mut next = LayoutTree::from_document(
         component.layout.document(|entity| entity).map_err(error)?,
@@ -62,8 +88,9 @@ pub fn apply(
     )
     .map_err(error)?;
     match action {
-        LayoutAction::Export => {}
-        LayoutAction::Inspect { pane } => return inspect(world, component, id, pane),
+        LayoutAction::Export | LayoutAction::Inspect { .. } => {
+            return Err(Failure::invalid("not a layout edit"));
+        }
         LayoutAction::Transfer {
             focus,
             pane,
@@ -73,12 +100,13 @@ pub fn apply(
             return super::transfer::within_workspace(
                 world,
                 workspace,
-                id,
-                tab,
-                pane,
-                destination,
-                side,
-                focus,
+                super::transfer::MoveSpec {
+                    source: tab,
+                    pane,
+                    destination,
+                    side,
+                    focus,
+                },
             );
         }
         LayoutAction::ResizeBorder {
@@ -88,7 +116,7 @@ pub fn apply(
             to_row,
         } => {
             if component.zoomed.is_some() {
-                return Err(failed(id, ErrorCode::Conflict, "no separator while zoomed"));
+                return Err(Failure::conflict("no separator while zoomed"));
             }
             let found = next
                 .splits(component.area)
@@ -110,7 +138,7 @@ pub fn apply(
                             u32::from(row) == u32::from(rect.y) + first
                         }
                 })
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "separator not found"))?;
+                .ok_or_else(|| Failure::not_found("separator not found"))?;
             let (split, axis, rect, _) = found;
             let (position, origin, extent) = if axis == crate::layout::Axis::Horizontal {
                 (to_column, rect.x, rect.width)
@@ -131,7 +159,7 @@ pub fn apply(
             let pane = resolve(pane)?;
             let target = next
                 .neighbour(pane, direction, component.area)
-                .ok_or_else(|| failed(id, ErrorCode::NotFound, "no pane in that direction"))?;
+                .ok_or_else(|| Failure::not_found("no pane in that direction"))?;
             if matches!(action, LayoutAction::SwapDirection { .. }) {
                 next.swap(pane, target).map_err(error)?;
             } else {
@@ -177,9 +205,7 @@ pub fn apply(
                         .collect::<std::collections::BTreeSet<_>>()
                         != sources
                 {
-                    return Err(failed(
-                        id,
-                        ErrorCode::InvalidRequest,
+                    return Err(Failure::invalid(
                         "remap must name every source pane exactly once",
                     ));
                 }
@@ -190,9 +216,7 @@ pub fn apply(
                         if !document.nodes.iter().any(
                             |node| matches!(node, LayoutNode::Pane { pane: id } if *id == pane),
                         ) {
-                            return Err(failed(
-                                id,
-                                ErrorCode::InvalidRequest,
+                            return Err(Failure::invalid(
                                 "zoom pane is not in the imported layout",
                             ));
                         }
@@ -209,8 +233,7 @@ pub fn apply(
                         _ => None,
                     })
                     .collect();
-                let labels = validate_labels(&labels, &sources)
-                    .map_err(|message| failed(id, ErrorCode::InvalidRequest, message))?;
+                let labels = validate_labels(&labels, &sources).map_err(Failure::invalid)?;
                 for pane in sources {
                     label_plan.push((
                         resolve(mapping.get(&pane).copied().unwrap_or(pane))?,
@@ -239,7 +262,7 @@ pub fn apply(
                         },
                     })
                 })
-                .collect::<Result<Vec<_>, Reply>>()?;
+                .collect::<Result<Vec<_>, Failure>>()?;
             next = LayoutTree::from_document(
                 LayoutDocument {
                     root: document.root,
@@ -256,13 +279,13 @@ pub fn apply(
             .is_some_and(|pane| &pane.label != label)
     }) || zoomed != component.zoomed
         || next
-            .document(|entity| world.get::<Pane>(entity).map(|pane| pane.id))
+            .document(|entity| pane_id(world, entity))
             .map_err(error)?
             != current;
     if changed {
         let revision = revision
             .checked_add(1)
-            .ok_or_else(|| failed(id, ErrorCode::Limit, "layout generation exhausted"))?;
+            .ok_or_else(|| Failure::limit("layout generation exhausted"))?;
         if let Some(mut component) = world.get_mut::<Tab>(tab) {
             component.layout = next;
             component.zoomed = zoomed;
@@ -276,9 +299,13 @@ pub fn apply(
         }
         mark_tab_dirty(world, tab);
     }
+    export(world, tab, tab_id)
+}
+
+fn export(world: &World, tab: Entity, tab_id: TabId) -> Result<CommandResult, Failure> {
     let component = world
         .get::<Tab>(tab)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
+        .ok_or_else(|| Failure::not_found("tab not found"))?;
     Ok(CommandResult::Layout {
         instance: world
             .resource::<crate::ecs::resources::ServerIdentity>()
@@ -287,10 +314,8 @@ pub fn apply(
         tab: tab_id,
         generation: component.layout_generation,
         labels: export_labels(world, &component.layout.leaves()),
-        zoomed: component
-            .zoomed
-            .and_then(|entity| world.get::<Pane>(entity).map(|pane| pane.id)),
-        document: export_document(world, component, id)?,
+        zoomed: component.zoomed.and_then(|entity| pane_id(world, entity)),
+        document: export_document(world, component)?,
     })
 }
 
@@ -333,7 +358,7 @@ pub fn validate_labels(
 }
 
 /// A pending viewer resize has not advanced the revision yet. Reject edits until layout resolves.
-pub fn ensure_settled(world: &mut World, tab: Entity, id: u64) -> Result<(), Reply> {
+pub fn ensure_settled(world: &mut World, tab: Entity) -> Result<(), Failure> {
     let smallest = world
         .query::<&Viewer>()
         .iter(world)
@@ -343,11 +368,9 @@ pub fn ensure_settled(world: &mut World, tab: Entity, id: u64) -> Result<(), Rep
         .map(|(rows, cols)| crate::ecs::support::tab_area(rows, cols));
     let component = world
         .get::<Tab>(tab)
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
+        .ok_or_else(|| Failure::not_found("tab not found"))?;
     if smallest.is_some_and(|area| area != component.area) {
-        return Err(failed(
-            id,
-            ErrorCode::Conflict,
+        return Err(Failure::conflict(
             "viewer area changed; wait for the next layout",
         ));
     }
@@ -355,12 +378,7 @@ pub fn ensure_settled(world: &mut World, tab: Entity, id: u64) -> Result<(), Rep
 }
 
 /// No mutation or cached geometry dependency: derive everything from the same current tree/area.
-fn inspect(
-    world: &World,
-    tab: &Tab,
-    id: u64,
-    pane: crate::ids::PaneId,
-) -> Result<CommandResult, Reply> {
+fn inspect(world: &World, tab: &Tab, pane: crate::ids::PaneId) -> Result<CommandResult, Failure> {
     use crate::layout::Direction;
     use crate::proto::control::{PaneEdges, PaneGeometry, PaneNeighbors};
     let entity = tab
@@ -372,10 +390,8 @@ fn inspect(
                 .get::<Pane>(*entity)
                 .is_some_and(|entry| entry.id == pane)
         })
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane does not belong to this tab"))?;
-    let error = |error: crate::layout::LayoutError| {
-        failed(id, ErrorCode::InvalidRequest, error.to_string())
-    };
+        .ok_or_else(|| Failure::not_found("pane does not belong to this tab"))?;
+    let error = |error: crate::layout::LayoutError| Failure::invalid(error.to_string());
     let area = tab.area;
     let rect = tab
         .layout
@@ -383,12 +399,12 @@ fn inspect(
         .map_err(error)?
         .into_iter()
         .find_map(|(candidate, rect)| (candidate == entity).then_some(rect))
-        .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane geometry missing"))?;
+        .ok_or_else(|| Failure::not_found("pane geometry missing"))?;
     let navigation_area = area.navigation_area();
     let neighbor = |direction| {
         tab.layout
             .neighbour(entity, direction, navigation_area)
-            .and_then(|entity| world.get::<Pane>(entity).map(|pane| pane.id))
+            .and_then(|entity| pane_id(world, entity))
     };
     let nonempty = rect.width != 0 && rect.height != 0;
     let visible_rect = if tab.zoomed.is_some_and(|zoomed| zoomed != entity) {
@@ -428,10 +444,8 @@ fn inspect(
                 down: nonempty
                     && rect.y.saturating_add(rect.height) == area.y.saturating_add(area.height),
             },
-            zoomed: tab
-                .zoomed
-                .and_then(|entity| world.get::<Pane>(entity).map(|pane| pane.id)),
-            document: export_document(world, tab, id)?,
+            zoomed: tab.zoomed.and_then(|entity| pane_id(world, entity)),
+            document: export_document(world, tab)?,
         }),
     })
 }
@@ -439,21 +453,18 @@ fn inspect(
 fn export_document(
     world: &World,
     component: &Tab,
-    id: u64,
-) -> Result<LayoutDocument<crate::ids::PaneId>, Reply> {
+) -> Result<LayoutDocument<crate::ids::PaneId>, Failure> {
     let document = component
         .layout
-        .document(|entity| world.get::<Pane>(entity).map(|pane| pane.id))
-        .map_err(|error| failed(id, ErrorCode::InvalidRequest, error.to_string()))?;
+        .document(|entity| pane_id(world, entity))
+        .map_err(|error| Failure::invalid(error.to_string()))?;
     let nodes = document
         .nodes
         .into_iter()
         .map(|node| {
             Ok(match node {
                 LayoutNode::Pane { pane } => LayoutNode::Pane {
-                    pane: pane.ok_or_else(|| {
-                        failed(id, ErrorCode::Conflict, "layout pane unavailable")
-                    })?,
+                    pane: pane.ok_or_else(|| Failure::conflict("layout pane unavailable"))?,
                 },
                 LayoutNode::Split {
                     axis,
@@ -468,7 +479,7 @@ fn export_document(
                 },
             })
         })
-        .collect::<Result<Vec<_>, Reply>>()?;
+        .collect::<Result<Vec<_>, Failure>>()?;
     Ok(LayoutDocument {
         root: document.root,
         nodes,

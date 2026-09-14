@@ -2,12 +2,13 @@
 //! connect it to PTYs and Unix sockets. Idle means asleep: the loop wakes only for inbound events,
 //! spawn completions, or a deadline the ECS asked for.
 
-pub mod adapter;
-pub mod connections;
+pub(crate) mod adapter;
+pub(crate) mod connections;
 
 use crate::config::Config;
 use crate::daemon::{DaemonPaths, ManagerIdentity, ManagerLock};
-use crate::ecs::{Effect, Inbound, ManagerAction, ManagerOutcome, Session};
+use crate::daemon::{ManagerReply, ManagerRequest};
+use crate::ecs::{Effect, Inbound, ManagerOutcome, Session};
 use crate::proto::socket::bind_local_socket;
 use adapter::{Adapter, OpenWorkspace};
 use connections::Owner;
@@ -84,9 +85,7 @@ struct ServerState {
     owner: Owner,
     pane_rx: mpsc::Receiver<Inbound>,
     ingress_rx: mpsc::Receiver<Inbound>,
-    control_reply_rx: mpsc::Receiver<(u64, oneshot::Sender<crate::proto::control::Reply>)>,
-    manager_reply_rx: mpsc::Receiver<(u64, oneshot::Sender<ManagerOutcome>)>,
-    outbox_rx: mpsc::Receiver<(crate::ids::ViewerId, adapter::ViewerOutbox)>,
+    register_rx: mpsc::Receiver<connections::Register>,
     started: Instant,
     /// When a step last fed pane output and when one last carried viewer input, for stream
     /// detection.
@@ -112,34 +111,22 @@ async fn start(
     crate::daemon::recover_stale_descriptors(&paths, &identity)?;
     let (pane_tx, pane_rx) = mpsc::channel(256);
     let (ingress_tx, ingress_rx) = mpsc::channel(1024);
-    let (control_reply_tx, control_reply_rx) = mpsc::channel(256);
-    let (manager_reply_tx, manager_reply_rx) = mpsc::channel(64);
-    let (outbox_tx, outbox_rx) = mpsc::channel(64);
+    let (register_tx, register_rx) = mpsc::channel(256);
     let mut session = Session::new(&config)?;
     session.set_identity(crate::ecs::ServerIdentity {
         pid: identity.pid,
         instance_nonce: identity.instance_nonce.clone(),
         runtime_dir: paths.runtime_dir.clone(),
     });
-    let instance = identity.instance_nonce.clone();
-    let adapter = Adapter::new(paths.clone(), identity, pane_tx);
     let owner = Owner {
-        instance,
+        paths: paths.clone(),
+        identity: identity.clone(),
         inbound: ingress_tx,
         tokens: Arc::new(AtomicU64::new(1)),
-        control_replies: control_reply_tx,
-        manager_replies: manager_reply_tx,
-        viewer_outboxes: outbox_tx,
+        register: register_tx,
         viewer_ids: Arc::new(AtomicU64::new(1)),
     };
-    let descriptors: connections::DescriptorHook = {
-        let paths = paths.clone();
-        let identity = adapter.identity.clone();
-        Arc::new(move |name: &str, stream: u64| {
-            adapter::descriptor(&paths, &identity, name, stream).ok()
-        })
-    };
-    connections::DESCRIPTOR_HOOK.install(descriptors);
+    let adapter = Adapter::new(paths, identity, pane_tx);
     manager_lock.listener().set_nonblocking(true)?;
     let manager_listener =
         tokio::net::UnixListener::from_std(manager_lock.listener().try_clone()?)?;
@@ -155,9 +142,7 @@ async fn start(
         owner,
         pane_rx,
         ingress_rx,
-        control_reply_rx,
-        manager_reply_rx,
-        outbox_rx,
+        register_rx,
         started: Instant::now(),
         last_output: None,
         last_input: None,
@@ -172,7 +157,7 @@ async fn start(
     let token = 0;
     state.adapter.manager_replies.insert(token, sender);
     let mut pending = vec![Inbound::Manager {
-        action: ManagerAction::Resolve {
+        request: ManagerRequest::Resolve {
             name: Some(options.name.clone()),
         },
         token,
@@ -183,20 +168,10 @@ async fn start(
         state.run_step(std::mem::take(&mut pending)).await?;
         match receiver.try_recv() {
             Ok(ManagerOutcome::Attach { .. }) => break,
-            Ok(ManagerOutcome::Failed(message)) => anyhow::bail!("initial workspace: {message}"),
-            Ok(
-                ManagerOutcome::Names(_)
-                | ManagerOutcome::Info(_)
-                | ManagerOutcome::ReleasePanePin(_)
-                | ManagerOutcome::InputStatus(_)
-                | ManagerOutcome::PaneLocation(_)
-                | ManagerOutcome::Final(_)
-                | ManagerOutcome::Catalog(_)
-                | ManagerOutcome::LayoutArchive(_)
-                | ManagerOutcome::Layout(_),
-            ) => {
-                anyhow::bail!("unexpected manager outcome")
+            Ok(ManagerOutcome::Reply(ManagerReply::Failed { message })) => {
+                anyhow::bail!("initial workspace: {message}")
             }
+            Ok(_) => anyhow::bail!("unexpected manager outcome"),
             Err(oneshot::error::TryRecvError::Closed) => {
                 anyhow::bail!("initial workspace creation was abandoned")
             }
@@ -221,14 +196,8 @@ impl ServerState {
     /// Collects a bounded, fair batch from every source without blocking.
     fn collect(&mut self, into: &mut Vec<Inbound>) -> bool {
         let mut more = false;
-        while let Ok((token, sender)) = self.control_reply_rx.try_recv() {
-            self.adapter.control_replies.insert(token, sender);
-        }
-        while let Ok((token, sender)) = self.manager_reply_rx.try_recv() {
-            self.adapter.manager_replies.insert(token, sender);
-        }
-        while let Ok((viewer, outbox)) = self.outbox_rx.try_recv() {
-            self.adapter.viewers.insert(viewer, outbox);
+        while let Ok(item) = self.register_rx.try_recv() {
+            self.adapter.register(item);
         }
         while let Some(result) = self.adapter.spawns.try_join_next() {
             match result {
@@ -308,7 +277,8 @@ impl ServerState {
         let control_listener = tokio::net::UnixListener::from_std(control.listener().try_clone()?)?;
         let stop = Arc::new(Notify::new());
         let subscribers = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let descriptor = self.adapter.descriptor_for(name, stream)?;
+        let descriptor =
+            adapter::descriptor(&self.adapter.paths, &self.adapter.identity, name, stream)?;
         self.adapter.register_workspace(OpenWorkspace {
             name: name.to_owned(),
             descriptor,
@@ -366,9 +336,7 @@ impl ServerState {
             () = shutdown => return true,
             event = self.ingress_rx.recv() => { if let Some(event) = event { into.push(event); } }
             event = self.pane_rx.recv() => { if let Some(event) = event { into.push(event); } }
-            Some((viewer, outbox)) = self.outbox_rx.recv() => { self.adapter.viewers.insert(viewer, outbox); }
-            Some((token, sender)) = self.control_reply_rx.recv() => { self.adapter.control_replies.insert(token, sender); }
-            Some((token, sender)) = self.manager_reply_rx.recv() => { self.adapter.manager_replies.insert(token, sender); }
+            Some(item) = self.register_rx.recv() => { self.adapter.register(item); }
             Some(result) = self.adapter.spawns.join_next(), if !self.adapter.spawns.is_empty() => {
                 if let Ok((pane, result)) = result { into.push(self.adapter.record_spawn(pane, result)); }
             }

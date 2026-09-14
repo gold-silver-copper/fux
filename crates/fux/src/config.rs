@@ -1,7 +1,7 @@
 //! Typed, validated user configuration. Small on purpose: shell/program default, prefix and
 //! bindings, bounded history, clipboard policy and resource limits.
 
-use crate::commands::Action;
+use crate::commands::{Action, Key};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
@@ -24,9 +24,9 @@ pub const MAX_WORKSPACES: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Config {
-    pub prefix: String,
+    pub prefix: Key,
     #[serde(deserialize_with = "merged_bindings")]
-    pub bindings: BTreeMap<String, Action>,
+    pub bindings: BTreeMap<Key, Action>,
     pub default_command: Command,
     pub clipboard: ClipboardPolicy,
     pub history: HistoryLimits,
@@ -40,7 +40,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            prefix: crate::commands::key_name(crate::commands::DEFAULT_PREFIX),
+            prefix: Key(crate::commands::DEFAULT_PREFIX),
             bindings: default_bindings(),
             default_command: default_shell(),
             clipboard: ClipboardPolicy::Disabled,
@@ -97,20 +97,19 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let prefix = validate_key_notation("prefix", &self.prefix)?;
         if self.bindings.len() > 256 {
             return invalid("bindings", "at most 256 entries are allowed");
         }
         let mut seen = std::collections::BTreeSet::new();
         for key in self.bindings.keys() {
-            let byte = crate::commands::canonical_key(validate_key_notation("bindings key", key)?);
+            let byte = crate::commands::canonical_key(key.0);
             if !seen.insert(byte) {
                 return invalid(
                     "bindings",
                     "two bindings use the same key with and without Shift",
                 );
             }
-            if byte == crate::commands::canonical_key(prefix) {
+            if byte == crate::commands::canonical_key(self.prefix.0) {
                 return invalid("bindings", "a binding cannot be the prefix key");
             }
         }
@@ -396,32 +395,20 @@ pub fn default_shell_from(
         })
 }
 
-fn merged_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<String, Action>, D::Error>
+fn merged_bindings<'de, D>(deserializer: D) -> Result<BTreeMap<Key, Action>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let mut bindings = default_bindings();
-    bindings.extend(BTreeMap::<String, Action>::deserialize(deserializer)?);
+    bindings.extend(BTreeMap::<Key, Action>::deserialize(deserializer)?);
     Ok(bindings)
 }
 
-fn default_bindings() -> BTreeMap<String, Action> {
+fn default_bindings() -> BTreeMap<Key, Action> {
     crate::commands::DEFAULT_BINDINGS
         .iter()
-        .map(|spec| (crate::commands::key_name(spec.key), spec.action))
+        .map(|spec| (Key(spec.key), spec.action))
         .collect()
-}
-
-fn validate_key_notation(field: &'static str, value: &str) -> Result<u8, ConfigError> {
-    crate::commands::key_byte(value).map_or_else(
-        || {
-            invalid(
-                field,
-                "must encode exactly one byte as a literal byte, `C-x`, `Esc`, `Space` or `DEL`",
-            )
-        },
-        Ok,
-    )
 }
 
 fn validate_limit(field: &'static str, value: usize, maximum: usize) -> Result<(), ConfigError> {
@@ -470,7 +457,7 @@ mod tests {
         assert_eq!(parsed, config);
         let sparse = Config::from_toml("prefix = 'C-b'\n[history]\nscrollback-lines = 5\n")
             .unwrap_or_default();
-        assert_eq!(sparse.prefix, "C-b");
+        assert_eq!(sparse.prefix, Key(2));
         assert_eq!(sparse.history.scrollback_lines, 5);
         assert_eq!(sparse.bindings, config.bindings);
     }

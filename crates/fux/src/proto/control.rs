@@ -73,6 +73,7 @@ pub enum Request {
     /// Permanently constrain an existing live pane to its current workspace.
     FixWorkspace {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         stream: u64,
         pane: PaneId,
@@ -80,12 +81,14 @@ pub enum Request {
     /// Set a manual pane label; an empty name restores the application title.
     RenamePane {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         pane: PaneId,
         name: String,
     },
     PaneInput {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         pane: PaneId,
         right_click: crate::view::RightClickPolicy,
@@ -132,6 +135,7 @@ pub enum Request {
     },
     InputReserve {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         pane: PaneId,
         /// How long the receipt is retained, in milliseconds; nonzero, clamped to
@@ -140,12 +144,14 @@ pub enum Request {
     },
     InputSubmit {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         operation: u64,
         keys: String,
     },
     InputStatus {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         operation: u64,
     },
@@ -502,6 +508,26 @@ pub struct CaptureLine {
     pub cells: Vec<crate::view::WireCell>,
 }
 
+impl CaptureLine {
+    /// Exact length of this line's compact JSON encoding.
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        // `{"row":` N `,"wrapped":` true|false `,"cells":[` cells `]}`
+        let cells: usize = self
+            .cells
+            .iter()
+            .map(crate::view::WireCell::encoded_len)
+            .sum();
+        7 + crate::view::digits_u16(self.row)
+            + 11
+            + if self.wrapped { 4 } else { 5 }
+            + 10
+            + cells
+            + self.cells.len().saturating_sub(1)
+            + 2
+    }
+}
+
 /// What `info` reports about the server answering the socket.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -531,7 +557,7 @@ pub struct InfoLimits {
     pub final_retention_ms: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum FocusTarget {
     Pane(PaneId),
@@ -682,13 +708,6 @@ pub enum LayoutAction {
         #[serde(default)]
         labels: Option<PaneLabels>,
     },
-}
-
-impl LayoutAction {
-    #[must_use]
-    pub fn is_read_only(&self) -> bool {
-        matches!(self, Self::Export | Self::Inspect { .. })
-    }
 }
 
 /// Directional neighbors follow the same rules as the focus operation.
@@ -848,6 +867,15 @@ pub enum Reply {
 }
 
 impl Reply {
+    /// The process exit status a CLI that printed this reply should end with.
+    #[must_use]
+    pub fn exit_code(&self) -> std::process::ExitCode {
+        match self {
+            Self::Failed { .. } => std::process::ExitCode::FAILURE,
+            Self::Accepted { .. } | Self::Completed { .. } => std::process::ExitCode::SUCCESS,
+        }
+    }
+
     pub fn id(&self) -> RequestId {
         match self {
             Self::Accepted { id } | Self::Completed { id, .. } | Self::Failed { id, .. } => *id,
@@ -1037,7 +1065,6 @@ pub enum ErrorCode {
     NotFound,
     Conflict,
     Limit,
-    Timeout,
     Internal,
 }
 
@@ -1092,17 +1119,6 @@ pub enum Event {
 }
 
 impl Event {
-    pub fn kind(&self) -> EventKind {
-        match self {
-            Self::WorkspaceChanged { .. } => EventKind::WorkspaceChanged,
-            Self::PaneOpened { .. } => EventKind::PaneOpened,
-            Self::PaneClosed { .. } => EventKind::PaneClosed,
-            Self::PaneOutput { .. } => EventKind::PaneOutput,
-            Self::TabOpened { .. } => EventKind::TabOpened,
-            Self::TabClosed { .. } => EventKind::TabClosed,
-        }
-    }
-
     /// Stamps the subscriber's request id on a published copy.
     pub fn with_id(mut self, subscription: RequestId) -> Self {
         match &mut self {
@@ -1115,23 +1131,6 @@ impl Event {
         }
         self
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EventKind {
-    #[serde(rename = "workspace.changed")]
-    WorkspaceChanged,
-    #[serde(rename = "pane.opened")]
-    PaneOpened,
-    #[serde(rename = "pane.closed")]
-    PaneClosed,
-    #[serde(rename = "pane.output")]
-    PaneOutput,
-    #[serde(rename = "tab.opened")]
-    TabOpened,
-    #[serde(rename = "tab.closed")]
-    TabClosed,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1181,16 +1180,21 @@ pub fn decode_request_frame(frame: &[u8]) -> Result<Request, ControlError> {
     Ok(request)
 }
 
-pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Result<()> {
-    let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+/// One newline-delimited JSON frame, refused when it exceeds [`MAX_FRAME_BYTES`].
+pub fn encode_line<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "serialized control frame exceeds limit",
         ));
     }
-    writer.write_all(&bytes)?;
-    writer.write_all(b"\n")?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Result<()> {
+    writer.write_all(&encode_line(value)?)?;
     writer.flush()
 }
 
@@ -1200,15 +1204,7 @@ pub fn write_frame_until<T: Serialize>(
     value: &T,
     deadline: std::time::Instant,
 ) -> io::Result<()> {
-    let mut bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    if bytes.len() > MAX_FRAME_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "serialized control frame exceeds limit",
-        ));
-    }
-    bytes.push(b'\n');
-    super::socket::write_all_until(writer, &bytes, deadline)
+    local_ipc::write_all_until(writer, &encode_line(value)?, deadline)
 }
 
 pub fn error_reply(error: &ControlError) -> Reply {
@@ -1464,6 +1460,29 @@ mod tests {
     }
 
     #[test]
+    fn tracked_requests_without_an_instance_fail_validation_not_decoding() {
+        // Every tracked operation decodes with the key omitted (like `events` and `split`) and
+        // is then refused by validation with the explanatory error, not a JSON field error.
+        for frame in [
+            "{\"command\":\"fix-workspace\",\"id\":1,\"stream\":2,\"pane\":3}",
+            "{\"command\":\"rename-pane\",\"id\":1,\"pane\":3,\"name\":\"n\"}",
+            "{\"command\":\"pane-input\",\"id\":1,\"pane\":3,\"right_click\":\"pane\"}",
+            "{\"command\":\"input-reserve\",\"id\":1,\"pane\":3,\"retain_ms\":10}",
+            "{\"command\":\"input-submit\",\"id\":1,\"operation\":4,\"keys\":\"x\"}",
+            "{\"command\":\"input-status\",\"id\":1,\"operation\":4}",
+        ] {
+            let decoded = serde_json::from_str::<Request>(frame);
+            assert!(decoded.is_ok(), "{frame}: {decoded:?}");
+            let error = decode_request_frame(frame.as_bytes()).err();
+            assert_eq!(
+                error.as_ref().map(|error| error.code),
+                Some(ErrorCode::InvalidRequest),
+                "{frame}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn events_serialize_with_dotted_names_and_take_subscription_ids() {
         let event = Event::PaneClosed {
             id: 1,
@@ -1474,12 +1493,9 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap_or_default();
         assert!(json.contains("\"event\":\"pane.closed\""));
         assert!(json.contains("\"id\":9"));
-        assert_eq!(
-            serde_json::from_str::<EventKind>("\"pane.output\"").ok(),
-            Some(EventKind::PaneOutput)
-        );
         for removed in ["pane.title", "client.attached", "client.detached"] {
-            assert!(serde_json::from_str::<EventKind>(&format!("\"{removed}\"")).is_err());
+            let frame = format!("{{\"event\":\"{removed}\",\"id\":1}}");
+            assert!(serde_json::from_str::<Event>(&frame).is_err());
         }
     }
 

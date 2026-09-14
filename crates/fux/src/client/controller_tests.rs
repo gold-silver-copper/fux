@@ -1034,7 +1034,7 @@ fn cancelled_right_menu_accepts_a_new_press_after_a_lost_release() {
         MouseDisposition::Local
     ));
     assert!(
-        matches!(&controller.mode, Mode::Menu(menu) if menu.project(&frame).focused == Some(PaneId(2)))
+        matches!(&controller.mode, Mode::Menu(menu) if menu.target().focused == Some(PaneId(2)))
     );
     assert!(matches!(
         controller.mouse(
@@ -1477,7 +1477,7 @@ fn hidden_tab_menu_targets_its_tab_and_cancels_when_catalog_changes() -> Result<
     feed(&mut controller, b"j\r", &frame);
     let (action, target) = controller.take_action().ok_or("tab action")?;
     assert_eq!(action, Action::RenameTab);
-    assert_eq!(target.active_tab, Some(TabId(2)));
+    assert_eq!(target.tab, Some(TabId(2)));
     assert_eq!(frame.active_tab, Some(TabId(1)));
     assert!(matches!(
         controller.mouse(right, &frame),
@@ -2291,7 +2291,11 @@ fn histories_are_memory_bounded_and_exited_apps_do_not_own_the_mouse() {
         view.exit = Some(0);
         view.modes.mouse_mode = MouseMode::AnyMotion;
     }
-    assert!(Action::CopyMode.unavailable(&frame, true).is_none());
+    assert!(
+        Action::CopyMode
+            .unavailable(&frame, Target::of(&frame), true)
+            .is_none()
+    );
     assert!(matches!(
         controller.mouse(
             MouseEvent {
@@ -2598,4 +2602,21 @@ fn canceled_modes_keep_owning_unfinished_pastes() {
         assert!(controller.feed(*byte, &frame).is_none());
     }
     assert!(!controller.owns_input());
+}
+
+#[test]
+fn a_double_escape_inside_a_mode_dismisses_it_after_the_timeout() {
+    // Both input owners share one sequence grammar: ESC ESC waits for a third byte or the
+    // Escape timeout, and a resolved trailing Escape dismisses the mode rather than being dropped.
+    let frame = frame();
+    let mut controller = Controller::new(true);
+    assert!(controller.enter(Action::RenameTab, &frame));
+    assert!(feed(&mut controller, b"\x1b\x1b", &frame).is_empty());
+    assert!(controller.active() && controller.escape_pending());
+    controller.resolve_escape();
+    assert!(!controller.active() && !controller.owns_input());
+    // ESC ESC followed by an ordinary byte is a complete unknown sequence and stays swallowed.
+    assert!(controller.enter(Action::RenameTab, &frame));
+    assert!(feed(&mut controller, b"\x1b\x1bx", &frame).is_empty());
+    assert!(controller.active() && !controller.escape_pending());
 }

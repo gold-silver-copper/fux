@@ -116,8 +116,10 @@ advance the terminal output sequence. History views carry the current label too.
 
 A wire cell is `{"text":"a"}` for text (`kind` present only for `wide-leading`), `{}` for one
 blank default cell, `{"run":40}` for a run of blank cells, `{"kind":"wide-continuation"}` for the
-cell after a wide character, with `style` present only when it is not the default
-(`{"foreground":"Default","background":"Default",…}`). A run never crosses a row. Each line must
+cell after a wide character, with `style` present only when it is not the default. A style is
+`[foreground, background, attributes]`: a colour is `null` for the terminal default, a palette
+index (`1`) or an `[r, g, b]` triple, and `attributes` is a bitset (bold 1, dim 2, italic 4,
+underline 8, inverse 16); a viewer rejects unknown bits. A run never crosses a row. Each line must
 expand to exactly `columns` cells; text cells hold one grapheme of width one (two for
 `wide-leading`) and no control characters; titles are at most 1,024 bytes; the panes an update
 leaves in its layout hold at most 262,144 cells in total, and an update decodes at most 128

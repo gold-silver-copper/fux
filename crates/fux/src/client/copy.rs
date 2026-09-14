@@ -47,7 +47,6 @@ pub enum CopyKey {
     Copy,
     Live,
     Quit,
-    Escape,
 }
 
 pub enum CopyOutcome {
@@ -174,6 +173,7 @@ impl CopySession {
     pub fn selecting(&self) -> bool {
         self.anchor.is_some()
     }
+    #[cfg(test)]
     pub fn notice(&self) -> Option<&'static str> {
         self.notice
     }
@@ -200,10 +200,6 @@ impl CopySession {
                 .pending_read
                 .as_ref()
                 .is_some_and(|pending| pending.id == request)
-    }
-
-    pub fn awaiting_read(&self) -> bool {
-        self.pending_read.is_some()
     }
 
     /// Installs a reply. Returns false when the pane is gone and the mode must end.
@@ -320,7 +316,7 @@ impl CopySession {
                     self.notice = Some("Selection cleared: returned to live output");
                 }
             }
-            CopyKey::Quit | CopyKey::Escape => {
+            CopyKey::Quit => {
                 self.clear_selection();
                 return CopyOutcome::Finished;
             }
@@ -584,10 +580,7 @@ mod tests {
     fn escape_finishes_selection_in_one_press() {
         let mut session = CopySession::new(PaneId(1), view(3, 6, "live", 0));
         session.key(CopyKey::Anchor);
-        assert!(matches!(
-            session.key(CopyKey::Escape),
-            CopyOutcome::Finished
-        ));
+        assert!(matches!(session.key(CopyKey::Quit), CopyOutcome::Finished));
         assert!(!session.selecting());
     }
 

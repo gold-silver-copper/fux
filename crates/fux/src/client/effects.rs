@@ -19,16 +19,28 @@ pub enum Effect {
     Detach,
 }
 
+/// The attachment identity a modal interaction was opened against; any change dismisses it.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Identity(String, String, u64, crate::ids::ViewerId);
+pub struct Identity {
+    pub instance: String,
+    pub workspace: String,
+    pub stream: u64,
+    pub viewer: crate::ids::ViewerId,
+}
 impl Identity {
     pub fn of(frame: &Frame) -> Self {
-        Self(
-            frame.server_instance.clone(),
-            frame.workspace.clone(),
-            frame.workspace_stream,
-            frame.viewer,
-        )
+        Self {
+            instance: frame.server_instance.clone(),
+            workspace: frame.workspace.clone(),
+            stream: frame.workspace_stream,
+            viewer: frame.viewer,
+        }
+    }
+    pub fn matches(&self, frame: &Frame) -> bool {
+        frame.server_instance == self.instance
+            && frame.workspace == self.workspace
+            && frame.workspace_stream == self.stream
+            && frame.viewer == self.viewer
     }
 }
 pub fn navigates_workspace(request: &Request) -> bool {
@@ -119,7 +131,7 @@ impl Queue {
                     (Effect::Input(bytes), Some(identity), Some(Some(pane))) => {
                         Ok(Effect::Control(Request::SendKeys {
                             id: 0,
-                            instance: Some(identity.0),
+                            instance: Some(identity.instance),
                             pane,
                             keys: bytes.iter().map(|byte| format!("\\x{byte:02x}")).collect(),
                             notation: crate::proto::control::KeyNotation::Escapes,

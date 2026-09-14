@@ -424,7 +424,9 @@ mod enabled {
             ensure!(
                 frame
                     .pixels
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .all(|pixel| pixel == &frame.pixels[frame.pixels.len() - 4..]),
                 "hidden cursor left pixels on the otherwise blank terminal"
             );
@@ -453,7 +455,9 @@ mod enabled {
             ensure!(
                 frame
                     .pixels
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .any(|pixel| pixel != &frame.pixels[..4]),
                 "blank raster"
             );

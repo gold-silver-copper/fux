@@ -28,27 +28,11 @@
             {
               "text": "日",
               "kind": "wide-leading",
-              "style": {
-                "foreground": { "Indexed": 1 },
-                "background": "Default",
-                "bold": true,
-                "dim": false,
-                "italic": false,
-                "underline": false,
-                "inverse": false
-              }
+              "style": [1, null, 1]
             },
             {
               "kind": "wide-continuation",
-              "style": {
-                "foreground": { "Indexed": 1 },
-                "background": "Default",
-                "bold": true,
-                "dim": false,
-                "italic": false,
-                "underline": false,
-                "inverse": false
-              }
+              "style": [1, null, 1]
             },
             { "run": 4 }
           ]
