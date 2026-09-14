@@ -449,3 +449,50 @@ fn recreated_workspace_rejects_old_stream_and_ignores_delayed_pane_output() {
     assert!(h.pending_spawns.is_empty());
     assert_eq!(listing_cursor(&mut h), new);
 }
+
+/// A control-socket read refreshes the pane grid the viewer is waiting to be sent. Output paced
+/// behind the frame interval must still reach the viewer when that read lands in the same step.
+#[test]
+fn a_control_read_during_paced_output_does_not_strand_the_viewer_frame() {
+    let mut h = Harness::new();
+    h.create_workspace("default");
+    let viewer = h.attach("default", 24, 80);
+    h.step(vec![Inbound::PaneOutput {
+        pane: PaneId(1),
+        bytes: b"first\r\n".to_vec(),
+    }]);
+    let shows = |h: &Harness, text: &str| {
+        h.last_frame(viewer).panes[&PaneId(1)]
+            .text_between((0, 0), (23, 79))
+            .contains(text)
+    };
+    assert!(shows(&h, "first"));
+    // Inside the frame interval: the output is paced, and a capture reads the pane meanwhile.
+    h.step_after(
+        1,
+        vec![
+            Inbound::PaneOutput {
+                pane: PaneId(1),
+                bytes: b"second\r\n".to_vec(),
+            },
+            Inbound::ControlRequest {
+                workspace: "default".into(),
+                request: serde_json::from_value(serde_json::json!({
+                    "command":"capture", "id":990, "instance":"test-instance", "pane":1,
+                    "max_bytes":4096
+                }))
+                .expect("capture request"),
+                token: 990,
+            },
+        ],
+    );
+    assert!(
+        h.session.next_deadline_ms().is_some(),
+        "paced output must schedule the viewer's frame"
+    );
+    h.step_after(20, Vec::new());
+    assert!(
+        shows(&h, "second"),
+        "the viewer never received the paced output"
+    );
+}

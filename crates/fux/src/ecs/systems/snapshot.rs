@@ -70,9 +70,18 @@ pub fn refresh_grids(
             .and_then(|tab| tabs.get(tab).ok())
             .map(|tab| tab.geometry.iter().map(|(pane, _)| *pane).collect())
             .unwrap_or_default();
-        let output = shown
-            .iter()
-            .any(|pane| panes.get(*pane).is_ok_and(|(_, pane)| pane.dirty));
+        // Output is owed when a shown pane is dirty or its grid already holds rows this viewer
+        // was not sent: control reads (list, capture) refresh grids outside this phase and
+        // clear `dirty`, and that output still has to reach the viewer.
+        let output = shown.iter().any(|pane| {
+            panes.get(*pane).is_ok_and(|(_, pane)| {
+                pane.dirty
+                    || viewer
+                        .sent
+                        .get(&pane.id)
+                        .is_some_and(|sent| pane.terminal.grid().seq() > sent.seq)
+            })
+        });
         viewer.pending |= output;
         // Output within two intervals of the viewer's own input is its echo, shown at once.
         let echoing = clock.now_ms

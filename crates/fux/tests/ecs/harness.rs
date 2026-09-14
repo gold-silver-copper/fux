@@ -91,7 +91,13 @@ impl Harness {
     }
 
     pub fn step(&mut self, inbound: Vec<Inbound>) -> Vec<Effect> {
-        self.now += 10;
+        self.step_after(10, inbound)
+    }
+
+    /// Runs one step `elapsed_ms` after the previous one (`step` uses 10 ms, beyond the frame
+    /// interval, so every step there may publish).
+    pub fn step_after(&mut self, elapsed_ms: u64, inbound: Vec<Inbound>) -> Vec<Effect> {
+        self.now += elapsed_ms;
         let effects = self.session.step(self.now, inbound);
         assert_eq!(self.session.retained_messages(), 0, "messages retained");
         self.session

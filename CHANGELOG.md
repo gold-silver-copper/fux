@@ -5,6 +5,12 @@
 Simplification pass (`docs/codebase-simplification.md` records every batch, its line count and
 its behaviour differences).
 
+- Fixed a viewer that stopped updating a pane. When a control-socket read (`list`, `capture`)
+  arrived in the same step as paced output, it refreshed the pane grid and cleared the flag
+  frame publication relied on, so that output was never sent until something else changed.
+  Publication now compares each shown pane's grid sequence with what the viewer was sent.
+  The bug predates this release.
+
 - Attachment frames and `cells` captures carry a non-default cell style as
   `[foreground, background, attributes]` (a colour is `null`, a palette index or `[r, g, b]`;
   attributes are a bitset: bold 1, dim 2, italic 4, underline 8, inverse 16; unknown bits are
