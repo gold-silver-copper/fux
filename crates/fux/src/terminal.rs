@@ -360,9 +360,8 @@ impl Grid {
                 cells,
             };
             // Each row is one array element; the separating comma counts toward the bound.
-            let encoded = serde_json::to_vec(&line).map_or(usize::MAX, |json| json.len());
             bytes = bytes
-                .saturating_add(encoded)
+                .saturating_add(line.encoded_len())
                 .saturating_add(usize::from(row > 0));
             if bytes > max_bytes {
                 return (lines, true);

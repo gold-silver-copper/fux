@@ -508,6 +508,26 @@ pub struct CaptureLine {
     pub cells: Vec<crate::view::WireCell>,
 }
 
+impl CaptureLine {
+    /// Exact length of this line's compact JSON encoding.
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        // `{"row":` N `,"wrapped":` true|false `,"cells":[` cells `]}`
+        let cells: usize = self
+            .cells
+            .iter()
+            .map(crate::view::WireCell::encoded_len)
+            .sum();
+        7 + crate::view::digits_u16(self.row)
+            + 11
+            + if self.wrapped { 4 } else { 5 }
+            + 10
+            + cells
+            + self.cells.len().saturating_sub(1)
+            + 2
+    }
+}
+
 /// What `info` reports about the server answering the socket.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

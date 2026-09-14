@@ -38,7 +38,23 @@ pub enum CellKind {
     WideContinuation,
 }
 
+impl CellKind {
+    /// The kebab-case wire name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Blank => "blank",
+            Self::Text => "text",
+            Self::WideLeading => "wide-leading",
+            Self::WideContinuation => "wide-continuation",
+        }
+    }
+}
+
+/// A cell colour. On the wire it is `null` (the terminal default), a palette index, or an
+/// `[r, g, b]` triple.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum Color {
     #[default]
     Default,
@@ -56,7 +72,58 @@ impl From<vt100::Color> for Color {
     }
 }
 
+impl Color {
+    /// Exact length of this colour's compact JSON encoding.
+    const fn encoded_len(self) -> usize {
+        match self {
+            Self::Default => 4,
+            Self::Indexed(index) => digits(index),
+            Self::Rgb(red, green, blue) => 4 + digits(red) + digits(green) + digits(blue),
+        }
+    }
+}
+
+/// Decimal digit count of a byte.
+const fn digits(value: u8) -> usize {
+    if value >= 100 {
+        3
+    } else if value >= 10 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Decimal digit count of a `u16`.
+pub(crate) const fn digits_u16(value: u16) -> usize {
+    if value >= 10_000 {
+        5
+    } else if value >= 1_000 {
+        4
+    } else if value >= 100 {
+        3
+    } else if value >= 10 {
+        2
+    } else {
+        1
+    }
+}
+
+/// Attribute bits of a wire style: `[foreground, background, attributes]`. The bit layout
+/// mirrors vt100's text mode so a style converts without branching.
+pub const ATTR_BOLD: u8 = 0b0000_0001;
+pub const ATTR_DIM: u8 = 0b0000_0010;
+pub const ATTR_ITALIC: u8 = 0b0000_0100;
+pub const ATTR_UNDERLINE: u8 = 0b0000_1000;
+pub const ATTR_INVERSE: u8 = 0b0001_0000;
+const ATTR_ALL: u8 = ATTR_BOLD | ATTR_DIM | ATTR_ITALIC | ATTR_UNDERLINE | ATTR_INVERSE;
+
+/// The wire shape of a [`CellStyle`]: `[foreground, background, attributes]`.
+#[derive(Serialize, Deserialize)]
+struct WireStyle(Color, Color, u8);
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(into = "WireStyle", try_from = "WireStyle")]
 pub struct CellStyle {
     pub foreground: Color,
     pub background: Color,
@@ -67,10 +134,53 @@ pub struct CellStyle {
     pub inverse: bool,
 }
 
+impl From<CellStyle> for WireStyle {
+    fn from(style: CellStyle) -> Self {
+        Self(style.foreground, style.background, style.attributes())
+    }
+}
+
+impl TryFrom<WireStyle> for CellStyle {
+    type Error = String;
+
+    fn try_from(WireStyle(foreground, background, attributes): WireStyle) -> Result<Self, String> {
+        if attributes & !ATTR_ALL != 0 {
+            return Err(format!("unknown style attribute bits {attributes:#x}"));
+        }
+        Ok(Self {
+            foreground,
+            background,
+            bold: attributes & ATTR_BOLD != 0,
+            dim: attributes & ATTR_DIM != 0,
+            italic: attributes & ATTR_ITALIC != 0,
+            underline: attributes & ATTR_UNDERLINE != 0,
+            inverse: attributes & ATTR_INVERSE != 0,
+        })
+    }
+}
+
 impl CellStyle {
     #[must_use]
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// The attribute bitset carried on the wire.
+    #[must_use]
+    pub const fn attributes(&self) -> u8 {
+        (if self.bold { ATTR_BOLD } else { 0 })
+            | (if self.dim { ATTR_DIM } else { 0 })
+            | (if self.italic { ATTR_ITALIC } else { 0 })
+            | (if self.underline { ATTR_UNDERLINE } else { 0 })
+            | (if self.inverse { ATTR_INVERSE } else { 0 })
+    }
+
+    /// Exact length of this style's compact JSON encoding.
+    const fn encoded_len(&self) -> usize {
+        // `[` fg `,` bg `,` attrs `]`
+        4 + self.foreground.encoded_len()
+            + self.background.encoded_len()
+            + digits(self.attributes())
     }
 
     #[must_use]
@@ -700,9 +810,46 @@ pub struct WireCell {
 }
 
 impl WireCell {
+    /// Exact length of this cell's compact JSON encoding, so a capture can be bounded without
+    /// encoding every row twice.
+    #[must_use]
+    pub fn encoded_len(&self) -> usize {
+        let mut fields = 0_usize;
+        let mut len = 2; // `{` and `}`
+        if let Some(text) = &self.text {
+            fields += 1;
+            len += 9 + json_string_len(text); // `"text":"` … `"`
+        }
+        if let Some(kind) = self.kind {
+            fields += 1;
+            len += 7 + 2 + kind.name().len(); // `"kind":` `"` … `"`
+        }
+        if !self.style.is_default() {
+            fields += 1;
+            len += 8 + self.style.encoded_len(); // `"style":` …
+        }
+        if self.run != 0 {
+            fields += 1;
+            len += 6 + digits_u16(self.run); // `"run":` …
+        }
+        len + fields.saturating_sub(1) // commas between fields
+    }
+
     fn matches_blank(&self, kind: CellKind, style: CellStyle) -> bool {
         self.text.is_none() && self.kind.unwrap_or_default() == kind && self.style == style
     }
+}
+
+/// Length of `text` as a JSON string body under serde_json's escaping rules (`"` and `\\` gain
+/// a backslash, the short control escapes take two bytes, other control characters six).
+fn json_string_len(text: &str) -> usize {
+    text.bytes()
+        .map(|byte| match byte {
+            b'"' | b'\\' | 0x08 | 0x09 | 0x0a | 0x0c | 0x0d => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+        .sum()
 }
 
 /// Appends one cell to the wire row that starts at `row_start`, extending a run of equal blanks
@@ -1136,6 +1283,153 @@ impl FrameUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn styled(foreground: Color, background: Color, attributes: u8) -> CellStyle {
+        CellStyle::try_from(WireStyle(foreground, background, attributes)).expect("known bits")
+    }
+
+    #[test]
+    fn styles_travel_as_compact_arrays_and_round_trip() {
+        let style = styled(
+            Color::Indexed(1),
+            Color::Rgb(0, 128, 255),
+            ATTR_BOLD | ATTR_INVERSE,
+        );
+        let json = serde_json::to_string(&style).expect("encode");
+        assert_eq!(json, "[1,[0,128,255],17]");
+        assert_eq!(
+            serde_json::from_str::<CellStyle>(&json).expect("decode"),
+            style
+        );
+        assert_eq!(
+            serde_json::to_string(&CellStyle::default()).expect("encode"),
+            "[null,null,0]"
+        );
+        let cell = WireCell {
+            text: Some("日".into()),
+            kind: Some(CellKind::WideLeading),
+            style: styled(Color::Indexed(1), Color::Default, ATTR_BOLD),
+            run: 0,
+        };
+        assert_eq!(
+            serde_json::to_string(&cell).expect("encode"),
+            r#"{"text":"日","kind":"wide-leading","style":[1,null,1]}"#
+        );
+    }
+
+    #[test]
+    fn unknown_style_bits_are_rejected() {
+        let error = serde_json::from_str::<CellStyle>("[null,null,32]").expect_err("bit 5");
+        assert!(
+            error.to_string().contains("unknown style attribute bits"),
+            "{error}"
+        );
+        assert!(serde_json::from_str::<CellStyle>("[null,null]").is_err());
+        assert!(serde_json::from_str::<CellStyle>(r#"{"foreground":null}"#).is_err());
+    }
+
+    fn encoded(value: &impl Serialize) -> usize {
+        serde_json::to_vec(value).expect("encode").len()
+    }
+
+    #[test]
+    fn encoded_len_matches_serde_json_exactly() {
+        let colors = [
+            Color::Default,
+            Color::Indexed(0),
+            Color::Indexed(9),
+            Color::Indexed(10),
+            Color::Indexed(255),
+            Color::Rgb(0, 100, 7),
+            Color::Rgb(255, 255, 255),
+        ];
+        let texts = [
+            "",
+            "a",
+            "日",
+            "\"",
+            "\\",
+            "\n",
+            "\u{1}",
+            "é",
+            "tab\there",
+            "\u{7f}",
+        ];
+        let kinds = [
+            None,
+            Some(CellKind::WideLeading),
+            Some(CellKind::WideContinuation),
+        ];
+        let runs = [
+            0_u16,
+            1,
+            9,
+            10,
+            99,
+            100,
+            999,
+            1_000,
+            9_999,
+            10_000,
+            u16::MAX,
+        ];
+        let mut cells = Vec::new();
+        for (index, &foreground) in colors.iter().enumerate() {
+            for (offset, &background) in colors.iter().enumerate() {
+                let attributes = u8::try_from((index * 7 + offset) % 32).expect("small");
+                let style = styled(foreground, background, attributes);
+                let text = texts
+                    .get((index + offset) % texts.len())
+                    .copied()
+                    .unwrap_or("");
+                let kind = kinds.get(index % kinds.len()).copied().flatten();
+                let run = runs.get(offset % runs.len()).copied().unwrap_or(0);
+                for cell in [
+                    WireCell {
+                        text: Some(text.into()),
+                        kind,
+                        style,
+                        run: 0,
+                    },
+                    WireCell {
+                        text: None,
+                        kind,
+                        style,
+                        run,
+                    },
+                    WireCell {
+                        text: None,
+                        kind: None,
+                        style,
+                        run,
+                    },
+                    WireCell {
+                        text: None,
+                        kind: None,
+                        style: CellStyle::default(),
+                        run,
+                    },
+                ] {
+                    assert_eq!(cell.encoded_len(), encoded(&cell), "{cell:?}");
+                    cells.push(cell);
+                }
+            }
+        }
+        for (row, wrapped) in [(0_u16, false), (7, true), (10, false), (65_535, true)] {
+            let line = crate::proto::control::CaptureLine {
+                row,
+                wrapped,
+                cells: cells.clone(),
+            };
+            assert_eq!(line.encoded_len(), encoded(&line));
+            let empty = crate::proto::control::CaptureLine {
+                row,
+                wrapped,
+                cells: Vec::new(),
+            };
+            assert_eq!(empty.encoded_len(), encoded(&empty));
+        }
+    }
 
     #[test]
     fn workspace_labels_are_sparse_clearable_and_validated_before_apply() {
