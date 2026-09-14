@@ -414,7 +414,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "usage: capture-service-failure --herdr PATH --fux PATH --zor PATH --output NEW_JSON [--repetitions 1..20] [--herdr-provenance BUILD_JSON]"
     );
     let mut flags = BTreeMap::new();
-    for p in args.chunks_exact(2) {
+    for p in args.as_chunks::<2>().0 {
         ensure!(
             [
                 "--herdr",

@@ -176,7 +176,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut version: Option<u32> = None;
     let mut samples = 20usize;
     ensure!((args.len() - 1).is_multiple_of(2), "missing option value");
-    for p in args[1..].chunks_exact(2) {
+    for p in args[1..].as_chunks::<2>().0 {
         match p[0].as_str() {
             "--version" => version = Some(p[1].parse()?),
             "--samples" => samples = p[1].parse()?,
