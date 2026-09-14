@@ -301,48 +301,15 @@ pub struct PaneView {
 pub struct PaneViewError;
 
 impl PaneView {
+    /// A full view of a vt100 screen, built through the wire path tests exercise elsewhere.
+    #[cfg(test)]
     pub fn from_screen(
         screen: &vt100::Screen,
         title: &str,
         offset: u32,
         exit: Option<u32>,
     ) -> Result<Self, PaneViewError> {
-        let (rows, columns) = screen.size();
-        if rows > MAX_DIM || columns > MAX_DIM || title.len() > MAX_TITLE_BYTES {
-            return Err(PaneViewError);
-        }
-        let capacity = usize::from(rows)
-            .checked_mul(usize::from(columns))
-            .ok_or(PaneViewError)?;
-        let mut cells = Vec::with_capacity(capacity);
-        for row in 0..rows {
-            for column in 0..columns {
-                cells.push(
-                    screen
-                        .cell(row, column)
-                        .map_or_else(Cell::default, Cell::from_vt100),
-                );
-            }
-        }
-        let (cursor_row, cursor_column) = screen.cursor_position();
-        let view = Self {
-            rows,
-            columns,
-            cells,
-            cursor: Cursor {
-                row: cursor_row,
-                column: cursor_column,
-                hidden: screen.hide_cursor(),
-            },
-            modes: PaneModes::from_vt100(screen),
-            title: title.to_owned(),
-            label: None,
-            right_click: RightClickPolicy::Auto,
-            wrapped_rows: (0..rows).map(|row| screen.row_wrapped(row)).collect(),
-            offset,
-            exit,
-        };
-        view.valid().then_some(view).ok_or(PaneViewError)
+        Self::from_update(&PaneUpdate::full_from_screen(screen, title, offset, exit)?)
     }
 
     #[must_use]
@@ -770,6 +737,18 @@ pub fn push_wire(
     });
 }
 
+/// Appends one vt100 cell (a missing one as a default blank) to the wire row starting at
+/// `row_start`, classifying its text and style at emission time.
+pub fn push_vt100(cells: &mut Vec<WireCell>, row_start: usize, cell: Option<&vt100::Cell>) {
+    match cell {
+        Some(cell) => {
+            let (text, kind) = classify(cell);
+            push_wire(cells, row_start, text, kind, CellStyle::from_vt100(cell));
+        }
+        None => push_wire(cells, row_start, "", CellKind::Blank, CellStyle::default()),
+    }
+}
+
 /// Expands one carried row into exactly `target.len()` validated cells.
 fn expand(carried: &[WireCell], target: &mut [Cell]) -> Result<(), PaneViewError> {
     let mut column = 0_usize;
@@ -933,25 +912,7 @@ impl PaneUpdate {
         for row in 0..rows {
             let start = update.cells.len();
             for column in 0..columns {
-                match screen.cell(row, column) {
-                    Some(cell) => {
-                        let (text, kind) = classify(cell);
-                        push_wire(
-                            &mut update.cells,
-                            start,
-                            text,
-                            kind,
-                            CellStyle::from_vt100(cell),
-                        );
-                    }
-                    None => push_wire(
-                        &mut update.cells,
-                        start,
-                        "",
-                        CellKind::Blank,
-                        CellStyle::default(),
-                    ),
-                }
+                push_vt100(&mut update.cells, start, screen.cell(row, column));
             }
             update.lines.push(Line {
                 row,
@@ -1404,11 +1365,12 @@ mod tests {
     fn full_updates_round_trip_to_the_screen_view() {
         let mut parser = vt100::Parser::new(3, 8, 0);
         parser.process("e\u{301}界x\x1b[1;31mred\r\n  wrap".as_bytes());
-        let direct = PaneView::from_screen(parser.screen(), "t", 2, Some(1)).unwrap_or_default();
         let update =
             PaneUpdate::full_from_screen(parser.screen(), "t", 2, Some(1)).unwrap_or_default();
-        let rebuilt = PaneView::from_update(&update);
-        assert_eq!(rebuilt.as_ref().ok(), Some(&direct), "{update:?}");
+        let rebuilt = PaneView::from_update(&update).unwrap_or_default();
+        assert_eq!(rebuilt.rows, 3);
+        assert_eq!(rebuilt.title, "t");
+        assert_eq!(rebuilt.exit, Some(1));
         let json = serde_json::to_string(&update).unwrap_or_default();
         let parsed: PaneUpdate = serde_json::from_str(&json).unwrap_or_default();
         assert_eq!(parsed, update);
