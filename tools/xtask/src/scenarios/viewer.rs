@@ -1382,19 +1382,20 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         3,
         format!("\x1b[<8;2;2M\x1b[<40;{main_column};24M").as_bytes(),
     )?;
+    // The hint and the highlighted destination tab are one drag state; wait for both rather
+    // than sampling the highlight once after the hint's paint.
     h.wait(
-        |h| Ok(h.text(3).contains("to tab main")),
-        "tab drag hint",
+        |h| {
+            Ok(h.text(3).contains("to tab main")
+                && h.viewers[3]
+                    .screen
+                    .screen()
+                    .cell(23, (main_column - 1) as u16)
+                    .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)))
+        },
+        "tab drag hint and drop highlight",
         8,
     )?;
-    ensure!(
-        h.viewers[3]
-            .screen
-            .screen()
-            .cell(23, (main_column - 1) as u16)
-            .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)),
-        "tab drop highlight"
-    );
     h.send(3, format!("\x1b[<0;{main_column};24m").as_bytes())?;
     h.wait(
         |h| {
