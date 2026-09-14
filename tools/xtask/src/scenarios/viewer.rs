@@ -898,19 +898,19 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     let tab_id = state[1]["id"].to_string();
     let layout_before = h.cli(&["default", "layout", &tab_id, "export"])?;
     h.send(0, b"\x1b[<8;2;2M\x1b[<40;78;3M")?;
+    // The hint and the destination highlight are one drag state; wait for both together.
     h.wait(
-        |h| Ok(h.text(0).contains("release to apply")),
-        "pane drag target",
+        |h| {
+            Ok(h.text(0).contains("release to apply")
+                && h.viewers[0]
+                    .screen
+                    .screen()
+                    .cell(2, 77)
+                    .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)))
+        },
+        "pane drag target and destination highlight",
         8,
     )?;
-    ensure!(
-        h.viewers[0]
-            .screen
-            .screen()
-            .cell(2, 77)
-            .is_some_and(|cell| cell.bgcolor() == vt100::Color::Idx(6)),
-        "pane drag did not render its destination highlight"
-    );
     // Neither a right-button release nor a wheel report may commit a left-button drag.
     h.send(0, b"\x1b[<2;78;3m\x1b[<64;78;3M")?;
     h.hold(|h| h.text(0).contains("release to apply"), 0.2)?;
