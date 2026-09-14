@@ -149,13 +149,15 @@ pub(super) fn run(fux: &Path, zor: &Path) -> Result<()> {
     server.finish()?;
     // The server-start path separately: no manager exists and none is required beforehand.
     let fresh = Root::new("zrun-new-rs-", &["/bin/sh".into()])?;
+    // The run's budget covers starting a fresh server, whose own startup allowance is 10 s; this
+    // step proves the start path works, not how fast a loaded runner starts a debug build.
     let command = zor_run(
         &fresh,
         fux,
         zor,
-        &["--timeout", "5000", "--", "/bin/sh", "-c", "printf FRESH"],
+        &["--timeout", "20000", "--", "/bin/sh", "-c", "printf FRESH"],
     )?;
-    let result = process::output(command, Duration::from_secs(15), 1024 * 1024)?;
+    let result = process::output(command, Duration::from_secs(30), 1024 * 1024)?;
     stop_servers(fresh.path())?;
     ensure!(
         result.status.success() && result.stdout == b"FRESH\n",

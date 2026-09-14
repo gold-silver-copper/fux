@@ -153,6 +153,29 @@ impl Harness {
         }
         Ok(())
     }
+    /// The viewer's screen once no paint has changed it for a short quiet window. A viewer that
+    /// just attached or reacted keeps painting for a while; a snapshot taken mid-way is not a
+    /// baseline to compare against later.
+    fn settled(&mut self, index: usize) -> Result<String> {
+        let quiet = Duration::from_millis(300);
+        let end = Instant::now() + Duration::from_secs(8) * crate::support::local::deadline_scale();
+        let mut last = self.text(index);
+        let mut since = Instant::now();
+        loop {
+            self.pump(0.03)?;
+            let now = self.text(index);
+            if now != last {
+                last = now;
+                since = Instant::now();
+            } else if since.elapsed() >= quiet {
+                return Ok(last);
+            }
+            ensure!(
+                Instant::now() < end,
+                "viewer {index} never settled:\n{last}"
+            );
+        }
+    }
     fn cli(&self, args: &[&str]) -> Result<Value> {
         let mut command = self.root.command(&self.binary);
         command.args(args);
