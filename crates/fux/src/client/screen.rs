@@ -3,10 +3,11 @@
 
 use super::backend::{TerminaBackend, TerminalBackend};
 use super::hints::HintPanel;
-use super::render::{LocalView, Notice, Palette, compose, paint};
+use super::render::{LocalView, Notice, Palette, compose_into, paint};
 use crate::view::{Frame, PaneModes};
 use base64::Engine as _;
 use ratatui_core::buffer::Buffer;
+use ratatui_core::layout::Rect;
 use std::io;
 
 pub const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
@@ -14,6 +15,8 @@ pub const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
 pub struct Screen<B: TerminalBackend> {
     backend: B,
     previous: Option<Buffer>,
+    /// The buffer the next frame is composed into; swapped with `previous` after painting.
+    spare: Buffer,
     clipboard_enabled: bool,
     last_title: Option<String>,
     previous_modes: Option<PaneModes>,
@@ -55,6 +58,7 @@ impl<B: TerminalBackend> Screen<B> {
         Ok(Self {
             backend,
             previous: None,
+            spare: Buffer::empty(Rect::default()),
             clipboard_enabled,
             last_title: None,
             previous_modes: None,
@@ -82,19 +86,23 @@ impl<B: TerminalBackend> Screen<B> {
     ) -> io::Result<super::render::HitRegions> {
         self.emit_out_of_band(frame)?;
         let (rows, cols) = self.backend.size()?;
-        let composed = compose(frame, local, panel, notice, &self.palette, rows, cols);
+        let area = Rect::new(0, 0, cols, rows);
+        if self.spare.area != area {
+            self.spare = Buffer::empty(area);
+        }
+        let (cursor, hits) =
+            compose_into(&mut self.spare, frame, local, panel, notice, &self.palette);
         paint(
             &mut self.backend,
             self.previous.as_ref(),
-            &composed.buffer,
-            composed.cursor,
+            &self.spare,
+            cursor,
         )?;
-        self.previous = Some(composed.buffer);
-        Ok(super::render::HitRegions {
-            tabs: composed.tabs,
-            entries: composed.entries,
-            panel: composed.panel,
-        })
+        let painted = std::mem::replace(&mut self.spare, Buffer::empty(Rect::default()));
+        if let Some(previous) = self.previous.replace(painted) {
+            self.spare = previous;
+        }
+        Ok(hits)
     }
 
     fn emit_out_of_band(&mut self, frame: &Frame) -> io::Result<()> {
@@ -214,6 +222,7 @@ mod tests {
         Screen {
             backend: CaptureBackend::new(1, 1),
             previous: None,
+            spare: Buffer::empty(Rect::default()),
             clipboard_enabled: false,
             last_title: None,
             previous_modes: None,

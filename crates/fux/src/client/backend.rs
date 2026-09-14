@@ -1,24 +1,13 @@
 //! Terminal output primitives for the viewer. Adapted from koh (MIT); see LICENSES/koh.txt.
 
+use ratatui_core::style::{Color, Modifier};
 use std::io::{self, Write};
 use termina::{PlatformTerminal, Terminal as _};
-use vt100::Color;
 
 /// Every DEC private mode the viewer may have enabled on the user's terminal, reset together when
 /// leaving the alternate screen so a shell never inherits mouse reporting or application keys.
 pub const RESET_FORWARDED_MODES: &[u8] =
     b"\x1b[?9l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1l\x1b>";
-
-#[derive(PartialEq, Eq, Clone, Copy)]
-pub struct CellStyle {
-    pub fg: Color,
-    pub bg: Color,
-    pub bold: bool,
-    pub dim: bool,
-    pub italic: bool,
-    pub underline: bool,
-    pub inverse: bool,
-}
 
 /// Platform primitives plus shared ANSI emission. Output is buffered until `flush`.
 pub trait TerminalBackend {
@@ -47,20 +36,24 @@ pub trait TerminalBackend {
     fn move_to(&mut self, row: u16, col: u16) -> io::Result<()> {
         self.write_bytes(format!("\x1b[{};{}H", u32::from(row) + 1, u32::from(col) + 1).as_bytes())
     }
-    fn set_style(&mut self, style: CellStyle) -> io::Result<()> {
+    /// Resets attributes, then applies the cell's modifiers and colours.
+    fn set_style(&mut self, fg: Color, bg: Color, modifier: Modifier) -> io::Result<()> {
         self.write_bytes(b"\x1b[m")?;
         let attributes = [
-            (style.bold, &b"\x1b[1m"[..]),
-            (style.dim, b"\x1b[2m"),
-            (style.italic, b"\x1b[3m"),
-            (style.underline, b"\x1b[4m"),
-            (style.inverse, b"\x1b[7m"),
+            (Modifier::BOLD, &b"\x1b[1m"[..]),
+            (Modifier::DIM, b"\x1b[2m"),
+            (Modifier::ITALIC, b"\x1b[3m"),
+            (Modifier::UNDERLINED, b"\x1b[4m"),
+            (Modifier::REVERSED, b"\x1b[7m"),
         ];
-        for (_, sequence) in attributes.into_iter().filter(|(set, _)| *set) {
+        for (_, sequence) in attributes
+            .into_iter()
+            .filter(|(flag, _)| modifier.contains(*flag))
+        {
             self.write_bytes(sequence)?;
         }
-        write_sgr_color(self, style.fg, true)?;
-        write_sgr_color(self, style.bg, false)
+        write_sgr_color(self, fg, true)?;
+        write_sgr_color(self, bg, false)
     }
     fn print(&mut self, glyph: &str) -> io::Result<()> {
         self.write_bytes(glyph.as_bytes())
@@ -80,29 +73,53 @@ pub trait TerminalBackend {
     }
 }
 
+/// The palette slot of a named colour, so the terminal theme applies to it.
+const fn palette_index(color: Color) -> Option<u8> {
+    Some(match color {
+        Color::Black => 0,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Yellow => 3,
+        Color::Blue => 4,
+        Color::Magenta => 5,
+        Color::Cyan => 6,
+        Color::Gray => 7,
+        Color::DarkGray => 8,
+        Color::LightRed => 9,
+        Color::LightGreen => 10,
+        Color::LightYellow => 11,
+        Color::LightBlue => 12,
+        Color::LightMagenta => 13,
+        Color::LightCyan => 14,
+        Color::White => 15,
+        Color::Indexed(index) => index,
+        Color::Reset | Color::Rgb(..) => return None,
+    })
+}
+
 fn write_sgr_color(
     out: &mut (impl TerminalBackend + ?Sized),
     color: Color,
     fg: bool,
 ) -> io::Result<()> {
-    match color {
-        Color::Default => out.write_bytes(if fg { b"\x1b[39m" } else { b"\x1b[49m" }),
-        Color::Idx(index) if index < 8 => {
-            let base: u16 = if fg { 30 } else { 40 };
-            out.write_bytes(format!("\x1b[{}m", base + u16::from(index)).as_bytes())
-        }
-        Color::Idx(index) if index < 16 => {
-            let base: u16 = if fg { 82 } else { 92 };
-            out.write_bytes(format!("\x1b[{}m", base + u16::from(index)).as_bytes())
-        }
-        Color::Idx(index) => {
-            let lead = if fg { 38 } else { 48 };
-            out.write_bytes(format!("\x1b[{lead};5;{index}m").as_bytes())
-        }
-        Color::Rgb(r, g, b) => {
+    match (color, palette_index(color)) {
+        (Color::Rgb(r, g, b), _) => {
             let lead = if fg { 38 } else { 48 };
             out.write_bytes(format!("\x1b[{lead};2;{r};{g};{b}m").as_bytes())
         }
+        (_, Some(index)) if index < 8 => {
+            let base: u16 = if fg { 30 } else { 40 };
+            out.write_bytes(format!("\x1b[{}m", base + u16::from(index)).as_bytes())
+        }
+        (_, Some(index)) if index < 16 => {
+            let base: u16 = if fg { 82 } else { 92 };
+            out.write_bytes(format!("\x1b[{}m", base + u16::from(index)).as_bytes())
+        }
+        (_, Some(index)) => {
+            let lead = if fg { 38 } else { 48 };
+            out.write_bytes(format!("\x1b[{lead};5;{index}m").as_bytes())
+        }
+        (_, None) => out.write_bytes(if fg { b"\x1b[39m" } else { b"\x1b[49m" }),
     }
 }
 
@@ -188,16 +205,17 @@ mod tests {
 
     #[test]
     fn sgr_colors_use_theme_aware_codes() {
+        assert_eq!(emit(|b| write_sgr_color(b, Color::Red, true)), b"\x1b[31m");
         assert_eq!(
-            emit(|b| write_sgr_color(b, Color::Idx(1), true)),
+            emit(|b| write_sgr_color(b, Color::Indexed(1), true)),
             b"\x1b[31m"
         );
         assert_eq!(
-            emit(|b| write_sgr_color(b, Color::Idx(8), true)),
+            emit(|b| write_sgr_color(b, Color::DarkGray, true)),
             b"\x1b[90m"
         );
         assert_eq!(
-            emit(|b| write_sgr_color(b, Color::Idx(196), false)),
+            emit(|b| write_sgr_color(b, Color::Indexed(196), false)),
             b"\x1b[48;5;196m"
         );
         assert_eq!(
@@ -205,8 +223,16 @@ mod tests {
             b"\x1b[38;2;0;0;255m"
         );
         assert_eq!(
-            emit(|b| write_sgr_color(b, Color::Default, false)),
+            emit(|b| write_sgr_color(b, Color::Reset, false)),
             b"\x1b[49m"
+        );
+        assert_eq!(
+            emit(|b| b.set_style(
+                Color::Reset,
+                Color::Reset,
+                Modifier::BOLD | Modifier::REVERSED
+            )),
+            b"\x1b[m\x1b[1m\x1b[7m\x1b[39m\x1b[49m"
         );
     }
 

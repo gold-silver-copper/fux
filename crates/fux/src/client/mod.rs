@@ -121,6 +121,58 @@ struct WaitingCommand {
     follows_workspace: bool,
 }
 
+/// Effects waiting for the server, plus the pane bytes gathered ahead of them. While a manager
+/// mutation is in flight, input is pinned to the frame it was typed against so it cannot land in
+/// a replacement workspace.
+#[derive(Default)]
+struct Outbox {
+    effects: effects::Queue,
+    pane_bytes: Vec<u8>,
+    manager_mutations: usize,
+}
+
+impl Outbox {
+    fn flush_input(&mut self, frame: &Frame) -> anyhow::Result<()> {
+        let pinned = self.manager_mutations > 0 || self.effects.manager_pending();
+        self.effects
+            .input(&mut self.pane_bytes, pinned.then_some(frame))
+    }
+    /// Queues an effect behind the input typed before it.
+    fn push(&mut self, effect: effects::Effect, frame: &Frame) -> anyhow::Result<()> {
+        self.flush_input(frame)?;
+        self.effects.push(effect, Some(frame))
+    }
+    fn idle(&self) -> bool {
+        self.manager_mutations == 0 && self.effects.is_empty()
+    }
+}
+
+/// The process signals that end a viewer.
+pub struct Signals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+    hangup: tokio::signal::unix::Signal,
+}
+
+impl Signals {
+    fn install() -> anyhow::Result<Self> {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt())?,
+            terminate: signal(SignalKind::terminate())?,
+            hangup: signal(SignalKind::hangup())?,
+        })
+    }
+    /// Resolves when any of the three arrives.
+    async fn recv(&mut self) {
+        tokio::select! {
+            _ = self.interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
+            _ = self.hangup.recv() => {}
+        }
+    }
+}
+
 struct OutstandingControl {
     request: u64,
     navigates_workspace: bool,
@@ -169,19 +221,14 @@ pub async fn attach_reported(
     config: &Config,
     options: AttachOptions,
 ) -> anyhow::Result<AttachExit> {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut hangup = signal(SignalKind::hangup())?;
+    let mut signals = Signals::install()?;
     let bindings = crate::commands::configured_bindings(config)?;
     let (rows, cols) = backend::TerminaBackend::new()
         .and_then(|backend| backend::TerminalBackend::size(&backend))
         .unwrap_or((24, 80));
     let connection = tokio::select! {
         result = Connection::connect_target(socket, rows, cols, options.initial.clone()) => result?,
-        _ = interrupt.recv() => return Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
-        _ = terminate.recv() => return Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
-        _ = hangup.recv() => return Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
+        () = signals.recv() => return Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
     };
     // Negotiation succeeded: only now does the terminal enter raw mode.
     let mut screen = Screen::enter_default(
@@ -196,9 +243,7 @@ pub async fn attach_reported(
         bindings,
         options,
         config.final_records.retain_ms,
-        &mut interrupt,
-        &mut terminate,
-        &mut hangup,
+        &mut signals,
     )
     .await;
     drop(screen);
@@ -206,7 +251,6 @@ pub async fn attach_reported(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run(
     connection: Connection,
     screen: &mut Screen<backend::TerminaBackend>,
@@ -214,9 +258,7 @@ async fn run(
     bindings: crate::commands::ClientBindings,
     options: AttachOptions,
     final_retain_ms: u64,
-    interrupt: &mut tokio::signal::unix::Signal,
-    terminate: &mut tokio::signal::unix::Signal,
-    hangup: &mut tokio::signal::unix::Signal,
+    signals: &mut Signals,
 ) -> anyhow::Result<AttachExit> {
     let (mut reader, mut writer) = connection.stream.into_split();
     let (message_tx, mut message_rx) = mpsc::channel::<std::io::Result<ServerMessage>>(4);
@@ -242,8 +284,7 @@ async fn run(
     let mut popup = popup::Popup::default();
     let mut lookups = tokio::task::JoinSet::new();
     let mut manager_commands = tokio::task::JoinSet::new();
-    let mut manager_mutations = 0usize;
-    let mut effects = effects::Queue::default();
+    let mut outbox = Outbox::default();
     let mut waiting_command: Option<WaitingCommand> = None;
     let mut detaching = false;
     let (rows, cols) = screen.size()?;
@@ -268,9 +309,7 @@ async fn run(
             .map(tokio::time::Instant::from_std);
         tokio::select! {
             biased;
-            _ = interrupt.recv() => break Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
-            _ = terminate.recv() => break Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
-            _ = hangup.recv() => break Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
+            () = signals.recv() => break Ok(AttachExit { fux_attach_exit: 1, code: None, detached: false }),
             () = at(escape_deadline) => {
                 if controller.owns_input() { controller.resolve_escape(); }
                 else {
@@ -288,8 +327,7 @@ async fn run(
                 break Err(anyhow::anyhow!("session server did not answer a request in time"));
             }
             () = std::future::ready(()), if waiting_command.is_some()
-                && controller.waiting_command_ready() && outstanding.is_none()
-                && manager_mutations == 0 && effects.is_empty() => {}
+                && controller.waiting_command_ready() && outstanding.is_none() && outbox.idle() => {}
             message = message_rx.recv() => {
                 let Some(message) = message else { break Err(anyhow::anyhow!("session server disconnected")) };
                 match message? {
@@ -340,7 +378,7 @@ async fn run(
             }
             Some(result) = manager_commands.join_next(), if !manager_commands.is_empty() => {
                 let (epoch, mutating, result) = result.map_err(anyhow::Error::from)?;
-                if mutating { manager_mutations = manager_mutations.saturating_sub(1); }
+                if mutating { outbox.manager_mutations = outbox.manager_mutations.saturating_sub(1); }
                 if epoch != controller.interaction_epoch() {
                     // Old results cannot reopen a dialog or replay input into its replacement.
                     if mutating {
@@ -381,7 +419,6 @@ async fn run(
         let Some(current) = frame.as_ref() else {
             continue;
         };
-        let mut pane_bytes = Vec::new();
         while !detaching {
             if waiting_command
                 .as_ref()
@@ -396,7 +433,7 @@ async fn run(
                 controller.cancel_waiting_command();
                 controller.report_error("Waiting command discarded: its workspace changed");
             }
-            let ready = outstanding.is_none() && manager_mutations == 0 && effects.is_empty();
+            let ready = outstanding.is_none() && outbox.idle();
             let resumed = if ready && controller.waiting_command_ready() {
                 waiting_command.take().map(|waiting| {
                     let replay = controller.finish_waiting_command();
@@ -422,11 +459,7 @@ async fn run(
                 } else if controller.owns_input() {
                     controller.clear_error();
                     if let Some(request) = controller.feed(byte, current) {
-                        effects.input(
-                            &mut pane_bytes,
-                            (manager_mutations > 0 || effects.manager_pending()).then_some(current),
-                        )?;
-                        effects.push(effects::Effect::Control(request), Some(current))?;
+                        outbox.push(effects::Effect::Control(request), current)?;
                         if let Some(action) = controller.wait_for_layout_reply() {
                             waiting_command = Some(WaitingCommand {
                                 action,
@@ -453,30 +486,24 @@ async fn run(
                         InputEvent::Bytes(bytes) => {
                             controller.clear_error();
                             controller.resume_input(current);
-                            pane_bytes.extend(bytes);
+                            outbox.pane_bytes.extend(bytes);
                         }
                         InputEvent::Escape => {
                             if !controller.dismiss_history() {
-                                pane_bytes.push(27);
+                                outbox.pane_bytes.push(27);
                             }
                         }
                         InputEvent::Command(action) => {
                             if let Some(button) = popup.take_capture() {
                                 controller.adopt_popup_capture(button);
                             }
-                            effects.input(
-                                &mut pane_bytes,
-                                (manager_mutations > 0 || effects.manager_pending())
-                                    .then_some(current),
-                            )?;
+                            outbox.flush_input(current)?;
                             controller.clear_error();
                             let target = resumed
                                 .as_ref()
                                 .and_then(|(_, target, _)| *target)
                                 .or_else(|| contextual.map(|(_, target)| target));
-                            if (outstanding.is_some()
-                                || manager_mutations > 0
-                                || !effects.is_empty())
+                            if (outstanding.is_some() || !outbox.idle())
                                 && !matches!(action, Action::CopyMode | Action::Detach)
                             {
                                 controller.wait_for_command();
@@ -486,7 +513,7 @@ async fn run(
                                     epoch: controller.interaction_epoch(),
                                     origin: effects::Identity::of(current),
                                     follows_workspace: target.is_none()
-                                        && (effects.navigates_workspace()
+                                        && (outbox.effects.navigates_workspace()
                                             || outstanding.as_ref().is_some_and(|pending| {
                                                 pending.navigates_workspace
                                             })),
@@ -515,11 +542,10 @@ async fn run(
                             }
                             match outcome {
                                 Dispatch::Send(request) => {
-                                    effects
-                                        .push(effects::Effect::Control(request), Some(current))?;
+                                    outbox.push(effects::Effect::Control(request), current)?;
                                 }
                                 Dispatch::Detach => {
-                                    effects.push(effects::Effect::Detach, None)?;
+                                    outbox.effects.push(effects::Effect::Detach, None)?;
                                     detaching = true;
                                     pending.clear();
                                 }
@@ -557,30 +583,19 @@ async fn run(
                                 resolved.push_back(InputEvent::Command(action));
                             }
                         },
-                        InputEvent::Mouse(event, _) if popup.consume_tail(event) => {}
-                        InputEvent::Mouse(event, raw) => match controller.mouse(event, current) {
+                        InputEvent::Mouse(event) if popup.consume_tail(event) => {}
+                        InputEvent::Mouse(event) => match controller.mouse(event, current) {
                             MouseDisposition::Local | MouseDisposition::Ignore => {}
                             MouseDisposition::Request(request) => {
-                                effects.input(
-                                    &mut pane_bytes,
-                                    (manager_mutations > 0 || effects.manager_pending())
-                                        .then_some(current),
-                                )?;
-                                effects.push(effects::Effect::Control(request), Some(current))?;
+                                outbox.push(effects::Effect::Control(request), current)?;
                             }
                             MouseDisposition::Forward => {
-                                effects.input(
-                                    &mut pane_bytes,
-                                    (manager_mutations > 0 || effects.manager_pending())
-                                        .then_some(current),
-                                )?;
-                                let _ = raw;
-                                effects.push(
+                                outbox.push(
                                     effects::Effect::Mouse {
                                         event,
                                         generation: current.generation,
                                     },
-                                    Some(current),
+                                    current,
                                 )?;
                             }
                         },
@@ -600,47 +615,27 @@ async fn run(
                             );
                             // The column lives above the one-row bar.
                             let rows = screen.size()?.0.saturating_sub(1);
-                            let delta = match step {
-                                ScrollBy::Rows(rows) => i64::from(rows),
-                                ScrollBy::Screens(screens) => {
-                                    i64::from(screens)
-                                        * i64::try_from(column.screenful(rows)).unwrap_or(1)
-                                }
-                            };
-                            let limit = i64::try_from(column.max_scroll(rows)).unwrap_or(0);
-                            hint_scroll = usize::try_from(
-                                (i64::try_from(hint_scroll).unwrap_or(0).min(limit) + delta)
-                                    .clamp(0, limit),
-                            )
-                            .unwrap_or(0);
+                            hint_scroll = scrolled(hint_scroll, step, &column, rows);
                         }
                     }
                 }
             }
             if let Some(event) = controller.take_forwarded_mouse() {
-                effects.input(
-                    &mut pane_bytes,
-                    (manager_mutations > 0 || effects.manager_pending()).then_some(current),
-                )?;
-                effects.push(
+                outbox.push(
                     effects::Effect::Mouse {
                         event,
                         generation: current.generation,
                     },
-                    Some(current),
+                    current,
                 )?;
             }
             if let Some(request) = controller.take_manager_request() {
-                effects.input(
-                    &mut pane_bytes,
-                    (manager_mutations > 0 || effects.manager_pending()).then_some(current),
-                )?;
-                effects.push(
+                outbox.push(
                     effects::Effect::Manager {
                         request,
                         epoch: controller.interaction_epoch(),
                     },
-                    Some(current),
+                    current,
                 )?;
             }
             if let Some(text) = controller.take_copied() {
@@ -658,12 +653,9 @@ async fn run(
                 }
             }
         }
-        effects.input(
-            &mut pane_bytes,
-            (manager_mutations > 0 || effects.manager_pending()).then_some(current),
-        )?;
-        while outstanding.is_none() && manager_mutations == 0 {
-            let Some(effect) = effects.pop(current) else {
+        outbox.flush_input(current)?;
+        while outstanding.is_none() && outbox.manager_mutations == 0 {
+            let Some(effect) = outbox.effects.pop(current) else {
                 break;
             };
             match effect {
@@ -679,7 +671,7 @@ async fn run(
                             let mutating =
                                 !matches!(request, crate::daemon::ManagerRequest::Catalog);
                             if mutating {
-                                manager_mutations += 1;
+                                outbox.manager_mutations += 1;
                             }
                             manager_commands.spawn_blocking(move || {
                                 (
@@ -779,6 +771,19 @@ async fn flush(
     }
     bytes.clear();
     Ok(())
+}
+
+/// The command column's scroll offset after `step`, clamped to what `rows` can show.
+fn scrolled(current: usize, step: ScrollBy, column: &HintPanel, rows: u16) -> usize {
+    let delta = match step {
+        ScrollBy::Rows(rows) => i64::from(rows),
+        ScrollBy::Screens(screens) => {
+            i64::from(screens) * i64::try_from(column.screenful(rows)).unwrap_or(1)
+        }
+    };
+    let limit = i64::try_from(column.max_scroll(rows)).unwrap_or(0);
+    usize::try_from((i64::try_from(current).unwrap_or(0).min(limit) + delta).clamp(0, limit))
+        .unwrap_or(0)
 }
 
 /// Resolves at `deadline`, or never.

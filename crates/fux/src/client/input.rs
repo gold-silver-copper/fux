@@ -26,7 +26,7 @@ pub enum InputEvent {
     /// A configured command key was pressed after the prefix.
     Command(Action),
     /// A complete SGR mouse report outside command mode.
-    Mouse(MouseEvent, Vec<u8>),
+    Mouse(MouseEvent),
     /// A mouse report owned by the visible command popup.
     PopupMouse(MouseEvent),
     /// Prefix then an unbound key: command mode stays active and the popup is revealed.
@@ -208,7 +208,7 @@ impl PrefixFilter {
                 return;
             }
             if let Some(mouse) = MouseEvent::parse(&sequence) {
-                events.push(InputEvent::Mouse(mouse, sequence));
+                events.push(InputEvent::Mouse(mouse));
                 return;
             }
             events.push(InputEvent::Bytes(sequence));
@@ -441,15 +441,12 @@ mod tests {
         );
         assert_eq!(
             plain.feed(b"\x1b[<0;3;4M"),
-            vec![InputEvent::Mouse(
-                MouseEvent {
-                    code: 0,
-                    column: 3,
-                    row: 4,
-                    release: false
-                },
-                b"\x1b[<0;3;4M".to_vec()
-            )]
+            vec![InputEvent::Mouse(MouseEvent {
+                code: 0,
+                column: 3,
+                row: 4,
+                release: false
+            })]
         );
     }
 
@@ -500,7 +497,10 @@ mod tests {
                     let mut bytes = Vec::new();
                     for event in events {
                         match event {
-                            InputEvent::Bytes(raw) | InputEvent::Mouse(_, raw) => bytes.extend(raw),
+                            InputEvent::Bytes(raw) => bytes.extend(raw),
+                            InputEvent::Mouse(mouse) => {
+                                bytes.extend(mouse.sgr(mouse.column, mouse.row));
+                            }
                             other => panic!(
                                 "unexpected {other:?}, prefix {prefix}, split {split}, payload {payload:?}"
                             ),
