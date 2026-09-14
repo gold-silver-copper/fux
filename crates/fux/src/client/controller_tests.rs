@@ -2603,3 +2603,20 @@ fn canceled_modes_keep_owning_unfinished_pastes() {
     }
     assert!(!controller.owns_input());
 }
+
+#[test]
+fn a_double_escape_inside_a_mode_dismisses_it_after_the_timeout() {
+    // Both input owners share one sequence grammar: ESC ESC waits for a third byte or the
+    // Escape timeout, and a resolved trailing Escape dismisses the mode rather than being dropped.
+    let frame = frame();
+    let mut controller = Controller::new(true);
+    assert!(controller.enter(Action::RenameTab, &frame));
+    assert!(feed(&mut controller, b"\x1b\x1b", &frame).is_empty());
+    assert!(controller.active() && controller.escape_pending());
+    controller.resolve_escape();
+    assert!(!controller.active() && !controller.owns_input());
+    // ESC ESC followed by an ordinary byte is a complete unknown sequence and stays swallowed.
+    assert!(controller.enter(Action::RenameTab, &frame));
+    assert!(feed(&mut controller, b"\x1b\x1bx", &frame).is_empty());
+    assert!(controller.active() && !controller.escape_pending());
+}

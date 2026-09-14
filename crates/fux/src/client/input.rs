@@ -5,10 +5,49 @@
 use crate::commands::{Action, ClientBindings};
 use crate::proto::attach::MouseEvent;
 
-const PASTE_BEGIN: &[u8] = b"\x1b[200~";
-const PASTE_END: &[u8] = b"\x1b[201~";
+pub(super) const PASTE_BEGIN: &[u8] = b"\x1b[200~";
+pub(super) const PASTE_END: &[u8] = b"\x1b[201~";
 /// Longest escape sequence kept together before being forwarded as ordinary bytes.
 const MAX_SEQUENCE: usize = 64;
+
+/// The one sequence grammar both input owners share. ESC alone, ESC ESC and an open CSI/SS3
+/// introducer wait for more bytes (or the Escape timeout); a CSI/SS3 body ends at its final
+/// byte or at `MAX_SEQUENCE`; ESC followed by any other byte is complete.
+pub(super) fn sequence_complete(sequence: &[u8]) -> bool {
+    match sequence {
+        [0x1b] | [0x1b, 0x1b] | [0x1b, b'[' | b'O'] => false,
+        [0x1b, b'[' | b'O', rest @ ..] => {
+            rest.last().is_some_and(|last| (0x40..=0x7e).contains(last))
+                || sequence.len() >= MAX_SEQUENCE
+        }
+        _ => true,
+    }
+}
+
+/// A navigation key, in normal and application cursor mode alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Nav {
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    Enter,
+}
+
+pub(super) fn navigation(sequence: &[u8]) -> Option<Nav> {
+    Some(match sequence {
+        b"\x1b[A" | b"\x1bOA" => Nav::Up,
+        b"\x1b[B" | b"\x1bOB" => Nav::Down,
+        b"\x1b[C" | b"\x1bOC" => Nav::Right,
+        b"\x1b[D" | b"\x1bOD" => Nav::Left,
+        b"\x1b[5~" => Nav::PageUp,
+        b"\x1b[6~" => Nav::PageDown,
+        b"\x1bOM" => Nav::Enter,
+        _ => return None,
+    })
+}
 
 /// A scroll request for the command column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,17 +209,7 @@ impl PrefixFilter {
         }
         if !self.sequence.is_empty() || byte == 0x1b {
             self.sequence.push(byte);
-            let complete = match self.sequence.as_slice() {
-                [0x1b] => false,
-                [0x1b, 0x1b] => false,
-                [0x1b, b'[' | b'O'] => false,
-                [0x1b, b'[' | b'O', rest @ ..] => {
-                    rest.last().is_some_and(|last| (0x40..=0x7e).contains(last))
-                        || self.sequence.len() >= MAX_SEQUENCE
-                }
-                _ => true,
-            };
-            if !complete {
+            if !sequence_complete(&self.sequence) {
                 return;
             }
             let sequence = std::mem::take(&mut self.sequence);
@@ -234,11 +263,11 @@ impl PrefixFilter {
             events.push(InputEvent::PopupMouse(mouse));
             return;
         }
-        events.push(match sequence {
-            b"\x1b[B" | b"\x1bOB" => InputEvent::Scroll(ScrollBy::Rows(1)),
-            b"\x1b[A" | b"\x1bOA" => InputEvent::Scroll(ScrollBy::Rows(-1)),
-            b"\x1b[6~" => InputEvent::Scroll(ScrollBy::Screens(1)),
-            b"\x1b[5~" => InputEvent::Scroll(ScrollBy::Screens(-1)),
+        events.push(match navigation(sequence) {
+            Some(Nav::Down) => InputEvent::Scroll(ScrollBy::Rows(1)),
+            Some(Nav::Up) => InputEvent::Scroll(ScrollBy::Rows(-1)),
+            Some(Nav::PageDown) => InputEvent::Scroll(ScrollBy::Screens(1)),
+            Some(Nav::PageUp) => InputEvent::Scroll(ScrollBy::Screens(-1)),
             _ => InputEvent::Unknown,
         });
     }

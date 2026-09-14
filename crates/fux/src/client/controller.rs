@@ -4,6 +4,7 @@
 use super::copy::{CopyKey, CopySession};
 use super::effects::Identity;
 use super::hints::HintPanel;
+use super::input::{Nav, PASTE_BEGIN, PASTE_END, navigation, sequence_complete};
 use super::interaction::{
     CloseKind, LayoutMode, MAX_TEXT_BYTES, Mode, Step, TabChoice, TextKind, step,
 };
@@ -1047,12 +1048,7 @@ impl Controller {
         }
         if !self.escape.is_empty() || byte == 27 {
             self.escape.push(byte);
-            let complete = self.escape.len() > 1
-                && match self.escape.get(1) {
-                    Some(b'[' | b'O') => self.escape.len() > 2 && (0x40..=0x7e).contains(&byte),
-                    _ => true,
-                };
-            if !complete && self.escape.len() < 64 {
+            if !sequence_complete(&self.escape) {
                 return None;
             }
             let sequence = std::mem::take(&mut self.escape);
@@ -1073,55 +1069,30 @@ impl Controller {
                     _ => None,
                 };
             }
-            match sequence.as_slice() {
-                b"\x1b[200~" => self.paste = true,
-                b"\x1b[201~" => self.paste = false,
-                b"\x1bOM" if !self.paste => return self.key('\r', frame),
-                b"\x1b[D" | b"\x1bOD" if !self.paste && self.in_copy() => {
-                    return self.key('h', frame);
-                }
-                b"\x1b[C" | b"\x1bOC" if !self.paste && self.in_copy() => {
-                    return self.key('l', frame);
-                }
-                b"\x1b[5~" if !self.paste && self.in_copy() => {
-                    return self.copy_key(CopyKey::PageUp);
-                }
-                b"\x1b[6~" if !self.paste && self.in_copy() => {
-                    return self.copy_key(CopyKey::PageDown);
-                }
-                b"\x1b[A" | b"\x1bOA"
-                    if !self.paste && matches!(self.mode, Mode::Layout { .. }) =>
-                {
-                    return self.key('k', frame);
-                }
-                b"\x1b[B" | b"\x1bOB"
-                    if !self.paste && matches!(self.mode, Mode::Layout { .. }) =>
-                {
-                    return self.key('j', frame);
-                }
-                b"\x1b[C" | b"\x1bOC"
-                    if !self.paste && matches!(self.mode, Mode::Layout { .. }) =>
-                {
-                    return self.key('l', frame);
-                }
-                b"\x1b[D" | b"\x1bOD"
-                    if !self.paste && matches!(self.mode, Mode::Layout { .. }) =>
-                {
-                    return self.key('h', frame);
-                }
-                b"\x1b[A" | b"\x1b[D" | b"\x1bOA" | b"\x1bOD"
-                    if !self.paste && !self.text_entry() =>
-                {
-                    return self.key('k', frame);
-                }
-                b"\x1b[B" | b"\x1b[C" | b"\x1bOB" | b"\x1bOC"
-                    if !self.paste && !self.text_entry() =>
-                {
-                    return self.key('j', frame);
-                }
-                _ => {}
+            if sequence == PASTE_BEGIN {
+                self.paste = true;
+                return None;
             }
-            return None;
+            if sequence == PASTE_END || self.paste {
+                self.paste = false;
+                return None;
+            }
+            // Arrows step lists (either axis), move within copy/layout modes, and are dropped
+            // by text fields; PageUp/PageDown page the copy view; keypad Enter submits.
+            let directional = matches!(self.mode, Mode::Copy(_) | Mode::Layout { .. });
+            let key = match navigation(&sequence) {
+                Some(Nav::Enter) => '\r',
+                Some(Nav::PageUp) if self.in_copy() => return self.copy_key(CopyKey::PageUp),
+                Some(Nav::PageDown) if self.in_copy() => return self.copy_key(CopyKey::PageDown),
+                Some(Nav::Left) if directional => 'h',
+                Some(Nav::Right) if directional => 'l',
+                Some(Nav::Up) if directional => 'k',
+                Some(Nav::Down) if directional => 'j',
+                Some(Nav::Up | Nav::Left) if !self.text_entry() => 'k',
+                Some(Nav::Down | Nav::Right) if !self.text_entry() => 'j',
+                _ => return None,
+            };
+            return self.key(key, frame);
         }
         self.plain_input(byte, frame)
     }
