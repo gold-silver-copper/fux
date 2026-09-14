@@ -1,7 +1,9 @@
 //! Lifecycle phase: natural exits, confirmed closes, tab and workspace retirement, shutdown.
 //! Ownership cascades are explicit despawns; the adapter releases OS handles per `ReleasePane`.
 
-use crate::ecs::components::{Creation, Pane, PaneState, Tab, Tabs, Viewer, Workspace};
+use crate::ecs::components::{
+    Accepting, Creation, Pane, PaneState, Retiring, Tab, Tabs, Viewer, Workspace,
+};
 use crate::ecs::messages::Effect;
 use crate::ecs::resources::{Clock, Deadlines, Ids, Limits, ShuttingDown};
 use crate::ecs::support::{
@@ -23,10 +25,8 @@ pub fn resolve_lifecycle(world: &mut World) {
     let limits = *world.resource::<Limits>();
     if world.resource::<ShuttingDown>().0 {
         let workspaces: Vec<Entity> = world
-            .query::<(Entity, &Workspace)>()
+            .query_filtered::<Entity, (With<Workspace>, Without<Retiring>)>()
             .iter(world)
-            .filter(|(_, workspace)| workspace.retiring.is_none())
-            .map(|(entity, _)| entity)
             .collect();
         for workspace in workspaces {
             kill_workspace(world, workspace);
@@ -125,12 +125,8 @@ fn drop_overdue_terminations(world: &mut World, now: u64, deadline_ms: u64) {
 /// relationship hook's removal at once; a `Commands`-based removal would leave an empty target.
 fn retire_empty_workspaces(world: &mut World, now: u64) {
     let empty: Vec<Entity> = world
-        .query::<(Entity, &Workspace)>()
+        .query_filtered::<Entity, (Accepting, Without<Tabs>)>()
         .iter(world)
-        .filter(|(entity, workspace)| {
-            workspace.open && workspace.retiring.is_none() && world.get::<Tabs>(*entity).is_none()
-        })
-        .map(|(entity, _)| entity)
         .collect();
     for workspace in empty {
         retire(world, workspace, now, Some(0));
@@ -140,13 +136,9 @@ fn retire_empty_workspaces(world: &mut World, now: u64) {
 
 fn finalize_retirements(world: &mut World, now: u64, grace_ms: u64) {
     let retiring: Vec<(Entity, u64)> = world
-        .query::<(Entity, &Workspace)>()
+        .query::<(Entity, &Retiring)>()
         .iter(world)
-        .filter_map(|(entity, workspace)| {
-            workspace
-                .retiring
-                .map(|retiring| (entity, retiring.since_ms))
-        })
+        .map(|(entity, retiring)| (entity, retiring.since_ms))
         .collect();
     for (workspace, since) in retiring {
         // Viewers still attached are waiting to paint the final frame; the snapshot phase marks

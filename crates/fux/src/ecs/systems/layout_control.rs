@@ -233,8 +233,7 @@ fn edit(
                         _ => None,
                     })
                     .collect();
-                let labels = validate_labels(&labels, &sources)
-                    .map_err(Failure::invalid)?;
+                let labels = validate_labels(&labels, &sources).map_err(Failure::invalid)?;
                 for pane in sources {
                     label_plan.push((
                         resolve(mapping.get(&pane).copied().unwrap_or(pane))?,

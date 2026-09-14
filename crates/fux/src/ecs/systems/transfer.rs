@@ -1,9 +1,9 @@
 //! Re-home existing pane entities. Process and retained input identities remain unchanged.
-use crate::ecs::components::{Creation, Pane, Tab, TabOf};
+use crate::ecs::components::{Creation, Open, Pane, Tab, TabOf};
 use crate::ecs::resources::{Clock, Limits};
 use crate::ecs::support::{
-    Failure, close_tab, event, is_member, mark_tab_dirty, mark_workspace_dirty, member_tabs,
-    pane_entity, retarget_focus, tab_entity, tab_id,
+    Failure, close_tab, event, is_accepting, is_member, mark_tab_dirty, mark_workspace_dirty,
+    member_tabs, pane_entity, retarget_focus, tab_entity, tab_id,
 };
 use crate::ids::PaneId;
 use crate::layout::{Axis, Direction, LayoutTree};
@@ -293,10 +293,7 @@ pub fn across_workspaces(
         return Err(Failure::conflict("source layout changed"));
     }
     let workspace = component.workspace;
-    if world
-        .get::<Workspace>(workspace)
-        .is_none_or(|component| !component.open || component.retiring.is_some())
-    {
+    if !is_accepting(world, workspace) {
         return Err(Failure::conflict("source workspace is not open"));
     }
     let following = transfer
@@ -330,10 +327,7 @@ pub fn across_workspaces(
                         .is_some_and(|log| log.cursor().stream == stream)
                 })
                 .ok_or_else(|| Failure::conflict("destination workspace lifetime changed"))?;
-            if world
-                .get::<Workspace>(entity)
-                .is_none_or(|component| !component.open || component.retiring.is_some())
-            {
+            if !is_accepting(world, entity) {
                 return Err(Failure::conflict("destination workspace is not open"));
             }
             (entity, false)
@@ -371,11 +365,11 @@ pub fn across_workspaces(
         } else {
             let selection = pane_entity(world, transfer.pane)
                 .and_then(|entity| world.get::<Pane>(entity).map(|pane| (pane.tab, entity)));
-            if let Some(mut component) = world.get_mut::<Workspace>(destination) {
-                component.open = true;
-                if let Some((tab, pane)) = selection {
-                    component.selection.select(tab, Some(pane));
-                }
+            world.entity_mut(destination).insert(Open);
+            if let Some(mut component) = world.get_mut::<Workspace>(destination)
+                && let Some((tab, pane)) = selection
+            {
+                component.selection.select(tab, Some(pane));
             }
             let name = world
                 .get::<Workspace>(destination)

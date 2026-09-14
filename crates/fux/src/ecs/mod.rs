@@ -190,10 +190,13 @@ impl Session {
             if tab.zoomed.is_some_and(|pane| !tab.layout.contains(pane)) {
                 return Err(format!("tab {} zoom references a missing pane", tab.id));
             }
-            let workspace = self
+            if self
                 .world
                 .get::<components::Workspace>(tab.workspace)
-                .ok_or_else(|| format!("tab {} has no workspace", tab.id))?;
+                .is_none()
+            {
+                return Err(format!("tab {} has no workspace", tab.id));
+            }
             if ids.tab(tab.id) != Some(entity) {
                 return Err(format!("tab {} is not registered", tab.id));
             }
@@ -222,7 +225,10 @@ impl Session {
                     return Err(format!("starting pane {} is visible", component.id));
                 }
             }
-            if member && tab.layout.is_empty() && workspace.retiring.is_none() {
+            if member
+                && tab.layout.is_empty()
+                && support::is_not_retiring(&self.world, tab.workspace)
+            {
                 return Err(format!("tab {} is empty but still a member", tab.id));
             }
         }
@@ -276,8 +282,7 @@ impl Session {
             }
             if let Some(tab) = workspace.selection.tab
                 && !members.contains(&tab)
-                && workspace.retiring.is_none()
-                && workspace.open
+                && support::is_accepting(&self.world, entity)
             {
                 return Err(format!(
                     "workspace {} selects a foreign tab",
@@ -293,13 +298,16 @@ impl Session {
             if ids.viewer(viewer.id) != Some(entity) {
                 return Err(format!("viewer {} is not registered", viewer.id));
             }
-            let workspace = self
+            if self
                 .world
                 .get::<components::Workspace>(viewer.workspace)
-                .ok_or_else(|| format!("viewer {} has no workspace", viewer.id))?;
+                .is_none()
+            {
+                return Err(format!("viewer {} has no workspace", viewer.id));
+            }
             if let Some(tab) = viewer.selection.tab
                 && !support::is_member(&self.world, viewer.workspace, tab)
-                && workspace.retiring.is_none()
+                && support::is_not_retiring(&self.world, viewer.workspace)
             {
                 return Err(format!("viewer {} shows a foreign tab", viewer.id));
             }

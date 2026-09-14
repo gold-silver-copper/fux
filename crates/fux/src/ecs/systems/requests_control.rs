@@ -8,9 +8,9 @@ use super::requests::{
 use crate::ecs::components::{CreationKind, Pane, PaneState, Tab, Viewer, Workspace};
 use crate::ecs::resources::{Clock, Limits, ServerIdentity};
 use crate::ecs::support::{
-    Failure, attached_viewers, close_tab, despawn_tab, focus_in_tab, mark_workspace_dirty,
-    member_tabs, pane_id, pane_in_layout, pane_tab, pane_workspace, remove_from_layout, tab_id,
-    terminate_pane, workspace_entity,
+    Failure, attached_viewers, close_tab, despawn_tab, focus_in_tab, is_accepting,
+    mark_workspace_dirty, member_tabs, pane_id, pane_in_layout, pane_tab, pane_workspace,
+    remove_from_layout, tab_id, terminate_pane, workspace_entity,
 };
 use crate::ecs::systems::creation::{NewPane, reserve_pane, reserve_tab, reserve_workspace};
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
@@ -194,11 +194,7 @@ pub(super) fn focus(
                 .ok_or_else(|| Failure::not_found("no previous pane"))?;
             let workspace = pane_workspace(world, entity)
                 .filter(|workspace| *workspace == context.workspace || context.viewer.is_some())
-                .filter(|workspace| {
-                    world
-                        .get::<Workspace>(*workspace)
-                        .is_some_and(|workspace| workspace.open && workspace.retiring.is_none())
-                })
+                .filter(|workspace| is_accepting(world, *workspace))
                 .ok_or_else(|| {
                     Failure::not_found("previous pane is unavailable in this workspace")
                 })?;
@@ -478,11 +474,7 @@ pub(super) fn workspace_action(
                 .viewer
                 .ok_or_else(|| Failure::invalid("only attached viewers switch workspaces"))?;
             let entity = workspace_entity(world, &name)
-                .filter(|entity| {
-                    world
-                        .get::<Workspace>(*entity)
-                        .is_some_and(|workspace| workspace.open && workspace.retiring.is_none())
-                })
+                .filter(|entity| is_accepting(world, *entity))
                 .ok_or_else(|| Failure::not_found("workspace does not exist"))?;
             check_viewer_admission(world, viewer, entity)?;
             switch_viewer_workspace(world, viewer, entity);

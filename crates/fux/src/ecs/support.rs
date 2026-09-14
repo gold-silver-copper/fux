@@ -2,7 +2,7 @@
 //! layout membership edits and explicit ownership cascades.
 
 use super::components::{
-    Creation, Pane, PaneState, Retiring, Selection, Tab, TabOf, Tabs, Viewer, Workspace,
+    Creation, Open, Pane, PaneState, Retiring, Selection, Tab, TabOf, Tabs, Viewer, Workspace,
 };
 use super::messages::{Effect, Requester};
 use super::resources::{Clock, Ids, Limits, Registry};
@@ -25,16 +25,16 @@ pub struct Step<'w> {
     pub ids: Res<'w, Ids>,
 }
 
-/// Deferred viewer removal for typed systems: the entity goes at the next sync point, its id is
-/// released now, and the outbox is closed after the messages already queued for it.
+/// Deferred viewer removal for typed systems: the entity and its id go at the next sync point
+/// (the id map follows the entity through its component hook), and the outbox is closed after
+/// the messages already queued for it.
 #[derive(SystemParam)]
 pub struct ViewerExit<'w, 's> {
     commands: Commands<'w, 's>,
 }
 
 impl ViewerExit<'_, '_> {
-    pub fn despawn(&mut self, ids: &mut Ids, viewer: Entity, id: ViewerId, effects: &mut Effects) {
-        ids.viewers.remove(&id);
+    pub fn despawn(&mut self, viewer: Entity, id: ViewerId, effects: &mut Effects) {
         self.commands.entity(viewer).despawn();
         effects.emit(Effect::CloseViewer { viewer: id });
     }
@@ -187,13 +187,12 @@ impl From<&control::ControlError> for Failure {
     }
 }
 
-/// Removes a viewer now (exclusive systems): releases its id, despawns it and closes its outbox
-/// after the messages already queued for it.
+/// Removes a viewer now (exclusive systems): despawns it (releasing its id) and closes its
+/// outbox after the messages already queued for it.
 pub fn despawn_viewer(world: &mut World, viewer: Entity) {
     let Some(id) = world.get::<Viewer>(viewer).map(|viewer| viewer.id) else {
         return;
     };
-    world.resource_mut::<Ids>().viewers.remove(&id);
     world.despawn(viewer);
     effect(world, Effect::CloseViewer { viewer: id });
 }
@@ -399,9 +398,9 @@ pub fn retarget_focus(world: &mut World, tab: Entity, old: Entity, next: Option<
 
 /// Starts a workspace's retirement with `exit_code`; false when one is already under way.
 pub fn retire(world: &mut World, workspace: Entity, now_ms: u64, exit_code: Option<u32>) -> bool {
-    match world.get_mut::<Workspace>(workspace) {
-        Some(mut component) if component.retiring.is_none() => {
-            component.retiring = Some(Retiring {
+    match world.get_entity_mut(workspace) {
+        Ok(mut entity) if !entity.contains::<Retiring>() => {
+            entity.insert(Retiring {
                 since_ms: now_ms,
                 exit_code,
             });
@@ -409,6 +408,27 @@ pub fn retire(world: &mut World, workspace: Entity, now_ms: u64, exit_code: Opti
         }
         _ => false,
     }
+}
+
+/// Whether `workspace` is open and not retiring: it accepts viewers and requests.
+pub fn is_accepting(world: &World, workspace: Entity) -> bool {
+    world
+        .get_entity(workspace)
+        .is_ok_and(|entity| entity.contains::<Open>() && !entity.contains::<Retiring>())
+}
+
+/// Whether `workspace` exists and is not retiring.
+pub fn is_not_retiring(world: &World, workspace: Entity) -> bool {
+    world
+        .get_entity(workspace)
+        .is_ok_and(|entity| !entity.contains::<Retiring>())
+}
+
+/// Whether `workspace` is reserved: neither open nor retiring.
+pub fn is_pending(world: &World, workspace: Entity) -> bool {
+    world
+        .get_entity(workspace)
+        .is_ok_and(|entity| !entity.contains::<Open>() && !entity.contains::<Retiring>())
 }
 
 /// Publishes `pane.closed` for `workspace`.
@@ -425,26 +445,17 @@ pub fn pane_closed(world: &mut World, workspace: Entity, pane: PaneId, code: Opt
     );
 }
 
-/// Removes a tab entity and its id; its panes must already be gone or re-homed.
+/// Removes a tab entity (its id follows); its panes must already be gone or re-homed.
 pub fn despawn_tab(world: &mut World, tab: Entity) {
-    if let Some(id) = tab_id(world, tab) {
-        world.resource_mut::<Ids>().tabs.remove(&id);
-    }
     world.despawn(tab);
 }
 
-/// Removes a workspace entity and its name; its tabs and panes must already be gone.
+/// Removes a workspace entity (its name follows); its tabs and panes must already be gone.
 pub fn despawn_workspace(world: &mut World, workspace: Entity) {
     world
         .resource_mut::<super::resources::WorkspaceOrder>()
         .0
         .retain(|entry| *entry != workspace);
-    if let Some(name) = world
-        .get::<Workspace>(workspace)
-        .map(|workspace| workspace.name.clone())
-    {
-        world.resource_mut::<Ids>().workspaces.remove(&name);
-    }
     world.despawn(workspace);
 }
 
@@ -481,7 +492,6 @@ pub fn despawn_pane(world: &mut World, pane: Entity) {
     let Some(id) = pane_id(world, pane) else {
         return;
     };
-    world.resource_mut::<Ids>().panes.remove(&id);
     clear_barriers(world, pane);
     world.despawn(pane);
     effect(world, Effect::ReleasePane { pane: id });

@@ -113,7 +113,9 @@ Phases are chained system sets; deferred mutations become visible at the sync po
    as blanks of their style.
 8. **Publish**: control events, deadlines, message clearing, `clear_trackers`.
 
-No observers or component hooks drive core commands; process cleanup is explicit.
+No observers or component hooks drive core commands; process cleanup is explicit. The only
+hooks are `on_remove` index maintenance on `Workspace`, `Tab`, `Pane` and `Viewer`, which drop
+the entity's public id from `Ids` so no despawn path can forget it; they emit nothing.
 
 ### Systems
 

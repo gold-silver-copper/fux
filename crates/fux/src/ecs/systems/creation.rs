@@ -2,15 +2,15 @@
 //! either inserts the new pane where it was requested or rolls the reservation back.
 
 use crate::ecs::components::{
-    Creation, CreationKind, Pane, PaneState, Selection, Tab, TabOf, Viewer, Workspace,
+    Creation, CreationKind, Open, Pane, PaneState, Selection, Tab, TabOf, Viewer, Workspace,
 };
 use crate::ecs::messages::{Effect, Inbound, Requester};
 use crate::ecs::resources::{Clock, Ids, Limits};
 use crate::ecs::support::{
     Failure, clear_barriers, default_command, despawn_pane, despawn_tab, despawn_workspace, effect,
-    event, focus_in_tab, mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity,
-    panes_in_workspace, reply, reply_all, tab_area, tab_id, tab_workspace, terminate_pane,
-    viewer_entity,
+    event, focus_in_tab, is_not_retiring, is_pending, mark_tab_dirty, mark_workspace_dirty,
+    member_tabs, pane_entity, panes_in_workspace, reply, reply_all, tab_area, tab_id,
+    tab_workspace, terminate_pane, viewer_entity,
 };
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
 use crate::ecs::systems::requests::switch_viewer_workspace;
@@ -331,9 +331,7 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
             });
         }
         CreationKind::NewTab { .. } => {
-            let open = world
-                .get::<Workspace>(workspace)
-                .is_some_and(|workspace| workspace.retiring.is_none());
+            let open = is_not_retiring(world, workspace);
             let tab_limit = world.resource::<Limits>().max_tabs;
             if !open || member_tabs(world, workspace).len() >= tab_limit {
                 let reason = if open {
@@ -372,10 +370,7 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
             });
         }
         CreationKind::Workspace { .. } => {
-            if world
-                .get::<Workspace>(workspace)
-                .is_none_or(|workspace| workspace.retiring.is_some())
-            {
+            if !is_not_retiring(world, workspace) {
                 return abandon(
                     world,
                     entity,
@@ -390,10 +385,10 @@ fn complete(world: &mut World, entity: Entity, id: PaneId, pid: u32, creation: C
                 .get_mut::<Workspace>(workspace)
                 .map(|mut component| {
                     component.selection.select(tab, Some(entity));
-                    component.open = true;
                     component.name.clone()
                 })
                 .unwrap_or_default();
+            world.entity_mut(workspace).insert(Open);
             let stream = world
                 .get::<crate::ecs::events::EventLog>(workspace)
                 .map_or(0, |log| log.cursor().stream);
@@ -553,9 +548,7 @@ pub fn join_pending_workspace(
 
 /// Whether a workspace is still waiting for its initial pane.
 pub fn workspace_pending(world: &World, workspace: Entity) -> bool {
-    world
-        .get::<Workspace>(workspace)
-        .is_some_and(|workspace| !workspace.open && workspace.retiring.is_none())
+    is_pending(world, workspace)
 }
 
 /// Reserve a workspace identity without creating a process or publishing an endpoint.
@@ -583,8 +576,6 @@ pub fn reserve_empty_workspace(world: &mut World, name: String) -> Result<Entity
             label: None,
             selection: Selection::default(),
             last_attached: step,
-            open: false,
-            retiring: None,
             tab_counter: 0,
         })
         .id();

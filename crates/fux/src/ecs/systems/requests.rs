@@ -3,15 +3,18 @@
 //! execution time and validates kind, membership and liveness.
 
 use crate::daemon::{ManagerReply, ManagerRequest};
-use crate::ecs::components::{FocusHistory, Pane, PaneState, Selection, Tab, Viewer, Workspace};
+use crate::ecs::components::{
+    Accepting, FocusHistory, Open, Pane, PaneState, Retiring, Selection, Tab, Viewer, Workspace,
+};
 use crate::ecs::messages::{Effect, Inbound, ManagerOutcome, Requester, ViewerRequest};
 use crate::ecs::resources::{
     Clock, Ids, Limits, Registry, ServerIdentity, ShuttingDown, WorkspaceCounter,
 };
 use crate::ecs::support::{
     Effects, Failure, ViewerExit, attached_viewers, despawn_viewer, effect, focus_in_tab,
-    mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity, pane_tab, pane_workspace,
-    reply, retire, tab_entity, terminate_pane, viewer_entity, workspace_entity, write_pane,
+    is_accepting, is_not_retiring, mark_tab_dirty, mark_workspace_dirty, member_tabs, pane_entity,
+    pane_tab, pane_workspace, reply, retire, tab_entity, terminate_pane, viewer_entity,
+    workspace_entity, write_pane,
 };
 use crate::ecs::systems::creation::reserve_workspace;
 use crate::ecs::systems::lifecycle::TERMINATE_GRACE_MS;
@@ -44,7 +47,7 @@ pub struct Arrivals<'w, 's> {
     registry: Res<'w, Registry>,
     identity: Res<'w, ServerIdentity>,
     panes: Query<'w, 's, &'static Pane>,
-    workspaces: Query<'w, 's, &'static mut Workspace>,
+    workspaces: Query<'w, 's, (&'static mut Workspace, Has<Open>, Has<Retiring>)>,
     viewers: Query<'w, 's, &'static Viewer>,
 }
 
@@ -95,11 +98,11 @@ pub fn apply_attachments(
                     refuse(&mut effects, "workspace does not exist");
                     continue;
                 };
-                let Ok(mut target) = workspaces.get_mut(entity) else {
+                let Ok((mut target, open, retiring)) = workspaces.get_mut(entity) else {
                     refuse(&mut effects, "workspace does not exist");
                     continue;
                 };
-                if !target.open || target.retiring.is_some() {
+                if !open || retiring {
                     refuse(&mut effects, "workspace is not accepting viewers");
                     continue;
                 }
@@ -213,7 +216,7 @@ pub fn apply_attachments(
                         None => continue,
                     },
                 }
-                exit.despawn(ids, entity, *id, &mut effects);
+                exit.despawn(entity, *id, &mut effects);
             }
             Inbound::Shutdown => shutting_down.0 = true,
             _ => {}
@@ -269,11 +272,8 @@ pub fn apply_requests(world: &mut World) {
                     // retiring has no control socket of its own; a request naming it can only
                     // come through another workspace's socket and must not mutate the
                     // reservation.
-                    let open = workspace_entity(world, workspace).filter(|entity| {
-                        world
-                            .get::<Workspace>(*entity)
-                            .is_some_and(|workspace| workspace.open && workspace.retiring.is_none())
-                    });
+                    let open = workspace_entity(world, workspace)
+                        .filter(|entity| is_accepting(world, *entity));
                     match open {
                         Some(entity) => {
                             apply_control(world, requester, Target::Workspace(entity), request);
@@ -439,13 +439,17 @@ fn history_view(
         view: None,
         history: 0,
     };
-    let Some(mut component) = pane_entity(world, pane)
+    // A history view reads the pane; bypassing change detection keeps the read from ticking.
+    let Some(mut pane_ref) = pane_entity(world, pane)
         .filter(|entity| pane_workspace(world, *entity) == workspace)
         .and_then(|entity| world.get_mut::<Pane>(entity))
-        .filter(|component| !matches!(component.state, PaneState::Starting))
     else {
         return unavailable;
     };
+    let component = pane_ref.bypass_change_detection();
+    if matches!(component.state, PaneState::Starting) {
+        return unavailable;
+    }
     let exit = component.state.exit_code();
     let title = component.published_title.clone();
     let label = component.label.clone();
@@ -714,11 +718,7 @@ fn control(world: &mut World, context: &Context, request: &Request) -> Result<Ou
             "layout changes require the exported server instance",
         ));
     }
-    if world.resource::<ShuttingDown>().0
-        || world
-            .get::<Workspace>(context.workspace)
-            .is_none_or(|workspace| workspace.retiring.is_some())
-    {
+    if world.resource::<ShuttingDown>().0 || !is_not_retiring(world, context.workspace) {
         return Err(Failure::conflict("workspace is shutting down"));
     }
     if let Request::Split {
@@ -848,9 +848,11 @@ fn control(world: &mut World, context: &Context, request: &Request) -> Result<Ou
             ..
         } => now((|| {
             let entity = context.live_pane(world, *pane)?.0;
-            let mut component = world
+            // A capture reads the pane; bypassing change detection keeps the read from ticking.
+            let mut pane = world
                 .get_mut::<Pane>(entity)
                 .ok_or_else(|| Failure::not_found("pane not found"))?;
+            let component = pane.bypass_change_detection();
             component.refresh();
             let max_bytes = (*max_bytes).min(control::MAX_CAPTURE_BYTES);
             let seq = component.terminal.grid().seq();
@@ -1032,7 +1034,7 @@ fn locate_pane(
         .ok_or_else(|| Failure::conflict("pane process is unavailable"))?;
     let workspace = world
         .get::<Workspace>(component.routing_workspace)
-        .filter(|workspace| workspace.open && workspace.retiring.is_none())
+        .filter(|_| is_accepting(world, component.routing_workspace))
         .ok_or_else(|| Failure::not_found("workspace unavailable"))?;
     let tab = world
         .get::<Tab>(component.tab)
@@ -1224,7 +1226,7 @@ fn apply_manager(world: &mut World, request: ManagerRequest, token: u64) {
                 }
                 let open = world
                     .get::<Workspace>(entity)
-                    .filter(|workspace| workspace.open && workspace.retiring.is_none())
+                    .filter(|_| is_accepting(world, entity))
                     .map(|workspace| workspace.name.clone());
                 let outcome = match open {
                     Some(name) => ManagerOutcome::Attach {
@@ -1248,9 +1250,8 @@ fn apply_manager(world: &mut World, request: ManagerRequest, token: u64) {
 
 pub(super) fn ordered_workspaces(world: &mut World) -> Vec<(String, Entity)> {
     let mut entries: Vec<_> = world
-        .query::<(Entity, &Workspace)>()
+        .query_filtered::<(Entity, &Workspace), Accepting>()
         .iter(world)
-        .filter(|(_, workspace)| workspace.open && workspace.retiring.is_none())
         .map(|(entity, workspace)| (workspace.name.clone(), entity))
         .collect();
     let rank: BTreeMap<Entity, usize> = world
@@ -1275,9 +1276,8 @@ fn open_workspace_names(world: &mut World) -> Vec<String> {
 
 fn most_recent_workspace(world: &mut World) -> Option<Entity> {
     world
-        .query::<(Entity, &Workspace)>()
+        .query_filtered::<(Entity, &Workspace), Without<Retiring>>()
         .iter(world)
-        .filter(|(_, workspace)| workspace.retiring.is_none())
         .max_by_key(|(_, workspace)| workspace.last_attached)
         .map(|(entity, _)| entity)
 }
@@ -1336,8 +1336,9 @@ fn summarize(world: &mut World, workspace: Entity, selection: &Selection) -> Wor
         .flat_map(|tab| tab.layout.leaves())
         .collect();
     for pane in shown {
+        // A listing reads the pane; bypassing change detection keeps the read from ticking.
         if let Some(mut component) = world.get_mut::<Pane>(pane) {
-            component.refresh();
+            component.bypass_change_detection().refresh();
         }
     }
     let viewers = u32::try_from(attached_viewers(world, workspace)).unwrap_or(u32::MAX);
