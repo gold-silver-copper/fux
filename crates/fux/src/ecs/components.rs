@@ -366,4 +366,11 @@ impl Viewer {
     pub fn focused(&self) -> Option<Entity> {
         self.selection.focused()
     }
+
+    /// Whether this viewer currently counts toward `workspace`'s viewer limit: attached to it
+    /// and not already detaching.
+    #[must_use]
+    pub fn attached_to(&self, workspace: Entity) -> bool {
+        self.workspace == workspace && !self.detaching
+    }
 }

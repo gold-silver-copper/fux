@@ -2665,10 +2665,13 @@ fn limits_and_queue_overflow_are_enforced() {
         })
         .collect();
     let effects = harness.step(flood);
-    assert!(
+    assert_eq!(
         effects
             .iter()
-            .any(|effect| matches!(effect, Effect::CloseViewer { .. }))
+            .filter(|effect| matches!(effect, Effect::CloseViewer { .. }))
+            .count(),
+        1,
+        "one close per overflowed viewer"
     );
     assert_eq!(harness.session.entity_counts().viewers, 0);
     harness.complete_spawns();
@@ -2676,6 +2679,43 @@ fn limits_and_queue_overflow_are_enforced() {
         harness.session.entity_counts().panes,
         2,
         "the pane still joined its tab"
+    );
+}
+
+#[test]
+fn a_detaching_viewer_no_longer_counts_toward_the_workspace_limit() {
+    let mut harness = Harness::new();
+    harness.create_workspace("full");
+    harness.create_workspace("other");
+    let limit = fux::proto::attach::MAX_VIEWERS_PER_WORKSPACE;
+    let residents: Vec<ViewerId> = (0..limit).map(|_| harness.attach("full", 24, 80)).collect();
+    let mover = harness.attach("other", 24, 80);
+    // The first resident detaches in the same step the mover selects the full workspace; the
+    // detaching viewer is still an entity but no longer holds a seat.
+    harness.step(vec![
+        Inbound::ViewerRequest {
+            viewer: residents[0],
+            request: ViewerRequest::Detach,
+        },
+        Inbound::ViewerRequest {
+            viewer: mover,
+            request: ViewerRequest::Control(Request::Workspace {
+                stream: None,
+                instance: None,
+                id: 1,
+                action: WorkspaceAction::Select {
+                    name: "full".into(),
+                },
+            }),
+        },
+    ]);
+    assert!(
+        matches!(
+            harness.replies(mover).last(),
+            Some(Reply::Completed { id: 1, .. })
+        ),
+        "{:?}",
+        harness.replies(mover).last()
     );
 }
 

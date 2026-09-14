@@ -104,7 +104,7 @@ pub fn apply_attachments(
                 }
                 let attached = viewers
                     .iter()
-                    .filter(|viewer| viewer.workspace == entity && !viewer.detaching)
+                    .filter(|viewer| viewer.attached_to(entity))
                     .count()
                     + arrived
                         .iter()
@@ -115,7 +115,7 @@ pub fn apply_attachments(
                         .filter(|gone| {
                             viewers
                                 .get(**gone)
-                                .is_ok_and(|viewer| viewer.workspace == entity && !viewer.detaching)
+                                .is_ok_and(|viewer| viewer.attached_to(entity))
                         })
                         .count();
                 if attached >= limits.max_viewers {
@@ -277,7 +277,6 @@ pub fn apply_requests(world: &mut World) {
                             },
                         },
                     );
-                    effect(world, Effect::CloseViewer { viewer });
                     despawn_viewer(world, entity);
                 }
             }
@@ -684,7 +683,11 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         },
     };
     if context.viewer.is_none()
-        && matches!(&request, Request::Layout { action, instance: None, .. } if !action.is_read_only())
+        && matches!(
+            &request,
+            Request::Layout { action, instance: None, .. }
+                if !matches!(action, control::LayoutAction::Export | control::LayoutAction::Inspect { .. })
+        )
     {
         return reply(
             world,
@@ -747,23 +750,29 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
             ratio,
             focus,
             ..
-        } => split(
-            world,
-            &context,
-            id,
-            axis,
-            target,
-            cwd,
-            argv,
-            env,
-            rows,
-            columns,
-            final_retain_ms,
-            fixed_workspace,
-            right_click,
-            ratio,
-            focus,
-        ),
+        } => {
+            let Some(result) = split(
+                world,
+                &context,
+                id,
+                axis,
+                target,
+                cwd,
+                argv,
+                env,
+                rows,
+                columns,
+                final_retain_ms,
+                fixed_workspace,
+                right_click,
+                ratio,
+                focus,
+            )
+            .settled() else {
+                return;
+            };
+            result
+        }
         Request::FixWorkspace { pane, .. } => match pane_in_workspace(world, &context, pane) {
             Some(entity) => {
                 if let Some(mut component) = world.get_mut::<Pane>(entity) {
@@ -951,8 +960,18 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         Request::Info { .. } => Ok(CommandResult::Info {
             info: Box::new(server_info(world, Some(context.workspace))),
         }),
-        Request::Tab { action, .. } => tab_action(world, &context, id, action),
-        Request::Workspace { action, .. } => workspace_action(world, &context, id, action),
+        Request::Tab { action, .. } => {
+            let Some(result) = tab_action(world, &context, id, action).settled() else {
+                return;
+            };
+            result
+        }
+        Request::Workspace { action, .. } => {
+            let Some(result) = workspace_action(world, &context, id, action).settled() else {
+                return;
+            };
+            result
+        }
         Request::Events { after, .. } => {
             match world
                 .get::<crate::ecs::events::EventLog>(context.workspace)
@@ -973,10 +992,30 @@ fn apply_control(world: &mut World, requester: Requester, target: Target, reques
         )),
     };
     match result {
-        // A started creation (barrier) replies later, not now.
-        Ok(CommandResult::Pane { pane: PaneId(0) }) => {}
         Ok(result) => reply(world, requester, Reply::Completed { id, result }),
         Err(reply_value) => reply(world, requester, reply_value),
+    }
+}
+
+/// What a control handler produced: a result to reply with now, or nothing yet because the
+/// request started a creation and set a barrier; the completion phase replies.
+pub enum Outcome {
+    Now(CommandResult),
+    Deferred,
+}
+
+trait Settled {
+    /// `None` when the reply is deferred, so the caller returns without replying.
+    fn settled(self) -> Option<Result<CommandResult, Reply>>;
+}
+
+impl Settled for Result<Outcome, Reply> {
+    fn settled(self) -> Option<Result<CommandResult, Reply>> {
+        match self {
+            Ok(Outcome::Now(result)) => Some(Ok(result)),
+            Ok(Outcome::Deferred) => None,
+            Err(reply) => Some(Err(reply)),
+        }
     }
 }
 

@@ -73,6 +73,7 @@ pub enum Request {
     /// Permanently constrain an existing live pane to its current workspace.
     FixWorkspace {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         stream: u64,
         pane: PaneId,
@@ -80,12 +81,14 @@ pub enum Request {
     /// Set a manual pane label; an empty name restores the application title.
     RenamePane {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         pane: PaneId,
         name: String,
     },
     PaneInput {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         pane: PaneId,
         right_click: crate::view::RightClickPolicy,
@@ -132,6 +135,7 @@ pub enum Request {
     },
     InputReserve {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         pane: PaneId,
         /// How long the receipt is retained, in milliseconds; nonzero, clamped to
@@ -140,12 +144,14 @@ pub enum Request {
     },
     InputSubmit {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         operation: u64,
         keys: String,
     },
     InputStatus {
         id: RequestId,
+        #[serde(default)]
         instance: Option<String>,
         operation: u64,
     },
@@ -682,13 +688,6 @@ pub enum LayoutAction {
         #[serde(default)]
         labels: Option<PaneLabels>,
     },
-}
-
-impl LayoutAction {
-    #[must_use]
-    pub fn is_read_only(&self) -> bool {
-        matches!(self, Self::Export | Self::Inspect { .. })
-    }
 }
 
 /// Directional neighbors follow the same rules as the focus operation.
@@ -1461,6 +1460,29 @@ mod tests {
             .err()
             .map(|error| error.code);
         assert_eq!(removed, Some(ErrorCode::UnknownCommand));
+    }
+
+    #[test]
+    fn tracked_requests_without_an_instance_fail_validation_not_decoding() {
+        // Every tracked operation decodes with the key omitted (like `events` and `split`) and
+        // is then refused by validation with the explanatory error, not a JSON field error.
+        for frame in [
+            "{\"command\":\"fix-workspace\",\"id\":1,\"stream\":2,\"pane\":3}",
+            "{\"command\":\"rename-pane\",\"id\":1,\"pane\":3,\"name\":\"n\"}",
+            "{\"command\":\"pane-input\",\"id\":1,\"pane\":3,\"right_click\":\"pane\"}",
+            "{\"command\":\"input-reserve\",\"id\":1,\"pane\":3,\"retain_ms\":10}",
+            "{\"command\":\"input-submit\",\"id\":1,\"operation\":4,\"keys\":\"x\"}",
+            "{\"command\":\"input-status\",\"id\":1,\"operation\":4}",
+        ] {
+            let decoded = serde_json::from_str::<Request>(frame);
+            assert!(decoded.is_ok(), "{frame}: {decoded:?}");
+            let error = decode_request_frame(frame.as_bytes()).err();
+            assert_eq!(
+                error.as_ref().map(|error| error.code),
+                Some(ErrorCode::InvalidRequest),
+                "{frame}: {error:?}"
+            );
+        }
     }
 
     #[test]

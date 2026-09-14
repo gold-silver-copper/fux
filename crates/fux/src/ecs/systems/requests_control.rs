@@ -4,7 +4,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use super::requests::{
-    Context, kill_workspace, list_workspaces, next_workspace_name, switch_viewer_workspace,
+    Context, Outcome, kill_workspace, list_workspaces, next_workspace_name, switch_viewer_workspace,
 };
 use crate::ecs::components::{CreationKind, Pane, PaneState, Tab, Viewer, Workspace};
 use crate::ecs::resources::{Clock, Limits, ServerIdentity};
@@ -85,7 +85,7 @@ pub(super) fn split(
     right_click: crate::view::RightClickPolicy,
     ratio: u16,
     focus: bool,
-) -> Result<CommandResult, Reply> {
+) -> Result<Outcome, Reply> {
     let ratio = std::num::NonZeroU16::new(ratio)
         .filter(|ratio| {
             (crate::layout::MIN_RATIO..=crate::layout::MAX_RATIO).contains(&ratio.get())
@@ -148,7 +148,7 @@ pub(super) fn split(
         size,
     )?;
     // The reply follows the spawn report.
-    Ok(CommandResult::Pane { pane: PaneId(0) })
+    Ok(Outcome::Deferred)
 }
 
 pub(super) fn focus(
@@ -312,7 +312,7 @@ pub(super) fn tab_action(
     context: &Context,
     id: u64,
     action: TabAction,
-) -> Result<CommandResult, Reply> {
+) -> Result<Outcome, Reply> {
     let tabs = member_tabs(world, context.workspace);
     let selection = context.selection(world);
     match action {
@@ -332,7 +332,7 @@ pub(super) fn tab_action(
                 return Err(failed(id, ErrorCode::Conflict, "tab order changed"));
             }
             mark_workspace_dirty(world, context.workspace);
-            Ok(CommandResult::Tab { tab })
+            Ok(Outcome::Now(CommandResult::Tab { tab }))
         }
         TabAction::New { name } => {
             let limit = world.resource::<Limits>().max_tabs;
@@ -363,7 +363,7 @@ pub(super) fn tab_action(
                 despawn_tab(world, tab);
                 return Err(reply);
             }
-            Ok(CommandResult::Pane { pane: PaneId(0) })
+            Ok(Outcome::Deferred)
         }
         TabAction::Next | TabAction::Previous => {
             if tabs.is_empty() {
@@ -382,9 +382,9 @@ pub(super) fn tab_action(
                 .get(index)
                 .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
             context.select_tab(world, tab);
-            Ok(CommandResult::Tab {
+            Ok(Outcome::Now(CommandResult::Tab {
                 tab: tab_id(world, tab).unwrap_or_default(),
-            })
+            }))
         }
         TabAction::Select { target } => {
             let entity = match target {
@@ -396,9 +396,9 @@ pub(super) fn tab_action(
                     .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab no longer exists"))?,
             };
             context.select_tab(world, entity);
-            Ok(CommandResult::Tab {
+            Ok(Outcome::Now(CommandResult::Tab {
                 tab: tab_id(world, entity).unwrap_or_default(),
-            })
+            }))
         }
         TabAction::Rename { tab, name } => {
             let entity = tab_in_workspace(world, context, tab)
@@ -407,14 +407,14 @@ pub(super) fn tab_action(
                 component.label = name;
             }
             mark_workspace_dirty(world, context.workspace);
-            Ok(CommandResult::Tab { tab })
+            Ok(Outcome::Now(CommandResult::Tab { tab }))
         }
         TabAction::Close { tab } => {
             let entity = tab_in_workspace(world, context, tab)
                 .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab no longer exists"))?;
             let now = world.resource::<Clock>().now_ms;
             close_tab(world, entity, now, TERMINATE_GRACE_MS);
-            Ok(CommandResult::Tab { tab })
+            Ok(Outcome::Now(CommandResult::Tab { tab }))
         }
     }
 }
@@ -424,7 +424,7 @@ pub(super) fn workspace_action(
     context: &Context,
     id: u64,
     action: WorkspaceAction,
-) -> Result<CommandResult, Reply> {
+) -> Result<Outcome, Reply> {
     match action {
         WorkspaceAction::Rename { label } => {
             let label = (!label.is_empty()).then_some(label);
@@ -437,19 +437,19 @@ pub(super) fn workspace_action(
             if changed {
                 mark_workspace_dirty(world, context.workspace);
             }
-            Ok(CommandResult::Workspace { name })
+            Ok(Outcome::Now(CommandResult::Workspace { name }))
         }
-        WorkspaceAction::List => Ok(CommandResult::Listing {
+        WorkspaceAction::List => Ok(Outcome::Now(CommandResult::Listing {
             instance: world.resource::<ServerIdentity>().instance_nonce.clone(),
             workspaces: list_workspaces(world),
-        }),
+        })),
         WorkspaceAction::New { name } => {
             let name = match name {
                 Some(name) => name,
                 None => next_workspace_name(world),
             };
             reserve_workspace(world, name, context.requester, id)?;
-            Ok(CommandResult::Pane { pane: PaneId(0) })
+            Ok(Outcome::Deferred)
         }
         WorkspaceAction::Kill { name } => {
             let entity = workspace_entity(world, &name)
@@ -462,7 +462,7 @@ pub(super) fn workspace_action(
                 ));
             }
             kill_workspace(world, entity);
-            Ok(CommandResult::Workspace { name })
+            Ok(Outcome::Now(CommandResult::Workspace { name }))
         }
         WorkspaceAction::Select { name } => {
             let viewer = context.viewer.ok_or_else(|| {
@@ -482,7 +482,7 @@ pub(super) fn workspace_action(
             check_viewer_admission(world, viewer, entity, id)?;
             switch_viewer_workspace(world, viewer, entity);
             crate::ecs::support::refresh_focus_history(world, entity);
-            Ok(CommandResult::Workspace { name })
+            Ok(Outcome::Now(CommandResult::Workspace { name }))
         }
     }
 }
@@ -503,7 +503,7 @@ pub(super) fn check_viewer_admission(
     let occupied = world
         .query::<&Viewer>()
         .iter(world)
-        .filter(|other| other.workspace == workspace)
+        .filter(|other| other.attached_to(workspace))
         .count();
     if occupied >= limit {
         return Err(failed(

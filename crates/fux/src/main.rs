@@ -477,11 +477,7 @@ fn resolve(
             name: name.map(str::to_owned),
         },
     ) {
-        Ok(fux::daemon::ManagerReply::Attach { descriptor }) => Ok(Some(descriptor)),
-        Ok(fux::daemon::ManagerReply::Failed { message }) => bail!("session server: {message}"),
-        Ok(fux::daemon::ManagerReply::ReleasePanePin { .. } | fux::daemon::ManagerReply::InputStatus { .. } | fux::daemon::ManagerReply::PaneLocation { .. } | fux::daemon::ManagerReply::Names { .. } | fux::daemon::ManagerReply::Info { .. } | fux::daemon::ManagerReply::Final { .. } | fux::daemon::ManagerReply::Layout { .. } | fux::daemon::ManagerReply::Catalog { .. } | fux::daemon::ManagerReply::LayoutArchive { .. }) => {
-            bail!("unexpected manager reply")
-        }
+        Ok(reply) => reply.into_descriptor().map(Some),
         Err(error) if no_server(&error) => Ok(None),
         Err(error) => Err(error.context(
             "cannot use the existing session server; if it is older than this fux, save your work in it and restart it",

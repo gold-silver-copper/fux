@@ -95,6 +95,17 @@ pub enum ManagerReply {
     },
 }
 
+impl ManagerReply {
+    /// The descriptor an `Attach`/`Resolve` request produced; any other reply is an error.
+    pub fn into_descriptor(self) -> Result<super::Descriptor> {
+        match self {
+            Self::Attach { descriptor } => Ok(descriptor),
+            Self::Failed { message } => bail!("session server: {message}"),
+            _ => bail!("unexpected manager reply"),
+        }
+    }
+}
+
 pub const MANAGER_DEADLINE: Duration = Duration::from_secs(15);
 
 pub fn manager_request(path: &Path, request: &ManagerRequest) -> Result<ManagerReply> {

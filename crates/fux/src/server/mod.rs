@@ -184,19 +184,7 @@ async fn start(
         match receiver.try_recv() {
             Ok(ManagerOutcome::Attach { .. }) => break,
             Ok(ManagerOutcome::Failed(message)) => anyhow::bail!("initial workspace: {message}"),
-            Ok(
-                ManagerOutcome::Names(_)
-                | ManagerOutcome::Info(_)
-                | ManagerOutcome::ReleasePanePin(_)
-                | ManagerOutcome::InputStatus(_)
-                | ManagerOutcome::PaneLocation(_)
-                | ManagerOutcome::Final(_)
-                | ManagerOutcome::Catalog(_)
-                | ManagerOutcome::LayoutArchive(_)
-                | ManagerOutcome::Layout(_),
-            ) => {
-                anyhow::bail!("unexpected manager outcome")
-            }
+            Ok(_) => anyhow::bail!("unexpected manager outcome"),
             Err(oneshot::error::TryRecvError::Closed) => {
                 anyhow::bail!("initial workspace creation was abandoned")
             }

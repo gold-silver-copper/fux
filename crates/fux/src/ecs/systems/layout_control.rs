@@ -18,16 +18,55 @@ pub fn apply(
     let tab = tab_entity(world, tab_id)
         .filter(|tab| is_member(world, workspace, *tab))
         .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
-    if !matches!(action, LayoutAction::Export) {
-        ensure_settled(world, tab, id)?;
+    match action {
+        LayoutAction::Export => read(world, tab, tab_id, id, None),
+        LayoutAction::Inspect { pane } => {
+            ensure_settled(world, tab, id)?;
+            read(world, tab, tab_id, id, Some(pane))
+        }
+        action => edit(world, workspace, tab, tab_id, id, generation, action),
     }
+}
+
+/// Export the tab, or inspect one of its panes. Never touches the World.
+fn read(
+    world: &mut World,
+    tab: Entity,
+    tab_id: TabId,
+    id: u64,
+    inspect_pane: Option<crate::ids::PaneId>,
+) -> Result<CommandResult, Reply> {
     let component = world
         .get::<Tab>(tab)
         .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
-    if let LayoutAction::Inspect { pane } = &action {
-        return inspect(world, component, id, *pane);
+    match inspect_pane {
+        Some(pane) => inspect(world, component, id, pane),
+        None => export(world, tab, tab_id, id),
     }
+}
+
+/// Apply one mutation against the generation the client observed.
+fn edit(
+    world: &mut World,
+    workspace: Entity,
+    tab: Entity,
+    tab_id: TabId,
+    id: u64,
+    generation: Option<u64>,
+    action: LayoutAction,
+) -> Result<CommandResult, Reply> {
+    ensure_settled(world, tab, id)?;
+    let component = world
+        .get::<Tab>(tab)
+        .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
     let revision = component.layout_generation;
+    if generation != Some(revision) {
+        return Err(failed(
+            id,
+            ErrorCode::Conflict,
+            "layout changed; export and retry with its generation",
+        ));
+    }
     let mut zoomed = component.zoomed;
     let mut label_plan = Vec::new();
     let error =
@@ -48,13 +87,6 @@ pub fn apply(
             .find_map(|(id, entity)| (*id == pane).then_some(*entity))
             .ok_or_else(|| failed(id, ErrorCode::NotFound, "pane does not belong to this tab"))
     };
-    if !action.is_read_only() && generation != Some(revision) {
-        return Err(failed(
-            id,
-            ErrorCode::Conflict,
-            "layout changed; export and retry with its generation",
-        ));
-    }
     // Public split indices refer to the canonical exported document, not arena allocation IDs.
     let mut next = LayoutTree::from_document(
         component.layout.document(|entity| entity).map_err(error)?,
@@ -62,8 +94,9 @@ pub fn apply(
     )
     .map_err(error)?;
     match action {
-        LayoutAction::Export => {}
-        LayoutAction::Inspect { pane } => return inspect(world, component, id, pane),
+        LayoutAction::Export | LayoutAction::Inspect { .. } => {
+            return Err(failed(id, ErrorCode::InvalidRequest, "not a layout edit"));
+        }
         LayoutAction::Transfer {
             focus,
             pane,
@@ -276,6 +309,10 @@ pub fn apply(
         }
         mark_tab_dirty(world, tab);
     }
+    export(world, tab, tab_id, id)
+}
+
+fn export(world: &World, tab: Entity, tab_id: TabId, id: u64) -> Result<CommandResult, Reply> {
     let component = world
         .get::<Tab>(tab)
         .ok_or_else(|| failed(id, ErrorCode::NotFound, "tab not found"))?;
