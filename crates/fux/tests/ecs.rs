@@ -7,7 +7,8 @@
 )]
 
 use fux::config::Config;
-use fux::ecs::{Effect, Inbound, ManagerAction, ManagerOutcome, Session, ViewerRequest};
+use fux::daemon::{ManagerReply, ManagerRequest};
+use fux::ecs::{Effect, Inbound, ManagerOutcome, Session, ViewerRequest};
 use fux::ids::{PaneId, TabId, ViewerId};
 use fux::layout::Axis;
 use fux::proto::attach::{MouseEvent, ServerMessage};
@@ -28,14 +29,14 @@ fn input_request(harness: &mut Harness, workspace: &str, request: Request) -> Re
 
 fn final_reply(h: &mut Harness, pane: PaneId, instance: &str) -> Reply {
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::Final {
+        request: ManagerRequest::Final {
             instance: instance.into(),
             pane,
         },
         token: 402,
     }]);
     match &h.manager.last().expect("final reply").1 {
-        ManagerOutcome::Final(reply) => reply.clone(),
+        ManagerOutcome::Reply(ManagerReply::Final { result: reply }) => reply.clone(),
         other => panic!("unexpected final reply: {other:?}"),
     }
 }
@@ -358,7 +359,7 @@ fn forced_release_keeps_unknown_exit_and_final_captures_stay_bounded() {
         bytes: b"LAST_OBSERVED".to_vec(),
     }]);
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::Kill {
+        request: ManagerRequest::Kill {
             name: "default".into(),
         },
         token: 10,
@@ -415,24 +416,24 @@ fn manager_create_rejects_reserved_and_existing_names_without_borrowing() {
     h.create_workspace("default");
     h.step(vec![
         Inbound::Manager {
-            action: ManagerAction::Create {
+            request: ManagerRequest::Create {
                 name: "owned".into(),
             },
             token: 600,
         },
         Inbound::Manager {
-            action: ManagerAction::Create {
+            request: ManagerRequest::Create {
                 name: "owned".into(),
             },
             token: 601,
         },
     ]);
     assert_eq!(h.pending_spawns.len(), 1);
-    assert!(
-        h.manager
-            .iter()
-            .any(|(token, result)| *token == 601 && matches!(result, ManagerOutcome::Failed(_)))
-    );
+    assert!(h.manager.iter().any(|(token, result)| *token == 601
+        && matches!(
+            result,
+            ManagerOutcome::Reply(ManagerReply::Failed { message: _ })
+        )));
     h.complete_spawns();
     assert!(h.manager.iter().any(|(token, result)| *token == 600
         && matches!(
@@ -444,14 +445,17 @@ fn manager_create_rejects_reserved_and_existing_names_without_borrowing() {
             }
         )));
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::Create {
+        request: ManagerRequest::Create {
             name: "owned".into(),
         },
         token: 602,
     }]);
     assert!(matches!(
         h.manager.last(),
-        Some((602, ManagerOutcome::Failed(_)))
+        Some((
+            602,
+            ManagerOutcome::Reply(ManagerReply::Failed { message: _ })
+        ))
     ));
     assert!(h.pending_spawns.is_empty());
     assert_eq!(h.session.entity_counts().workspaces, 2);
@@ -1392,7 +1396,7 @@ impl Harness {
 
     fn create_workspace(&mut self, name: &str) {
         self.step(vec![Inbound::Manager {
-            action: ManagerAction::Resolve {
+            request: ManagerRequest::Resolve {
                 name: Some(name.into()),
             },
             token: 7,
@@ -2042,7 +2046,7 @@ fn workspace_switch_sends_the_suffix_to_the_destination() {
     assert_eq!(harness.written, vec![(PaneId(2), b"there".to_vec())]);
     // The no-name attach rule now prefers the most recently attached workspace.
     harness.step(vec![Inbound::Manager {
-        action: ManagerAction::Resolve { name: None },
+        request: ManagerRequest::Resolve { name: None },
         token: 11,
     }]);
     assert!(matches!(
@@ -3104,7 +3108,7 @@ mod randomized {
         Gone { viewer: u8 },
         Viewer { viewer: u8, request: ViewerRequest },
         Control { workspace: u8, request: Request },
-        Manager(ManagerAction),
+        Manager(ManagerRequest),
         Output { pane: u8, bytes: Vec<u8> },
         Eof { pane: u8 },
         Exited { pane: u8, code: u32 },
@@ -3257,10 +3261,10 @@ mod randomized {
             8 => (0..6u8, viewer_request()).prop_map(|(viewer, request)| Op::Viewer { viewer, request }),
             3 => (0..3u8, request()).prop_map(|(workspace, request)| Op::Control { workspace, request }),
             2 => prop_oneof![
-                Just(ManagerAction::List),
-                Just(ManagerAction::Resolve { name: None }),
-                name().prop_map(|name| ManagerAction::Resolve { name: Some(name) }),
-                name().prop_map(|name| ManagerAction::Kill { name }),
+                Just(ManagerRequest::List),
+                Just(ManagerRequest::Resolve { name: None }),
+                name().prop_map(|name| ManagerRequest::Resolve { name: Some(name) }),
+                name().prop_map(|name| ManagerRequest::Kill { name }),
             ]
             .prop_map(Op::Manager),
             3 => (0..13u8, prop::collection::vec(any::<u8>(), 0..64))
@@ -3333,7 +3337,7 @@ mod randomized {
                         }]);
                     }
                     Op::Manager(action) => {
-                        harness.step(vec![Inbound::Manager { action, token: 8 }]);
+                        harness.step(vec![Inbound::Manager { request: action, token: 8 }]);
                     }
                     Op::Output { pane, bytes } => {
                         harness.step(vec![Inbound::PaneOutput {
@@ -3461,7 +3465,7 @@ fn exit_arriving_with_or_before_the_spawn_completion_is_not_lost() {
 fn a_workspace_whose_first_pane_exits_at_once_retires_with_its_status() {
     let mut harness = Harness::new();
     harness.step(vec![Inbound::Manager {
-        action: ManagerAction::Resolve {
+        request: ManagerRequest::Resolve {
             name: Some("default".into()),
         },
         token: 7,
@@ -3508,7 +3512,7 @@ fn killing_a_workspace_with_a_pending_spawn_stops_the_late_process() {
     }]);
     assert_eq!(harness.pending_spawns, vec![PaneId(2)]);
     harness.step(vec![Inbound::Manager {
-        action: ManagerAction::Kill {
+        request: ManagerRequest::Kill {
             name: "default".into(),
         },
         token: 8,
@@ -3708,10 +3712,12 @@ fn layout_edits_are_atomic_generation_checked_and_never_relaunch_panes() {
 fn workspace_display_labels_preserve_routes_and_restore_atomically() {
     fn archive(h: &mut Harness) -> fux::proto::control::LayoutArchive {
         h.step(vec![Inbound::Manager {
-            action: ManagerAction::ExportLayout,
+            request: ManagerRequest::ExportLayout,
             token: 994,
         }]);
-        let ManagerOutcome::LayoutArchive(archive) = h.manager.last().unwrap().1.clone() else {
+        let ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive }) =
+            h.manager.last().unwrap().1.clone()
+        else {
             panic!("archive failed")
         };
         archive
@@ -3757,10 +3763,11 @@ fn workspace_display_labels_preserve_routes_and_restore_atomically() {
         "unchanged label emitted an event"
     );
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::Catalog,
+        request: ManagerRequest::Catalog,
         token: 994,
     }]);
-    let ManagerOutcome::Catalog(catalog) = &h.manager.last().unwrap().1 else {
+    let ManagerOutcome::Reply(ManagerReply::Catalog { catalog }) = &h.manager.last().unwrap().1
+    else {
         panic!("catalog failed")
     };
     assert_eq!(catalog.entries[0].name, "default");
@@ -3803,40 +3810,40 @@ fn workspace_display_labels_preserve_routes_and_restore_atomically() {
     ));
     h.step(vec![Inbound::Manager {
         token: 994,
-        action: ManagerAction::ApplyLayout {
+        request: ManagerRequest::ApplyLayout {
             expected: original.clone(),
             archive: original.clone(),
         },
     }]);
     assert!(matches!(
         h.manager.last().unwrap().1,
-        ManagerOutcome::Failed(_)
+        ManagerOutcome::Reply(ManagerReply::Failed { message: _ })
     ));
     assert_eq!(archive(&mut h), named);
     let mut invalid = original.clone();
     invalid.workspaces[0].label = Some("bad\nlabel".into());
     h.step(vec![Inbound::Manager {
         token: 994,
-        action: ManagerAction::ApplyLayout {
+        request: ManagerRequest::ApplyLayout {
             expected: named.clone(),
             archive: invalid,
         },
     }]);
     assert!(matches!(
         h.manager.last().unwrap().1,
-        ManagerOutcome::Failed(_)
+        ManagerOutcome::Reply(ManagerReply::Failed { message: _ })
     ));
     assert_eq!(archive(&mut h), named);
     h.step(vec![Inbound::Manager {
         token: 994,
-        action: ManagerAction::ApplyLayout {
+        request: ManagerRequest::ApplyLayout {
             expected: named,
             archive: original.clone(),
         },
     }]);
     assert!(matches!(
         h.manager.last().unwrap().1,
-        ManagerOutcome::LayoutArchive(_)
+        ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive: _ })
     ));
     assert_eq!(archive(&mut h), original);
     assert_eq!(h.last_frame(viewer).workspace_label, None);
@@ -4591,43 +4598,46 @@ fn workspace_order_is_manager_scoped_and_missing_targets_leave_order_unchanged()
     let focused = h.last_frame(viewer).focused;
     h.step(vec![Inbound::Manager {
         token: 801,
-        action: ManagerAction::Reorder {
+        request: ManagerRequest::Reorder {
             name: "gamma".into(),
             before: Some("alpha".into()),
         },
     }]);
     assert!(
-        matches!(h.manager.last(), Some((801, ManagerOutcome::Names(names))) if names == &vec!["gamma".to_owned(), "alpha".to_owned(), "beta".to_owned()])
+        matches!(h.manager.last(), Some((801, ManagerOutcome::Reply(ManagerReply::Names { names }))) if names == &vec!["gamma".to_owned(), "alpha".to_owned(), "beta".to_owned()])
     );
     h.step(vec![Inbound::Manager {
         token: 802,
-        action: ManagerAction::Reorder {
+        request: ManagerRequest::Reorder {
             name: "alpha".into(),
             before: Some("missing".into()),
         },
     }]);
     assert!(matches!(
         h.manager.last(),
-        Some((802, ManagerOutcome::Failed(_)))
+        Some((
+            802,
+            ManagerOutcome::Reply(ManagerReply::Failed { message: _ })
+        ))
     ));
     h.step(vec![Inbound::Manager {
         token: 803,
-        action: ManagerAction::List,
+        request: ManagerRequest::List,
     }]);
     assert!(
-        matches!(h.manager.last(), Some((803, ManagerOutcome::Names(names))) if names == &vec!["gamma".to_owned(), "alpha".to_owned(), "beta".to_owned()])
+        matches!(h.manager.last(), Some((803, ManagerOutcome::Reply(ManagerReply::Names { names }))) if names == &vec!["gamma".to_owned(), "alpha".to_owned(), "beta".to_owned()])
     );
     assert_eq!(h.last_frame(viewer).workspace, "beta");
     assert_eq!(h.last_frame(viewer).focused, focused);
     h.step(vec![Inbound::Manager {
         token: 804,
-        action: ManagerAction::Reorder {
+        request: ManagerRequest::Reorder {
             name: "gamma".into(),
             before: None,
         },
     }]);
     assert!(
-        matches!(h.manager.last(), Some((804, ManagerOutcome::Names(names))) if names == &vec!["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()])
+        matches!(h.manager.last(), Some((804, ManagerOutcome::Reply(ManagerReply::Names { names }))) if names == &vec!["alpha".to_owned(), "beta".to_owned(), "gamma".to_owned()])
     );
 }
 
@@ -4650,11 +4660,11 @@ fn workspace_stream(h: &mut Harness, name: &str) -> u64 {
 
 fn transfer_request(h: &mut Harness, transfer: fux::proto::control::WorkspaceTransfer) -> Reply {
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::Transfer { transfer },
+        request: ManagerRequest::Transfer { transfer },
         token: 990,
     }]);
     match &h.manager.last().unwrap().1 {
-        ManagerOutcome::Layout(reply) => reply.clone(),
+        ManagerOutcome::Reply(ManagerReply::Layout { result: reply }) => reply.clone(),
         other => panic!("transfer: {other:?}"),
     }
 }
@@ -4662,12 +4672,14 @@ fn transfer_request(h: &mut Harness, transfer: fux::proto::control::WorkspaceTra
 fn pane_location(h: &mut Harness, instance: &str, pane: PaneId) -> Reply {
     h.step(vec![Inbound::Manager {
         token: 991,
-        action: ManagerAction::PaneLocation {
+        request: ManagerRequest::PaneLocation {
             instance: instance.into(),
             pane,
         },
     }]);
-    let ManagerOutcome::PaneLocation(reply) = &h.manager.last().unwrap().1 else {
+    let ManagerOutcome::Reply(ManagerReply::PaneLocation { result: reply }) =
+        &h.manager.last().unwrap().1
+    else {
         panic!("location reply missing")
     };
     reply.clone()
@@ -4676,13 +4688,15 @@ fn pane_location(h: &mut Harness, instance: &str, pane: PaneId) -> Reply {
 fn manager_input_status(h: &mut Harness, instance: &str, pane: PaneId, operation: u64) -> Reply {
     h.step(vec![Inbound::Manager {
         token: 992,
-        action: ManagerAction::InputStatus {
+        request: ManagerRequest::InputStatus {
             instance: instance.into(),
             pane,
             operation,
         },
     }]);
-    let ManagerOutcome::InputStatus(reply) = &h.manager.last().unwrap().1 else {
+    let ManagerOutcome::Reply(ManagerReply::InputStatus { result: reply }) =
+        &h.manager.last().unwrap().1
+    else {
         panic!("receipt reply missing")
     };
     reply.clone()
@@ -4752,13 +4766,15 @@ fn creation_pin_release_checks_process_identity_and_preserves_explicit_pins() {
     fn release(h: &mut Harness, instance: &str, pane: PaneId, pid: u32) -> Reply {
         h.step(vec![Inbound::Manager {
             token: 993,
-            action: ManagerAction::ReleasePanePin {
+            request: ManagerRequest::ReleasePanePin {
                 instance: instance.into(),
                 pane,
                 pid,
             },
         }]);
-        let ManagerOutcome::ReleasePanePin(reply) = &h.manager.last().unwrap().1 else {
+        let ManagerOutcome::Reply(ManagerReply::ReleasePanePin { result: reply }) =
+            &h.manager.last().unwrap().1
+        else {
             panic!("release reply missing")
         };
         reply.clone()
@@ -5425,12 +5441,17 @@ fn transfer_creates_workspace_without_a_replacement_process_and_rolls_back_rejec
 
 #[test]
 fn archive_labels_validate_all_tabs_before_commit_and_detect_concurrent_renames() {
-    fn request(h: &mut Harness, action: ManagerAction) -> ManagerOutcome {
-        h.step(vec![Inbound::Manager { action, token: 994 }]);
+    fn request(h: &mut Harness, action: ManagerRequest) -> ManagerOutcome {
+        h.step(vec![Inbound::Manager {
+            request: action,
+            token: 994,
+        }]);
         h.manager.last().unwrap().1.clone()
     }
     fn export(h: &mut Harness) -> fux::proto::control::LayoutArchive {
-        let ManagerOutcome::LayoutArchive(archive) = request(h, ManagerAction::ExportLayout) else {
+        let ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive }) =
+            request(h, ManagerRequest::ExportLayout)
+        else {
             panic!("export failed")
         };
         archive
@@ -5461,19 +5482,19 @@ fn archive_labels_validate_all_tabs_before_commit_and_detect_concurrent_renames(
         assert!(!matches!(
             request(
                 &mut h,
-                ManagerAction::ApplyLayout {
+                ManagerRequest::ApplyLayout {
                     expected: original.clone(),
                     archive: invalid
                 }
             ),
-            ManagerOutcome::LayoutArchive(_)
+            ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive: _ })
         ));
         assert_eq!(export(&mut h), original);
     }
     let effects = h.effects.len();
-    let ManagerOutcome::LayoutArchive(applied) = request(
+    let ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive: applied }) = request(
         &mut h,
-        ManagerAction::ApplyLayout {
+        ManagerRequest::ApplyLayout {
             expected: original.clone(),
             archive: desired.clone(),
         },
@@ -5507,12 +5528,12 @@ fn archive_labels_validate_all_tabs_before_commit_and_detect_concurrent_renames(
     assert!(!matches!(
         request(
             &mut h,
-            ManagerAction::ApplyLayout {
+            ManagerRequest::ApplyLayout {
                 expected: applied,
                 archive: original.clone()
             }
         ),
-        ManagerOutcome::LayoutArchive(_)
+        ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive: _ })
     ));
     assert_eq!(
         h.last_frame(viewer).panes[&PaneId(2)].label.as_deref(),
@@ -5522,12 +5543,12 @@ fn archive_labels_validate_all_tabs_before_commit_and_detect_concurrent_renames(
     assert!(matches!(
         request(
             &mut h,
-            ManagerAction::ApplyLayout {
+            ManagerRequest::ApplyLayout {
                 expected: current,
                 archive: original
             }
         ),
-        ManagerOutcome::LayoutArchive(_)
+        ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive: _ })
     ));
     assert!(
         export(&mut h).workspaces[0]
@@ -5566,11 +5587,11 @@ fn archive_focus_fallback_uses_tree_order_not_serialized_node_order() {
     h.complete_spawns();
     h.create_workspace("other");
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::ExportLayout,
+        request: ManagerRequest::ExportLayout,
         token: 981,
     }]);
     let before = match &h.manager.last().unwrap().1 {
-        ManagerOutcome::LayoutArchive(archive) => archive.clone(),
+        ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive }) => archive.clone(),
         other => panic!("archive: {other:?}"),
     };
     let mut desired = before.clone();
@@ -5599,7 +5620,7 @@ fn archive_focus_fallback_uses_tree_order_not_serialized_node_order() {
     }
     desired.workspaces.reverse();
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::ApplyLayout {
+        request: ManagerRequest::ApplyLayout {
             expected: before,
             archive: desired,
         },
@@ -5607,15 +5628,17 @@ fn archive_focus_fallback_uses_tree_order_not_serialized_node_order() {
     }]);
     assert!(matches!(
         &h.manager.last().unwrap().1,
-        ManagerOutcome::LayoutArchive(_)
+        ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive: _ })
     ));
     assert_eq!(h.last_frame(b).active_tab, Some(TabId(1)));
     assert_eq!(h.last_frame(b).focused, Some(PaneId(3)));
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::ExportLayout,
+        request: ManagerRequest::ExportLayout,
         token: 983,
     }]);
-    let ManagerOutcome::LayoutArchive(archive) = &h.manager.last().unwrap().1 else {
+    let ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive }) =
+        &h.manager.last().unwrap().1
+    else {
         panic!("archive missing")
     };
     assert_eq!(archive.workspaces[0].name, "other");
@@ -5623,13 +5646,16 @@ fn archive_focus_fallback_uses_tree_order_not_serialized_node_order() {
 
 #[test]
 fn archive_apply_restores_order_membership_and_selection_atomically() {
-    fn request(h: &mut Harness, action: ManagerAction) -> ManagerOutcome {
-        h.step(vec![Inbound::Manager { action, token: 989 }]);
+    fn request(h: &mut Harness, action: ManagerRequest) -> ManagerOutcome {
+        h.step(vec![Inbound::Manager {
+            request: action,
+            token: 989,
+        }]);
         h.manager.last().unwrap().1.clone()
     }
     fn export(h: &mut Harness) -> fux::proto::control::LayoutArchive {
-        match request(h, ManagerAction::ExportLayout) {
-            ManagerOutcome::LayoutArchive(archive) => archive,
+        match request(h, ManagerRequest::ExportLayout) {
+            ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive }) => archive,
             other => panic!("archive: {other:?}"),
         }
     }
@@ -5686,12 +5712,12 @@ fn archive_apply_restores_order_membership_and_selection_atomically() {
         assert!(matches!(
             request(
                 &mut h,
-                ManagerAction::ApplyLayout {
+                ManagerRequest::ApplyLayout {
                     expected: before.clone(),
                     archive: invalid
                 }
             ),
-            ManagerOutcome::Failed(_)
+            ManagerOutcome::Reply(ManagerReply::Failed { message: _ })
         ));
         assert_eq!(export(&mut h), before);
     }
@@ -5699,12 +5725,12 @@ fn archive_apply_restores_order_membership_and_selection_atomically() {
     assert!(matches!(
         request(
             &mut h,
-            ManagerAction::ApplyLayout {
+            ManagerRequest::ApplyLayout {
                 expected: before.clone(),
                 archive: desired
             }
         ),
-        ManagerOutcome::LayoutArchive(_)
+        ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive: _ })
     ));
     assert!(
         !h.effects[effects..]
@@ -5727,23 +5753,23 @@ fn archive_apply_restores_order_membership_and_selection_atomically() {
     assert!(matches!(
         request(
             &mut h,
-            ManagerAction::ApplyLayout {
+            ManagerRequest::ApplyLayout {
                 expected: before,
                 archive: after.clone()
             }
         ),
-        ManagerOutcome::Failed(_)
+        ManagerOutcome::Reply(ManagerReply::Failed { message: _ })
     ));
     let effects = h.effects.len();
     assert!(matches!(
         request(
             &mut h,
-            ManagerAction::ApplyLayout {
+            ManagerRequest::ApplyLayout {
                 expected: after.clone(),
                 archive: after.clone()
             }
         ),
-        ManagerOutcome::LayoutArchive(_)
+        ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive: _ })
     ));
     assert_eq!(export(&mut h), after);
     assert!(
@@ -5757,7 +5783,7 @@ fn archive_apply_restores_order_membership_and_selection_atomically() {
 fn manager_layout_archive_is_ordered_complete_and_read_only() {
     fn export(h: &mut Harness) -> fux::proto::control::LayoutArchive {
         let effects = h.step(vec![Inbound::Manager {
-            action: ManagerAction::ExportLayout,
+            request: ManagerRequest::ExportLayout,
             token: 990,
         }]);
         assert!(!effects.iter().any(|effect| matches!(
@@ -5765,7 +5791,7 @@ fn manager_layout_archive_is_ordered_complete_and_read_only() {
             Effect::SpawnPane { .. } | Effect::ResizePty { .. } | Effect::WorkspaceOpened { .. }
         )));
         match &h.manager.last().unwrap().1 {
-            ManagerOutcome::LayoutArchive(archive) => archive.clone(),
+            ManagerOutcome::Reply(ManagerReply::LayoutArchive { archive }) => archive.clone(),
             other => panic!("archive: {other:?}"),
         }
     }
@@ -5820,7 +5846,7 @@ fn manager_layout_archive_is_ordered_complete_and_read_only() {
         },
     );
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::Reorder {
+        request: ManagerRequest::Reorder {
             name: "beta".into(),
             before: Some("alpha".into()),
         },
@@ -5867,7 +5893,7 @@ fn manager_layout_archive_is_ordered_complete_and_read_only() {
 fn manager_catalog_is_ordered_read_only_and_distinguishes_recreated_workspaces() {
     fn catalog(h: &mut Harness) -> fux::proto::control::WorkspaceCatalog {
         let effects = h.step(vec![Inbound::Manager {
-            action: ManagerAction::Catalog,
+            request: ManagerRequest::Catalog,
             token: 991,
         }]);
         assert!(!effects.iter().any(|effect| matches!(
@@ -5875,7 +5901,7 @@ fn manager_catalog_is_ordered_read_only_and_distinguishes_recreated_workspaces()
             Effect::SpawnPane { .. } | Effect::WorkspaceOpened { .. }
         )));
         match &h.manager.last().unwrap().1 {
-            ManagerOutcome::Catalog(catalog) => catalog.clone(),
+            ManagerOutcome::Reply(ManagerReply::Catalog { catalog }) => catalog.clone(),
             other => panic!("catalog: {other:?}"),
         }
     }
@@ -5894,7 +5920,7 @@ fn manager_catalog_is_ordered_read_only_and_distinguishes_recreated_workspaces()
     );
     let old_stream = before.entries[0].stream;
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::Reorder {
+        request: ManagerRequest::Reorder {
             name: "beta".into(),
             before: Some("alpha".into()),
         },
@@ -5902,7 +5928,7 @@ fn manager_catalog_is_ordered_read_only_and_distinguishes_recreated_workspaces()
     }]);
     assert_eq!(catalog(&mut h).entries[0].name, "beta");
     h.step(vec![Inbound::Manager {
-        action: ManagerAction::Kill {
+        request: ManagerRequest::Kill {
             name: "alpha".into(),
         },
         token: 993,

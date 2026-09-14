@@ -126,9 +126,9 @@ pub fn reply(world: &mut World, requester: Requester, reply: Reply) {
                     created: true,
                 },
                 Reply::Failed { error, .. } => {
-                    super::messages::ManagerOutcome::Failed(error.message)
+                    super::messages::ManagerOutcome::failed(error.message)
                 }
-                other => super::messages::ManagerOutcome::Failed(format!(
+                other => super::messages::ManagerOutcome::failed(format!(
                     "unexpected manager result {other:?}"
                 )),
             };

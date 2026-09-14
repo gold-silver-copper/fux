@@ -12,7 +12,7 @@ pub mod resources;
 pub mod support;
 pub mod systems;
 
-pub use messages::{Effect, Inbound, ManagerAction, ManagerOutcome, Requester, ViewerRequest};
+pub use messages::{Effect, Inbound, ManagerOutcome, Requester, ViewerRequest};
 pub use resources::{Clock, Deadlines, Ids, Limits, Registry, ServerIdentity};
 
 use bevy_ecs::prelude::*;

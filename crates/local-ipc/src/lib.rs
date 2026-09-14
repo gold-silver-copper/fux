@@ -471,16 +471,18 @@ pub fn runtime_directory_from(
     runtime: Option<OsString>,
     home: Option<OsString>,
 ) -> Option<PathBuf> {
-    let absolute = |value: Option<OsString>| {
-        value
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    };
-    if let Some(root) = absolute(runtime) {
+    if let Some(root) = absolute_path(runtime) {
         return Some(root.join(name));
     }
-    macos_fallback(name, absolute(home))
+    macos_fallback(name, absolute_path(home))
+}
+
+/// A non-empty absolute path from an environment value, or `None`.
+pub fn absolute_path(value: Option<OsString>) -> Option<PathBuf> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 
 #[cfg(target_os = "macos")]

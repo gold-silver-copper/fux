@@ -1036,7 +1036,6 @@ pub enum ErrorCode {
     NotFound,
     Conflict,
     Limit,
-    Timeout,
     Internal,
 }
 
@@ -1091,17 +1090,6 @@ pub enum Event {
 }
 
 impl Event {
-    pub fn kind(&self) -> EventKind {
-        match self {
-            Self::WorkspaceChanged { .. } => EventKind::WorkspaceChanged,
-            Self::PaneOpened { .. } => EventKind::PaneOpened,
-            Self::PaneClosed { .. } => EventKind::PaneClosed,
-            Self::PaneOutput { .. } => EventKind::PaneOutput,
-            Self::TabOpened { .. } => EventKind::TabOpened,
-            Self::TabClosed { .. } => EventKind::TabClosed,
-        }
-    }
-
     /// Stamps the subscriber's request id on a published copy.
     pub fn with_id(mut self, subscription: RequestId) -> Self {
         match &mut self {
@@ -1114,23 +1102,6 @@ impl Event {
         }
         self
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EventKind {
-    #[serde(rename = "workspace.changed")]
-    WorkspaceChanged,
-    #[serde(rename = "pane.opened")]
-    PaneOpened,
-    #[serde(rename = "pane.closed")]
-    PaneClosed,
-    #[serde(rename = "pane.output")]
-    PaneOutput,
-    #[serde(rename = "tab.opened")]
-    TabOpened,
-    #[serde(rename = "tab.closed")]
-    TabClosed,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1180,16 +1151,21 @@ pub fn decode_request_frame(frame: &[u8]) -> Result<Request, ControlError> {
     Ok(request)
 }
 
-pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Result<()> {
-    let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
+/// One newline-delimited JSON frame, refused when it exceeds [`MAX_FRAME_BYTES`].
+pub fn encode_line<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
+    let mut bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "serialized control frame exceeds limit",
         ));
     }
-    writer.write_all(&bytes)?;
-    writer.write_all(b"\n")?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
+pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Result<()> {
+    writer.write_all(&encode_line(value)?)?;
     writer.flush()
 }
 
@@ -1199,15 +1175,7 @@ pub fn write_frame_until<T: Serialize>(
     value: &T,
     deadline: std::time::Instant,
 ) -> io::Result<()> {
-    let mut bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    if bytes.len() > MAX_FRAME_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "serialized control frame exceeds limit",
-        ));
-    }
-    bytes.push(b'\n');
-    super::socket::write_all_until(writer, &bytes, deadline)
+    local_ipc::write_all_until(writer, &encode_line(value)?, deadline)
 }
 
 pub fn error_reply(error: &ControlError) -> Reply {
@@ -1496,12 +1464,9 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap_or_default();
         assert!(json.contains("\"event\":\"pane.closed\""));
         assert!(json.contains("\"id\":9"));
-        assert_eq!(
-            serde_json::from_str::<EventKind>("\"pane.output\"").ok(),
-            Some(EventKind::PaneOutput)
-        );
         for removed in ["pane.title", "client.attached", "client.detached"] {
-            assert!(serde_json::from_str::<EventKind>(&format!("\"{removed}\"")).is_err());
+            let frame = format!("{{\"event\":\"{removed}\",\"id\":1}}");
+            assert!(serde_json::from_str::<Event>(&frame).is_err());
         }
     }
 

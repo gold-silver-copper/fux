@@ -124,7 +124,7 @@ pub fn manager_request_until(
             .filter(|duration| !duration.is_zero())
             .ok_or_else(|| anyhow::anyhow!("manager request timed out"))
     };
-    let mut stream = crate::proto::socket::connect_local(path, deadline)
+    let mut stream = local_ipc::connect_until(path, deadline)
         .with_context(|| format!("connecting to manager socket {}", path.display()))?;
     crate::proto::socket::negotiate_client_with_timeout(&mut stream, remaining()?)
         .context("authenticating the manager socket and negotiating its control protocol")?;

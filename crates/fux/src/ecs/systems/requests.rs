@@ -2,10 +2,9 @@
 //! barriers, control-socket requests and manager requests. Every request resolves public ids at
 //! execution time and validates kind, membership and liveness.
 
+use crate::daemon::{ManagerReply, ManagerRequest};
 use crate::ecs::components::{FocusHistory, Pane, PaneState, Selection, Tab, Viewer, Workspace};
-use crate::ecs::messages::{
-    Effect, Inbound, ManagerAction, ManagerOutcome, Requester, ViewerRequest,
-};
+use crate::ecs::messages::{Effect, Inbound, ManagerOutcome, Requester, ViewerRequest};
 use crate::ecs::resources::{
     Clock, Ids, Limits, Registry, ServerIdentity, ShuttingDown, WorkspaceCounter,
 };
@@ -306,7 +305,7 @@ pub fn apply_requests(world: &mut World) {
                     ),
                 }
             }
-            Inbound::Manager { action, token } => apply_manager(world, action, token),
+            Inbound::Manager { request, token } => apply_manager(world, request, token),
             _ => {}
         }
     }
@@ -1085,6 +1084,22 @@ fn manager(world: &mut World, token: u64, outcome: ManagerOutcome) {
     effect(world, Effect::Manager { token, outcome });
 }
 
+fn manager_reply(world: &mut World, token: u64, reply: ManagerReply) {
+    manager(world, token, ManagerOutcome::Reply(reply));
+}
+
+fn manager_failed(world: &mut World, token: u64, message: impl Into<String>) {
+    manager(world, token, ManagerOutcome::failed(message));
+}
+
+/// A control-style result as the `id: 0` reply a manager wrapper carries.
+fn control_reply(result: Result<CommandResult, Reply>) -> Reply {
+    match result {
+        Ok(result) => Reply::Completed { id: 0, result },
+        Err(reply) => reply,
+    }
+}
+
 /// Manager-only inspection: workspace-scoped connections cannot discover foreign panes.
 fn locate_pane(
     world: &World,
@@ -1169,67 +1184,47 @@ fn release_pane_pin(
     Ok(CommandResult::Unit)
 }
 
-fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
-    match action {
-        ManagerAction::ReleasePanePin {
+fn apply_manager(world: &mut World, request: ManagerRequest, token: u64) {
+    match request {
+        ManagerRequest::ReleasePanePin {
             instance,
             pane,
             pid,
         } => {
-            let reply = match release_pane_pin(world, &instance, pane, pid) {
-                Ok(result) => Reply::Completed { id: 0, result },
-                Err(reply) => reply,
-            };
-            manager(world, token, ManagerOutcome::ReleasePanePin(reply));
+            let result = control_reply(release_pane_pin(world, &instance, pane, pid));
+            manager_reply(world, token, ManagerReply::ReleasePanePin { result });
         }
-        ManagerAction::InputStatus {
+        ManagerRequest::InputStatus {
             instance,
             pane,
             operation,
         } => {
-            let result = super::input::manager_status(world, &instance, pane, operation);
-            let reply = match result {
-                Ok(result) => Reply::Completed { id: 0, result },
-                Err(reply) => reply,
-            };
-            manager(world, token, ManagerOutcome::InputStatus(reply));
+            let result = control_reply(super::input::manager_status(
+                world, &instance, pane, operation,
+            ));
+            manager_reply(world, token, ManagerReply::InputStatus { result });
         }
-        ManagerAction::PaneLocation { instance, pane } => {
-            let reply = match locate_pane(world, &instance, pane) {
-                Ok(location) => Reply::Completed {
-                    id: 0,
-                    result: CommandResult::PaneLocation { location },
-                },
-                Err(reply) => reply,
-            };
-            manager(world, token, ManagerOutcome::PaneLocation(reply));
+        ManagerRequest::PaneLocation { instance, pane } => {
+            let result = control_reply(
+                locate_pane(world, &instance, pane)
+                    .map(|location| CommandResult::PaneLocation { location }),
+            );
+            manager_reply(world, token, ManagerReply::PaneLocation { result });
         }
-        ManagerAction::Transfer { transfer } => {
-            let result = super::transfer::across_workspaces(world, transfer);
-            let reply = match result {
-                Ok(result) => Reply::Completed { id: 0, result },
-                Err(reply) => reply,
-            };
-            manager(world, token, ManagerOutcome::Layout(reply));
+        ManagerRequest::Transfer { transfer } => {
+            let result = control_reply(super::transfer::across_workspaces(world, transfer));
+            manager_reply(world, token, ManagerReply::Layout { result });
         }
-        ManagerAction::Reorder { name, before } => {
+        ManagerRequest::Reorder { name, before } => {
             let mut entries = ordered_workspaces(world);
             let Some(position) = entries.iter().position(|(entry, _)| *entry == name) else {
-                return manager(
-                    world,
-                    token,
-                    ManagerOutcome::Failed("workspace not found".into()),
-                );
+                return manager_failed(world, token, "workspace not found");
             };
             if before
                 .as_ref()
                 .is_some_and(|before| !entries.iter().any(|(name, _)| name == before))
             {
-                return manager(
-                    world,
-                    token,
-                    ManagerOutcome::Failed("reference workspace not found".into()),
-                );
+                return manager_failed(world, token, "reference workspace not found");
             }
             if before.as_ref() != Some(&name) {
                 let entry = entries.remove(position);
@@ -1242,47 +1237,36 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
             world
                 .resource_mut::<crate::ecs::resources::WorkspaceOrder>()
                 .0 = entries.iter().map(|(_, entity)| *entity).collect();
-            manager(
-                world,
-                token,
-                ManagerOutcome::Names(entries.into_iter().map(|(name, _)| name).collect()),
-            );
+            let names = entries.into_iter().map(|(name, _)| name).collect();
+            manager_reply(world, token, ManagerReply::Names { names });
         }
-        ManagerAction::Final { instance, pane } => {
+        ManagerRequest::Final { instance, pane } => {
             let result = super::final_records::read(world, &instance, pane);
-            manager(world, token, ManagerOutcome::Final(result));
+            manager_reply(world, token, ManagerReply::Final { result });
         }
-        ManagerAction::Create { name } => {
+        ManagerRequest::Create { name } => {
             if world.resource::<ShuttingDown>().0 {
-                return manager(
-                    world,
-                    token,
-                    ManagerOutcome::Failed("server is shutting down".into()),
-                );
+                return manager_failed(world, token, "server is shutting down");
             }
             if let Err(reply) = reserve_workspace(world, name, Requester::Manager(token), 0) {
-                let message = match reply {
-                    Reply::Failed { error, .. } => error.message,
-                    _ => "workspace creation failed".into(),
-                };
-                manager(world, token, ManagerOutcome::Failed(message));
+                manager_failed(world, token, creation_failure(reply));
             }
         }
-        ManagerAction::ApplyLayout { expected, archive } => {
-            let outcome = match super::layout_archive::apply(world, expected, archive) {
-                Ok(archive) => ManagerOutcome::LayoutArchive(archive),
-                Err(error) => ManagerOutcome::Failed(error),
+        ManagerRequest::ApplyLayout { expected, archive } => {
+            let reply = match super::layout_archive::apply(world, expected, archive) {
+                Ok(archive) => ManagerReply::LayoutArchive { archive },
+                Err(message) => ManagerReply::Failed { message },
             };
-            manager(world, token, outcome);
+            manager_reply(world, token, reply);
         }
-        ManagerAction::ExportLayout => {
-            let outcome = match super::layout_archive::export(world) {
-                Ok(archive) => ManagerOutcome::LayoutArchive(archive),
-                Err(error) => ManagerOutcome::Failed(error),
+        ManagerRequest::ExportLayout => {
+            let reply = match super::layout_archive::export(world) {
+                Ok(archive) => ManagerReply::LayoutArchive { archive },
+                Err(message) => ManagerReply::Failed { message },
             };
-            manager(world, token, outcome);
+            manager_reply(world, token, reply);
         }
-        ManagerAction::Catalog => {
+        ManagerRequest::Catalog => {
             let entries = ordered_workspaces(world)
                 .into_iter()
                 .filter_map(|(name, entity)| {
@@ -1298,42 +1282,31 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
                 })
                 .collect();
             let instance = world.resource::<ServerIdentity>().instance_nonce.clone();
-            manager(
-                world,
-                token,
-                ManagerOutcome::Catalog(control::WorkspaceCatalog { instance, entries }),
-            );
+            let catalog = control::WorkspaceCatalog { instance, entries };
+            manager_reply(world, token, ManagerReply::Catalog { catalog });
         }
-        ManagerAction::List => {
+        ManagerRequest::List => {
             let names = open_workspace_names(world);
-            manager(world, token, ManagerOutcome::Names(names));
+            manager_reply(world, token, ManagerReply::Names { names });
         }
-        ManagerAction::Kill { name } => match workspace_entity(world, &name) {
+        ManagerRequest::Kill { name } => match workspace_entity(world, &name) {
             Some(entity) => {
                 kill_workspace(world, entity);
                 let names = open_workspace_names(world)
                     .into_iter()
                     .filter(|entry| *entry != name)
                     .collect();
-                manager(world, token, ManagerOutcome::Names(names));
+                manager_reply(world, token, ManagerReply::Names { names });
             }
-            None => manager(
-                world,
-                token,
-                ManagerOutcome::Failed("workspace not found".into()),
-            ),
+            None => manager_failed(world, token, "workspace not found"),
         },
-        ManagerAction::Info => {
-            let info = server_info(world, None);
-            manager(world, token, ManagerOutcome::Info(Box::new(info)));
+        ManagerRequest::Info => {
+            let info = Box::new(server_info(world, None));
+            manager_reply(world, token, ManagerReply::Info { info });
         }
-        ManagerAction::Resolve { name } => {
+        ManagerRequest::Resolve { name } => {
             if world.resource::<ShuttingDown>().0 {
-                return manager(
-                    world,
-                    token,
-                    ManagerOutcome::Failed("server is shutting down".into()),
-                );
+                return manager_failed(world, token, "server is shutting down");
             }
             let requester = Requester::Manager(token);
             let existing = match &name {
@@ -1359,19 +1332,22 @@ fn apply_manager(world: &mut World, action: ManagerAction, token: u64) {
                         name,
                         created: false,
                     },
-                    None => ManagerOutcome::Failed("workspace is closing; retry shortly".into()),
+                    None => ManagerOutcome::failed("workspace is closing; retry shortly"),
                 };
                 return manager(world, token, outcome);
             }
             let name = name.unwrap_or_else(|| next_workspace_name(world));
             if let Err(reply) = reserve_workspace(world, name, requester, 0) {
-                let message = match reply {
-                    Reply::Failed { error, .. } => error.message,
-                    _ => "workspace creation failed".into(),
-                };
-                manager(world, token, ManagerOutcome::Failed(message));
+                manager_failed(world, token, creation_failure(reply));
             }
         }
+    }
+}
+
+fn creation_failure(reply: Reply) -> String {
+    match reply {
+        Reply::Failed { error, .. } => error.message,
+        _ => "workspace creation failed".into(),
     }
 }
 

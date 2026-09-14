@@ -154,11 +154,6 @@ fn surface(root: &Path) -> BTreeMap<&'static str, BTreeSet<String>> {
     let rpc = parse(root, "src/daemon/rpc.rs");
     let terminal = parse(root, "src/terminal.rs");
     let events = variants(&control, "Event");
-    assert_eq!(
-        events,
-        variants(&control, "EventKind"),
-        "Event and EventKind must name the same wire kinds"
-    );
     BTreeMap::from([
         ("request", variants(&control, "Request")),
         ("command-result", variants(&control, "CommandResult")),

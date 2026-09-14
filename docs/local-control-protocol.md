@@ -167,7 +167,8 @@ subscription's `id`; records returned by the `events` RPC retain their stored ID
 subscription receives every event of its workspace; what to act on is the consumer's
 selection. Title changes and viewer attachments are not events: a title change advances the
 pane's output sequence (`pane.output`) and is read from `list` or a capture, and viewer
-counts are read from `list`.
+counts are read from `list`. The event name is the `event` field of each record; fux ships no
+separate event-kind type or `timeout` error code, since neither was ever emitted.
 
 `pane.output` retains the grid sequence semantics. Output that changes only capture
 history or metadata emits `workspace.changed` instead. These output invalidations share

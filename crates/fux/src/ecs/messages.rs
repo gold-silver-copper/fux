@@ -30,73 +30,25 @@ pub enum ViewerRequest {
     Detach,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ManagerAction {
-    ReleasePanePin {
-        instance: String,
-        pane: PaneId,
-        pid: u32,
-    },
-    InputStatus {
-        instance: String,
-        pane: PaneId,
-        operation: u64,
-    },
-    PaneLocation {
-        instance: String,
-        pane: PaneId,
-    },
-    ApplyLayout {
-        expected: control::LayoutArchive,
-        archive: control::LayoutArchive,
-    },
-    ExportLayout,
-    Catalog,
-    Transfer {
-        transfer: control::WorkspaceTransfer,
-    },
-    Reorder {
-        name: String,
-        before: Option<String>,
-    },
-    /// Create only; an existing or reserved name is an error.
-    Create {
-        name: String,
-    },
-    Final {
-        instance: String,
-        pane: PaneId,
-    },
-    List,
-    /// Server identity and limits.
-    Info,
-    /// `None` applies the documented default rule: create `default` when no workspace exists,
-    /// otherwise attach to the most recently attached workspace.
-    Resolve {
-        name: Option<String>,
-    },
-    Kill {
-        name: String,
-    },
-}
-
+/// The answer to a manager request. Everything but an attach is the wire reply itself; an
+/// attach names the workspace and stream so the socket layer can build the descriptor, which
+/// depends on runtime paths the World never sees.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ManagerOutcome {
-    ReleasePanePin(control::Reply),
-    InputStatus(control::Reply),
-    PaneLocation(control::Reply),
-    LayoutArchive(control::LayoutArchive),
-    Catalog(control::WorkspaceCatalog),
-    Layout(control::Reply),
-    Final(control::Reply),
-    Names(Vec<String>),
+    Reply(crate::daemon::ManagerReply),
     Attach {
         name: String,
         created: bool,
         stream: u64,
     },
-    Info(Box<crate::proto::control::ServerInfo>),
-    Failed(String),
+}
+
+impl ManagerOutcome {
+    pub fn failed(message: impl Into<String>) -> Self {
+        Self::Reply(crate::daemon::ManagerReply::Failed {
+            message: message.into(),
+        })
+    }
 }
 
 #[derive(Message, Clone, Debug, PartialEq, Eq)]
@@ -143,7 +95,7 @@ pub enum Inbound {
         token: ReplyToken,
     },
     Manager {
-        action: ManagerAction,
+        request: crate::daemon::ManagerRequest,
         token: ReplyToken,
     },
     Shutdown,

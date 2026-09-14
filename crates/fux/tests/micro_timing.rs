@@ -125,7 +125,8 @@ fn ecs_step_timing() {
         return;
     }
     use fux::config::Config;
-    use fux::ecs::messages::{Effect, Inbound, ManagerAction, ViewerRequest};
+    use fux::daemon::ManagerRequest;
+    use fux::ecs::messages::{Effect, Inbound, ViewerRequest};
     use fux::ecs::{ServerIdentity, Session};
     use fux::ids::ViewerId;
     let config = Config::from_toml("default-command = { argv = [\"/bin/sh\"] }").expect("config");
@@ -142,7 +143,7 @@ fn ecs_step_timing() {
     let effects = step(
         &mut session,
         vec![Inbound::Manager {
-            action: ManagerAction::Resolve {
+            request: ManagerRequest::Resolve {
                 name: Some("micro".into()),
             },
             token: 1,
