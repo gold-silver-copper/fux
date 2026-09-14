@@ -104,10 +104,6 @@ impl BoundSocket {
     pub fn listener(&self) -> &UnixListener {
         &self.listener
     }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl Drop for BoundSocket {
@@ -171,7 +167,7 @@ pub fn random_token() -> io::Result<String> {
 /// A close-on-exec, non-blocking stream socket with `connect` initiated. When `pending`, the
 /// caller waits for writability under its own deadline policy, then calls [`Connecting::confirm`].
 #[derive(Debug)]
-pub struct Connecting {
+pub(crate) struct Connecting {
     fd: OwnedFd,
     pending: bool,
 }
@@ -630,7 +626,7 @@ mod tests {
         let path = root.join("s.sock");
         let bound = BoundSocket::bind(&path)?;
         assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
-        assert_eq!(bound.path(), path);
+        assert_eq!(bound.path, path);
         drop(bound);
         assert!(!path.exists());
         let first = BoundSocket::bind(&path)?;

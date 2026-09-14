@@ -7,7 +7,7 @@
       "info": {
         "pid": 4242,
         "instance_nonce": "a1b2c3",
-        "version": "0.10.0",
+        "version": "0.11.0",
         "runtime_dir": "/run/user/1000/fux",
         "workspace": "default",
         "limits": {

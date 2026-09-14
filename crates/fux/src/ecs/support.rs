@@ -5,7 +5,7 @@ use super::components::{
     Creation, Open, Pane, PaneState, Retiring, Selection, Tab, TabOf, Tabs, Viewer, Workspace,
 };
 use super::messages::{Effect, Requester};
-use super::resources::{Clock, Ids, Limits, Registry};
+use super::resources::{Ids, Registry};
 use crate::ids::{PaneId, TabId, ViewerId};
 use crate::layout::Rect;
 use crate::proto::attach::ServerMessage;
@@ -17,11 +17,9 @@ pub fn effect(world: &mut World, effect: Effect) {
     world.resource_mut::<Messages<Effect>>().write(effect);
 }
 
-/// The step's read-only context: clock, limits and the identity registry.
+/// The step's read-only identity registry, for typed systems.
 #[derive(SystemParam)]
 pub struct Step<'w> {
-    pub clock: Res<'w, Clock>,
-    pub limits: Res<'w, Limits>,
     pub ids: Res<'w, Ids>,
 }
 

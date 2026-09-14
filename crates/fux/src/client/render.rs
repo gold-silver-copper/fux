@@ -89,10 +89,11 @@ fn styled(fg: Option<Color>) -> Style {
     fg.map_or_else(Style::default, |fg| Style::default().fg(fg))
 }
 
+/// A composed frame in a fresh buffer, for tests that inspect the result.
+#[cfg(test)]
 pub struct Composed {
     pub buffer: Buffer,
     pub cursor: Option<(u16, u16)>,
-    pub hits: HitRegions,
 }
 
 /// Where the bar's tabs, a panel's entries and the panel itself were painted, for hit testing.
@@ -104,6 +105,7 @@ pub struct HitRegions {
 }
 
 /// Composes `frame` for a terminal of `rows` x `cols` into a fresh buffer.
+#[cfg(test)]
 pub fn compose(
     frame: &Frame,
     local: Option<&[LocalView<'_>]>,
@@ -114,12 +116,8 @@ pub fn compose(
     cols: u16,
 ) -> Composed {
     let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
-    let (cursor, hits) = compose_into(&mut buffer, frame, local, panel, notice, palette);
-    Composed {
-        buffer,
-        cursor,
-        hits,
-    }
+    let (cursor, _hits) = compose_into(&mut buffer, frame, local, panel, notice, palette);
+    Composed { buffer, cursor }
 }
 
 /// Composes `frame` into `buffer`, which is resized to `rows` x `cols` and cleared first, so a

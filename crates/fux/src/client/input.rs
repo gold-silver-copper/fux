@@ -144,12 +144,6 @@ impl PrefixFilter {
         self.reveal
     }
 
-    /// Opens the popup as if the prefix had been pressed (used when a mode backs out).
-    pub fn show_commands(&mut self) {
-        self.command_pending = true;
-        self.reveal = true;
-    }
-
     pub fn cancel(&mut self) {
         self.command_pending = false;
         self.reveal = false;
@@ -164,6 +158,7 @@ impl PrefixFilter {
     }
 
     /// Resolves a lone Escape (or a trailing one) after the disambiguation delay.
+    #[cfg(test)]
     pub fn resolve_escape(&mut self) -> Vec<InputEvent> {
         self.resolve_history_escape(false)
     }

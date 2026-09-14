@@ -52,9 +52,6 @@ impl Histories {
             .iter()
             .any(|copy| copy.pending_matches(request, pane))
     }
-    pub fn awaiting_read(&self) -> bool {
-        self.sessions.iter().any(CopySession::awaiting_read)
-    }
     pub fn fail(&mut self, request: u64, pane: PaneId) -> bool {
         let before = self.sessions.len();
         self.sessions

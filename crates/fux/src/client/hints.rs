@@ -243,6 +243,7 @@ impl HintPanel {
 
     /// Paints the column at the bottom-right of `area` (the compositor passes everything above
     /// the bar), or a thin full-width row for transient hints.
+    #[cfg(test)]
     pub fn paint(&self, buffer: &mut Buffer, area: Rect) -> Vec<(Rect, usize)> {
         self.paint_with_bounds(buffer, area).entries
     }

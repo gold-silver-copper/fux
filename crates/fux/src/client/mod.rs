@@ -1,23 +1,23 @@
 //! The viewer process: private terminal, private menu/history/selection state, one attachment
 //! connection. The server frame is the only shared truth; everything here is a view of it.
 
-pub mod backend;
+pub(crate) mod backend;
 mod capture;
 mod context;
-pub mod controller;
-pub mod copy;
+pub(crate) mod controller;
+pub(crate) mod copy;
 mod drag;
 mod effects;
-pub mod hints;
+pub(crate) mod hints;
 mod history;
-pub mod input;
+pub(crate) mod input;
 mod interaction;
-pub mod io;
+pub(crate) mod io;
 mod popup;
 mod read_window;
-pub mod render;
-pub mod screen;
-pub mod text;
+pub(crate) mod render;
+pub(crate) mod screen;
+pub(crate) mod text;
 
 use crate::commands::{Action, Target};
 use crate::config::Config;

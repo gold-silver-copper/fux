@@ -9,8 +9,8 @@ pub mod components;
 pub mod events;
 pub mod messages;
 pub mod resources;
-pub mod support;
-pub mod systems;
+pub(crate) mod support;
+pub(crate) mod systems;
 
 pub use messages::{Effect, Inbound, ManagerOutcome, Requester, ViewerRequest};
 pub use resources::{Clock, Deadlines, Ids, Limits, Registry, ServerIdentity};

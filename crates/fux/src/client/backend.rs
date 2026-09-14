@@ -156,6 +156,7 @@ impl TerminalBackend for TerminaBackend {
 }
 
 /// An in-memory backend that captures every emitted byte for tests.
+#[cfg(test)]
 #[derive(Debug)]
 pub struct CaptureBackend {
     pub bytes: Vec<u8>,
@@ -163,6 +164,7 @@ pub struct CaptureBackend {
     pub cols: u16,
 }
 
+#[cfg(test)]
 impl CaptureBackend {
     #[must_use]
     pub fn new(rows: u16, cols: u16) -> Self {
@@ -174,6 +176,7 @@ impl CaptureBackend {
     }
 }
 
+#[cfg(test)]
 impl TerminalBackend for CaptureBackend {
     fn write_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.bytes.extend_from_slice(bytes);

@@ -239,6 +239,7 @@ impl Controller {
         self.error = Some(crate::view::printable(&error.into(), 256));
     }
 
+    #[cfg(test)]
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
@@ -274,11 +275,6 @@ impl Controller {
             _ => None,
         };
         self.histories.take_read(keyboard)
-    }
-
-    pub fn awaiting_read(&self) -> bool {
-        self.histories.awaiting_read()
-            || matches!(&self.mode, Mode::Copy(copy) if copy.awaiting_read())
     }
 
     fn enforce_history_budget(&mut self, limit: usize) {
@@ -533,6 +529,7 @@ impl Controller {
     }
 
     /// Enters a mode for a modal action at the viewer's own focus and tab.
+    #[cfg(test)]
     pub fn enter(&mut self, action: Action, frame: &Frame) -> bool {
         self.enter_at(action, frame, Target::of(frame))
     }

@@ -2,8 +2,8 @@
 //! connect it to PTYs and Unix sockets. Idle means asleep: the loop wakes only for inbound events,
 //! spawn completions, or a deadline the ECS asked for.
 
-pub mod adapter;
-pub mod connections;
+pub(crate) mod adapter;
+pub(crate) mod connections;
 
 use crate::config::Config;
 use crate::daemon::{DaemonPaths, ManagerIdentity, ManagerLock};
