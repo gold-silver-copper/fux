@@ -207,7 +207,8 @@ fn ordinary_ci_runs_pinned_composition_without_optional_prerequisites() {
         "--test pty",
         "--test admission",
         "--test e2e_loopback",
-        "scenario zor-multi-machine target/debug/fux target/debug/zor references/koh/target/debug/koh",
+        "cargo build --release --manifest-path references/koh/Cargo.toml",
+        "scenario zor-multi-machine target/debug/fux target/debug/zor references/koh/target/release/koh",
         "scenario zor-remote-resume target/debug/fux",
         "scenario zor-remote-resume-dashboard target/debug/fux",
     ] {
