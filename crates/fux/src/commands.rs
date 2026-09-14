@@ -142,9 +142,16 @@ impl Action {
 
     /// The obvious contextual restrictions shared by the popup and viewer dispatch. The server
     /// remains authoritative for limits and for changes made by other viewers.
-    pub fn unavailable(self, frame: &Frame, workspaces: bool) -> Option<&'static str> {
-        let visible = frame.layout.len();
-        let live_focus = frame.focused_pane().is_some_and(|pane| pane.exit.is_none());
+    pub fn unavailable(
+        self,
+        frame: &Frame,
+        target: Target,
+        workspaces: bool,
+    ) -> Option<&'static str> {
+        let visible = target.visible(frame);
+        let live_focus = target
+            .focused_pane(frame)
+            .is_some_and(|pane| pane.exit.is_none());
         match self {
             Self::Detach | Self::NewTab | Self::WorkspaceMenu => None,
             Self::CloseWorkspace | Self::RenameWorkspace => (frame.server_instance.is_empty()
@@ -178,9 +185,12 @@ impl Action {
             | Self::FocusDown
             | Self::FocusNext
             | Self::FocusPrevious
-            | Self::FocusLast => frame.focused.is_none().then_some("No active pane"),
+            | Self::FocusLast => target.focused.is_none().then_some("No active pane"),
             Self::ClosePane => (!live_focus).then_some("No live pane"),
-            Self::CopyMode => frame.focused_pane().is_none().then_some("No pane to copy"),
+            Self::CopyMode => target
+                .focused_pane(frame)
+                .is_none()
+                .then_some("No pane to copy"),
             Self::MoveToNewTab => (!live_focus).then_some("No live pane"),
             Self::MoveToTab => {
                 if !live_focus {
@@ -191,16 +201,55 @@ impl Action {
             }
             Self::ReorderTab => (frame.tabs.len() < 2).then_some("Only one tab"),
             Self::SplitSide | Self::SplitStack | Self::Zoom => {
-                frame.focused.is_none().then_some("No active pane")
+                target.focused.is_none().then_some("No active pane")
             }
             Self::NextTab | Self::PreviousTab => (frame.tabs.len() < 2).then_some("Only one tab"),
             Self::TabMenu | Self::ChooseTab | Self::RenameTab | Self::CloseTab => {
-                frame.active_tab.is_none().then_some("No active tab")
+                target.tab.is_none().then_some("No active tab")
             }
             Self::SwapMode | Self::SwapPane | Self::MoveMode | Self::ResizeMode => {
                 (visible < 2).then_some("No split to adjust")
             }
         }
+    }
+}
+
+/// What a command acts on: the viewer's own focus and tab, or the pane or tab a context menu was
+/// opened on. A hidden tab's contents are not in this attachment's frame, so a target on another
+/// tab exposes no panes: the visible tab's panes are never accidental targets of a tab menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub focused: Option<crate::ids::PaneId>,
+    pub tab: Option<crate::ids::TabId>,
+    pub generation: u64,
+}
+
+impl Target {
+    pub fn of(frame: &Frame) -> Self {
+        Self {
+            focused: frame.focused,
+            tab: frame.active_tab,
+            generation: frame.layout_generation,
+        }
+    }
+    /// Whether the target is the tab this attachment is showing.
+    pub fn shown(self, frame: &Frame) -> bool {
+        self.tab == frame.active_tab
+    }
+    pub fn focused_pane(self, frame: &Frame) -> Option<&crate::view::PaneView> {
+        self.shown(frame)
+            .then(|| frame.pane(self.focused?))
+            .flatten()
+    }
+    pub fn visible(self, frame: &Frame) -> usize {
+        if self.shown(frame) {
+            frame.layout.len()
+        } else {
+            0
+        }
+    }
+    pub fn zoomed(self, frame: &Frame) -> Option<crate::ids::PaneId> {
+        self.shown(frame).then_some(frame.zoomed).flatten()
     }
 }
 
@@ -430,12 +479,36 @@ mod tests {
     #[test]
     fn availability_follows_frame_context() {
         let frame = Frame::default();
-        assert!(Action::SplitSide.unavailable(&frame, true).is_some());
-        assert!(Action::ResizeMode.unavailable(&frame, true).is_some());
-        assert!(Action::NextTab.unavailable(&frame, true).is_some());
-        assert!(Action::ChooseWorkspace.unavailable(&frame, false).is_some());
-        assert!(Action::ChooseWorkspace.unavailable(&frame, true).is_none());
-        assert!(Action::Detach.unavailable(&frame, false).is_none());
+        assert!(
+            Action::SplitSide
+                .unavailable(&frame, Target::of(&frame), true)
+                .is_some()
+        );
+        assert!(
+            Action::ResizeMode
+                .unavailable(&frame, Target::of(&frame), true)
+                .is_some()
+        );
+        assert!(
+            Action::NextTab
+                .unavailable(&frame, Target::of(&frame), true)
+                .is_some()
+        );
+        assert!(
+            Action::ChooseWorkspace
+                .unavailable(&frame, Target::of(&frame), false)
+                .is_some()
+        );
+        assert!(
+            Action::ChooseWorkspace
+                .unavailable(&frame, Target::of(&frame), true)
+                .is_none()
+        );
+        assert!(
+            Action::Detach
+                .unavailable(&frame, Target::of(&frame), false)
+                .is_none()
+        );
     }
 
     #[test]
@@ -451,7 +524,10 @@ mod tests {
             Action::FocusLast,
         ];
         for action in navigation {
-            assert_eq!(action.unavailable(&frame, true), Some("No active pane"));
+            assert_eq!(
+                action.unavailable(&frame, Target::of(&frame), true),
+                Some("No active pane")
+            );
         }
         frame.focused = Some(crate::ids::PaneId(1));
         frame.layout.push(crate::view::PaneRect {
@@ -461,10 +537,18 @@ mod tests {
         for zoomed in [None, frame.focused] {
             frame.zoomed = zoomed;
             for action in navigation {
-                assert_eq!(action.unavailable(&frame, true), None);
+                assert_eq!(action.unavailable(&frame, Target::of(&frame), true), None);
             }
-            assert!(Action::ResizeMode.unavailable(&frame, true).is_some());
-            assert!(Action::SwapPane.unavailable(&frame, true).is_some());
+            assert!(
+                Action::ResizeMode
+                    .unavailable(&frame, Target::of(&frame), true)
+                    .is_some()
+            );
+            assert!(
+                Action::SwapPane
+                    .unavailable(&frame, Target::of(&frame), true)
+                    .is_some()
+            );
         }
     }
 

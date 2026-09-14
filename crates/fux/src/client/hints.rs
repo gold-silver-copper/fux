@@ -82,7 +82,10 @@ impl HintPanel {
                 entries.push(group.label().to_owned());
                 previous = Some(group);
             }
-            if action.unavailable(frame, workspaces).is_some() {
+            if action
+                .unavailable(frame, crate::commands::Target::of(frame), workspaces)
+                .is_some()
+            {
                 disabled.insert(entries.len());
             }
             actions.insert(entries.len(), action);

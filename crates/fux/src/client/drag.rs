@@ -15,14 +15,17 @@ pub struct Drag {
     destinations: Vec<crate::view::TabEntry>,
     wheel_tab: Option<TabId>,
     tabs: Vec<(ratatui_core::layout::Rect, crate::view::TabEntry)>,
-    instance: String,
-    viewer: crate::ids::ViewerId,
-    workspace: String,
+    identity: super::effects::Identity,
     tab: TabId,
     generation: u64,
     start: (u16, u16),
     pointer: (u16, u16),
     kind: Kind,
+}
+
+/// A wheel press without extra buttons or horizontal scrolling: what steps a list.
+pub fn plain_wheel(mouse: MouseEvent) -> bool {
+    mouse.wheel() && !mouse.release && mouse.code & !(4 | 8 | 16 | 64 | 1) == 0
 }
 
 impl Drag {
@@ -87,9 +90,7 @@ impl Drag {
                         .map(|tab| (*rect, tab))
                 })
                 .collect(),
-            instance: frame.server_instance.clone(),
-            viewer: frame.viewer,
-            workspace: frame.workspace.clone(),
+            identity: super::effects::Identity::of(frame),
             tab: frame.active_tab?,
             generation: frame.layout_generation,
             start: point,
@@ -99,9 +100,7 @@ impl Drag {
     }
 
     pub fn valid(&self, frame: &Frame) -> bool {
-        frame.server_instance == self.instance
-            && frame.viewer == self.viewer
-            && frame.workspace == self.workspace
+        self.identity.matches(frame)
             && frame.active_tab == Some(self.tab)
             && frame.layout_generation == self.generation
             && frame.zoomed.is_none()
@@ -139,9 +138,7 @@ impl Drag {
         let point = (mouse.column.saturating_sub(1), mouse.row.saturating_sub(1));
         if !matches!(self.kind, Kind::Pane(_))
             || self.destinations.is_empty()
-            || !mouse.wheel()
-            || mouse.release
-            || mouse.code & !(4 | 8 | 16 | 64 | 1) != 0
+            || !plain_wheel(mouse)
             || !self
                 .tabs
                 .iter()

@@ -1,24 +1,24 @@
 //! Contextual subsets of the command registry, bound to observed server-side identities.
+use super::effects::Identity;
 use super::hints::HintPanel;
-use crate::commands::Action;
-use crate::ids::{PaneId, TabId, ViewerId};
+use crate::commands::{Action, Target};
+use crate::ids::{PaneId, TabId};
 use crate::proto::attach::MouseEvent;
 use crate::view::{Frame, MouseMode, TabEntry};
 use std::collections::BTreeMap;
 
+/// What a context menu was opened on.
 #[derive(Clone, Copy)]
-pub enum Target {
+pub enum Subject {
     Pane(PaneId),
     Tab(TabId),
     Workspace,
 }
 
 pub struct Menu {
-    target: Target,
-    workspace: String,
-    stream: u64,
-    instance: String,
-    viewer: ViewerId,
+    subject: Subject,
+    identity: Identity,
+    focused: Option<PaneId>,
     tab: Option<TabId>,
     generation: u64,
     catalog: Vec<TabEntry>,
@@ -31,10 +31,7 @@ pub struct Menu {
 pub struct SwapPicker {
     pane: PaneId,
     tab: TabId,
-    instance: String,
-    workspace: String,
-    stream: u64,
-    viewer: ViewerId,
+    identity: Identity,
     generation: u64,
     pub choices: Vec<(PaneId, String)>,
     pub selected: usize,
@@ -62,10 +59,7 @@ impl SwapPicker {
         Some(Self {
             pane,
             tab: frame.active_tab?,
-            instance: frame.server_instance.clone(),
-            workspace: frame.workspace.clone(),
-            stream: frame.workspace_stream,
-            viewer: frame.viewer,
+            identity: Identity::of(frame),
             generation: frame.layout_generation,
             choices,
             selected: 0,
@@ -73,10 +67,7 @@ impl SwapPicker {
     }
 
     pub fn valid(&self, frame: &Frame) -> bool {
-        frame.server_instance == self.instance
-            && frame.workspace == self.workspace
-            && frame.workspace_stream == self.stream
-            && frame.viewer == self.viewer
+        self.identity.matches(frame)
             && frame.active_tab == Some(self.tab)
             && frame.layout_generation == self.generation
             && frame.pane(self.pane).is_some()
@@ -89,7 +80,7 @@ impl SwapPicker {
     pub fn request(&self) -> Option<crate::proto::control::Request> {
         Some(crate::proto::control::Request::Layout {
             id: 0,
-            instance: Some(self.instance.clone()),
+            instance: Some(self.identity.instance.clone()),
             tab: self.tab,
             generation: Some(self.generation),
             action: crate::proto::control::LayoutAction::Swap {
@@ -113,52 +104,50 @@ impl SwapPicker {
 }
 
 impl Menu {
-    pub fn new(target: Target, frame: &Frame, workspaces: bool) -> Option<Self> {
+    pub fn new(subject: Subject, frame: &Frame, workspaces: bool) -> Option<Self> {
         if frame.server_instance.is_empty() {
             return None;
         }
-        let (title, actions) = match target {
-            Target::Pane(pane) => {
+        let (title, actions) = match subject {
+            Subject::Pane(pane) => {
                 let policy = frame.pane(pane)?.right_click;
                 (
                     format!("Pane {pane} actions · right-click: {}", policy.name()),
                     Action::PANE_CONTEXT,
                 )
             }
-            Target::Tab(tab) => {
+            Subject::Tab(tab) => {
                 let entry = frame.tabs.iter().find(|entry| entry.id == tab)?;
                 (
                     format!("Tab {} ({tab}) actions", entry.label),
                     Action::TAB_CONTEXT,
                 )
             }
-            Target::Workspace => (
+            Subject::Workspace => (
                 format!("Workspace {} actions", frame.workspace),
                 Action::WORKSPACE_CONTEXT,
             ),
         };
         let mut menu = Self {
-            target,
+            subject,
             title,
             actions: actions.to_vec(),
             disabled: BTreeMap::new(),
             selected: 0,
-            workspace: frame.workspace.clone(),
-            stream: frame.workspace_stream,
-            instance: frame.server_instance.clone(),
-            viewer: frame.viewer,
+            identity: Identity::of(frame),
+            focused: frame.focused,
             tab: frame.active_tab,
             generation: frame.layout_generation,
             catalog: frame.tabs.clone(),
         };
-        let projected = menu.project(frame);
+        let target = menu.target();
         menu.disabled = menu
             .actions
             .iter()
             .enumerate()
             .filter_map(|(index, action)| {
                 action
-                    .unavailable(&projected, workspaces)
+                    .unavailable(frame, target, workspaces)
                     .map(|reason| (index, reason))
             })
             .collect();
@@ -166,45 +155,44 @@ impl Menu {
     }
 
     pub fn valid(&self, frame: &Frame) -> bool {
-        frame.server_instance == self.instance
-            && frame.workspace == self.workspace
-            && frame.workspace_stream == self.stream
-            && frame.viewer == self.viewer
+        self.identity.matches(frame)
             && frame.tabs == self.catalog
-            && match self.target {
-                Target::Pane(pane) => {
+            && match self.subject {
+                Subject::Pane(pane) => {
                     frame.active_tab == self.tab
                         && frame.layout_generation == self.generation
                         && frame.pane(pane).is_some_and(|pane| pane.exit.is_none())
                 }
-                Target::Tab(tab) => frame.tabs.iter().any(|entry| entry.id == tab),
-                Target::Workspace => true,
+                Subject::Tab(tab) => frame.tabs.iter().any(|entry| entry.id == tab),
+                Subject::Workspace => true,
             }
     }
 
-    /// This owned projection is made only on menu open/activation, never on output frames.
-    /// It is used by the same command dispatcher as key bindings, not rendered or sent as state.
-    pub fn project(&self, frame: &Frame) -> Frame {
-        let mut projected = frame.clone();
-        match self.target {
-            Target::Pane(pane) => projected.focused = Some(pane),
-            Target::Tab(tab) => {
-                projected.active_tab = Some(tab);
-                // Hidden tab contents are not in this attachment's frame. Never expose the
-                // currently visible tab's panes as accidental targets of a tab menu action.
-                projected.focused = None;
-                projected.zoomed = None;
-                projected.layout.clear();
-                projected.panes.clear();
-                projected.layout_generation = frame
-                    .tabs
+    /// What the chosen action acts on. It is used by the same command dispatcher as key
+    /// bindings; the viewer's real focus and tab never change.
+    pub fn target(&self) -> Target {
+        match self.subject {
+            Subject::Pane(pane) => Target {
+                focused: Some(pane),
+                tab: self.tab,
+                generation: self.generation,
+            },
+            // A tab menu acts on that tab alone: no pane of the visible tab is its target.
+            Subject::Tab(tab) => Target {
+                focused: None,
+                tab: Some(tab),
+                generation: self
+                    .catalog
                     .iter()
                     .find(|entry| entry.id == tab)
-                    .map_or(0, |entry| entry.layout_generation);
-            }
-            Target::Workspace => {}
+                    .map_or(0, |entry| entry.layout_generation),
+            },
+            Subject::Workspace => Target {
+                focused: self.focused,
+                tab: self.tab,
+                generation: self.generation,
+            },
         }
-        projected
     }
 
     pub fn panel(&self) -> HintPanel {
@@ -228,20 +216,20 @@ impl Menu {
     }
 }
 
-pub fn mouse_target(
+pub fn mouse_subject(
     mouse: MouseEvent,
     frame: &Frame,
     tabs: &[(ratatui_core::layout::Rect, TabId)],
-) -> Option<Target> {
+) -> Option<Subject> {
     let point = (mouse.column.saturating_sub(1), mouse.row.saturating_sub(1));
     if let Some((_, tab)) = tabs.iter().find(|(rect, _)| rect.contains(point.into())) {
-        return Some(Target::Tab(*tab));
+        return Some(Subject::Tab(*tab));
     }
     if tabs
         .first()
         .is_some_and(|(rect, _)| point.1 == rect.y && point.0 < rect.x)
     {
-        return Some(Target::Workspace);
+        return Some(Subject::Workspace);
     }
     let entry = frame.pane_at(point.0, point.1)?;
     let pane = frame.pane(entry.pane)?;
@@ -251,7 +239,7 @@ pub fn mouse_target(
             crate::view::RightClickPolicy::Fux => true,
             crate::view::RightClickPolicy::Pane => false,
         })
-    .then_some(Target::Pane(entry.pane))
+    .then_some(Subject::Pane(entry.pane))
 }
 
 #[cfg(test)]
@@ -264,7 +252,7 @@ mod tests {
         let mut frame = Frame {
             server_instance: "server".into(),
             workspace: "default".into(),
-            viewer: ViewerId(1),
+            viewer: crate::ids::ViewerId(1),
             active_tab: Some(TabId(1)),
             focused: Some(PaneId(1)),
             ..Frame::default()
@@ -272,7 +260,7 @@ mod tests {
         frame
             .panes
             .insert(PaneId(1), crate::view::PaneView::default());
-        let menu = Menu::new(Target::Pane(PaneId(1)), &frame, true).ok_or("menu")?;
+        let menu = Menu::new(Subject::Pane(PaneId(1)), &frame, true).ok_or("menu")?;
         frame.generation += 1;
         if let Some(pane) = frame.panes.get_mut(&PaneId(1)) {
             pane.title = "new application title".into();
@@ -286,7 +274,7 @@ mod tests {
             match kind {
                 0 => changed.server_instance = "replacement".into(),
                 1 => changed.workspace = "other".into(),
-                2 => changed.viewer = ViewerId(2),
+                2 => changed.viewer = crate::ids::ViewerId(2),
                 3 => changed.layout_generation += 1,
                 _ => {
                     changed.panes.remove(&PaneId(1));

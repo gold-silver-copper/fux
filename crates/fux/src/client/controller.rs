@@ -1,10 +1,13 @@
 //! Viewer-local interaction modes: history/copy, tab and workspace choosers, rename, confirmed
 //! closes, repeated resize and workspace naming. Transient state never leaves this process.
 
-use super::copy::{CopyKey, CopyOutcome, CopySession};
+use super::copy::{CopyKey, CopySession};
+use super::effects::Identity;
 use super::hints::HintPanel;
-use super::interaction::{LayoutMode, MAX_TEXT_BYTES, Mode, TabChoice, step};
-use crate::commands::Action;
+use super::interaction::{
+    CloseKind, LayoutMode, MAX_TEXT_BYTES, Mode, Step, TabChoice, TextKind, step,
+};
+use crate::commands::{Action, Target};
 use crate::ids::{PaneId, TabId};
 use crate::proto::attach::{MouseEvent, ViewReply};
 use crate::proto::control::{PaneDestination, Request};
@@ -18,13 +21,12 @@ fn workspace_choice_label(entry: &crate::proto::control::WorkspaceRoute) -> Stri
 }
 
 const MAX_HISTORY_BYTES: usize = 64 * 1024 * 1024;
-pub use super::interaction::RESIZE_STEP;
 
 /// How long a bar notice stays without a key press.
 pub const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub struct Controller {
-    pending_action: Option<(Action, Frame)>,
+    pending_action: Option<(Action, Target)>,
     waiting_hint: Option<HintPanel>,
     forwarded_mouse: Option<MouseEvent>,
     capture: super::capture::Capture,
@@ -57,9 +59,6 @@ pub enum MouseDisposition {
     /// Consumed and dropped (a mode that ignores the mouse).
     Ignore,
 }
-
-#[path = "controller_copy.rs"]
-mod copy;
 
 impl Controller {
     #[must_use]
@@ -115,8 +114,12 @@ impl Controller {
             || matches!(&self.mode, Mode::Copy(copy) if copy.pending_matches(request, pane))
     }
 
-    pub fn take_action(&mut self) -> Option<(Action, Frame)> {
+    pub fn take_action(&mut self) -> Option<(Action, Target)> {
         self.pending_action.take()
+    }
+
+    pub(super) fn selection_dragging(&self) -> bool {
+        matches!(&self.mode, Mode::Copy(copy) if copy.dragging())
     }
 
     pub fn active(&self) -> bool {
@@ -528,51 +531,46 @@ impl Controller {
         std::mem::take(&mut self.loading_input)
     }
 
-    /// Enters a mode for a modal action; returns false for actions that need no mode.
+    /// Enters a mode for a modal action at the viewer's own focus and tab.
     pub fn enter(&mut self, action: Action, frame: &Frame) -> bool {
+        self.enter_at(action, frame, Target::of(frame))
+    }
+
+    /// Enters a mode for a modal action; returns false for actions that need no mode.
+    pub fn enter_at(&mut self, action: Action, frame: &Frame, target: Target) -> bool {
         tracing::debug!(target: "fux::diagnostics", pid = std::process::id(), event = "interaction_enter", ?action,
             epoch = self.interaction_epoch, instance = %frame.server_instance,
-            viewer = frame.viewer.0, pane = ?frame.focused.map(|pane| pane.0), stream = frame.workspace_stream);
+            viewer = frame.viewer.0, pane = ?target.focused.map(|pane| pane.0), stream = frame.workspace_stream);
         self.interaction_epoch = self.interaction_epoch.wrapping_add(1);
         self.reset_input();
-        let tab = frame.active_tab;
-        let pane = frame.focused;
+        let tab = target.tab;
+        let pane = target.focused;
+        let identity = Identity::of(frame);
+        let has_identity = !frame.server_instance.is_empty();
         self.entry_regions.clear();
         self.panel_bounds = None;
+        let text = |kind: TextKind, text: String| Mode::Text { kind, text };
         self.mode = match action {
-            Action::CloseWorkspace
-                if frame.workspace_stream != 0 && !frame.server_instance.is_empty() =>
-            {
-                Mode::CloseWorkspace {
-                    instance: frame.server_instance.clone(),
-                    workspace: frame.workspace.clone(),
-                    stream: frame.workspace_stream,
-                    viewer: frame.viewer,
-                }
+            Action::CloseWorkspace if frame.workspace_stream != 0 && has_identity => {
+                Mode::Confirm(CloseKind::Workspace(identity))
             }
-            Action::SwapPane => {
-                self.entry_regions.clear();
-                self.panel_bounds = None;
-                match super::context::SwapPicker::new(frame) {
-                    Some(picker) => Mode::SwapPicker(Box::new(picker)),
-                    None => return false,
-                }
-            }
+            Action::SwapPane => match super::context::SwapPicker::new(frame) {
+                Some(picker) => Mode::SwapPicker(Box::new(picker)),
+                None => return false,
+            },
             Action::PaneMenu | Action::TabMenu | Action::WorkspaceMenu => {
-                self.entry_regions.clear();
-                self.panel_bounds = None;
-                let target = match action {
+                let subject = match action {
                     Action::PaneMenu => match pane {
-                        Some(pane) => super::context::Target::Pane(pane),
+                        Some(pane) => super::context::Subject::Pane(pane),
                         None => return false,
                     },
                     Action::TabMenu => match tab {
-                        Some(tab) => super::context::Target::Tab(tab),
+                        Some(tab) => super::context::Subject::Tab(tab),
                         None => return false,
                     },
-                    _ => super::context::Target::Workspace,
+                    _ => super::context::Subject::Workspace,
                 };
-                match super::context::Menu::new(target, frame, self.workspaces_enabled) {
+                match super::context::Menu::new(subject, frame, self.workspaces_enabled) {
                     Some(menu) => Mode::Menu(Box::new(menu)),
                     None => return false,
                 }
@@ -614,7 +612,7 @@ impl Controller {
                         Some((pane, tab)) => TabChoice::Transfer {
                             pane,
                             tab,
-                            generation: frame.layout_generation,
+                            generation: target.generation,
                         },
                         None => return false,
                     },
@@ -627,45 +625,33 @@ impl Controller {
             },
             Action::RenamePane => {
                 match pane.and_then(|pane| frame.pane(pane).map(|view| (pane, view))) {
-                    Some((pane, view)) if !frame.server_instance.is_empty() => Mode::RenamePane {
-                        pane,
-                        instance: frame.server_instance.clone(),
-                        workspace: frame.workspace.clone(),
-                        text: view.label.clone().unwrap_or_default(),
-                    },
+                    Some((pane, view)) if has_identity => text(
+                        TextKind::RenamePane { pane, identity },
+                        view.label.clone().unwrap_or_default(),
+                    ),
                     _ => return false,
                 }
             }
-            Action::RenameWorkspace
-                if !frame.server_instance.is_empty() && frame.workspace_stream != 0 =>
-            {
-                Mode::RenameWorkspace {
-                    instance: frame.server_instance.clone(),
-                    workspace: frame.workspace.clone(),
-                    stream: frame.workspace_stream,
-                    viewer: frame.viewer,
-                    text: frame.workspace_label.clone().unwrap_or_default(),
-                }
-            }
+            Action::RenameWorkspace if has_identity && frame.workspace_stream != 0 => text(
+                TextKind::RenameWorkspace { identity },
+                frame.workspace_label.clone().unwrap_or_default(),
+            ),
             Action::RenameTab => {
                 match tab.and_then(|tab| frame.tabs.iter().find(|entry| entry.id == tab)) {
-                    Some(entry) => Mode::Rename {
-                        tab: entry.id,
-                        text: entry.label.clone(),
-                    },
+                    Some(entry) => text(TextKind::RenameTab { tab: entry.id }, entry.label.clone()),
                     None => return false,
                 }
             }
             Action::ClosePane => match pane {
-                Some(pane) => Mode::ClosePane { pane },
+                Some(pane) => Mode::Confirm(CloseKind::Pane(pane)),
                 None => return false,
             },
             Action::CloseTab => {
                 match tab.and_then(|tab| frame.tabs.iter().find(|entry| entry.id == tab)) {
-                    Some(entry) => Mode::CloseTab {
+                    Some(entry) => Mode::Confirm(CloseKind::Tab {
                         tab: entry.id,
                         label: entry.label.clone(),
-                    },
+                    }),
                     None => return false,
                 }
             }
@@ -681,18 +667,15 @@ impl Controller {
                 },
                 None => return false,
             },
-            Action::NewWorkspace => Mode::NewWorkspace {
-                text: String::new(),
-                transfer: None,
-            },
+            Action::NewWorkspace => text(TextKind::NewWorkspace { transfer: None }, String::new()),
             Action::MoveToNewWorkspace | Action::MoveToWorkspace => match pane.zip(tab) {
-                Some((pane, tab)) if !frame.server_instance.is_empty() => {
+                Some((pane, tab)) if has_identity => {
                     let transfer = Box::new(crate::proto::control::WorkspaceTransfer {
                         focus: false,
                         follow: Some(frame.viewer),
                         instance: frame.server_instance.clone(),
                         source: tab,
-                        generation: frame.layout_generation,
+                        generation: target.generation,
                         pane,
                         workspace: crate::proto::control::WorkspaceDestination::New {
                             name: String::new(),
@@ -711,10 +694,12 @@ impl Controller {
                             loading: true,
                         }
                     } else {
-                        Mode::NewWorkspace {
-                            text: String::new(),
-                            transfer: Some(transfer),
-                        }
+                        text(
+                            TextKind::NewWorkspace {
+                                transfer: Some(transfer),
+                            },
+                            String::new(),
+                        )
                     }
                 }
                 _ => return false,
@@ -836,160 +821,47 @@ impl Controller {
             return MouseDisposition::Ignore;
         }
         let left_release = mouse.release && super::drag::Drag::accepts(mouse);
-        if matches!(self.mode, Mode::SwapPicker(_)) {
-            self.reconcile(frame);
-            let Mode::SwapPicker(picker) = &mut self.mode else {
+        let confirm = matches!(self.mode, Mode::Confirm(_));
+        if confirm || self.mode.selection_mut().is_some() {
+            // Close dialogs answer only a left press; lists also scroll with the wheel.
+            if confirm && !left_press {
                 return MouseDisposition::Ignore;
-            };
-            if mouse.wheel() && !mouse.release {
-                step(
-                    &mut picker.selected,
-                    picker.choices.len(),
-                    if mouse.button() == 1 { 'j' } else { 'k' },
-                );
-                return MouseDisposition::Local;
             }
-            if !mouse.release && !mouse.motion() && super::drag::Drag::accepts(mouse) {
-                let hit = self
-                    .entry_regions
-                    .iter()
-                    .find(|(rect, _)| {
-                        rect.contains(
-                            (mouse.column.saturating_sub(1), mouse.row.saturating_sub(1)).into(),
-                        )
-                    })
-                    .map(|(_, index)| *index);
-                let request = if let Some(index) = hit.filter(|index| *index < picker.choices.len())
-                {
-                    picker.selected = index;
-                    self.key('\r', frame)
-                } else {
-                    self.end_interaction();
-                    None
-                };
-                self.capture.adopt(0);
-                return request.map_or(MouseDisposition::Local, MouseDisposition::Request);
-            }
-            return MouseDisposition::Ignore;
-        }
-        if matches!(self.mode, Mode::Menu(_)) {
             self.reconcile(frame);
-            let Mode::Menu(menu) = &mut self.mode else {
-                return MouseDisposition::Ignore;
-            };
-            if mouse.wheel() && !mouse.release {
-                step(
-                    &mut menu.selected,
-                    menu.actions.len(),
-                    if mouse.button() == 1 { 'j' } else { 'k' },
-                );
-                return MouseDisposition::Local;
-            }
-            if !mouse.release && !mouse.motion() && super::drag::Drag::accepts(mouse) {
-                let hit = self
-                    .entry_regions
-                    .iter()
-                    .find(|(rect, _)| {
-                        rect.contains(
-                            (mouse.column.saturating_sub(1), mouse.row.saturating_sub(1)).into(),
-                        )
-                    })
-                    .map(|(_, index)| *index);
-                if let Some(index) = hit.filter(|index| *index < menu.actions.len()) {
-                    menu.selected = index;
-                    self.key('\r', frame);
-                } else {
-                    self.end_interaction();
+            if !(confirm || self.mode.selection_mut().is_some()) {
+                if left_press {
+                    self.capture.adopt(0);
                 }
-                self.capture.adopt(0);
-                return MouseDisposition::Local;
-            }
-            return MouseDisposition::Ignore;
-        }
-        if matches!(
-            self.mode,
-            Mode::ClosePane { .. } | Mode::CloseTab { .. } | Mode::CloseWorkspace { .. }
-        ) {
-            if mouse.release || mouse.motion() || !super::drag::Drag::accepts(mouse) {
                 return MouseDisposition::Ignore;
             }
-            self.reconcile(frame);
-            let hit = self
-                .entry_regions
-                .iter()
-                .find(|(rect, _)| {
-                    rect.contains(
-                        (mouse.column.saturating_sub(1), mouse.row.saturating_sub(1)).into(),
-                    )
-                })
-                .map(|(_, index)| *index);
-            let request = if matches!(
-                self.mode,
-                Mode::ClosePane { .. } | Mode::CloseTab { .. } | Mode::CloseWorkspace { .. }
-            ) {
+            if super::drag::plain_wheel(mouse) {
+                if let Some((selected, len)) = self.mode.selection_mut() {
+                    step(selected, len, if mouse.button() == 1 { 'j' } else { 'k' });
+                    return MouseDisposition::Local;
+                }
+                return MouseDisposition::Ignore;
+            }
+            if !left_press {
+                return MouseDisposition::Ignore;
+            }
+            let hit = self.hit(mouse);
+            let request = if confirm {
                 match hit {
                     Some(1) => self.key('y', frame),
                     Some(0) => None, // The explanatory row is not an action.
                     _ => self.key('n', frame),
                 }
+            } else if let Some((selected, len)) = self.mode.selection_mut()
+                && let Some(index) = hit.filter(|index| *index < len)
+            {
+                *selected = index;
+                self.key('\r', frame)
             } else {
+                self.end_interaction();
                 None
             };
             self.capture.adopt(0);
             return request.map_or(MouseDisposition::Local, MouseDisposition::Request);
-        }
-        if matches!(
-            self.mode,
-            Mode::Destination { loading: false, .. } | Mode::Tabs { .. } | Mode::Workspaces { .. }
-        ) {
-            let left_press = !mouse.release && !mouse.motion() && super::drag::Drag::accepts(mouse);
-            self.reconcile(frame);
-            let (selected, len) = match &mut self.mode {
-                Mode::Destination {
-                    entries,
-                    selected,
-                    loading: false,
-                    ..
-                } => (selected, entries.len()),
-                Mode::Tabs {
-                    choices, selected, ..
-                } => (selected, choices.len()),
-                Mode::Workspaces {
-                    names, selected, ..
-                } => (selected, names.len()),
-                _ => {
-                    if left_press {
-                        self.capture.adopt(0);
-                    }
-                    return MouseDisposition::Ignore;
-                }
-            };
-            if mouse.wheel() && !mouse.release && mouse.code & !(4 | 8 | 16 | 64 | 1) == 0 {
-                step(selected, len, if mouse.button() == 1 { 'j' } else { 'k' });
-                return MouseDisposition::Local;
-            }
-            if left_press {
-                let hit = self
-                    .entry_regions
-                    .iter()
-                    .find(|(rect, _)| {
-                        rect.contains(
-                            (mouse.column.saturating_sub(1), mouse.row.saturating_sub(1)).into(),
-                        )
-                    })
-                    .map(|(_, index)| *index)
-                    .filter(|index| *index < len);
-                let request = if let Some(index) = hit {
-                    *selected = index;
-                    self.key('\r', frame)
-                } else {
-                    self.end_interaction();
-                    None
-                };
-                self.capture.adopt(0);
-                return request.map_or(MouseDisposition::Local, MouseDisposition::Request);
-            }
-            return MouseDisposition::Ignore;
         }
         if let Some(mut drag) = self.drag.take() {
             if !drag.valid(frame) {
@@ -1023,8 +895,8 @@ impl Controller {
             && !mouse.motion()
             && mouse.button() == 2
             && mouse.code & !(2 | 8) == 0
-            && let Some(target) = super::context::mouse_target(mouse, frame, &self.tab_regions)
-            && let Some(menu) = super::context::Menu::new(target, frame, self.workspaces_enabled)
+            && let Some(subject) = super::context::mouse_subject(mouse, frame, &self.tab_regions)
+            && let Some(menu) = super::context::Menu::new(subject, frame, self.workspaces_enabled)
         {
             self.mode = Mode::Menu(Box::new(menu));
             self.entry_regions.clear();
@@ -1284,29 +1156,68 @@ impl Controller {
         self.mode.text_entry()
     }
 
+    /// The chooser entry under the pointer, if any.
+    fn hit(&self, mouse: MouseEvent) -> Option<usize> {
+        let point = (mouse.column.saturating_sub(1), mouse.row.saturating_sub(1)).into();
+        self.entry_regions
+            .iter()
+            .find(|(rect, _)| rect.contains(point))
+            .map(|(_, index)| *index)
+    }
+
     fn key(&mut self, key: char, frame: &Frame) -> Option<Request> {
-        use super::interaction::{Completion, KeyEffect};
-        let transition = self.mode.key(key, self.paste, frame);
-        if matches!(transition.completion, Completion::Finish) {
+        if let super::interaction::FrameTransition::Dismiss(message) = self.mode.reconcile(frame) {
             self.end_interaction();
+            self.report_error(message);
+            return None;
         }
-        if let Some(notice) = transition.notice {
-            self.report_error(notice);
-        }
-        match transition.effect {
-            Some(KeyEffect::Control(request)) => Some(request),
-            Some(KeyEffect::Manager(request)) => {
+        let dragging = self.selection_dragging();
+        let step = self.mode.key(key, self.paste, frame);
+        self.apply(step, dragging)
+    }
+
+    fn copy_key(&mut self, key: CopyKey) -> Option<Request> {
+        let dragging = self.selection_dragging();
+        let step = self.mode.copy(key);
+        self.apply(step, dragging)
+    }
+
+    /// Applies what a consumed key decided; the mode's own state has already changed.
+    fn apply(&mut self, step: Step, was_dragging: bool) -> Option<Request> {
+        let request = match step {
+            Step::Keep => None,
+            Step::Finish => {
+                self.end_interaction();
+                None
+            }
+            Step::Send(request) => Some(request),
+            Step::Submit(request) => {
+                self.end_interaction();
+                Some(request)
+            }
+            Step::Manager(request) => {
+                self.end_interaction();
                 self.manager_request = Some(request);
                 None
             }
-            Some(KeyEffect::Action(action, target)) => {
+            Step::Action(action, target) => {
+                self.end_interaction();
                 self.pending_action = Some((action, target));
                 None
             }
-            Some(KeyEffect::Copy(key)) => self.copy_key(key),
-            Some(KeyEffect::ScrollCopy(delta)) => self.scroll_copy(delta),
-            None => None,
-        }
+            Step::Copied(text) => {
+                self.end_interaction();
+                self.copied = Some(text);
+                None
+            }
+            Step::Notice(notice) => {
+                self.report_error(notice);
+                None
+            }
+        };
+        self.capture
+            .cancel_left_if(was_dragging && !self.selection_dragging());
+        request
     }
 
     /// The panel this mode wants painted, if any.
@@ -1413,70 +1324,19 @@ impl Controller {
                 },
                 Some(*selected),
             ),
-            Mode::RenamePane { text, .. } => {
-                return Some(HintPanel::text_input(
-                    "Rename pane (empty = application title)",
-                    text,
-                    "Enter save · Esc dismiss · Ctrl-U clear · Backspace delete",
-                ));
-            }
-            Mode::RenameWorkspace { text, .. } => {
-                return Some(HintPanel::text_input(
-                    "Rename workspace (empty = routing name)",
-                    text,
-                    "Enter save · Esc dismiss · Ctrl-U clear · Backspace delete",
-                ));
-            }
-            Mode::Rename { text, .. } => {
-                return Some(HintPanel::text_input(
-                    "Rename tab",
-                    text,
-                    "Enter save · Esc dismiss · Ctrl-U clear · Backspace delete",
-                ));
-            }
-            Mode::NewWorkspace { text, transfer } => {
-                return Some(HintPanel::text_input(
-                    if transfer.is_some() {
-                        "Move pane to new workspace"
-                    } else {
-                        "New workspace (empty = automatic name)"
-                    },
-                    text,
-                    "Enter create · Esc dismiss · Ctrl-U clear",
-                ));
+            Mode::Text { kind, text } => {
+                return Some(HintPanel::text_input(kind.title(), text, kind.footer()));
             }
             Mode::Menu(_) | Mode::SwapPicker(_) => return None,
-            Mode::CloseWorkspace { workspace, .. } => (
-                format!("Close workspace {workspace}?"),
-                vec![
-                    "All its panes and processes will be terminated; its viewers will detach."
-                        .into(),
-                    "Confirm close".into(),
-                    "Cancel".into(),
-                ],
-                "y or click confirm · n/Esc or outside click cancel",
-                None,
-            ),
-            Mode::ClosePane { pane } => (
-                format!("Close pane {pane}?"),
-                vec![
-                    "Its process and unsaved work will be terminated.".into(),
-                    "Confirm close".into(),
-                    "Cancel".into(),
-                ],
-                "y or click confirm · n/Esc or outside click cancel",
-                None,
-            ),
-            Mode::CloseTab { tab, label } => (
-                format!("Close tab {label} ({tab})?"),
-                vec![
-                    "All its panes and their processes will be terminated.".into(),
-                    "Confirm close".into(),
-                    "Cancel".into(),
-                ],
-                "y or click confirm · n/Esc or outside click cancel",
-                None,
-            ),
+            Mode::Confirm(kind) => {
+                let (title, explanation) = kind.describe();
+                (
+                    title,
+                    vec![explanation.into(), "Confirm close".into(), "Cancel".into()],
+                    "y or click confirm · n/Esc or outside click cancel",
+                    None,
+                )
+            }
             Mode::Layout { pane, kind, .. } => {
                 let verb = match kind {
                     LayoutMode::Resize => "Resize",
@@ -1493,10 +1353,6 @@ impl Controller {
             entries.push(error.clone());
         }
         Some(HintPanel::context(title, entries, footer, focus))
-    }
-
-    pub fn workspaces_enabled(&self) -> bool {
-        self.workspaces_enabled
     }
 }
 

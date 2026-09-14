@@ -19,7 +19,7 @@ pub mod render;
 pub mod screen;
 pub mod text;
 
-use crate::commands::Action;
+use crate::commands::{Action, Target};
 use crate::config::Config;
 use crate::proto::attach::{
     ClientMessage, FRAME_TIMEOUT, MAX_CLIENT_FRAME, MAX_INPUT_CHUNK, MAX_SERVER_FRAME,
@@ -115,7 +115,7 @@ impl Connection {
 
 struct WaitingCommand {
     action: Action,
-    target: Option<Frame>,
+    target: Option<Target>,
     epoch: u64,
     origin: effects::Identity,
     follows_workspace: bool,
@@ -430,7 +430,7 @@ async fn run(
                         if let Some(action) = controller.wait_for_layout_reply() {
                             waiting_command = Some(WaitingCommand {
                                 action,
-                                target: Some(current.clone()),
+                                target: Some(Target::of(current)),
                                 epoch: controller.interaction_epoch(),
                                 origin: effects::Identity::of(current),
                                 follows_workspace: false,
@@ -472,8 +472,8 @@ async fn run(
                             controller.clear_error();
                             let target = resumed
                                 .as_ref()
-                                .and_then(|(_, target, _)| target.as_ref())
-                                .or_else(|| contextual.as_ref().map(|(_, target)| target));
+                                .and_then(|(_, target, _)| *target)
+                                .or_else(|| contextual.map(|(_, target)| target));
                             if (outstanding.is_some()
                                 || manager_mutations > 0
                                 || !effects.is_empty())
@@ -482,7 +482,7 @@ async fn run(
                                 controller.wait_for_command();
                                 waiting_command = Some(WaitingCommand {
                                     action,
-                                    target: target.cloned(),
+                                    target,
                                     epoch: controller.interaction_epoch(),
                                     origin: effects::Identity::of(current),
                                     follows_workspace: target.is_none()
@@ -495,7 +495,8 @@ async fn run(
                             }
                             let outcome = dispatch(
                                 action,
-                                target.unwrap_or(current),
+                                current,
+                                target.unwrap_or_else(|| Target::of(current)),
                                 &mut controller,
                                 workspaces_enabled,
                                 final_retain_ms,
@@ -799,11 +800,12 @@ enum Dispatch {
 fn dispatch(
     action: Action,
     frame: &Frame,
+    target: Target,
     controller: &mut Controller,
     workspaces: bool,
     final_retain_ms: u64,
 ) -> Dispatch {
-    if let Some(reason) = action.unavailable(frame, workspaces) {
+    if let Some(reason) = action.unavailable(frame, target, workspaces) {
         controller.report_error(reason);
         return Dispatch::Local;
     }
@@ -818,7 +820,7 @@ fn dispatch(
             } else {
                 crate::layout::Axis::Vertical
             },
-            target: frame.focused,
+            target: target.focused,
             cwd: None,
             argv: Vec::new(),
             env: Vec::new(),
@@ -849,28 +851,28 @@ fn dispatch(
                 _ => FocusTarget::Down,
             },
         }),
-        Action::Zoom => match frame.active_tab {
+        Action::Zoom => match target.tab {
             Some(tab) => Dispatch::Send(Request::Layout {
                 id: 0,
                 instance: None,
                 tab,
-                generation: Some(frame.layout_generation),
+                generation: Some(target.generation),
                 action: crate::proto::control::LayoutAction::Zoom {
-                    pane: if frame.zoomed.is_some() {
+                    pane: if target.zoomed(frame).is_some() {
                         None
                     } else {
-                        frame.focused
+                        target.focused
                     },
                 },
             }),
             None => Dispatch::Local,
         },
-        Action::MoveToNewTab => match frame.focused.zip(frame.active_tab) {
+        Action::MoveToNewTab => match target.focused.zip(target.tab) {
             Some((pane, tab)) => Dispatch::Send(Request::Layout {
                 id: 0,
                 instance: None,
                 tab,
-                generation: Some(frame.layout_generation),
+                generation: Some(target.generation),
                 action: crate::proto::control::LayoutAction::Transfer {
                     focus: false,
                     pane,
@@ -890,9 +892,9 @@ fn dispatch(
             },
         }),
         Action::CycleRightClick => {
-            match frame
+            match target
                 .focused
-                .and_then(|pane| frame.pane(pane).map(|view| (pane, view)))
+                .and_then(|pane| target.focused_pane(frame).map(|view| (pane, view)))
             {
                 Some((pane, view)) => Dispatch::Send(Request::PaneInput {
                     id: 0,
@@ -904,7 +906,7 @@ fn dispatch(
             }
         }
         Action::ChooseWorkspace | Action::ReorderWorkspace => {
-            controller.enter(action, frame);
+            controller.enter_at(action, frame, target);
             Dispatch::LoadWorkspaces
         }
         Action::PaneMenu
@@ -927,7 +929,7 @@ fn dispatch(
         | Action::NewWorkspace
         | Action::MoveToNewWorkspace
         | Action::MoveToWorkspace => {
-            if !controller.enter(action, frame) {
+            if !controller.enter_at(action, frame, target) {
                 controller.report_error("That command is not available right now");
             }
             Dispatch::Local
