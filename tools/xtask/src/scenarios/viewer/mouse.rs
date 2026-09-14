@@ -37,11 +37,14 @@ pub(super) fn run(binary: &Path) -> Result<()> {
     let right = logs
         .path()
         .join(format!("{}.input", tabs[0]["panes"][1]["pid"]));
-    h.wait(
+    let both_ready = h.wait(
         |h| Ok(h.text(0).matches("MOUSE_APP_READY").count() == 2),
         "both reporting apps ready",
         8,
-    )?;
+    );
+    if let Err(error) = both_ready {
+        return Err(error.context(both_ready_diagnostics(&mut h, &tabs[0])));
+    }
     h.send(0, b"\x1b[<68;3;3M")?;
     h.wait(
         |h| Ok(h.text(0).contains("History pane 1") && h.text(0).contains("offset 3")),
@@ -436,4 +439,35 @@ pub(super) fn run(binary: &Path) -> Result<()> {
         "PASS real reporting app mouse bytes, Shift history override and screen buffer transitions"
     );
     Ok(())
+}
+
+/// Where a missing reporting-app screen went: whether each application finished writing, what
+/// the server's own model of the pane holds, and whether a forced full frame shows it.
+fn both_ready_diagnostics(h: &mut Harness, tab: &Value) -> String {
+    let mut report = String::new();
+    for pane in tab["panes"].as_array().cloned().unwrap_or_default() {
+        let id = pane["id"].to_string();
+        let pid = pane["pid"].as_u64().unwrap_or_default();
+        let wchan = fs::read_to_string(format!("/proc/{pid}/wchan")).unwrap_or_default();
+        let written = fs::read_to_string(format!("/proc/{pid}/io"))
+            .unwrap_or_default()
+            .lines()
+            .find(|line| line.starts_with("wchar:"))
+            .unwrap_or_default()
+            .to_owned();
+        let capture = h
+            .cli(&["default", "capture", &id])
+            .map(|reply| reply["result"]["value"]["text"].clone());
+        report.push_str(&format!(
+            "\npane {id} pid {pid} wchan {wchan:?} {written}\nserver capture: {capture:?}\n"
+        ));
+    }
+    let before = h.text(0).matches("MOUSE_APP_READY").count();
+    let resized = h.resize(0, 26, 82).and_then(|()| h.pump(3.0));
+    let after = h.text(0).matches("MOUSE_APP_READY").count();
+    report.push_str(&format!(
+        "ready markers on the viewer: {before}; after a forced full frame ({resized:?}): {after}\n{}",
+        h.text(0)
+    ));
+    report
 }
