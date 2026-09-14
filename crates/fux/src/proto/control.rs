@@ -847,6 +847,15 @@ pub enum Reply {
 }
 
 impl Reply {
+    /// The process exit status a CLI that printed this reply should end with.
+    #[must_use]
+    pub fn exit_code(&self) -> std::process::ExitCode {
+        match self {
+            Self::Failed { .. } => std::process::ExitCode::FAILURE,
+            Self::Accepted { .. } | Self::Completed { .. } => std::process::ExitCode::SUCCESS,
+        }
+    }
+
     pub fn id(&self) -> RequestId {
         match self {
             Self::Accepted { id } | Self::Completed { id, .. } | Self::Failed { id, .. } => *id,

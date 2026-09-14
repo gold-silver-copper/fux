@@ -1,15 +1,19 @@
 //! Per-user session-server lifecycle: private paths, workspace descriptors, election locks,
 //! on-demand background startup and the manager RPC contract.
 
+mod bootstrap;
 mod descriptor;
+mod log;
 mod paths;
 mod rpc;
 mod startup;
 
+pub use bootstrap::{no_server, resolve, start_server};
 pub use descriptor::{
     Descriptor, DescriptorError, MAX_DESCRIPTOR_BYTES, ManagerIdentity, read_descriptor,
     recover_stale_descriptors, remove_descriptor, write_descriptor,
 };
+pub use log::CappedLog;
 pub use paths::{DaemonPaths, PathError};
 pub use rpc::{
     MANAGER_DEADLINE, ManagerReply, ManagerRequest, manager_request, manager_request_until,

@@ -525,8 +525,10 @@ async fn run(
                                 current,
                                 target.unwrap_or_else(|| Target::of(current)),
                                 &mut controller,
-                                workspaces_enabled,
-                                final_retain_ms,
+                                DispatchContext {
+                                    workspaces: workspaces_enabled,
+                                    final_retain_ms,
+                                },
                             );
                             // A contextual command can have waited while its pane/tab
                             // disappeared. Validate its new local mode against live state
@@ -801,15 +803,26 @@ enum Dispatch {
     Local,
 }
 
+/// What an attachment can do beyond the current frame: whether workspace commands are
+/// available (a manager socket is known) and the retention CLI-created panes get.
+#[derive(Clone, Copy, Debug)]
+struct DispatchContext {
+    workspaces: bool,
+    final_retain_ms: u64,
+}
+
 /// Turns a bound action into a request, a mode entry or a local effect, honouring availability.
 fn dispatch(
     action: Action,
     frame: &Frame,
     target: Target,
     controller: &mut Controller,
-    workspaces: bool,
-    final_retain_ms: u64,
+    context: DispatchContext,
 ) -> Dispatch {
+    let DispatchContext {
+        workspaces,
+        final_retain_ms,
+    } = context;
     if let Some(reason) = action.unavailable(frame, target, workspaces) {
         controller.report_error(reason);
         return Dispatch::Local;

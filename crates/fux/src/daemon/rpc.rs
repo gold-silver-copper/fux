@@ -96,6 +96,21 @@ pub enum ManagerReply {
 }
 
 impl ManagerReply {
+    /// The process exit status a CLI that printed this reply should end with: failure for a
+    /// failed manager request or a failed nested control reply.
+    #[must_use]
+    pub fn exit_code(&self) -> std::process::ExitCode {
+        match self {
+            Self::Failed { .. } => std::process::ExitCode::FAILURE,
+            Self::ReleasePanePin { result }
+            | Self::InputStatus { result }
+            | Self::PaneLocation { result }
+            | Self::Layout { result }
+            | Self::Final { result } => result.exit_code(),
+            _ => std::process::ExitCode::SUCCESS,
+        }
+    }
+
     /// The descriptor an `Attach`/`Resolve` request produced; any other reply is an error.
     pub fn into_descriptor(self) -> Result<super::Descriptor> {
         match self {

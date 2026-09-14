@@ -285,6 +285,43 @@ pub const fn canonical_key(key: u8) -> u8 {
     }
 }
 
+/// One input byte in the configuration's notation: a literal character, `C-x`, `Esc`, `Space`,
+/// `DEL` or `0xHH`. Parsing happens once, at deserialization, so a configuration holds bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct Key(pub u8);
+
+impl std::fmt::Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&key_name(self.0))
+    }
+}
+
+impl std::str::FromStr for Key {
+    type Err = KeyNotationError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        key_byte(value).map(Self).ok_or(KeyNotationError)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("must encode exactly one byte as a literal byte, `C-x`, `Esc`, `Space`, `DEL` or `0xHH`")]
+pub struct KeyNotationError;
+
+impl Serialize for Key {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&key_name(self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for Key {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(|error: KeyNotationError| {
+            serde::de::Error::custom(format!("`{value}` {error}"))
+        })
+    }
+}
+
 pub fn key_name(key: u8) -> String {
     match key {
         0 => "C-@".to_owned(),
@@ -420,15 +457,10 @@ impl Default for ClientBindings {
 /// configuration's own validation rejects unknown notation, prefix clashes and Shift twins.
 pub fn configured_bindings(config: &crate::config::Config) -> anyhow::Result<ClientBindings> {
     config.validate()?;
-    let byte =
-        |key: &str| key_byte(key).ok_or_else(|| anyhow::anyhow!("`{key}` must encode one byte"));
-    let prefix = byte(&config.prefix)?;
-    let bindings = config
-        .bindings
-        .iter()
-        .map(|(key, action)| Ok((byte(key)?, *action)))
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(ClientBindings::new(prefix, bindings))
+    Ok(ClientBindings::new(
+        config.prefix.0,
+        config.bindings.iter().map(|(key, action)| (key.0, *action)),
+    ))
 }
 
 #[cfg(test)]
@@ -574,16 +606,16 @@ mod tests {
         assert_eq!(canonical_key(b'{'), b'[');
         assert_eq!(canonical_key(1), 1);
         let mut config = crate::config::Config::default();
-        config.bindings.insert("X".into(), Action::CloseTab);
+        config.bindings.insert(Key(b'X'), Action::CloseTab);
         assert!(
             configured_bindings(&config).is_err(),
             "x and X are the same key"
         );
         let mut config = crate::config::Config {
-            prefix: "b".into(),
+            prefix: Key(b'b'),
             ..Default::default()
         };
-        config.bindings.insert("B".into(), Action::Detach);
+        config.bindings.insert(Key(b'B'), Action::Detach);
         assert!(configured_bindings(&config).is_err());
     }
 }

@@ -9,6 +9,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use fux::daemon::{ManagerReply, ManagerRequest};
+use fux::ids::{PaneId, TabId};
+use fux::proto::control::{FocusTarget, Request, TabAction, TabTarget};
 
 /// A minimal persistent terminal multiplexer: workspaces group tabs, tabs switch layouts, splits
 /// show terminals together. `fux` attaches to the default workspace, starting a session server on
@@ -44,7 +47,7 @@ impl AttachTargetArgs {
             instance,
             workspace: self.target_workspace.context("target workspace required")?,
             stream: self.target_stream.context("target stream required")?,
-            pane: fux::ids::PaneId(self.target_pane.context("target pane required")?),
+            pane: PaneId(self.target_pane.context("target pane required")?),
             pid: self.target_pid.context("target PID required")?,
         }))
     }
@@ -68,47 +71,203 @@ enum Command {
     },
     /// Show the configured prefix and keybindings.
     Bindings,
-    /// Manage workspaces: list, catalog, export-layout, apply-layout FILE --against EXPECTED_FILE, new [NAME], kill NAME, close NAME --instance INSTANCE --stream STREAM, reorder NAME [BEFORE_NAME].
-    Workspace(PassthroughArgs),
+    /// Manage workspaces through the session server (lists them when no subcommand is given).
+    Workspace {
+        #[command(subcommand)]
+        action: Option<WorkspaceCommand>,
+    },
     /// Send one raw JSON control request to the workspace control socket.
-    Ctl(PassthroughArgs),
-    /// Open a pane beside the focused one: [--cwd DIR] [--] [COMMAND...]
-    New(PassthroughArgs),
-    /// Split the focused pane: horizontal|vertical [--target PANE] [--cwd DIR] [--] [COMMAND...]
-    Split(PassthroughArgs),
-    /// Move the workspace focus: left|right|up|down|next|previous|last|PANE
-    Focus(PassthroughArgs),
-    /// Close a pane and terminate its process: PANE
-    Kill(PassthroughArgs),
+    Ctl {
+        /// The request, as one JSON object (may be split across arguments).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        json: Vec<String>,
+    },
+    /// Open a pane beside the focused one (sugar for a horizontal split of the focused pane).
+    New(PaneArgs),
+    /// Split a pane and run a command in the new half.
+    Split(SplitArgs),
+    /// Move the workspace focus.
+    Focus {
+        /// left|right|up|down|next|previous|last or a pane id.
+        #[arg(value_parser = parse_focus)]
+        target: FocusTarget,
+    },
+    /// Close a pane and terminate its process.
+    Kill { pane: u32 },
     /// Set a manual pane label; an empty name restores the application title.
     RenamePane(RenamePaneArgs),
     /// Choose ordinary right-click ownership for a pane.
     PaneInput(PaneInputArgs),
-    /// Resize the split around a pane: PANE DELTA
-    Resize(PassthroughArgs),
+    /// Resize the split around a pane by DELTA cells (negative shrinks).
+    Resize {
+        pane: u32,
+        #[arg(allow_hyphen_values = true)]
+        delta: i16,
+    },
     /// Inspect and edit existing pane layouts without restarting their processes.
     Layout(layout_cli::LayoutArgs),
     /// Move a live pane to another workspace on this server, preserving its process.
     TransferPane(layout_cli::WorkspaceTransferArgs),
-    /// Send input bytes to a pane: PANE KEYS (escapes: \n \r \t \e \\ \0 \xHH)
-    SendKeys(PassthroughArgs),
-    /// Capture a pane's screen: PANE [--attrs] [--scrollback LINES] [--cells]
-    Capture(PassthroughArgs),
+    /// Send input to a pane.
+    SendKeys(SendKeysArgs),
+    /// Capture a pane's screen.
+    Capture(CaptureArgs),
     /// List the workspace's tabs and panes as JSON.
-    List(PassthroughArgs),
+    List,
     /// Show the session server's pid, version, runtime directory and request bounds as JSON.
-    Info(PassthroughArgs),
-    /// Tab commands: new [NAME] | next | previous | select INDEX | select-id TAB | rename TAB NAME | close TAB | reorder TAB [BEFORE_TAB]
-    Tab(PassthroughArgs),
+    Info,
+    /// Tab commands.
+    Tab {
+        #[command(subcommand)]
+        action: TabCommand,
+    },
     /// Stream the workspace's lifecycle events as JSON lines.
-    Subscribe(PassthroughArgs),
+    Subscribe,
+}
+
+/// Options shared by `new` and `split`: where and how the pane command runs.
+#[derive(Debug, Args)]
+struct PaneArgs {
+    /// Working directory of the pane command (made absolute).
+    #[arg(long)]
+    cwd: Option<PathBuf>,
+    /// Extra environment for the pane command, repeatable.
+    #[arg(long, value_name = "NAME=VALUE", value_parser = parse_env)]
+    env: Vec<(String, String)>,
+    /// Initial pane height when no viewer sizes the tab (a headless workspace).
+    #[arg(long)]
+    rows: Option<u16>,
+    /// Initial pane width when no viewer sizes the tab (a headless workspace).
+    #[arg(long)]
+    columns: Option<u16>,
+    /// Ownership of ordinary right-clicks in the new pane.
+    #[arg(long, value_enum, default_value_t = fux::view::RightClickPolicy::Auto)]
+    right_click: fux::view::RightClickPolicy,
+    /// The existing pane's share of the split on a 10000 scale.
+    #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u16).range(500..=9500))]
+    ratio: u16,
+    /// Focus the new pane (default).
+    #[arg(long, overrides_with = "no_focus")]
+    focus: bool,
+    /// Keep the focus where it is.
+    #[arg(long)]
+    no_focus: bool,
+    /// The command to run; the configured default command when omitted. Precede with `--`
+    /// when it starts with a dash.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    argv: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct SplitArgs {
+    /// horizontal (side by side) or vertical (stacked); `h` and `v` are accepted.
+    #[arg(value_enum)]
+    axis: fux::layout::Axis,
+    /// The pane to split (the focused pane when omitted).
+    #[arg(long)]
+    target: Option<u32>,
+    #[command(flatten)]
+    pane: PaneArgs,
+}
+
+#[derive(Debug, Args)]
+struct SendKeysArgs {
+    pane: u32,
+    /// Interpret the input as space-separated key names (`C-c Enter`) instead of byte escapes
+    /// (`\n \r \t \e \\ \0 \xHH`).
+    #[arg(long)]
+    keys: bool,
+    /// The input: one escaped string, or key names when `--keys` is given.
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    input: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct CaptureArgs {
+    pane: u32,
+    /// Include text attributes.
+    #[arg(long)]
+    attrs: bool,
+    /// Lines of history above the screen to include.
+    #[arg(long, default_value_t = 0)]
+    scrollback: u32,
+    /// Return the visible grid cell by cell instead of text.
+    #[arg(long)]
+    cells: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum TabCommand {
+    /// Open a new tab, optionally named.
+    New { name: Option<String> },
+    /// Show the next tab.
+    Next,
+    /// Show the previous tab.
+    #[command(alias = "prev")]
+    Previous,
+    /// Show the tab at a position.
+    Select { index: u32 },
+    /// Show a tab by its stable id.
+    SelectId { tab: u32 },
+    /// Rename a tab.
+    Rename { tab: u32, name: String },
+    /// Close a tab and terminate its panes.
+    Close { tab: u32 },
+    /// Move a tab before another (to the end when BEFORE is omitted).
+    Reorder { tab: u32, before: Option<u32> },
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkspaceCommand {
+    /// List workspace names.
+    List,
+    /// Show the session server's identity and bounds.
+    Info,
+    /// List every workspace with its identity, layout generation and panes.
+    Catalog,
+    /// Export every workspace layout as an archive.
+    ExportLayout,
+    /// Apply a layout archive, checked against the export it was derived from.
+    ApplyLayout {
+        file: PathBuf,
+        #[arg(long)]
+        against: PathBuf,
+    },
+    /// Create a workspace (starting the session server when none is running).
+    New { name: Option<String> },
+    /// Terminate a workspace and its panes.
+    Kill { name: String },
+    /// Close a workspace by its observed identity.
+    Close {
+        name: String,
+        /// Observed server instance from workspace catalog/list.
+        #[arg(long)]
+        instance: String,
+        /// Observed workspace lifetime from workspace catalog/list.
+        #[arg(long)]
+        stream: u64,
+    },
+    /// Set a workspace's display label.
+    Rename {
+        name: String,
+        label: String,
+        #[arg(long)]
+        instance: String,
+        #[arg(long)]
+        stream: u64,
+    },
+    /// Move a workspace before another (to the end when BEFORE is omitted).
+    Reorder {
+        name: String,
+        before: Option<String>,
+    },
 }
 
 #[derive(Debug, Args)]
 struct PaneInputArgs {
     pane: u32,
-    #[arg(long, value_parser = ["auto", "fux", "pane"])]
-    right_click: String,
+    #[arg(long, value_enum)]
+    right_click: fux::view::RightClickPolicy,
     #[arg(long)]
     instance: String,
 }
@@ -129,27 +288,6 @@ struct PaneLocationArgs {
     instance: String,
 }
 
-#[derive(Debug, Parser)]
-struct WorkspaceRenameArgs {
-    name: String,
-    label: String,
-    #[arg(long)]
-    instance: String,
-    #[arg(long)]
-    stream: u64,
-}
-
-#[derive(Debug, Parser)]
-struct WorkspaceCloseArgs {
-    name: String,
-    /// Observed server instance from workspace catalog/list.
-    #[arg(long)]
-    instance: String,
-    /// Observed workspace lifetime from workspace catalog/list.
-    #[arg(long)]
-    stream: u64,
-}
-
 #[derive(Debug, Args)]
 struct ServeArgs {
     /// Initial workspace name.
@@ -161,10 +299,26 @@ struct ServeArgs {
     startup_channel: Option<PathBuf>,
 }
 
-#[derive(Debug, Args)]
-struct PassthroughArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    arguments: Vec<String>,
+fn parse_env(value: &str) -> Result<(String, String), String> {
+    value
+        .split_once('=')
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .ok_or_else(|| "expected NAME=VALUE".to_owned())
+}
+
+fn parse_focus(value: &str) -> Result<FocusTarget, String> {
+    Ok(match value {
+        "last" => FocusTarget::Last,
+        "next" => FocusTarget::Next,
+        "previous" => FocusTarget::Previous,
+        "left" => FocusTarget::Left,
+        "right" => FocusTarget::Right,
+        "up" => FocusTarget::Up,
+        "down" => FocusTarget::Down,
+        pane => FocusTarget::Pane(PaneId(pane.parse().map_err(|_| {
+            "expected left|right|up|down|next|previous|last or a pane id".to_owned()
+        })?)),
+    })
 }
 
 fn main() -> ExitCode {
@@ -204,7 +358,7 @@ fn init_diagnostics(daemon: bool) -> Result<()> {
         } else {
             "daemon.log"
         });
-        BoxMakeWriter::new(move || CappedLog::open(&log))
+        BoxMakeWriter::new(move || fux::daemon::CappedLog::open(&log))
     } else {
         BoxMakeWriter::new(std::io::stderr)
     };
@@ -225,81 +379,8 @@ fn init_diagnostics(daemon: bool) -> Result<()> {
     Ok(())
 }
 
-enum CappedLog {
-    File {
-        file: nix::fcntl::Flock<std::fs::File>,
-        remaining: usize,
-    },
-    Sink(std::io::Sink),
-}
-
-impl CappedLog {
-    fn open(path: &std::path::Path) -> Self {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let mut options = std::fs::OpenOptions::new();
-        options
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .custom_flags(nix::libc::O_NOFOLLOW);
-        let Ok(file) = options.open(path) else {
-            return Self::Sink(std::io::sink());
-        };
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        let private = file.metadata().is_ok_and(|metadata| {
-            metadata.is_file()
-                && metadata.permissions().mode() & 0o077 == 0
-                && path
-                    .parent()
-                    .and_then(|parent| std::fs::metadata(parent).ok())
-                    .is_some_and(|parent| parent.uid() == metadata.uid())
-        });
-        if !private {
-            return Self::Sink(std::io::sink());
-        }
-        let Ok(file) = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
-        else {
-            return Self::Sink(std::io::sink());
-        };
-        if file
-            .metadata()
-            .is_ok_and(|metadata| metadata.len() >= 1024 * 1024)
-        {
-            let _ = file.set_len(0);
-        }
-        let used = file.metadata().map_or(1024 * 1024, |metadata| {
-            metadata.len().min(1024 * 1024) as usize
-        });
-        Self::File {
-            file,
-            remaining: (1024 * 1024_usize).saturating_sub(used),
-        }
-    }
-}
-
-impl std::io::Write for CappedLog {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        match self {
-            Self::File { file, remaining } => {
-                let kept = bytes.len().min(*remaining);
-                std::io::Write::write_all(&mut **file, bytes.get(..kept).unwrap_or_default())?;
-                *remaining -= kept;
-                // Diagnostics are best-effort: discard overflow without delaying
-                // or failing the operation that produced the record.
-                Ok(bytes.len())
-            }
-            Self::Sink(sink) => std::io::Write::write(sink, bytes),
-        }
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::File { file, .. } => std::io::Write::flush(&mut **file),
-            Self::Sink(sink) => std::io::Write::flush(sink),
-        }
-    }
-}
-
 async fn run(cli: Cli) -> Result<ExitCode> {
+    let workspace = cli.name.as_deref();
     match cli.command {
         Some(Command::Serve(args)) => {
             let config = fux::config::Config::load()?;
@@ -343,7 +424,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Some(Command::Bindings) => {
             let config = fux::config::Config::load()?;
             let bindings = fux::commands::configured_bindings(&config)?;
-            println!("Prefix: {}", fux::commands::key_name(bindings.prefix()));
+            println!("Prefix: {}", fux::commands::Key(bindings.prefix()));
             let mut previous = None;
             for (key, action) in bindings.entries() {
                 let group = action.group();
@@ -351,89 +432,171 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     println!("\n{}", group.label());
                     previous = Some(group);
                 }
-                println!("{:8} {}", fux::commands::key_name(key), action.label());
+                println!(
+                    "{:8} {}",
+                    fux::commands::Key(key).to_string(),
+                    action.label()
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
-        Some(Command::LocatePane(args)) => {
-            let paths = fux::daemon::DaemonPaths::discover()?;
-            let reply = fux::daemon::manager_request(
-                &paths.manager_socket,
-                &fux::daemon::ManagerRequest::PaneLocation {
-                    instance: args.instance,
-                    pane: fux::ids::PaneId(args.pane),
-                },
-            )?;
-            println!("{}", serde_json::to_string(&reply)?);
-            Ok(
-                if matches!(
-                    reply,
-                    fux::daemon::ManagerReply::PaneLocation {
-                        result: fux::proto::control::Reply::Completed { .. }
-                    }
-                ) {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::FAILURE
-                },
-            )
+        Some(Command::LocatePane(args)) => manager(&ManagerRequest::PaneLocation {
+            instance: args.instance,
+            pane: PaneId(args.pane),
+        }),
+        Some(Command::Workspace { action }) => {
+            workspace_command(action.unwrap_or(WorkspaceCommand::List))
         }
-        Some(Command::Workspace(args)) => workspace_command(args.arguments),
-        Some(Command::Ctl(args)) => ctl_json(cli.name.as_deref(), args.arguments),
-        Some(Command::New(args)) => ctl_alias(cli.name.as_deref(), "new", args.arguments),
-        Some(Command::Split(args)) => ctl_alias(cli.name.as_deref(), "split", args.arguments),
-        Some(Command::Focus(args)) => ctl_alias(cli.name.as_deref(), "focus", args.arguments),
-        Some(Command::Kill(args)) => ctl_alias(cli.name.as_deref(), "kill", args.arguments),
-        Some(Command::Resize(args)) => ctl_alias(cli.name.as_deref(), "resize", args.arguments),
-        Some(Command::PaneInput(args)) => {
-            let right_click = match args.right_click.as_str() {
-                "fux" => fux::view::RightClickPolicy::Fux,
-                "pane" => fux::view::RightClickPolicy::Pane,
-                _ => fux::view::RightClickPolicy::Auto,
-            };
-            let request = fux::proto::control::Request::PaneInput {
-                id: 1,
-                instance: Some(args.instance),
-                pane: fux::ids::PaneId(args.pane),
-                right_click,
-            };
-            request.validate()?;
-            send_control(cli.name.as_deref(), request)
+        Some(Command::Ctl { json }) => {
+            let request = fux::proto::control::decode_request_frame(json.join(" ").as_bytes())?;
+            send_control(workspace, request)
         }
-        Some(Command::RenamePane(args)) => {
-            let request = fux::proto::control::Request::RenamePane {
-                id: 1,
-                instance: Some(args.instance),
-                pane: fux::ids::PaneId(args.pane),
-                name: args.name,
-            };
-            request.validate()?;
-            send_control(cli.name.as_deref(), request)
+        Some(Command::TransferPane(args)) => manager(&args.request()?),
+        Some(Command::Layout(args)) => send_control(workspace, args.request()?),
+        Some(command) => {
+            let request = control_request(command, configured_final_retain_ms)?;
+            send_control(workspace, request)
         }
-        Some(Command::Layout(args)) => send_control(cli.name.as_deref(), args.request()?),
-        Some(Command::TransferPane(args)) => {
-            let paths = fux::daemon::DaemonPaths::discover()?;
-            let reply = fux::daemon::manager_request(&paths.manager_socket, &args.request()?)?;
-            println!("{}", serde_json::to_string(&reply)?);
-            Ok(status(!matches!(
-                reply,
-                fux::daemon::ManagerReply::Layout {
-                    result: fux::proto::control::Reply::Completed { .. }
-                }
-            )))
-        }
-        Some(Command::SendKeys(args)) => {
-            ctl_alias(cli.name.as_deref(), "send-keys", args.arguments)
-        }
-        Some(Command::Capture(args)) => ctl_alias(cli.name.as_deref(), "capture", args.arguments),
-        Some(Command::List(args)) => ctl_alias(cli.name.as_deref(), "list", args.arguments),
-        Some(Command::Info(args)) => ctl_alias(cli.name.as_deref(), "info", args.arguments),
-        Some(Command::Tab(args)) => ctl_alias(cli.name.as_deref(), "tab", args.arguments),
-        Some(Command::Subscribe(args)) => {
-            ctl_alias(cli.name.as_deref(), "subscribe", args.arguments)
-        }
-        None => attach(cli.name.as_deref()).await,
+        None => attach(workspace).await,
     }
+}
+
+/// The control request a control subcommand stands for; `final_retain_ms` is consulted only by
+/// the commands that create panes, so the others never depend on a config file or `$HOME`.
+fn control_request(
+    command: Command,
+    final_retain_ms: impl FnOnce() -> Result<u64>,
+) -> Result<Request> {
+    let id = 1;
+    let split = |axis, target: Option<u32>, pane: PaneArgs| -> Result<Request> {
+        Ok(Request::Split {
+            stream: None,
+            instance: None,
+            id,
+            axis,
+            target: target.map(PaneId),
+            cwd: pane.cwd.map(std::path::absolute).transpose()?,
+            argv: pane.argv,
+            env: pane.env,
+            rows: pane.rows,
+            columns: pane.columns,
+            final_retain_ms: final_retain_ms()?,
+            fixed_workspace: false,
+            right_click: pane.right_click,
+            ratio: pane.ratio,
+            focus: !pane.no_focus,
+        })
+    };
+    let request = match command {
+        Command::New(pane) => split(fux::layout::Axis::Horizontal, None, pane)?,
+        Command::Split(args) => split(args.axis, args.target, args.pane)?,
+        Command::Focus { target } => Request::Focus {
+            instance: None,
+            id,
+            target,
+        },
+        Command::Kill { pane } => Request::Kill {
+            instance: None,
+            id,
+            pane: PaneId(pane),
+        },
+        Command::Resize { pane, delta } => Request::Resize {
+            instance: None,
+            id,
+            pane: PaneId(pane),
+            delta,
+        },
+        Command::PaneInput(args) => Request::PaneInput {
+            id,
+            instance: Some(args.instance),
+            pane: PaneId(args.pane),
+            right_click: args.right_click,
+        },
+        Command::RenamePane(args) => Request::RenamePane {
+            id,
+            instance: Some(args.instance),
+            pane: PaneId(args.pane),
+            name: args.name,
+        },
+        Command::SendKeys(args) => {
+            let (notation, keys) = if args.keys {
+                (fux::proto::control::KeyNotation::Keys, args.input.join(" "))
+            } else {
+                if args.input.len() != 1 {
+                    bail!("send-keys takes one escaped string, or key names after --keys");
+                }
+                (
+                    fux::proto::control::KeyNotation::Escapes,
+                    args.input.into_iter().next().unwrap_or_default(),
+                )
+            };
+            if keys.is_empty() {
+                bail!("send-keys requires keys");
+            }
+            Request::SendKeys {
+                instance: None,
+                id,
+                pane: PaneId(args.pane),
+                keys,
+                notation,
+            }
+        }
+        Command::Capture(args) => Request::Capture {
+            if_revision: None,
+            instance: None,
+            id,
+            pane: PaneId(args.pane),
+            attrs: args.attrs,
+            scrollback: args.scrollback,
+            max_bytes: fux::proto::control::MAX_CAPTURE_BYTES,
+            format: if args.cells {
+                fux::proto::control::CaptureFormat::Cells
+            } else {
+                fux::proto::control::CaptureFormat::Text
+            },
+        },
+        Command::List => Request::List { instance: None, id },
+        Command::Info => Request::Info { instance: None, id },
+        Command::Tab { action } => Request::Tab {
+            instance: None,
+            id,
+            action: match action {
+                TabCommand::New { name } => TabAction::New { name },
+                TabCommand::Next => TabAction::Next,
+                TabCommand::Previous => TabAction::Previous,
+                TabCommand::Select { index } => TabAction::Select {
+                    target: TabTarget::Index(index),
+                },
+                TabCommand::SelectId { tab } => TabAction::Select {
+                    target: TabTarget::Id(TabId(tab)),
+                },
+                TabCommand::Rename { tab, name } => TabAction::Rename {
+                    tab: TabId(tab),
+                    name,
+                },
+                TabCommand::Close { tab } => TabAction::Close { tab: TabId(tab) },
+                TabCommand::Reorder { tab, before } => TabAction::Reorder {
+                    tab: TabId(tab),
+                    before: before.map(TabId),
+                },
+            },
+        },
+        Command::Subscribe => Request::Subscribe {
+            after: None,
+            instance: None,
+            id,
+        },
+        Command::Serve(_)
+        | Command::Attach { .. }
+        | Command::Bindings
+        | Command::LocatePane(_)
+        | Command::Workspace { .. }
+        | Command::Ctl { .. }
+        | Command::Layout(_)
+        | Command::TransferPane(_) => bail!("not a control command"),
+    };
+    request.validate()?;
+    Ok(request)
 }
 
 fn exit_code(code: u32) -> ExitCode {
@@ -450,9 +613,9 @@ async fn attach(name: Option<&str>) -> Result<ExitCode> {
     paths.prepare()?;
     let descriptor = {
         let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
-        match resolve(&paths, name)? {
+        match fux::daemon::resolve(&paths, name)? {
             Some(descriptor) => descriptor,
-            None => start_server(&paths, name.unwrap_or("default"))?,
+            None => fux::daemon::start_server(&paths, name.unwrap_or("default"))?,
         }
     };
     let code = fux::client::attach(
@@ -467,206 +630,88 @@ async fn attach(name: Option<&str>) -> Result<ExitCode> {
     Ok(code.map_or(ExitCode::SUCCESS, exit_code))
 }
 
-fn resolve(
-    paths: &fux::daemon::DaemonPaths,
-    name: Option<&str>,
-) -> Result<Option<fux::daemon::Descriptor>> {
-    match fux::daemon::manager_request(
-        &paths.manager_socket,
-        &fux::daemon::ManagerRequest::Resolve {
-            name: name.map(str::to_owned),
-        },
-    ) {
-        Ok(reply) => reply.into_descriptor().map(Some),
-        Err(error) if no_server(&error) => Ok(None),
-        Err(error) => Err(error.context(
-            "cannot use the existing session server; if it is older than this fux, save your work in it and restart it",
-        )),
-    }
-}
-
-/// No session server is listening (as opposed to one that answered badly).
-fn no_server(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<std::io::Error>().is_some_and(|error| {
-        matches!(
-            error.kind(),
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-        )
-    })
-}
-
-fn status(failed: bool) -> ExitCode {
-    if failed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
-}
-
-fn start_server(paths: &fux::daemon::DaemonPaths, name: &str) -> Result<fux::daemon::Descriptor> {
-    let executable = std::env::current_exe()?;
-    let mut child = fux::daemon::ServerChild::spawn(&paths.runtime_dir, &executable, name)?;
-    let deadline = std::time::Instant::now() + fux::daemon::STARTUP_TIMEOUT;
-    loop {
-        // READY may arrive before the manager answers; keep polling until the deadline either way.
-        child.poll()?;
-        if let Ok(fux::daemon::ManagerReply::Info { info }) = fux::daemon::manager_request_until(
-            &paths.manager_socket,
-            &fux::daemon::ManagerRequest::Info,
-            deadline,
-        ) {
-            anyhow::ensure!(
-                info.pid == child.pid(),
-                "another server won startup; owned workspace was not created"
-            );
-            let identity = fux::daemon::ManagerIdentity {
-                pid: info.pid,
-                instance_nonce: info.instance_nonce,
-            };
-            if let Ok(descriptor) =
-                fux::daemon::read_descriptor(&paths.descriptor(name)?, name, &identity)
-            {
-                anyhow::ensure!(
-                    child.confirm(descriptor.pid),
-                    "workspace belongs to another server"
-                );
-                return Ok(descriptor);
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            bail!("session server startup timed out");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-}
-
-fn workspace_command(arguments: Vec<String>) -> Result<ExitCode> {
+/// Sends one manager request, prints the reply and maps it to an exit status.
+fn manager(request: &ManagerRequest) -> Result<ExitCode> {
     let paths = fux::daemon::DaemonPaths::discover()?;
-    let action = arguments.first().map_or("list", String::as_str);
-    if action == "rename" {
-        let args = WorkspaceRenameArgs::try_parse_from(
-            std::iter::once("workspace rename".to_owned()).chain(arguments.into_iter().skip(1)),
-        )?;
-        let request = fux::proto::control::Request::Workspace {
+    let reply = fux::daemon::manager_request(&paths.manager_socket, request)?;
+    print_reply(&reply)
+}
+
+fn print_reply(reply: &ManagerReply) -> Result<ExitCode> {
+    println!("{}", serde_json::to_string(reply)?);
+    Ok(reply.exit_code())
+}
+
+fn workspace_command(action: WorkspaceCommand) -> Result<ExitCode> {
+    let paths = fux::daemon::DaemonPaths::discover()?;
+    let identified = |name: String, instance, stream, action| -> Result<ExitCode> {
+        let request = Request::Workspace {
             id: 1,
-            instance: Some(args.instance),
-            stream: Some(args.stream),
-            action: fux::proto::control::WorkspaceAction::Rename { label: args.label },
+            instance: Some(instance),
+            stream: Some(stream),
+            action,
         };
         request.validate()?;
-        return send_control(Some(&args.name), request);
-    }
-    if action == "close" {
-        let args = WorkspaceCloseArgs::try_parse_from(
-            std::iter::once("workspace close".to_owned()).chain(arguments.into_iter().skip(1)),
-        )?;
-        let request = fux::proto::control::Request::Workspace {
-            id: 1,
-            instance: Some(args.instance),
-            stream: Some(args.stream),
-            action: fux::proto::control::WorkspaceAction::Kill {
-                name: args.name.clone(),
-            },
-        };
-        request.validate()?;
-        return send_control(Some(&args.name), request);
-    }
-    let reply = match action {
-        "reorder" => fux::daemon::manager_request(
-            &paths.manager_socket,
-            &fux::daemon::ManagerRequest::Reorder {
-                name: arguments
-                    .get(1)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("workspace reorder requires NAME [BEFORE_NAME]")
-                    })?
-                    .clone(),
-                before: arguments.get(2).cloned(),
-            },
-        )?,
-        "apply-layout" => {
-            if arguments.len() != 4 || arguments.get(2).map(String::as_str) != Some("--against") {
-                bail!("workspace apply-layout FILE --against EXPECTED_FILE");
-            }
-            fux::daemon::manager_request(
-                &paths.manager_socket,
-                &fux::daemon::ManagerRequest::ApplyLayout {
-                    archive: layout_cli::read_archive(std::path::Path::new(
-                        arguments.get(1).context("archive file")?,
-                    ))?,
-                    expected: layout_cli::read_archive(std::path::Path::new(
-                        arguments.get(3).context("expected archive file")?,
-                    ))?,
-                },
-            )?
+        send_control(Some(&name), request)
+    };
+    match action {
+        WorkspaceCommand::List => manager(&ManagerRequest::List),
+        WorkspaceCommand::Info => manager(&ManagerRequest::Info),
+        WorkspaceCommand::Catalog => manager(&ManagerRequest::Catalog),
+        WorkspaceCommand::ExportLayout => manager(&ManagerRequest::ExportLayout),
+        WorkspaceCommand::ApplyLayout { file, against } => manager(&ManagerRequest::ApplyLayout {
+            archive: layout_cli::read_archive(&file)?,
+            expected: layout_cli::read_archive(&against)?,
+        }),
+        WorkspaceCommand::Kill { name } => manager(&ManagerRequest::Kill { name }),
+        WorkspaceCommand::Reorder { name, before } => {
+            manager(&ManagerRequest::Reorder { name, before })
         }
-        "export-layout" => fux::daemon::manager_request(
-            &paths.manager_socket,
-            &fux::daemon::ManagerRequest::ExportLayout,
-        )?,
-        "catalog" => fux::daemon::manager_request(
-            &paths.manager_socket,
-            &fux::daemon::ManagerRequest::Catalog,
-        )?,
-        "list" => {
-            fux::daemon::manager_request(&paths.manager_socket, &fux::daemon::ManagerRequest::List)?
-        }
-        "info" => {
-            fux::daemon::manager_request(&paths.manager_socket, &fux::daemon::ManagerRequest::Info)?
-        }
-        "new" => {
+        WorkspaceCommand::Rename {
+            name,
+            label,
+            instance,
+            stream,
+        } => identified(
+            name,
+            instance,
+            stream,
+            fux::proto::control::WorkspaceAction::Rename { label },
+        ),
+        WorkspaceCommand::Close {
+            name,
+            instance,
+            stream,
+        } => identified(
+            name.clone(),
+            instance,
+            stream,
+            fux::proto::control::WorkspaceAction::Kill { name },
+        ),
+        WorkspaceCommand::New { name } => {
             paths.prepare()?;
             let _startup = fux::daemon::StartupLock::acquire(&paths.runtime_dir)?;
-            let name = arguments.get(1).cloned();
             if let Some(name) = &name {
                 fux::ids::validate_workspace_name(name)?;
             }
-            match fux::daemon::manager_request(
+            let reply = match fux::daemon::manager_request(
                 &paths.manager_socket,
-                &fux::daemon::ManagerRequest::Resolve { name: name.clone() },
+                &ManagerRequest::Resolve { name: name.clone() },
             ) {
                 Ok(reply) => reply,
-                Err(error) if no_server(&error) => {
-                    let descriptor = start_server(&paths, name.as_deref().unwrap_or("default"))?;
-                    fux::daemon::ManagerReply::Attach { descriptor }
+                Err(error) if fux::daemon::no_server(&error) => {
+                    let descriptor =
+                        fux::daemon::start_server(&paths, name.as_deref().unwrap_or("default"))?;
+                    ManagerReply::Attach { descriptor }
                 }
                 Err(error) => return Err(error),
-            }
+            };
+            print_reply(&reply)
         }
-        "kill" => fux::daemon::manager_request(
-            &paths.manager_socket,
-            &fux::daemon::ManagerRequest::Kill {
-                name: arguments
-                    .get(1)
-                    .ok_or_else(|| anyhow::anyhow!("workspace kill requires a name"))?
-                    .clone(),
-            },
-        )?,
-        _ => bail!("workspace requires list, new [NAME], kill NAME, or info"),
-    };
-    println!("{}", serde_json::to_string(&reply)?);
-    Ok(status(matches!(
-        reply,
-        fux::daemon::ManagerReply::Failed { .. }
-    )))
-}
-
-fn ctl_json(workspace: Option<&str>, arguments: Vec<String>) -> Result<ExitCode> {
-    let input = arguments.join(" ");
-    if input.is_empty() {
-        bail!("ctl requires one JSON request");
     }
-    let request = fux::proto::control::decode_request_frame(input.as_bytes())?;
-    send_control(workspace, request)
 }
 
-fn ctl_alias(workspace: Option<&str>, command: &str, arguments: Vec<String>) -> Result<ExitCode> {
-    let request = alias_request(command, &arguments, &configured_final_retain_ms)?;
-    send_control(workspace, request)
-}
-
-/// The `[final] retain-ms` a CLI-created pane's final record keeps; only `new`/`split` read the
-/// configuration, so the other aliases never depend on a config file or `$HOME`.
+/// The `[final] retain-ms` a CLI-created pane's final record keeps.
 fn configured_final_retain_ms() -> Result<u64> {
     Ok(fux::config::Config::load()?.final_records.retain_ms)
 }
@@ -679,10 +724,7 @@ fn control_path(workspace: Option<&str>) -> Result<PathBuf> {
     Ok(paths.control_socket(workspace.unwrap_or("default"))?)
 }
 
-fn send_control(
-    workspace: Option<&str>,
-    request: fux::proto::control::Request,
-) -> Result<ExitCode> {
+fn send_control(workspace: Option<&str>, request: Request) -> Result<ExitCode> {
     use std::io::Write as _;
     use std::os::unix::net::UnixStream;
     let answer_window = std::time::Duration::from_secs(30);
@@ -699,7 +741,7 @@ fn send_control(
         stdout.write_all(b"\n")?;
         stdout.flush()
     };
-    if matches!(request, fux::proto::control::Request::Subscribe { .. }) {
+    if matches!(request, Request::Subscribe { .. }) {
         let accepted =
             fux::daemon::read_json_frame(&mut stream, std::time::Duration::from_secs(30))?;
         print_line(&accepted)?;
@@ -718,437 +760,220 @@ fn send_control(
     let frame = fux::daemon::read_json_frame(&mut stream, answer_window)?;
     let reply: fux::proto::control::Reply = serde_json::from_slice(&frame)?;
     print_line(&frame)?;
-    Ok(status(matches!(
-        reply,
-        fux::proto::control::Reply::Failed { .. }
-    )))
-}
-
-fn alias_request(
-    command: &str,
-    args: &[String],
-    final_retain_ms: &dyn Fn() -> Result<u64>,
-) -> Result<fux::proto::control::Request> {
-    use fux::ids::{PaneId, TabId};
-    use fux::layout::Axis;
-    use fux::proto::control::{FocusTarget, Request, TabAction};
-    let id = 1;
-    let get = |index: usize, name: &str| {
-        args.get(index)
-            .ok_or_else(|| anyhow::anyhow!("{command} requires {name}"))
-    };
-    let number = |index: usize, name: &str| -> Result<u32> { Ok(get(index, name)?.parse()?) };
-    let request = match command {
-        "new" => {
-            // `new` is sugar for a side-by-side split of the focused pane.
-            let (cwd, env, rows, columns, right_click, ratio, focus, argv) =
-                parse_pane_options(args)?;
-            Request::Split {
-                stream: None,
-                instance: None,
-                id,
-                axis: Axis::Horizontal,
-                target: None,
-                cwd,
-                argv,
-                env,
-                rows,
-                columns,
-                final_retain_ms: final_retain_ms()?,
-                fixed_workspace: false,
-                right_click,
-                ratio,
-                focus,
-            }
-        }
-        "split" => {
-            let (axis, rest) = match args.first().map(String::as_str) {
-                Some("horizontal" | "h") => (Axis::Horizontal, args.get(1..).unwrap_or_default()),
-                Some("vertical" | "v") => (Axis::Vertical, args.get(1..).unwrap_or_default()),
-                _ => bail!("split requires horizontal|vertical followed by options and a command"),
-            };
-            let (target, rest) = parse_target(rest)?;
-            let (cwd, env, rows, columns, right_click, ratio, focus, argv) =
-                parse_pane_options(rest)?;
-            Request::Split {
-                stream: None,
-                instance: None,
-                id,
-                axis,
-                target: target.map(PaneId),
-                cwd,
-                argv,
-                env,
-                rows,
-                columns,
-                final_retain_ms: final_retain_ms()?,
-                fixed_workspace: false,
-                right_click,
-                ratio,
-                focus,
-            }
-        }
-        "focus" => {
-            let target = match get(0, "a target")?.as_str() {
-                "last" => FocusTarget::Last,
-                "next" => FocusTarget::Next,
-                "previous" => FocusTarget::Previous,
-                "left" => FocusTarget::Left,
-                "right" => FocusTarget::Right,
-                "up" => FocusTarget::Up,
-                "down" => FocusTarget::Down,
-                value => FocusTarget::Pane(PaneId(value.parse()?)),
-            };
-            Request::Focus {
-                instance: None,
-                id,
-                target,
-            }
-        }
-        "kill" => Request::Kill {
-            instance: None,
-            id,
-            pane: PaneId(number(0, "a pane id")?),
-        },
-        "resize" => Request::Resize {
-            instance: None,
-            id,
-            pane: PaneId(number(0, "a pane id")?),
-            delta: get(1, "a delta")?.parse()?,
-        },
-        "send-keys" => {
-            let pane = PaneId(number(0, "a pane id")?);
-            let rest = args.get(1..).unwrap_or_default();
-            let (notation, payload) = if rest.first().map(String::as_str) == Some("--keys") {
-                (
-                    fux::proto::control::KeyNotation::Keys,
-                    rest.get(1..).unwrap_or_default().join(" "),
-                )
-            } else {
-                (
-                    fux::proto::control::KeyNotation::Escapes,
-                    rest.first().cloned().unwrap_or_default(),
-                )
-            };
-            if payload.is_empty() {
-                bail!("send-keys requires keys");
-            }
-            Request::SendKeys {
-                instance: None,
-                id,
-                pane,
-                keys: payload,
-                notation,
-            }
-        }
-        "capture" => {
-            let pane = PaneId(number(0, "a pane id")?);
-            let options = parse_capture_options(args.get(1..).unwrap_or_default())?;
-            Request::Capture {
-                if_revision: None,
-                instance: None,
-                id,
-                pane,
-                attrs: options.attrs,
-                scrollback: options.scrollback,
-                max_bytes: fux::proto::control::MAX_CAPTURE_BYTES,
-                format: if options.cells {
-                    fux::proto::control::CaptureFormat::Cells
-                } else {
-                    fux::proto::control::CaptureFormat::Text
-                },
-            }
-        }
-        "list" => Request::List { instance: None, id },
-        "info" => Request::Info { instance: None, id },
-        "tab" => {
-            let action = match get(0, "an action")?.as_str() {
-                "reorder" => TabAction::Reorder {
-                    tab: TabId(number(1, "a tab id")?),
-                    before: args
-                        .get(2)
-                        .map(|value| value.parse::<u32>().map(TabId))
-                        .transpose()?,
-                },
-                "new" => TabAction::New {
-                    name: args.get(1).cloned(),
-                },
-                "next" => TabAction::Next,
-                "previous" | "prev" => TabAction::Previous,
-                "select" => TabAction::Select {
-                    target: fux::proto::control::TabTarget::Index(number(1, "an index")?),
-                },
-                "select-id" => TabAction::Select {
-                    target: fux::proto::control::TabTarget::Id(TabId(number(1, "a tab id")?)),
-                },
-                "rename" => TabAction::Rename {
-                    tab: TabId(number(1, "a tab id")?),
-                    name: get(2, "a name")?.to_owned(),
-                },
-                "close" => TabAction::Close {
-                    tab: TabId(number(1, "a tab id")?),
-                },
-                _ => bail!("tab requires new, next, previous, select, select-id, rename or close"),
-            };
-            Request::Tab {
-                instance: None,
-                id,
-                action,
-            }
-        }
-        "subscribe" => {
-            if !args.is_empty() {
-                bail!("subscribe takes no arguments; every workspace event is streamed");
-            }
-            Request::Subscribe {
-                after: None,
-                instance: None,
-                id,
-            }
-        }
-        _ => bail!("unknown control command {command}"),
-    };
-    request.validate()?;
-    Ok(request)
-}
-
-fn parse_target(args: &[String]) -> Result<(Option<u32>, &[String])> {
-    if args.first().map(String::as_str) == Some("--target") {
-        let target = args
-            .get(1)
-            .ok_or_else(|| anyhow::anyhow!("--target requires a pane id"))?
-            .parse()?;
-        return Ok((Some(target), args.get(2..).unwrap_or_default()));
-    }
-    Ok((None, args))
-}
-
-type PaneOptions = (
-    Option<PathBuf>,
-    Vec<(String, String)>,
-    Option<u16>,
-    Option<u16>,
-    fux::view::RightClickPolicy,
-    u16,
-    bool,
-    Vec<String>,
-);
-
-fn parse_pane_options(args: &[String]) -> Result<PaneOptions> {
-    let mut cwd = None;
-    let mut env = Vec::new();
-    let mut rows = None;
-    let mut columns = None;
-    let mut right_click = fux::view::RightClickPolicy::Auto;
-    let mut ratio = 5000;
-    let mut focus = true;
-    let mut index = 0;
-    while let Some(argument) = args.get(index) {
-        match argument.as_str() {
-            "--" => {
-                return Ok((
-                    cwd,
-                    env,
-                    rows,
-                    columns,
-                    right_click,
-                    ratio,
-                    focus,
-                    args.get(index + 1..).unwrap_or_default().to_vec(),
-                ));
-            }
-            "--ratio" => {
-                ratio = args
-                    .get(index + 1)
-                    .ok_or_else(|| anyhow::anyhow!("--ratio requires 500..=9500"))?
-                    .parse()?;
-                index += 2;
-            }
-            "--focus" | "--no-focus" => {
-                focus = argument == "--focus";
-                index += 1;
-            }
-            "--right-click" => {
-                right_click = match args.get(index + 1).map(String::as_str) {
-                    Some("auto") => fux::view::RightClickPolicy::Auto,
-                    Some("fux") => fux::view::RightClickPolicy::Fux,
-                    Some("pane") => fux::view::RightClickPolicy::Pane,
-                    _ => bail!("--right-click requires auto|fux|pane"),
-                };
-                index += 2;
-            }
-            "--cwd" => {
-                let directory = args
-                    .get(index + 1)
-                    .ok_or_else(|| anyhow::anyhow!("--cwd requires a directory"))?;
-                cwd = Some(std::path::absolute(directory)?);
-                index += 2;
-            }
-            "--env" => {
-                let pair = args
-                    .get(index + 1)
-                    .ok_or_else(|| anyhow::anyhow!("--env requires NAME=VALUE"))?;
-                let (name, value) = pair
-                    .split_once('=')
-                    .ok_or_else(|| anyhow::anyhow!("--env requires NAME=VALUE"))?;
-                env.push((name.to_owned(), value.to_owned()));
-                index += 2;
-            }
-            "--rows" => {
-                rows = Some(
-                    args.get(index + 1)
-                        .ok_or_else(|| anyhow::anyhow!("--rows requires a count"))?
-                        .parse()?,
-                );
-                index += 2;
-            }
-            "--columns" => {
-                columns = Some(
-                    args.get(index + 1)
-                        .ok_or_else(|| anyhow::anyhow!("--columns requires a count"))?
-                        .parse()?,
-                );
-                index += 2;
-            }
-            _ => {
-                return Ok((
-                    cwd,
-                    env,
-                    rows,
-                    columns,
-                    right_click,
-                    ratio,
-                    focus,
-                    args.get(index..).unwrap_or_default().to_vec(),
-                ));
-            }
-        }
-    }
-    Ok((
-        cwd,
-        env,
-        rows,
-        columns,
-        right_click,
-        ratio,
-        focus,
-        Vec::new(),
-    ))
-}
-
-#[derive(Default)]
-struct CaptureOptions {
-    attrs: bool,
-    scrollback: u32,
-    cells: bool,
-}
-
-fn parse_capture_options(args: &[String]) -> Result<CaptureOptions> {
-    let mut options = CaptureOptions::default();
-    let mut index = 0;
-    while let Some(argument) = args.get(index) {
-        match argument.as_str() {
-            "--attrs" => {
-                options.attrs = true;
-                index += 1;
-            }
-            "--cells" => {
-                options.cells = true;
-                index += 1;
-            }
-            "--scrollback" => {
-                options.scrollback = args
-                    .get(index + 1)
-                    .ok_or_else(|| anyhow::anyhow!("--scrollback requires a line count"))?
-                    .parse()?;
-                index += 2;
-            }
-            value => bail!("unknown capture option {value}"),
-        }
-    }
-    Ok(options)
+    Ok(reply.exit_code())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory as _;
 
-    #[test]
-    fn aliases_build_validated_requests() {
-        let retain = || Ok(fux::config::DEFAULT_FINAL_RETAIN_MS);
-        let alias_request = |command: &str, args: &[String]| alias_request(command, args, &retain);
-        let split = alias_request(
-            "split",
-            &[
-                "vertical".into(),
-                "--target".into(),
-                "3".into(),
-                "--ratio".into(),
-                "7000".into(),
-                "--no-focus".into(),
-                "--right-click".into(),
-                "pane".into(),
-                "--cwd".into(),
-                "/tmp".into(),
-                "--".into(),
-                "sh".into(),
-                "-l".into(),
-            ],
-        );
-        assert!(matches!(
-            split,
-            Ok(fux::proto::control::Request::Split { axis: fux::layout::Axis::Vertical, target: Some(fux::ids::PaneId(3)), right_click: fux::view::RightClickPolicy::Pane, ratio: 7000, focus: false, argv, final_retain_ms: fux::config::DEFAULT_FINAL_RETAIN_MS, .. }) if argv == ["sh", "-l"]
-        ));
-        assert!(
-            alias_request("focus", &["left".into()]).is_ok(),
-            "aliases other than new/split never read the configured retention"
-        );
-        assert!(alias_request("resize", &["1".into(), "0".into()]).is_err());
-        assert!(alias_request("popup", &[]).is_err());
-        assert!(alias_request("tab", &["close".into(), "2".into()]).is_ok());
-        assert!(alias_request("subscribe", &[]).is_ok());
-        assert!(alias_request("subscribe", &["pane.closed".into()]).is_err());
-        assert!(alias_request("new", &["--right-click".into(), "invalid".into()]).is_err());
-        assert!(
-            matches!(alias_request("new", &["--".into(), "sh".into(), "--right-click".into(), "pane".into()]),
-            Ok(fux::proto::control::Request::Split { right_click: fux::view::RightClickPolicy::Auto, argv, .. }) if argv == ["sh", "--right-click", "pane"])
-        );
-        assert!(alias_request("wait", &["1".into(), "exit".into()]).is_err());
-        for ratio in ["0", "499", "9501", "nan", "inf", "-1", "0.5"] {
-            assert!(alias_request("new", &["--ratio".into(), ratio.into()]).is_err());
-        }
-        assert!(alias_request("run", &[]).is_err());
+    fn request(args: &[&str]) -> Result<Request> {
+        let cli = Cli::try_parse_from(std::iter::once("fux").chain(args.iter().copied()))?;
+        control_request(cli.command.context("subcommand")?, || {
+            Ok(fux::config::DEFAULT_FINAL_RETAIN_MS)
+        })
     }
 
     #[test]
-    fn daemon_log_is_private_and_truncated_at_one_mib() -> Result<()> {
-        use std::io::Write as _;
-        use std::os::unix::fs::PermissionsExt as _;
-        let root = std::env::temp_dir().join(format!("fux-log-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir(&root)?;
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
-        let path = root.join("daemon.log");
-        std::fs::write(&path, vec![b'x'; 1024 * 1024])?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        let mut log = CappedLog::open(&path);
-        log.write_all(b"fresh")?;
-        log.flush()?;
-        assert!(std::fs::metadata(&path)?.len() < 1024 * 1024);
-        let before = std::fs::metadata(&path)?.len();
-        let mut contender = CappedLog::open(&path);
-        contender.write_all(b"must not interleave")?;
-        assert_eq!(std::fs::metadata(&path)?.len(), before);
-        log.write_all(&vec![b'y'; 2 * 1024 * 1024])?;
-        log.flush()?;
-        assert_eq!(std::fs::metadata(&path)?.len(), 1024 * 1024);
-        drop(log);
-        let mut reopened = CappedLog::open(&path);
-        reopened.write_all(b"next record")?;
-        reopened.flush()?;
-        assert_eq!(std::fs::read(&path)?, b"next record");
-        assert_eq!(std::fs::metadata(&path)?.permissions().mode() & 0o077, 0);
-        std::fs::remove_dir_all(root)?;
+    fn control_subcommands_build_validated_requests() {
+        let split = request(&[
+            "split",
+            "vertical",
+            "--target",
+            "3",
+            "--ratio",
+            "7000",
+            "--no-focus",
+            "--right-click",
+            "pane",
+            "--cwd",
+            "/tmp",
+            "--",
+            "sh",
+            "-l",
+        ]);
+        assert!(matches!(
+            split,
+            Ok(Request::Split { axis: fux::layout::Axis::Vertical, target: Some(PaneId(3)), right_click: fux::view::RightClickPolicy::Pane, ratio: 7000, focus: false, argv, final_retain_ms: fux::config::DEFAULT_FINAL_RETAIN_MS, .. }) if argv == ["sh", "-l"]
+        ));
+        assert!(matches!(
+            request(&["split", "h", "--ratio", "7000", "--no-focus"]),
+            Ok(Request::Split { axis: fux::layout::Axis::Horizontal, target: None, focus: false, ratio: 7000, argv, .. }) if argv.is_empty()
+        ));
+        assert!(matches!(
+            request(&["focus", "left"]),
+            Ok(Request::Focus {
+                target: FocusTarget::Left,
+                ..
+            })
+        ));
+        assert!(matches!(
+            request(&["focus", "4"]),
+            Ok(Request::Focus {
+                target: FocusTarget::Pane(PaneId(4)),
+                ..
+            })
+        ));
+        assert!(request(&["focus", "sideways"]).is_err());
+        assert!(request(&["resize", "1", "0"]).is_err());
+        assert!(matches!(
+            request(&["resize", "1", "-3"]),
+            Ok(Request::Resize { delta: -3, .. })
+        ));
+        assert!(request(&["popup"]).is_err());
+        assert!(request(&["tab", "close", "2"]).is_ok());
+        assert!(request(&["tab", "prev"]).is_ok());
+        assert!(request(&["subscribe"]).is_ok());
+        assert!(request(&["subscribe", "pane.closed"]).is_err());
+        assert!(request(&["new", "--right-click", "invalid"]).is_err());
+        assert!(matches!(
+            request(&["new", "--", "sh", "--right-click", "pane"]),
+            Ok(Request::Split { right_click: fux::view::RightClickPolicy::Auto, argv, .. }) if argv == ["sh", "--right-click", "pane"]
+        ));
+        assert!(matches!(
+            request(&["new", "--env", "A=1", "--rows", "10", "--columns", "40", "sh"]),
+            Ok(Request::Split { rows: Some(10), columns: Some(40), env, argv, .. }) if env == [("A".to_owned(), "1".to_owned())] && argv == ["sh"]
+        ));
+        assert!(request(&["new", "--env", "novalue"]).is_err());
+        assert!(request(&["wait", "1", "exit"]).is_err());
+        for ratio in ["0", "499", "9501", "nan", "inf", "-1", "0.5"] {
+            assert!(request(&["new", "--ratio", ratio]).is_err(), "{ratio}");
+        }
+        assert!(matches!(
+            request(&["send-keys", "2", "\\x02"]),
+            Ok(Request::SendKeys { keys, notation: fux::proto::control::KeyNotation::Escapes, .. }) if keys == "\\x02"
+        ));
+        assert!(matches!(
+            request(&["send-keys", "2", "--keys", "C-c", "Enter"]),
+            Ok(Request::SendKeys { keys, notation: fux::proto::control::KeyNotation::Keys, .. }) if keys == "C-c Enter"
+        ));
+        assert!(request(&["send-keys", "2"]).is_err());
+        assert!(matches!(
+            request(&["capture", "7", "--attrs", "--scrollback", "5"]),
+            Ok(Request::Capture {
+                pane: PaneId(7),
+                attrs: true,
+                scrollback: 5,
+                format: fux::proto::control::CaptureFormat::Text,
+                ..
+            })
+        ));
+        assert!(matches!(
+            request(&["capture", "7", "--cells"]),
+            Ok(Request::Capture {
+                attrs: false,
+                format: fux::proto::control::CaptureFormat::Cells,
+                ..
+            })
+        ));
+        assert!(
+            request(&["capture", "7", "--cells", "--attrs"]).is_err(),
+            "cells already carry styles"
+        );
+        assert!(request(&["run"]).is_err());
+    }
+
+    #[test]
+    fn workspace_and_name_parse_together() -> Result<()> {
+        let cli = Cli::try_parse_from(["fux", "other", "workspace", "new", "x"])?;
+        assert_eq!(cli.name.as_deref(), Some("other"));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Workspace {
+                action: Some(WorkspaceCommand::New { name: Some(name) })
+            }) if name == "x"
+        ));
+        let cli = Cli::try_parse_from(["fux", "workspace"])?;
+        assert!(matches!(
+            cli.command,
+            Some(Command::Workspace { action: None })
+        ));
+        let cli = Cli::try_parse_from([
+            "fux",
+            "workspace",
+            "apply-layout",
+            "a.json",
+            "--against",
+            "b.json",
+        ])?;
+        assert!(matches!(
+            cli.command,
+            Some(Command::Workspace {
+                action: Some(WorkspaceCommand::ApplyLayout { .. })
+            })
+        ));
+        assert!(Cli::try_parse_from(["fux", "workspace", "apply-layout", "a.json"]).is_err());
+        assert!(Cli::try_parse_from(["fux", "workspace", "close", "x"]).is_err());
         Ok(())
+    }
+
+    /// Every subcommand's help names its own options, so `--help` never drifts from the parser.
+    #[test]
+    fn help_matches_the_parser() {
+        let mut command = Cli::command();
+        let help = |name: &str, command: &mut clap::Command| {
+            command
+                .find_subcommand_mut(name)
+                .unwrap_or_else(|| panic!("subcommand {name}"))
+                .render_long_help()
+                .to_string()
+        };
+        let split = help("split", &mut command);
+        for option in [
+            "--target",
+            "--cwd",
+            "--env",
+            "--rows",
+            "--columns",
+            "--right-click",
+            "--ratio",
+            "--focus",
+            "--no-focus",
+            "horizontal",
+            "vertical",
+        ] {
+            assert!(
+                split.contains(option),
+                "split help lacks {option}:\n{split}"
+            );
+        }
+        let workspace = help("workspace", &mut command);
+        for sub in [
+            "list",
+            "info",
+            "catalog",
+            "export-layout",
+            "apply-layout",
+            "new",
+            "kill",
+            "close",
+            "rename",
+            "reorder",
+        ] {
+            assert!(
+                workspace.contains(sub),
+                "workspace help lacks {sub}:\n{workspace}"
+            );
+        }
+        let tab = help("tab", &mut command);
+        for sub in [
+            "new",
+            "next",
+            "previous",
+            "select",
+            "select-id",
+            "rename",
+            "close",
+            "reorder",
+        ] {
+            assert!(tab.contains(sub), "tab help lacks {sub}:\n{tab}");
+        }
+        assert!(help("send-keys", &mut command).contains("--keys"));
+        let capture = help("capture", &mut command);
+        for option in ["--attrs", "--scrollback", "--cells"] {
+            assert!(capture.contains(option), "capture help lacks {option}");
+        }
+        assert!(help("pane-input", &mut command).contains("auto, fux, pane"));
     }
 }

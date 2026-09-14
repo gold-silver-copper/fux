@@ -232,7 +232,13 @@ pub(super) fn focus(
                 .ok_or_else(|| Failure::not_found("no focused pane"))?;
             let next = world
                 .get::<Tab>(tab)
-                .and_then(|component| component.layout.cycle(current, target == FocusTarget::Next))
+                .and_then(|component| {
+                    if target == FocusTarget::Next {
+                        component.layout.next_leaf(current)
+                    } else {
+                        component.layout.previous_leaf(current)
+                    }
+                })
                 .ok_or_else(|| Failure::not_found("no next pane"))?;
             context.select(world, tab, Some(next));
             Ok(CommandResult::Pane {

@@ -245,8 +245,9 @@ impl PaneModes {
 }
 
 /// Ownership of ordinary right-clicks in a pane; Alt-right-click always opens fux's menu.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
+#[value(rename_all = "kebab-case")]
 pub enum RightClickPolicy {
     #[default]
     Auto,

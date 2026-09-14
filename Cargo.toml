@@ -39,6 +39,7 @@ uninlined_format_args = "deny"
 str_to_string = "deny"
 map_unwrap_or = "deny"
 explicit_iter_loop = "deny"
+fn_params_excessive_bools = "deny"
 # Batch A: correctness and safety.
 exit = "deny"
 mem_forget = "deny"
