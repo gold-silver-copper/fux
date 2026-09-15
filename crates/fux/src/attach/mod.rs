@@ -17,7 +17,6 @@ mod projection;
 use async_channel::Sender;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
-use bevy_log::debug;
 
 pub use adapter::AttachAdapter;
 pub use listener::{AttachEndpoint, AttachToken, HELLO_TIMEOUT, WRITER_QUEUE, random_hex256};
@@ -27,7 +26,7 @@ use crate::model::{
     Effect, Ids, Inbound, Open, PaneIn, Phase, Process, Retiring, ServerInstance, ViewerId,
     WorkspaceStream,
 };
-use crate::wire::{self, ByeReason, Hello, ServerFrame, Welcome};
+use crate::wire::{ByeReason, Hello, ServerFrame, Welcome};
 
 pub struct AttachPlugin {
     /// The runner's channel: reader tasks send `ViewerRequest`/`ViewerGone`, the accept loop
@@ -57,9 +56,10 @@ enum Refusal {
 }
 
 /// `First`/`Ingest`: every connection whose `Hello` passed the token check becomes a viewer or
-/// is refused. Refusals are written straight to the connection's writer because no viewer
-/// exists for an effect to name; admitted viewers get `Welcome` through `Effect::SendFrame`
-/// after the adapter learned about them, in the same update as their first scene frame.
+/// is refused. The verdict goes back to the connection's reader task, which encodes a refusal
+/// as `Bye` itself (no viewer exists for an effect to name); admitted viewers get `Welcome`
+/// through `Effect::SendFrame` after the adapter learned about them, in the same update as
+/// their first scene frame.
 fn admit(world: &mut World) {
     let accepted = world.resource::<listener::Inbox>().accepted.clone();
     while let Ok(connection) = accepted.try_recv() {
@@ -74,22 +74,20 @@ fn admit(world: &mut World) {
                 if registry.sender.try_send(registered).is_err() {
                     continue;
                 }
-                let _ = connection.admit.try_send(viewer);
+                let _ = connection.admit.try_send(Ok(viewer));
                 world.write_message(Effect::SendFrame {
                     viewer,
                     frame: ServerFrame::Welcome(welcome),
                 });
             }
             Err(refusal) => {
-                let (reason, message) = match refusal {
-                    Refusal::Refused(message) => (ByeReason::Refused, message.to_owned()),
-                    Refusal::Layout(message) => (ByeReason::Refused, message),
+                let message = match refusal {
+                    Refusal::Refused(message) => message.to_owned(),
+                    Refusal::Layout(message) => message,
                 };
-                debug!("attachment refused: {message}");
-                let mut buf = Vec::new();
-                if wire::encode(&ServerFrame::Bye { reason, message }, &mut buf).is_ok() {
-                    let _ = connection.writer.try_send(buf);
-                }
+                let _ = connection
+                    .admit
+                    .try_send(Err((ByeReason::Refused, message)));
             }
         }
     }

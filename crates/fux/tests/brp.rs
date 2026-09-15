@@ -310,6 +310,24 @@ fn end_to_end_over_http() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert_eq!(listed, ALLOWED_TYPE_PATHS.iter().copied().collect());
+    // registry.schema is cut to the projection vocabulary (plus the types those schemas
+    // reference); neither the default filter nor a widening one reaches authoritative types.
+    for params in [json!({}), json!({ "with_crates": ["fux"] })] {
+        let schema = server.call("registry.schema", params).unwrap();
+        let keys: BTreeSet<&str> = schema
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert!(ALLOWED_TYPE_PATHS.iter().all(|path| keys.contains(path)));
+        assert!(keys.iter().all(|key| !key.starts_with("fux::model::")));
+        assert!(!keys.contains("fux::model::components::Process"));
+    }
+    let narrowed = server
+        .call("registry.schema", json!({ "with_crates": ["bevy_ui"] }))
+        .unwrap();
+    assert!(narrowed.as_object().unwrap().is_empty());
 
     // A token narrowed to alpha cannot touch default.
     let minted = server

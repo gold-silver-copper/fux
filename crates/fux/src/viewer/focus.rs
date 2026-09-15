@@ -3,9 +3,17 @@
 //! one observer that either forwards bytes (`Normal`) or resolves a prefix chord through the
 //! bindings table of one-shot systems; `FocusGained` on a leaf becomes `ViewerRequest::Target`
 //! (the server's `Targets` follows the viewer's focus, never the reverse); `h j k l` navigate a
-//! `DirectionalNavigationMap` rebuilt from the leaves' geometry after every layout; a cell
+//! `DirectionalNavigationMap` rebuilt from the leaves' geometry after every layout with the
+//! server's `AutoNavigationConfig`, so a local move and a server-side retarget agree; a cell
 //! picking backend turns the local mouse pointer into `Pointer<Press>` events for click-to-focus
 //! and tab-strip clicks.
+//!
+//! `TabNavigationPlugin` stays registered for its `AcquireFocus` observer (click-to-focus), but
+//! its window-level Tab handler is shadowed on purpose: `on_key` stops every keyboard event
+//! because the terminal never reports Shift as a key (`Shift-Tab` is one `CSI Z` event, so the
+//! handler's `ButtonInput<KeyCode>` test could never see it) and because Tab is a prefix chord
+//! here, not a bare key. Next/Previous run through `next_pane`/`prev_pane` instead, with the
+//! plugin's `NoTabGroupForCurrentFocus` recovery.
 
 use core::time::Duration;
 
@@ -15,9 +23,10 @@ use bevy_ecs::system::SystemId;
 use bevy_input::ButtonState;
 use bevy_input::keyboard::{Key, KeyboardInput};
 use bevy_input_focus::directional_navigation::{
-    DirectionalNavigation, DirectionalNavigationMap, FocusableArea,
+    AutoNavigationConfig, DirectionalNavigation, DirectionalNavigationMap, FocusableArea,
+    auto_generate_navigation_edges,
 };
-use bevy_input_focus::tab_navigation::{NavAction, TabNavigation};
+use bevy_input_focus::tab_navigation::{NavAction, TabNavigation, TabNavigationError};
 use bevy_input_focus::{
     AcquireFocus, FocusCause, FocusGained, FocusedInput, InputFocus, InputFocusSystems,
     dispatch_focused_input,
@@ -30,10 +39,10 @@ use bevy_picking::pointer::{PointerId, PointerLocation};
 use bevy_platform::collections::HashMap;
 use bevy_state::prelude::*;
 use bevy_time::{Time, Timer, TimerMode};
-use bevy_ui::{ComputedNode, UiGlobalTransform, UiStack};
+use bevy_ui::{ComputedNode, Node, OverrideClip, UiGlobalTransform, UiStack, clip_check_recursive};
 use bevy_window::{Ime, PrimaryWindow};
 
-use super::chrome::{PendingNotice, TabEntry};
+use super::chrome::{ChromeRoots, PendingNotice, TabEntry};
 use super::keys::{self, KeyChord};
 use super::paint::CellRect;
 use super::replicate::{Grid, Replicated, Roots, ShowingRoot, TargetPane};
@@ -54,9 +63,9 @@ impl Bindings {
     }
 }
 
-/// An exact attachment never retargets and ignores focus-changing bindings.
-#[derive(Resource, Default, Debug, Clone, Copy)]
-pub struct ExactAttachment(pub bool);
+/// Present on an exact attachment: it never retargets and ignores focus-changing bindings.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct ExactAttachment;
 
 /// A `Target` request in flight: the server's `target` is ignored until it confirms the pane or
 /// the timer runs out (refused, e.g. by an exact attachment).
@@ -223,7 +232,7 @@ fn on_focus_gained(
     leaves: Query<&Shows, With<Replicated>>,
     panes: Query<&PaneId>,
     target: Res<TargetPane>,
-    exact: Res<ExactAttachment>,
+    exact: Option<Res<ExactAttachment>>,
     mut pending: ResMut<PendingTarget>,
     mut outbox: ResMut<Outbox>,
 ) {
@@ -233,7 +242,7 @@ fn on_focus_gained(
     let Ok(pane) = panes.get(shows.0) else {
         return;
     };
-    if exact.0 || target.0 == Some(*pane) {
+    if exact.is_some() || target.0 == Some(*pane) {
         return;
     }
     outbox.push(ViewerRequest::Target(*pane));
@@ -274,7 +283,6 @@ fn sync_focus(
     }
 }
 
-type Leaf = (With<Shows>, With<Replicated>);
 type LeafGeometryChanged = (
     With<Shows>,
     With<Replicated>,
@@ -285,14 +293,20 @@ type LeafGeometryChanged = (
     )>,
 );
 
+/// The server's rule (`layout::ops::navigate`): rect-edge distance with at least half overlap on
+/// the perpendicular axis. Touching panes tie at distance zero and the first in tree order wins,
+/// so the leaves are collected in the same pre-order walk the server uses.
+const NAV_CONFIG: AutoNavigationConfig = AutoNavigationConfig {
+    min_alignment_factor: 0.5,
+    max_search_distance: None,
+    prefer_aligned: true,
+};
+
 /// Rebuilds the directional navigation map from leaf geometry after layout.
-///
-/// Edges are generated here rather than by `auto_generate_navigation_edges`: its score is the
-/// rect-edge distance, which is zero for every touching pane, so a diagonal neighbour ties with
-/// the aligned one. A cardinal neighbour must overlap the origin on the perpendicular axis; among
-/// those the nearest edge wins, then the closest perpendicular centre.
 fn rebuild_nav_map(
-    leaves: Query<(Entity, &ComputedNode, &UiGlobalTransform), Leaf>,
+    chrome: Res<ChromeRoots>,
+    children: Query<&Children>,
+    leaves: Query<(&ComputedNode, &UiGlobalTransform), (With<Shows>, With<Replicated>)>,
     changed: Query<(), LeafGeometryChanged>,
     mut removed: RemovedComponents<Shows>,
     mut map: ResMut<DirectionalNavigationMap>,
@@ -303,7 +317,10 @@ fn rebuild_nav_map(
         return;
     }
     areas.clear();
-    for (entity, node, transform) in &leaves {
+    for entity in children.iter_descendants_depth_first(chrome.pane_area) {
+        let Ok((node, transform)) = leaves.get(entity) else {
+            continue;
+        };
         if node.size.x < 0.5 || node.size.y < 0.5 {
             continue;
         }
@@ -314,79 +331,17 @@ fn rebuild_nav_map(
         });
     }
     map.clear();
-    for origin in &*areas {
-        for octant in [
-            CompassOctant::North,
-            CompassOctant::East,
-            CompassOctant::South,
-            CompassOctant::West,
-        ] {
-            if let Some(best) = cardinal_neighbour(origin, octant, &areas) {
-                map.add_edge(origin.entity, best, octant);
-            }
-        }
-    }
+    auto_generate_navigation_edges(&mut map, &areas, &NAV_CONFIG);
 }
 
-fn cardinal_neighbour(
-    origin: &FocusableArea,
-    octant: CompassOctant,
-    areas: &[FocusableArea],
-) -> Option<Entity> {
-    let (o_min, o_max) = (
-        origin.position - origin.size / 2.0,
-        origin.position + origin.size / 2.0,
-    );
-    let mut best: Option<(i32, f32, Entity)> = None;
-    for candidate in areas {
-        if candidate.entity == origin.entity {
-            continue;
-        }
-        let (c_min, c_max) = (
-            candidate.position - candidate.size / 2.0,
-            candidate.position + candidate.size / 2.0,
-        );
-        // UI y grows downwards: North is smaller y.
-        let (gap, overlap, centre_delta) = match octant {
-            CompassOctant::East => (
-                c_min.x - o_max.x,
-                o_max.y.min(c_max.y) - o_min.y.max(c_min.y),
-                candidate.position.y - origin.position.y,
-            ),
-            CompassOctant::West => (
-                o_min.x - c_max.x,
-                o_max.y.min(c_max.y) - o_min.y.max(c_min.y),
-                candidate.position.y - origin.position.y,
-            ),
-            CompassOctant::South => (
-                c_min.y - o_max.y,
-                o_max.x.min(c_max.x) - o_min.x.max(c_min.x),
-                candidate.position.x - origin.position.x,
-            ),
-            _ => (
-                o_min.y - c_max.y,
-                o_max.x.min(c_max.x) - o_min.x.max(c_min.x),
-                candidate.position.x - origin.position.x,
-            ),
-        };
-        if gap < -0.5 || overlap <= 0.5 {
-            continue;
-        }
-        // Layout is whole cells, so gaps compare exactly as integers.
-        let key = (gap.max(0.0).round() as i32, centre_delta.abs());
-        if best.is_none_or(|(g, d, _)| key.0 < g || (key.0 == g && key.1 < d)) {
-            best = Some((key.0, key.1, candidate.entity));
-        }
-    }
-    best.map(|(_, _, e)| e)
-}
-
-/// Cell picking backend: the mouse pointer hits every node whose rect contains its cell; the
-/// stack index is the depth so the topmost node wins.
+/// Cell picking backend: the mouse pointer hits every node whose rect contains its cell and
+/// whose ancestors do not clip it away (`bevy_ui`'s own backend rule); the stack index is the
+/// depth so the topmost node wins.
 fn cell_backend(
     pointers: Query<(&PointerId, &PointerLocation)>,
     stack: Res<UiStack>,
-    nodes: Query<(&ComputedNode, &UiGlobalTransform)>,
+    nodes: Query<(&ComputedNode, &UiGlobalTransform, &Node)>,
+    child_of: Query<&ChildOf, Without<OverrideClip>>,
     camera: Res<LocalCamera>,
     mut hits: MessageWriter<PointerHits>,
 ) {
@@ -401,21 +356,21 @@ fn cell_backend(
             .iter()
             .enumerate()
             .filter_map(|(index, &entity)| {
-                let (node, transform) = nodes.get(entity).ok()?;
-                CellRect::from_node(node, transform)
-                    .contains(col, row)
-                    .then(|| {
-                        (
-                            entity,
-                            HitData {
-                                camera: camera.0,
-                                depth: -(index as f32),
-                                position: Some(pos.extend(0.0)),
-                                normal: None,
-                                extra: None,
-                            },
-                        )
-                    })
+                let (node, transform, _) = nodes.get(entity).ok()?;
+                let hit = CellRect::from_node(node, transform).contains(col, row)
+                    && clip_check_recursive(pos, entity, &nodes, &child_of);
+                hit.then(|| {
+                    (
+                        entity,
+                        HitData {
+                            camera: camera.0,
+                            depth: -(index as f32),
+                            position: Some(pos.extend(0.0)),
+                            normal: None,
+                            extra: None,
+                        },
+                    )
+                })
             })
             .collect();
         if !picks.is_empty() {
@@ -475,37 +430,71 @@ fn confirm_close(mut next: ResMut<NextState<Mode>>, mut confirm: ResMut<PendingC
     next.set(Mode::Confirm);
 }
 
-fn navigate(nav: &mut DirectionalNavigation, exact: &ExactAttachment, direction: CompassOctant) {
-    if exact.0 {
+fn navigate(
+    nav: &mut DirectionalNavigation,
+    exact: Option<&ExactAttachment>,
+    direction: CompassOctant,
+) {
+    if exact.is_some() {
         return;
     }
     // No neighbour in that direction is not an error worth reporting.
     let _ = nav.navigate(direction);
 }
 
-fn nav_west(mut nav: DirectionalNavigation, exact: Res<ExactAttachment>) {
-    navigate(&mut nav, &exact, CompassOctant::West);
+fn nav_west(mut nav: DirectionalNavigation, exact: Option<Res<ExactAttachment>>) {
+    navigate(&mut nav, exact.as_deref(), CompassOctant::West);
 }
 
-fn nav_south(mut nav: DirectionalNavigation, exact: Res<ExactAttachment>) {
-    navigate(&mut nav, &exact, CompassOctant::South);
+fn nav_south(mut nav: DirectionalNavigation, exact: Option<Res<ExactAttachment>>) {
+    navigate(&mut nav, exact.as_deref(), CompassOctant::South);
 }
 
-fn nav_north(mut nav: DirectionalNavigation, exact: Res<ExactAttachment>) {
-    navigate(&mut nav, &exact, CompassOctant::North);
+fn nav_north(mut nav: DirectionalNavigation, exact: Option<Res<ExactAttachment>>) {
+    navigate(&mut nav, exact.as_deref(), CompassOctant::North);
 }
 
-fn nav_east(mut nav: DirectionalNavigation, exact: Res<ExactAttachment>) {
-    navigate(&mut nav, &exact, CompassOctant::East);
+fn nav_east(mut nav: DirectionalNavigation, exact: Option<Res<ExactAttachment>>) {
+    navigate(&mut nav, exact.as_deref(), CompassOctant::East);
 }
 
-fn next_pane(nav: TabNavigation, mut focus: ResMut<InputFocus>, exact: Res<ExactAttachment>) {
-    if exact.0 {
+/// Tab order, as `bevy_input_focus::tab_navigation::handle_tab_navigation` does it: a focus that
+/// lost its tab group (re-instanced after a template edit) still moves to the group's first or
+/// last leaf instead of stranding the user.
+fn tab_navigate(
+    nav: &TabNavigation,
+    focus: &mut InputFocus,
+    exact: Option<&ExactAttachment>,
+    action: NavAction,
+) {
+    if exact.is_some() {
         return;
     }
-    if let Ok(next) = nav.navigate(&focus, NavAction::Next) {
-        focus.set(next, FocusCause::Navigated);
+    match nav.navigate(focus, action) {
+        Ok(next)
+        | Err(TabNavigationError::NoTabGroupForCurrentFocus {
+            new_focus: next, ..
+        }) => {
+            focus.set(next, FocusCause::Navigated);
+        }
+        Err(_) => {}
     }
+}
+
+fn next_pane(
+    nav: TabNavigation,
+    mut focus: ResMut<InputFocus>,
+    exact: Option<Res<ExactAttachment>>,
+) {
+    tab_navigate(&nav, &mut focus, exact.as_deref(), NavAction::Next);
+}
+
+fn prev_pane(
+    nav: TabNavigation,
+    mut focus: ResMut<InputFocus>,
+    exact: Option<Res<ExactAttachment>>,
+) {
+    tab_navigate(&nav, &mut focus, exact.as_deref(), NavAction::Previous);
 }
 
 fn show_root(roots: &Roots, showing: &ShowingRoot, outbox: &mut Outbox, offset: isize) {
@@ -581,6 +570,7 @@ pub fn register_bindings(world: &mut World) {
     let next = world.register_system(next_pane);
     bind(KeyChord::character('o'), next);
     bind(KeyChord::plain(Key::Tab), next);
+    bind(KeyChord::shift(Key::Tab), world.register_system(prev_pane));
     bind(KeyChord::character('n'), world.register_system(next_root));
     bind(KeyChord::character('p'), world.register_system(prev_root));
     bind(KeyChord::character('c'), world.register_system(new_root));
@@ -600,7 +590,6 @@ impl Plugin for FocusPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PendingTarget>()
             .init_resource::<PendingConfirm>()
-            .init_resource::<ExactAttachment>()
             .add_message::<Ime>()
             .add_systems(
                 PreUpdate,

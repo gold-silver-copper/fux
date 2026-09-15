@@ -339,8 +339,9 @@ pub fn run(opts: ViewerOptions) -> Result<i32, BevyError> {
     let _reader = term.spawn_reader(wake_tx)?;
 
     let mut app = build(cols, rows);
-    app.world_mut()
-        .insert_resource(focus::ExactAttachment(opts.exact.is_some()));
+    if opts.exact.is_some() {
+        app.world_mut().insert_resource(focus::ExactAttachment);
+    }
     app.finish();
     app.cleanup();
 

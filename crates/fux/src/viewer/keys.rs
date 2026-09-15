@@ -11,15 +11,18 @@ use crate::wire::Modes;
 
 const ESC: u8 = 0x1b;
 
-/// A key as bindings see it: the logical key plus the Ctrl/Alt state the terminal encoded.
+/// A key as bindings see it: the logical key plus the modifier state the terminal encoded.
 ///
 /// Ctrl and Alt are derived from the produced text, so they are only meaningful for
-/// `Key::Character` chords (Ctrl-b, Alt-x); named keys (arrows, function keys) bind unmodified.
+/// `Key::Character` chords (Ctrl-b, Alt-x). Shift is only meaningful for named keys, where the
+/// terminal encodes it in the sequence itself (`CSI Z` for Shift-Tab, the `;2` modifier parameter
+/// for shifted arrows and function keys); a shifted character already arrives as that character.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct KeyChord {
     pub key: Key,
     pub ctrl: bool,
     pub alt: bool,
+    pub shift: bool,
 }
 
 impl KeyChord {
@@ -28,6 +31,14 @@ impl KeyChord {
             key,
             ctrl: false,
             alt: false,
+            shift: false,
+        }
+    }
+
+    pub fn shift(key: Key) -> Self {
+        Self {
+            shift: true,
+            ..Self::plain(key)
         }
     }
 
@@ -56,8 +67,32 @@ impl KeyChord {
             key: input.logical_key.clone(),
             ctrl,
             alt,
+            shift: named && csi_shifted(text),
         }
     }
+}
+
+/// Whether a named key's CSI sequence carries Shift: `CSI Z` (Shift-Tab) or a `;<p>` modifier
+/// parameter whose shift bit (bit 0 of `p - 1`) is set.
+fn csi_shifted(text: &[u8]) -> bool {
+    let Some(body) = text.strip_prefix(b"\x1b[") else {
+        return false;
+    };
+    if body == b"Z" {
+        return true;
+    }
+    let Some(semicolon) = body.iter().position(|b| *b == b';') else {
+        return false;
+    };
+    let param = body
+        .get(semicolon + 1..)
+        .unwrap_or_default()
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .fold(0u8, |acc, b| {
+            acc.saturating_mul(10).saturating_add(b.wrapping_sub(b'0'))
+        });
+    param > 0 && (param - 1) & 1 != 0
 }
 
 /// Appends the bytes a terminal program should receive for `input`; `false` if the key produces

@@ -143,6 +143,11 @@ pub struct PaneTemplate {
 #[reflect(Component)]
 pub struct Title(pub String);
 
+/// The pane's last accepted OSC 52 write (base64, bounded): present only once the pane has
+/// written one. Carries content, so it is deliberately not reflected.
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Clipboard(pub String);
+
 #[derive(
     Component, Reflect, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize,
 )]

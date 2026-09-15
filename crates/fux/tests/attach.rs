@@ -27,8 +27,8 @@ use fux::attach::{AttachAdapter, AttachEndpoint, AttachPlugin, AttachToken};
 use fux::layout::{LayoutPlugin, ops};
 use fux::model::invariants::check_invariants;
 use fux::model::{
-    Detaching, Effect, Inbound, ModelPlugin, PaneId, PaneTemplate, Places, Process, ServerInstance,
-    Viewer, ViewerRequest, Viewport,
+    Detaching, Effect, Inbound, Limits, ModelPlugin, PaneId, PaneTemplate, Places, Process,
+    ServerInstance, Viewer, ViewerRequest, Viewport,
 };
 use fux::terminal::Terminal;
 use fux::wire::{self, ByeReason, ClientFrame, ExactTargetSpec, Hello, SceneFrame, ServerFrame};
@@ -51,6 +51,10 @@ struct Server {
 
 impl Server {
     fn start() -> Self {
+        Self::start_with(Limits::default())
+    }
+
+    fn start_with(limits: Limits) -> Self {
         let (inbound_tx, inbound_rx) = async_channel::unbounded::<Inbound>();
         let (probes, probe_rx) = mpsc::channel::<Probe>();
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -75,6 +79,7 @@ impl Server {
                 pid: std::process::id(),
                 started_ms: 0,
             })
+            .insert_resource(limits)
             .add_systems(PreUpdate, lifecycle_stand_in);
             app.finish();
             app.cleanup();
@@ -370,6 +375,38 @@ fn wrong_token_or_instance_is_refused() {
     client.expect_bye(ByeReason::Refused);
     assert!(client.recv().is_none());
     assert_eq!(server.viewer_count(), 0);
+}
+
+/// Idle pre-auth connections count against the cap (`2 * viewers`): the connection past it is
+/// not served until one of them closes.
+#[test]
+fn connections_past_the_cap_wait_for_a_slot() {
+    let server = Server::start_with(Limits {
+        viewers: 1,
+        ..Limits::default()
+    });
+    let idle: Vec<Client> = (0..2).map(|_| server.connect()).collect();
+    let mut third = server.connect();
+    third.send(&server.hello(24, 80));
+    third
+        .stream
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let mut prefix = [0u8; wire::FRAME_PREFIX_BYTES];
+    let blocked = third.stream.read_exact(&mut prefix).unwrap_err();
+    assert!(
+        matches!(
+            blocked.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        "the third connection was served while two idle ones held the cap: {blocked}"
+    );
+    assert_eq!(server.viewer_count(), 0);
+
+    drop(idle);
+    third.stream.set_read_timeout(Some(PATIENCE)).unwrap();
+    third.expect_welcome();
+    server.wait_for_viewers(1);
 }
 
 #[test]

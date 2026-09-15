@@ -44,9 +44,11 @@ impl Text {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct TabEntry(pub NodeId);
 
+/// The status bar's mode label.
 #[derive(Component, Debug)]
 pub struct ModeIndicator;
 
+/// The status bar's title label.
 #[derive(Component, Debug)]
 pub struct StatusTitle;
 
@@ -63,8 +65,6 @@ pub struct ChromeRoots {
     pub pane_area: Entity,
     pub status_bar: Entity,
     pub tab_strip: Entity,
-    pub mode: Entity,
-    pub title: Entity,
 }
 
 /// A notice waiting to be shown (from the server or a local binding).
@@ -208,8 +208,6 @@ pub fn spawn_chrome(world: &mut World) -> ChromeRoots {
         pane_area,
         status_bar,
         tab_strip,
-        mode,
-        title,
     }
 }
 
@@ -260,11 +258,11 @@ fn sync_tab_strip(
 }
 
 /// Mode indicator in the status bar.
-fn sync_mode(mode: Res<State<Mode>>, chrome: Res<ChromeRoots>, mut texts: Query<&mut Text>) {
+fn sync_mode(mode: Res<State<Mode>>, mut texts: Query<&mut Text, With<ModeIndicator>>) {
     if !mode.is_changed() {
         return;
     }
-    let Ok(mut text) = texts.get_mut(chrome.mode) else {
+    let Ok(mut text) = texts.single_mut() else {
         return;
     };
     let label = match mode.get() {
@@ -286,15 +284,14 @@ fn sync_title(
     ids: Res<Ids>,
     grids: Query<&Grid>,
     changed_grids: Query<Entity, Changed<Grid>>,
-    chrome: Res<ChromeRoots>,
-    mut texts: Query<&mut Text>,
+    mut texts: Query<&mut Text, With<StatusTitle>>,
 ) {
     let pane = target.0.and_then(|id| ids.pane(id));
     let grid_changed = pane.is_some_and(|p| changed_grids.contains(p));
     if !target.is_changed() && !session.is_changed() && !grid_changed {
         return;
     }
-    let Ok(mut text) = texts.get_mut(chrome.title) else {
+    let Ok(mut text) = texts.single_mut() else {
         return;
     };
     let grid = pane.and_then(|p| grids.get(p).ok());

@@ -13,11 +13,11 @@ use bevy_input_focus::navigator::find_best_candidate;
 use bevy_math::{CompassOctant, UVec2, Vec2};
 use bevy_picking::pointer::PointerId;
 use bevy_ui::{
-    BackgroundColor, BorderColor, ComputedNode, ComputedStackIndex, Display, FlexDirection,
-    FlexWrap, Node, ScrollPosition, UiGlobalTransform, Val, ZIndex,
+    BackgroundColor, BorderColor, CalculatedClip, ComputedNode, ComputedStackIndex, Display,
+    FlexDirection, FlexWrap, Node, ScrollPosition, UiGlobalTransform, Val, ZIndex,
 };
 
-use super::{LayoutError, NavDirection, NodePatch, Side, ViewState, instances, size};
+use super::{LayoutError, NavDirection, NodePatch, Side, ViewState, instances, picking, size};
 use crate::model::invariants::root_of_template;
 use crate::model::*;
 
@@ -73,6 +73,8 @@ pub fn retire_workspace(world: &mut World, ws: Entity, now_ms: u64) -> R<()> {
 // ---------------------------------------------------------------------------------------------
 
 /// Spawns an empty template root filling its viewport and appends it to the workspace's order.
+/// The root is a child of its workspace so `bevy_ui` never treats it as a UI root: template
+/// subtrees are never laid out (only their instances are).
 pub fn new_root(world: &mut World, ws: Entity, name: &str) -> R<Entity> {
     open_workspace(world, ws)?;
     check_name(name)?;
@@ -89,6 +91,7 @@ pub fn new_root(world: &mut World, ws: Entity, name: &str) -> R<Entity> {
                 ..Node::default()
             },
             RootOf(ws),
+            ChildOf(ws),
             LayoutGeneration(0),
             Name::new(name.to_owned()),
         ))
@@ -136,7 +139,7 @@ pub fn move_root(world: &mut World, root: Entity, ws: Entity) -> R<()> {
         order.0.retain(|r| *r != root);
     }
     reshow_viewers(world, root);
-    world.entity_mut(root).insert(RootOf(ws));
+    world.entity_mut(root).insert((RootOf(ws), ChildOf(ws)));
     if let Some(mut order) = world.get_mut::<RootOrder>(ws) {
         order.0.push(root);
     }
@@ -285,10 +288,7 @@ pub fn reparent_node(
 /// Moves a node to `index` among its siblings.
 pub fn reorder_node(world: &mut World, node: Entity, index: usize) -> R<()> {
     template_node(world, node)?;
-    let parent = world
-        .get::<ChildOf>(node)
-        .map(ChildOf::parent)
-        .ok_or(LayoutError::IsATemplateRoot(node))?;
+    let parent = parent_of(world, node)?;
     let len = children(world, parent).len();
     if index >= len {
         return Err(LayoutError::IndexOutOfRange { index, len });
@@ -308,14 +308,8 @@ pub fn exchange(world: &mut World, a: Entity, b: Entity) -> R<()> {
     if a == b {
         return Err(LayoutError::Cycle(a));
     }
-    let parent_a = world
-        .get::<ChildOf>(a)
-        .map(ChildOf::parent)
-        .ok_or(LayoutError::IsATemplateRoot(a))?;
-    let parent_b = world
-        .get::<ChildOf>(b)
-        .map(ChildOf::parent)
-        .ok_or(LayoutError::IsATemplateRoot(b))?;
+    let parent_a = parent_of(world, a)?;
+    let parent_b = parent_of(world, b)?;
     editable_container(world, parent_a)?;
     editable_container(world, parent_b)?;
     if is_descendant(world, a, b) {
@@ -406,10 +400,7 @@ pub fn split(
     template: PaneTemplate,
 ) -> R<(Entity, Entity)> {
     let leaf = leaf_of(world, pane)?;
-    let parent = world
-        .get::<ChildOf>(leaf)
-        .map(ChildOf::parent)
-        .ok_or(LayoutError::IsATemplateRoot(leaf))?;
+    let parent = parent_of(world, leaf)?;
     let root = root_of(world, leaf)?;
     let ws = workspace_of_root(world, root)?;
     open_workspace(world, ws)?;
@@ -487,13 +478,8 @@ pub fn place_beside(world: &mut World, node: Entity, target: Entity, side: Side)
     if node == target || is_descendant(world, node, target) {
         return Err(LayoutError::Cycle(node));
     }
-    let target_parent = world
-        .get::<ChildOf>(target)
-        .map(ChildOf::parent)
-        .ok_or(LayoutError::IsATemplateRoot(target))?;
-    if world.get::<ChildOf>(node).is_none() {
-        return Err(LayoutError::IsATemplateRoot(node));
-    }
+    let target_parent = parent_of(world, target)?;
+    parent_of(world, node)?;
     editable_container(world, target_parent)?;
     editable_slot(world, node)?;
     let old_root = root_of(world, node)?;
@@ -581,32 +567,25 @@ pub fn place_beside(world: &mut World, node: Entity, target: Entity, side: Side)
     Ok(())
 }
 
-/// Swaps the leaf placing `pane` with its next sibling (the previous one when it is last).
-pub fn swap(world: &mut World, pane: Entity, direction: SplitDirection) -> R<()> {
-    let _ = direction;
-    let leaf = leaf_of(world, pane)?;
-    let parent = world
-        .get::<ChildOf>(leaf)
-        .map(ChildOf::parent)
-        .ok_or(LayoutError::IsATemplateRoot(leaf))?;
-    let root = root_of(world, leaf)?;
-    let siblings = children(world, parent);
-    let index = siblings
-        .iter()
-        .position(|c| *c == leaf)
-        .ok_or(LayoutError::NotATemplateNode(leaf))?;
-    let other = if index + 1 < siblings.len() {
-        index + 1
-    } else if index > 0 {
-        index - 1
-    } else {
-        return Err(LayoutError::NoNeighbour);
+/// Exchanges the leaf of the pane the viewer targets with the leaf of its neighbour in
+/// `direction` (`Right`: the pane to its right, `Below`: the pane below), found by the same
+/// laid-out geometry as [`navigate`]; with nothing that way, the pane on the opposite side.
+/// Refused ([`LayoutError::NoNeighbour`]) when neither exists or the instance is not laid out
+/// yet.
+pub fn swap(world: &mut World, viewer: Entity, direction: SplitDirection) -> R<()> {
+    viewer_entity(world, viewer)?;
+    let pane = world
+        .get::<Targets>(viewer)
+        .map(|t| t.0)
+        .ok_or(LayoutError::NotShown(viewer))?;
+    let (forward, back) = match direction {
+        SplitDirection::Right => (NavDirection::Right, NavDirection::Left),
+        SplitDirection::Below => (NavDirection::Down, NavDirection::Up),
     };
-    if let Some(mut kids) = world.get_mut::<Children>(parent) {
-        kids.swap(index, other);
-    }
-    bump(world, root);
-    Ok(())
+    let other = navigate(world, viewer, forward)
+        .or_else(|| navigate(world, viewer, back))
+        .ok_or(LayoutError::NoNeighbour)?;
+    exchange(world, leaf_of(world, pane)?, leaf_of(world, other)?)
 }
 
 /// Removes the leaf placing `pane` (the pane itself is the lifecycle's to despawn), collapses a
@@ -615,10 +594,7 @@ pub fn swap(world: &mut World, pane: Entity, direction: SplitDirection) -> R<()>
 pub fn remove_leaf(world: &mut World, pane: Entity) -> R<()> {
     let leaf = leaf_of(world, pane)?;
     let root = root_of(world, leaf)?;
-    let mut parent = world
-        .get::<ChildOf>(leaf)
-        .map(ChildOf::parent)
-        .ok_or(LayoutError::IsATemplateRoot(leaf))?;
+    let mut parent = parent_of(world, leaf)?;
     world.despawn(leaf);
     loop {
         let (len, only) = {
@@ -760,15 +736,7 @@ pub fn resize_viewer(world: &mut World, viewer: Entity, viewport: Viewport) -> R
     if let Some(mut current) = world.get_mut::<Viewport>(viewer) {
         current.set_if_neq(viewport);
     }
-    if let Some(camera) = world.get::<ViewerCamera>(viewer).map(|c| c.0) {
-        let size = size::target_size(viewport);
-        if let Some(mut camera) = world.get_mut::<Camera>(camera) {
-            size::set_camera_size(&mut camera, size);
-        }
-        if let Some(mut target) = world.get_mut::<RenderTarget>(camera) {
-            size::set_render_target(&mut target, size);
-        }
-    }
+    // `size::sync_cameras` owns the camera: it follows `Changed<Viewport>` in `PostUpdate`.
     Ok(())
 }
 
@@ -797,14 +765,7 @@ pub fn show_root(world: &mut World, viewer: Entity, root: Entity) -> R<()> {
         }
     }
     if !target_in_root {
-        match first_pane_in(world, root) {
-            Some(pane) => {
-                world.entity_mut(viewer).insert(Targets(pane));
-            }
-            None => {
-                world.entity_mut(viewer).remove::<Targets>();
-            }
-        }
+        set_target(world, viewer, first_pane_in(world, root));
     }
     Ok(())
 }
@@ -824,7 +785,7 @@ pub fn target(world: &mut World, viewer: Entity, pane: Entity) -> R<()> {
     if world.get::<Showing>(viewer).map(|s| s.0) != Some(root) {
         show_root(world, viewer, root)?;
     }
-    world.entity_mut(viewer).insert(Targets(pane));
+    set_target(world, viewer, Some(pane));
     Ok(())
 }
 
@@ -907,7 +868,7 @@ pub fn navigate(world: &World, viewer: Entity, direction: NavDirection) -> Optio
     let root = instances::instance_root(world, viewer)?;
     let mut leaves: Vec<FocusableArea> = Vec::new();
     let mut panes: Vec<Entity> = Vec::new();
-    instances::walk(world, root, &mut |world, entity| {
+    instances::walk(world, root, &mut |entity, _| {
         let (Some(shows), Some(computed), Some(transform)) = (
             world.get::<Shows>(entity),
             world.get::<ComputedNode>(entity),
@@ -948,12 +909,13 @@ pub fn navigate(world: &World, viewer: Entity, direction: NavDirection) -> Optio
     panes.get(index).copied()
 }
 
-/// The pane shown at viewport cell (`col`, `row`) of the viewer, topmost first.
+/// The pane shown at viewport cell (`col`, `row`) of the viewer, topmost first; the same hit
+/// test as the picking backend ([`picking::hits`]).
 pub fn pane_at(world: &World, viewer: Entity, col: u16, row: u16) -> Option<Entity> {
     let root = instances::instance_root(world, viewer)?;
     let point = Vec2::new(f32::from(col) + 0.5, f32::from(row) + 0.5);
     let mut best: Option<(u32, Entity)> = None;
-    instances::walk(world, root, &mut |world, entity| {
+    instances::walk(world, root, &mut |entity, _| {
         let (Some(shows), Some(computed), Some(transform), Some(stack)) = (
             world.get::<Shows>(entity),
             world.get::<ComputedNode>(entity),
@@ -962,7 +924,9 @@ pub fn pane_at(world: &World, viewer: Entity, col: u16, row: u16) -> Option<Enti
         ) else {
             return;
         };
-        if computed.contains_point(*transform, point) && best.is_none_or(|(s, _)| stack.0 > s) {
+        let clip = world.get::<CalculatedClip>(entity);
+        if picking::hits(computed, transform, clip, point) && best.is_none_or(|(s, _)| stack.0 > s)
+        {
             best = Some((stack.0, shows.0));
         }
     });
@@ -1089,30 +1053,22 @@ fn pane_in_root(world: &World, pane: Entity, root: Entity) -> bool {
     })
 }
 
-/// Pre-order walk of a template subtree.
-fn walk_template(world: &World, root: Entity, mut f: impl FnMut(Entity, usize)) {
-    let mut stack = vec![(root, 0usize)];
-    while let Some((entity, depth)) = stack.pop() {
-        f(entity, depth);
-        for &child in children(world, entity).iter().rev() {
-            stack.push((child, depth + 1));
-        }
-    }
-}
-
 /// `(node count, height in edges)` of a subtree.
 fn subtree_stats(world: &World, root: Entity) -> (usize, usize) {
     let (mut count, mut height) = (0, 0);
-    walk_template(world, root, |_, depth| {
+    instances::walk(world, root, &mut |_, depth| {
         count += 1;
         height = height.max(depth);
     });
     (count, height)
 }
 
+/// Edges from `node` up to its template root.
 fn depth_of(world: &World, mut node: Entity) -> usize {
     let mut depth = 0;
-    while let Some(parent) = world.get::<ChildOf>(node) {
+    while world.get::<TemplateRoot>(node).is_none()
+        && let Some(parent) = world.get::<ChildOf>(node)
+    {
         node = parent.parent();
         depth += 1;
         if depth > MAX_DEPTH {
@@ -1122,15 +1078,27 @@ fn depth_of(world: &World, mut node: Entity) -> usize {
     depth
 }
 
+/// The parent of a non-root template node; a template root's parent is its workspace, not a
+/// node, so it is refused.
+fn parent_of(world: &World, node: Entity) -> R<Entity> {
+    if world.get::<TemplateRoot>(node).is_some() {
+        return Err(LayoutError::IsATemplateRoot(node));
+    }
+    world
+        .get::<ChildOf>(node)
+        .map(ChildOf::parent)
+        .ok_or(LayoutError::NotATemplateNode(node))
+}
+
 fn is_descendant(world: &World, ancestor: Entity, node: Entity) -> bool {
     let mut found = false;
-    walk_template(world, ancestor, |entity, _| found |= entity == node);
+    instances::walk(world, ancestor, &mut |entity, _| found |= entity == node);
     found
 }
 
 fn placed_panes(world: &World, root: Entity) -> Vec<Entity> {
     let mut panes = Vec::new();
-    walk_template(world, root, |entity, _| {
+    instances::walk(world, root, &mut |entity, _| {
         if let Some(places) = world.get::<Places>(entity) {
             panes.push(places.0);
         }
@@ -1140,7 +1108,7 @@ fn placed_panes(world: &World, root: Entity) -> Vec<Entity> {
 
 fn first_pane_in(world: &World, root: Entity) -> Option<Entity> {
     let mut first = None;
-    walk_template(world, root, |entity, _| {
+    instances::walk(world, root, &mut |entity, _| {
         if first.is_none()
             && let Some(places) = world.get::<Places>(entity)
         {
@@ -1274,14 +1242,23 @@ fn retarget_after_move(world: &mut World, moved: Entity, old_root: Entity, new_r
                 state.zoom = None;
             }
         } else {
-            match first_pane_in(world, old_root) {
-                Some(pane) => {
-                    world.entity_mut(viewer).insert(Targets(pane));
-                }
-                None => {
-                    world.entity_mut(viewer).remove::<Targets>();
-                }
-            }
+            set_target(world, viewer, first_pane_in(world, old_root));
+        }
+    }
+}
+
+/// Writes the viewer's `Targets` only when it changes, so its change tick (and the
+/// relationship hooks) move on real retargets alone.
+fn set_target(world: &mut World, viewer: Entity, pane: Option<Entity>) {
+    if world.get::<Targets>(viewer).map(|t| t.0) == pane {
+        return;
+    }
+    match pane {
+        Some(pane) => {
+            world.entity_mut(viewer).insert(Targets(pane));
+        }
+        None => {
+            world.entity_mut(viewer).remove::<Targets>();
         }
     }
 }

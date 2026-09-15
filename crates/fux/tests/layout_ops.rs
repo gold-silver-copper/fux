@@ -14,9 +14,7 @@ use bevy_ecs::prelude::*;
 use bevy_math::UVec2;
 use bevy_ui::UiTargetCamera;
 use bevy_ui::prelude::*;
-use fux::layout::{
-    GridTrackPatch, InstanceGeneration, LayoutError, LayoutPlugin, NavDirection, NodePatch, ops,
-};
+use fux::layout::{GridTrackPatch, LayoutError, LayoutPlugin, NavDirection, NodePatch, ops};
 use fux::model::invariants::check_invariants;
 use fux::model::*;
 
@@ -379,10 +377,6 @@ fn attach_viewer_instances_the_template_and_folds_pane_size() {
         world.get::<UiTargetCamera>(instance).map(|c| c.entity()),
         Some(camera)
     );
-    assert_eq!(
-        world.get::<InstanceGeneration>(instance).map(|g| g.0),
-        world.get::<LayoutGeneration>(root).map(|g| g.0)
-    );
     assert_eq!(size_of(world, instance), UVec2::new(80, 24));
     let i1 = leaf_showing(world, instance, pane1);
     let i2 = leaf_showing(world, instance, pane2);
@@ -487,10 +481,6 @@ fn template_edits_reclone_instances_with_the_new_generation() {
     assert!(app.world().get_entity(before).is_err());
     let world = app.world();
     assert_same_shape(world, root, after);
-    assert_eq!(
-        world.get::<InstanceGeneration>(after).map(|g| g.0),
-        world.get::<LayoutGeneration>(root).map(|g| g.0)
-    );
     let i1 = leaf_showing(world, after, pane1);
     assert_eq!(size_of(world, i1), UVec2::new(40, 24));
     assert_eq!(world.get::<ZIndex>(i1), Some(&ZIndex(3)));
@@ -641,6 +631,65 @@ fn navigate_reaches_every_pane_of_a_grid_and_pane_at_hits_cells() {
     assert_eq!(ops::navigate(world, viewer, NavDirection::Up), Some(tr));
     assert_eq!(ops::navigate(world, viewer, NavDirection::Right), None);
     assert_eq!(ops::navigate(world, viewer, NavDirection::Next), Some(tl));
+}
+
+#[test]
+fn swap_exchanges_with_the_neighbour_in_the_given_direction() {
+    let mut app = app();
+    let world = app.world_mut();
+    let ws = ops::new_workspace(world, "grid").unwrap();
+    let root = ops::new_root(world, ws, "dash").unwrap();
+    let patch = NodePatch {
+        display: Some("grid".to_owned()),
+        grid_template_columns: Some(vec![GridTrackPatch {
+            repeat: 2,
+            track: "1fr".to_owned(),
+        }]),
+        grid_template_rows: Some(vec![GridTrackPatch {
+            repeat: 2,
+            track: "1fr".to_owned(),
+        }]),
+        ..Default::default()
+    };
+    ops::patch_node(world, root, &patch).unwrap();
+    let panes: Vec<Entity> = (0..4)
+        .map(|_| {
+            let leaf = ops::spawn_node(world, root, None, Node::default(), Some(shell())).unwrap();
+            pane_of(world, leaf)
+        })
+        .collect();
+    let (tl, tr, bl) = (panes[0], panes[1], panes[2]);
+    let viewer = ops::attach_viewer(world, ws, viewport(24, 80), None).unwrap();
+    app.update();
+    // `Below` swaps with the pane under the target, not with the next sibling in tree order.
+    ops::swap(app.world_mut(), viewer, SplitDirection::Below).unwrap();
+    check(&mut app);
+    app.update();
+    check(&mut app);
+    let world = app.world();
+    assert_eq!(world.get::<Targets>(viewer).map(|t| t.0), Some(tl));
+    assert_eq!(ops::pane_at(world, viewer, 0, 0), Some(bl));
+    assert_eq!(ops::pane_at(world, viewer, 0, 23), Some(tl));
+    assert_eq!(ops::pane_at(world, viewer, 79, 0), Some(tr));
+    // At the bottom edge nothing lies below, so the pane above is the partner: swapped back.
+    ops::swap(app.world_mut(), viewer, SplitDirection::Below).unwrap();
+    app.update();
+    assert_eq!(ops::pane_at(app.world(), viewer, 0, 0), Some(tl));
+    ops::swap(app.world_mut(), viewer, SplitDirection::Right).unwrap();
+    app.update();
+    check(&mut app);
+    let world = app.world();
+    assert_eq!(ops::pane_at(world, viewer, 79, 0), Some(tl));
+    assert_eq!(ops::pane_at(world, viewer, 0, 0), Some(tr));
+
+    let mut single = self::app();
+    let (ws, ..) = one_pane(&mut single);
+    let viewer = ops::attach_viewer(single.world_mut(), ws, viewport(24, 80), None).unwrap();
+    single.update();
+    assert_eq!(
+        ops::swap(single.world_mut(), viewer, SplitDirection::Right),
+        Err(LayoutError::NoNeighbour)
+    );
 }
 
 #[test]

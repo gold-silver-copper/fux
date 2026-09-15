@@ -4,7 +4,8 @@
 //! Modelled on `bevy_picking::window::update_window_hits` for the pointer side and on
 //! `bevy_ui::picking_backend::ui_picking` for the geometry (`ComputedNode::contains_point`,
 //! `UiGlobalTransform`, `ComputedStackIndex` as the `UiStack` order, `CalculatedClip` as the
-//! precomputed `clip_check_recursive`); like both, no `normal` is reported.
+//! precomputed `clip_check_recursive`) and its shape: pointers are grouped by camera once, then
+//! every instance node is visited once; like both, no `normal` is reported.
 //!
 //! `bevy_picking`'s hover map keeps only the topmost blocking hit per pointer, so the observers
 //! in [`crate::pointer`] see one original target per event and its ancestors by bubbling.
@@ -12,6 +13,7 @@
 use std::sync::Arc;
 
 use bevy_camera::NormalizedRenderTarget;
+use bevy_ecs::entity::EntityHashMap;
 use bevy_ecs::prelude::*;
 use bevy_math::Vec2;
 use bevy_picking::backend::{HitData, HitDataExtra, PointerHits};
@@ -102,8 +104,37 @@ impl RegionExtras {
     }
 }
 
+/// Whether the cell point `point` hits a laid-out node: the node has an area, no ancestor clips
+/// the point away (`CalculatedClip`, bevy_ui's precomputed `clip_check_recursive`) and its border
+/// box contains the point. Shared by [`cell_backend`] and [`super::ops::pane_at`].
+pub fn hits(
+    computed: &ComputedNode,
+    transform: &UiGlobalTransform,
+    clip: Option<&CalculatedClip>,
+    point: Vec2,
+) -> bool {
+    !computed.is_empty()
+        && clip.is_none_or(|clip| clip.clip.contains(point))
+        && computed.contains_point(*transform, point)
+}
+
+/// A located viewer pointer and the picks collected for it this update.
+struct Located {
+    pointer: PointerId,
+    position: Vec2,
+    picks: Vec<(Entity, HitData)>,
+}
+
+/// Retained across updates: the located pointers and the camera → pointer index (one pointer
+/// per viewer, one camera per viewer).
+#[derive(Default)]
+pub struct Scratch {
+    located: Vec<Located>,
+    by_camera: EntityHashMap<usize>,
+}
+
 pub fn cell_backend(
-    pointers: Query<(Entity, &PointerId, &PointerLocation)>,
+    pointers: Query<(&PointerId, &PointerLocation)>,
     viewers: Query<(&ViewerPointer, &ViewerCamera), With<Viewer>>,
     nodes: Query<
         (
@@ -117,9 +148,16 @@ pub fn cell_backend(
         With<InstanceNode>,
     >,
     extras: Local<RegionExtras>,
-    mut hits: MessageWriter<PointerHits>,
+    mut scratch: Local<Scratch>,
+    mut writer: MessageWriter<PointerHits>,
 ) {
-    for (pointer, id, location) in &pointers {
+    let Scratch { located, by_camera } = &mut *scratch;
+    located.clear();
+    by_camera.clear();
+    for (pointer, camera) in &viewers {
+        let Ok((id, location)) = pointers.get(pointer.0) else {
+            continue;
+        };
         let Some(Location {
             target: NormalizedRenderTarget::None { .. },
             position,
@@ -127,35 +165,50 @@ pub fn cell_backend(
         else {
             continue;
         };
-        let Some((_, camera)) = viewers.iter().find(|(p, _)| p.0 == pointer) else {
+        by_camera.insert(camera.0, located.len());
+        located.push(Located {
+            pointer: *id,
+            position,
+            picks: Vec::new(),
+        });
+    }
+    if located.is_empty() {
+        return;
+    }
+    for (entity, computed, transform, stack, target, clip) in &nodes {
+        let Some(camera) = target.get() else {
             continue;
         };
-        let camera = camera.0;
-        // One allocation per located pointer per update: `PointerHits` owns its picks.
-        let picks: Vec<(Entity, HitData)> = nodes
-            .iter()
-            .filter(|(_, computed, transform, _, target, clip)| {
-                target.get() == Some(camera)
-                    && computed.size != Vec2::ZERO
-                    && clip.is_none_or(|clip| clip.clip.contains(position))
-                    && computed.contains_point(**transform, position)
-            })
-            .filter_map(|(entity, computed, transform, stack, _, _)| {
-                let region = HitRegion::classify(computed, transform, position)?;
-                Some((
-                    entity,
-                    HitData {
-                        camera,
-                        depth: -(stack.0 as f32),
-                        position: Some(position.extend(0.0)),
-                        normal: None,
-                        extra: Some(extras.get(region)),
-                    },
-                ))
-            })
-            .collect();
-        if !picks.is_empty() {
-            hits.write(PointerHits::new(*id, picks, ORDER));
+        let Some(pointer) = by_camera
+            .get(&camera)
+            .and_then(|&index| located.get_mut(index))
+        else {
+            continue;
+        };
+        let position = pointer.position;
+        if !hits(computed, transform, clip, position) {
+            continue;
         }
+        let Some(region) = HitRegion::classify(computed, transform, position) else {
+            continue;
+        };
+        pointer.picks.push((
+            entity,
+            HitData {
+                camera,
+                depth: -(stack.0 as f32),
+                position: Some(position.extend(0.0)),
+                normal: None,
+                extra: Some(extras.get(region)),
+            },
+        ));
+    }
+    for pointer in located.iter_mut() {
+        if pointer.picks.is_empty() {
+            continue;
+        }
+        // One allocation per pointer with hits per update: `PointerHits` owns its picks.
+        let picks = core::mem::take(&mut pointer.picks);
+        writer.write(PointerHits::new(pointer.pointer, picks, ORDER));
     }
 }

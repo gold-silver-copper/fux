@@ -16,7 +16,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
 use super::descriptor::Endpoint;
-use super::projection::is_allowed_type_path;
+use super::projection::{ALLOWED_TYPE_PATHS, is_allowed_type_path};
 use super::schema::described;
 use super::token::{Capabilities, Capability, Grant, Tokens};
 use crate::layout::{LayoutError, NodePatch, ops};
@@ -805,18 +805,14 @@ fn process_name(process: Process) -> &'static str {
 /// Panes placed in a root's subtree, document order.
 fn root_panes(world: &World, root: Entity) -> Vec<PaneEntry> {
     let mut panes = Vec::new();
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
+    crate::layout::instances::walk(world, root, &mut |node, _| {
         if let Some(entry) = world
             .get::<Places>(node)
             .and_then(|p| pane_entry(world, p.0))
         {
             panes.push(entry);
         }
-        if let Some(children) = world.get::<Children>(node) {
-            stack.extend(children.iter().rev());
-        }
-    }
+    });
     panes
 }
 
@@ -1566,12 +1562,50 @@ fn world_list_components(mut req: Request, world: &mut World) -> BrpResult {
     ))
 }
 
+/// `registry.schema` over the projection vocabulary only: the caller's filter is applied by
+/// `export_registry_types` (so a caller can narrow), then the result is cut down to the
+/// allowlisted projection components and the types their schemas reference (so a caller can
+/// never widen to an authoritative component's shape).
 fn registry_schema(mut req: Request, world: &mut World) -> BrpResult {
     let params = match core::mem::take(&mut req.params) {
         Value::Object(fields) if fields.is_empty() => None,
         other => Some(other),
     };
-    builtin_methods::export_registry_types(In(params), world)
+    let Value::Object(mut exported) = builtin_methods::export_registry_types(In(params), world)?
+    else {
+        return Err(BrpError::internal("registry.schema returned a non-object"));
+    };
+    let mut kept = serde_json::Map::new();
+    let mut pending: Vec<String> = ALLOWED_TYPE_PATHS.iter().map(|p| (*p).to_owned()).collect();
+    while let Some(path) = pending.pop() {
+        let Some(schema) = exported.remove(&path) else {
+            continue;
+        };
+        collect_schema_refs(&schema, &mut pending);
+        kept.insert(path, schema);
+    }
+    Ok(Value::Object(kept))
+}
+
+const SCHEMA_REF_PREFIX: &str = "#/$defs/";
+
+/// Type paths a schema refers to through `$ref`.
+fn collect_schema_refs(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                match value
+                    .as_str()
+                    .and_then(|s| s.strip_prefix(SCHEMA_REF_PREFIX))
+                {
+                    Some(path) if key == "$ref" => out.push(path.to_owned()),
+                    _ => collect_schema_refs(value, out),
+                }
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| collect_schema_refs(item, out)),
+        _ => {}
+    }
 }
 
 fn rpc_discover(mut req: Request, world: &mut World) -> BrpResult {

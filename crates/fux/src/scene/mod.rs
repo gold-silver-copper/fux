@@ -267,7 +267,7 @@ pub fn export(world: &World, workspace: Entity) -> R<Export> {
         });
     }
     let registry = world.resource::<AppTypeRegistry>().read();
-    let dynamic = DynamicWorldBuilder::from_world(world, &registry)
+    let mut dynamic = DynamicWorldBuilder::from_world(world, &registry)
         .deny_all()
         .allow_component::<Workspace>()
         .allow_component::<WorkspaceName>()
@@ -290,6 +290,24 @@ pub fn export(world: &World, workspace: Entity) -> R<Export> {
         .extract_entities(extract.into_iter())
         .remove_empty_entities()
         .build();
+    // In the World a root is a child of its workspace (so `bevy_ui` never lays it out); in the
+    // document roots are parentless and the workspace lists them only through `RootOrder`.
+    fn is_type(component: &dyn bevy_reflect::PartialReflect, id: core::any::TypeId) -> bool {
+        component
+            .get_represented_type_info()
+            .is_some_and(|info| info.type_id() == id)
+    }
+    for entity in &mut dynamic.entities {
+        if entity.entity == workspace {
+            entity
+                .components
+                .retain(|c| !is_type(c.as_ref(), core::any::TypeId::of::<Children>()));
+        } else if roots.contains(&entity.entity) {
+            entity
+                .components
+                .retain(|c| !is_type(c.as_ref(), core::any::TypeId::of::<ChildOf>()));
+        }
+    }
     let document = dynamic
         .serialize(&registry)
         .map_err(|e| SceneError::Serialize(e.to_string()))?;

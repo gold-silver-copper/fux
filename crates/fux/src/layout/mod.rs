@@ -1,11 +1,13 @@
-//! Layout (prompt 3.4): workspaces own inert template roots (`bevy_ui` `Node` trees); every
-//! viewer showing a root gets one **instance** clone of it laid out against the viewer's camera.
+//! Layout (prompt 3.4): workspaces own template roots (`bevy_ui` `Node` trees parented to their
+//! workspace, so `bevy_ui` never sees them as UI roots and never lays them out); every viewer
+//! showing a root gets one parentless **instance** clone of it laid out against the viewer's
+//! camera.
 //!
 //! * [`ops`]: validated, all-or-nothing transitions on `&mut World` (template edits, viewer
 //!   attachment, per-viewer instance state).
 //! * [`instances`]: `Update`/[`Phase::Layout`]: make each viewer's instance tree equal in shape
 //!   to the template it shows, re-cloning with `EntityCloner` when the template's
-//!   [`LayoutGeneration`] moves.
+//!   [`LayoutGeneration`] changed since the last sync.
 //! * [`size`]: viewer cameras track `Viewport`; `PostUpdate` folds instance geometry into
 //!   [`PaneSize`] (minimum over `ShownBy`).
 //! * [`picking`]: the cell backend turning per-viewer `PointerId::Custom` locations into
@@ -21,7 +23,6 @@ pub mod size;
 use bevy_app::prelude::*;
 use bevy_asset::AssetApp;
 use bevy_ecs::prelude::*;
-use bevy_reflect::prelude::*;
 use bevy_ui::UiSystems;
 
 use crate::model::{Ids, Limits, NodeId, Phase};
@@ -38,11 +39,6 @@ pub enum LayoutSystems {
     /// after this set.
     SizeFold,
 }
-
-/// The template [`LayoutGeneration`] an instance root was cloned from; a mismatch re-clones.
-#[derive(Component, Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[reflect(Component)]
-pub struct InstanceGeneration(pub u64);
 
 /// Per-viewer instance state keyed by template [`NodeId`] so it survives re-cloning (prompt 3.4).
 #[derive(Component, Debug, Default)]
@@ -225,7 +221,6 @@ impl Plugin for LayoutPlugin {
         add_ui_stack(app);
         app.init_resource::<Ids>()
             .init_resource::<Limits>()
-            .register_type::<InstanceGeneration>()
             .configure_sets(Update, LayoutSystems::Instances.in_set(Phase::Layout))
             .configure_sets(
                 PostUpdate,

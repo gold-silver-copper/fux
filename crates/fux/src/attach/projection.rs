@@ -24,13 +24,12 @@ use crate::terminal::Terminal;
 use crate::wire::{ByeReason, ProcessSummary, RootEntry, SceneFrame, ServerFrame, TerminalDelta};
 
 /// Private per-viewer memory of what was projected: the instance entities the viewer has been
-/// told about (so `despawned` can name them after they are gone) and the last target/shown
-/// root, which `ProjectionBaseline` does not carry.
+/// told about, so `despawned` can name them after they are gone (a despawned entity cannot be
+/// re-queried, which is what makes this a legitimate snapshot). Everything else the frame
+/// carries is keyed on change ticks and `ProjectionBaseline`.
 #[derive(Component, Default)]
 pub(crate) struct Projected {
     known: EntityHashSet,
-    target: Option<PaneId>,
-    showing: Option<NodeId>,
 }
 
 /// An instance node whose allowlisted components changed since the last projection.
@@ -58,8 +57,8 @@ type Viewers<'w, 's> = Query<
         Entity,
         &'static ViewerCamera,
         &'static Viewing,
-        Option<&'static Showing>,
-        Option<&'static Targets>,
+        Option<Ref<'static, Showing>>,
+        Option<Ref<'static, Targets>>,
         &'static ProjectionBaseline,
         &'static Projected,
         Option<Ref<'static, Notice>>,
@@ -96,6 +95,8 @@ type Params<'w, 's> = (
         (With<Viewer>, Added<Detaching>),
     >,
     RemovedComponents<'w, 's, Viewer>,
+    RemovedComponents<'w, 's, Showing>,
+    RemovedComponents<'w, 's, Targets>,
     Res<'w, AppTypeRegistry>,
     Option<Res<'w, State<ServerMode>>>,
 );
@@ -108,8 +109,6 @@ struct Outgoing {
     /// The instance entities in this frame's view; swapped into `Projected::known`.
     current: EntityHashSet,
     panes: Vec<(Entity, PaneBaseline)>,
-    target: Option<PaneId>,
-    showing: Option<NodeId>,
 }
 
 impl Default for Outgoing {
@@ -120,8 +119,6 @@ impl Default for Outgoing {
             revision: 0,
             current: EntityHashSet::default(),
             panes: Vec::new(),
-            target: None,
-            showing: None,
         }
     }
 }
@@ -134,6 +131,9 @@ pub(crate) struct Scratch {
     extract: Vec<Entity>,
     closing: Vec<(Entity, ByeReason)>,
     gone: Vec<Entity>,
+    /// Viewers whose `Showing` or `Targets` was removed since the last projection: a removal
+    /// has no change tick, so it is the one focus change a `Ref` cannot report.
+    unfocused: EntityHashSet,
 }
 
 pub(crate) fn project(
@@ -162,12 +162,17 @@ fn collect(
         root_names,
         detaching,
         mut removed,
+        mut unshown,
+        mut untargeted,
         registry,
         mode,
     )) = state.get(world)
     else {
         return;
     };
+    scratch.unfocused.clear();
+    scratch.unfocused.extend(unshown.read());
+    scratch.unfocused.extend(untargeted.read());
     let registry = registry.read();
     let shutting_down = mode.is_some_and(|mode| *mode.get() == ServerMode::ShuttingDown);
 
@@ -266,6 +271,7 @@ fn collect(
                 cursor: Default::default(),
                 modes: Default::default(),
                 title: None,
+                clipboard: None,
                 process: summary(process.as_deref().copied()),
             };
             if terminal.write_delta(pane_baseline, &mut delta) {
@@ -308,10 +314,16 @@ fn collect(
             })
         });
 
-        out.target = targets.and_then(|t| world.get::<PaneId>(t.0).copied());
-        out.showing = showing.and_then(|s| world.get::<NodeId>(s.0).copied());
-        let focus_changed =
-            full || out.target != projected.target || out.showing != projected.showing;
+        out.frame.target = targets
+            .as_ref()
+            .and_then(|t| world.get::<PaneId>(t.0).copied());
+        out.frame.showing = showing
+            .as_ref()
+            .and_then(|s| world.get::<NodeId>(s.0).copied());
+        let focus_changed = full
+            || showing.is_some_and(|showing| showing.is_changed())
+            || targets.is_some_and(|targets| targets.is_changed())
+            || scratch.unfocused.contains(&viewer);
         out.frame.notice = notice
             .filter(|notice| full || notice.is_changed())
             .map(|notice| notice.text.clone());
@@ -326,8 +338,6 @@ fn collect(
             out.revision = baseline.scene_revision + 1;
             out.frame.revision = out.revision;
             out.frame.full = full;
-            out.frame.target = out.target;
-            out.frame.showing = out.showing;
             scratch.outgoing.push(out);
         } else {
             scratch.spare.push(out);
@@ -370,8 +380,6 @@ fn commit(world: &mut World, scratch: &mut Scratch) {
         }
         if let Some(mut projected) = viewer.get_mut::<Projected>() {
             core::mem::swap(&mut projected.known, &mut out.current);
-            projected.target = out.target;
-            projected.showing = out.showing;
         }
         let frame = core::mem::take(&mut out.frame);
         world.write_message(Effect::SendFrame {

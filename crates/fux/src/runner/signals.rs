@@ -1,7 +1,8 @@
 //! `SIGINT`/`SIGTERM` → `Inbound::Signal` through a self-pipe (prompt 3.1): the handler only
 //! `write(2)`s the signal number to a non-blocking pipe; an `IoTaskPool` task reads the pipe
-//! and forwards typed messages, so the runner blocks on one channel with nothing polled.
-//! `SIGHUP` is ignored on the server; panes get theirs through `Effect::Terminate`.
+//! and forwards typed messages on the runner's control channel, which the runner polls ahead
+//! of pane output. `SIGHUP` is ignored on the server; panes get theirs through
+//! `Effect::Terminate`.
 //!
 //! The only `unsafe` in the crate lives here: installing the handler.
 #![allow(unsafe_code)]
@@ -36,8 +37,9 @@ extern "C" fn on_signal(signal: libc::c_int) {
     }
 }
 
-/// Installs the handlers once and spawns the reader task. Calling twice is an error.
-pub fn install(inbound: Sender<Inbound>) -> Result<(), BevyError> {
+/// Installs the handlers once and spawns the reader task, which forwards on `control` (the
+/// runner's priority channel). Calling twice is an error.
+pub fn install(control: Sender<Inbound>) -> Result<(), BevyError> {
     if WRITE_FD.load(Ordering::Relaxed) >= 0 {
         return Err(BevyError::from("signal handlers already installed"));
     }
@@ -61,11 +63,11 @@ pub fn install(inbound: Sender<Inbound>) -> Result<(), BevyError> {
         sigaction(Signal::SIGHUP, &ignore)?;
     }
     let reader = Async::new(read)?;
-    IoTaskPool::get().spawn(forward(reader, inbound)).detach();
+    IoTaskPool::get().spawn(forward(reader, control)).detach();
     Ok(())
 }
 
-async fn forward(reader: Async<OwnedFd>, inbound: Sender<Inbound>) {
+async fn forward(reader: Async<OwnedFd>, control: Sender<Inbound>) {
     let mut buf = [0u8; 16];
     loop {
         let n = match reader
@@ -81,7 +83,7 @@ async fn forward(reader: Async<OwnedFd>, inbound: Sender<Inbound>) {
                 libc::SIGTERM => Sig::Terminate,
                 _ => continue,
             };
-            if inbound.send(Inbound::Signal(signal)).await.is_err() {
+            if control.send(Inbound::Signal(signal)).await.is_err() {
                 return;
             }
         }

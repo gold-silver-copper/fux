@@ -1,6 +1,6 @@
-//! `fux.toml`, in the old vocabulary: `prefix`, `default-command`, `[history]`, `[limits]`,
-//! `[final]`. Every key is optional over the defaults; unknown keys are errors; the result is
-//! the `Limits` resource plus the default command and prefix.
+//! `fux.toml`, in the old vocabulary: `prefix`, `default-command`, `clipboard`, `[history]`,
+//! `[limits]`, `[final]`. Every key is optional over the defaults; unknown keys are errors; the
+//! result is the `Limits` resource plus the default command, prefix and clipboard policy.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -24,6 +24,8 @@ pub struct Config {
     /// Prefix key in the old notation (`C-b`); interpreted by the viewer.
     pub prefix: String,
     pub default_command: Command,
+    /// Whether OSC 52 writes from panes reach the viewer's terminal clipboard.
+    pub clipboard: ClipboardPolicy,
     pub history: History,
     pub limits: LimitsSection,
     #[serde(rename = "final")]
@@ -35,11 +37,24 @@ impl Default for Config {
         Self {
             prefix: "C-b".into(),
             default_command: Command::default(),
+            clipboard: ClipboardPolicy::default(),
             history: History::default(),
             limits: LimitsSection::default(),
             final_records: FinalRecords::default(),
         }
     }
+}
+
+/// What a pane's OSC 52 write may do to the enclosing terminal's clipboard. Reading is never
+/// offered: the only policies are "off" and "write, bounded, once per write".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClipboardPolicy {
+    /// Never write to the enclosing terminal's clipboard.
+    #[default]
+    Off,
+    /// Application OSC 52 writes reach the terminal clipboard (bounded, once per write).
+    WriteOnly,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +273,22 @@ mod tests {
         assert!(Config::from_toml("[limits]\nmax-panes = 100000").is_err());
         assert!(Config::from_toml("[history]\nscrollback-lines = 0").is_err());
         assert!(Config::from_toml("[default-command]\nargv = []").is_err());
+        assert!(Config::from_toml("clipboard = 'read-write'").is_err());
+    }
+
+    #[test]
+    fn clipboard_policy_is_off_unless_write_only() {
+        assert_eq!(Config::default().clipboard, ClipboardPolicy::Off);
+        assert_eq!(
+            Config::from_toml("clipboard = 'write-only'")
+                .unwrap()
+                .clipboard,
+            ClipboardPolicy::WriteOnly
+        );
+        assert_eq!(
+            Config::from_toml("clipboard = 'off'").unwrap().clipboard,
+            ClipboardPolicy::Off
+        );
     }
 
     #[test]

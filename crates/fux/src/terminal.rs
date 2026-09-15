@@ -5,6 +5,8 @@
 //!
 //! Adapted from koh (MIT); the upstream notice is retained in LICENSES/koh.txt.
 
+use std::io::Write as _;
+
 use bevy_ecs::prelude::*;
 use vt100::Screen;
 
@@ -13,6 +15,8 @@ use crate::wire::{Cell, Color, Cursor, Line, Modes, MouseMode, Style, TerminalDe
 
 /// Titles longer than this are truncated (characters, after control characters are dropped).
 pub const MAX_TITLE_CHARS: usize = 256;
+/// An OSC 52 payload (base64) longer than this is dropped; the previous one stays.
+pub const MAX_CLIPBOARD_BASE64: usize = 16 * 1024;
 /// Bound on one OSC/DCS/APC control string before it is dropped.
 const MAX_CONTROL_STRING_BYTES: usize = 64 * 1024;
 
@@ -59,6 +63,12 @@ struct Callbacks {
     /// Set when a title arrived that differs from the previous one; cleared by
     /// [`Terminal::take_title_change`].
     title_changed: bool,
+    /// The last accepted OSC 52 payload (base64, bounded).
+    clipboard: String,
+    /// Accepted OSC 52 writes so far: every write is forwarded once, even a repeated payload.
+    clipboard_writes: u64,
+    /// Set by an accepted OSC 52 write; cleared by [`Terminal::take_clipboard_change`].
+    clipboard_changed: bool,
     bell_count: u64,
     /// Query answers the application expects back on its input.
     host_replies: Vec<u8>,
@@ -76,6 +86,15 @@ impl vt100::Callbacks for Callbacks {
     fn set_window_icon_name(&mut self, _: &mut Screen, _: &[u8]) {}
     fn audible_bell(&mut self, _: &mut Screen) {
         self.bell_count = self.bell_count.saturating_add(1);
+    }
+    fn copy_to_clipboard(&mut self, _: &mut Screen, _selection: &[u8], data: &[u8]) {
+        if data.len() > MAX_CLIPBOARD_BASE64 {
+            return;
+        }
+        self.clipboard.clear();
+        self.clipboard.push_str(&String::from_utf8_lossy(data));
+        self.clipboard_writes = self.clipboard_writes.saturating_add(1);
+        self.clipboard_changed = true;
     }
     fn unhandled_osc(&mut self, _: &mut Screen, params: &[&[u8]]) {
         match parse_progress(params) {
@@ -97,26 +116,25 @@ impl vt100::Callbacks for Callbacks {
             .and_then(|values| values.first())
             .copied()
             .unwrap_or(0);
+        // `Vec<u8>` writes never fail; the results are dropped rather than unwrapped.
+        let replies = &mut self.host_replies;
         match (intermediate, second, action) {
             (None, _, 'n') => match first {
                 6 => {
                     let (row, column) = screen.cursor_position();
-                    self.host_replies.extend_from_slice(
-                        format!("\x1b[{};{}R", u32::from(row) + 1, u32::from(column) + 1)
-                            .as_bytes(),
-                    );
+                    let (row, column) = (u32::from(row) + 1, u32::from(column) + 1);
+                    let _ = write!(replies, "\x1b[{row};{column}R");
                 }
-                5 => self.host_replies.extend_from_slice(b"\x1b[0n"),
+                5 => replies.extend_from_slice(b"\x1b[0n"),
                 _ => {}
             },
             (Some(b'?'), _, 'n') if first == 6 => {
                 let (row, column) = screen.cursor_position();
-                self.host_replies.extend_from_slice(
-                    format!("\x1b[?{};{}R", u32::from(row) + 1, u32::from(column) + 1).as_bytes(),
-                );
+                let (row, column) = (u32::from(row) + 1, u32::from(column) + 1);
+                let _ = write!(replies, "\x1b[?{row};{column}R");
             }
-            (None, _, 'c') => self.host_replies.extend_from_slice(b"\x1b[?62;1;6c"),
-            (Some(b'>'), _, 'c') => self.host_replies.extend_from_slice(b"\x1b[>1;10;0c"),
+            (None, _, 'c') => replies.extend_from_slice(b"\x1b[?62;1;6c"),
+            (Some(b'>'), _, 'c') => replies.extend_from_slice(b"\x1b[>1;10;0c"),
             (Some(b'?'), Some(b'$'), 'p') => {
                 let status: u16 = match first {
                     2004 => {
@@ -128,8 +146,7 @@ impl vt100::Callbacks for Callbacks {
                     }
                     _ => 0,
                 };
-                self.host_replies
-                    .extend_from_slice(format!("\x1b[?{first};{status}$y").as_bytes());
+                let _ = write!(replies, "\x1b[?{first};{status}$y");
             }
             _ => {}
         }
@@ -307,8 +324,9 @@ fn cursor_of(screen: &Screen) -> Cursor {
 }
 
 /// A copy of what an observer last saw of the pane: the visible screen with the sequence each
-/// row last changed at, plus cursor, modes and title. The sequence advances once per refresh
-/// that changed anything, so a frame carries only the rows a viewer has not seen.
+/// row last changed at, plus cursor, modes, title and clipboard writes. The sequence advances
+/// once per refresh that changed anything, so a frame carries only the rows a viewer has not
+/// seen.
 #[derive(Default)]
 struct Grid {
     rows: u16,
@@ -320,15 +338,19 @@ struct Grid {
     seq: u64,
     /// Sequence at which the title last changed.
     title_seq: u64,
+    /// Sequence at which the last OSC 52 write was accepted, and the write count seen then.
+    clipboard_seq: u64,
+    clipboard_writes: u64,
     cursor: Cursor,
     modes: Modes,
     title: String,
 }
 
 impl Grid {
-    /// Brings the grid up to date with `screen` and `title`; when anything changed the sequence
-    /// advances, the rows that differ are stamped with it, and `true` is returned.
-    fn refresh(&mut self, screen: &Screen, title: &str) -> bool {
+    /// Brings the grid up to date with `screen`, `title` and the OSC 52 write count; when
+    /// anything changed the sequence advances, the rows that differ are stamped with it, and
+    /// `true` is returned.
+    fn refresh(&mut self, screen: &Screen, title: &str, clipboard_writes: u64) -> bool {
         let next = self.seq.saturating_add(1);
         let (rows, cols) = screen.size();
         let width = usize::from(cols);
@@ -367,13 +389,21 @@ impl Grid {
         }
         let cursor = cursor_of(screen);
         let modes = modes_of(screen);
-        if cursor != self.cursor || modes != self.modes || title != self.title {
+        if cursor != self.cursor
+            || modes != self.modes
+            || title != self.title
+            || clipboard_writes != self.clipboard_writes
+        {
             self.cursor = cursor;
             self.modes = modes;
             if title != self.title {
                 self.title.clear();
                 self.title.push_str(title);
                 self.title_seq = next;
+            }
+            if clipboard_writes != self.clipboard_writes {
+                self.clipboard_writes = clipboard_writes;
+                self.clipboard_seq = next;
             }
             changed = true;
         }
@@ -481,8 +511,12 @@ impl Terminal {
     }
 
     fn refresh(&mut self) {
-        self.grid
-            .refresh(self.parser.screen(), &self.parser.callbacks().title);
+        let callbacks = self.parser.callbacks();
+        self.grid.refresh(
+            self.parser.screen(),
+            &callbacks.title,
+            callbacks.clipboard_writes,
+        );
     }
 
     /// A `vt100` panic on hostile output is contained: the chunk is dropped and later output
@@ -549,6 +583,18 @@ impl Terminal {
         std::mem::take(&mut callbacks.title_changed).then(|| callbacks.title.clone())
     }
 
+    /// The last accepted OSC 52 payload (base64); empty until one was written.
+    #[must_use]
+    pub fn clipboard(&self) -> &str {
+        &self.parser.callbacks().clipboard
+    }
+
+    /// The payload of the latest OSC 52 write, once, after it was accepted.
+    pub fn take_clipboard_change(&mut self) -> Option<String> {
+        let callbacks = self.parser.callbacks_mut();
+        std::mem::take(&mut callbacks.clipboard_changed).then(|| callbacks.clipboard.clone())
+    }
+
     pub fn bell_count(&self) -> u64 {
         self.parser.callbacks().bell_count
     }
@@ -580,7 +626,9 @@ impl Terminal {
     /// Writes the rows changed since `baseline` (`None` = everything) into `out`, reusing its
     /// line and cell vectors; `pane` and `process` are left for the caller. Returns `false` when
     /// the baseline already saw this sequence at this size. The title is carried only when the
-    /// delta is full or the title changed after the baseline.
+    /// delta is full or the title changed after the baseline. The clipboard payload is carried
+    /// only when an OSC 52 write was accepted after the baseline: a first sight never replays
+    /// an old write.
     pub fn write_delta(&self, baseline: Option<PaneBaseline>, out: &mut TerminalDelta) -> bool {
         let grid = &self.grid;
         let full = baseline.is_none_or(|b| b.rows != grid.rows || b.cols != grid.cols);
@@ -596,6 +644,9 @@ impl Terminal {
         out.modes = grid.modes;
         out.title = (since.is_none_or(|seq| grid.title_seq > seq) && !grid.title.is_empty())
             .then(|| grid.title.clone());
+        out.clipboard = baseline
+            .is_some_and(|b| grid.clipboard_seq > b.seq)
+            .then(|| self.parser.callbacks().clipboard.clone());
         // Rows whose stamp is newer than the baseline; every row when the delta is full.
         let changed_rows = || {
             grid.changed
@@ -687,6 +738,7 @@ mod tests {
             cursor: Cursor::default(),
             modes: Modes::default(),
             title: None,
+            clipboard: None,
             process: crate::wire::ProcessSummary::Live,
         };
         assert!(terminal.write_delta(None, &mut delta));
@@ -736,6 +788,7 @@ mod tests {
             cursor: Cursor::default(),
             modes: Modes::default(),
             title: None,
+            clipboard: None,
             process: crate::wire::ProcessSummary::Live,
         };
         terminal.resize(5, 12);
@@ -772,6 +825,53 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_is_bounded_reported_once_and_carried_only_after_the_baseline() {
+        let mut terminal = Terminal::new(24, 80, 0);
+        let seen = baseline(&terminal);
+        terminal.feed(b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(terminal.clipboard(), "aGVsbG8=");
+        assert_eq!(
+            terminal.take_clipboard_change().as_deref(),
+            Some("aGVsbG8=")
+        );
+        assert!(terminal.take_clipboard_change().is_none());
+        let mut delta = TerminalDelta {
+            pane: crate::model::PaneId(1),
+            seq: 0,
+            rows: 0,
+            cols: 0,
+            full: false,
+            lines: Vec::new(),
+            cursor: Cursor::default(),
+            modes: Modes::default(),
+            title: None,
+            clipboard: None,
+            process: crate::wire::ProcessSummary::Live,
+        };
+        // Written after the baseline: carried; a first sight never replays it.
+        assert!(terminal.write_delta(Some(seen), &mut delta));
+        assert_eq!(delta.clipboard.as_deref(), Some("aGVsbG8="));
+        assert!(terminal.write_delta(None, &mut delta));
+        assert!(delta.clipboard.is_none());
+        // The same payload written again is a new write.
+        let seen = baseline(&terminal);
+        terminal.feed(b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(
+            terminal.take_clipboard_change().as_deref(),
+            Some("aGVsbG8=")
+        );
+        assert!(terminal.write_delta(Some(seen), &mut delta));
+        assert_eq!(delta.clipboard.as_deref(), Some("aGVsbG8="));
+        // Oversize payloads keep the previous value and are not a write.
+        let seen = baseline(&terminal);
+        let big = "A".repeat(MAX_CLIPBOARD_BASE64 + 1);
+        terminal.feed(format!("\x1b]52;c;{big}\x07").as_bytes());
+        assert_eq!(terminal.clipboard(), "aGVsbG8=");
+        assert!(terminal.take_clipboard_change().is_none());
+        assert!(!terminal.write_delta(Some(seen), &mut delta));
+    }
+
+    #[test]
     fn bell_and_host_replies() {
         let mut terminal = Terminal::new(24, 80, 0);
         terminal.feed(b"\x07\x07\x1b[5;3H\x1b[6n");
@@ -796,6 +896,7 @@ mod tests {
             cursor: Cursor::default(),
             modes: Modes::default(),
             title: None,
+            clipboard: None,
             process: crate::wire::ProcessSummary::Live,
         };
         assert!(terminal.write_delta(None, &mut delta));
@@ -821,6 +922,7 @@ mod tests {
             cursor: Cursor::default(),
             modes: Modes::default(),
             title: None,
+            clipboard: None,
             process: crate::wire::ProcessSummary::Live,
         };
         assert!(terminal.write_delta(None, &mut delta));

@@ -20,6 +20,7 @@ use fux::layout::ops;
 use fux::lifecycle::{self, Clock, SHUTDOWN_DEADLINE_MS};
 use fux::model::invariants::check_invariants;
 use fux::model::*;
+use fux::runner::{self, Params, Sources};
 
 fn step(app: &mut App, messages: Vec<Inbound>) -> Vec<Effect> {
     app.world_mut()
@@ -128,6 +129,43 @@ fn signal_terminates_every_live_pane_then_exits_when_all_exited() {
         }],
     );
     assert!(exits(&effects));
+}
+
+/// A hot pane cannot delay a signal: with far more pane output queued than one step drains,
+/// the runner's next batch still carries the signal, and one `update` enters `ShuttingDown`.
+#[test]
+fn signal_is_applied_by_the_next_step_ahead_of_queued_pane_output() {
+    let (mut app, panes) = two_live_panes();
+    let params = Params::default();
+    let (inbound_tx, inbound) = async_channel::bounded(8192);
+    let (control_tx, control) = async_channel::bounded(runner::CONTROL_QUEUE);
+    for _ in 0..5000 {
+        inbound_tx
+            .try_send(Inbound::PaneOutput {
+                pane: panes[0],
+                bytes: b"x".to_vec(),
+            })
+            .unwrap();
+    }
+    control_tx
+        .try_send(Inbound::Signal(Signal::Terminate))
+        .unwrap();
+    let sources = Sources { control, inbound };
+    let mut batch = Vec::with_capacity(params.batch);
+    runner::collect(&sources, &mut batch, &params, None).unwrap();
+    assert!(matches!(
+        batch.first(),
+        Some(Inbound::Signal(Signal::Terminate))
+    ));
+    assert!(batch.len() <= params.batch + 1);
+    assert!(sources.inbound.len() >= 5000 - params.batch);
+
+    let effects = step(&mut app, batch);
+    assert_eq!(terminated(&effects).len(), 2);
+    assert_eq!(
+        *app.world().resource::<State<ServerMode>>().get(),
+        ServerMode::ShuttingDown
+    );
 }
 
 #[test]

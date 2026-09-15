@@ -254,6 +254,19 @@ fn chords_derive_modifiers_from_terminal_bytes() {
         KeyChord::of(&key_input(key(TKey::Enter, Modifiers::NONE))),
         KeyChord::plain(Key::Enter)
     );
+    // Shift on a named key is what the terminal encoded: `CSI Z` or the `;2` parameter.
+    assert_eq!(
+        KeyChord::of(&key_input(key(TKey::BackTab, Modifiers::NONE))),
+        KeyChord::shift(Key::Tab)
+    );
+    assert_eq!(
+        KeyChord::of(&key_input(key(TKey::Up, Modifiers::SHIFT))),
+        KeyChord::shift(Key::ArrowUp)
+    );
+    assert_eq!(
+        KeyChord::of(&key_input(key(TKey::Up, Modifiers::ALT))),
+        KeyChord::plain(Key::ArrowUp)
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -284,6 +297,24 @@ impl ServerScene {
             r.register::<InstanceNode>();
         }
         registry
+    }
+
+    fn leaf(world: &mut World, container: Entity, node: u64, pane: u64) -> (Entity, Entity) {
+        let pane = world.spawn(PaneId(pane)).id();
+        let leaf = world
+            .spawn((
+                InstanceNode,
+                NodeId(node),
+                ChildOf(container),
+                Shows(pane),
+                Node {
+                    flex_grow: 1.0,
+                    flex_basis: Val::Px(0.0),
+                    ..Default::default()
+                },
+            ))
+            .id();
+        (leaf, pane)
     }
 
     /// `rows` x `cols` grid of panes: root column of row containers, each row a flex row of
@@ -334,20 +365,8 @@ impl ServerScene {
                 root
             };
             for c in 0..cols {
-                let pane = world.spawn(PaneId((r * cols + c + 1) as u64)).id();
-                let leaf = world
-                    .spawn((
-                        InstanceNode,
-                        NodeId(next_node),
-                        ChildOf(container),
-                        Shows(pane),
-                        Node {
-                            flex_grow: 1.0,
-                            flex_basis: Val::Px(0.0),
-                            ..Default::default()
-                        },
-                    ))
-                    .id();
+                let (leaf, pane) =
+                    Self::leaf(&mut world, container, next_node, (r * cols + c + 1) as u64);
                 next_node += 1;
                 leaves.push(leaf);
                 panes.push(pane);
@@ -359,6 +378,85 @@ impl ServerScene {
             root,
             leaves,
             panes,
+        }
+    }
+
+    /// `[a | [b / c]]`: pane 1 fills the left half, panes 2 and 3 stack in the right half.
+    fn beside_stack() -> Self {
+        let mut world = World::new();
+        world.init_resource::<Ids>();
+        let root = world
+            .spawn((
+                InstanceNode,
+                NodeId(1),
+                Name::new("main"),
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    ..Default::default()
+                },
+            ))
+            .id();
+        let (a, pane_a) = Self::leaf(&mut world, root, 2, 1);
+        let column = world
+            .spawn((
+                InstanceNode,
+                NodeId(3),
+                ChildOf(root),
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    flex_grow: 1.0,
+                    flex_basis: Val::Px(0.0),
+                    ..Default::default()
+                },
+            ))
+            .id();
+        let (b, pane_b) = Self::leaf(&mut world, column, 4, 2);
+        let (c, pane_c) = Self::leaf(&mut world, column, 5, 3);
+        Self {
+            world,
+            registry: Self::registry(),
+            root,
+            leaves: vec![a, b, c],
+            panes: vec![pane_a, pane_b, pane_c],
+        }
+    }
+
+    /// A 40-column root that clips its overflow, holding a 20-column pane 1 and a 60-column
+    /// pane 2: pane 2's cells past column 40 are laid out but never painted.
+    fn clipped_overflow() -> Self {
+        let mut world = World::new();
+        world.init_resource::<Ids>();
+        let root = world
+            .spawn((
+                InstanceNode,
+                NodeId(1),
+                Name::new("main"),
+                Node {
+                    width: Val::Percent(50.0),
+                    height: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    overflow: Overflow::clip(),
+                    ..Default::default()
+                },
+            ))
+            .id();
+        let (a, pane_a) = Self::leaf(&mut world, root, 2, 1);
+        let (b, pane_b) = Self::leaf(&mut world, root, 3, 2);
+        for (leaf, width) in [(a, 20.0), (b, 60.0)] {
+            world.entity_mut(leaf).insert(Node {
+                width: Val::Px(width),
+                flex_shrink: 0.0,
+                ..Default::default()
+            });
+        }
+        Self {
+            world,
+            registry: Self::registry(),
+            root,
+            leaves: vec![a, b],
+            panes: vec![pane_a, pane_b],
         }
     }
 
@@ -420,6 +518,7 @@ fn delta(pane: u64, cols: u16, rows: u16, first_row: &str) -> TerminalDelta {
         cursor: Cursor::default(),
         modes: Modes::default(),
         title: None,
+        clipboard: None,
         process: ProcessSummary::Live,
     }
 }
@@ -766,6 +865,250 @@ fn prefix_hjkl_reaches_every_leaf_of_a_2x2_layout() {
     push_keys(&mut app, [key(TKey::Char('y'), Modifiers::NONE)]);
     app.update();
     assert_eq!(take_requests(&mut app), vec![ViewerRequest::ClosePane]);
+}
+
+#[test]
+fn navigation_beside_a_stack_matches_the_server_rule() {
+    let scene = ServerScene::beside_stack();
+    let mut app = viewer::build(80, 24);
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    let leaf = |app: &App, i: usize| local(app, scene.leaves[i]);
+    let step = |app: &mut App, c: char| {
+        push_keys(
+            app,
+            [
+                key(TKey::Char('b'), Modifiers::CONTROL),
+                key(TKey::Char(c), Modifiers::NONE),
+            ],
+        );
+        app.update();
+    };
+    assert_eq!(focused(&app), Some(leaf(&app, 0)));
+    step(&mut app, 'l');
+    assert_eq!(
+        focused(&app),
+        Some(leaf(&app, 1)),
+        "l from a reaches the top-aligned b"
+    );
+    step(&mut app, 'j');
+    assert_eq!(focused(&app), Some(leaf(&app, 2)), "j from b reaches c");
+    step(&mut app, 'h');
+    assert_eq!(focused(&app), Some(leaf(&app, 0)), "h from c reaches a");
+    step(&mut app, 'l');
+    step(&mut app, 'j');
+    step(&mut app, 'k');
+    assert_eq!(focused(&app), Some(leaf(&app, 1)), "k from c reaches b");
+    step(&mut app, 'h');
+    assert_eq!(focused(&app), Some(leaf(&app, 0)), "h from b reaches a");
+}
+
+#[test]
+fn prefix_tab_and_shift_tab_walk_tab_order_both_ways() {
+    let scene = ServerScene::grid(2, 2);
+    let mut app = viewer::build(80, 24);
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    let leaf = |app: &App, i: usize| local(app, scene.leaves[i]);
+    let step = |app: &mut App, code: TKey| {
+        push_keys(
+            app,
+            [
+                key(TKey::Char('b'), Modifiers::CONTROL),
+                key(code, Modifiers::NONE),
+            ],
+        );
+        app.update();
+    };
+    assert_eq!(focused(&app), Some(leaf(&app, 0)));
+    step(&mut app, TKey::Tab);
+    assert_eq!(
+        focused(&app),
+        Some(leaf(&app, 1)),
+        "Tab moves to the next leaf"
+    );
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::Target(PaneId(2))]
+    );
+    step(&mut app, TKey::BackTab);
+    assert_eq!(
+        focused(&app),
+        Some(leaf(&app, 0)),
+        "Shift-Tab moves to the previous leaf"
+    );
+    step(&mut app, TKey::BackTab);
+    assert_eq!(
+        focused(&app),
+        Some(leaf(&app, 3)),
+        "Shift-Tab wraps to the last leaf"
+    );
+    step(&mut app, TKey::Tab);
+    assert_eq!(
+        focused(&app),
+        Some(leaf(&app, 0)),
+        "Tab wraps to the first leaf"
+    );
+    take_requests(&mut app);
+
+    // A focus outside every tab group (a leaf re-instanced away, here the status bar) is not a
+    // dead end: the walk resumes from the group's edge.
+    let status_bar = app.world().resource::<viewer::ChromeRoots>().status_bar;
+    app.world_mut()
+        .resource_mut::<InputFocus>()
+        .set(status_bar, bevy_input_focus::FocusCause::Navigated);
+    step(&mut app, TKey::BackTab);
+    assert_eq!(
+        focused(&app),
+        Some(leaf(&app, 3)),
+        "Shift-Tab from a stranded focus reaches the last leaf"
+    );
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::Target(PaneId(4))]
+    );
+
+    // Plain Tab in Normal mode is pane input, not navigation.
+    push_keys(&mut app, [key(TKey::Tab, Modifiers::NONE)]);
+    app.update();
+    assert_eq!(focused(&app), Some(leaf(&app, 3)));
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::Input(b"\t".to_vec())]
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// (6) click-to-focus through the cell picking backend
+// ---------------------------------------------------------------------------------------------
+
+fn click(app: &mut App, col: u16, row: u16) -> Vec<ViewerRequest> {
+    let at = |kind| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: Modifiers::NONE,
+        })
+    };
+    push_keys(
+        app,
+        [
+            at(MouseEventKind::Down(MouseButton::Left)),
+            at(MouseEventKind::Up(MouseButton::Left)),
+        ],
+    );
+    app.update();
+    take_requests(app)
+        .into_iter()
+        .filter(|r| !matches!(r, ViewerRequest::Pointer(_)))
+        .collect()
+}
+
+#[test]
+fn clicks_focus_the_visible_pane_and_ignore_clipped_cells() {
+    let scene = ServerScene::clipped_overflow();
+    let mut app = viewer::build(80, 24);
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    let leaf = |app: &App, i: usize| local(app, scene.leaves[i]);
+    assert_eq!(focused(&app), Some(leaf(&app, 0)));
+
+    assert_eq!(
+        click(&mut app, 30, 5),
+        vec![ViewerRequest::Target(PaneId(2))],
+        "a click on pane 2's visible cells focuses it"
+    );
+    assert_eq!(focused(&app), Some(leaf(&app, 1)));
+
+    assert_eq!(
+        click(&mut app, 10, 5),
+        vec![],
+        "back on the server's target: nothing to request"
+    );
+    assert_eq!(focused(&app), Some(leaf(&app, 0)));
+
+    // Column 60 is inside pane 2's rect but clipped by the root: nothing to pick there.
+    assert_eq!(
+        click(&mut app, 60, 5),
+        vec![],
+        "a clipped cell is not pickable"
+    );
+    assert_eq!(focused(&app), Some(leaf(&app, 0)));
+}
+
+// ---------------------------------------------------------------------------------------------
+// (7) clipboard forwarding
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn pane_clipboard_writes_reach_the_terminal_as_osc_52_once() {
+    let scene = ServerScene::grid(1, 2);
+    let mut app = viewer::build(80, 24);
+    let mut frame = scene.frame(1);
+    frame.terminals = vec![delta(1, 40, 23, "hello"), delta(2, 40, 23, "world")];
+    push_frame(&mut app, frame);
+    app.update();
+    let out = |app: &mut App| core::mem::take(&mut app.world_mut().resource_mut::<Painter>().out);
+    let osc = b"\x1b]52;c;aGVsbG8=\x07";
+    assert!(
+        !out(&mut app).windows(osc.len()).any(|w| w == osc),
+        "no clipboard write without a payload"
+    );
+
+    let mut update = delta(2, 40, 23, "world");
+    update.full = false;
+    update.seq = 2;
+    update.clipboard = Some("aGVsbG8=".into());
+    push_frame(
+        &mut app,
+        SceneFrame {
+            revision: 2,
+            full: false,
+            scene: String::new(),
+            roots: None,
+            terminals: vec![update],
+            ..scene.frame(2)
+        },
+    );
+    app.update();
+    let bytes = out(&mut app);
+    assert_eq!(
+        bytes.windows(osc.len()).filter(|w| *w == osc).count(),
+        1,
+        "one OSC 52 write per delta that carries a payload: {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert!(
+        bytes.ends_with(osc),
+        "the clipboard write follows the frame's cell diff"
+    );
+
+    app.update();
+    assert!(
+        !out(&mut app).windows(osc.len()).any(|w| w == osc),
+        "a payload is not replayed on later frames"
+    );
+
+    // An unknown pane's delta is dropped whole, clipboard included.
+    let mut stray = delta(9, 40, 23, "x");
+    stray.clipboard = Some("c3RyYXk=".into());
+    push_frame(
+        &mut app,
+        SceneFrame {
+            revision: 3,
+            full: false,
+            scene: String::new(),
+            roots: None,
+            terminals: vec![stray],
+            ..scene.frame(3)
+        },
+    );
+    app.update();
+    assert!(
+        !out(&mut app).windows(4).any(|w| w == b"]52;"),
+        "no clipboard write for a pane the viewer does not show"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

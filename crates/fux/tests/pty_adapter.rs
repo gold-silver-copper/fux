@@ -15,7 +15,9 @@ use bevy_app::prelude::*;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::*;
 use bevy_tasks::{IoTaskPool, TaskPool};
-use fux::model::{Effect, Inbound, ModelPlugin, OutputPacing, Pane, PaneSize, Process, Title};
+use fux::model::{
+    Clipboard, Effect, Inbound, ModelPlugin, OutputPacing, Pane, PaneSize, Process, Title,
+};
 use fux::pty::{PtyAdapter, TerminalPlugin};
 use fux::terminal::Terminal;
 
@@ -274,10 +276,11 @@ fn terminal_plugin_ingests_output_and_transitions_process() {
             Disabled,
         ))
         .id();
+    assert!(app.world().get::<Clipboard>(pane).is_none());
     adapter
         .apply(spawn(
             pane,
-            "printf '\\033]2;named\\a\\033[6nhello'; exit 3",
+            "printf '\\033]2;named\\a\\033]52;c;aGVsbG8=\\a\\033[6nhello'; exit 3",
             24,
             80,
         ))
@@ -311,6 +314,8 @@ fn terminal_plugin_ingests_output_and_transitions_process() {
         let terminal = entity.get::<Terminal>().unwrap();
         assert!(terminal.screen_lines()[0].starts_with("hello"));
         assert_eq!(entity.get::<Title>().unwrap().0, "named");
+        // Present only once the pane wrote OSC 52.
+        assert_eq!(entity.get::<Clipboard>().unwrap().0, "aGVsbG8=");
     }
     assert!(recycled >= 1, "output buffers are returned to the adapter");
     assert!(host_reply, "DSR answer emitted as WritePty");

@@ -5,7 +5,6 @@
 //! holds no World.
 
 use std::io::Write;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -265,12 +264,13 @@ fn ensure_server(paths: &Paths, server: &str) -> Result<PathBuf, BevyError> {
         .append(true)
         .open(paths.log_file(server))?;
     let exe = std::env::current_exe()?;
+    // No `process_group(0)`: the child calls `setsid`, which fails for a process-group leader
+    // and gives the new session its own group anyway.
     Command::new(exe)
         .args(["serve", "--name", server, "--detached"])
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
-        .process_group(0)
         .spawn()?;
     let started = Instant::now();
     while started.elapsed() < START_TIMEOUT {
@@ -308,20 +308,26 @@ fn ensure_workspace(brp: &Path, workspace: &str) -> Result<(), BevyError> {
 fn serve(name: &str, detached: bool) -> Result<i32, BevyError> {
     if detached {
         // The parent already redirected stdio; only the session needs to be ours.
-        let _ = nix::unistd::setsid();
+        nix::unistd::setsid()?;
     }
     let paths = Paths::discover()?;
     paths.prepare()?;
     let config = Config::load(&paths.config_file())?;
-    let (sender, receiver) = async_channel::bounded(8192);
+    let (sender, inbound) = async_channel::bounded(8192);
+    let (control_sender, control) = async_channel::bounded(crate::runner::CONTROL_QUEUE);
     let mut app = crate::app::build(&config, &paths, name, sender.clone());
     app.add_systems(Startup, |world: &mut World| -> Result<(), BevyError> {
         crate::lifecycle::bootstrap(world, DEFAULT_WORKSPACE, &[])
     });
-    crate::runner::signals::install(sender.clone())?;
+    crate::runner::signals::install(control_sender)?;
     let pty = crate::pty::PtyAdapter::new(sender);
     let attach = crate::attach::AttachAdapter::from_app(&app)?;
-    crate::runner::install(&mut app, receiver, pty, attach);
+    crate::runner::install(
+        &mut app,
+        crate::runner::Sources { control, inbound },
+        pty,
+        attach,
+    );
     Ok(match app.run() {
         AppExit::Success => 0,
         AppExit::Error(code) => i32::from(code.get()),

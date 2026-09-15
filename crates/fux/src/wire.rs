@@ -128,6 +128,10 @@ pub struct TerminalDelta {
     pub cursor: Cursor,
     pub modes: Modes,
     pub title: Option<String>,
+    /// An OSC 52 payload (base64) the pane wrote since the viewer's baseline; the viewer
+    /// forwards it to its own terminal (write-only, once). Never set on a first sight.
+    #[serde(default)]
+    pub clipboard: Option<String>,
     pub process: ProcessSummary,
 }
 

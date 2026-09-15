@@ -33,7 +33,9 @@ use nix::unistd::Pid;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::layout::LayoutSystems;
-use crate::model::{Effect, Inbound, Limits, OutputPacing, Pane, PaneSize, Phase, Process, Title};
+use crate::model::{
+    Clipboard, Effect, Inbound, Limits, OutputPacing, Pane, PaneSize, Phase, Process, Title,
+};
 use crate::terminal::{MAX_TITLE_CHARS, Terminal, printable};
 
 /// One PTY read; also the size of every pooled output buffer.
@@ -568,10 +570,19 @@ fn apply_process_events(
 /// tail publishes titles, host replies and pacing, then recycles the buffers.
 fn ingest_output(
     mut inbound: MessageMutator<Inbound>,
-    mut terminals: Query<(Entity, &mut Terminal, &mut Title, &mut OutputPacing), AnyPane>,
+    mut terminals: Query<
+        (
+            Entity,
+            &mut Terminal,
+            &mut Title,
+            Option<&mut Clipboard>,
+            &mut OutputPacing,
+        ),
+        AnyPane,
+    >,
     mut effects: MessageWriter<Effect>,
-    time: Res<Time>,
-    limits: Res<Limits>,
+    mut commands: Commands,
+    (time, limits): (Res<Time>, Res<Limits>),
     mut batch: Local<Vec<(Entity, Vec<u8>)>>,
     mut replies: Local<Vec<u8>>,
 ) {
@@ -595,7 +606,7 @@ fn ingest_output(
     let grouped: &[(Entity, Vec<u8>)] = &batch;
     terminals
         .par_iter_mut()
-        .for_each(|(entity, mut terminal, _, _)| {
+        .for_each(|(entity, mut terminal, _, _, _)| {
             let start = grouped.partition_point(|(pane, _)| *pane < entity);
             let end = grouped.partition_point(|(pane, _)| *pane <= entity);
             if start == end {
@@ -611,12 +622,23 @@ fn ingest_output(
             continue;
         }
         previous = Some(*pane);
-        let Ok((_, mut terminal, mut title, mut pacing)) = terminals.get_mut(*pane) else {
+        let Ok((_, mut terminal, mut title, clipboard, mut pacing)) = terminals.get_mut(*pane)
+        else {
             continue;
         };
         let terminal = terminal.bypass_change_detection();
         if let Some(changed) = terminal.take_title_change() {
             title.set_if_neq(Title(changed));
+        }
+        if let Some(written) = terminal.take_clipboard_change() {
+            match clipboard {
+                Some(mut current) => {
+                    current.set_if_neq(Clipboard(written));
+                }
+                None => {
+                    commands.entity(*pane).insert(Clipboard(written));
+                }
+            }
         }
         if terminal.take_host_replies(&mut replies) {
             effects.write(Effect::WritePty {

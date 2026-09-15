@@ -53,6 +53,11 @@ pub struct Session(pub Option<Welcome>);
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneRevision(pub u64);
 
+/// A shown pane wrote OSC 52 since its last delta (the base64 payload as the pane sent it); the
+/// painter forwards it to the outer terminal.
+#[derive(Message, Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardWrite(pub String);
+
 /// One pane's screen as last delivered: rows of cells (storage reused across deltas), cursor,
 /// modes and process summary.
 #[derive(Component, Debug)]
@@ -317,6 +322,9 @@ fn apply_terminal(world: &mut World, delta: &TerminalDelta) {
             entity.insert(grid);
         }
     }
+    if let Some(payload) = &delta.clipboard {
+        world.write_message(ClipboardWrite(payload.clone()));
+    }
 }
 
 pub struct ReplicatePlugin;
@@ -330,6 +338,7 @@ impl Plugin for ReplicatePlugin {
             .init_resource::<ShowingRoot>()
             .init_resource::<Session>()
             .init_resource::<SceneRevision>()
+            .add_message::<ClipboardWrite>()
             .add_systems(First, ingest_frames.in_set(super::ViewerSystems::Ingest));
     }
 }

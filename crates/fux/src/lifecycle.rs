@@ -16,7 +16,7 @@ use bevy_picking::PickingSystems;
 use bevy_state::prelude::*;
 use bevy_ui::Node;
 
-use crate::layout::{self, NavDirection, ops};
+use crate::layout::{self, NavDirection, instances, ops};
 use crate::model::*;
 use crate::terminal::Terminal;
 
@@ -178,7 +178,11 @@ fn start_serving(mut next: ResMut<NextState<ServerMode>>) {
 
 /// `PreUpdate`/`Requests`: viewer requests are queued per viewer and drained in order while
 /// the viewer has no creation barrier; `ViewerGone` detaches; signals begin shutdown.
-fn requests(world: &mut World, queued: &mut QueryState<(Entity, &RequestQueue), With<Viewer>>) {
+fn requests(
+    world: &mut World,
+    queued: &mut QueryState<(Entity, &RequestQueue), With<Viewer>>,
+    barriers: &mut BarrierQuery,
+) {
     let mut incoming: Vec<(Entity, ViewerRequest)> = Vec::new();
     let mut gone: Vec<Entity> = Vec::new();
     let mut signal = false;
@@ -218,12 +222,13 @@ fn requests(world: &mut World, queued: &mut QueryState<(Entity, &RequestQueue), 
             continue;
         };
         if queue.0.len() >= MAX_QUEUED_REQUESTS {
-            warn!("viewer {viewer} request queue full; dropping {request:?}");
+            let (kind, bytes) = request_shape(&request);
+            warn!("viewer {viewer} request queue full; dropping {kind} ({bytes} bytes)");
             continue;
         }
         queue.0.push_back(request);
     }
-    release_barriers(world);
+    release_barriers(world, barriers);
     let viewers: Vec<Entity> = queued
         .iter(world)
         .filter(|(_, q)| !q.0.is_empty())
@@ -311,9 +316,7 @@ fn handle(world: &mut World, viewer: Entity, request: ViewerRequest) -> Result<(
             close_pane(world, pane)?;
         }
         ViewerRequest::Swap { direction } => {
-            let pane = target_of(world, viewer)
-                .ok_or_else(|| BevyError::from("swap: viewer targets nothing"))?;
-            ops::swap(world, pane, direction)?;
+            ops::swap(world, viewer, direction)?;
         }
         ViewerRequest::NewRoot { template } => {
             let ws = world
@@ -365,6 +368,7 @@ fn begin_creation(world: &mut World, viewer: Entity, pane: Entity) {
 fn completions(
     world: &mut World,
     live: &mut QueryState<(Entity, &Process, Has<CloseRequested>), (With<Pane>, With<Disabled>)>,
+    barriers: &mut BarrierQuery,
 ) {
     let now = now_ms(world);
     let done: Vec<(Entity, bool)> = live
@@ -380,13 +384,34 @@ fn completions(
             terminate(world, pane, now);
         }
     }
-    release_barriers(world);
+    release_barriers(world, barriers);
 }
 
+/// What a log line may say about a request: the variant and, for input, its size — never the
+/// bytes themselves (prompt 3.3).
+fn request_shape(request: &ViewerRequest) -> (&'static str, usize) {
+    match request {
+        ViewerRequest::Input(bytes) => ("Input", bytes.len()),
+        ViewerRequest::Target(_) => ("Target", 0),
+        ViewerRequest::Show(_) => ("Show", 0),
+        ViewerRequest::Resize { .. } => ("Resize", 0),
+        ViewerRequest::Pointer(_) => ("Pointer", 0),
+        ViewerRequest::Scroll { .. } => ("Scroll", 0),
+        ViewerRequest::Zoom(_) => ("Zoom", 0),
+        ViewerRequest::Unzoom => ("Unzoom", 0),
+        ViewerRequest::Split { .. } => ("Split", 0),
+        ViewerRequest::ClosePane => ("ClosePane", 0),
+        ViewerRequest::Swap { .. } => ("Swap", 0),
+        ViewerRequest::NewRoot { .. } => ("NewRoot", 0),
+        ViewerRequest::Detach => ("Detach", 0),
+    }
+}
+
+type BarrierQuery = QueryState<(Entity, &'static CreationBarrier), With<Viewer>>;
+
 /// A barrier whose pane has no `Creation` any more (live, exited or gone) releases.
-fn release_barriers(world: &mut World) {
-    let mut query = world.query_filtered::<(Entity, &CreationBarrier), With<Viewer>>();
-    let stale: Vec<Entity> = query
+fn release_barriers(world: &mut World, barriers: &mut BarrierQuery) {
+    let stale: Vec<Entity> = barriers
         .iter(world)
         .filter_map(|(viewer, barrier)| {
             let pane = barrier.0?;
@@ -451,6 +476,7 @@ fn exits(
     world: &mut World,
     closing: &mut QueryState<Entity, (With<Closing>, Allow<Disabled>)>,
     exited: &mut QueryState<(Entity, &Process), (With<Pane>, Without<Closing>, Allow<Disabled>)>,
+    barriers: &mut BarrierQuery,
 ) {
     let done: Vec<Entity> = closing.iter(world).collect();
     for pane in done {
@@ -469,7 +495,7 @@ fn exits(
         close_exited(world, pane, code, now);
     }
     if any {
-        release_barriers(world);
+        release_barriers(world, barriers);
     }
 }
 
@@ -584,16 +610,15 @@ fn retarget(world: &mut World, viewer: Entity, next: Option<Entity>) {
 
 /// First placing leaf in document order under a template root, if any.
 fn first_pane_in_root(world: &World, root: Entity) -> Option<Entity> {
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if let Some(places) = world.get::<Places>(node) {
-            return Some(places.0);
+    let mut first = None;
+    instances::walk(world, root, &mut |node, _| {
+        if first.is_none()
+            && let Some(places) = world.get::<Places>(node)
+        {
+            first = Some(places.0);
         }
-        if let Some(children) = world.get::<Children>(node) {
-            stack.extend(children.iter().rev());
-        }
-    }
-    None
+    });
+    first
 }
 
 /// Retiring workspaces terminate their panes, detach their viewers, close their roots and are

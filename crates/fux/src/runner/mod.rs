@@ -1,7 +1,11 @@
-//! The custom runner (prompt 3.1): `finish`/`cleanup` once, then block on the inbound channel
-//! (with a deadline only when the World has timed work), feed a bounded batch, `update` once,
-//! and route `Effect`s to the adapters. No reactor of its own and no busy loop: idle means the
-//! runner thread sleeps in `recv`.
+//! The custom runner (prompt 3.1): `finish`/`cleanup` once, then block on the control and
+//! inbound channels (with a deadline only when the World has timed work), feed a bounded batch
+//! with every control message ahead of the pane batch, `update` once, and route `Effect`s to
+//! the adapters. No reactor of its own and no busy loop: idle means the runner thread sleeps in
+//! `block_on`.
+//!
+//! Control messages (signals) have their own small channel so a hot pane streaming output
+//! never delays them beyond one step.
 
 pub mod signals;
 
@@ -43,14 +47,24 @@ impl Default for Params {
     }
 }
 
+/// Depth of the control channel: signals coalesce, so a handful is plenty.
+pub const CONTROL_QUEUE: usize = 4;
+
+/// The two sources the runner blocks on: `control` (signals) is polled first and drained in
+/// full ahead of every step; `inbound` is the shared adapter channel.
+pub struct Sources {
+    pub control: Receiver<Inbound>,
+    pub inbound: Receiver<Inbound>,
+}
+
 /// Makes `app.run()` use [`run`].
-pub fn install(app: &mut App, receiver: Receiver<Inbound>, pty: PtyAdapter, attach: AttachAdapter) {
-    app.set_runner(move |app| run(app, receiver, pty, attach, Params::default()));
+pub fn install(app: &mut App, sources: Sources, pty: PtyAdapter, attach: AttachAdapter) {
+    app.set_runner(move |app| run(app, sources, pty, attach, Params::default()));
 }
 
 pub fn run(
     mut app: App,
-    receiver: Receiver<Inbound>,
+    sources: Sources,
     mut pty: PtyAdapter,
     mut attach: AttachAdapter,
     params: Params,
@@ -66,27 +80,14 @@ pub fn run(
     // The first step runs immediately so `Startup` happens before anything arrives.
     let mut immediate = true;
     loop {
-        if !immediate {
-            let deadline = deadline(&mut app, &mut records, params.tick);
-            match wait(&receiver, deadline) {
-                Wait::Message(message) => {
-                    batch.push(message);
-                    if let Wait::Message(next) = wait(&receiver, Some(params.coalesce)) {
-                        batch.push(next);
-                    }
-                }
-                Wait::Timeout => {}
-                Wait::Closed => {
-                    error!("inbound channel closed; exiting");
-                    return AppExit::error();
-                }
-            }
-        }
-        while batch.len() < params.batch {
-            match receiver.try_recv() {
-                Ok(message) => batch.push(message),
-                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
-            }
+        let deadline = if immediate {
+            Some(Duration::ZERO)
+        } else {
+            deadline(&mut app, &mut records, params.tick)
+        };
+        if collect(&sources, &mut batch, &params, deadline).is_err() {
+            error!("runner channel closed; exiting");
+            return AppExit::error();
         }
         let world = app.world_mut();
         world.resource_mut::<Clock>().now_ms = wall_ms();
@@ -121,8 +122,51 @@ pub fn run(
         immediate = matches!(
             app.world().resource::<NextState<ServerMode>>(),
             NextState::Pending(_)
-        ) || !receiver.is_empty();
+        ) || !sources.inbound.is_empty()
+            || !sources.control.is_empty();
     }
+}
+
+/// A runner channel has no senders left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Closed;
+
+/// Gathers one step's messages into `batch`: blocks until a message arrives on either source
+/// (a zero `deadline` does not block; `None` blocks indefinitely), briefly waits for a second
+/// one to coalesce, then drains the control channel in full and at most `params.batch` inbound
+/// messages. Control messages are placed ahead of everything else, so a signal is applied by
+/// the next `update` no matter how much pane output is queued.
+pub fn collect(
+    sources: &Sources,
+    batch: &mut Vec<Inbound>,
+    params: &Params,
+    deadline: Option<Duration>,
+) -> Result<(), Closed> {
+    if deadline != Some(Duration::ZERO) {
+        match wait(sources, deadline) {
+            Wait::Message(message) => {
+                batch.push(message);
+                if let Wait::Message(next) = wait(sources, Some(params.coalesce)) {
+                    batch.push(next);
+                }
+            }
+            Wait::Timeout => {}
+            Wait::Closed => return Err(Closed),
+        }
+    }
+    let waited = batch.len();
+    while let Ok(message) = sources.control.try_recv() {
+        batch.push(message);
+    }
+    // Control first: the messages the wait returned move behind the drained control messages.
+    batch.rotate_left(waited);
+    while batch.len() < params.batch {
+        match sources.inbound.try_recv() {
+            Ok(message) => batch.push(message),
+            Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+        }
+    }
+    Ok(())
 }
 
 enum Wait {
@@ -131,11 +175,13 @@ enum Wait {
     Closed,
 }
 
-fn wait(receiver: &Receiver<Inbound>, deadline: Option<Duration>) -> Wait {
+/// Blocks on both sources, control polled first; nothing else runs on this thread meanwhile.
+fn wait(sources: &Sources, deadline: Option<Duration>) -> Wait {
+    let message = future::or(sources.control.recv(), sources.inbound.recv());
     match deadline {
-        None => receiver.recv_blocking().map_or(Wait::Closed, Wait::Message),
+        None => bevy_tasks::block_on(message).map_or(Wait::Closed, Wait::Message),
         Some(duration) => bevy_tasks::block_on(future::or(
-            async { receiver.recv().await.map_or(Wait::Closed, Wait::Message) },
+            async { message.await.map_or(Wait::Closed, Wait::Message) },
             async {
                 Timer::after(duration).await;
                 Wait::Timeout

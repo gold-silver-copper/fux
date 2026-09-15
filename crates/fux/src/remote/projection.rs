@@ -3,23 +3,25 @@
 //! `Disabled` model entities (starting panes, retiring workspaces) stay visible with their state
 //! and no authoritative component is ever reachable through the reflected read path.
 //!
-//! Maintained every update in `PostUpdate`/`Phase::Projection` with in-place writes: steady
-//! state allocates nothing (scratch rows and the index are reused; `String`/`Vec` fields are
-//! `clone_from`ed into existing capacity) and change ticks move only when a value changed.
+//! Each projection entity carries `Mirrors(model)`; the `Projections` target on the model is
+//! `linked_spawn`, so a projection dies with its model and no sweep is needed. Maintained every
+//! update in `PostUpdate`/`Phase::Projection` with in-place writes: steady state allocates
+//! nothing (scratch rows are reused; `String`/`Vec` fields are `clone_from`ed into existing
+//! capacity) and change ticks move only when a value changed.
 
 use bevy_app::App;
-use bevy_ecs::entity::EntityHashMap;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::{Allow, Has};
 use bevy_ecs::relationship::RelationshipTarget;
 use bevy_reflect::prelude::*;
 
+use crate::layout::instances;
 use crate::model::{
-    ExactTarget, LaunchAttribution, LayoutGeneration, NodeId, Open, Pane, PaneId, PaneIn, PaneSize,
-    PlacedIn, Places, Process, RootOf, RootOrder, Roots, ServerInstance, Showing, Targets,
-    TemplateNode, TemplateRoot, Title, ViewedBy, Viewer, ViewerId, Viewing, Viewport, Workspace,
-    WorkspaceName, WorkspacePanes,
+    ExactTarget, LaunchAttribution, LayoutGeneration, Mirrors, NodeId, Open, Pane, PaneId, PaneIn,
+    PaneSize, PlacedIn, Places, Process, Projections, RootOf, RootOrder, Roots, ServerInstance,
+    Showing, Targets, TemplateNode, TemplateRoot, Title, ViewedBy, Viewer, ViewerId, Viewing,
+    Viewport, Workspace, WorkspaceName, WorkspacePanes,
 };
 use crate::terminal::Terminal;
 
@@ -132,14 +134,6 @@ pub fn register_types(app: &mut App) {
         .register_type::<ServerView>();
 }
 
-/// Model entity → projection entity, stamped with the pass that last saw the model entity.
-#[derive(Default)]
-pub struct ProjectionIndex {
-    map: EntityHashMap<(Entity, u64)>,
-    stamp: u64,
-    server: Option<Entity>,
-}
-
 /// Reused rows: phase one fills them from the model without touching projection entities,
 /// phase two writes them through change detection.
 #[derive(Default)]
@@ -149,13 +143,14 @@ pub struct Scratch {
     roots: Vec<(Entity, RootView)>,
     workspaces: Vec<(Entity, WorkspaceView)>,
     viewers: Vec<(Entity, ViewerView)>,
-    stack: Vec<Entity>,
+    server: ServerView,
 }
 
-/// The system's retained state: index plus scratch rows.
+/// The system's retained state: the server projection entity (the one projection without a
+/// model entity to mirror) plus scratch rows.
 #[derive(Default)]
 pub struct SyncState {
-    index: ProjectionIndex,
+    server: Option<Entity>,
     scratch: Scratch,
 }
 
@@ -263,7 +258,7 @@ pub(super) fn sync(
     viewers: &mut QueryState<ViewerRow, With<Viewer>>,
     mut state: Local<SyncState>,
 ) {
-    let SyncState { index, scratch } = &mut *state;
+    let SyncState { server, scratch } = &mut *state;
     // Phase one: read the model into reused rows.
     let mut n = 0;
     for (entity, id, pane_in, placed_in, process, title, size, launch, terminal) in
@@ -323,6 +318,8 @@ pub(super) fn sync(
         view.root = root_of(world, entity)
             .and_then(|r| node_id(world, r))
             .unwrap_or(id.0);
+        // A template root's `ChildOf` is its workspace, not a node: it has no parent here.
+        let child_of = child_of.filter(|_| world.get::<TemplateRoot>(entity).is_none());
         view.parent = child_of.and_then(|c| node_id(world, c.parent()));
         view.index = child_of
             .and_then(|c| world.get::<Children>(c.parent()))
@@ -350,16 +347,11 @@ pub(super) fn sync(
             .map_or(0, |i| i as u32);
         // Panes placed anywhere in the subtree, in document order.
         view.panes.clear();
-        scratch.stack.clear();
-        scratch.stack.push(entity);
-        while let Some(node) = scratch.stack.pop() {
+        instances::walk(world, entity, &mut |node, _| {
             if let Some(pane) = world.get::<Places>(node).and_then(|p| pane_id(world, p.0)) {
                 view.panes.push(pane);
             }
-            if let Some(children) = world.get::<Children>(node) {
-                scratch.stack.extend(children.iter().rev());
-            }
-        }
+        });
     }
     scratch.roots.truncate(n);
 
@@ -411,56 +403,44 @@ pub(super) fn sync(
     }
     scratch.viewers.truncate(n);
 
-    // Phase two: write through change detection, then drop projections of vanished entities.
-    index.stamp += 1;
-    let stamp = index.stamp;
-    upsert(world, index, stamp, &scratch.panes);
-    upsert(world, index, stamp, &scratch.nodes);
-    upsert(world, index, stamp, &scratch.roots);
-    upsert(world, index, stamp, &scratch.workspaces);
-    upsert(world, index, stamp, &scratch.viewers);
-    index.map.retain(|_, (projection, seen)| {
-        if *seen == stamp {
-            true
-        } else {
-            world.despawn(*projection);
-            false
-        }
-    });
+    // Phase two: write through change detection. Projections of vanished models died with them.
+    upsert(world, &scratch.panes);
+    upsert(world, &scratch.nodes);
+    upsert(world, &scratch.roots);
+    upsert(world, &scratch.workspaces);
+    upsert(world, &scratch.viewers);
 
     let instance = world.resource::<ServerInstance>();
-    let server = ServerView {
-        name: instance.name.clone(),
-        instance: instance.nonce.clone(),
-        pid: instance.pid,
-        started_ms: instance.started_ms,
-        workspaces: scratch.workspaces.len() as u32,
-        panes: scratch.panes.len() as u32,
-        viewers: scratch.viewers.len() as u32,
-    };
-    match index.server {
-        Some(entity) => write_view(world, entity, &server),
+    let view = &mut scratch.server;
+    set_str(&mut view.name, &instance.name);
+    set_str(&mut view.instance, &instance.nonce);
+    view.pid = instance.pid;
+    view.started_ms = instance.started_ms;
+    view.workspaces = scratch.workspaces.len() as u32;
+    view.panes = scratch.panes.len() as u32;
+    view.viewers = scratch.viewers.len() as u32;
+    match *server {
+        Some(entity) => write_view(world, entity, &scratch.server),
         None => {
-            index.server = Some(world.spawn((ProjectionEntity, server)).id());
+            *server = Some(world.spawn((ProjectionEntity, scratch.server.clone())).id());
         }
     }
 }
 
+/// Writes each row into the model's projection carrying `T` (a template root has two: node and
+/// root views), spawning one linked to the model when there is none yet.
 fn upsert<T: Component<Mutability = bevy_ecs::component::Mutable> + Clone + PartialEq + Default>(
     world: &mut World,
-    index: &mut ProjectionIndex,
-    stamp: u64,
     rows: &[(Entity, T)],
 ) {
     for (model, view) in rows {
-        match index.map.get_mut(model) {
-            Some((projection, seen)) if world.get::<T>(*projection).is_some() => {
-                *seen = stamp;
-                write_view(world, *projection, view);
-            }
-            _ => {
-                let projection = world.spawn((ProjectionEntity, view.clone())).id();
-                index.map.insert(*model, (projection, stamp));
+        let projection = world
+            .get::<Projections>(*model)
+            .and_then(|p| p.iter().find(|&p| world.get::<T>(p).is_some()));
+        match projection {
+            Some(projection) => write_view(world, projection, view),
+            None => {
+                world.spawn((ProjectionEntity, view.clone(), Mirrors(*model)));
             }
         }
     }

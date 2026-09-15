@@ -23,7 +23,7 @@ use termina::escape::csi::{
 use termina::style::{ColorSpec, RgbaColor};
 
 use super::chrome::Text;
-use super::replicate::Grid;
+use super::replicate::{ClipboardWrite, Grid};
 use super::{Mode as ViewerMode, Viewport};
 use crate::model::Shows;
 use crate::surface::Text as SurfaceText;
@@ -350,14 +350,19 @@ type NodeItem<'a> = (
     Option<&'a SurfaceText>,
 );
 
-/// Composes the screen from the UI stack and diffs it against the previous paint.
+/// Composes the screen from the UI stack and diffs it against the previous paint, then appends
+/// the frame's pane clipboard writes as OSC 52 (write-only: the viewer sets the outer
+/// terminal's clipboard and never queries it).
 pub fn paint(
     stack: Res<UiStack>,
     nodes: Query<NodeItem<'_>>,
     grids: Query<&Grid>,
-    focus: Res<InputFocus>,
-    mode: Res<bevy_state::prelude::State<ViewerMode>>,
-    viewport: Res<Viewport>,
+    (focus, mode, viewport): (
+        Res<InputFocus>,
+        Res<bevy_state::prelude::State<ViewerMode>>,
+        Res<Viewport>,
+    ),
+    mut clipboard: MessageReader<ClipboardWrite>,
     mut painter: ResMut<Painter>,
 ) {
     let painter = &mut *painter;
@@ -452,6 +457,10 @@ pub fn paint(
         }
     }
     emit(painter, cursor);
+    for ClipboardWrite(payload) in clipboard.read() {
+        // `Vec<u8>` never fails to write.
+        let _ = write!(painter.out, "\x1b]52;c;{payload}\x07");
+    }
 }
 
 fn draw_border(screen: &mut Screen, rect: CellRect, visible: CellRect, style: Style) {

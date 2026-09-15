@@ -34,6 +34,7 @@
           "alternate_screen": false
         },
         "title": "sh",
+        "clipboard": "aGVsbG8=",
         "process": "live"
       },
       {
@@ -52,6 +53,7 @@
           "alternate_screen": true
         },
         "title": null,
+        "clipboard": null,
         "process": { "exited": { "code": 130 } }
       }
     ],

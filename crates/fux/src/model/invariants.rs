@@ -2,11 +2,12 @@
 //! after every step and by the app in debug builds; a violation is an invariant error the
 //! global error handler treats as fatal.
 
+use bevy_app::Propagate;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::Allow;
 use bevy_platform::collections::HashSet;
-use bevy_ui::{Node, UiTargetCamera};
+use bevy_ui::{ComputedNode, ComputedUiTargetCamera, Node, UiTargetCamera};
 
 use super::*;
 
@@ -80,19 +81,30 @@ pub fn check_invariants(world: &mut World) -> Result<(), String> {
         }
         placed.insert(entity);
     }
-    // Template nodes: placing leaves have no children; no template node has a camera; every
-    // template node is reachable from a root that has RootOf and is in RootOrder once.
-    for (entity, places, children, camera) in world
+    // Template nodes: placing leaves have no children; no template node has a camera; no
+    // template node is ever laid out (`bevy_ui` sees only parentless `Node`s as UI roots, and a
+    // template root's parent is its workspace, so no camera or geometry reaches the subtree);
+    // every template node is reachable from a root that has RootOf and is in RootOrder once.
+    for (entity, places, children, camera, computed, target, propagated) in world
         .query_filtered::<(
             Entity,
             Option<&Places>,
             Option<&Children>,
             Has<UiTargetCamera>,
+            &ComputedNode,
+            &ComputedUiTargetCamera,
+            Has<Propagate<ComputedUiTargetCamera>>,
         ), With<TemplateNode>>()
         .iter(world)
     {
         if camera {
             return Err(format!("template node {entity} has a UiTargetCamera"));
+        }
+        if propagated || target.get().is_some() {
+            return Err(format!("template node {entity} resolved a target camera"));
+        }
+        if !computed.is_empty() {
+            return Err(format!("template node {entity} was laid out"));
         }
         if places.is_some() && children.is_some_and(|c| !c.is_empty()) {
             return Err(format!("placing template leaf {entity} has children"));
@@ -105,8 +117,10 @@ pub fn check_invariants(world: &mut World) -> Result<(), String> {
         let Some(root_of) = root_of else {
             return Err(format!("template root {root} has no RootOf"));
         };
-        if child_of.is_some() {
-            return Err(format!("template root {root} has a parent"));
+        if child_of.map(ChildOf::parent) != Some(root_of.0) {
+            return Err(format!(
+                "template root {root} is not a child of its workspace"
+            ));
         }
         let order = world
             .get::<RootOrder>(root_of.0)
@@ -225,13 +239,13 @@ pub fn check_invariants(world: &mut World) -> Result<(), String> {
     Ok(())
 }
 
-/// Walks `ChildOf` up to the template root.
+/// Walks `ChildOf` up to the template root (whose own parent is its workspace).
 pub fn root_of_template(world: &World, mut node: Entity) -> Option<Entity> {
     for _ in 0..=MAX_DEPTH {
-        match world.get::<ChildOf>(node) {
-            Some(parent) => node = parent.parent(),
-            None => return world.get::<TemplateRoot>(node).map(|_| node),
+        if world.get::<TemplateRoot>(node).is_some() {
+            return Some(node);
         }
+        node = world.get::<ChildOf>(node)?.parent();
     }
     None
 }

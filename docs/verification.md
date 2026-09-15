@@ -190,3 +190,36 @@ lifecycle (`build_headless`), `check_invariants` after every step:
 **Fixed at integration:** `tests/brp.rs::end_to_end_over_http` was racy (the test harness
 bootstrapped after the first update had already published the descriptor; `fux serve` itself
 bootstraps in `Startup`). The harness now bootstraps before the first update; 6/6 runs green.
+
+### Review fixes (layout: S2, S3, S11, S12, N2, N7, N8)
+
+* S2 — the prompt's "templates are inert / never laid out" was false: `bevy_ui`'s `UiRootNodes`
+  is every parentless `Node`, so each template root got `Propagate(ComputedUiTargetCamera)` and a
+  taffy `compute_layout` per update. Chosen fix: a template root is spawned (and moved by
+  `move_root`) with `ChildOf(workspace)`; the workspace has no `Node`, so `ui_layout_system` and
+  `propagate_ui_target_cameras` never reach the subtree (verified in
+  `bevy_ui/src/layout/mod.rs::ui_layout_system` and `update.rs::propagate_ui_target_cameras`).
+  `clone_instance` strips the cloned `ChildOf` so instance roots stay UI roots. The alternative
+  (`Node`-less templates with a `TemplateStyle(Node)`) was rejected: `Node` requires
+  `ComputedNode`/`ComputedUiTargetCamera` anyway and every reader (patches, scenes, projections,
+  cloning) would have needed a second style path. `root_of_template`/`ops::depth_of` stop at
+  `TemplateRoot`; `check_invariants` now requires a root's parent to be its workspace and every
+  template node to have no `Propagate<ComputedUiTargetCamera>`, no resolved target camera and an
+  empty `ComputedNode`. Proof: with the `ChildOf` removed the invariant fails after one update
+  with "template node … resolved a target camera". Scene documents keep parentless roots:
+  `scene::export` strips the root's `ChildOf` and the workspace's `Children`.
+* S3 — `ops::swap(world, viewer, direction)` exchanges the targeted leaf with the pane the same
+  geometry as `navigate` finds in that direction (opposite side when nothing lies that way;
+  `NoNeighbour` otherwise). `layout_ops::swap_exchanges_with_the_neighbour_in_the_given_direction`
+  pins `Below` in a 2x2 grid landing on the pane below, not the tree-order sibling.
+* S11 — `resize_viewer` writes only `Viewport`; `size::sync_cameras` is the camera's sole owner.
+* S12/N2 — `picking::cell_backend` groups located pointers by camera once and visits each
+  instance node once; `picking::hits` is the single clip-aware hit test shared with
+  `ops::pane_at`.
+* N7 — one `layout::instances::walk(world, root, &mut |entity, depth| ..)` serves `ops`,
+  `lifecycle::first_pane_in_root` and `remote::methods::root_panes`.
+* N8 — `InstanceGeneration` is gone; `sync_instances` re-clones on
+  `Changed<LayoutGeneration>` of the template root and still clones a viewer's first instance
+  when nothing changed.
+* `cargo test -p fux --test layout_ops --test layout_props --test layout_matrix --test picking
+  --test scenes --test surface --test attach`: 69 tests green.

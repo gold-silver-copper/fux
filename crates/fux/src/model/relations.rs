@@ -94,6 +94,16 @@ pub struct OperationOn(pub Entity);
 #[relationship_target(relationship = OperationOn, linked_spawn)]
 pub struct PaneOperations(Vec<Entity>);
 
+/// From a reflected projection entity (`remote::projection`) to the authoritative entity it
+/// mirrors; `linked_spawn` despawns the projection with its model, so no sweep is needed.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[relationship(relationship_target = Projections)]
+pub struct Mirrors(pub Entity);
+
+#[derive(Component, Debug)]
+#[relationship_target(relationship = Mirrors, linked_spawn)]
+pub struct Projections(Vec<Entity>);
+
 /// User-visible order of a workspace's template roots; validated against `Roots`. The entities
 /// are mapped when a scene document is written into a World (`scene::apply`).
 #[derive(Component, Reflect, Clone, Debug, Default, PartialEq, Eq)]

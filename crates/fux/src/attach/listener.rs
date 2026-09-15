@@ -2,6 +2,10 @@
 //! reader task and one writer task per connection. Tasks own the sockets; the World only ever
 //! sees channel ends: an [`Accepted`] handshake per connection and, after admission, the
 //! viewer's `ClientFrame`s as `Inbound::ViewerRequest` on the runner's channel.
+//!
+//! Connections are capped at twice the viewer limit, pre-authentication included: over the
+//! cap the accept loop stops accepting and the OS backlog applies backpressure, so an
+//! unauthenticated peer cannot grow tasks, socket registrations or queued handshakes.
 
 use std::io;
 use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
@@ -18,7 +22,7 @@ use bevy_tasks::futures_lite::future;
 use bevy_tasks::futures_lite::io::{AsyncReadExt, AsyncWriteExt};
 use serde::de::DeserializeOwned;
 
-use crate::model::{Inbound, ServerInstance};
+use crate::model::{Inbound, Limits, ServerInstance};
 use crate::wire::{self, ByeReason, ClientFrame, FRAME_PREFIX_BYTES, Hello, ServerFrame};
 
 /// A viewer that has not sent `Hello` within this long is closed.
@@ -39,17 +43,22 @@ pub struct AttachEndpoint {
 pub struct AttachToken(pub String);
 
 /// A connection whose `Hello` passed the token and instance checks. The ingest system decides
-/// admission against the World (workspace, exact pane) and either sends the viewer entity on
-/// `admit` or drops it, which ends the reader task; the writer sender goes to the adapter.
+/// admission against the World (workspace, exact pane) and answers on `admit`: the viewer
+/// entity the reader task feeds, or the refusal the reader task encodes as `Bye` itself.
+/// Dropping `admit` unanswered also ends the reader task. The writer sender goes to the
+/// adapter.
 pub(crate) struct Accepted {
     pub hello: Hello,
     /// Encoded frames for the writer task.
     pub writer: Sender<Vec<u8>>,
     /// Buffers the writer task has finished with, for reuse by the encoder.
     pub recycle: Receiver<Vec<u8>>,
-    /// The reader task learns which viewer it feeds; dropped on refusal.
-    pub admit: Sender<Entity>,
+    /// The World's verdict for the reader task.
+    pub admit: Sender<Verdict>,
 }
+
+/// What the World decided about an accepted connection.
+pub(crate) type Verdict = Result<Entity, (ByeReason, String)>;
 
 /// Channel ends the accept loop and the ingest system share.
 #[derive(Resource)]
@@ -61,7 +70,9 @@ pub(crate) struct Inbox {
 
 impl Inbox {
     pub fn new(inbound: Sender<Inbound>) -> Self {
-        let (sender, accepted) = async_channel::unbounded();
+        // Bounded like the writer queues: a connection task waits here when the World is behind,
+        // and its permit keeps the accept loop from admitting more meanwhile.
+        let (sender, accepted) = async_channel::bounded(WRITER_QUEUE);
         Self {
             accepted,
             sender,
@@ -106,12 +117,25 @@ pub fn random_hex256() -> Result<String, io::Error> {
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
-/// Startup: bind `127.0.0.1:0`, publish the endpoint and token, start the accept loop.
+/// One connection's slot under the cap: acquired by the accept loop before `accept`, released
+/// when the connection task ends. The permit channel is used as a semaphore: a slot is a queued
+/// unit, `send` blocks at the cap, and dropping the permit dequeues one.
+struct Permit(Receiver<()>);
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        let _ = self.0.try_recv();
+    }
+}
+
+/// Startup: bind `127.0.0.1:0`, publish the endpoint and token, start the accept loop with
+/// `2 * Limits::viewers` connection slots.
 pub(crate) fn start(world: &mut World) -> Result<(), BevyError> {
     let listener = Async::<TcpListener>::bind((Ipv4Addr::LOCALHOST, 0))?;
     let port = listener.get_ref().local_addr()?.port();
     let token = random_hex256()?;
     let instance = world.resource::<ServerInstance>().nonce.clone();
+    let max_connections = world.resource::<Limits>().viewers.saturating_mul(2).max(1);
     let inbox = world.resource::<Inbox>();
     let gate = Arc::new(Gate {
         token: token.clone(),
@@ -121,6 +145,7 @@ pub(crate) fn start(world: &mut World) -> Result<(), BevyError> {
         .spawn(accept_loop(
             listener,
             gate,
+            max_connections,
             inbox.sender.clone(),
             inbox.inbound.clone(),
         ))
@@ -136,10 +161,17 @@ pub(crate) fn start(world: &mut World) -> Result<(), BevyError> {
 async fn accept_loop(
     listener: Async<TcpListener>,
     gate: Arc<Gate>,
+    max_connections: usize,
     accepted: Sender<Accepted>,
     inbound: Sender<Inbound>,
 ) {
+    let (slots, released) = async_channel::bounded::<()>(max_connections);
     loop {
+        // At the cap this waits for a connection to end; new peers sit in the OS backlog.
+        if slots.send(()).await.is_err() {
+            return;
+        }
+        let permit = Permit(released.clone());
         match listener.accept().await {
             Ok((stream, _peer)) => {
                 IoTaskPool::get()
@@ -148,10 +180,12 @@ async fn accept_loop(
                         Arc::clone(&gate),
                         accepted.clone(),
                         inbound.clone(),
+                        permit,
                     ))
                     .detach();
             }
             Err(error) => {
+                drop(permit);
                 // EMFILE and friends: back off instead of spinning.
                 warn!("attach accept failed: {error}");
                 Timer::after(Duration::from_millis(100)).await;
@@ -160,12 +194,14 @@ async fn accept_loop(
     }
 }
 
-/// One connection: handshake, then the reader loop; the writer loop is its own task.
+/// One connection: handshake, then the reader loop; the writer loop is its own task. The
+/// permit is held until this task ends.
 async fn serve(
     stream: Async<TcpStream>,
     gate: Arc<Gate>,
     accepted: Sender<Accepted>,
     inbound: Sender<Inbound>,
+    _permit: Permit,
 ) {
     let stream = Arc::new(stream);
     let mut reader = FrameReader::default();
@@ -185,9 +221,6 @@ async fn serve(
     let (writer, frames) = async_channel::bounded(WRITER_QUEUE);
     let (recycle_tx, recycle) = async_channel::bounded(WRITER_QUEUE);
     let (admit_tx, admit) = async_channel::bounded(1);
-    IoTaskPool::get()
-        .spawn(write_loop(Arc::clone(&stream), frames, recycle_tx))
-        .detach();
     let handoff = Accepted {
         hello,
         writer,
@@ -201,10 +234,21 @@ async fn serve(
     if inbound.send(Inbound::Wake).await.is_err() {
         return;
     }
-    // Refused by the World: the writer task delivers its `Bye`, this task just ends.
-    let Ok(viewer) = admit.recv().await else {
-        return;
+    // The World's verdict; a dropped sender (the World never answered) also ends the task.
+    // Until it arrives this task is the socket's only writer, so a refusal's `Bye` cannot race
+    // the writer task's shutdown; frames queued for an admitted viewer wait in `frames`.
+    let viewer = match admit.recv().await {
+        Ok(Ok(viewer)) => viewer,
+        Ok(Err((reason, message))) => {
+            debug!("attachment refused: {message}");
+            refuse(&stream, reason, &message).await;
+            return;
+        }
+        Err(_) => return,
     };
+    IoTaskPool::get()
+        .spawn(write_loop(Arc::clone(&stream), frames, recycle_tx))
+        .detach();
     loop {
         match reader.read::<ClientFrame>(&stream).await {
             Ok(Some(ClientFrame::Request { request })) => {

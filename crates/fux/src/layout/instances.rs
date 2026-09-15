@@ -1,8 +1,8 @@
 //! Instance sync (prompt 3.4): each viewer's instance tree is a clone of the template root it
 //! shows, re-cloned with `EntityCloner` (linked cloning over `Children`) whenever the template's
-//! `LayoutGeneration` moves, and despawned when the viewer stops showing the root. Per-viewer
-//! state ([`ViewState`]: zoom, scroll, display overrides) is re-applied by `NodeId` after every
-//! clone.
+//! `LayoutGeneration` changed since the last sync, and despawned when the viewer stops showing
+//! the root. Per-viewer state ([`ViewState`]: zoom, scroll, display overrides) is re-applied by
+//! `NodeId` after every clone.
 
 use bevy_ecs::entity::{EntityCloner, EntityHashMap};
 use bevy_ecs::prelude::*;
@@ -12,7 +12,7 @@ use bevy_ui::{
     ZIndex,
 };
 
-use super::{InstanceGeneration, ViewState};
+use super::ViewState;
 use crate::model::{
     InstanceNode, InstanceOf, Instances, LayoutGeneration, MAX_DEPTH, NodeId, Places, Showing,
     Shows, Surface, TemplateRoot, Viewer, ViewerCamera, Zoomed,
@@ -22,11 +22,15 @@ use crate::surface::Text;
 #[derive(Default)]
 pub struct Scratch {
     viewers: Vec<(Entity, Entity, Option<Entity>)>,
-    roots: Vec<(Entity, Entity, Option<Entity>, u64)>,
+    roots: Vec<(Entity, Entity, Option<Entity>)>,
+    edited: Vec<Entity>,
     satisfied: Vec<bool>,
 }
 
 /// `Update`/[`super::LayoutSystems::Instances`]: instance trees equal their templates in shape.
+/// An instance survives while its viewer still shows its template root and that root's
+/// [`LayoutGeneration`] did not change since the last run; everything else is despawned and a
+/// viewer left without an instance of the root it shows gets a fresh clone.
 pub fn sync_instances(
     world: &mut World,
     viewer_query: &mut QueryState<
@@ -34,19 +38,16 @@ pub fn sync_instances(
         With<Viewer>,
     >,
     root_query: &mut QueryState<
-        (
-            Entity,
-            &'static UiTargetCamera,
-            Option<&'static InstanceOf>,
-            &'static InstanceGeneration,
-        ),
+        (Entity, &'static UiTargetCamera, Option<&'static InstanceOf>),
         (With<InstanceNode>, Without<ChildOf>),
     >,
+    edited_query: &mut QueryState<Entity, (With<TemplateRoot>, Changed<LayoutGeneration>)>,
     mut scratch: Local<Scratch>,
 ) {
     let Scratch {
         viewers,
         roots,
+        edited,
         satisfied,
     } = &mut *scratch;
     viewers.clear();
@@ -59,21 +60,17 @@ pub fn sync_instances(
     roots.extend(
         root_query
             .iter(world)
-            .map(|(root, camera, of, generation)| {
-                (root, camera.entity(), of.map(|o| o.0), generation.0)
-            }),
+            .map(|(root, camera, of)| (root, camera.entity(), of.map(|o| o.0))),
     );
+    edited.clear();
+    edited.extend(edited_query.iter(world));
     satisfied.clear();
     satisfied.resize(viewers.len(), false);
 
-    for &(instance, camera, template, generation) in &*roots {
+    for &(instance, camera, template) in &*roots {
         let owner = viewers.iter().position(|v| v.1 == camera);
         let current = owner.and_then(|i| viewers.get(i)).and_then(|v| v.2);
-        let wanted = template.is_some()
-            && current == template
-            && template
-                .and_then(|t| world.get::<LayoutGeneration>(t))
-                .is_some_and(|g| g.0 == generation);
+        let wanted = template.is_some_and(|t| current == Some(t) && !edited.contains(&t));
         match (wanted, owner) {
             (true, Some(i)) => {
                 if let Some(flag) = satisfied.get_mut(i) {
@@ -97,9 +94,10 @@ pub fn sync_instances(
     }
 }
 
-/// Clones `root` into a new instance tree for `viewer` and applies its view state.
+/// Clones `root` into a new instance tree for `viewer` and applies its view state. The
+/// template root's `ChildOf` (its workspace) is cloned too and removed again: the instance
+/// root must stay parentless so `bevy_ui` lays it out against `camera`.
 fn clone_instance(world: &mut World, viewer: Entity, camera: Entity, root: Entity) -> Entity {
-    let generation = world.get::<LayoutGeneration>(root).map_or(0, |g| g.0);
     let target = world.spawn_empty().id();
     let mut map = EntityHashMap::<Entity>::default();
     map.insert(root, target);
@@ -121,6 +119,7 @@ fn clone_instance(world: &mut World, viewer: Entity, camera: Entity, root: Entit
         .linked_cloning(true);
     let mut cloner = cloner.finish();
     cloner.clone_entity_mapped(world, root, &mut map);
+    world.entity_mut(target).remove::<ChildOf>();
     for (&template, &instance) in &map {
         let places = world.get::<Places>(template).map(|p| p.0);
         let mut entity = world.entity_mut(instance);
@@ -129,9 +128,7 @@ fn clone_instance(world: &mut World, viewer: Entity, camera: Entity, root: Entit
             entity.insert(Shows(pane));
         }
     }
-    world
-        .entity_mut(target)
-        .insert((UiTargetCamera(camera), InstanceGeneration(generation)));
+    world.entity_mut(target).insert(UiTargetCamera(camera));
     apply_view_state(world, viewer);
     target
 }
@@ -157,11 +154,12 @@ pub fn instance_root(world: &World, viewer: Entity) -> Option<Entity> {
     })
 }
 
-/// Pre-order walk of an instance (or template) subtree.
-pub fn walk(world: &World, root: Entity, f: &mut dyn FnMut(&World, Entity)) {
+/// Pre-order walk of a template or instance subtree, with each node's depth below `root`;
+/// never descends past [`MAX_DEPTH`].
+pub fn walk(world: &World, root: Entity, f: &mut dyn FnMut(Entity, usize)) {
     let mut stack = vec![(root, 0usize)];
     while let Some((entity, depth)) = stack.pop() {
-        f(world, entity);
+        f(entity, depth);
         if depth >= MAX_DEPTH {
             continue;
         }
@@ -176,7 +174,7 @@ pub fn walk(world: &World, root: Entity, f: &mut dyn FnMut(&World, Entity)) {
 /// The node in the subtree of `root` carrying `id`.
 pub fn find_by_node_id(world: &World, root: Entity, id: NodeId) -> Option<Entity> {
     let mut found = None;
-    walk(world, root, &mut |world, entity| {
+    walk(world, root, &mut |entity, _| {
         if found.is_none() && world.get::<NodeId>(entity) == Some(&id) {
             found = Some(entity);
         }
@@ -193,7 +191,7 @@ pub fn apply_view_state(world: &mut World, viewer: Entity) {
         return;
     };
     let mut nodes: Vec<Entity> = Vec::new();
-    walk(world, root, &mut |_, entity| nodes.push(entity));
+    walk(world, root, &mut |entity, _| nodes.push(entity));
     for &instance in &nodes {
         let Some(template) = world.get::<InstanceOf>(instance).map(|o| o.0) else {
             continue;
