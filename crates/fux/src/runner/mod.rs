@@ -24,6 +24,7 @@ use bevy_tasks::futures_lite::future;
 use crate::attach::AttachAdapter;
 use crate::lifecycle::Clock;
 use crate::model::{Effect, FinalRecord, Inbound, ServerMode};
+use crate::pty::PacingWake;
 use crate::pty::PtyAdapter;
 
 /// Runner parameters; the old stream coalescing values are the defaults.
@@ -49,6 +50,10 @@ impl Default for Params {
 
 /// Depth of the control channel: signals coalesce, so a handful is plenty.
 pub const CONTROL_QUEUE: usize = 4;
+
+/// Runner steps since start (`fux/runner/wakeups`); incremented before every `update`.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StepCounter(pub u64);
 
 /// The two sources the runner blocks on: `control` (signals) is polled first and drained in
 /// full ahead of every step; `inbound` is the shared adapter channel.
@@ -91,6 +96,7 @@ pub fn run(
         }
         let world = app.world_mut();
         world.resource_mut::<Clock>().now_ms = wall_ms();
+        world.get_resource_or_init::<StepCounter>().0 += 1;
         world
             .resource_mut::<Messages<Inbound>>()
             .write_batch(batch.drain(..));
@@ -190,8 +196,8 @@ fn wait(sources: &Sources, deadline: Option<Duration>) -> Wait {
     }
 }
 
-/// How long the runner may sleep: bounded by the shutdown poll and the earliest `FinalRecord`
-/// expiry; `None` sleeps until a message arrives.
+/// How long the runner may sleep: bounded by the shutdown poll, the earliest `FinalRecord`
+/// expiry and a pending paced `PaneOutput`; `None` sleeps until a message arrives.
 fn deadline(
     app: &mut App,
     records: &mut QueryState<&FinalRecord>,
@@ -205,11 +211,13 @@ fn deadline(
         return Some(tick);
     }
     let now = wall_ms();
+    let pacing = world.get_resource::<PacingWake>().and_then(|w| w.at_ms);
     records
         .iter(world)
         .map(|r| r.expires_ms)
+        .chain(pacing)
         .min()
-        .map(|expires| Duration::from_millis(expires.saturating_sub(now).max(1)))
+        .map(|at| Duration::from_millis(at.saturating_sub(now).max(1)))
 }
 
 fn wall_ms() -> u64 {

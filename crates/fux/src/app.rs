@@ -5,7 +5,7 @@ use async_channel::Sender;
 use bevy_app::TaskPoolPlugin;
 use bevy_app::prelude::*;
 use bevy_asset::AssetPlugin;
-use bevy_diagnostic::DiagnosticsPlugin;
+use bevy_diagnostic::{DiagnosticsPlugin, EntityCountDiagnosticsPlugin};
 use bevy_ecs::error::FallbackErrorHandler;
 use bevy_log::LogPlugin;
 use bevy_scene::ScenePlugin;
@@ -14,6 +14,9 @@ use bevy_time::TimePlugin;
 
 use crate::attach::AttachPlugin;
 use crate::config::Config;
+use crate::events::EventsPlugin;
+use crate::finals::FinalsPlugin;
+use crate::input_ops::InputOpsPlugin;
 use crate::layout::LayoutPlugin;
 use crate::lifecycle::{DefaultCommand, LifecyclePlugin};
 use crate::model::{Inbound, ModelPlugin};
@@ -41,6 +44,7 @@ pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound
         },
         ScenePlugin,
         DiagnosticsPlugin,
+        EntityCountDiagnosticsPlugin::default(),
     ));
     core(&mut app, config);
     app.add_plugins((
@@ -81,5 +85,6 @@ fn core(app: &mut App, config: &Config) {
             LifecyclePlugin,
             PointerPlugin,
             SurfacePlugin,
+            (InputOpsPlugin, FinalsPlugin, EventsPlugin),
         ));
 }

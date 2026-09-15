@@ -17,7 +17,7 @@ use bevy_math::UVec2;
 use bevy_picking::hover::HoverMap;
 use bevy_picking::pointer::PointerId;
 use bevy_ui::prelude::*;
-use bevy_ui::{ScrollPosition, UiTargetCamera};
+use bevy_ui::{ScrollPosition, UiGlobalTransform, UiTargetCamera};
 use fux::app::build_headless;
 use fux::config::Config;
 use fux::layout::picking::HitRegion;
@@ -481,7 +481,11 @@ fn border_drag_resizes_the_template_and_every_viewer_relayouts() {
     );
     assert_eq!(flex_grow(world, right), 28.0);
     assert_eq!(world.get::<Node>(left).unwrap().flex_basis, Val::Px(0.0));
-    assert!(world.get::<LayoutGeneration>(root).unwrap().0 > generation);
+    assert_eq!(
+        world.get::<LayoutGeneration>(root).unwrap().0,
+        generation + 2,
+        "one bump when the drag starts (every sibling in the drag's unit), one per step"
+    );
     assert!(
         world
             .get::<PointerDrag>(pointer_entity(world, viewer))
@@ -762,6 +766,115 @@ fn wheel_scrolls_a_scroll_container_and_pane_history() {
     );
 }
 
+/// The surface leaf's provider subtree: a scroll column (`1`) holding a tall row (`2`) and a
+/// bordered row pair (`3`, `4`) inside it, hand-written as a provider would stream it.
+const SURFACE_DELTA: &str = r#"(resources: {}, entities: {
+    1: (components: {"bevy_ui::ui_node::Node": (width: Percent(100.0), height: Percent(100.0), flex_direction: Column, overflow: (x: Visible, y: Scroll))}),
+    2: (components: {"bevy_ui::ui_node::Node": (height: Px(100.0), flex_shrink: 0.0, flex_direction: Row), "bevy_ecs::hierarchy::ChildOf": (1)}),
+    3: (components: {"bevy_ui::ui_node::Node": (flex_grow: 1.0, border: (left: Px(1.0), right: Px(1.0), top: Px(1.0), bottom: Px(1.0))), "bevy_ecs::hierarchy::ChildOf": (2)}),
+    4: (components: {"bevy_ui::ui_node::Node": (flex_grow: 1.0, border: (left: Px(1.0), right: Px(1.0), top: Px(1.0), bottom: Px(1.0))), "bevy_ecs::hierarchy::ChildOf": (2)}),
+})"#;
+
+/// Row [ pane, surface ] with [`SURFACE_DELTA`] streamed in; `(ws, root, surface leaf)`.
+fn with_surface(world: &mut World) -> (Entity, Entity, Entity) {
+    let (ws, root) = workspace(world);
+    let _pane = ops::spawn_node(world, root, None, grow(), Some(shell())).unwrap();
+    let leaf = ops::spawn_node(world, root, None, grow(), None).unwrap();
+    fux::surface::open(world, leaf, "zor").unwrap();
+    fux::surface::update(world, leaf, 1, true, SURFACE_DELTA).unwrap();
+    (ws, root, leaf)
+}
+
+#[test]
+fn wheel_scrolls_a_scroll_container_inside_a_surface() {
+    let mut app = app();
+    let world = app.world_mut();
+    let (ws, _, leaf) = with_surface(world);
+    let viewer = ops::attach_viewer(world, ws, viewport(24, 80), None).unwrap();
+    app.update();
+    check(&mut app);
+    let column = kids(app.world(), leaf)[0];
+    let icolumn = instance_of(app.world_mut(), viewer, column);
+    for _ in 0..2 {
+        mouse(
+            &mut app,
+            viewer,
+            60,
+            5,
+            PointerKind::ScrollDown,
+            PointerButton::None,
+            0,
+        );
+    }
+    let world = app.world();
+    assert_eq!(
+        world.get::<ScrollPosition>(icolumn).map(|p| p.0.y),
+        Some(2.0),
+        "the provider's scroll container scrolls like any other"
+    );
+    let id = *world.get::<NodeId>(column).unwrap();
+    assert_eq!(
+        world
+            .get::<fux::layout::ViewState>(viewer)
+            .unwrap()
+            .scroll
+            .get(&id),
+        Some(&2.0),
+        "recorded per viewer by the surface node's id"
+    );
+}
+
+#[test]
+fn border_drag_inside_a_surface_leaves_the_provider_subtree_alone() {
+    let mut app = app();
+    let world = app.world_mut();
+    let (ws, root, leaf) = with_surface(world);
+    let viewer = ops::attach_viewer(world, ws, viewport(24, 80), None).unwrap();
+    app.update();
+    check(&mut app);
+    let generation = app.world().get::<LayoutGeneration>(root).unwrap().0;
+    let column = kids(app.world(), leaf)[0];
+    let row = kids(app.world(), column)[0];
+    let [a, b]: [Entity; 2] = kids(app.world(), row).try_into().unwrap();
+    let ia = instance_of(app.world_mut(), viewer, a);
+    let size_before = size_of(app.world(), ia);
+    let (min, max) = {
+        let world = app.world();
+        let computed = world.get::<ComputedNode>(ia).unwrap();
+        let centre = world.get::<UiGlobalTransform>(ia).unwrap().translation;
+        (centre - computed.size / 2.0, centre + computed.size / 2.0)
+    };
+    assert_eq!(size_before.y, 100);
+    // `a`'s right border is its last column.
+    let border = (max.x - 1.0) as u16;
+    let at_row = (min.y + 2.0) as u16;
+    hover(&mut app, viewer, border, at_row);
+    assert_eq!(
+        hit(&app, viewer),
+        Some((ia, HitRegion::Border(Side::Right))),
+        "the provider's border is picked"
+    );
+    drag(&mut app, viewer, (border, at_row), (border + 6, at_row), 0);
+    let world = app.world();
+    assert_eq!(
+        flex_grow(world, a),
+        1.0,
+        "the provider's template is untouched"
+    );
+    assert_eq!(flex_grow(world, b), 1.0);
+    assert!(
+        world
+            .get::<PointerDrag>(pointer_entity(world, viewer))
+            .is_none()
+    );
+    assert_eq!(
+        world.get::<LayoutGeneration>(root).unwrap().0,
+        generation,
+        "nothing was written"
+    );
+    assert_eq!(instance_size(&mut app, viewer, a), size_before);
+}
+
 /// Bootstraps `default` with one live pane in SGR button-tracking mode; `(app, viewer, pane)`.
 fn live_mouse_pane(modes: &[u8]) -> (App, Entity, Entity) {
     let mut app = app();
@@ -860,6 +973,51 @@ fn panes_reporting_the_mouse_receive_translated_events() {
     assert_eq!(
         app.world().get::<ScrollPosition>(ileaf).map(|p| p.0.y),
         Some(0.0)
+    );
+}
+
+#[test]
+fn reported_cells_start_inside_the_border_and_padding() {
+    let (mut app, viewer, pane) = live_mouse_pane(b"\x1b[?1000h\x1b[?1006h");
+    let world = app.world_mut();
+    let leaf = world.get::<PlacedIn>(pane).unwrap().iter().next().unwrap();
+    let inset = |v: &str| fux::layout::RectPatch {
+        all: Some(v.to_owned()),
+        ..Default::default()
+    };
+    ops::patch_node(
+        world,
+        leaf,
+        &NodePatch {
+            border: Some(inset("1px")),
+            padding: Some(inset("2px")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    app.update();
+    check(&mut app);
+    assert_eq!(
+        *app.world().get::<PaneSize>(pane).unwrap(),
+        PaneSize { rows: 18, cols: 74 },
+        "the pane is the content box"
+    );
+    drain_effects(&mut app);
+    hover(&mut app, viewer, 10, 5);
+    mouse(
+        &mut app,
+        viewer,
+        10,
+        5,
+        PointerKind::Press,
+        PointerButton::Left,
+        0,
+    );
+    let writes = pty_writes(&drain_effects(&mut app), pane);
+    assert_eq!(
+        writes,
+        vec![b"\x1b[<0;8;3M".to_vec()],
+        "cell (1, 1) is the first content cell, three cells in from the edge"
     );
 }
 

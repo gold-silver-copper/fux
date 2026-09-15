@@ -19,6 +19,8 @@ use super::descriptor::Endpoint;
 use super::projection::{ALLOWED_TYPE_PATHS, is_allowed_type_path};
 use super::schema::described;
 use super::token::{Capabilities, Capability, Grant, Tokens};
+use super::watch::{self, open_events};
+use crate::events::DiagnosticsSnapshot;
 use crate::layout::{LayoutError, NodePatch, ops};
 use crate::model::components::ExactTarget;
 use crate::model::components::Open;
@@ -44,7 +46,16 @@ pub mod codes {
     pub const INVALID: i16 = -32004;
 }
 
-pub type Handler = fn(In<Option<Value>>, &mut World) -> BrpResult;
+/// An instant handler: answers in the update that dequeued the request.
+pub type Instant = fn(In<Option<Value>>, &mut World) -> BrpResult;
+
+/// How a method is served.
+#[derive(Clone, Copy)]
+pub enum Handler {
+    Instant(Instant),
+    /// A `+watch` stream; opened by `remote::watch`, polled every update.
+    Watch(super::watch::Open),
+}
 
 /// One `fux/*` method: handler plus the typed shapes `fux/schema` and the fixtures pin.
 pub struct MethodSpec {
@@ -110,6 +121,7 @@ pub(super) fn to_value<T: serde::Serialize>(value: T) -> BrpResult {
 /// A request after the envelope was validated: `token` resolved to its grant, `instance`
 /// remembered for mutations, the remaining fields left for the typed params.
 pub struct Request {
+    token: String,
     grant: Grant,
     instance: Option<String>,
     params: Value,
@@ -147,6 +159,7 @@ impl Request {
             }
         };
         let request = Self {
+            token,
             grant,
             instance,
             params: Value::Object(fields),
@@ -157,6 +170,11 @@ impl Request {
 
     pub fn parse<P: DeserializeOwned>(&mut self) -> Result<P, BrpError> {
         builtin_methods::parse(core::mem::take(&mut self.params))
+    }
+
+    /// The presented token, for binding a stream to its revocation.
+    pub fn token(&self) -> &str {
+        &self.token
     }
 
     pub fn require(&self, capabilities: Capabilities) -> Result<(), BrpError> {
@@ -180,16 +198,31 @@ impl Request {
         }
     }
 
+    /// The `instance` nonce the request carried, if any.
+    pub fn instance(&self) -> Option<&str> {
+        self.instance.as_deref()
+    }
+
     /// Whether the grant covers a workspace entity.
     pub fn cover(&self, world: &World, workspace: Entity) -> Result<(), BrpError> {
         let name = world
             .get::<WorkspaceName>(workspace)
             .map_or("", |n| n.0.as_str());
+        self.cover_name(name)
+    }
+
+    /// Whether the grant covers a workspace by name (a record can outlive its workspace).
+    pub fn cover_name(&self, name: &str) -> Result<(), BrpError> {
         if self.grant.covers(name) {
             Ok(())
         } else {
             Err(unauthorized("token is scoped to another workspace"))
         }
+    }
+
+    /// The grant's workspace scope: `None` covers every workspace.
+    pub fn workspace_scope(&self) -> Option<&str> {
+        self.grant.workspace.as_deref()
     }
 
     /// Workspace-wide operations (creating or listing workspaces) need an unscoped token.
@@ -332,6 +365,27 @@ described!(
         pub capture_lines: usize,
     }
 );
+described!(
+    /// `bevy_diagnostic` counters the server keeps (owner `events`): runner wake-ups since
+    /// start, live panes, attached viewers, retained event entries.
+    pub struct Diagnostics {
+        pub wakeups: u64,
+        pub panes_live: u32,
+        pub viewers: u32,
+        pub events_retained: u32,
+    }
+);
+
+impl From<DiagnosticsSnapshot> for Diagnostics {
+    fn from(snapshot: DiagnosticsSnapshot) -> Self {
+        Self {
+            wakeups: snapshot.wakeups,
+            panes_live: snapshot.panes_live,
+            viewers: snapshot.viewers,
+            events_retained: snapshot.events_retained,
+        }
+    }
+}
 
 described!(
     pub struct ServerInfo {
@@ -344,7 +398,10 @@ described!(
         pub panes: usize,
         pub viewers: usize,
         pub tokens_minted: usize,
+        /// Open `+watch` streams.
+        pub watches: usize,
         pub limits: LimitsInfo,
+        pub diagnostics: Diagnostics,
     }
 );
 
@@ -692,6 +749,7 @@ fn server_info(mut req: Request, world: &mut World) -> BrpResult {
         .get_resource::<bevy_remote::http::HostPort>()
         .map_or(0, |p| p.0);
     let ids = world.resource::<Ids>();
+    let watches = world.resource::<watch::Watches>().open_count();
     to_value(ServerInfo {
         name: instance.name.clone(),
         nonce: instance.nonce.clone(),
@@ -702,6 +760,7 @@ fn server_info(mut req: Request, world: &mut World) -> BrpResult {
         panes: ids.panes.len(),
         viewers: ids.viewers.len(),
         tokens_minted: world.resource::<Tokens>().minted_count(),
+        watches,
         limits: LimitsInfo {
             panes_per_workspace: limits.panes_per_workspace,
             nodes_per_workspace: limits.nodes_per_workspace,
@@ -714,6 +773,12 @@ fn server_info(mut req: Request, world: &mut World) -> BrpResult {
             key_bytes: MAX_KEY_BYTES,
             capture_lines: MAX_CAPTURE_LINES,
         },
+        diagnostics: Diagnostics::from(
+            world
+                .get_resource::<DiagnosticsSnapshot>()
+                .copied()
+                .unwrap_or_default(),
+        ),
     })
 }
 
@@ -757,6 +822,9 @@ fn token_revoke(mut req: Request, world: &mut World) -> BrpResult {
     req.require(Capabilities::ADMIN)?;
     let params: TokenRevokeParams = req.parse()?;
     let revoked = world.resource_mut::<Tokens>().revoke(&params.revoke);
+    if revoked {
+        watch::revoke(world, &params.revoke);
+    }
     to_value(TokenRevoked { revoked })
 }
 
@@ -1303,10 +1371,11 @@ fn pane_send_keys(mut req: Request, world: &mut World) -> BrpResult {
         )));
     }
     let bytes = match params.notation {
-        KeyNotation::Escapes => decode_escapes(&params.keys),
-        KeyNotation::Keys => decode_key_names(&params.keys),
-    }
-    .map_err(invalid)?;
+        KeyNotation::Escapes => {
+            crate::input_ops::parse_keys(&params.keys).map_err(|e| invalid(e.to_string()))?
+        }
+        KeyNotation::Keys => decode_key_names(&params.keys).map_err(invalid)?,
+    };
     let bytes = write_pane(world, pane, bytes)?;
     to_value(BytesWritten { bytes })
 }
@@ -1355,41 +1424,6 @@ fn pane_capture(mut req: Request, world: &mut World) -> BrpResult {
         lines,
         truncated,
     })
-}
-
-/// `\n \r \t \e \\ \0 \xHH`; everything else byte-exact.
-pub fn decode_escapes(input: &str) -> Result<Vec<u8>, String> {
-    let mut out = Vec::with_capacity(input.len());
-    let mut bytes = input.bytes();
-    while let Some(b) = bytes.next() {
-        if b != b'\\' {
-            out.push(b);
-            continue;
-        }
-        match bytes.next() {
-            Some(b'n') => out.push(b'\n'),
-            Some(b'r') => out.push(b'\r'),
-            Some(b't') => out.push(b'\t'),
-            Some(b'e') => out.push(0x1b),
-            Some(b'\\') => out.push(b'\\'),
-            Some(b'0') => out.push(0),
-            Some(b'x') => {
-                let hi = bytes.next().and_then(|c| (c as char).to_digit(16));
-                let lo = bytes.next().and_then(|c| (c as char).to_digit(16));
-                match (hi, lo) {
-                    (Some(hi), Some(lo)) => out.push((hi * 16 + lo) as u8),
-                    _ => return Err("\\x needs two hex digits".to_owned()),
-                }
-            }
-            other => {
-                return Err(format!(
-                    "unknown escape `\\{}`",
-                    other.map_or(String::new(), |c| (c as char).to_string())
-                ));
-            }
-        }
-    }
-    Ok(out)
 }
 
 /// The xterm byte sequence for one named key (normal cursor mode).
@@ -1505,7 +1539,7 @@ pub fn schema_table() -> SchemaTable {
     }
 }
 
-fn check_paths<'a>(paths: impl IntoIterator<Item = &'a String>) -> Result<(), BrpError> {
+pub(super) fn check_paths<'a>(paths: impl IntoIterator<Item = &'a String>) -> Result<(), BrpError> {
     for path in paths {
         if !is_allowed_type_path(path) {
             return Err(unauthorized(format!(
@@ -1633,9 +1667,17 @@ macro_rules! handler {
 }
 pub(super) use handler;
 
-/// `spec!("fux/x.y", brp_handler, Params, Result)`: one [`MethodSpec`] row.
+/// `spec!("fux/x.y", brp_handler, Params, Result)`: one instant [`MethodSpec`] row;
+/// `spec!(watch "fux/x+watch", open_fn, Params, Item)`: a stream whose result shape is one
+/// item.
 macro_rules! spec {
     ($method:literal, $handler:ident, $params:ty, $result:ty) => {
+        $crate::remote::methods::spec!(@row $method, $crate::remote::methods::Handler::Instant($handler), $params, $result)
+    };
+    (watch $method:expr, $open:ident, $params:ty, $result:ty) => {
+        $crate::remote::methods::spec!(@row $method, $crate::remote::methods::Handler::Watch($open), $params, $result)
+    };
+    (@row $method:expr, $handler:expr, $params:ty, $result:ty) => {
         $crate::remote::methods::MethodSpec {
             name: $method,
             handler: $handler,
@@ -1799,10 +1841,16 @@ pub static TABLE: &[MethodSpec] = &[
         Capture
     ),
     spec!("fux/schema", brp_schema, NoParams, SchemaTable),
+    spec!(
+        watch watch::EVENTS_WATCH_METHOD,
+        open_events,
+        watch::EventsWatchParams,
+        watch::EventsWatchItem
+    ),
 ];
 
 /// Token-checked wrappers over Bevy's read-only built-ins, under their standard names.
-pub static WRAPPED: &[(&str, Handler)] = &[
+pub static WRAPPED: &[(&str, Instant)] = &[
     (BRP_QUERY_METHOD, brp_world_query),
     (BRP_GET_COMPONENTS_METHOD, brp_world_get_components),
     (BRP_LIST_COMPONENTS_METHOD, brp_world_list_components),
@@ -1815,22 +1863,13 @@ pub fn allowlist() -> Vec<&'static str> {
     all_specs()
         .map(|s| s.name)
         .chain(WRAPPED.iter().map(|(n, _)| *n))
+        .chain(watch::WATCHED.iter().map(|(n, _)| *n))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn escapes_are_byte_exact() {
-        assert_eq!(
-            decode_escapes("a\\nb\\x1b\\\\\\0").unwrap(),
-            b"a\nb\x1b\\\0"
-        );
-        assert!(decode_escapes("\\q").is_err());
-        assert!(decode_escapes("\\x1").is_err());
-    }
 
     #[test]
     fn key_names_follow_xterm() {

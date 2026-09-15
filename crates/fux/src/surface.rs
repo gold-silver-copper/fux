@@ -30,7 +30,8 @@ use serde::de::DeserializeSeed as _;
 use crate::layout::instances;
 use crate::model::invariants::root_of_template;
 use crate::model::{
-    LayoutGeneration, Limits, MAX_DEPTH, Places, RootOf, Roots, Surface, TemplateNode,
+    Ids, LayoutGeneration, Limits, MAX_DEPTH, Places, RootOf, Roots, Surface, TemplateNode,
+    TemplateRoot,
 };
 
 // Provider pacing bounds. They are not configuration (`Limits` is the user's `[limits]` table
@@ -189,12 +190,12 @@ type R<T> = Result<T, SurfaceError>;
 // Transitions
 // ---------------------------------------------------------------------------------------------
 
-/// Marks a childless, pane-less template node as a surface streamed by `provider`.
+/// Marks a childless, pane-less, non-root template node as a surface streamed by `provider`.
 pub fn open(world: &mut World, node: Entity, provider: &str) -> R<()> {
     let entity = world
         .get_entity(node)
         .map_err(|_| SurfaceError::NoSuchEntity(node))?;
-    if !entity.contains::<TemplateNode>() {
+    if !entity.contains::<TemplateNode>() || entity.contains::<TemplateRoot>() {
         return Err(SurfaceError::NotATemplateNode(node));
     }
     if entity.contains::<Surface>() {
@@ -248,18 +249,34 @@ pub fn update(
     let dynamic = parse(world, &registry, ron)?;
     let plan = validate(world, surface, full, &dynamic)?;
 
-    // Components first, through the surface's map so ids stay stable across updates.
+    // Components first, through the surface's map so ids stay stable across updates. The write
+    // cannot refuse what `validate` admitted (the vocabulary is registered with the same
+    // registry the delta was parsed against); should it, the map goes back as it was and the
+    // revision stays, so the provider can retry.
     let Some(mut state) = world.get_mut::<SurfaceState>(surface) else {
         return Err(SurfaceError::NotASurface(surface));
     };
     let mut map = core::mem::take(&mut state.entities);
-    let written = plan
+    if let Err(error) = plan
         .components
         .write_to_world_with(world, &mut map, &registry.read())
-        .map_err(|e| SurfaceError::Malformed(e.to_string()));
-    for (&provider_id, &template) in &map {
-        if plan.fresh.contains(&provider_id) {
-            world.entity_mut(template).insert(TemplateNode);
+    {
+        for provider_id in &plan.fresh {
+            if let Some(template) = map.remove(provider_id) {
+                let _ = world.try_despawn(template);
+            }
+        }
+        if let Some(mut state) = world.get_mut::<SurfaceState>(surface) {
+            state.entities = map;
+        }
+        return Err(SurfaceError::Malformed(error.to_string()));
+    }
+    // Fresh nodes are template nodes with their own `NodeId`, so viewer state keyed by id
+    // (scroll, display overrides) and `fux/node.*` addressing reach them like any other.
+    for provider_id in &plan.fresh {
+        if let Some(&template) = map.get(provider_id) {
+            let id = world.resource_mut::<Ids>().allocate_node();
+            world.entity_mut(template).insert((TemplateNode, id));
         }
     }
 
@@ -307,7 +324,7 @@ pub fn update(
         state.revision = revision;
     }
     bump(world, root);
-    written.map(|()| nodes)
+    Ok(nodes)
 }
 
 /// Despawns the surface's subtree and removes the marker.

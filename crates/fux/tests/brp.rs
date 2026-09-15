@@ -9,20 +9,16 @@
     clippy::float_cmp,
     reason = "integration-test helpers; clippy.toml only relaxes #[test] bodies"
 )]
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
 
-use bevy_app::App;
 use bevy_remote::RemoteMethods;
-use fux::config::Config;
-use fux::remote::client::{self, ClientError, Descriptor};
+use common::{Server, build, code};
+use fux::remote::client;
 use fux::remote::methods::{self, codes};
 use fux::remote::projection::ALLOWED_TYPE_PATHS;
-use fux::remote::{RemoteControlPlugin, descriptor};
 use serde_json::{Value, json};
 
 const DENYLIST: [&str; 11] = [
@@ -43,109 +39,6 @@ fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/brp")
         .join(name)
-}
-
-fn build(runtime_dir: &Path, name: &str) -> App {
-    let (inbound, _keep) = async_channel::unbounded();
-    // The receiver is dropped: `Wake` sends fail harmlessly; the test loop polls instead.
-    let mut app = fux::app::build_headless(&Config::default());
-    app.add_plugins(RemoteControlPlugin {
-        runtime_dir: runtime_dir.to_path_buf(),
-        server_name: name.into(),
-        inbound,
-    });
-    app
-}
-
-/// A server on its own thread, stepped every 10 ms; the real runner belongs to `runner.rs`.
-struct Server {
-    stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
-    brp: PathBuf,
-    descriptor: Descriptor,
-    _dir: tempfile::TempDir,
-}
-
-impl Server {
-    fn start() -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let runtime = dir.path().join("run");
-        let brp = descriptor::descriptor_path(&runtime, "test");
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread = {
-            let stop = Arc::clone(&stop);
-            let runtime = runtime.clone();
-            std::thread::spawn(move || {
-                let mut app = build(&runtime, "test");
-                // As `fux serve` does through its Startup system: the workspace exists before
-                // the first update publishes the descriptor, so a client that reads it never
-                // observes an empty server.
-                fux::lifecycle::bootstrap(app.world_mut(), "default", &[]).unwrap();
-                app.finish();
-                app.cleanup();
-                app.update();
-                while !stop.load(Ordering::Relaxed) {
-                    app.update();
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            })
-        };
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let descriptor = loop {
-            if let Ok(d) = client::read_descriptor(&brp) {
-                break d;
-            }
-            assert!(Instant::now() < deadline, "brp.json never appeared");
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        Self {
-            stop,
-            thread: Some(thread),
-            brp,
-            descriptor,
-            _dir: dir,
-        }
-    }
-
-    fn call(&self, method: &str, params: Value) -> Result<Value, ClientError> {
-        client::call(&self.brp, method, params)
-    }
-
-    /// Sends `params` verbatim: no token/instance injection.
-    fn raw(&self, method: &str, params: Value) -> Result<Value, ClientError> {
-        client::request(
-            &self.descriptor.http.host,
-            self.descriptor.http.port,
-            method,
-            params,
-        )
-    }
-
-    fn workspace_names(&self) -> Vec<String> {
-        let list = self.call("fux/workspace.list", json!({})).unwrap();
-        list["workspaces"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|w| w["name"].as_str().unwrap().to_owned())
-            .collect()
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
-        }
-    }
-}
-
-fn code(result: Result<Value, ClientError>) -> i16 {
-    match result {
-        Err(ClientError::Rpc { code, .. }) => code,
-        other => panic!("expected an RPC error, got {other:?}"),
-    }
 }
 
 #[test]

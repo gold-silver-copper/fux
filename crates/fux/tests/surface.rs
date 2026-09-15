@@ -35,7 +35,7 @@ use fux::layout::{LayoutError, ops};
 use fux::lifecycle::Clock;
 use fux::model::invariants::check_invariants;
 use fux::model::{
-    Effect, Inbound, InstanceNode, InstanceOf, LayoutGeneration, Limits, NodeId, PaneTemplate,
+    Effect, Ids, Inbound, InstanceNode, InstanceOf, LayoutGeneration, Limits, NodeId, PaneTemplate,
     ServerInstance, Surface, TemplateNode, ViewerCamera, Viewport,
 };
 use fux::remote::methods::{self, codes};
@@ -113,7 +113,10 @@ fn call(app: &mut App, method: &str, mut params: Value) -> Result<Value, bevy_re
         .unwrap_or_else(|| panic!("{method} is not in the table"));
     params["token"] = json!(TOKEN);
     params["instance"] = json!(NONCE);
-    let result = (spec.handler)(In(Some(params)), app.world_mut());
+    let methods::Handler::Instant(handler) = spec.handler else {
+        panic!("{method} is a stream");
+    };
+    let result = handler(In(Some(params)), app.world_mut());
     check(app);
     result
 }
@@ -265,16 +268,29 @@ fn opened(app: &mut App) -> (Entity, Entity, Entity, Entity) {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn open_refuses_pane_leaves_containers_and_repeats() {
+fn open_refuses_pane_leaves_containers_roots_and_repeats() {
     let mut app = app();
-    let (_, root, pane_leaf, leaf) = scene(&mut app);
+    let (ws, root, pane_leaf, leaf) = scene(&mut app);
     assert_eq!(
         surface::open(app.world_mut(), pane_leaf, "zor"),
         Err(SurfaceError::PlacesAPane(pane_leaf))
     );
+    // A root is never a surface, with children or without: its subtree is the workspace's.
     assert_eq!(
         surface::open(app.world_mut(), root, "zor"),
-        Err(SurfaceError::HasChildren(root))
+        Err(SurfaceError::NotATemplateNode(root))
+    );
+    let empty_root = ops::new_root(app.world_mut(), ws, "empty").unwrap();
+    assert_eq!(
+        surface::open(app.world_mut(), empty_root, "zor"),
+        Err(SurfaceError::NotATemplateNode(empty_root))
+    );
+    // Nor is a container.
+    let container = ops::spawn_node(app.world_mut(), root, None, grow(), None).unwrap();
+    ops::spawn_node(app.world_mut(), container, None, grow(), None).unwrap();
+    assert_eq!(
+        surface::open(app.world_mut(), container, "zor"),
+        Err(SurfaceError::HasChildren(container))
     );
     let before = generation(app.world(), root);
     surface::open(app.world_mut(), leaf, "zor").unwrap();
@@ -370,9 +386,11 @@ fn full_update_lays_out_under_the_leaf() {
         let t_column = state.entity(column).unwrap();
         assert_eq!(world.get::<ChildOf>(t_column).unwrap().parent(), leaf);
         assert!(world.get::<TemplateNode>(t_column).is_some());
-        assert!(
-            world.get::<NodeId>(t_column).is_none(),
-            "provider nodes are not addressable"
+        let id = *world.get::<NodeId>(t_column).unwrap();
+        assert_eq!(
+            world.resource::<Ids>().node(id),
+            Some(t_column),
+            "provider nodes are template nodes with their own id"
         );
         let kids: Vec<Entity> = world.get::<Children>(t_column).unwrap().iter().collect();
         let expected: Vec<Entity> = rows.iter().map(|r| state.entity(*r).unwrap()).collect();
@@ -587,6 +605,64 @@ fn stale_revision_is_refused_with_the_generation_code() {
         5,
         "a refused update leaves the revision"
     );
+}
+
+#[test]
+fn a_malformed_delta_leaves_a_populated_surface_untouched() {
+    let mut app = app();
+    let (_, root, _, leaf) = opened(&mut app);
+    let mut provider = Provider::new(&app);
+    let (column, rows) = provider.column(&["tasks", "checks", "notes"]);
+    let delta = provider.export_all();
+    surface::update(app.world_mut(), leaf, 1, true, &delta).unwrap();
+    check(&mut app);
+    let gen1 = generation(app.world(), root);
+    let snapshot = |world: &World| -> (u64, usize, Vec<Entity>, Vec<String>) {
+        let state = world.get::<SurfaceState>(leaf).unwrap();
+        let t_column = state.entity(column).unwrap();
+        let kids: Vec<Entity> = world.get::<Children>(t_column).unwrap().iter().collect();
+        let texts = kids
+            .iter()
+            .map(|k| world.get::<Text>(*k).unwrap().0.clone())
+            .collect();
+        (state.revision, state.nodes(), kids, texts)
+    };
+    let before = snapshot(app.world());
+    assert_eq!(before.0, 1);
+    assert_eq!(before.1, 4);
+
+    // A partial update whose first entity is fine and whose second is outside the vocabulary:
+    // nothing of it lands, not even the good half.
+    provider
+        .world
+        .entity_mut(rows[0])
+        .insert(Text("changed".to_owned()));
+    let bad = provider
+        .world
+        .spawn((Node::default(), GlobalZIndex(1), ChildOf(column)))
+        .id();
+    let delta = provider.export(&[rows[0], bad]);
+    assert!(matches!(
+        surface::update(app.world_mut(), leaf, 2, false, &delta),
+        Err(SurfaceError::UnknownType(_))
+    ));
+    // A full update that would prune everything but names a parent it does not carry.
+    let delta = provider.export(&[rows[1]]);
+    assert!(matches!(
+        surface::update(app.world_mut(), leaf, 2, true, &delta),
+        Err(SurfaceError::UnknownParent { .. })
+    ));
+    check(&mut app);
+    assert_eq!(snapshot(app.world()), before, "refusals commit nothing");
+    assert_eq!(generation(app.world(), root), gen1);
+
+    // The same revision then still applies: the refusals did not spend it.
+    let delta = provider.export(&[rows[0]]);
+    surface::update(app.world_mut(), leaf, 2, false, &delta).unwrap();
+    check(&mut app);
+    let after = snapshot(app.world());
+    assert_eq!(after.0, 2);
+    assert_eq!(after.3[0], "changed");
 }
 
 /// A hand-written delta of `count` partial `Node`s (ids `1..=count`), flat or as one chain,

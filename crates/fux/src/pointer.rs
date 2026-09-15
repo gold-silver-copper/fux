@@ -40,8 +40,9 @@ use bevy_ui::{
     UiGlobalTransform,
 };
 
+use crate::layout::Side;
+use crate::layout::ops::{self, GridAxis};
 use crate::layout::picking::HitRegion;
-use crate::layout::{GridTrackPatch, NodePatch, Side, ops};
 use crate::model::*;
 use crate::terminal::Terminal;
 use crate::wire::{Modes, MouseMode};
@@ -55,7 +56,8 @@ const NOTICE_SECS: f32 = 3.0;
 pub struct PointerModifiers(pub u8);
 
 /// What the viewer's primary-button drag is doing, on its pointer entity for the drag's life.
-#[derive(Component, Clone, Debug, PartialEq)]
+/// `Copy`: every drag step reads it in place, nothing is cloned per event.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub enum PointerDrag {
     /// A border drag: the edge between two template siblings moves with the pointer.
     Resize(Resize),
@@ -63,7 +65,7 @@ pub enum PointerDrag {
     Move { leaf: Entity },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Resize {
     pub kind: ResizeKind,
     pub axis: Axis,
@@ -79,17 +81,13 @@ pub struct Resize {
     pub applied: f32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResizeKind {
     /// Two template siblings under a flex parent; both get `flex_grow = size, flex_basis = 0`.
     Flex { first: Entity, second: Entity },
-    /// Tracks `boundary` and `boundary + 1` of the template parent's grid template, all written
-    /// as px.
-    Grid {
-        parent: Entity,
-        boundary: usize,
-        tracks: Vec<f32>,
-    },
+    /// Tracks `boundary` and `boundary + 1` of the template parent's grid template along the
+    /// axis; every track was written as px at drag start, so a step rewrites just these two.
+    Grid { parent: Entity, boundary: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +115,13 @@ impl Axis {
         match self {
             Self::Horizontal => f32::from(MIN_PANE_COLS),
             Self::Vertical => f32::from(MIN_PANE_ROWS),
+        }
+    }
+
+    fn grid(self) -> GridAxis {
+        match self {
+            Self::Horizontal => GridAxis::Columns,
+            Self::Vertical => GridAxis::Rows,
         }
     }
 }
@@ -377,15 +382,26 @@ fn on_drag_start(
     match region {
         HitRegion::Border(side) => {
             commands.queue(move |world: &mut World| {
-                if let Some((resize, siblings)) = plan_resize(world, node, side) {
-                    debug!("border drag on {node}: {resize:?}");
-                    for slot in siblings {
-                        patch_grow(world, slot.template, slot.size, slot.insets);
+                let Some((resize, sizes)) = plan_resize(world, node, side) else {
+                    return;
+                };
+                debug!("border drag on {node}: {resize:?}");
+                // Every in-flow sibling (or grid track) is written in the drag's unit once,
+                // here; the steps then move the pair alone.
+                let written = match resize.kind {
+                    ResizeKind::Flex { .. } => ops::set_flex_grows(world, &sizes),
+                    ResizeKind::Grid { parent, .. } => {
+                        let sizes: Vec<f32> = sizes.iter().map(|(_, size)| *size).collect();
+                        ops::set_grid_tracks(world, parent, resize.axis.grid(), 0, &sizes)
                     }
-                    world
-                        .entity_mut(pointer)
-                        .insert(PointerDrag::Resize(resize));
+                };
+                if let Err(error) = written {
+                    warn!("resize from {node}: {error}");
+                    return;
                 }
+                world
+                    .entity_mut(pointer)
+                    .insert(PointerDrag::Resize(resize));
             });
         }
         HitRegion::Content => {
@@ -616,10 +632,15 @@ fn slots(world: &World, parent: Entity, axis: Axis) -> Vec<Slot> {
 }
 
 /// Walks up from the instance node whose `side` border was pressed to the nearest ancestor pair
-/// of siblings that share that edge, and describes how to move it. For a flex pair the
-/// container's in-flow children come back too: every one is written as `flex_grow = size,
-/// flex_basis = 0` first, so the pair's new grows are in the same unit as the rest.
-fn plan_resize(world: &World, node: Entity, side: Side) -> Option<(Resize, Vec<Slot>)> {
+/// of siblings that share that edge, and describes how to move it, with what the drag writes
+/// at its start: for a flex pair every in-flow child of the container as `(template,
+/// flex_grow = size - insets)`, so the pair's later grows are in the same unit as the rest;
+/// for a grid pair every track as `(parent, px)`. Nothing inside a surface leaf: that subtree
+/// is its provider's (prompt 3.13).
+fn plan_resize(world: &World, node: Entity, side: Side) -> Option<(Resize, Vec<(Entity, f32)>)> {
+    if inside_surface(world, node) {
+        return None;
+    }
     let axis = Axis::of(side);
     let mut node = node;
     for _ in 0..=MAX_DEPTH {
@@ -646,6 +667,20 @@ fn plan_resize(world: &World, node: Entity, side: Side) -> Option<(Resize, Vec<S
         node = parent;
     }
     None
+}
+
+/// Whether an instance node lies under a surface leaf.
+fn inside_surface(world: &World, mut node: Entity) -> bool {
+    for _ in 0..=MAX_DEPTH {
+        let Some(parent) = world.get::<ChildOf>(node).map(ChildOf::parent) else {
+            return false;
+        };
+        if world.get::<Surface>(parent).is_some() {
+            return true;
+        }
+        node = parent;
+    }
+    false
 }
 
 fn flex_axis(style: &Node) -> Option<Axis> {
@@ -690,13 +725,17 @@ fn flex_plan(
     node: Entity,
     axis: Axis,
     side: Side,
-) -> Option<(Resize, Vec<Slot>)> {
+) -> Option<(Resize, Vec<(Entity, f32)>)> {
     let template = world.get::<InstanceOf>(node)?.0;
     let slots = slots(world, parent, axis);
     let index = slots.iter().position(|s| s.template == template)?;
     let boundary = boundary(index, side, slots.len())?;
     let resize = pair(&slots, boundary, axis)?;
-    Some((resize, slots))
+    let grows = slots
+        .iter()
+        .map(|slot| (slot.template, (slot.size - slot.insets).max(0.0)))
+        .collect();
+    Some((resize, grows))
 }
 
 /// Grid tracks along `axis` from the laid-out children: one track per distinct start, sized by
@@ -708,7 +747,7 @@ fn grid_plan(
     node: Entity,
     axis: Axis,
     side: Side,
-) -> Option<(Resize, Vec<Slot>)> {
+) -> Option<(Resize, Vec<(Entity, f32)>)> {
     let template = world.get::<InstanceOf>(node)?.0;
     let slots = slots(world, parent, axis);
     let mut tracks: Vec<Slot> = Vec::new();
@@ -731,29 +770,18 @@ fn grid_plan(
     resize.kind = ResizeKind::Grid {
         parent: parent_template,
         boundary,
-        tracks: tracks.iter().map(|t| t.size).collect(),
     };
-    Some((resize, Vec::new()))
+    let sizes = tracks.iter().map(|t| (parent_template, t.size)).collect();
+    Some((resize, sizes))
 }
 
-/// `flex_grow = size - insets, flex_basis = 0`: with every in-flow sibling written this way the
-/// free space is exactly the sum of the grows, so each item lays out at `size`.
-fn patch_grow(world: &mut World, template: Entity, size: f32, insets: f32) {
-    let patch = NodePatch {
-        flex_grow: Some((size - insets).max(0.0)),
-        flex_basis: Some("0px".to_owned()),
-        ..Default::default()
-    };
-    if let Err(error) = ops::patch_node(world, template, &patch) {
-        warn!("resize {template}: {error}");
-    }
-}
-
-/// Applies the pointer's resize plan for a drag `distance` from its start.
+/// Applies the pointer's resize plan for a drag `distance` from its start: one transition (one
+/// generation bump) per step, nothing allocated.
 fn apply_resize(world: &mut World, pointer: Entity, distance: Vec2) {
-    let Some(PointerDrag::Resize(resize)) = world.get::<PointerDrag>(pointer).cloned() else {
+    let Some(PointerDrag::Resize(resize)) = world.get::<PointerDrag>(pointer) else {
         return;
     };
+    let resize = *resize;
     let total = resize.first + resize.second;
     let min_first = resize.axis.min_pane() + resize.insets_first;
     let min_second = resize.axis.min_pane() + resize.insets_second;
@@ -764,50 +792,28 @@ fn apply_resize(world: &mut World, pointer: Entity, distance: Vec2) {
         return;
     }
     let second = total - first;
-    match &resize.kind {
+    let written = match resize.kind {
         ResizeKind::Flex {
             first: a,
             second: b,
-        } => {
-            patch_grow(world, *a, first, resize.insets_first);
-            patch_grow(world, *b, second, resize.insets_second);
-        }
-        ResizeKind::Grid {
+        } => ops::set_flex_grows(
+            world,
+            &[
+                (a, (first - resize.insets_first).max(0.0)),
+                (b, (second - resize.insets_second).max(0.0)),
+            ],
+        ),
+        ResizeKind::Grid { parent, boundary } => ops::set_grid_tracks(
+            world,
             parent,
+            resize.axis.grid(),
             boundary,
-            tracks,
-        } => {
-            let tracks: Vec<GridTrackPatch> = tracks
-                .iter()
-                .enumerate()
-                .map(|(i, size)| {
-                    let size = if i == *boundary {
-                        first
-                    } else if i == boundary + 1 {
-                        second
-                    } else {
-                        *size
-                    };
-                    GridTrackPatch {
-                        repeat: 1,
-                        track: format!("{size}px"),
-                    }
-                })
-                .collect();
-            let patch = match resize.axis {
-                Axis::Horizontal => NodePatch {
-                    grid_template_columns: Some(tracks),
-                    ..Default::default()
-                },
-                Axis::Vertical => NodePatch {
-                    grid_template_rows: Some(tracks),
-                    ..Default::default()
-                },
-            };
-            if let Err(error) = ops::patch_node(world, *parent, &patch) {
-                warn!("resize grid {parent}: {error}");
-            }
-        }
+            &[first, second],
+        ),
+    };
+    if let Err(error) = written {
+        warn!("resize step: {error}");
+        return;
     }
     if let Some(mut drag) = world.get_mut::<PointerDrag>(pointer)
         && let PointerDrag::Resize(resize) = &mut *drag
@@ -929,11 +935,12 @@ fn report_code(
     }
 }
 
-/// The 1-based pane cell under a viewport position, from the instance leaf's content box.
+/// The 1-based pane cell under a viewport position, from the instance leaf's content box
+/// (border and padding excluded, `ComputedNode::content_inset`).
 fn pane_cell(world: &World, leaf: Entity, position: Vec2) -> Option<(u16, u16)> {
     let computed = world.get::<ComputedNode>(leaf)?;
     let transform = world.get::<UiGlobalTransform>(leaf)?;
-    let origin = transform.translation - computed.size * 0.5 + computed.border.min_inset;
+    let origin = transform.translation - computed.size * 0.5 + computed.content_inset().min_inset;
     let local = (position - origin).floor().max(Vec2::ZERO);
     let cell = |v: f32| u16::try_from(v as u32).ok().and_then(|v| v.checked_add(1));
     cell(local.x).zip(cell(local.y))
@@ -941,7 +948,8 @@ fn pane_cell(world: &World, leaf: Entity, position: Vec2) -> Option<(u16, u16)> 
 
 /// Encodes one mouse report for the pane's protocol: SGR 1006 (`ESC [ < code ; col ; row M|m`)
 /// when the pane asked for it, else X10 (`ESC [ M` + three bytes offset by 32, unencodable
-/// beyond cell 223). `None` when the pane's mode does not report `kind`.
+/// beyond cell 223). `None` when the pane's mode does not report `kind`. Formatted on the
+/// stack; the one allocation is the exact-sized report the `Effect` carries.
 pub fn encode_mouse(
     modes: Modes,
     kind: Report,
@@ -976,19 +984,59 @@ pub fn encode_mouse(
     if kind == Report::Hover {
         code |= 3;
     }
+    // `ESC [ <` + three numbers of at most five digits + two separators + the terminator.
+    let mut buffer = [0u8; 24];
+    let mut len = 0;
     if modes.mouse_sgr {
-        let terminator = if kind == Report::Release { 'm' } else { 'M' };
-        return Some(format!("\x1b[<{code};{col};{row}{terminator}").into_bytes());
+        let terminator = if kind == Report::Release { b'm' } else { b'M' };
+        len = append(&mut buffer, len, b"\x1b[<");
+        len = append_decimal(&mut buffer, len, code);
+        len = append(&mut buffer, len, b";");
+        len = append_decimal(&mut buffer, len, col);
+        len = append(&mut buffer, len, b";");
+        len = append_decimal(&mut buffer, len, row);
+        len = append(&mut buffer, len, &[terminator]);
+    } else {
+        if kind == Report::Release {
+            code = (code & !0b11) | 3;
+        }
+        len = append(&mut buffer, len, b"\x1b[M");
+        for value in [code + 32, col + 32, row + 32] {
+            len = append(&mut buffer, len, &[u8::try_from(value).ok()?]);
+        }
     }
-    if kind == Report::Release {
-        code = (code & !0b11) | 3;
+    Some(buffer.get(..len)?.to_vec())
+}
+
+/// Copies `bytes` into `buffer` at `len`; returns the new length. The buffer is sized for the
+/// longest report, so nothing is ever cut.
+fn append(buffer: &mut [u8; 24], len: usize, bytes: &[u8]) -> usize {
+    for (slot, &byte) in buffer.iter_mut().skip(len).zip(bytes) {
+        *slot = byte;
     }
-    let mut bytes = Vec::with_capacity(6);
-    bytes.extend_from_slice(b"\x1b[M");
-    for value in [code + 32, col + 32, row + 32] {
-        bytes.push(u8::try_from(value).ok()?);
+    len + bytes.len()
+}
+
+/// Writes `value` in decimal into `buffer` at `len`; returns the new length.
+fn append_decimal(buffer: &mut [u8; 24], len: usize, value: u16) -> usize {
+    let mut digits = [0u8; 5];
+    let mut count = 0;
+    let mut rest = value;
+    loop {
+        if let Some(slot) = digits.get_mut(count) {
+            *slot = b'0' + (rest % 10) as u8;
+        }
+        count += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
     }
-    Some(bytes)
+    let mut len = len;
+    for slot in digits.iter().take(count).rev() {
+        len = append(buffer, len, &[*slot]);
+    }
+    len
 }
 
 fn notice(world: &mut World, viewer: Entity, text: &str) {

@@ -65,7 +65,7 @@ pub fn sync_cameras(
 
 /// `PostUpdate` after `bevy_ui` layout ([`super::LayoutSystems::SizeFold`]): `PaneSize` is the
 /// minimum over the pane's shown instances of the visible content box in cells — `ComputedNode`
-/// minus its borders, cut to the ancestors' `CalculatedClip` (an `Overflow::scroll`/`clip`
+/// minus its borders and padding, cut to the ancestors' `CalculatedClip` (an `Overflow::scroll`/`clip`
 /// container or a `Display::None` subtree) — clamped to the emulator limits. Instances that are
 /// hidden, clipped away or smaller than a usable pane do not count; a pane with no usable
 /// instance keeps its size. Includes `Disabled` (`Starting`) panes so a process is spawned at
@@ -107,17 +107,17 @@ pub fn fold_pane_sizes(
 }
 
 /// `(rows, cols)` of the visible content box of a laid-out node: its border box in viewport
-/// cells inset by the borders, intersected with the inherited clip rect; `None` below the
-/// minimum usable pane.
+/// cells inset by its borders and padding (`ComputedNode::content_inset`), intersected with
+/// the inherited clip rect; `None` below the minimum usable pane.
 pub fn visible_content_cells(
     computed: &ComputedNode,
     transform: &UiGlobalTransform,
     clip: Option<&CalculatedClip>,
 ) -> Option<(u16, u16)> {
-    let border = computed.border;
+    let inset = computed.content_inset();
     let mut content = Rect::from_center_size(transform.translation, computed.size);
-    content.min += border.min_inset;
-    content.max -= border.max_inset;
+    content.min += inset.min_inset;
+    content.max -= inset.max_inset;
     if let Some(clip) = clip {
         content = content.intersect(clip.clip);
     }

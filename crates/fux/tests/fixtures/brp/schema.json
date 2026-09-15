@@ -4,6 +4,81 @@
     "instance"
   ],
   "methods": {
+    "fux/events+watch": {
+      "params": {
+        "fields": {
+          "cursor": "Option<u64>",
+          "workspace": "Option<String>"
+        },
+        "name": "EventsWatchParams"
+      },
+      "result": {
+        "fields": {
+          "events": "Vec<EventRecord>",
+          "gap": "Option<GapNotice>"
+        },
+        "name": "EventsWatchItem"
+      }
+    },
+    "fux/input.reserve": {
+      "params": {
+        "fields": {
+          "pane": "u64",
+          "retain_ms": "u64"
+        },
+        "name": "InputReserveParams"
+      },
+      "result": {
+        "fields": {
+          "bytes_written": "usize",
+          "expires_ms": "u64",
+          "operation": "u64",
+          "pane": "Option<u64>",
+          "seq": "Option<u64>",
+          "state": "String"
+        },
+        "name": "InputReceipt"
+      }
+    },
+    "fux/input.status": {
+      "params": {
+        "fields": {
+          "operation": "u64"
+        },
+        "name": "InputStatusParams"
+      },
+      "result": {
+        "fields": {
+          "bytes_written": "usize",
+          "expires_ms": "u64",
+          "operation": "u64",
+          "pane": "Option<u64>",
+          "seq": "Option<u64>",
+          "state": "String"
+        },
+        "name": "InputReceipt"
+      }
+    },
+    "fux/input.submit": {
+      "params": {
+        "fields": {
+          "keys": "String",
+          "operation": "u64"
+        },
+        "name": "InputSubmitParams"
+      },
+      "result": {
+        "fields": {
+          "bytes_written": "usize",
+          "expires_ms": "u64",
+          "operation": "u64",
+          "pane": "Option<u64>",
+          "seq": "Option<u64>",
+          "state": "String"
+        },
+        "name": "InputReceipt"
+      }
+    },
     "fux/node.despawn": {
       "params": {
         "fields": {
@@ -121,6 +196,28 @@
       "result": {
         "fields": {},
         "name": "Done"
+      }
+    },
+    "fux/pane.final": {
+      "params": {
+        "fields": {
+          "pane": "u64"
+        },
+        "name": "PaneFinalParams"
+      },
+      "result": {
+        "fields": {
+          "exit_code": "i32",
+          "exited_ms": "u64",
+          "expires_ms": "u64",
+          "last_seq": "u64",
+          "pane": "u64",
+          "screen": "Vec<String>",
+          "stream": "String",
+          "title": "String",
+          "workspace": "String"
+        },
+        "name": "PaneFinal"
       }
     },
     "fux/pane.new": {
@@ -354,6 +451,7 @@
       },
       "result": {
         "fields": {
+          "diagnostics": "Diagnostics",
           "http": "Endpoint",
           "limits": "LimitsInfo",
           "name": "String",
@@ -363,6 +461,7 @@
           "started_ms": "u64",
           "tokens_minted": "usize",
           "viewers": "usize",
+          "watches": "usize",
           "workspaces": "usize"
         },
         "name": "ServerInfo"

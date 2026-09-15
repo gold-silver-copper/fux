@@ -26,15 +26,17 @@ use bevy_ecs::query::Allow;
 use bevy_platform::collections::HashMap;
 use bevy_tasks::futures_lite::{AsyncReadExt, AsyncWriteExt};
 use bevy_tasks::{IoTaskPool, Task};
-use bevy_time::Time;
 use nix::sys::signal::Signal;
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::Pid;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+use crate::events::{Bell, PaneOutput, PaneTitleChanged};
 use crate::layout::LayoutSystems;
+use crate::lifecycle::Clock;
 use crate::model::{
-    Clipboard, Effect, Inbound, Limits, OutputPacing, Pane, PaneSize, Phase, Process, Title,
+    Clipboard, Effect, Inbound, Limits, OutputPacing, Pane, PaneId, PaneIn, PaneSize, Phase,
+    Process, Title,
 };
 use crate::terminal::{MAX_TITLE_CHARS, Terminal, printable};
 
@@ -491,23 +493,36 @@ pub enum TerminalSystems {
     Resize,
 }
 
+/// When the runner must step again for a paced `PaneOutput` still owed: the earliest end of
+/// a pane's pacing window with an unsent sequence, in [`Clock`] milliseconds.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PacingWake {
+    pub at_ms: Option<u64>,
+}
+
+/// Bells already announced for a pane; inserted by the first `Bell`.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BellsAnnounced(u64);
+
 pub struct TerminalPlugin;
 
 impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
-        app.configure_sets(
-            PostUpdate,
-            TerminalSystems::Resize
-                .in_set(Phase::Projection)
-                .after(LayoutSystems::SizeFold),
-        )
-        .add_systems(
-            First,
-            (apply_process_events, ingest_output)
-                .chain()
-                .in_set(Phase::Ingest),
-        )
-        .add_systems(PostUpdate, resize_terminals.in_set(TerminalSystems::Resize));
+        app.init_resource::<Clock>()
+            .init_resource::<PacingWake>()
+            .configure_sets(
+                PostUpdate,
+                TerminalSystems::Resize
+                    .in_set(Phase::Projection)
+                    .after(LayoutSystems::SizeFold),
+            )
+            .add_systems(
+                First,
+                (apply_process_events, ingest_output, announce)
+                    .chain()
+                    .in_set(Phase::Ingest),
+            )
+            .add_systems(PostUpdate, resize_terminals.in_set(TerminalSystems::Resize));
     }
 }
 
@@ -567,22 +582,12 @@ fn apply_process_events(
 
 /// Feeds PTY output to the emulators: bytes are grouped per pane (their buffers moved out of
 /// the messages, not copied), every terminal with output is fed in parallel, and the serial
-/// tail publishes titles, host replies and pacing, then recycles the buffers.
+/// tail publishes titles and host replies, then recycles the buffers.
 fn ingest_output(
     mut inbound: MessageMutator<Inbound>,
-    mut terminals: Query<
-        (
-            Entity,
-            &mut Terminal,
-            &mut Title,
-            Option<&mut Clipboard>,
-            &mut OutputPacing,
-        ),
-        AnyPane,
-    >,
+    mut terminals: Query<(Entity, &mut Terminal, &mut Title, Option<&mut Clipboard>), AnyPane>,
     mut effects: MessageWriter<Effect>,
     mut commands: Commands,
-    (time, limits): (Res<Time>, Res<Limits>),
     mut batch: Local<Vec<(Entity, Vec<u8>)>>,
     mut replies: Local<Vec<u8>>,
 ) {
@@ -606,7 +611,7 @@ fn ingest_output(
     let grouped: &[(Entity, Vec<u8>)] = &batch;
     terminals
         .par_iter_mut()
-        .for_each(|(entity, mut terminal, _, _, _)| {
+        .for_each(|(entity, mut terminal, _, _)| {
             let start = grouped.partition_point(|(pane, _)| *pane < entity);
             let end = grouped.partition_point(|(pane, _)| *pane <= entity);
             if start == end {
@@ -615,15 +620,13 @@ fn ingest_output(
             let chunks = grouped.get(start..end).unwrap_or(&[]);
             terminal.feed_all(chunks.iter().map(|(_, bytes)| bytes.as_slice()));
         });
-    let now_ms = u64::try_from(time.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut previous = None;
     for (pane, _) in grouped {
         if previous == Some(*pane) {
             continue;
         }
         previous = Some(*pane);
-        let Ok((_, mut terminal, mut title, clipboard, mut pacing)) = terminals.get_mut(*pane)
-        else {
+        let Ok((_, mut terminal, mut title, clipboard)) = terminals.get_mut(*pane) else {
             continue;
         };
         let terminal = terminal.bypass_change_detection();
@@ -646,19 +649,93 @@ fn ingest_output(
                 bytes: replies.clone(),
             });
         }
-        let seq = terminal.seq();
-        if pacing.last_event_seq != seq
-            && now_ms.saturating_sub(pacing.last_event_ms) >= limits.output_pacing_ms
-        {
-            pacing.set_if_neq(OutputPacing {
-                last_event_ms: now_ms,
-                last_event_seq: seq,
-            });
-        }
     }
     for (_, bytes) in batch.drain(..) {
         effects.write(Effect::RecycleBuffer(bytes));
     }
+}
+
+/// After ingest, every update: the public `PaneOutput` (paced to one per
+/// [`Limits::output_pacing_ms`] per pane, carrying the latest sequence; a sequence left unsent
+/// at the end of a window goes out on the first update after it, which [`PacingWake`] asks the
+/// runner for), `PaneTitleChanged` on a real title change and `Bell` once per update with
+/// new bells. Runs over every pane so the trailing event needs no new output to fire.
+fn announce(
+    mut panes: Query<
+        (
+            Entity,
+            &PaneId,
+            &PaneIn,
+            &Terminal,
+            Ref<Title>,
+            &mut OutputPacing,
+            Option<&mut BellsAnnounced>,
+        ),
+        AnyPane,
+    >,
+    (clock, limits): (Res<Clock>, Res<Limits>),
+    mut wake: ResMut<PacingWake>,
+    mut commands: Commands,
+) {
+    let now_ms = clock.now_ms;
+    let mut next_wake: Option<u64> = None;
+    for (entity, id, ws, terminal, title, mut pacing, bells) in &mut panes {
+        let scope = ws.0;
+        let pane = *id;
+        if title.is_changed() && !title.is_added() {
+            commands.trigger(PaneTitleChanged {
+                entity,
+                scope,
+                pane,
+            });
+        }
+        let rung = terminal.bell_count();
+        match bells {
+            Some(mut seen) if seen.0 < rung => {
+                seen.0 = rung;
+                commands.trigger(Bell {
+                    entity,
+                    scope,
+                    pane,
+                });
+            }
+            None if rung > 0 => {
+                commands.entity(entity).insert(BellsAnnounced(rung));
+                commands.trigger(Bell {
+                    entity,
+                    scope,
+                    pane,
+                });
+            }
+            _ => {}
+        }
+        let seq = terminal.seq();
+        if seq == pacing.last_event_seq {
+            continue;
+        }
+        if pacing.last_event_seq == 0 {
+            // First sight of the emulator: its blank grid is nothing to announce, only the
+            // baseline the first real output moves from.
+            pacing.last_event_seq = seq;
+            continue;
+        }
+        let due = pacing.last_event_ms.saturating_add(limits.output_pacing_ms);
+        if pacing.last_event_ms == 0 || now_ms >= due {
+            pacing.set_if_neq(OutputPacing {
+                last_event_ms: now_ms,
+                last_event_seq: seq,
+            });
+            commands.trigger(PaneOutput {
+                entity,
+                scope,
+                pane,
+                seq,
+            });
+        } else {
+            next_wake = Some(next_wake.map_or(due, |w| w.min(due)));
+        }
+    }
+    wake.set_if_neq(PacingWake { at_ms: next_wake });
 }
 
 /// A pane whose [`PaneSize`] changed this update.

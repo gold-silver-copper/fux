@@ -14,7 +14,8 @@ use bevy_math::{CompassOctant, UVec2, Vec2};
 use bevy_picking::pointer::PointerId;
 use bevy_ui::{
     BackgroundColor, BorderColor, CalculatedClip, ComputedNode, ComputedStackIndex, Display,
-    FlexDirection, FlexWrap, Node, ScrollPosition, UiGlobalTransform, Val, ZIndex,
+    FlexDirection, FlexWrap, Node, RepeatedGridTrack, ScrollPosition, UiGlobalTransform, Val,
+    ZIndex,
 };
 
 use super::{LayoutError, NavDirection, NodePatch, Side, ViewState, instances, picking, size};
@@ -79,6 +80,12 @@ pub fn new_root(world: &mut World, ws: Entity, name: &str) -> R<Entity> {
     open_workspace(world, ws)?;
     check_name(name)?;
     check_capacity(world, ws, 1, 0)?;
+    Ok(create_root(world, ws, name))
+}
+
+/// [`new_root`] without its checks: for callers that validated a whole plan up front
+/// (`scene::apply`) and must not be refused halfway through writing it.
+pub(crate) fn create_root(world: &mut World, ws: Entity, name: &str) -> Entity {
     let id = world.resource_mut::<Ids>().allocate_node();
     let root = world
         .spawn((
@@ -99,7 +106,7 @@ pub fn new_root(world: &mut World, ws: Entity, name: &str) -> R<Entity> {
     if let Some(mut order) = world.get_mut::<RootOrder>(ws) {
         order.0.push(root);
     }
-    Ok(root)
+    root
 }
 
 /// Despawns a root whose panes have all exited; returns the (exited) panes it despawned with it.
@@ -210,6 +217,22 @@ pub fn spawn_node(
     if at > len {
         return Err(LayoutError::IndexOutOfRange { index: at, len });
     }
+    let child = create_node(world, ws, parent, at, node, template);
+    bump(world, root);
+    Ok(child)
+}
+
+/// [`spawn_node`] without its checks or the generation bump: appends a template node (and its
+/// `Starting` pane when `template` is given) under `parent` at `at`. For callers that validated
+/// a whole plan up front (`scene::apply`) and must not be refused halfway through writing it.
+pub(crate) fn create_node(
+    world: &mut World,
+    ws: Entity,
+    parent: Entity,
+    at: usize,
+    node: Node,
+    template: Option<PaneTemplate>,
+) -> Entity {
     let id = world.resource_mut::<Ids>().allocate_node();
     let child = world.spawn((TemplateNode, id, node)).id();
     if let Some(template) = template {
@@ -217,8 +240,7 @@ pub fn spawn_node(
         world.entity_mut(child).insert(Places(pane));
     }
     world.entity_mut(parent).insert_children(at, &[child]);
-    bump(world, root);
-    Ok(child)
+    child
 }
 
 /// Despawns a non-root template subtree; refused while it places a pane that has not exited.
@@ -380,6 +402,71 @@ pub fn patch_node(world: &mut World, node: Entity, patch: &NodePatch) -> R<()> {
     }
     if let Some(mut current) = entity.get_mut::<BorderColor>() {
         current.set_if_neq(border);
+    }
+    bump(world, root);
+    Ok(())
+}
+
+/// Writes `flex_grow = grow, flex_basis = 0px` on template siblings as one transition: a live
+/// border drag sizes both sides of an edge with a single generation bump per step, so the
+/// instances re-clone once. Refused as a whole when any entry is not a template node; roots
+/// are bumped once per run of consecutive entries.
+pub(crate) fn set_flex_grows(world: &mut World, grows: &[(Entity, f32)]) -> R<()> {
+    for &(node, _) in grows {
+        template_node(world, node)?;
+        root_of(world, node)?;
+    }
+    let mut bumped = None;
+    for &(node, grow) in grows {
+        if let Some(mut style) = world.get_mut::<Node>(node)
+            && (style.flex_grow.to_bits() != grow.to_bits() || style.flex_basis != Val::Px(0.0))
+        {
+            style.flex_grow = grow;
+            style.flex_basis = Val::Px(0.0);
+        }
+        if let Ok(root) = root_of(world, node)
+            && bumped != Some(root)
+        {
+            bump(world, root);
+            bumped = Some(root);
+        }
+    }
+    Ok(())
+}
+
+/// Which grid template of a node [`set_grid_tracks`] writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GridAxis {
+    Columns,
+    Rows,
+}
+
+/// Writes the px tracks `from..from + sizes.len()` of a template node's grid template along
+/// `axis` (extending it when shorter) as one transition. Every track written is
+/// `repeat(1, <n>px)`, so a border drag that wrote them all at its start rewrites its two
+/// tracks in place afterwards without allocating. Refused for a non-template node.
+pub(crate) fn set_grid_tracks(
+    world: &mut World,
+    node: Entity,
+    axis: GridAxis,
+    from: usize,
+    sizes: &[f32],
+) -> R<()> {
+    template_node(world, node)?;
+    let root = root_of(world, node)?;
+    let Some(mut style) = world.get_mut::<Node>(node) else {
+        return Err(LayoutError::NotATemplateNode(node));
+    };
+    let tracks = match axis {
+        GridAxis::Columns => &mut style.grid_template_columns,
+        GridAxis::Rows => &mut style.grid_template_rows,
+    };
+    let end = from + sizes.len();
+    if tracks.len() < end {
+        tracks.resize(end, RepeatedGridTrack::default());
+    }
+    for (track, &size) in tracks.iter_mut().skip(from).zip(sizes) {
+        *track = RepeatedGridTrack::px(1, size);
     }
     bump(world, root);
     Ok(())

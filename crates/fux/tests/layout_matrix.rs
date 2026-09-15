@@ -496,6 +496,42 @@ fn main_and_sidebar_share_three_to_one() {
 }
 
 #[test]
+fn a_framed_and_padded_leaf_gives_its_pane_the_content_box() {
+    // Border 1 and padding 2 on every side: the leaf tiles the viewport, the pane gets six
+    // cells less each way.
+    matrix(
+        |world, root| {
+            vec![leaf(
+                world,
+                root,
+                Node {
+                    flex_grow: 1.0,
+                    border: UiRect::all(Val::Px(1.0)),
+                    padding: UiRect::all(Val::Px(2.0)),
+                    ..Default::default()
+                },
+            )]
+        },
+        |app, instance, _, panes, rows, cols| {
+            let world = app.world();
+            assert_rects(
+                world,
+                instance,
+                panes,
+                &[rect(0, 0, u32::from(cols), u32::from(rows))],
+            );
+            assert_eq!(
+                pane_size(world, panes[0]),
+                PaneSize {
+                    rows: rows - 6,
+                    cols: cols - 6
+                }
+            );
+        },
+    );
+}
+
+#[test]
 fn absolute_overlay_floats_at_its_inset_above_the_base_pane() {
     matrix(
         |world, root| {

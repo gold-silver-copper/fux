@@ -223,3 +223,39 @@ bootstraps in `Startup`). The harness now bootstraps before the first update; 6/
   when nothing changed.
 * `cargo test -p fux --test layout_ops --test layout_props --test layout_matrix --test picking
   --test scenes --test surface --test attach`: 69 tests green.
+
+## 2026-09-15 — Milestone 4: lifecycle events and the retained log (Events)
+
+`cargo test -p fux --test events` (8 tests) through `build_headless` with `check_invariants`
+after every step, plus the log on its own:
+
+* `every_lifecycle_event_fires_once_at_its_transition`: `ViewerAttached` at `attach_viewer`,
+  `PaneSpawned { pane, pid }` when the pane leaves `Disabled`, `PaneTitleChanged` on a real
+  title change (not on insertion, not on an equal title), `Bell` once per update with new bells,
+  `PaneExited { code }`, `RootEmptied` and `WorkspaceRetired` in the exit update, `PaneClosed`
+  on the despawn update, `ViewerDetached` on `ViewerGone`; each exactly once after three idle
+  updates. Every body (as triggered and as retained) is an object of numbers/strings under 256
+  bytes with no `lines`/`cells`/`screen`/`text`/`entity`/`scope`/`bytes` key.
+* `pane_output_is_paced_with_a_trailing_event`: ten feeds inside `output_pacing_ms` produce one
+  `PaneOutput`; the window elapsing (no new bytes) produces the trailing one carrying
+  `Terminal::seq()`; `pty::PacingWake` names the window end while a sequence is owed and is
+  `None` after, which the runner's sleep deadline honours. A blank emulator announces nothing.
+* `recreated_workspace_replaces_its_stream`: retire + despawn `default`, bootstrap it again:
+  a cursor into the old stream is `Gap { since, resume: <old tail> }` for the scoped and the
+  unscoped read; the old tail itself resumes cleanly.
+* Log-only: entry eviction (`Limits.event_log_entries`) and byte eviction (512 KiB per stream)
+  report `Gap` with the last evicted cursor; unknown cursors above `latest()` are gaps; unknown
+  names are empty; unscoped reads merge streams in cursor order; retired streams beyond
+  `Limits.workspaces` are dropped whole into tombstones that keep reporting the gap.
+
+`cargo check -p fux --features bell` compiles headless: `bevy_audio`'s `AudioOutput::default`
+only warns "No audio device found." and every `AudioPlayer` is dropped, so no `bell.enabled`
+guard is needed; the chime is `crates/fux/assets/bell.wav` (1004 bytes, 8-bit PCM, 880 Hz,
+120 ms) embedded with `include_bytes!`. Not verified: audible playback on a device.
+
+Design notes: events carry a reflect/serde-ignored `scope: Entity` (the workspace) so the log
+observer never has to resolve a despawned target; `PaneClosed`/`ViewerDetached`/`RootEmptied`
+/`WorkspaceRetired` are triggered from `On<Remove, Pane|Viewer|TemplateRoot>` /
+`On<Add, Retiring>` observers in `events.rs`, so every code path (lifecycle, remote ops, scene
+apply) announces them; pacing uses `lifecycle::Clock` (the runner's wall clock) rather than
+`Time` so the runner can compute its sleep deadline against the same clock.

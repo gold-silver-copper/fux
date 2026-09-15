@@ -12,6 +12,7 @@
       "panes": 2,
       "viewers": 1,
       "tokens_minted": 0,
+      "watches": 1,
       "limits": {
         "panes_per_workspace": 64,
         "nodes_per_workspace": 512,
@@ -23,7 +24,19 @@
         "tokens": 256,
         "key_bytes": 65536,
         "capture_lines": 10000
-      }
+      },
+      "diagnostics": { "wakeups": 1200, "panes_live": 2, "viewers": 1, "events_retained": 37 }
+    }
+  },
+  {
+    "method": "fux/events+watch",
+    "params": { "workspace": "default", "cursor": 41 },
+    "result": {
+      "gap": { "since": 41, "resume": 900 },
+      "events": [
+        { "cursor": 901, "workspace": "default", "ms": 1757894401000, "name": "PaneSpawned", "event": { "pane": 1, "pid": 4243 } },
+        { "cursor": 902, "workspace": "default", "ms": 1757894402000, "name": "PaneExited", "event": { "pane": 1, "code": 0 } }
+      ]
     }
   },
   {
@@ -312,6 +325,36 @@
       "launched": [7],
       "adopted": [6],
       "closed": []
+    }
+  },
+  {
+    "method": "fux/input.reserve",
+    "params": { "pane": 1, "retain_ms": 600000 },
+    "result": { "operation": 3, "pane": 1, "state": "reserved", "bytes_written": 0, "seq": null, "expires_ms": 1700000600000 }
+  },
+  {
+    "method": "fux/input.submit",
+    "params": { "operation": 3, "keys": "ls -l\\n" },
+    "result": { "operation": 3, "pane": 1, "state": "submitted", "bytes_written": 6, "seq": 17, "expires_ms": 1700000600000 }
+  },
+  {
+    "method": "fux/input.status",
+    "params": { "operation": 3 },
+    "result": { "operation": 3, "pane": null, "state": "uncertain", "bytes_written": 0, "seq": null, "expires_ms": 1700000600000 }
+  },
+  {
+    "method": "fux/pane.final",
+    "params": { "pane": 6 },
+    "result": {
+      "pane": 6,
+      "workspace": "alpha",
+      "stream": "agent-1",
+      "exit_code": 0,
+      "title": "make",
+      "last_seq": 42,
+      "exited_ms": 1700000000000,
+      "expires_ms": 1700000030000,
+      "screen": ["$ make", "ok", "$ "]
     }
   }
 ]

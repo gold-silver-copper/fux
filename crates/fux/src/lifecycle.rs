@@ -16,6 +16,7 @@ use bevy_picking::PickingSystems;
 use bevy_state::prelude::*;
 use bevy_ui::Node;
 
+use crate::events::{PaneExited, PaneSpawned};
 use crate::layout::{self, NavDirection, instances, ops};
 use crate::model::*;
 use crate::terminal::Terminal;
@@ -75,7 +76,7 @@ impl Plugin for LifecyclePlugin {
             .add_systems(PreUpdate, completions.in_set(Phase::Completions))
             .add_systems(
                 Update,
-                (exits, workspaces, expire_records, shutdown_progress)
+                (exits, workspaces, shutdown_progress)
                     .chain()
                     .in_set(Phase::Lifecycle),
             )
@@ -364,22 +365,33 @@ fn begin_creation(world: &mut World, viewer: Entity, pane: Entity) {
 // ---------------------------------------------------------------------------------------------
 
 /// `PreUpdate`/`Completions`: panes that went `Live` in this update's ingest leave `Disabled`
-/// and `Creation`; barriers on them release; a close requested while starting is honoured.
+/// and `Creation`, announce `PaneSpawned`; barriers on them release; a close requested while
+/// starting is honoured.
 fn completions(
     world: &mut World,
     live: &mut QueryState<(Entity, &Process, Has<CloseRequested>), (With<Pane>, With<Disabled>)>,
     barriers: &mut BarrierQuery,
 ) {
     let now = now_ms(world);
-    let done: Vec<(Entity, bool)> = live
+    let done: Vec<(Entity, u32, bool)> = live
         .iter(world)
-        .filter(|(_, p, _)| matches!(p, Process::Live { .. } | Process::Eof { .. }))
-        .map(|(e, _, close)| (e, close))
+        .filter_map(|(e, p, close)| match *p {
+            Process::Live { pid } | Process::Eof { pid } => Some((e, pid, close)),
+            _ => None,
+        })
         .collect();
-    for (pane, close) in done {
+    for (pane, pid, close) in done {
         world
             .entity_mut(pane)
             .remove::<(Disabled, Creation, CloseRequested)>();
+        if let (Some(id), Some(ws)) = (world.get::<PaneId>(pane), world.get::<PaneIn>(pane)) {
+            world.trigger(PaneSpawned {
+                entity: pane,
+                scope: ws.0,
+                pane: *id,
+                pid,
+            });
+        }
         if close {
             terminate(world, pane, now);
         }
@@ -500,6 +512,14 @@ fn exits(
 }
 
 fn close_exited(world: &mut World, pane: Entity, code: i32, now: u64) {
+    if let (Some(id), Some(ws)) = (world.get::<PaneId>(pane), world.get::<PaneIn>(pane)) {
+        world.trigger(PaneExited {
+            entity: pane,
+            scope: ws.0,
+            pane: *id,
+            code,
+        });
+    }
     let record = final_record(world, pane, code, now);
     let viewers: Vec<(Entity, bool, Option<Entity>)> = world
         .get::<TargetedBy>(pane)
@@ -670,18 +690,6 @@ fn workspaces(
         if empty && viewers.is_empty() {
             world.despawn(ws);
         }
-    }
-}
-
-fn expire_records(world: &mut World, records: &mut QueryState<(Entity, &FinalRecord)>) {
-    let now = now_ms(world);
-    let expired: Vec<Entity> = records
-        .iter(world)
-        .filter(|(_, r)| r.expires_ms <= now)
-        .map(|(e, _)| e)
-        .collect();
-    for record in expired {
-        world.despawn(record);
     }
 }
 

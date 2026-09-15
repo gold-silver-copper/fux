@@ -10,13 +10,14 @@
 
 pub mod client;
 pub mod descriptor;
+pub mod input_methods;
 pub mod methods;
 pub mod projection;
-pub mod input_methods;
 pub mod scene_methods;
 pub mod schema;
 pub mod surface_methods;
 pub mod token;
+pub mod watch;
 
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::PathBuf;
@@ -62,10 +63,12 @@ pub struct DescriptorPath(pub PathBuf);
 /// Systems of this plugin, for ordering by others.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RemoteControlSystems {
-    /// `RemoteLast`: answer parked requests.
+    /// `RemoteLast`: answer parked requests, open streams.
     Dispatch,
     /// `PostUpdate`/`Phase::Projection`: refresh projection components.
     Projection,
+    /// `Last`: deliver to open streams after this update's lifecycle events.
+    Watch,
 }
 
 impl Plugin for RemoteControlPlugin {
@@ -112,14 +115,24 @@ impl Plugin for RemoteControlPlugin {
                 .with_port(port),
         ));
 
-        // Replace the built-in table with the allowlist.
+        // Replace the built-in table with the allowlist. A stream's `Watching` entry names one
+        // placeholder system: fux's dispatcher opens streams through `watch::Watches`, and
+        // `bevy_remote`'s own loop never runs without its receiver.
         let world = app.world_mut();
+        let mut watches = watch::Watches::default();
+        let placeholder = world.register_system(watch::placeholder);
         let mut table = RemoteMethods::new();
         for spec in methods::all_specs() {
-            table.insert(
-                spec.name,
-                RemoteMethodSystemId::Instant(world.register_system(spec.handler)),
-            );
+            let id = match spec.handler {
+                methods::Handler::Instant(handler) => {
+                    RemoteMethodSystemId::Instant(world.register_system(handler))
+                }
+                methods::Handler::Watch(open) => {
+                    watches.register(spec.name, open);
+                    RemoteMethodSystemId::Watching(placeholder)
+                }
+            };
+            table.insert(spec.name, id);
         }
         for (name, handler) in methods::WRAPPED {
             table.insert(
@@ -127,7 +140,12 @@ impl Plugin for RemoteControlPlugin {
                 RemoteMethodSystemId::Instant(world.register_system(*handler)),
             );
         }
+        for (name, open) in watch::WATCHED {
+            watches.register(name, *open);
+            table.insert(*name, RemoteMethodSystemId::Watching(placeholder));
+        }
         world.insert_resource(table);
+        world.insert_resource(watches);
 
         // BRP mutations land before `Requests` and are visible in the same update's frames.
         let remote_last = RemoteLast.intern();
@@ -154,7 +172,9 @@ impl Plugin for RemoteControlPlugin {
             .add_systems(
                 PostUpdate,
                 projection::sync.in_set(RemoteControlSystems::Projection),
-            );
+            )
+            .configure_sets(Last, RemoteControlSystems::Watch.before(Phase::Effects))
+            .add_systems(Last, watch::poll.in_set(RemoteControlSystems::Watch));
     }
 }
 
@@ -183,8 +203,8 @@ fn take_mailbox(world: &mut World, inbound: &Sender<Inbound>) {
         .detach();
 }
 
-/// Answers every parked request: instant handlers run now; an unknown name is answered here
-/// and never stalls the ones behind it.
+/// Answers every parked request: instant handlers run now, a `+watch` opens its stream, and an
+/// unknown name is answered here and never stalls the ones behind it.
 fn dispatch(world: &mut World) {
     for _ in 0..DISPATCH_BATCH {
         let Some(message) = world
@@ -207,11 +227,10 @@ fn dispatch(world: &mut World) {
                         data: None,
                     })
                 }),
-            Some(RemoteMethodSystemId::Watching(_)) => Err(BrpError {
-                code: error_codes::INVALID_REQUEST,
-                message: "watching methods are not served in this milestone".into(),
-                data: None,
-            }),
+            Some(RemoteMethodSystemId::Watching(_)) => {
+                watch::open(world, message);
+                continue;
+            }
             None => Err(BrpError {
                 code: error_codes::METHOD_NOT_FOUND,
                 message: format!("Method `{}` not found", message.method),

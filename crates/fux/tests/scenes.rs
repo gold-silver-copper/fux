@@ -513,6 +513,84 @@ fn template_scene_launches_through_the_creation_path_and_closes_unplaced() {
 }
 
 #[test]
+fn closing_unplaced_panes_frees_their_share_of_the_pane_cap() {
+    // Three panes at a cap of three: the two launching leaves of `two_column` fit only because
+    // the three unplaced panes close. The closed panes still sit in `WorkspacePanes` until the
+    // lifecycle despawns them, so the commit must not recount them.
+    let mut app = app();
+    let (ws, _, [pane1, pane2, pane3]) = three_panes(&mut app);
+    app.world_mut().resource_mut::<Limits>().panes_per_workspace = 3;
+    let document = scene::builtin::document("two_column").unwrap().to_owned();
+    let viewer = ops::attach_viewer(
+        app.world_mut(),
+        ws,
+        Viewport { rows: 24, cols: 80 },
+        Some(pane3),
+    )
+    .unwrap();
+    check(&mut app);
+
+    let report = scene::apply(
+        app.world_mut(),
+        ws,
+        &document,
+        &ApplyOptions {
+            allow_templates: true,
+            close_unplaced: true,
+            ..plain()
+        },
+    )
+    .unwrap();
+    check(&mut app);
+    assert_eq!(report.closed, vec![pane1, pane2, pane3]);
+    assert_eq!(report.launched.len(), 2, "both leaves launched");
+    let world = app.world();
+    let root = roots(world, ws)[0];
+    let leaves = kids(world, root);
+    assert_eq!(leaves.len(), 2, "the whole document is built");
+    for (leaf, pane) in leaves.iter().zip(&report.launched) {
+        assert_eq!(placed(world, *leaf), Some(*pane));
+    }
+    // The exact viewer's pane closed: it shows and targets nothing rather than a Disabled pane
+    // and leaves the way it would had the pane exited.
+    assert!(world.get::<Showing>(viewer).is_none());
+    assert!(world.get::<Targets>(viewer).is_none());
+    assert!(world.get::<Detaching>(viewer).is_some());
+
+    // Once the lifecycle has retired the closed panes, a cap the document itself exceeds is
+    // still refused up front, untouched.
+    app.update();
+    app.update();
+    check(&mut app);
+    assert!(
+        app.world().get_entity(pane1).is_err(),
+        "closed panes are gone"
+    );
+    app.world_mut().resource_mut::<Limits>().panes_per_workspace = 1;
+    let generation_before = app.world().get::<LayoutGeneration>(root).unwrap().0;
+    let refused = scene::apply(
+        app.world_mut(),
+        ws,
+        &document,
+        &ApplyOptions {
+            allow_templates: true,
+            close_unplaced: true,
+            ..plain()
+        },
+    );
+    assert!(
+        matches!(refused, Err(SceneError::TooManyPanes { count: 2, max: 1 })),
+        "{refused:?}"
+    );
+    assert_eq!(roots(app.world(), ws), vec![root]);
+    assert_eq!(
+        app.world().get::<LayoutGeneration>(root).unwrap().0,
+        generation_before
+    );
+    check(&mut app);
+}
+
+#[test]
 fn restore_adopts_existing_panes_and_matches_the_old_two_pane_split() {
     let mut app = app();
     let world = app.world_mut();

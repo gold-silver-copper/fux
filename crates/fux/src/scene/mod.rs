@@ -660,17 +660,24 @@ fn validate(
         unplaced = pool.collect();
         launches -= adopted.len();
     }
-    if !unplaced.is_empty() && !options.close_unplaced {
+    let closing = if options.close_unplaced {
+        unplaced.len()
+    } else if unplaced.is_empty() {
+        0
+    } else {
         return Err(SceneError::UnplacedPanes(
             unplaced
                 .iter()
                 .filter_map(|&p| world.get::<PaneId>(p).copied())
                 .collect(),
         ));
-    }
+    };
+    // The net count after the commit: closed panes leave `WorkspacePanes` only when the
+    // lifecycle despawns them, so `commit` cannot recheck this against the live World.
     let panes = world
         .get::<WorkspacePanes>(workspace)
         .map_or(0, |p| p.len())
+        .saturating_sub(closing)
         + launches;
     if panes > limits.panes_per_workspace {
         return Err(SceneError::TooManyPanes {
@@ -921,9 +928,9 @@ fn adopt(
     }
 }
 
-/// Writes the plan: old roots go, new roots are built through `layout::ops`, viewers follow
-/// their panes. Every check `ops` repeats was already made against the plan, so the `ops`
-/// calls cannot refuse; a refusal here would be a bug and is logged, never partial by design.
+/// Writes the plan: old roots go, new roots are built with the unchecked `layout::ops`
+/// constructors (every check they skip was made against the plan, so nothing here can
+/// refuse and leave the workspace half-written), viewers follow their panes.
 fn commit(world: &mut World, workspace: Entity, old_roots: &[Entity], plan: Plan) -> ApplyReport {
     let viewers: Vec<(Entity, bool, Option<usize>, Option<Entity>)> = world
         .get::<ViewedBy>(workspace)
@@ -960,15 +967,10 @@ fn commit(world: &mut World, workspace: Entity, old_roots: &[Entity], plan: Plan
     }
     for plan_root in plan.roots {
         let name = plan_root.name.as_deref().unwrap_or("root");
-        let root = match ops::new_root(world, workspace, name) {
-            Ok(root) => root,
-            Err(error) => {
-                bevy_log::error!("scene apply: new root: {error}");
-                continue;
-            }
-        };
+        let root = ops::create_root(world, workspace, name);
+        world.entity_mut(root).insert(plan_root.node.clone());
         decorate(world, root, &plan_root);
-        build_children(world, root, plan_root.children, &mut report);
+        build_children(world, workspace, root, plan_root.children, &mut report);
         let generation = world.get::<LayoutGeneration>(root).map_or(0, |g| g.0);
         report.roots.push((root, generation));
     }
@@ -995,17 +997,24 @@ fn commit(world: &mut World, workspace: Entity, old_roots: &[Entity], plan: Plan
                     bevy_log::warn!("scene apply: reshow viewer {viewer}: {error}");
                 }
             }
+            // Its pane is no longer placed anywhere (closed above): the viewer shows and
+            // targets nothing rather than a `Disabled` pane (prompt 3.5), and an exact
+            // attachment leaves as it would had the pane exited (`ExactTargetLost`).
             None => {
-                world.entity_mut(viewer).remove::<Showing>();
+                let mut entity = world.entity_mut(viewer);
+                entity.remove::<(Showing, Targets)>();
+                if exact {
+                    entity.insert(Detaching);
+                }
             }
         }
     }
     report
 }
 
+/// The optional decorations of a planned node; its `Node` is part of its spawn bundle.
 fn decorate(world: &mut World, entity: Entity, plan: &PlanNode) {
     let mut e = world.entity_mut(entity);
-    e.insert(plan.node.clone());
     if let Some(name) = &plan.name {
         e.insert(Name::new(name.clone()));
     }
@@ -1022,22 +1031,19 @@ fn decorate(world: &mut World, entity: Entity, plan: &PlanNode) {
 
 fn build_children(
     world: &mut World,
+    workspace: Entity,
     parent: Entity,
     children: Vec<PlanNode>,
     report: &mut ApplyReport,
 ) {
-    for child in children {
-        let template = match &child.leaf {
-            Some(Leaf::Launch(template)) => Some(template.clone()),
+    for mut child in children {
+        let template = match &mut child.leaf {
+            Some(Leaf::Launch(template)) => Some(core::mem::take(template)),
             _ => None,
         };
-        let node = match ops::spawn_node(world, parent, None, child.node.clone(), template) {
-            Ok(node) => node,
-            Err(error) => {
-                bevy_log::error!("scene apply: spawn node: {error}");
-                continue;
-            }
-        };
+        let node = core::mem::take(&mut child.node);
+        let at = world.get::<Children>(parent).map_or(0, |c| c.len());
+        let node = ops::create_node(world, workspace, parent, at, node, template);
         decorate(world, node, &child);
         match child.leaf {
             Some(Leaf::Existing(pane)) => {
@@ -1054,7 +1060,7 @@ fn build_children(
             }
             None => {}
         }
-        build_children(world, node, child.children, report);
+        build_children(world, workspace, node, child.children, report);
     }
 }
 
