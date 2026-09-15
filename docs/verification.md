@@ -259,3 +259,40 @@ observer never has to resolve a despawned target; `PaneClosed`/`ViewerDetached`/
 `On<Add, Retiring>` observers in `events.rs`, so every code path (lifecycle, remote ops, scene
 apply) announces them; pacing uses `lifecycle::Clock` (the runner's wall clock) rather than
 `Time` so the runner can compute its sleep deadline against the same clock.
+
+## 2026-09-15 — Milestone 4 integration record (Main)
+
+Commit `e378fa3` (+ `CLI: fux [NAME] events --cursor N`). `cargo clippy --workspace --all-targets
+-- -D warnings` clean; `cargo test -p fux`: 164 tests green (`--lib` 31, attach 8, brp 4,
+brp_watch 5, events 8, layout_matrix 15, layout_mechanism 2, layout_ops 15, layout_props 1,
+lifecycle 6, picking 17, pty_adapter 5, receipts 9, scenes 8, shutdown 3, surface 11,
+viewer 15); `cargo check -p fux --features bell` clean.
+
+Milestone-2 review (`'/Users/kisaczka/.omp/agent/sessions/-Desktop-code-fux/2026-09-15T18-50-37-820Z_01a0a668-237c-73d9-a57a-d1f9d108dee5/local/m2-review.md'`, 25 findings) applied in `ac86886`: template roots
+are children of their workspace so `bevy_ui` never lays them out (invariant: no template node
+resolves a target camera); OSC 52 clipboard restored end to end (`Clipboard` component,
+`TerminalDelta.clipboard`, viewer OSC 52 write, `clipboard` config key); signals on a dedicated
+control channel drained ahead of pane output; attach listener capped at `2 × Limits.viewers`
+pre-auth connections; refusals encoded by the reader task, never the World; projection entities
+linked by a `Mirrors`/`Projections` `linked_spawn` pair; `registry.schema` can narrow but never
+widen the projection allowlist; `--detached` really calls `setsid`; viewer navigation through
+`bevy_input_focus::navigator::find_best_candidate` with the server's config; the painter's
+output buffer cleared per frame (blocker B1).
+
+Milestone-3 review (`'/Users/kisaczka/.omp/agent/sessions/-Desktop-code-fux/2026-09-15T18-50-37-820Z_01a0a668-237c-73d9-a57a-d1f9d108dee5/local/m3-review.md'`, 13 findings) applied in `e378fa3`: `scene::apply`
+commit is structurally infallible (capacity computed in `validate`, `ops::create_root`/
+`create_node` unchecked halves); surface updates never partially mutate; surface nodes get
+`NodeId`s so wheel scroll works inside surfaces; drag steps and SGR mouse reports allocate
+nothing per event; padding honoured in the content box; `surface.open` refuses roots; viewers
+whose target a scene close removed are retargeted or detached; resize drags stop at surface
+boundaries. The "no system reads `Hovered`" source-scan test is kept on purpose: the prompt
+demands it (section 5).
+
+Real-process smoke on the milestone-4 binary (server `smoke`, disposable XDG dirs): the
+pty-driven viewer scenario (attach, echo, split, detach with status 0) and the two-viewer /
+exact-attachment scenario pass unchanged; `fux/server.info.diagnostics` reports
+`{events_retained, panes_live, viewers, wakeups}`; a raw HTTP client on `fux/events+watch`
+receives `text/event-stream` with the retained log from `cursor: 0` and, live, the
+`PaneSpawned`/`PaneOutput` items for a `fux/pane.new {split, direction}` issued while the
+stream is open; `fux --server smoke events --cursor 0` prints the same as JSON lines and
+`fux events` (no cursor) prints only new items.

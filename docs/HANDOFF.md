@@ -11,7 +11,12 @@ behavioural oracle. Bevy source: `../many_rigs/inspirations/bevy` (0.19.1).
 2. fux App shell (commit `0e49c4b`): runner, lifecycle, layout instances, terminal/PTY, BRP,
    attachment stream, viewer, CLI; 80 tests; real-process smokes in `docs/verification.md`.
 
-## Module ownership (milestone 2)
+3. Scene completeness (commit `baeef55`): picking regions/drags, scenes, surfaces + `Text`,
+   layout matrix. Milestone-2 review applied in `ac86886`.
+4. Events, retained log, `fux/events+watch`, `world.observe+watch`, receipts, final records,
+   diagnostics, bell (commit `e378fa3`); milestone-3 review applied; `fux events` CLI.
+
+## Module ownership (milestones 2-4)
 
 Module ownership (one owner per file; shared contracts live in `model/` and `wire.rs`):
 
@@ -29,10 +34,9 @@ Module ownership (one owner per file; shared contracts live in `model/` and `wir
 | `app.rs`, `runner.rs`, `cli.rs`, `config.rs`, `paths.rs` | App assembly, custom runner, signals, CLI, config, XDG paths | `fux::app::build`, `runner::run` |
 
 ## Next task
-Milestone 3 (scene completeness): picking border regions, border drag, drag-to-move, full
-`node.*`/`root.*`/`viewer.*` over flex/grid/absolute/overflow, per-viewer zoom/scroll, scene
-export/apply/save/load, user layout assets, `Surface` hosting and the `Text` leaf. ECS-native
-review of milestone 2 is running alongside.
+Milestone 5 (in flight): `assets.rs` (config/theme/keybinding assets, hot reload),
+`scene/templates.rs` (`bsn!` templates, `LayoutAsset`), `session.rs` (persistence, restore/skip
+over `fux/session.*`). Then milestone 6 (zor).
 
 ## Open blockers
 * none. `bevy_render` in graph via `bevy_remote -> bevy_dev_tools` is an accepted deviation (docs/dependencies.md).
