@@ -12,6 +12,7 @@ pub mod client;
 pub mod descriptor;
 pub mod methods;
 pub mod projection;
+pub mod input_methods;
 pub mod scene_methods;
 pub mod schema;
 pub mod surface_methods;

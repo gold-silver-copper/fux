@@ -1484,6 +1484,7 @@ pub fn all_specs() -> impl Iterator<Item = &'static MethodSpec> {
     TABLE
         .iter()
         .chain(super::scene_methods::METHODS)
+        .chain(super::input_methods::METHODS)
         .chain(super::surface_methods::METHODS)
 }
 
