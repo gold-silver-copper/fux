@@ -32,6 +32,8 @@ bevy_transform      = { version = "=0.19.1", default-features = false, features 
 bevy_camera         = { version = "=0.19.1", default-features = false }
 bevy_math           = { version = "=0.19.1", default-features = false, features = ["std"] }
 bevy_color          = { version = "=0.19.1", default-features = false, features = ["std"] }
+bevy_platform       = { version = "=0.19.1", default-features = false, features = ["std"] }
+bevy_utils          = { version = "=0.19.1", default-features = false }
 # Only to initialise the resources `UiPlugin`'s text/image systems validate; no text is laid out.
 bevy_text           = { version = "=0.19.1", default-features = false }
 bevy_image          = { version = "=0.19.1", default-features = false }

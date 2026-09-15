@@ -32,6 +32,8 @@ bevy_transform.workspace = true
 bevy_camera.workspace = true
 bevy_math.workspace = true
 bevy_color.workspace = true
+bevy_platform.workspace = true
+bevy_utils.workspace = true
 bevy_text.workspace = true
 bevy_image.workspace = true
 bevy_audio = { workspace = true, optional = true }
