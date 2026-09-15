@@ -59,9 +59,27 @@ enum Cmd {
         #[command(subcommand)]
         command: LayoutCmd,
     },
+    /// Stream lifecycle events of the `default` workspace as they happen (`fux WORKSPACE
+    /// events …` for another); `--cursor` resumes after a cursor, reporting a gap if the
+    /// server no longer retains it.
+    Events(EventsArgs),
     /// `fux NAME` attaches to workspace NAME; `fux [SERVER] <method> [json]` calls BRP.
     #[command(external_subcommand)]
     Other(Vec<String>),
+}
+
+#[derive(Args, Debug)]
+struct EventsArgs {
+    /// Resume after this cursor; omitted streams only new events.
+    #[arg(long)]
+    cursor: Option<u64>,
+}
+
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+struct EventsWords {
+    #[command(flatten)]
+    args: EventsArgs,
 }
 
 #[derive(Args, Debug)]
@@ -148,6 +166,7 @@ fn dispatch(cli: Cli) -> Result<i32, BevyError> {
             print_reply(client::call(&brp, method, params)?)
         }
         Some(Cmd::Layout { command }) => layout(&cli.server, DEFAULT_WORKSPACE, command),
+        Some(Cmd::Events(args)) => events(&cli.server, DEFAULT_WORKSPACE, args),
         Some(Cmd::Other(words)) => other(&cli.server, words),
         None => attach_workspace(&cli.server, DEFAULT_WORKSPACE),
     }
@@ -167,6 +186,10 @@ fn other(server: &str, words: Vec<String>) -> Result<i32, BevyError> {
         Some(word) if word == "layout" => {
             let parsed = LayoutWords::try_parse_from(words)?;
             layout(server, &first, parsed.command)
+        }
+        Some(word) if word == "events" => {
+            let parsed = EventsWords::try_parse_from(words)?;
+            events(server, &first, parsed.args)
         }
         Some(method) if is_method(&method) => {
             let params = parse_params(words.next())?;
@@ -206,6 +229,37 @@ fn layout(server: &str, workspace: &str, command: LayoutCmd) -> Result<i32, Bevy
         ),
     };
     print_reply(client::call(&brp, method, params)?)
+}
+
+/// Streams `fux/events+watch`, printing one JSON line per item (a `gap` item first when the
+/// cursor is no longer retained); ends when the server closes the stream.
+fn events(server: &str, workspace: &str, args: EventsArgs) -> Result<i32, BevyError> {
+    let brp = descriptor_or_error(server)?;
+    let descriptor = client::read_descriptor(&brp)?;
+    let mut params = serde_json::json!({ "workspace": workspace });
+    if let Some(cursor) = args.cursor {
+        params["cursor"] = serde_json::json!(cursor);
+    }
+    let mut out = std::io::stdout().lock();
+    let mut failed = None;
+    client::stream(&descriptor, "fux/events+watch", params, |item| {
+        match serde_json::to_string(&item) {
+            Ok(line) => {
+                if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                    return false;
+                }
+            }
+            Err(error) => {
+                failed = Some(error);
+                return false;
+            }
+        }
+        true
+    })?;
+    match failed {
+        Some(error) => Err(error.into()),
+        None => Ok(0),
+    }
 }
 
 fn parse_params(json: Option<String>) -> Result<serde_json::Value, BevyError> {

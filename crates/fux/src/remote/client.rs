@@ -1,7 +1,7 @@
 //! Thin BRP client: one JSON-RPC call per TCP connection over a minimal HTTP/1.1 POST. No
 //! hyper, no reactor: the CLI and zor's observation loop are request/reply.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::time::Duration;
@@ -106,6 +106,114 @@ pub fn request(host: &str, port: u16, method: &str, params: Value) -> Result<Val
     reply
         .remove("result")
         .ok_or_else(|| ClientError::Malformed("reply has neither result nor error".into()))
+}
+
+/// Opens a `+watch` stream and calls `on_item` for every JSON-RPC item the server emits
+/// (`text/event-stream`, one `data:` line per item), until the server closes the stream or
+/// `on_item` returns `false`. The read timeout is disabled: a quiet stream is not an error.
+pub fn stream(
+    descriptor: &Descriptor,
+    method: &str,
+    params: Value,
+    mut on_item: impl FnMut(Value) -> bool,
+) -> Result<(), ClientError> {
+    let Value::Object(mut fields) = params else {
+        return Err(ClientError::Params);
+    };
+    fields.insert("token".into(), Value::String(descriptor.token.clone()));
+    fields.insert(
+        "instance".into(),
+        Value::String(descriptor.instance.clone()),
+    );
+    let request =
+        json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": Value::Object(fields) });
+    let body = serde_json::to_vec(&request).map_err(|e| ClientError::Malformed(e.to_string()))?;
+    let host = &descriptor.http.host;
+    let port = descriptor.http.port;
+    let address = (host.as_str(), port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| std::io::Error::other("unresolvable host"))?;
+    let mut tcp = TcpStream::connect_timeout(&address, TIMEOUT)?;
+    tcp.set_write_timeout(Some(TIMEOUT))?;
+    let header = format!(
+        "POST / HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    tcp.write_all(header.as_bytes())?;
+    tcp.write_all(&body)?;
+    tcp.flush()?;
+    let mut reader = std::io::BufReader::new(tcp);
+    let mut line = String::new();
+    // Status line and headers.
+    reader.read_line(&mut line)?;
+    let status: u16 = line
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| ClientError::Malformed(format!("status line `{}`", line.trim())))?;
+    let mut chunked = false;
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 || line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("transfer-encoding")
+        {
+            chunked = value.trim().eq_ignore_ascii_case("chunked");
+        }
+    }
+    if status != 200 {
+        let mut rest = String::new();
+        let _ = reader.read_to_string(&mut rest);
+        return Err(ClientError::Http { status, body: rest });
+    }
+    // Chunk framing carries whole SSE records; each record is `data: <json>\n\n`.
+    let mut chunk = Vec::new();
+    loop {
+        let payload: &[u8] = if chunked {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                return Ok(());
+            }
+            let size_hex = line.split(';').next().unwrap_or_default().trim();
+            let size = usize::from_str_radix(size_hex, 16)
+                .map_err(|_| ClientError::Malformed("bad chunked encoding".into()))?;
+            if size == 0 {
+                return Ok(());
+            }
+            chunk.clear();
+            chunk.resize(size + 2, 0);
+            reader.read_exact(&mut chunk)?;
+            chunk.get(..size).unwrap_or_default()
+        } else {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                return Ok(());
+            }
+            line.as_bytes()
+        };
+        for record in payload.split(|b| *b == b'\n') {
+            let Some(data) = record.strip_prefix(b"data:") else {
+                continue;
+            };
+            let item: Value = serde_json::from_slice(data.trim_ascii())
+                .map_err(|e| ClientError::Malformed(e.to_string()))?;
+            let item = match item {
+                Value::Object(mut reply) => {
+                    if let Some(Value::Object(error)) = reply.remove("error") {
+                        return Err(rpc_error(&error));
+                    }
+                    reply.remove("result").unwrap_or(Value::Null)
+                }
+                other => other,
+            };
+            if !on_item(item) {
+                return Ok(());
+            }
+        }
+    }
 }
 
 fn rpc_error(error: &Map<String, Value>) -> ClientError {
