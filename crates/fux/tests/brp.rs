@@ -424,8 +424,7 @@ fn fixtures_round_trip_through_typed_shapes() {
     for case in cases {
         let method = case["method"].as_str().unwrap().to_owned();
         let method = method.as_str();
-        let spec = methods::TABLE
-            .iter()
+        let spec = methods::all_specs()
             .find(|s| s.name == method)
             .unwrap_or_else(|| panic!("{method} is not in the table"));
         covered.insert(spec.name);
@@ -444,10 +443,9 @@ fn fixtures_round_trip_through_typed_shapes() {
             "{method} result"
         );
     }
-    let all: BTreeSet<&str> = methods::TABLE.iter().map(|s| s.name).collect();
+    let all: BTreeSet<&str> = methods::all_specs().map(|s| s.name).collect();
     assert_eq!(covered, all, "every fux/* method needs a fixture");
-    let spec = methods::TABLE
-        .iter()
+    let spec = methods::all_specs()
         .find(|s| s.name == "fux/pane.close")
         .unwrap();
     assert!((spec.roundtrip_params)(json!({ "pane": 1, "extra": true })).is_err());

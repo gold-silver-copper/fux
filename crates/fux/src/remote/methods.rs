@@ -1483,9 +1483,17 @@ fn schema(mut req: Request, _world: &mut World) -> BrpResult {
     to_value(schema_table())
 }
 
+/// Every `fux/*` method from every owner table.
+pub fn all_specs() -> impl Iterator<Item = &'static MethodSpec> {
+    TABLE
+        .iter()
+        .chain(super::scene_methods::METHODS)
+        .chain(super::surface_methods::METHODS)
+}
+
 pub fn schema_table() -> SchemaTable {
     let mut methods = Map::new();
-    for spec in TABLE {
+    for spec in all_specs() {
         methods.insert(
             spec.name.to_owned(),
             json!({
@@ -1761,8 +1769,7 @@ pub static WRAPPED: &[(&str, Handler)] = &[
 
 /// Every registered method name; the allowlist test compares `RemoteMethods::methods()` to it.
 pub fn allowlist() -> Vec<&'static str> {
-    TABLE
-        .iter()
+    all_specs()
         .map(|s| s.name)
         .chain(WRAPPED.iter().map(|(n, _)| *n))
         .collect()

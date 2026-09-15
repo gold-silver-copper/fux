@@ -12,7 +12,9 @@ pub mod client;
 pub mod descriptor;
 pub mod methods;
 pub mod projection;
+pub mod scene_methods;
 pub mod schema;
+pub mod surface_methods;
 pub mod token;
 
 use std::net::{Ipv4Addr, TcpListener};
@@ -112,7 +114,7 @@ impl Plugin for RemoteControlPlugin {
         // Replace the built-in table with the allowlist.
         let world = app.world_mut();
         let mut table = RemoteMethods::new();
-        for spec in methods::TABLE {
+        for spec in methods::all_specs() {
             table.insert(
                 spec.name,
                 RemoteMethodSystemId::Instant(world.register_system(spec.handler)),
