@@ -467,6 +467,66 @@
         "name": "ServerInfo"
       }
     },
+    "fux/session.restore": {
+      "params": {
+        "fields": {
+          "pane": "u64"
+        },
+        "name": "SessionDecisionParams"
+      },
+      "result": {
+        "fields": {
+          "pane": "u64",
+          "pending": "usize"
+        },
+        "name": "SessionDecided"
+      }
+    },
+    "fux/session.save": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "bytes": "usize",
+          "path": "String"
+        },
+        "name": "SessionSaved"
+      }
+    },
+    "fux/session.skip": {
+      "params": {
+        "fields": {
+          "pane": "u64"
+        },
+        "name": "SessionDecisionParams"
+      },
+      "result": {
+        "fields": {
+          "pane": "u64",
+          "pending": "usize"
+        },
+        "name": "SessionDecided"
+      }
+    },
+    "fux/session.status": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "exists": "bool",
+          "last_error": "Option<String>",
+          "last_saved_ms": "u64",
+          "path": "String",
+          "pending": "Vec<PendingPane>",
+          "saves": "u64"
+        },
+        "name": "SessionStatus"
+      }
+    },
     "fux/surface.close": {
       "params": {
         "fields": {

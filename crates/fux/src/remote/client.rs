@@ -91,12 +91,18 @@ pub fn call_with(
 
 /// One JSON-RPC call with `params` sent exactly as given (no envelope injection).
 pub fn request(host: &str, port: u16, method: &str, params: Value) -> Result<Value, ClientError> {
+    let reply = post(host, port, &encode_request(method, params)?)?;
+    unwrap_reply(reply)
+}
+
+/// The JSON-RPC request body for `method` with `params` as given.
+pub fn encode_request(method: &str, params: Value) -> Result<Vec<u8>, ClientError> {
     let request = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-    let reply = post(
-        host,
-        port,
-        &serde_json::to_vec(&request).map_err(|e| ClientError::Malformed(e.to_string()))?,
-    )?;
+    serde_json::to_vec(&request).map_err(|e| ClientError::Malformed(e.to_string()))
+}
+
+/// `result` of a JSON-RPC reply object, or its `error` as [`ClientError::Rpc`].
+pub fn unwrap_reply(reply: Value) -> Result<Value, ClientError> {
     let Value::Object(mut reply) = reply else {
         return Err(ClientError::Malformed("reply is not an object".into()));
     };
@@ -253,7 +259,7 @@ fn post(host: &str, port: u16, body: &[u8]) -> Result<Value, ClientError> {
 /// Parses `HTTP/1.1 <status> ...\r\n<headers>\r\n\r\n<body>`; the body is `Content-Length`
 /// bounded, `Transfer-Encoding: chunked` (hyper's default for streamed replies), or runs to
 /// EOF (`Connection: close`).
-fn parse_response(raw: &[u8]) -> Result<Value, ClientError> {
+pub fn parse_response(raw: &[u8]) -> Result<Value, ClientError> {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")

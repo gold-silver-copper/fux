@@ -1,12 +1,12 @@
 //! Viewer-local chrome (prompt 3.11): a column under the local camera holding the pane area
 //! (where the replicated root is parented), a one-row status bar with the tab strip (projection
 //! of the server's `roots`), the mode indicator and the target pane's title, plus a transient
-//! notice overlay whose lifetime is a `bevy_time` `Timer`.
+//! notice overlay whose lifetime is a `bevy_time` `Timer`. Colours come from the theme: every
+//! chrome node names a [`ThemeToken`] and the resolve pass writes its `CellStyle`.
 
 use core::time::Duration;
 
 use bevy_app::prelude::*;
-use bevy_color::Color;
 use bevy_ecs::prelude::*;
 use bevy_input_focus::tab_navigation::TabGroup;
 use bevy_state::prelude::*;
@@ -17,28 +17,18 @@ use bevy_ui::{UiTargetCamera, ZIndex};
 
 use super::replicate::{Grid, Roots, Session, ShowingRoot, TargetPane};
 use super::{LocalCamera, Mode, WakeDeadline};
+use crate::assets::ThemeToken;
 use crate::model::{Ids, NodeId};
-use crate::wire::{Color as WireColor, ProcessSummary, Style};
+use crate::wire::ProcessSummary;
 
 /// Marks viewer-local nodes.
 #[derive(Component, Debug, Default)]
 pub struct Chrome;
 
-/// Text content painted into a chrome node (`bevy_text` is unused).
-#[derive(Component, Debug, Clone, PartialEq, Eq)]
-pub struct Text {
-    pub text: String,
-    pub style: Style,
-}
-
-impl Text {
-    pub fn new(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            style: Style::default(),
-        }
-    }
-}
+/// Text content painted into a chrome node (`bevy_text` is unused); styled by the node's
+/// `CellStyle`.
+#[derive(Component, Debug, Clone, Default, PartialEq, Eq)]
+pub struct Text(pub String);
 
 /// A tab strip entry for one template root.
 #[derive(Component, Debug, Clone, Copy)]
@@ -72,30 +62,6 @@ pub struct ChromeRoots {
 pub struct PendingNotice(pub Option<String>);
 
 const NOTICE_TTL: Duration = Duration::from_secs(3);
-const BAR_BG: Color = Color::srgb_u8(40, 40, 48);
-const ACCENT: Color = Color::srgb_u8(32, 110, 201);
-const NOTICE_BG: Color = Color::srgb_u8(217, 178, 51);
-
-const TEXT_STYLE: Style = Style {
-    fg: WireColor::Rgb(220, 220, 220),
-    bg: WireColor::Default,
-    attrs: 0,
-};
-const DIM_STYLE: Style = Style {
-    fg: WireColor::Rgb(150, 150, 160),
-    bg: WireColor::Default,
-    attrs: 0,
-};
-const SELECTED_STYLE: Style = Style {
-    fg: WireColor::Rgb(255, 255, 255),
-    bg: WireColor::Rgb(32, 110, 201),
-    attrs: Style::BOLD,
-};
-const NOTICE_STYLE: Style = Style {
-    fg: WireColor::Rgb(20, 20, 20),
-    bg: WireColor::Rgb(217, 178, 51),
-    attrs: Style::BOLD,
-};
 
 fn bar_row() -> Node {
     Node {
@@ -148,44 +114,40 @@ pub fn spawn_chrome(world: &mut World) -> ChromeRoots {
         .spawn((
             Chrome,
             ModeIndicator,
+            ThemeToken::TAB_ACTIVE,
             Node {
                 width: Val::Px(0.0),
                 flex_shrink: 0.0,
                 ..bar_row()
             },
-            Text {
-                text: String::new(),
-                style: SELECTED_STYLE,
-            },
+            Text::default(),
         ))
         .id();
     let title = world
         .spawn((
             Chrome,
             StatusTitle,
+            ThemeToken::BAR,
             Node {
                 width: Val::Px(0.0),
                 flex_shrink: 1.0,
                 overflow: Overflow::clip(),
                 ..bar_row()
             },
-            Text {
-                text: String::new(),
-                style: TEXT_STYLE,
-            },
+            Text::default(),
         ))
         .id();
     let status_bar = world
         .spawn((
             Chrome,
             Name::new("status-bar"),
+            ThemeToken::BAR_BACKGROUND,
             Node {
                 width: Val::Percent(100.0),
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(1.0),
                 ..bar_row()
             },
-            BackgroundColor(BAR_BG),
         ))
         .add_children(&[tab_strip, spacer, mode, title])
         .id();
@@ -214,7 +176,7 @@ pub fn spawn_chrome(world: &mut World) -> ChromeRoots {
 /// Text nodes are as wide as their content.
 fn size_text_nodes(mut nodes: Query<(&Text, &mut Node), Changed<Text>>) {
     for (text, mut node) in &mut nodes {
-        let width = Val::Px(text.text.chars().count() as f32);
+        let width = Val::Px(text.0.chars().count() as f32);
         if node.width != width {
             node.width = width;
         }
@@ -241,18 +203,20 @@ fn sync_tab_strip(
             Chrome,
             TabEntry(root.node),
             ChildOf(chrome.tab_strip),
+            if active {
+                ThemeToken::TAB_ACTIVE
+            } else {
+                ThemeToken::TAB
+            },
             Node {
                 flex_shrink: 0.0,
                 margin: UiRect::right(Val::Px(1.0)),
                 ..bar_row()
             },
-            Text {
-                text: format!("{}:{}", index + 1, root.name),
-                style: if active { SELECTED_STYLE } else { DIM_STYLE },
-            },
+            Text(format!("{}:{}", index + 1, root.name)),
         ));
         if active {
-            entry.insert((Selected, BackgroundColor(ACCENT)));
+            entry.insert(Selected);
         }
     }
 }
@@ -271,9 +235,9 @@ fn sync_mode(mode: Res<State<Mode>>, mut texts: Query<&mut Text, With<ModeIndica
         Mode::Confirm => " close pane? y/n ",
         Mode::CopyMode => " COPY j/k/q ",
     };
-    if text.text != label {
-        text.text.clear();
-        text.text.push_str(label);
+    if text.0 != label {
+        text.0.clear();
+        text.0.push_str(label);
     }
 }
 
@@ -317,8 +281,8 @@ fn sync_title(
             title.push_str(t);
         }
     }
-    if text.text != title {
-        text.text = title;
+    if text.0 != title {
+        text.0 = title;
     }
 }
 
@@ -341,6 +305,7 @@ fn notices(
                 timer: Timer::new(NOTICE_TTL, TimerMode::Once),
             },
             ChildOf(chrome.root),
+            ThemeToken::NOTICE,
             Node {
                 position_type: PositionType::Absolute,
                 right: Val::Px(0.0),
@@ -349,11 +314,7 @@ fn notices(
                 ..Default::default()
             },
             ZIndex(10),
-            BackgroundColor(NOTICE_BG),
-            Text {
-                text: format!(" {text} "),
-                style: NOTICE_STYLE,
-            },
+            Text(format!(" {text} ")),
         ));
         deadline.0 = Some(NOTICE_TTL);
         return;

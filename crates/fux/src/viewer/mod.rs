@@ -14,13 +14,16 @@ pub mod keys;
 pub mod paint;
 pub mod replicate;
 pub mod terminal_io;
+pub mod theme;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
 use bevy_app::prelude::*;
 use bevy_asset::AssetPlugin;
+use bevy_asset::io::{AssetSourceBuilders, AssetSourceId};
 use bevy_camera::{Camera, RenderTarget, RenderTargetInfo};
 use bevy_ecs::error::BevyError;
 use bevy_ecs::prelude::*;
@@ -32,6 +35,7 @@ use bevy_picking::pointer::PointerId;
 use bevy_state::prelude::*;
 use bevy_window::{PrimaryWindow, Window, WindowResolution};
 
+use crate::assets;
 use crate::model::{
     Ids, InstanceNode, NodeId, PaneId, ShownBy, Shows, Surface, ViewerRequest, Zoomed,
 };
@@ -47,6 +51,9 @@ pub struct ViewerOptions {
     pub brp_path: PathBuf,
     pub workspace: String,
     pub exact: Option<ExactTargetSpec>,
+    /// Where `fux.toml` lives; the viewer loads and watches it for its theme, bindings and
+    /// clipboard policy.
+    pub config_dir: PathBuf,
 }
 
 /// What wakes the runner.
@@ -56,6 +63,8 @@ pub enum Wake {
     TerminalClosed,
     Frame(ServerFrame),
     Disconnected(String),
+    /// `fux.toml` changed or finished loading: step once so the asset systems run.
+    Asset,
 }
 
 /// What the runner delivers to one update: terminal events and server frames, in arrival order.
@@ -138,15 +147,34 @@ pub enum ViewerSystems {
 #[derive(Resource)]
 struct TerminalInput(input::Translator);
 
-/// Builds the viewer App for a `cols`×`rows` terminal with no terminal or socket attached:
-/// [`run`] wires those in; tests drive [`Inbox`] directly.
+/// Builds the viewer App for a `cols`×`rows` terminal with no terminal or socket attached and
+/// no configuration directory (built-in theme and bindings); tests drive [`Inbox`] directly.
 pub fn build(cols: u16, rows: u16) -> App {
+    build_in(
+        cols,
+        rows,
+        Path::new(&AssetPlugin::default().file_path),
+        Arc::new(|| {}),
+    )
+}
+
+/// [`build`] over a configuration directory: `fux.toml` there is loaded and watched, and
+/// `wake` is called whenever the watcher or a load has something for the next update.
+pub fn build_in(cols: u16, rows: u16, config_dir: &Path, wake: assets::Wake) -> App {
     let mut app = App::new();
+    let root = assets::asset_root(config_dir);
+    app.world_mut()
+        .get_resource_or_init::<AssetSourceBuilders>()
+        .insert(AssetSourceId::Default, assets::waking_source(&root, wake));
     app.add_plugins((
         bevy_app::TaskPoolPlugin::default(),
         bevy_state::app::StatesPlugin,
         bevy_time::TimePlugin,
-        AssetPlugin::default(),
+        AssetPlugin {
+            file_path: root,
+            ..Default::default()
+        },
+        assets::ConfigAssetPlugin,
     ));
     crate::layout::add_ui_stack(&mut app);
     app.add_plugins((
@@ -214,6 +242,7 @@ pub fn build(cols: u16, rows: u16) -> App {
         replicate::ReplicatePlugin,
         focus::FocusPlugin,
         chrome::ChromePlugin,
+        theme::ThemePlugin,
         paint::PaintPlugin,
     ));
     app
@@ -336,9 +365,17 @@ pub fn run(opts: ViewerOptions) -> Result<i32, BevyError> {
             return Err(e.into());
         }
     };
+    let asset_wake = wake_tx.clone();
     let _reader = term.spawn_reader(wake_tx)?;
 
-    let mut app = build(cols, rows);
+    let mut app = build_in(
+        cols,
+        rows,
+        &opts.config_dir,
+        Arc::new(move || {
+            let _ = asset_wake.send(Wake::Asset);
+        }),
+    );
     if opts.exact.is_some() {
         app.world_mut().insert_resource(focus::ExactAttachment);
     }
@@ -380,6 +417,7 @@ pub fn run(opts: ViewerOptions) -> Result<i32, BevyError> {
                 match wake {
                     Wake::Terminal(event) => inbox.events.push(event),
                     Wake::Frame(frame) => inbox.frames.push(frame),
+                    Wake::Asset => {}
                     Wake::TerminalClosed => {
                         fatal = Some(Exit {
                             code: 1,

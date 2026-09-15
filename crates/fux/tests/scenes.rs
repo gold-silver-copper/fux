@@ -184,6 +184,42 @@ fn chain_document(depth: usize, pane: u64) -> String {
     out
 }
 
+/// A template document (what a user writes by hand): one root `main` in `direction` with two
+/// leaves `left`/`right` launching the default command.
+fn template_document(direction: &str) -> String {
+    let ws = doc_entity(0);
+    let root = doc_entity(1);
+    let leaves = [(doc_entity(2), "left"), (doc_entity(3), "right")];
+    let mut out = String::from("(\n  resources: {},\n  entities: {\n");
+    out.push_str(&format!(
+        "    {ws}: (components: {{ \"fux::model::components::Workspace\": (), \
+         \"fux::model::ids::WorkspaceName\": \"doc\", \
+         \"fux::model::relations::RootOrder\": ([{root}]) }}),\n"
+    ));
+    out.push_str(&format!(
+        "    {root}: (components: {{ \"bevy_ecs::name::Name\": \"main\", \
+         \"fux::model::components::TemplateRoot\": (), \
+         \"fux::model::components::TemplateNode\": (), \
+         \"bevy_ui::ui_node::Node\": (width: Percent(100.0), height: Percent(100.0), \
+         flex_direction: {direction}), \
+         \"bevy_ecs::hierarchy::Children\": ([{}, {}]) }}),\n",
+        leaves[0].0, leaves[1].0
+    ));
+    for (leaf, name) in leaves {
+        out.push_str(&format!(
+            "    {leaf}: (components: {{ \"bevy_ecs::name::Name\": \"{name}\", \
+             \"fux::model::components::TemplateNode\": (), \
+             \"bevy_ecs::hierarchy::ChildOf\": ({root}), \
+             \"bevy_ui::ui_node::Node\": (flex_grow: 1.0, flex_shrink: 1.0, \
+             min_width: Px(2.0), min_height: Px(2.0)), \
+             \"fux::model::components::PaneTemplate\": (argv: [], cwd: None, env: [], \
+             stream: \"\") }}),\n"
+        ));
+    }
+    out.push_str("  },\n)\n");
+    out
+}
+
 fn pane_id(world: &World, pane: Entity) -> u64 {
     world.get::<PaneId>(pane).unwrap().0
 }
@@ -436,7 +472,7 @@ fn node_count_limit_is_enforced_against_the_document() {
 fn template_scene_launches_through_the_creation_path_and_closes_unplaced() {
     let mut app = app();
     let (ws, _, [pane1, pane2, pane3]) = three_panes(&mut app);
-    let document = scene::builtin::document("two_column").unwrap().to_owned();
+    let document = template_document("Row");
     let refused = scene::apply(app.world_mut(), ws, &document, &plain());
     assert!(
         matches!(refused, Err(SceneError::TemplatesNotAllowed)),
@@ -520,7 +556,7 @@ fn closing_unplaced_panes_frees_their_share_of_the_pane_cap() {
     let mut app = app();
     let (ws, _, [pane1, pane2, pane3]) = three_panes(&mut app);
     app.world_mut().resource_mut::<Limits>().panes_per_workspace = 3;
-    let document = scene::builtin::document("two_column").unwrap().to_owned();
+    let document = template_document("Row");
     let viewer = ops::attach_viewer(
         app.world_mut(),
         ws,
@@ -643,8 +679,8 @@ fn restore_adopts_existing_panes_and_matches_the_old_two_pane_split() {
     assert_eq!(world.get::<Showing>(viewer).map(|s| s.0), Some(new_root));
 
     // A user file of the same name shadows the built-in.
-    let user = scene::builtin::document("two_row").unwrap();
-    scene::save(&dir, "two_column", user).unwrap();
+    let user = template_document("Column");
+    scene::save(&dir, "two_column", &user).unwrap();
     let report = scene::restore(
         app.world_mut(),
         ws,
@@ -708,11 +744,11 @@ fn every_builtin_applies() {
 fn files_are_named_listed_and_written_atomically() {
     let dir = temp_dir("files").join("layouts");
     assert_eq!(scene::list(&dir).unwrap(), Vec::<String>::new());
-    let doc = scene::builtin::document("two_row").unwrap();
+    let doc = &template_document("Column");
     let path = scene::save(&dir, "mine", doc).unwrap();
     assert_eq!(path, dir.join("mine.scn.ron"));
     scene::save(&dir, "Also-ok_2", doc).unwrap();
-    assert_eq!(scene::load(&dir, "mine").unwrap(), doc);
+    assert_eq!(&scene::load(&dir, "mine").unwrap(), doc);
     assert_eq!(
         scene::list(&dir).unwrap(),
         vec!["Also-ok_2".to_owned(), "mine".to_owned()]
@@ -732,14 +768,6 @@ fn files_are_named_listed_and_written_atomically() {
     }
     assert!(matches!(
         scene::load(&dir, "missing"),
-        Err(SceneError::NotFound(_))
-    ));
-    assert!(matches!(
-        scene::document_named(&dir, "two_column"),
-        Ok(d) if d == scene::builtin::TWO_COLUMN
-    ));
-    assert!(matches!(
-        scene::document_named(&dir, "nope"),
         Err(SceneError::NotFound(_))
     ));
 

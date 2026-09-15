@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::model::PaneId;
 use crate::paths::Paths;
 use crate::remote::client;
+use crate::session::RestoreMode;
 use crate::viewer::{self, ViewerOptions};
 use crate::wire::ExactTargetSpec;
 
@@ -41,6 +42,10 @@ enum Cmd {
     Serve {
         #[arg(long, default_value = DEFAULT_SERVER)]
         name: String,
+        /// What to do with a saved session (`<state>/fux/session/<name>.scn.ron`): rebuild it
+        /// and launch every pane, rebuild it and ask per pane over BRP, or ignore it.
+        #[arg(long, value_enum, default_value_t = RestoreMode::Auto)]
+        restore: RestoreMode,
         /// Detach from the controlling terminal (new session); used by `fux` when it starts
         /// the default server.
         #[arg(long, hide = true)]
@@ -63,6 +68,8 @@ enum Cmd {
     /// events …` for another); `--cursor` resumes after a cursor, reporting a gap if the
     /// server no longer retains it.
     Events(EventsArgs),
+    /// Print the effective prefix and prefix-mode bindings.
+    Bindings,
     /// `fux NAME` attaches to workspace NAME; `fux [SERVER] <method> [json]` calls BRP.
     #[command(external_subcommand)]
     Other(Vec<String>),
@@ -140,8 +147,13 @@ pub fn main() -> ExitCode {
 
 fn dispatch(cli: Cli) -> Result<i32, BevyError> {
     match cli.command {
-        Some(Cmd::Serve { name, detached }) => serve(&name, detached),
+        Some(Cmd::Serve {
+            name,
+            restore,
+            detached,
+        }) => serve(&name, restore, detached),
         Some(Cmd::Attach(args)) => {
+            let paths = Paths::discover()?;
             let exact = args.pane.map(|pane| ExactTargetSpec {
                 pane: PaneId(pane),
                 pid: args.pid,
@@ -150,7 +162,15 @@ fn dispatch(cli: Cli) -> Result<i32, BevyError> {
                 brp_path: args.brp,
                 workspace: args.workspace,
                 exact,
+                config_dir: paths.config_dir,
             })
+        }
+        Some(Cmd::Bindings) => {
+            let paths = Paths::discover()?;
+            let config = Config::load(&paths.config_file())?;
+            let mut out = std::io::stdout().lock();
+            out.write_all(crate::assets::describe_bindings(&config)?.as_bytes())?;
+            Ok(0)
         }
         Some(Cmd::Workspace { command }) => {
             let brp = descriptor_or_error(&cli.server)?;
@@ -237,8 +257,8 @@ fn events(server: &str, workspace: &str, args: EventsArgs) -> Result<i32, BevyEr
     let brp = descriptor_or_error(server)?;
     let descriptor = client::read_descriptor(&brp)?;
     let mut params = serde_json::json!({ "workspace": workspace });
-    if let Some(cursor) = args.cursor {
-        params["cursor"] = serde_json::json!(cursor);
+    if let (Some(cursor), Some(fields)) = (args.cursor, params.as_object_mut()) {
+        fields.insert("cursor".into(), serde_json::json!(cursor));
     }
     let mut out = std::io::stdout().lock();
     let mut failed = None;
@@ -298,6 +318,7 @@ fn attach_workspace(server: &str, workspace: &str) -> Result<i32, BevyError> {
         brp_path: brp,
         workspace: workspace.into(),
         exact: None,
+        config_dir: paths.config_dir.clone(),
     })
 }
 
@@ -359,7 +380,7 @@ fn ensure_workspace(brp: &Path, workspace: &str) -> Result<(), BevyError> {
     Ok(())
 }
 
-fn serve(name: &str, detached: bool) -> Result<i32, BevyError> {
+fn serve(name: &str, restore: RestoreMode, detached: bool) -> Result<i32, BevyError> {
     if detached {
         // The parent already redirected stdio; only the session needs to be ours.
         nix::unistd::setsid()?;
@@ -370,9 +391,12 @@ fn serve(name: &str, detached: bool) -> Result<i32, BevyError> {
     let (sender, inbound) = async_channel::bounded(8192);
     let (control_sender, control) = async_channel::bounded(crate::runner::CONTROL_QUEUE);
     let mut app = crate::app::build(&config, &paths, name, sender.clone());
-    app.add_systems(Startup, |world: &mut World| -> Result<(), BevyError> {
-        crate::lifecycle::bootstrap(world, DEFAULT_WORKSPACE, &[])
-    });
+    app.insert_resource(restore).add_systems(
+        Startup,
+        |world: &mut World| -> Result<(), BevyError> {
+            crate::session::restore_or_bootstrap(world, DEFAULT_WORKSPACE)
+        },
+    );
     crate::runner::signals::install(control_sender)?;
     let pty = crate::pty::PtyAdapter::new(sender);
     let attach = crate::attach::AttachAdapter::from_app(&app)?;

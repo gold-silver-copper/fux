@@ -1,5 +1,6 @@
 //! The cell painter (prompt 3.11): one pass over the viewer's own `UiStack` in stacking order,
-//! drawing `BackgroundColor`, `BorderColor` borders, then each node's content (the pane grid for
+//! drawing each node's fill (its resolved `CellStyle` for chrome, `BackgroundColor` for
+//! replicated nodes), `BorderColor`/theme borders, then the node's content (the pane grid for
 //! replicated leaves, `Text` for chrome) into a cell buffer that is diffed against the last
 //! painted screen; only changed cells become termina commands. No allocation per cell: both
 //! screens and the output buffer are reused across frames.
@@ -7,6 +8,7 @@
 use std::io::Write as _;
 
 use bevy_app::prelude::*;
+use bevy_asset::{AssetEvent, AssetEventSystems, Assets};
 use bevy_color::Color;
 use bevy_ecs::prelude::*;
 use bevy_input_focus::InputFocus;
@@ -24,7 +26,10 @@ use termina::style::{ColorSpec, RgbaColor};
 
 use super::chrome::Text;
 use super::replicate::{ClipboardWrite, Grid};
+use super::theme::{BorderStyles, CellStyle};
 use super::{Mode as ViewerMode, Viewport};
+use crate::assets::{ConfigAsset, ConfigHandle};
+use crate::config::ClipboardPolicy;
 use crate::model::Shows;
 use crate::surface::Text as SurfaceText;
 use crate::wire::{Color as WireColor, Style};
@@ -271,12 +276,6 @@ impl Painter {
     }
 }
 
-pub const FOCUS_STYLE: Style = Style {
-    fg: WireColor::Indexed(14),
-    bg: WireColor::Default,
-    attrs: Style::BOLD,
-};
-
 pub fn wire_color(color: Color) -> WireColor {
     let s = color.to_srgba();
     if s.alpha <= 0.0 {
@@ -344,6 +343,7 @@ type NodeItem<'a> = (
     &'a UiGlobalTransform,
     Option<&'a BackgroundColor>,
     Option<&'a BorderColor>,
+    Option<&'a CellStyle>,
     Option<&'a CalculatedClip>,
     Option<&'a Shows>,
     Option<&'a Text>,
@@ -351,16 +351,18 @@ type NodeItem<'a> = (
 );
 
 /// Composes the screen from the UI stack and diffs it against the previous paint, then appends
-/// the frame's pane clipboard writes as OSC 52 (write-only: the viewer sets the outer
-/// terminal's clipboard and never queries it).
+/// the frame's pane clipboard writes as OSC 52 when the configured policy is `write-only` (the
+/// viewer sets the outer terminal's clipboard and never queries it).
 pub fn paint(
     stack: Res<UiStack>,
     nodes: Query<NodeItem<'_>>,
     grids: Query<&Grid>,
-    (focus, mode, viewport): (
+    (focus, mode, viewport, borders, policy): (
         Res<InputFocus>,
         Res<bevy_state::prelude::State<ViewerMode>>,
         Res<Viewport>,
+        Res<BorderStyles>,
+        Res<ClipboardPolicy>,
     ),
     mut clipboard: MessageReader<ClipboardWrite>,
     mut painter: ResMut<Painter>,
@@ -377,8 +379,18 @@ pub fn paint(
     let focused = focus.get();
     let mut cursor = None;
     for &entity in &stack.uinodes {
-        let Ok((entity, node, transform, bg, border_color, clip, shows, text, surface_text)) =
-            nodes.get(entity)
+        let Ok((
+            entity,
+            node,
+            transform,
+            bg_color,
+            border_color,
+            cell_style,
+            clip,
+            shows,
+            text,
+            surface_text,
+        )) = nodes.get(entity)
         else {
             continue;
         };
@@ -393,7 +405,11 @@ pub fn paint(
         if visible.width() <= 0 || visible.height() <= 0 {
             continue;
         }
-        let bg = bg.map(|b| wire_color(b.0)).unwrap_or_default();
+        let style = cell_style.map(|s| s.0).unwrap_or_default();
+        let bg = match cell_style {
+            Some(style) => style.0.bg,
+            None => bg_color.map(|b| wire_color(b.0)).unwrap_or_default(),
+        };
         if bg != WireColor::Default {
             let cell = ScreenCell::blank(Style {
                 fg: WireColor::Default,
@@ -410,12 +426,18 @@ pub fn paint(
             || node.border.max_inset.max_element() >= 0.5;
         if has_border && rect.width() >= 2 && rect.height() >= 2 {
             let style = if focused == Some(entity) {
-                Style { bg, ..FOCUS_STYLE }
-            } else {
                 Style {
-                    fg: border_color.map(|b| wire_color(b.top)).unwrap_or_default(),
                     bg,
-                    attrs: 0,
+                    ..borders.focused
+                }
+            } else {
+                let own = border_color
+                    .map(|b| wire_color(b.top))
+                    .filter(|c| *c != WireColor::Default);
+                Style {
+                    fg: own.unwrap_or(borders.pane.fg),
+                    bg,
+                    attrs: borders.pane.attrs,
                 }
             };
             draw_border(&mut painter.next, rect, visible, style);
@@ -437,8 +459,8 @@ pub fn paint(
         if let Some(text) = text {
             draw_text(
                 &mut painter.next,
-                &text.text,
-                text.style,
+                &text.0,
+                style,
                 rect.inset(node),
                 content,
                 bg,
@@ -457,9 +479,29 @@ pub fn paint(
         }
     }
     emit(painter, cursor);
-    for ClipboardWrite(payload) in clipboard.read() {
-        // `Vec<u8>` never fails to write.
-        let _ = write!(painter.out, "\x1b]52;c;{payload}\x07");
+    match *policy {
+        ClipboardPolicy::WriteOnly => {
+            for ClipboardWrite(payload) in clipboard.read() {
+                // `Vec<u8>` never fails to write.
+                let _ = write!(painter.out, "\x1b]52;c;{payload}\x07");
+            }
+        }
+        ClipboardPolicy::Off => clipboard.clear(),
+    }
+}
+
+/// Follows `clipboard` in the loaded `fux.toml`.
+fn apply_clipboard_policy(
+    mut events: MessageReader<AssetEvent<ConfigAsset>>,
+    handle: Res<ConfigHandle>,
+    configs: Res<Assets<ConfigAsset>>,
+    mut policy: ResMut<ClipboardPolicy>,
+) {
+    if !events.read().any(|event| handle.changed(event)) {
+        return;
+    }
+    if let Some(ConfigAsset(config)) = configs.get(&handle.0) {
+        policy.set_if_neq(config.clipboard);
     }
 }
 
@@ -643,12 +685,16 @@ pub struct PaintPlugin;
 
 impl Plugin for PaintPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<ClipboardPolicy>().add_systems(
             PostUpdate,
-            paint
-                .after(UiSystems::PostLayout)
-                .after(UiSystems::Stack)
-                .after(bevy_input_focus::InputFocusSystems::FocusChangeEvents),
+            (
+                apply_clipboard_policy.after(AssetEventSystems),
+                paint
+                    .after(UiSystems::PostLayout)
+                    .after(UiSystems::Stack)
+                    .after(bevy_input_focus::InputFocusSystems::FocusChangeEvents),
+            )
+                .chain(),
         );
     }
 }

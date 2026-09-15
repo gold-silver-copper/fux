@@ -343,6 +343,35 @@
     "result": { "operation": 3, "pane": null, "state": "uncertain", "bytes_written": 0, "seq": null, "expires_ms": 1700000600000 }
   },
   {
+    "method": "fux/session.save",
+    "params": {},
+    "result": { "path": "/home/user/.local/state/fux/session/default.scn.ron", "bytes": 8192 }
+  },
+  {
+    "method": "fux/session.status",
+    "params": {},
+    "result": {
+      "path": "/home/user/.local/state/fux/session/default.scn.ron",
+      "exists": true,
+      "last_saved_ms": 1700000000000,
+      "saves": 3,
+      "last_error": null,
+      "pending": [
+        { "pane": 4, "workspace": "alpha", "stream": "agent-1", "argv": ["/bin/zsh", "-l"], "cwd": "/home/user/src", "title": "make", "history_lines": 24 }
+      ]
+    }
+  },
+  {
+    "method": "fux/session.restore",
+    "params": { "pane": 4 },
+    "result": { "pane": 4, "pending": 1 }
+  },
+  {
+    "method": "fux/session.skip",
+    "params": { "pane": 5 },
+    "result": { "pane": 5, "pending": 0 }
+  },
+  {
     "method": "fux/pane.final",
     "params": { "pane": 6 },
     "result": {

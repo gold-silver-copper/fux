@@ -37,9 +37,18 @@ extern "C" fn on_signal(signal: libc::c_int) {
     }
 }
 
-/// Installs the handlers once and spawns the reader task, which forwards on `control` (the
-/// runner's priority channel). Calling twice is an error.
+/// Installs the handlers once and spawns the reader task, which forwards `Inbound::Signal` on
+/// `control` (the runner's priority channel). Calling twice is an error.
 pub fn install(control: Sender<Inbound>) -> Result<(), BevyError> {
+    install_with(control, Inbound::Signal)
+}
+
+/// [`install`] for any runner message type: `wrap` turns the received signal into the host's
+/// control message (zor wraps it into its own `Inbound`).
+pub fn install_with<I: Send + 'static>(
+    control: Sender<I>,
+    wrap: fn(Sig) -> I,
+) -> Result<(), BevyError> {
     if WRITE_FD.load(Ordering::Relaxed) >= 0 {
         return Err(BevyError::from("signal handlers already installed"));
     }
@@ -63,11 +72,13 @@ pub fn install(control: Sender<Inbound>) -> Result<(), BevyError> {
         sigaction(Signal::SIGHUP, &ignore)?;
     }
     let reader = Async::new(read)?;
-    IoTaskPool::get().spawn(forward(reader, control)).detach();
+    IoTaskPool::get()
+        .spawn(forward(reader, control, wrap))
+        .detach();
     Ok(())
 }
 
-async fn forward(reader: Async<OwnedFd>, control: Sender<Inbound>) {
+async fn forward<I>(reader: Async<OwnedFd>, control: Sender<I>, wrap: fn(Sig) -> I) {
     let mut buf = [0u8; 16];
     loop {
         let n = match reader
@@ -83,7 +94,7 @@ async fn forward(reader: Async<OwnedFd>, control: Sender<Inbound>) {
                 libc::SIGTERM => Sig::Terminate,
                 _ => continue,
             };
-            if control.send(Inbound::Signal(signal)).await.is_err() {
+            if control.send(wrap(signal)).await.is_err() {
                 return;
             }
         }

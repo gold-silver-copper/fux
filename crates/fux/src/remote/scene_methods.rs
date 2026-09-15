@@ -192,7 +192,8 @@ fn scene_apply(mut req: Request, world: &mut World) -> BrpResult {
 
 fn scene_list(mut req: Request, world: &mut World) -> BrpResult {
     let NoParams {} = req.parse()?;
-    let saved = scene::list(&layout_dir(world)?).map_err(scene_error)?;
+    // Also asks the asset server for any file it has not loaded yet.
+    let saved = scene::scan(world).map_err(scene_error)?;
     to_value(SceneListed {
         saved,
         builtin: scene::builtin::NAMES

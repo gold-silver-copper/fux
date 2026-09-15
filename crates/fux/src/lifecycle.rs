@@ -19,6 +19,8 @@ use bevy_ui::Node;
 use crate::events::{PaneExited, PaneSpawned};
 use crate::layout::{self, NavDirection, instances, ops};
 use crate::model::*;
+use crate::scene::templates;
+use crate::session::{Historical, RestoreDecision};
 use crate::terminal::Terminal;
 
 /// Requests a viewer may have queued behind a creation barrier; beyond this the newest are
@@ -125,7 +127,7 @@ pub fn default_shell() -> String {
 }
 
 /// Creates workspace `name` with one root `main` holding one pane running `default_argv`
-/// (the configured default command when empty).
+/// (the configured default command when empty): the `default_session` template (prompt 3.7).
 pub fn bootstrap(world: &mut World, name: &str, default_argv: &[String]) -> Result<(), BevyError> {
     let template = if default_argv.is_empty() {
         default_template(world)
@@ -135,15 +137,7 @@ pub fn bootstrap(world: &mut World, name: &str, default_argv: &[String]) -> Resu
             ..default_template(world)
         }
     };
-    let ws = ops::new_workspace(world, name)?;
-    let root = ops::new_root(world, ws, "main")?;
-    let node = ops::spawn_node(world, root, None, leaf_node(), Some(template))?;
-    if let Some(pane) = placed_pane(world, node) {
-        world.entity_mut(pane).insert(Creation {
-            requesters: vec![Requester::Server],
-            kind: CreationKind::Spawn,
-        });
-    }
+    templates::spawn_workspace(world, templates::default_session(name, template))?;
     Ok(())
 }
 
@@ -441,11 +435,18 @@ fn release_barriers(world: &mut World, barriers: &mut BarrierQuery) {
 
 /// `PostUpdate` after the size fold: every `Starting` pane without a `Terminal` gets one at its
 /// folded size and exactly one `Effect::SpawnPane`; `Terminal` presence is the "emitted" mark.
+/// A restored pane awaiting a `fux/session.{restore,skip}` decision waits; a restored pane's
+/// `Historical` screen is fed into the new terminal first (prompt 3.8).
 fn materialize(
     world: &mut World,
     starting: &mut QueryState<
         (Entity, &Process, &PaneTemplate, &PaneSize, Has<Creation>),
-        (With<Pane>, Without<Terminal>, Allow<Disabled>),
+        (
+            With<Pane>,
+            Without<Terminal>,
+            Without<RestoreDecision>,
+            Allow<Disabled>,
+        ),
     >,
 ) {
     let scrollback = world.resource::<Limits>().scrollback_lines;
@@ -457,7 +458,11 @@ fn materialize(
     for (pane, template, size, has_creation) in todo {
         let (rows, cols) = clamp_dims(size.rows, size.cols);
         let mut entity = world.entity_mut(pane);
-        entity.insert(Terminal::new(rows, cols, scrollback));
+        let mut terminal = Terminal::new(rows, cols, scrollback);
+        if let Some(history) = entity.take::<Historical>() {
+            crate::session::replay(&mut terminal, &history, cols);
+        }
+        entity.insert(terminal);
         if !has_creation {
             entity.insert(Creation {
                 requesters: vec![Requester::Server],

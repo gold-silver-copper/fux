@@ -27,10 +27,14 @@ use termina::event::{
     Event, KeyCode as TKey, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
+use bevy_asset::Assets;
+use fux::assets::{ConfigAsset, ConfigHandle, ThemeToken};
+use fux::config::ClipboardPolicy;
 use fux::model::{Ids, InstanceNode, NodeId, PaneId, PointerKind, Shows, ViewerRequest};
 use fux::viewer::input::{Input, Translator};
 use fux::viewer::keys::{self, KeyChord};
 use fux::viewer::replicate::EntityMap;
+use fux::viewer::theme::CellStyle;
 use fux::viewer::{self, Inbox, Outbox, Painter};
 use fux::wire::{
     Cell, ClientFrame, Cursor, Line, Modes, ProcessSummary, RootEntry, SceneFrame, ServerFrame,
@@ -1045,6 +1049,7 @@ fn clicks_focus_the_visible_pane_and_ignore_clipped_cells() {
 fn pane_clipboard_writes_reach_the_terminal_as_osc_52_once() {
     let scene = ServerScene::grid(1, 2);
     let mut app = viewer::build(80, 24);
+    app.insert_resource(ClipboardPolicy::WriteOnly);
     let mut frame = scene.frame(1);
     frame.terminals = vec![delta(1, 40, 23, "hello"), delta(2, 40, 23, "world")];
     push_frame(&mut app, frame);
@@ -1217,4 +1222,316 @@ fn connection_sends_hello_then_streams_frames_to_the_wake_channel() {
         viewer::Wake::Disconnected(_)
     ));
     connection.close();
+}
+
+// ---------------------------------------------------------------------------------------------
+// (8) configuration assets: theme, prefix and bindings, clipboard policy
+// ---------------------------------------------------------------------------------------------
+
+/// A config directory the viewer loads `fux.toml` from (canonical: the watcher needs it).
+struct ConfigDir {
+    _dir: tempfile::TempDir,
+    root: std::path::PathBuf,
+}
+
+impl ConfigDir {
+    fn new(document: &str) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let this = Self { _dir: dir, root };
+        this.write(document);
+        this
+    }
+
+    fn write(&self, document: &str) {
+        std::fs::write(self.root.join("fux.toml"), document).unwrap();
+    }
+
+    fn viewer(&self) -> App {
+        viewer::build_in(80, 24, &self.root, std::sync::Arc::new(|| {}))
+    }
+}
+
+/// Steps the viewer until `done` holds or two seconds pass (the watcher debounces 300 ms).
+fn settle(app: &mut App, mut done: impl FnMut(&mut App) -> bool) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        app.update();
+        if done(app) {
+            return true;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(2) {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn cell_bg(app: &App, col: u16, row: u16) -> Option<fux::wire::Color> {
+    app.world()
+        .resource::<Painter>()
+        .screen()
+        .get(col, row)
+        .map(|c| c.style.bg)
+}
+
+#[test]
+fn theme_tokens_resolve_to_the_configured_colours_and_follow_reloads() {
+    use fux::wire::Color;
+    let dir = ConfigDir::new("[style]\nbar-background = 'blue'\ntab-active = 'default'\n");
+    let scene = ServerScene::grid(1, 2);
+    let mut app = dir.viewer();
+    let mut frame = scene.frame(1);
+    frame.roots = Some(vec![
+        RootEntry {
+            node: NodeId(1),
+            name: "main".into(),
+        },
+        RootEntry {
+            node: NodeId(99),
+            name: "logs".into(),
+        },
+    ]);
+    push_frame(&mut app, frame);
+    app.update();
+    let default_bar = ThemeToken::BAR_BACKGROUND.default_color();
+    assert!(
+        matches!(cell_bg(&app, 79, 23), Some(bg) if bg == default_bar || bg == Color::Indexed(4)),
+        "before the asset lands the bar wears today's default"
+    );
+    assert!(
+        settle(&mut app, |app| cell_bg(app, 79, 23)
+            == Some(Color::Indexed(4))),
+        "the bar-background token paints the configured colour: {:?}",
+        cell_bg(&app, 79, 23)
+    );
+    let active = app
+        .world()
+        .resource::<Painter>()
+        .screen()
+        .get(0, 23)
+        .unwrap()
+        .style;
+    assert_eq!(
+        active.attrs & Style::INVERSE,
+        Style::INVERSE,
+        "`tab-active = default` draws the active tab reversed"
+    );
+    assert_eq!(active.bg, Color::Indexed(4), "over the bar's fill");
+
+    dir.write("[style]\nbar-background = 'red'\n");
+    assert!(
+        settle(&mut app, |app| cell_bg(app, 79, 23)
+            == Some(Color::Indexed(1))),
+        "a theme reload repaints the bar: {:?}",
+        cell_bg(&app, 79, 23)
+    );
+    let active = app
+        .world()
+        .resource::<Painter>()
+        .screen()
+        .get(0, 23)
+        .unwrap()
+        .style;
+    assert_eq!(
+        active.bg,
+        ThemeToken::TAB_ACTIVE.default_color(),
+        "a token dropped from the file returns to its default"
+    );
+    assert_eq!(
+        active.fg,
+        Color::Indexed(1),
+        "reversed accents take the bar's fill as text"
+    );
+
+    // A newly spawned tokened entity picks up the current theme without a reload.
+    let bar = app
+        .world_mut()
+        .spawn((ThemeToken::BAR_BACKGROUND, bevy_ui::Node::default()))
+        .id();
+    app.update();
+    assert_eq!(
+        app.world().get::<CellStyle>(bar).map(|s| s.0.bg),
+        Some(Color::Indexed(1))
+    );
+
+    // An invalid edit keeps the previous theme.
+    dir.write("[style]\nbar-background = 'purple'\n");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    settle(&mut app, |_| false);
+    assert_eq!(cell_bg(&app, 79, 23), Some(Color::Indexed(1)));
+}
+
+#[test]
+fn configured_prefix_and_bindings_apply_and_reload() {
+    let dir = ConfigDir::new("prefix = 'C-a'\n[bindings]\n'|' = 'split-side'\n'%' = 'help'\n");
+    let scene = ServerScene::grid(2, 2);
+    let mut app = dir.viewer();
+    push_frame(&mut app, scene.frame(1));
+    assert!(
+        settle(&mut app, |app| *app
+            .world()
+            .resource::<fux::viewer::focus::Bindings>()
+            .prefix()
+            == KeyChord::ctrl('a')),
+        "the configured prefix is loaded"
+    );
+    take_requests(&mut app);
+
+    // The old prefix is now plain input; the new one enters prefix mode.
+    push_keys(&mut app, [key(TKey::Char('b'), Modifiers::CONTROL)]);
+    app.update();
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::Input(b"\x02".to_vec())]
+    );
+    push_keys(
+        &mut app,
+        [
+            key(TKey::Char('a'), Modifiers::CONTROL),
+            key(TKey::Char('|'), Modifiers::NONE),
+        ],
+    );
+    app.update();
+    assert!(matches!(
+        take_requests(&mut app).as_slice(),
+        [ViewerRequest::Split {
+            direction: fux::model::SplitDirection::Right,
+            template: None
+        }]
+    ));
+    // `%` was remapped away from split-side; `h` keeps its default.
+    push_keys(
+        &mut app,
+        [
+            key(TKey::Char('a'), Modifiers::CONTROL),
+            key(TKey::Char('%'), Modifiers::NONE),
+        ],
+    );
+    app.update();
+    assert!(take_requests(&mut app).is_empty(), "help is local");
+    let leaf = |app: &App, i: usize| local(app, scene.leaves[i]);
+    push_keys(
+        &mut app,
+        [
+            key(TKey::Char('a'), Modifiers::CONTROL),
+            key(TKey::Char('l'), Modifiers::NONE),
+        ],
+    );
+    app.update();
+    assert_eq!(
+        focused(&app),
+        Some(leaf(&app, 1)),
+        "defaults stay underneath"
+    );
+    take_requests(&mut app);
+    // Prefix twice sends the prefix itself.
+    push_keys(
+        &mut app,
+        [
+            key(TKey::Char('a'), Modifiers::CONTROL),
+            key(TKey::Char('a'), Modifiers::CONTROL),
+        ],
+    );
+    app.update();
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::Input(b"\x01".to_vec())]
+    );
+
+    // A reload rebinds without reconnecting: the prefix returns to C-b and `|` is unbound.
+    dir.write("[bindings]\nEsc = 'detach'\n");
+    assert!(
+        settle(&mut app, |app| *app
+            .world()
+            .resource::<fux::viewer::focus::Bindings>()
+            .prefix()
+            == KeyChord::ctrl('b')),
+        "the reload lands"
+    );
+    take_requests(&mut app);
+    push_keys(
+        &mut app,
+        [
+            key(TKey::Char('b'), Modifiers::CONTROL),
+            key(TKey::Escape, Modifiers::NONE),
+        ],
+    );
+    app.update();
+    assert_eq!(take_requests(&mut app), vec![ViewerRequest::Detach]);
+    push_keys(
+        &mut app,
+        [
+            key(TKey::Char('b'), Modifiers::CONTROL),
+            key(TKey::Char('|'), Modifiers::NONE),
+        ],
+    );
+    app.update();
+    assert!(take_requests(&mut app).is_empty(), "`|` is unbound again");
+}
+
+#[test]
+fn clipboard_policy_gates_osc_52_both_ways() {
+    let dir = ConfigDir::new("clipboard = 'disabled'\n");
+    let scene = ServerScene::grid(1, 2);
+    let mut app = dir.viewer();
+    push_frame(&mut app, scene.frame(1));
+    assert!(
+        settle(&mut app, |app| app
+            .world()
+            .resource::<Assets<ConfigAsset>>()
+            .contains(&app.world().resource::<ConfigHandle>().0)),
+        "fux.toml loads"
+    );
+    let out = |app: &mut App| core::mem::take(&mut app.world_mut().resource_mut::<Painter>().out);
+    out(&mut app);
+    let osc = b"\x1b]52;c;aGVsbG8=\x07";
+    let clipboard_frame = |seq: u64| {
+        let mut update = delta(2, 40, 23, "world");
+        update.full = false;
+        update.seq = seq;
+        update.clipboard = Some("aGVsbG8=".into());
+        SceneFrame {
+            revision: seq,
+            full: false,
+            scene: String::new(),
+            roots: None,
+            terminals: vec![update],
+            ..scene.frame(seq)
+        }
+    };
+    push_frame(&mut app, clipboard_frame(2));
+    app.update();
+    assert!(
+        !out(&mut app).windows(osc.len()).any(|w| w == osc),
+        "`disabled` drops the write"
+    );
+
+    dir.write("clipboard = 'write-only'\n");
+    assert!(
+        settle(&mut app, |app| *app.world().resource::<ClipboardPolicy>()
+            == ClipboardPolicy::WriteOnly),
+        "the policy follows the edit"
+    );
+    out(&mut app);
+    push_frame(&mut app, clipboard_frame(3));
+    app.update();
+    let bytes = out(&mut app);
+    assert_eq!(
+        bytes.windows(osc.len()).filter(|w| *w == osc).count(),
+        1,
+        "`write-only` writes once: {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+
+    dir.write("clipboard = 'off'\n");
+    assert!(
+        settle(&mut app, |app| *app.world().resource::<ClipboardPolicy>()
+            == ClipboardPolicy::Off),
+        "and back"
+    );
+    out(&mut app);
+    push_frame(&mut app, clipboard_frame(4));
+    app.update();
+    assert!(!out(&mut app).windows(osc.len()).any(|w| w == osc));
 }

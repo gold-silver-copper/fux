@@ -296,3 +296,49 @@ receives `text/event-stream` with the retained log from `cursor: 0` and, live, t
 `PaneSpawned`/`PaneOutput` items for a `fux/pane.new {split, direction}` issued while the
 stream is open; `fux --server smoke events --cursor 0` prints the same as JSON lines and
 `fux events` (no cursor) prints only new items.
+
+## 2026-09-15 — Milestone 5: `bsn!` templates and layout assets (Templates)
+
+`cargo test -p fux --test templates` (4 tests) plus `--test scenes` (8, unchanged) green,
+`check_invariants` after every step:
+
+* Syntax landed: Bevy 0.19.1's `bsn!` has no `scene(..) [ .. ] { .. }` form, so the prompt's
+  sketch becomes `workspace("default") Children [ (root("main") Node { flex_direction:
+  FlexDirection::Row } Children [ (pane(shell()) Node { flex_grow: 1.0 }), (pane(command(argv,
+  cwd)) Node { min_width: px(20.0) }) ]) ]` (`scene::templates` module docs). Helpers:
+  `workspace`, `root`, `node`, `pane`, `shell`, `command`, `default_session`. Markers needed
+  `Clone` for the blanket `FromTemplate` (Main added it); `WorkspaceName` has no `Default`, so
+  `workspace()` uses `bevy_ecs::template::template`.
+* Mechanism: a scene is resolved with the live `AssetServer`/`Assets<ScenePatch>` and spawned
+  into the same inert scratch `World` `scene::apply` uses, normalised (a `workspace()` root's
+  `Children` become `RootOrder`, a bare `root()` gets a synthetic workspace) and committed
+  through the shared `validate` → `commit` tail, so every limit, name rule and leaf rule of a RON
+  document applies to a template and a refusal leaves the World untouched.
+  `templates::spawn_workspace` (bootstrap), `templates::spawn` (append roots, `Creation::Spawn`,
+  viewers of untouched roots untouched) and `templates::apply` (replace, `Creation::Restore`).
+* `lifecycle::bootstrap` = `spawn_workspace(default_session(name, template))`: one workspace
+  `default` (`Open`, indexed), one root `main` (`TemplateRoot`, `NodeId`, `RootOf`, `ChildOf`
+  workspace, `LayoutGeneration(0)`, 100%×100%), one leaf placing a `Disabled` +
+  `Process::Starting` pane whose `PaneTemplate.argv` is the default shell and whose `Creation`
+  is `{ Server, Spawn }`; the next update emits exactly its `Effect::SpawnPane`; a duplicate
+  name is refused with nothing spawned.
+* Built-ins are `bsn!` (`scene::builtin::{two_column, two_row, three_column, main_side}`, RON
+  files deleted): `two_column` at 80x24 lays out 40|24 + 40|24 with the right pane centred at
+  60 and leaves named `left`/`right`; unknown names are `NotFound`.
+* A nested Row/Column template appended to a workspace with an existing root and viewer: names
+  and patched fields land (`node()`/`pane()` defaults survive a partial `Node { .. }` patch),
+  seven unique indexed `NodeId`s over both roots, launched panes in pre-order, 60|20 with the
+  side column split 1:3 once shown; `bsn! { Node }` refused as `Template`, a leaf with children
+  as `BadLeaf`; `templates::apply(two_row)` then adopts the two live panes in order and closes
+  the rest.
+* `LayoutAsset` (`scene/layout_asset.rs`): `AssetLoader` for `scn.ron` with the app's registry,
+  allowlist applied at load; `LayoutAssetPlugin` (registered in `app::core`) scans
+  `<config>/layouts` at `Startup` and on `scene.list` into `Layouts` handles; `scene::restore`
+  prefers the loaded asset (file still present), then the file, then a built-in. Headless with
+  `AssetPlugin { file_path: <temp config dir> }` (default `file_watcher`, no override needed):
+  a file written before startup is listed and loaded within the 2 s poll, restored as Column;
+  rewritten as Row → `AssetEvent::Modified` within the poll and the next restore is Row; an
+  invalid rewrite → `AssetLoadFailedEvent` (warned as "keeping the previously loaded document")
+  and restore still yields Row while the file on disk fails `apply` with `Parse`; a deleted file
+  is dropped from `Layouts` and `NotFound`. Pitfall: `FileWatcher` panics unless the root is
+  canonical (`/var` vs `/private/var` on macOS), so tests canonicalise the temp dir.

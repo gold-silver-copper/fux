@@ -22,7 +22,7 @@ pub fn clamp_dims(rows: u16, cols: u16) -> (u16, u16) {
 }
 
 /// Configured bounds (`[limits]` in fux.toml); never above the absolute constants.
-#[derive(Resource, Clone, Debug)]
+#[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub panes_per_workspace: usize,
     pub nodes_per_workspace: usize,

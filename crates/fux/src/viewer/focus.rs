@@ -18,6 +18,7 @@
 use core::time::Duration;
 
 use bevy_app::prelude::*;
+use bevy_asset::{AssetEvent, AssetEventSystems, AssetServer, Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemId;
 use bevy_input::ButtonState;
@@ -47,19 +48,47 @@ use super::keys::{self, KeyChord};
 use super::paint::CellRect;
 use super::replicate::{Grid, Replicated, Roots, ShowingRoot, TargetPane};
 use super::{LocalCamera, Mode, Outbox, ViewerSystems, Viewport};
+use crate::assets::Keybindings;
 use crate::model::{NodeId, PaneId, Shows, SplitDirection, ViewerRequest, Zoomed};
 use crate::wire::Modes;
 
-/// Prefix-mode chords bound to one-shot systems (`world.register_system`).
+/// Prefix-mode chords bound to one-shot systems (`world.register_system`): the loaded
+/// [`Keybindings`] resolved through the [`Actions`] registry. Rebuilt on every reload.
 #[derive(Resource)]
 pub struct Bindings {
-    pub prefix: KeyChord,
+    pub table: Keybindings,
     map: HashMap<KeyChord, SystemId>,
 }
 
 impl Bindings {
+    pub fn prefix(&self) -> &KeyChord {
+        &self.table.prefix
+    }
+
     pub fn get(&self, chord: &KeyChord) -> Option<SystemId> {
         self.map.get(chord).copied()
+    }
+
+    fn build(table: &Keybindings, actions: &Actions) -> Self {
+        let map = table
+            .bindings
+            .iter()
+            .filter_map(|(chord, name)| Some((chord.clone(), actions.get(name)?)))
+            .collect();
+        Self {
+            table: table.clone(),
+            map,
+        }
+    }
+}
+
+/// Action name → registered one-shot system; the closed set config may bind.
+#[derive(Resource)]
+pub struct Actions(HashMap<&'static str, SystemId>);
+
+impl Actions {
+    pub fn get(&self, name: &str) -> Option<SystemId> {
+        self.0.get(name).copied()
     }
 }
 
@@ -93,7 +122,9 @@ pub enum ViewerRequestKind {
     ClosePane,
 }
 
-const HELP: &str = "C-b: % split right  \" split below  x close  hjkl/o move  n/p/c roots  z zoom  [ copy  d detach";
+/// Recomputed from the bindings when they change.
+#[derive(Resource, Default)]
+struct HelpText(String);
 
 fn effective_mode(state: &State<Mode>, next: &NextState<Mode>) -> Mode {
     match next {
@@ -136,7 +167,7 @@ fn on_key(
     let focused = ev.focused_entity;
     match effective_mode(&state, &next) {
         Mode::Normal => {
-            if chord == bindings.prefix {
+            if chord == *bindings.prefix() {
                 next.set(Mode::Prefix);
                 return;
             }
@@ -150,16 +181,9 @@ fn on_key(
         }
         Mode::Prefix => {
             next.set(Mode::Normal);
-            if chord == bindings.prefix {
-                buf.clear();
-                if keys::encode(&ev.input, Modes::default(), &mut buf) && leaves.contains(focused) {
-                    outbox.push(ViewerRequest::Input(buf.clone()));
-                }
-                return;
-            }
             match bindings.get(&chord) {
                 Some(system) => commands.run_system(system),
-                None => notice.0 = Some(format!("unbound: {:?}", chord.key)),
+                None => notice.0 = Some(format!("unbound: {chord}")),
             }
         }
         Mode::Confirm => {
@@ -547,49 +571,114 @@ fn copy_mode(mut next: ResMut<NextState<Mode>>) {
     next.set(Mode::CopyMode);
 }
 
-fn help(mut notice: ResMut<PendingNotice>) {
-    notice.0 = Some(HELP.into());
+fn help(text: Res<HelpText>, mut notice: ResMut<PendingNotice>) {
+    notice.0 = Some(text.0.clone());
 }
 
-/// Registers the one-shot systems and the chord table.
-pub fn register_bindings(world: &mut World) {
-    let mut map = HashMap::default();
-    let mut bind = |chord: KeyChord, id: SystemId| {
-        map.insert(chord, id);
-    };
-    bind(KeyChord::character('%'), world.register_system(split_right));
-    bind(KeyChord::character('"'), world.register_system(split_below));
-    bind(
-        KeyChord::character('x'),
-        world.register_system(confirm_close),
-    );
-    bind(KeyChord::character('h'), world.register_system(nav_west));
-    bind(KeyChord::character('j'), world.register_system(nav_south));
-    bind(KeyChord::character('k'), world.register_system(nav_north));
-    bind(KeyChord::character('l'), world.register_system(nav_east));
-    let next = world.register_system(next_pane);
-    bind(KeyChord::character('o'), next);
-    bind(KeyChord::plain(Key::Tab), next);
-    bind(KeyChord::shift(Key::Tab), world.register_system(prev_pane));
-    bind(KeyChord::character('n'), world.register_system(next_root));
-    bind(KeyChord::character('p'), world.register_system(prev_root));
-    bind(KeyChord::character('c'), world.register_system(new_root));
-    bind(KeyChord::character('d'), world.register_system(detach));
-    bind(KeyChord::character('z'), world.register_system(toggle_zoom));
-    bind(KeyChord::character('['), world.register_system(copy_mode));
-    bind(KeyChord::character('?'), world.register_system(help));
-    world.insert_resource(Bindings {
-        prefix: KeyChord::ctrl('b'),
-        map,
-    });
+/// Sends the prefix key itself to the focused pane (`prefix prefix` by default).
+fn send_prefix(
+    bindings: Res<Bindings>,
+    focus: Res<InputFocus>,
+    leaves: Query<&Shows>,
+    mut outbox: ResMut<Outbox>,
+    mut buf: Local<Vec<u8>>,
+) {
+    if !focus.get().is_some_and(|e| leaves.contains(e)) {
+        return;
+    }
+    buf.clear();
+    if bindings.prefix().bytes(&mut buf) {
+        outbox.push(ViewerRequest::Input(buf.clone()));
+    }
 }
+
+/// Every bindable action by name; `[bindings]` values are validated against this list.
+pub const ACTIONS: &[(&str, fn(&mut World) -> SystemId)] = &[
+    ("split-side", |w| w.register_system(split_right)),
+    ("split-below", |w| w.register_system(split_below)),
+    ("close-pane", |w| w.register_system(confirm_close)),
+    ("focus-left", |w| w.register_system(nav_west)),
+    ("focus-down", |w| w.register_system(nav_south)),
+    ("focus-up", |w| w.register_system(nav_north)),
+    ("focus-right", |w| w.register_system(nav_east)),
+    ("next-pane", |w| w.register_system(next_pane)),
+    ("prev-pane", |w| w.register_system(prev_pane)),
+    ("next-root", |w| w.register_system(next_root)),
+    ("prev-root", |w| w.register_system(prev_root)),
+    ("new-root", |w| w.register_system(new_root)),
+    ("detach", |w| w.register_system(detach)),
+    ("zoom", |w| w.register_system(toggle_zoom)),
+    ("copy-mode", |w| w.register_system(copy_mode)),
+    ("help", |w| w.register_system(help)),
+    ("send-prefix", |w| w.register_system(send_prefix)),
+];
+
+/// Registers the one-shot systems and the default chord table; the loaded `fux.toml#bindings`
+/// replaces the table through [`reload_bindings`].
+pub fn register_bindings(world: &mut World) {
+    let actions = Actions(
+        ACTIONS
+            .iter()
+            .map(|(name, register)| (*name, register(world)))
+            .collect(),
+    );
+    let table = Keybindings::default();
+    world.insert_resource(HelpText(help_text(&table)));
+    world.insert_resource(Bindings::build(&table, &actions));
+    world.insert_resource(actions);
+}
+
+fn help_text(table: &Keybindings) -> String {
+    let mut text = format!("{}:", table.prefix);
+    for (chord, action) in table.sorted() {
+        text.push(' ');
+        text.push_str(&chord);
+        text.push(' ');
+        text.push_str(action);
+    }
+    text
+}
+
+/// Applies a loaded or reloaded `fux.toml#bindings` without reconnecting.
+fn reload_bindings(
+    mut events: MessageReader<AssetEvent<Keybindings>>,
+    handle: Res<BindingsHandle>,
+    tables: Res<Assets<Keybindings>>,
+    actions: Res<Actions>,
+    mut bindings: ResMut<Bindings>,
+    mut help: ResMut<HelpText>,
+) {
+    let changed = events.read().any(|event| {
+        matches!(event, AssetEvent::Added { id } | AssetEvent::Modified { id } if *id == handle.0.id())
+    });
+    if !changed {
+        return;
+    }
+    let Some(table) = tables.get(&handle.0) else {
+        return;
+    };
+    if bindings.table == *table {
+        return;
+    }
+    *bindings = Bindings::build(table, &actions);
+    help.0 = help_text(table);
+}
+
+/// The viewer's `fux.toml#bindings` handle.
+#[derive(Resource, Debug, Clone)]
+pub struct BindingsHandle(pub Handle<Keybindings>);
 
 pub struct FocusPlugin;
 
 impl Plugin for FocusPlugin {
     fn build(&self, app: &mut App) {
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load(crate::assets::BINDINGS_PATH);
         app.init_resource::<PendingTarget>()
             .init_resource::<PendingConfirm>()
+            .insert_resource(BindingsHandle(handle))
             .add_message::<Ime>()
             .add_systems(
                 PreUpdate,
@@ -601,9 +690,12 @@ impl Plugin for FocusPlugin {
             .add_systems(Update, sync_focus.in_set(ViewerSystems::Focus))
             .add_systems(
                 PostUpdate,
-                rebuild_nav_map
-                    .after(bevy_ui::UiSystems::PostLayout)
-                    .before(InputFocusSystems::FocusChangeEvents),
+                (
+                    reload_bindings.after(AssetEventSystems),
+                    rebuild_nav_map
+                        .after(bevy_ui::UiSystems::PostLayout)
+                        .before(InputFocusSystems::FocusChangeEvents),
+                ),
             )
             .add_observer(on_key)
             .add_observer(on_paste)

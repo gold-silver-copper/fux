@@ -5195,6 +5195,7 @@ name = "zor"
 version = "1.0.0-alpha.1"
 dependencies = [
  "async-channel",
+ "async-io",
  "bevy_app",
  "bevy_asset",
  "bevy_color",
@@ -5213,6 +5214,7 @@ dependencies = [
  "bevy_utils",
  "bevy_world_serialization",
  "clap",
+ "fux",
  "nix 0.30.1",
  "ron 0.10.1",
  "serde",

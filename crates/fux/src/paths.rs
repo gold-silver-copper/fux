@@ -87,10 +87,14 @@ impl Paths {
         })
     }
 
-    /// Creates the runtime and state directories privately (0700) and verifies ownership.
+    /// Creates the runtime and state directories privately (0700) and verifies ownership, and
+    /// the config directory (a plain directory: it holds no secrets) so the asset watcher has
+    /// something to watch before `fux.toml` is written.
     pub fn prepare(&self) -> Result<(), PathError> {
         private_dir(&self.runtime_dir)?;
-        private_dir(&self.state_dir)
+        private_dir(&self.state_dir)?;
+        fs::create_dir_all(&self.config_dir)
+            .map_err(|error| PathError::Io(self.config_dir.clone(), error))
     }
 
     pub fn descriptor(&self, server: &str) -> PathBuf {

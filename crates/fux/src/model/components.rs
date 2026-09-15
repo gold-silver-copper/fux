@@ -15,45 +15,45 @@ use super::ids::{NodeId, PaneId, ViewerId, WorkspaceName};
 // ---------------------------------------------------------------------------------------------
 
 /// The single server entity.
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct Server;
 
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct Workspace;
 
 /// A pane: the shared process entity (`Terminal`, PTY identity, receipts).
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct Pane;
 
 /// A template node: part of an inert `Node` subgraph per root, never laid out (no camera).
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct TemplateNode;
 
 /// A template root: a "tab". Carries `RootOf`, `LayoutGeneration`, `Name`.
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct TemplateRoot;
 
 /// An instance node: one clone of a template subtree per viewer showing it, laid out against
 /// that viewer's camera.
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct InstanceNode;
 
 /// A template leaf whose subtree is a scene streamed by another app (prompt 3.13).
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct Surface;
 
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct Viewer;
 
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct ControlClient;
 
@@ -223,7 +223,7 @@ pub struct ViewerCamera(pub Entity);
 pub struct ViewerPointer(pub Entity);
 
 /// An exact attachment: `Targets` cannot be retargeted and loss of the pane detaches the viewer.
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct ExactTarget;
 
@@ -258,7 +258,7 @@ pub struct Notice {
     pub timer: Timer,
 }
 
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct Detaching;
 
@@ -267,7 +267,7 @@ pub struct Detaching;
 // ---------------------------------------------------------------------------------------------
 
 /// A workspace accepting new panes and viewers.
-#[derive(Component, Reflect, Debug, Default)]
+#[derive(Component, Reflect, Clone, Debug, Default)]
 #[reflect(Component)]
 pub struct Open;
 

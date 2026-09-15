@@ -1,5 +1,6 @@
-//! Scenes (prompt 3.4 "Scenes", 3.8 file discipline, 3.9 `fux/scene.*`): a workspace's layout
-//! as a `DynamicWorld` of the allowlisted **template** subgraph, serialised as RON.
+//! Scenes (prompt 3.4 "Scenes", 3.7 templates, 3.8 file discipline, 3.9 `fux/scene.*`): a
+//! workspace's layout as a `DynamicWorld` of the allowlisted **template** subgraph, serialised
+//! as RON, or as a typed `bsn!` template.
 //!
 //! * [`export`] extracts, for one workspace, a synthetic workspace entity (`WorkspaceName`,
 //!   `RootOrder`), every template node of every root in order (`Node`, `ChildOf`/`Children`,
@@ -13,18 +14,23 @@
 //!   own. A plain scene references existing panes by `PaneId` and never launches a process; a
 //!   *template scene* (leaves carrying `PaneTemplate`, or pane entities whose `PaneId` no longer
 //!   resolves but carry `LaunchAttribution`) launches through the same `Requests` path as any
-//!   spawn.
+//!   spawn. [`templates`] feeds `bsn!` scenes through the same validate-then-commit tail.
 //! * [`save`]/[`load`]/[`list`] keep documents under `<config_dir>/layouts/<name>.scn.ron`
-//!   (atomic write: temp + rename); [`restore`] loads a user file or a [`builtin`] and applies
-//!   it. Users write layouts as scene assets and select them by name.
+//!   (atomic write: temp + rename). Those files are also [`LayoutAsset`]s: loaded through the
+//!   `AssetServer` and hot-reloaded by its file watcher, so [`restore`] prefers the loaded asset
+//!   of that name, then the file, then a [`builtin`] template.
 
 pub mod builtin;
+mod layout_asset;
+pub mod templates;
+
+pub use layout_asset::{LayoutAsset, LayoutAssetLoader, LayoutAssetPlugin, Layouts, scan};
 
 use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use bevy_asset::AssetServer;
+use bevy_asset::{AssetServer, Assets};
 use bevy_ecs::entity::EntityHashMap;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::*;
@@ -131,6 +137,9 @@ pub enum SceneError {
     },
     NoLayoutDir,
     Io(String),
+    /// A `bsn!` template could not be resolved or spawned, or has a shape no workspace layout
+    /// can take (its root is neither a workspace nor a template root, a workspace has no name).
+    Template(String),
 }
 
 impl core::fmt::Display for SceneError {
@@ -201,6 +210,7 @@ impl core::fmt::Display for SceneError {
             Self::TooLarge { bytes, max } => write!(f, "document of {bytes} bytes exceeds {max}"),
             Self::NoLayoutDir => write!(f, "no layout directory is configured"),
             Self::Io(e) => write!(f, "{e}"),
+            Self::Template(e) => write!(f, "template: {e}"),
         }
     }
 }
@@ -403,20 +413,55 @@ pub fn apply(
     document: &str,
     options: &ApplyOptions,
 ) -> R<ApplyReport> {
-    check_workspace(world, workspace)?;
-    if world.get::<Open>(workspace).is_none() {
-        return Err(LayoutError::WorkspaceRetiring(workspace).into());
-    }
     if document.len() > MAX_DOCUMENT_BYTES {
         return Err(SceneError::TooLarge {
             bytes: document.len(),
             max: MAX_DOCUMENT_BYTES,
         });
     }
-    let old_roots: Vec<Entity> = world
-        .get::<RootOrder>(workspace)
-        .map(|o| o.0.clone())
-        .unwrap_or_default();
+    begin(world, workspace, options)?;
+    let old_roots = roots_of(world, workspace);
+    let dynamic = parse(world, document)?;
+    let (mut scratch, entities) = scratch_world(world, &dynamic)?;
+    finish(
+        world,
+        workspace,
+        &mut scratch,
+        &entities,
+        &old_roots,
+        options,
+        CreationKind::Restore,
+    )
+}
+
+/// [`apply`] for an already parsed document (a loaded [`LayoutAsset`], a session snapshot).
+pub fn apply_dynamic(
+    world: &mut World,
+    workspace: Entity,
+    document: &DynamicWorld,
+    options: &ApplyOptions,
+) -> R<ApplyReport> {
+    begin(world, workspace, options)?;
+    let old_roots = roots_of(world, workspace);
+    let (mut scratch, entities) = scratch_world(world, document)?;
+    finish(
+        world,
+        workspace,
+        &mut scratch,
+        &entities,
+        &old_roots,
+        options,
+        CreationKind::Restore,
+    )
+}
+
+/// The checks every apply makes before reading its document: a live open workspace whose roots
+/// are as the caller expects.
+pub(crate) fn begin(world: &World, workspace: Entity, options: &ApplyOptions) -> R<()> {
+    check_workspace(world, workspace)?;
+    if world.get::<Open>(workspace).is_none() {
+        return Err(LayoutError::WorkspaceRetiring(workspace).into());
+    }
     if let Some(expected) = &options.expected {
         let current: Vec<(NodeId, u64)> = root_states(world, workspace)
             .into_iter()
@@ -429,18 +474,31 @@ pub fn apply(
             });
         }
     }
+    Ok(())
+}
 
-    let dynamic = parse(world, document)?;
-    let (mut scratch, entities) = scratch_world(world, &dynamic)?;
-    let plan = validate(
-        world,
-        &mut scratch,
-        &entities,
-        workspace,
-        &old_roots,
-        options,
-    )?;
-    Ok(commit(world, workspace, &old_roots, plan))
+/// The workspace's template roots in `RootOrder` order.
+pub(crate) fn roots_of(world: &World, workspace: Entity) -> Vec<Entity> {
+    world
+        .get::<RootOrder>(workspace)
+        .map(|o| o.0.clone())
+        .unwrap_or_default()
+}
+
+/// Validates the scratch World against the live one and commits: `old_roots` (all of the
+/// workspace's roots for an apply, none for a template spawn that appends) are replaced by the
+/// document's roots; launched panes carry `Creation` of `kind`.
+pub(crate) fn finish(
+    world: &mut World,
+    workspace: Entity,
+    scratch: &mut World,
+    entities: &[Entity],
+    old_roots: &[Entity],
+    options: &ApplyOptions,
+    kind: CreationKind,
+) -> R<ApplyReport> {
+    let plan = validate(world, scratch, entities, workspace, old_roots, options)?;
+    Ok(commit(world, workspace, old_roots, plan, kind))
 }
 
 fn parse(world: &World, document: &str) -> R<DynamicWorld> {
@@ -487,10 +545,9 @@ fn allowed(type_id: core::any::TypeId) -> bool {
     .contains(&type_id)
 }
 
-/// An inert World holding the document: same registry, an `Ids` index for the id hooks,
-/// relationship hooks skipped (`Children` comes from the document as written). Returns the
-/// scratch entities in document order (resources are entities too; they are not part of it).
-fn scratch_world(world: &World, dynamic: &DynamicWorld) -> R<(World, Vec<Entity>)> {
+/// The static part of what [`apply`] refuses: resources, and registered components outside the
+/// layout allowlist. The asset loader applies it to every file it reads.
+pub(crate) fn check_allowlist(dynamic: &DynamicWorld) -> R<()> {
     if !dynamic.resources.is_empty() {
         return Err(SceneError::ResourcesNotAllowed);
     }
@@ -504,10 +561,24 @@ fn scratch_world(world: &World, dynamic: &DynamicWorld) -> R<(World, Vec<Entity>
             }
         }
     }
-    let registry = world.resource::<AppTypeRegistry>().clone();
+    Ok(())
+}
+
+/// An empty inert World: the live World's registry and an `Ids` index for the id hooks.
+pub(crate) fn empty_scratch(world: &World) -> World {
     let mut scratch = World::new();
-    scratch.insert_resource(registry.clone());
+    scratch.insert_resource(world.resource::<AppTypeRegistry>().clone());
     scratch.init_resource::<Ids>();
+    scratch
+}
+
+/// An inert World holding the document, relationship hooks skipped (`Children` comes from the
+/// document as written). Returns the scratch entities in document order (resources are entities
+/// too; they are not part of it).
+fn scratch_world(world: &World, dynamic: &DynamicWorld) -> R<(World, Vec<Entity>)> {
+    check_allowlist(dynamic)?;
+    let registry = world.resource::<AppTypeRegistry>().clone();
+    let mut scratch = empty_scratch(world);
     let mut map = EntityHashMap::<Entity>::default();
     dynamic
         .write_to_world_with(&mut scratch, &mut map, &registry.read())
@@ -930,25 +1001,33 @@ fn adopt(
 
 /// Writes the plan: old roots go, new roots are built with the unchecked `layout::ops`
 /// constructors (every check they skip was made against the plan, so nothing here can
-/// refuse and leave the workspace half-written), viewers follow their panes.
-fn commit(world: &mut World, workspace: Entity, old_roots: &[Entity], plan: Plan) -> ApplyReport {
+/// refuse and leave the workspace half-written), viewers of the replaced roots follow their
+/// panes. Viewers showing a root that stays (a template spawn appends) are left alone.
+fn commit(
+    world: &mut World,
+    workspace: Entity,
+    old_roots: &[Entity],
+    plan: Plan,
+    kind: CreationKind,
+) -> ApplyReport {
     let viewers: Vec<(Entity, bool, Option<usize>, Option<Entity>)> = world
         .get::<ViewedBy>(workspace)
         .map(|v| v.iter().collect::<Vec<_>>())
         .unwrap_or_default()
         .into_iter()
-        .map(|viewer| {
+        .filter_map(|viewer| {
             let exact = world.get::<ExactTarget>(viewer).is_some();
-            let index = world
-                .get::<Showing>(viewer)
-                .and_then(|s| old_roots.iter().position(|r| *r == s.0));
+            let index = match world.get::<Showing>(viewer) {
+                Some(showing) => Some(old_roots.iter().position(|r| *r == showing.0)?),
+                None => None,
+            };
             let target = world.get::<Targets>(viewer).map(|t| t.0);
-            (viewer, exact, index, target)
+            Some((viewer, exact, index, target))
         })
         .collect();
 
     if let Some(mut order) = world.get_mut::<RootOrder>(workspace) {
-        order.0.clear();
+        order.0.retain(|r| !old_roots.contains(r));
     }
     for &root in old_roots {
         world.despawn(root);
@@ -970,7 +1049,14 @@ fn commit(world: &mut World, workspace: Entity, old_roots: &[Entity], plan: Plan
         let root = ops::create_root(world, workspace, name);
         world.entity_mut(root).insert(plan_root.node.clone());
         decorate(world, root, &plan_root);
-        build_children(world, workspace, root, plan_root.children, &mut report);
+        build_children(
+            world,
+            workspace,
+            root,
+            plan_root.children,
+            &mut report,
+            kind,
+        );
         let generation = world.get::<LayoutGeneration>(root).map_or(0, |g| g.0);
         report.roots.push((root, generation));
     }
@@ -1035,6 +1121,7 @@ fn build_children(
     parent: Entity,
     children: Vec<PlanNode>,
     report: &mut ApplyReport,
+    kind: CreationKind,
 ) {
     for mut child in children {
         let template = match &mut child.leaf {
@@ -1053,14 +1140,14 @@ fn build_children(
                 if let Some(pane) = world.get::<Places>(node).map(|p| p.0) {
                     world.entity_mut(pane).insert(Creation {
                         requesters: vec![Requester::Server],
-                        kind: CreationKind::Restore,
+                        kind,
                     });
                     report.launched.push(pane);
                 }
             }
             None => {}
         }
-        build_children(world, workspace, node, child.children, report);
+        build_children(world, workspace, node, child.children, report, kind);
     }
 }
 
@@ -1167,18 +1254,10 @@ pub fn list(dir: &Path) -> R<Vec<String>> {
     Ok(names)
 }
 
-/// The saved layout `name`, or the built-in of that name when no file exists.
-pub fn document_named(dir: &Path, name: &str) -> R<String> {
-    match load(dir, name) {
-        Err(SceneError::NotFound(_)) => builtin::document(name)
-            .map(str::to_owned)
-            .ok_or_else(|| SceneError::NotFound(name.to_owned())),
-        other => other,
-    }
-}
-
-/// [`document_named`] + [`apply`] with templates allowed (restoring a layout launches what it
-/// needs).
+/// Restores the layout `name` into `workspace` with templates allowed (restoring a layout
+/// launches what it needs): the loaded [`LayoutAsset`] of that name when the file still
+/// exists, else the file itself (`<dir>/<name>.scn.ron`, not yet loaded or no asset server),
+/// else the [`builtin`] template of that name. A user file thus shadows a built-in.
 pub fn restore(
     world: &mut World,
     workspace: Entity,
@@ -1186,12 +1265,27 @@ pub fn restore(
     name: &str,
     options: &ApplyOptions,
 ) -> R<ApplyReport> {
-    let document = document_named(dir, name)?;
     let options = ApplyOptions {
         allow_templates: true,
         ..options.clone()
     };
-    apply(world, workspace, &document, &options)
+    if let Some(handle) = layout_asset::loaded(world, dir, name) {
+        return world.resource_scope(|world, assets: Mut<Assets<LayoutAsset>>| {
+            let asset = assets
+                .get(&handle)
+                .ok_or_else(|| SceneError::NotFound(name.to_owned()))?;
+            apply_dynamic(world, workspace, &asset.document, &options)
+        });
+    }
+    match load(dir, name) {
+        Ok(document) => apply(world, workspace, &document, &options),
+        Err(SceneError::NotFound(_)) => {
+            let scene =
+                builtin::scene(name).ok_or_else(|| SceneError::NotFound(name.to_owned()))?;
+            templates::apply(world, workspace, scene, &options)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
