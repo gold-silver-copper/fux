@@ -11,12 +11,12 @@ observed result; blockers are recorded where they were found.
   documented in `docs/dependencies.md`.
 * CI workflow `.github/workflows/ci.yml`: fmt, clippy, build, test, doc, package, deps report.
 
-### Blocker recorded (section 7): render crates in the graph
+### Accepted deviation: render crates in the graph (user-approved 2026-09-15)
 
 `bevy_remote` 0.19.1 hard-depends on `bevy_dev_tools`, which hard-depends on `bevy_render`
 (details and the enforced replacement rule in `docs/dependencies.md`). The prompt's "no wgpu in
 the resolved graph" acceptance rule contradicts Bevy source and neither the precedence rule of
-section 1 nor the forking policy of section 2 resolves it (Bevy crates are never forked). Decision
+section 1 nor the forking policy of section 2 resolves it (Bevy crates are never forked). The user accepted wgpu in the graph. Decision
 taken: keep `bevy_remote` as published, never use render types, enforce the narrowed rule in
 `xtask deps`, and propose the upstream change. No milestone task depends on this beyond the
 report itself.

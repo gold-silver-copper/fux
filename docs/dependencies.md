@@ -11,7 +11,7 @@ under `[workspace.dependencies]`. `bevy_camera`, `bevy_math` and `bevy_color` ar
 explicitly because fux names their types (`Camera`, `RenderTarget`, `UVec2`, `Color`); they were
 already in the graph through `bevy_ui`.
 
-## Recorded deviation: `bevy_render` is in the resolved graph
+## Accepted deviation: `bevy_render` is in the resolved graph (user-approved 2026-09-15)
 
 Prompt section 2 sets the acceptance rule "no `wgpu`, `wgpu-hal`, `naga` in the resolved graph".
 That rule cannot be met with `bevy_remote` 0.19.1 as published:

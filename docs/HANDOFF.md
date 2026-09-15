@@ -10,7 +10,7 @@ behavioural oracle. Bevy source: `../many_rigs/inspirations/bevy` (0.19.1).
 Milestone 2: fux App shell (prompt section 6.2).
 
 ## Open blockers
-* `bevy_render` in graph via `bevy_remote -> bevy_dev_tools` (docs/dependencies.md).
+* none. `bevy_render` in graph via `bevy_remote -> bevy_dev_tools` is an accepted deviation (docs/dependencies.md).
 
 ## Resume
 ```
