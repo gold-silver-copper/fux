@@ -1,0 +1,37 @@
+[package]
+name = "zor"
+version = "1.0.0-alpha.1"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Agent and task policy layer over fux, as a Bevy App"
+
+[dependencies]
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+bevy_reflect.workspace = true
+bevy_state.workspace = true
+bevy_time.workspace = true
+bevy_log.workspace = true
+bevy_diagnostic.workspace = true
+bevy_tasks.workspace = true
+bevy_asset.workspace = true
+bevy_scene.workspace = true
+bevy_world_serialization.workspace = true
+bevy_remote.workspace = true
+bevy_ui.workspace = true
+bevy_math.workspace = true
+bevy_color.workspace = true
+async-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ron.workspace = true
+clap.workspace = true
+toml.workspace = true
+nix.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

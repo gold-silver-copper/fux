@@ -1,0 +1,53 @@
+[package]
+name = "fux"
+version = "1.0.0-alpha.1"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Persistent terminal multiplexer whose session is a bevy_ui scene"
+
+[features]
+default = []
+bell = ["dep:bevy_audio"]
+
+[dependencies]
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+bevy_reflect.workspace = true
+bevy_state.workspace = true
+bevy_time.workspace = true
+bevy_log.workspace = true
+bevy_diagnostic.workspace = true
+bevy_tasks.workspace = true
+bevy_asset.workspace = true
+bevy_scene.workspace = true
+bevy_world_serialization.workspace = true
+bevy_remote.workspace = true
+bevy_input.workspace = true
+bevy_input_focus.workspace = true
+bevy_window.workspace = true
+bevy_ui.workspace = true
+bevy_picking.workspace = true
+bevy_transform.workspace = true
+bevy_camera.workspace = true
+bevy_math.workspace = true
+bevy_color.workspace = true
+bevy_audio = { workspace = true, optional = true }
+async-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ron.workspace = true
+clap.workspace = true
+toml.workspace = true
+portable-pty.workspace = true
+nix.workspace = true
+vt100.workspace = true
+termina.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

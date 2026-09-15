@@ -1,0 +1,77 @@
+# Virtual workspace for the ECS-native rewrite: fux (multiplexer) and zor (agent policy) are
+# separate Bevy Apps sharing one lockfile. `tools/xtask` keeps its own workspace.
+[workspace]
+resolver = "3"
+members = ["crates/fux", "crates/zor"]
+exclude = ["tools/xtask", "references"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.95"
+
+[workspace.dependencies]
+bevy_app            = { version = "=0.19.1", default-features = false, features = ["std", "bevy_reflect"] }
+bevy_ecs            = { version = "=0.19.1", default-features = false, features = ["std", "bevy_reflect", "serialize", "multi_threaded"] }
+bevy_reflect        = { version = "=0.19.1", default-features = false, features = ["std"] }
+bevy_state          = { version = "=0.19.1", default-features = false, features = ["std", "bevy_app", "bevy_reflect"] }
+bevy_time           = { version = "=0.19.1", default-features = false }
+bevy_log            = { version = "=0.19.1", default-features = false }
+bevy_diagnostic     = { version = "=0.19.1", default-features = false, features = ["std"] }
+bevy_tasks          = { version = "=0.19.1", default-features = false, features = ["async-io", "multi_threaded"] }
+bevy_asset          = { version = "=0.19.1", default-features = false, features = ["file_watcher"] }
+bevy_scene          = { version = "=0.19.1", default-features = false }
+bevy_world_serialization = { version = "=0.19.1", default-features = false, features = ["serialize"] }
+bevy_remote         = { version = "=0.19.1", default-features = false, features = ["http"] }
+bevy_input          = { version = "=0.19.1", default-features = false, features = ["std", "bevy_reflect", "keyboard", "mouse"] }
+bevy_input_focus    = { version = "=0.19.1", default-features = false, features = ["std", "bevy_reflect", "keyboard"] }
+bevy_window         = { version = "=0.19.1", default-features = false, features = ["std", "bevy_reflect"] }
+bevy_ui             = { version = "=0.19.1", default-features = false }
+bevy_picking        = { version = "=0.19.1", default-features = false }
+bevy_transform      = { version = "=0.19.1", default-features = false, features = ["std"] }
+bevy_camera         = { version = "=0.19.1", default-features = false }
+bevy_math           = { version = "=0.19.1", default-features = false, features = ["std"] }
+bevy_color          = { version = "=0.19.1", default-features = false, features = ["std"] }
+bevy_audio          = { version = "=0.19.1", default-features = false, features = ["wav"] }
+async-channel = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ron = "0.10"
+clap = { version = "4.5", features = ["derive"] }
+toml = "0.9"
+portable-pty = "=0.9.0"
+nix = { version = "0.30", features = ["fs", "poll", "signal", "term", "user", "process"] }
+vt100 = "=0.16.2"
+termina = "0.3.3"
+unicode-width = "0.2.0"
+proptest = "1.7"
+tempfile = "3"
+
+[workspace.lints.rust]
+dead_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+clone_on_ref_ptr = "deny"
+semicolon_if_nothing_returned = "deny"
+manual_let_else = "deny"
+uninlined_format_args = "deny"
+str_to_string = "deny"
+map_unwrap_or = "deny"
+explicit_iter_loop = "deny"
+exit = "deny"
+mem_forget = "deny"
+float_cmp = "deny"
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+panic = "deny"
+string_slice = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
