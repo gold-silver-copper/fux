@@ -427,3 +427,38 @@ green on the new default.
 Recorded trade-off (also in `docs/security.md`): an unauthenticated local process can hold
 the 256 slots for 10 s at a time and make BRP refuse others meanwhile; the listener always
 recovers, which `RemoteHttpPlugin` under a 256-descriptor limit does not.
+
+## 2026-09-15 — Milestone 6 integration record (Main)
+
+Commit `a3bab88` (+ fmt fix). `cargo fmt --all --check`, `cargo clippy --workspace --all-targets
+-- -D warnings` clean (`too_many_arguments` allowed workspace-wide beside `type_complexity`:
+Bevy systems take their world access as parameters). `cargo test -p fux`: 204 green
+(adds `brp_exhaustion` 8, `viewer_pty` 3, viewer chrome cases); `cargo test -p zor`: 71 green
+(`model` 5, `journal`, `remote` 5, `fux_client` (real fux binary), `lifecycle`, `run`, `checks` 10,
+`worktrees` (real git repo), `groups`, `providers` 6).
+
+zor foundation and milestone 6 land the whole section-4.1 model: `crates/zor/docs/model.md`
+numbers 28 invariants with contract line references; the structural twelve are enforced by
+`check_invariants` after every update in every zor test; the temporal ones are each covered by
+a lifecycle/checks/groups/worktrees/providers test named in the slice records above.
+
+Real-process smoke (fux `smoke` server + `zor serve --name default` with `FUX_BRP`, disposable
+XDG dirs): `zor zor/server.info` answers over its own 0600 descriptor; `zor run --timeout 20 --
+sh -c 'echo HI_FROM_ZOR; exit 3'` creates an ephemeral fux workspace, launches, waits for
+`fux/pane.final` evidence, prints `HI_FROM_ZOR`, exits 3 in 0.18 s wall; afterwards
+`fux/workspace.list` shows only `default` (ephemeral workspace retired), `zor/task.list` shows
+the task `open` with its finished attempt, and `<state>/zor/journal.scn.ron` (2.4 KiB, 0600)
+holds it.
+
+BRP resource exhaustion (BrpHardening record above): under the default macOS 256-fd limit
+`RemoteHttpPlugin`'s accept loop dies permanently after ~120 idle connections, so the
+section-3.9 fallback is now the default transport: `remote/http.rs`, a bounded hyper acceptor
+feeding the same `BrpSender` (1 MiB body, 64-element batch, 256 connections, 10 s header/body
+deadlines, accept errors retried); `RemoteHttpPlugin` stays selectable and unforked.
+`docs/security.md` written.
+
+fux viewer completes prompt 3.11: tab/workspace choosers (list idiom, dismissal on focus loss),
+rename/new-workspace prompts (edit queue), confirmations (popover placement), copy mode
+(history via `pane.capture`, selection, search, OSC 52 yank), focus history ring, help panel;
+`tests/viewer_pty.rs` drives the real binary over a pty: SIGWINCH relayout within one update,
+panic restores the terminal, chooser dismisses on click.

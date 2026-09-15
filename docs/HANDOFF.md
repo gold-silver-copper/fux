@@ -16,7 +16,11 @@ behavioural oracle. Bevy source: `../many_rigs/inspirations/bevy` (0.19.1).
 4. Events, retained log, `fux/events+watch`, `world.observe+watch`, receipts, final records,
    diagnostics, bell (commit `e378fa3`); milestone-3 review applied; `fux events` CLI.
 
-## Module ownership (milestones 2-4)
+5. Assets, `bsn!` templates, session persistence/restore (commit `8696ad4`).
+6. zor: foundation (`9e316cb`), lifecycle/checks/groups/worktrees/providers (`a3bab88`);
+   fux viewer chrome completion, bounded BRP acceptor, review fixes (same commit).
+
+## Module ownership (milestones 2-6)
 
 Module ownership (one owner per file; shared contracts live in `model/` and `wire.rs`):
 
@@ -34,9 +38,10 @@ Module ownership (one owner per file; shared contracts live in `model/` and `wir
 | `app.rs`, `runner.rs`, `cli.rs`, `config.rs`, `paths.rs` | App assembly, custom runner, signals, CLI, config, XDG paths | `fux::app::build`, `runner::run` |
 
 ## Next task
-Milestone 5 (in flight): `assets.rs` (config/theme/keybinding assets, hot reload),
-`scene/templates.rs` (`bsn!` templates, `LayoutAsset`), `session.rs` (persistence, restore/skip
-over `fux/session.*`). Then milestone 6 (zor).
+Milestone 7: zor plugin host (`zor-plugin.toml`), machines catalog / supervision workers /
+resume intents, dashboard as a fux surface, koh composition (unavailable until koh forwards TCP
+upstream), multi-machine scenario harness in `tools/xtask`. Then milestone 8 (docs, changelog,
+benchmarks vs `main`, capability status refresh).
 
 ## Open blockers
 * none. `bevy_render` in graph via `bevy_remote -> bevy_dev_tools` is an accepted deviation (docs/dependencies.md).
