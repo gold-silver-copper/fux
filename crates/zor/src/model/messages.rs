@@ -1,0 +1,100 @@
+//! The World never holds an OS handle: the runner writes a bounded batch of [`Inbound`]
+//! messages before each `update` and drains [`Effect`]s after it. Both are Bevy `Messages`
+//! used only within one update.
+
+use bevy_ecs::prelude::*;
+use serde_json::Value;
+
+pub use fux::model::Signal;
+
+/// Runner → World.
+#[derive(Message, Debug)]
+pub enum Inbound {
+    /// A provider subprocess (Codex app-server, OpenCode plugin, ...) started for an attempt.
+    ProviderStarted {
+        attempt: Entity,
+        pid: u32,
+    },
+    ProviderOutput {
+        attempt: Entity,
+        bytes: Vec<u8>,
+    },
+    ProviderExited {
+        attempt: Entity,
+        code: i32,
+    },
+    CheckOutput {
+        check: Entity,
+        bytes: Vec<u8>,
+    },
+    CheckExited {
+        check: Entity,
+        code: i32,
+    },
+    /// A git command requested by `Effect::RunGit { op }` finished.
+    GitDone {
+        op: u64,
+        code: Option<i32>,
+        stdout: String,
+        stderr: String,
+    },
+    /// One item of `fux/events+watch`, with the server-wide cursor.
+    FuxEvent {
+        cursor: u64,
+        name: String,
+        body: Value,
+    },
+    /// The events stream could not resume losslessly: entries `since..resume` were lost.
+    FuxGap {
+        since: u64,
+        resume: u64,
+    },
+    /// The events stream connected (`Some(instance)`) or dropped (`None`).
+    FuxLink {
+        instance: Option<String>,
+    },
+    /// Reply to `Effect::FuxCall { call }`.
+    FuxReply {
+        call: u64,
+        result: Result<Value, String>,
+    },
+    Signal(Signal),
+    /// An adapter queued work for an in-World drain (a parked BRP request); carries nothing.
+    Wake,
+}
+
+/// World → runner → adapters.
+#[derive(Message, Debug)]
+pub enum Effect {
+    SpawnProvider {
+        attempt: Entity,
+        argv: Vec<String>,
+        cwd: Option<String>,
+        env: Vec<(String, String)>,
+    },
+    WriteProvider {
+        attempt: Entity,
+        bytes: Vec<u8>,
+    },
+    RunCheck {
+        check: Entity,
+        argv: Vec<String>,
+        cwd: String,
+        timeout_ms: u64,
+    },
+    RunGit {
+        op: u64,
+        argv: Vec<String>,
+        cwd: String,
+    },
+    /// One typed `fux/*` call; answered by `Inbound::FuxReply { call }`.
+    FuxCall {
+        call: u64,
+        method: String,
+        params: Value,
+    },
+    /// The World has nothing live left; the runner returns `AppExit`.
+    Exit {
+        code: u8,
+    },
+}

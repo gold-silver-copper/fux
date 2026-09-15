@@ -7,6 +7,8 @@ rust-version.workspace = true
 description = "Agent and task policy layer over fux, as a Bevy App"
 
 [dependencies]
+# The runner loop, BRP client/descriptor/token and the signal forwarder are shared with fux.
+fux = { path = "../fux" }
 bevy_app.workspace = true
 bevy_ecs.workspace = true
 bevy_reflect.workspace = true
@@ -25,6 +27,7 @@ bevy_color.workspace = true
 bevy_platform.workspace = true
 bevy_utils.workspace = true
 async-channel.workspace = true
+async-io.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ron.workspace = true
