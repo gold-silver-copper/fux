@@ -342,3 +342,21 @@ stream is open; `fux --server smoke events --cursor 0` prints the same as JSON l
   and restore still yields Row while the file on disk fails `apply` with `Parse`; a deleted file
   is dropped from `Layouts` and `NotFound`. Pitfall: `FileWatcher` panics unless the root is
   canonical (`/var` vs `/private/var` on macOS), so tests canonicalise the temp dir.
+
+## 2026-09-15 — Milestone 5 integration record (Main)
+
+Commit `8696ad4`. Full pass at this milestone (prompt section 7): `cargo fmt --all --check`,
+`cargo clippy -p fux --all-targets -- -D warnings` clean, `cargo test -p fux`: 183 tests green
+(adds `assets` 8-ish, `templates` 4, `session` 8, viewer theme/binding cases).
+
+Real-process smoke (server `persist`, disposable XDG dirs, `fux.toml` in the config dir):
+* invalid `fux.toml` at startup is a hard error naming the line (`max-panes = "nope"`);
+* live hot reload: `[limits].max-panes` 7 → 9 visible in `fux/server.info.limits` within 2.5 s
+  of the file write, no pane restarted; a subsequent invalid edit keeps 9 (previous asset kept,
+  warning logged);
+* `fux/session.save` writes `<state>/fux/session/persist.scn.ron` 0600 (17 KiB for three
+  panes), containing `LaunchAttribution` but no `token`/`nonce` string;
+* `restart` of the server (SIGTERM saves on `OnEnter(ShuttingDown)`; new process restores in
+  `auto` mode): the three panes come back live with fresh ids, the same root name, and each
+  `pane.capture` shows the historical prompt line, the dim `─` separator and the new prompt;
+  `fux/session.status` reports `pending: []`, `saves: 1`.
