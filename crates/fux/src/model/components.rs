@@ -174,6 +174,22 @@ pub struct OutputPacing {
 #[reflect(Component)]
 pub struct LayoutGeneration(pub u64);
 
+/// The pane's emulator size: written by the layout set as the minimum over its `ShownBy`
+/// instances' `ComputedNode` content sizes (`set_if_neq`); the terminal set reacts to
+/// `Changed<PaneSize>` by resizing the emulator and emitting `Effect::ResizePty`.
+#[derive(Component, Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Component)]
+pub struct PaneSize {
+    pub rows: u16,
+    pub cols: u16,
+}
+
+impl Default for PaneSize {
+    fn default() -> Self {
+        Self { rows: 24, cols: 80 }
+    }
+}
+
 /// Per-viewer zoom on an instance root: the named instance node fills the root; siblings off
 /// its path get `Display::None`.
 #[derive(Component, Reflect, Clone, Copy, Debug, PartialEq, Eq)]
@@ -335,6 +351,7 @@ pub(super) fn register_types(app: &mut App) {
         .register_type::<RightClickPolicy>()
         .register_type::<OutputPacing>()
         .register_type::<LayoutGeneration>()
+        .register_type::<PaneSize>()
         .register_type::<Zoomed>()
         .register_type::<Viewport>()
         .register_type::<ViewerCamera>()

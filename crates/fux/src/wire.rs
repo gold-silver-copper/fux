@@ -219,7 +219,9 @@ pub fn encode<T: Serialize>(frame: &T, out: &mut Vec<u8>) -> Result<(), serde_js
     serde_json::to_writer(&mut *out, frame)?;
     let len = u32::try_from(out.len() - FRAME_PREFIX_BYTES)
         .map_err(|_| serde_json::Error::io(std::io::Error::other("frame exceeds u32")))?;
-    out[..FRAME_PREFIX_BYTES].copy_from_slice(&len.to_be_bytes());
+    if let Some(prefix) = out.get_mut(..FRAME_PREFIX_BYTES) {
+        prefix.copy_from_slice(&len.to_be_bytes());
+    }
     Ok(())
 }
 
@@ -228,7 +230,10 @@ pub fn payload_len(prefix: &[u8]) -> Result<Option<usize>, std::io::Error> {
     let Some(head) = prefix.get(..FRAME_PREFIX_BYTES) else {
         return Ok(None);
     };
-    let len = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
+    let Ok(head) = <[u8; FRAME_PREFIX_BYTES]>::try_from(head) else {
+        return Ok(None);
+    };
+    let len = u32::from_be_bytes(head) as usize;
     if len > MAX_FRAME_BYTES {
         return Err(std::io::Error::other("frame too large"));
     }

@@ -53,7 +53,7 @@ pub fn check_invariants(world: &mut World) -> Result<(), String> {
         .query_filtered::<(Entity, Option<&PlacedIn>, Option<&PaneIn>, Has<Disabled>), With<Pane>>()
         .iter(world)
     {
-        let leaves = placed_in.map(|p| p.len()).unwrap_or(0);
+        let leaves = placed_in.map_or(0, |p| p.len());
         if !disabled && (leaves != 1 || pane_in.is_none()) {
             return Err(format!(
                 "pane {entity} has {leaves} placing leaves and pane_in={}",
