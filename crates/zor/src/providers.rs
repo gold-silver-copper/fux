@@ -513,19 +513,19 @@ fn collect_inbound(mut inbound: MessageReader<Inbound>, mut inbox: ResMut<Inbox>
                 inbox.provider.push(ProviderItem::Started {
                     attempt: *attempt,
                     pid: *pid,
-                })
+                });
             }
             Inbound::ProviderOutput { attempt, bytes } => {
                 inbox.provider.push(ProviderItem::Output {
                     attempt: *attempt,
                     bytes: bytes.clone(),
-                })
+                });
             }
             Inbound::ProviderExited { attempt, code } => {
                 inbox.provider.push(ProviderItem::Exited {
                     attempt: *attempt,
                     code: *code,
-                })
+                });
             }
             Inbound::FuxReply { call, result } if *call & CALL_TAG == CALL_TAG => {
                 inbox.replies.push((*call, result.clone()));
