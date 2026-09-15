@@ -5,9 +5,28 @@ behavioural oracle. Bevy source: `../many_rigs/inspirations/bevy` (0.19.1).
 
 ## Milestone reached
 1. Workspace skeleton (crates `fux`, `zor`, `tools/xtask`), dependency report, CI.
+1b. Headless `bevy_ui` layout proof (`crates/fux/tests/layout_mechanism.rs`) and the model
+   foundation (`crates/fux/src/model/*`, `wire.rs`).
+
+## In progress: Milestone 2 (fux App shell)
+
+Module ownership (one owner per file; shared contracts live in `model/` and `wire.rs`):
+
+| module | owns | provides |
+|---|---|---|
+| `model/` | entity graph, ids, relationships, messages, limits, invariants | contracts for everyone |
+| `wire.rs` | attachment stream frames | `Hello`, `ClientFrame`, `ServerFrame`, `SceneFrame`, `TerminalDelta` |
+| `terminal.rs` | `Terminal` component (vt100 + bounded history + sequence) | `Terminal::{new, feed, resize, seq, title, write_delta}` |
+| `pty.rs` | `PtyAdapter` (portable-pty on `IoTaskPool`), `TerminalPlugin` (ingest/output systems) | applies `Effect::{SpawnPane,WritePty,ResizePty,Terminate,ReleasePty}`; pushes `Inbound` |
+| `layout.rs` | workspaces, template roots/nodes, instances per viewer, cameras, `PaneSize` fold, `LayoutPlugin` | `layout::ops::*` typed transitions on `&mut World` |
+| `lifecycle.rs` | pane/workspace state machine, `Requests`/`Completions` phases, shutdown, `LifecyclePlugin` | consumes `Inbound`, `ViewerRequest`; emits `Effect` |
+| `remote.rs` | BRP: token file, allowlist, `fux/*` methods, `RemoteControlPlugin`, thin client | `remote::client::call` |
+| `attach.rs` | attachment listener, per-viewer projection, `AttachPlugin` | `Effect::SendFrame` |
+| `viewer.rs` | the viewer App (input parser, focus, chrome, painter, panic hook) | `viewer::run` |
+| `app.rs`, `runner.rs`, `cli.rs`, `config.rs`, `paths.rs` | App assembly, custom runner, signals, CLI, config, XDG paths | `fux::app::build`, `runner::run` |
 
 ## Next task
-Milestone 2: fux App shell (prompt section 6.2).
+Finish milestone 2; milestone commit with `docs/verification.md` record.
 
 ## Open blockers
 * none. `bevy_render` in graph via `bevy_remote -> bevy_dev_tools` is an accepted deviation (docs/dependencies.md).
@@ -16,5 +35,6 @@ Milestone 2: fux App shell (prompt section 6.2).
 ```
 cd ../fux-rewrite
 cargo check --workspace
+cargo test -p fux
 cargo run --manifest-path tools/xtask/Cargo.toml -- deps
 ```
