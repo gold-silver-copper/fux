@@ -1,0 +1,21 @@
+[
+  { "type": "request", "request": { "Input": [104, 105, 13] } },
+  { "type": "request", "request": { "Target": 3 } },
+  { "type": "request", "request": { "Show": 1 } },
+  { "type": "request", "request": { "Resize": { "rows": 30, "cols": 100 } } },
+  {
+    "type": "request",
+    "request": {
+      "Pointer": { "col": 10, "row": 2, "kind": "Press", "button": "Left", "modifiers": 0 }
+    }
+  },
+  { "type": "request", "request": { "Scroll": { "node": 5, "rows": -3 } } },
+  { "type": "request", "request": { "Zoom": 5 } },
+  { "type": "request", "request": "Unzoom" },
+  { "type": "request", "request": { "Split": { "direction": "Right", "template": null } } },
+  { "type": "request", "request": "ClosePane" },
+  { "type": "request", "request": { "Swap": { "direction": "Below" } } },
+  { "type": "request", "request": { "NewRoot": { "template": null } } },
+  { "type": "request", "request": "Detach" },
+  { "type": "ack", "revision": 7 }
+]

@@ -50,6 +50,10 @@ pub enum ViewerRequest {
     Swap {
         direction: SplitDirection,
     },
+    /// Create a new template root in the viewer's workspace with one pane and show it.
+    NewRoot {
+        template: Option<super::components::PaneTemplate>,
+    },
     Detach,
 }
 
@@ -121,6 +125,9 @@ pub enum Inbound {
         viewer: Entity,
     },
     Signal(Signal),
+    /// An adapter queued work for an in-World drain (e.g. an accepted attachment whose viewer
+    /// entity does not exist yet); carries nothing and is ignored by every consumer.
+    Wake,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

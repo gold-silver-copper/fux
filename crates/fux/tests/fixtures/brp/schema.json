@@ -1,0 +1,433 @@
+{
+  "envelope": [
+    "token",
+    "instance"
+  ],
+  "methods": {
+    "fux/node.despawn": {
+      "params": {
+        "fields": {
+          "generation": "u64",
+          "node": "u64"
+        },
+        "name": "NodeDespawnParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64"
+        },
+        "name": "Generation"
+      }
+    },
+    "fux/node.patch": {
+      "params": {
+        "fields": {
+          "generation": "u64",
+          "node": "u64",
+          "patch": "NodePatch"
+        },
+        "name": "NodePatchParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64"
+        },
+        "name": "Generation"
+      }
+    },
+    "fux/node.reorder": {
+      "params": {
+        "fields": {
+          "generation": "u64",
+          "index": "usize",
+          "node": "u64"
+        },
+        "name": "NodeReorderParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64"
+        },
+        "name": "Generation"
+      }
+    },
+    "fux/node.reparent": {
+      "params": {
+        "fields": {
+          "generation": "u64",
+          "index": "Option<usize>",
+          "node": "u64",
+          "parent": "u64"
+        },
+        "name": "NodeReparentParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64"
+        },
+        "name": "Generation"
+      }
+    },
+    "fux/node.spawn": {
+      "params": {
+        "fields": {
+          "generation": "u64",
+          "index": "Option<usize>",
+          "parent": "u64",
+          "patch": "Option<NodePatch>",
+          "template": "Option<TemplateSpec>"
+        },
+        "name": "NodeSpawnParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64",
+          "node": "u64",
+          "pane": "Option<u64>"
+        },
+        "name": "NodeSpawned"
+      }
+    },
+    "fux/pane.capture": {
+      "params": {
+        "fields": {
+          "pane": "u64",
+          "scrollback": "usize"
+        },
+        "name": "PaneCaptureParams"
+      },
+      "result": {
+        "fields": {
+          "cols": "u16",
+          "cursor": "crate::wire::Cursor",
+          "lines": "Vec<String>",
+          "pane": "u64",
+          "rows": "u16",
+          "seq": "u64",
+          "state": "String",
+          "title": "String",
+          "truncated": "bool"
+        },
+        "name": "Capture"
+      }
+    },
+    "fux/pane.close": {
+      "params": {
+        "fields": {
+          "pane": "u64"
+        },
+        "name": "PaneCloseParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/pane.new": {
+      "params": {
+        "fields": {
+          "direction": "Option<SplitDirection>",
+          "generation": "Option<u64>",
+          "index": "Option<usize>",
+          "parent": "Option<u64>",
+          "split": "Option<u64>",
+          "template": "Option<TemplateSpec>"
+        },
+        "name": "PaneNewParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64",
+          "node": "u64",
+          "pane": "u64"
+        },
+        "name": "PaneCreated"
+      }
+    },
+    "fux/pane.send_bytes": {
+      "params": {
+        "fields": {
+          "bytes": "Vec<u8>",
+          "pane": "u64"
+        },
+        "name": "PaneSendBytesParams"
+      },
+      "result": {
+        "fields": {
+          "bytes": "usize"
+        },
+        "name": "BytesWritten"
+      }
+    },
+    "fux/pane.send_keys": {
+      "params": {
+        "fields": {
+          "keys": "String",
+          "notation": "KeyNotation",
+          "pane": "u64"
+        },
+        "name": "PaneSendKeysParams"
+      },
+      "result": {
+        "fields": {
+          "bytes": "usize"
+        },
+        "name": "BytesWritten"
+      }
+    },
+    "fux/root.close": {
+      "params": {
+        "fields": {
+          "root": "u64"
+        },
+        "name": "RootCloseParams"
+      },
+      "result": {
+        "fields": {
+          "panes": "Vec<u64>"
+        },
+        "name": "RootClosed"
+      }
+    },
+    "fux/root.move": {
+      "params": {
+        "fields": {
+          "root": "u64",
+          "workspace": "String"
+        },
+        "name": "RootMoveParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/root.new": {
+      "params": {
+        "fields": {
+          "name": "String",
+          "template": "Option<TemplateSpec>",
+          "workspace": "String"
+        },
+        "name": "RootNewParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64",
+          "pane": "u64",
+          "root": "u64"
+        },
+        "name": "RootCreated"
+      }
+    },
+    "fux/root.order": {
+      "params": {
+        "fields": {
+          "order": "Vec<u64>",
+          "workspace": "String"
+        },
+        "name": "RootOrderParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/root.rename": {
+      "params": {
+        "fields": {
+          "name": "String",
+          "root": "u64"
+        },
+        "name": "RootRenameParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/schema": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "envelope": "Vec<String>",
+          "methods": "Map<String,Value>"
+        },
+        "name": "SchemaTable"
+      }
+    },
+    "fux/server.info": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "http": "Endpoint",
+          "limits": "LimitsInfo",
+          "name": "String",
+          "nonce": "String",
+          "panes": "usize",
+          "pid": "u32",
+          "started_ms": "u64",
+          "tokens_minted": "usize",
+          "viewers": "usize",
+          "workspaces": "usize"
+        },
+        "name": "ServerInfo"
+      }
+    },
+    "fux/token.mint": {
+      "params": {
+        "fields": {
+          "capabilities": "Vec<Capability>",
+          "workspace": "Option<String>"
+        },
+        "name": "TokenMintParams"
+      },
+      "result": {
+        "fields": {
+          "capabilities": "Vec<Capability>",
+          "token": "String",
+          "workspace": "Option<String>"
+        },
+        "name": "TokenMinted"
+      }
+    },
+    "fux/token.revoke": {
+      "params": {
+        "fields": {
+          "revoke": "String"
+        },
+        "name": "TokenRevokeParams"
+      },
+      "result": {
+        "fields": {
+          "revoked": "bool"
+        },
+        "name": "TokenRevoked"
+      }
+    },
+    "fux/viewer.list": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "viewers": "Vec<ViewerEntry>"
+        },
+        "name": "ViewerList"
+      }
+    },
+    "fux/viewer.scroll": {
+      "params": {
+        "fields": {
+          "node": "u64",
+          "rows": "i32",
+          "viewer": "u64"
+        },
+        "name": "ViewerScrollParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/viewer.show": {
+      "params": {
+        "fields": {
+          "root": "u64",
+          "viewer": "u64"
+        },
+        "name": "ViewerShowParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/viewer.target": {
+      "params": {
+        "fields": {
+          "pane": "u64",
+          "viewer": "u64"
+        },
+        "name": "ViewerTargetParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/viewer.unzoom": {
+      "params": {
+        "fields": {
+          "viewer": "u64"
+        },
+        "name": "ViewerUnzoomParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/viewer.zoom": {
+      "params": {
+        "fields": {
+          "node": "u64",
+          "viewer": "u64"
+        },
+        "name": "ViewerZoomParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/workspace.kill": {
+      "params": {
+        "fields": {
+          "name": "String"
+        },
+        "name": "WorkspaceKillParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
+    "fux/workspace.list": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "workspaces": "Vec<WorkspaceEntry>"
+        },
+        "name": "WorkspaceList"
+      }
+    },
+    "fux/workspace.new": {
+      "params": {
+        "fields": {
+          "name": "String",
+          "template": "Option<TemplateSpec>"
+        },
+        "name": "WorkspaceNewParams"
+      },
+      "result": {
+        "fields": {
+          "name": "String",
+          "pane": "u64",
+          "root": "u64"
+        },
+        "name": "WorkspaceCreated"
+      }
+    }
+  }
+}

@@ -1,6 +1,14 @@
 //! Prompt section 5, first bullet: a root under a `UiTargetCamera` whose target info is 80x24
 //! yields an 80x24 `ComputedNode` with no window and no renderer.
 
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::float_cmp,
+    reason = "integration-test helpers; clippy.toml only relaxes #[test] bodies"
+)]
 use bevy_app::prelude::*;
 use bevy_asset::AssetApp;
 use bevy_camera::{Camera, RenderTarget, RenderTargetInfo};

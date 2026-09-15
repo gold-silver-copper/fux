@@ -134,10 +134,23 @@ impl core::borrow::Borrow<str> for WorkspaceName {
     }
 }
 
+/// Records the id. An id already mapped to a *different live* entity keeps its mapping: the
+/// template node registers first and its instances (cloned with the same `NodeId`) never
+/// displace it, independent of component insertion order.
 fn on_insert_id<T: Indexed>(mut world: DeferredWorld, ctx: HookContext) {
     let Some(id) = world.get::<T>(ctx.entity).cloned() else {
         return;
     };
+    let existing = {
+        let mut ids = world.resource_mut::<Ids>();
+        T::map(&mut ids).get(&id).copied()
+    };
+    if let Some(other) = existing
+        && other != ctx.entity
+        && world.get_entity(other).is_ok()
+    {
+        return;
+    }
     let mut ids = world.resource_mut::<Ids>();
     T::map(&mut ids).insert(id, ctx.entity);
 }

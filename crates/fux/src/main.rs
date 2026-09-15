@@ -1,2 +1,4 @@
 #![forbid(unsafe_code)]
-fn main() {}
+fn main() -> std::process::ExitCode {
+    fux::cli::main()
+}

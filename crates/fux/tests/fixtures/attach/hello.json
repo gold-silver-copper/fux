@@ -1,0 +1,8 @@
+{
+  "token": "6f1d2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7",
+  "instance": "b7e2c1d0",
+  "workspace": "default",
+  "stream": "agent-1",
+  "viewport": { "rows": 24, "cols": 80 },
+  "exact_target": { "pane": 3, "pid": 4242 }
+}

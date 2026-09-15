@@ -1,0 +1,61 @@
+[
+  { "type": "welcome", "viewer": 1, "instance": "b7e2c1d0", "workspace": "default" },
+  {
+    "type": "scene",
+    "revision": 1,
+    "full": true,
+    "scene": "(resources: {}, entities: {})",
+    "despawned": [4294967297],
+    "roots": [{ "node": 1, "name": "main" }],
+    "target": 3,
+    "showing": 1,
+    "terminals": [
+      {
+        "pane": 3,
+        "seq": 5,
+        "rows": 24,
+        "cols": 40,
+        "full": true,
+        "lines": [
+          {
+            "row": 0,
+            "cells": [
+              { "text": "h", "width": 1, "style": { "fg": "default", "bg": { "indexed": 4 }, "attrs": 1 } },
+              { "text": "字", "width": 2, "style": { "fg": { "rgb": [255, 0, 128] }, "bg": "default", "attrs": 0 } }
+            ]
+          }
+        ],
+        "cursor": { "row": 0, "col": 3, "visible": true },
+        "modes": {
+          "application_cursor": false,
+          "bracketed_paste": true,
+          "mouse": "drag",
+          "mouse_sgr": true,
+          "alternate_screen": false
+        },
+        "title": "sh",
+        "process": "live"
+      },
+      {
+        "pane": 4,
+        "seq": 9,
+        "rows": 24,
+        "cols": 40,
+        "full": false,
+        "lines": [],
+        "cursor": { "row": 1, "col": 0, "visible": false },
+        "modes": {
+          "application_cursor": true,
+          "bracketed_paste": false,
+          "mouse": "none",
+          "mouse_sgr": false,
+          "alternate_screen": true
+        },
+        "title": null,
+        "process": { "exited": { "code": 130 } }
+      }
+    ],
+    "notice": "pane 4 exited"
+  },
+  { "type": "bye", "reason": "exact_target_lost", "message": "pane 4 exited" }
+]

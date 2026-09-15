@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b2c6c79ac239298205a2ba120cb0855f20894e52a02f852e56da35ccc1f04bbc # shrinks to steps = [Reparent { node: 8, parent: 13, index: None }]
+cc 66c80c8cdc4dbeb84c65869f589e39b2da1e6a3053dc506b7f92dc548d050c9b # shrinks to steps = [NewRoot, Attach { rows: 2, cols: 2, exact: false }, Reparent { node: 46, parent: 3, index: None }]

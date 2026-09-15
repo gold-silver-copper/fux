@@ -2152,6 +2152,7 @@ name = "fux"
 version = "1.0.0-alpha.1"
 dependencies = [
  "async-channel",
+ "async-io",
  "bevy_app",
  "bevy_asset",
  "bevy_audio",
@@ -2179,6 +2180,7 @@ dependencies = [
  "bevy_window",
  "bevy_world_serialization",
  "clap",
+ "filedescriptor",
  "nix 0.30.1",
  "portable-pty",
  "proptest",

@@ -4,6 +4,7 @@
 
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::*;
+use bevy_ecs::query::Allow;
 use bevy_platform::collections::HashSet;
 use bevy_ui::{Node, UiTargetCamera};
 
@@ -21,12 +22,20 @@ pub fn check_invariants(world: &mut World) -> Result<(), String> {
     }
     let ids = world.resource::<Ids>().clone();
     // Ids maps equal the set of live immutable id components.
-    for (entity, id) in world.query::<(Entity, &PaneId)>().iter(world) {
+    for (entity, id) in world
+        .query_filtered::<(Entity, &PaneId), Allow<Disabled>>()
+        .iter(world)
+    {
         if ids.pane(*id) != Some(entity) {
             return Err(format!("pane {id} is not registered"));
         }
     }
-    if ids.panes.len() != world.query::<&PaneId>().iter(world).count() {
+    if ids.panes.len()
+        != world
+            .query_filtered::<&PaneId, Allow<Disabled>>()
+            .iter(world)
+            .count()
+    {
         return Err("Ids.panes has stale entries".into());
     }
     for (entity, id) in world
@@ -37,12 +46,18 @@ pub fn check_invariants(world: &mut World) -> Result<(), String> {
             return Err(format!("template node {id} is not registered"));
         }
     }
-    for (entity, id) in world.query::<(Entity, &ViewerId)>().iter(world) {
+    for (entity, id) in world
+        .query_filtered::<(Entity, &ViewerId), Allow<Disabled>>()
+        .iter(world)
+    {
         if ids.viewer(*id) != Some(entity) {
             return Err(format!("viewer {id} is not registered"));
         }
     }
-    for (entity, name) in world.query::<(Entity, &WorkspaceName)>().iter(world) {
+    for (entity, name) in world
+        .query_filtered::<(Entity, &WorkspaceName), Allow<Disabled>>()
+        .iter(world)
+    {
         if ids.workspace(&name.0) != Some(entity) {
             return Err(format!("workspace {name} is not registered"));
         }
@@ -50,7 +65,7 @@ pub fn check_invariants(world: &mut World) -> Result<(), String> {
     // Panes: exactly one PaneIn and exactly one placing template leaf, or Disabled.
     let mut placed: HashSet<Entity> = HashSet::default();
     for (entity, placed_in, pane_in, disabled) in world
-        .query_filtered::<(Entity, Option<&PlacedIn>, Option<&PaneIn>, Has<Disabled>), With<Pane>>()
+        .query_filtered::<(Entity, Option<&PlacedIn>, Option<&PaneIn>, Has<Disabled>), (With<Pane>, Allow<Disabled>)>()
         .iter(world)
     {
         let leaves = placed_in.map_or(0, |p| p.len());

@@ -39,12 +39,15 @@ bevy_text           = { version = "=0.19.1", default-features = false }
 bevy_image          = { version = "=0.19.1", default-features = false }
 bevy_audio          = { version = "=0.19.1", default-features = false, features = ["wav"] }
 async-channel = "2"
+async-io = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ron = "0.10"
 clap = { version = "4.5", features = ["derive"] }
 toml = "0.9"
 portable-pty = "=0.9.0"
+# Safe dup of PTY master descriptors for async readers (no unsafe from_raw_fd).
+filedescriptor = "=0.8.3"
 nix = { version = "0.30", features = ["fs", "poll", "signal", "term", "user", "process"] }
 vt100 = "=0.16.2"
 termina = "0.3.3"
@@ -57,6 +60,8 @@ dead_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
+# Bevy query tuples are the type; aliasing them hides what a system reads.
+type_complexity = "allow"
 dbg_macro = "deny"
 print_stdout = "deny"
 print_stderr = "deny"

@@ -38,12 +38,14 @@ bevy_text.workspace = true
 bevy_image.workspace = true
 bevy_audio = { workspace = true, optional = true }
 async-channel.workspace = true
+async-io.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ron.workspace = true
 clap.workspace = true
 toml.workspace = true
 portable-pty.workspace = true
+filedescriptor.workspace = true
 nix.workspace = true
 vt100.workspace = true
 termina.workspace = true

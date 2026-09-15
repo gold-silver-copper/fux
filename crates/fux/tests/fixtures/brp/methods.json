@@ -1,0 +1,249 @@
+[
+  {
+    "method": "fux/server.info",
+    "params": {},
+    "result": {
+      "name": "default",
+      "nonce": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "pid": 4242,
+      "started_ms": 1757894400000,
+      "http": { "host": "127.0.0.1", "port": 51234 },
+      "workspaces": 1,
+      "panes": 2,
+      "viewers": 1,
+      "tokens_minted": 0,
+      "limits": {
+        "panes_per_workspace": 64,
+        "nodes_per_workspace": 512,
+        "workspaces": 32,
+        "viewers": 32,
+        "scrollback_lines": 2000,
+        "final_retain_ms": 30000,
+        "output_pacing_ms": 50,
+        "tokens": 256,
+        "key_bytes": 65536,
+        "capture_lines": 10000
+      }
+    }
+  },
+  {
+    "method": "fux/token.mint",
+    "params": { "workspace": "alpha", "capabilities": ["read", "mutate"] },
+    "result": {
+      "token": "5e6f0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
+      "workspace": "alpha",
+      "capabilities": ["read", "mutate"]
+    }
+  },
+  {
+    "method": "fux/token.revoke",
+    "params": { "revoke": "5e6f0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d" },
+    "result": { "revoked": true }
+  },
+  {
+    "method": "fux/workspace.list",
+    "params": {},
+    "result": {
+      "workspaces": [
+        {
+          "name": "default",
+          "open": true,
+          "viewers": 1,
+          "roots": [
+            {
+              "id": 1,
+              "name": "main",
+              "generation": 3,
+              "panes": [
+                {
+                  "id": 1,
+                  "node": 2,
+                  "state": "live",
+                  "pid": 4243,
+                  "exit_code": null,
+                  "title": "zsh",
+                  "rows": 24,
+                  "cols": 80,
+                  "seq": 17,
+                  "argv": ["/bin/zsh", "-l"],
+                  "cwd": "/home/user"
+                },
+                {
+                  "id": 2,
+                  "node": 4,
+                  "state": "exited",
+                  "pid": null,
+                  "exit_code": 0,
+                  "title": "",
+                  "rows": 24,
+                  "cols": 40,
+                  "seq": 3,
+                  "argv": ["/bin/true"],
+                  "cwd": null
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "method": "fux/workspace.new",
+    "params": { "name": "alpha", "template": { "argv": ["/bin/sh"], "cwd": "/tmp", "env": [["FOO", "bar"]], "stream": "main" } },
+    "result": { "name": "alpha", "root": 5, "pane": 3 }
+  },
+  {
+    "method": "fux/workspace.kill",
+    "params": { "name": "alpha" },
+    "result": {}
+  },
+  {
+    "method": "fux/root.new",
+    "params": { "workspace": "default", "name": "logs", "template": null },
+    "result": { "root": 6, "pane": 4, "generation": 1 }
+  },
+  {
+    "method": "fux/root.close",
+    "params": { "root": 6 },
+    "result": { "panes": [4] }
+  },
+  {
+    "method": "fux/root.rename",
+    "params": { "root": 6, "name": "editor" },
+    "result": {}
+  },
+  {
+    "method": "fux/root.order",
+    "params": { "workspace": "default", "order": [6, 1] },
+    "result": {}
+  },
+  {
+    "method": "fux/root.move",
+    "params": { "root": 6, "workspace": "alpha" },
+    "result": {}
+  },
+  {
+    "method": "fux/node.spawn",
+    "params": {
+      "generation": 3,
+      "parent": 1,
+      "index": 0,
+      "patch": { "flex_grow": 2.0, "min_width": "20px", "border": { "all": "1px" } },
+      "template": { "argv": ["/bin/sh"] }
+    },
+    "result": { "node": 7, "pane": 5, "generation": 4 }
+  },
+  {
+    "method": "fux/node.despawn",
+    "params": { "generation": 4, "node": 7 },
+    "result": { "generation": 5 }
+  },
+  {
+    "method": "fux/node.reparent",
+    "params": { "generation": 5, "node": 4, "parent": 1, "index": null },
+    "result": { "generation": 6 }
+  },
+  {
+    "method": "fux/node.reorder",
+    "params": { "generation": 6, "node": 4, "index": 1 },
+    "result": { "generation": 7 }
+  },
+  {
+    "method": "fux/node.patch",
+    "params": {
+      "generation": 7,
+      "node": 1,
+      "patch": {
+        "display": "grid",
+        "grid_template_columns": [{ "repeat": 2, "track": "1fr" }],
+        "grid_template_rows": [{ "repeat": 1, "track": "auto" }],
+        "background_color": { "rgb": [0, 0, 0] },
+        "z_index": 1
+      }
+    },
+    "result": { "generation": 8 }
+  },
+  {
+    "method": "fux/viewer.list",
+    "params": {},
+    "result": {
+      "viewers": [
+        { "id": 1, "workspace": "default", "showing": 1, "target": 1, "rows": 40, "cols": 120, "exact": false }
+      ]
+    }
+  },
+  {
+    "method": "fux/viewer.show",
+    "params": { "viewer": 1, "root": 6 },
+    "result": {}
+  },
+  {
+    "method": "fux/viewer.target",
+    "params": { "viewer": 1, "pane": 2 },
+    "result": {}
+  },
+  {
+    "method": "fux/viewer.zoom",
+    "params": { "viewer": 1, "node": 2 },
+    "result": {}
+  },
+  {
+    "method": "fux/viewer.unzoom",
+    "params": { "viewer": 1 },
+    "result": {}
+  },
+  {
+    "method": "fux/viewer.scroll",
+    "params": { "viewer": 1, "node": 1, "rows": -3 },
+    "result": {}
+  },
+  {
+    "method": "fux/pane.new",
+    "params": { "generation": 8, "split": 1, "direction": "Below", "template": { "argv": ["/usr/bin/top"] } },
+    "result": { "pane": 6, "node": 8, "generation": 9 }
+  },
+  {
+    "method": "fux/pane.close",
+    "params": { "pane": 6 },
+    "result": {}
+  },
+  {
+    "method": "fux/pane.send_keys",
+    "params": { "pane": 1, "keys": "ls -l\\n", "notation": "escapes" },
+    "result": { "bytes": 6 }
+  },
+  {
+    "method": "fux/pane.send_bytes",
+    "params": { "pane": 1, "bytes": [3, 13] },
+    "result": { "bytes": 2 }
+  },
+  {
+    "method": "fux/pane.capture",
+    "params": { "pane": 1, "scrollback": 2 },
+    "result": {
+      "pane": 1,
+      "seq": 17,
+      "rows": 2,
+      "cols": 8,
+      "title": "zsh",
+      "state": "live",
+      "cursor": { "row": 1, "col": 2, "visible": true },
+      "lines": ["older", "old", "$ ls -l", "$ "],
+      "truncated": false
+    }
+  },
+  {
+    "method": "fux/schema",
+    "params": {},
+    "result": {
+      "envelope": ["token", "instance"],
+      "methods": {
+        "fux/pane.close": {
+          "params": { "name": "PaneCloseParams", "fields": { "pane": "u64" } },
+          "result": { "name": "Done", "fields": {} }
+        }
+      }
+    }
+  }
+]
