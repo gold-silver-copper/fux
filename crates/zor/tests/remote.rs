@@ -252,3 +252,80 @@ fn events_watch_delivers_a_zor_event_and_resumes_by_cursor() {
     assert_eq!(gap["gap"]["since"], 40);
     assert_eq!(gap["gap"]["resume"], 0);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Fixtures (owner TaskLifecycle; every owner table appends its cases to methods.json)
+// ---------------------------------------------------------------------------------------------
+
+fn fixture(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/brp")
+        .join(name)
+}
+
+/// Removes `null` members so `Option` fields absent from a fixture compare equal after the
+/// typed round trip.
+fn without_nulls(value: Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, without_nulls(v)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(without_nulls).collect()),
+        other => other,
+    }
+}
+
+/// Every `zor/*` method has a fixture whose params and result survive the typed shapes
+/// unchanged; unknown fields are refused.
+#[test]
+fn fixtures_round_trip_through_typed_shapes() {
+    let raw = std::fs::read(fixture("methods.json")).unwrap();
+    let cases: Vec<Value> = serde_json::from_slice(&raw).unwrap();
+    let mut covered = BTreeSet::new();
+    for case in cases {
+        let method = case["method"].as_str().unwrap().to_owned();
+        let method = method.as_str();
+        let spec = methods::all_specs()
+            .find(|s| s.name == method)
+            .unwrap_or_else(|| panic!("{method} is not in the table"));
+        covered.insert(spec.name);
+        let params = (spec.roundtrip_params)(case["params"].clone())
+            .unwrap_or_else(|e| panic!("{method} params: {e}"));
+        assert_eq!(
+            without_nulls(params),
+            without_nulls(case["params"].clone()),
+            "{method} params"
+        );
+        let result = (spec.roundtrip_result)(case["result"].clone())
+            .unwrap_or_else(|e| panic!("{method} result: {e}"));
+        assert_eq!(
+            without_nulls(result),
+            without_nulls(case["result"].clone()),
+            "{method} result"
+        );
+    }
+    let all: BTreeSet<&str> = methods::all_specs().map(|s| s.name).collect();
+    assert_eq!(covered, all, "every zor/* method needs a fixture");
+    let spec = methods::all_specs()
+        .find(|s| s.name == "zor/task.inspect")
+        .unwrap();
+    assert!((spec.roundtrip_params)(json!({ "task": "t1", "extra": true })).is_err());
+}
+
+/// `zor/schema` is pinned; `ZOR_BLESS=1` rewrites the fixture after an intentional change.
+#[test]
+fn schema_matches_fixture() {
+    let path = fixture("schema.json");
+    let table = serde_json::to_value(methods::schema_table()).unwrap();
+    if std::env::var_os("ZOR_BLESS").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(&table).unwrap() + "\n").unwrap();
+    }
+    let pinned: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        table, pinned,
+        "run with ZOR_BLESS=1 after an intentional schema change"
+    );
+}

@@ -199,7 +199,8 @@ pub struct EventLog {
     /// The current stream of each workspace name.
     by_name: HashMap<String, Entity>,
     /// The tail cursor of streams dropped whole (pruned or replaced), by name, so a read for
-    /// a name without a live stream still reports the gap.
+    /// a name without a live stream still reports the gap. Bounded at twice `max_retired`: a
+    /// name whose tail aged out answers like an unknown name (nothing, not a gap).
     tombstones: HashMap<String, u64>,
     /// Next cursor to issue.
     next: u64,
@@ -393,7 +394,8 @@ impl EventLog {
         );
     }
 
-    /// Keeps at most `max_retired` retired streams: the oldest are dropped whole.
+    /// Keeps at most `max_retired` retired streams: the oldest are dropped whole into
+    /// tombstones, of which the oldest are forgotten past twice that bound.
     fn prune_retired(&mut self) {
         let mut retired: Vec<(u64, Entity)> = self
             .streams
@@ -415,6 +417,18 @@ impl EventLog {
                 self.by_name.remove(&stream.name);
             }
             self.tombstones.insert(stream.name, stream.latest);
+        }
+        let max_tombstones = self.max_retired.saturating_mul(2);
+        while self.tombstones.len() > max_tombstones {
+            let Some(oldest) = self
+                .tombstones
+                .iter()
+                .min_by_key(|(_, tail)| **tail)
+                .map(|(name, _)| name.clone())
+            else {
+                break;
+            };
+            self.tombstones.remove(&oldest);
         }
     }
 }

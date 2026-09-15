@@ -304,6 +304,42 @@ fn theme_and_bindings_are_sub_assets_of_the_same_file() {
     );
 }
 
+#[test]
+fn an_unported_action_name_keeps_the_rest_of_the_file() {
+    // `new-tab` is in today's registry but not in this build's `ACTIONS`.
+    let dir = ConfigDir::new(
+        "prefix = 'C-a'\n[bindings]\n'|' = 'split-side'\n't' = 'new-tab'\n[limits]\nmax-panes = 7\n",
+    );
+    let mut app = build_headless_in(&Config::default(), &dir.paths);
+    let bindings: Handle<Keybindings> = app.world().resource::<AssetServer>().load(BINDINGS_PATH);
+    assert!(
+        settle(&mut app, RELOAD_WINDOW, |app| {
+            loaded(app)
+                && app
+                    .world()
+                    .resource::<Assets<Keybindings>>()
+                    .contains(&bindings)
+        }),
+        "the file loads despite the unknown action"
+    );
+    assert_eq!(limits(&app).panes_per_workspace, 7, "[limits] applied");
+    let loaded_bindings = app
+        .world()
+        .resource::<Assets<Keybindings>>()
+        .get(&bindings)
+        .unwrap();
+    assert_eq!(loaded_bindings.prefix, KeyChord::ctrl('a'));
+    assert_eq!(
+        loaded_bindings.bindings.get(&KeyChord::character('|')),
+        Some(&"split-side")
+    );
+    assert_eq!(
+        loaded_bindings.bindings.get(&KeyChord::character('t')),
+        None,
+        "the unknown action binds nothing"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // (3) chord text and the `fux bindings` listing
 // ---------------------------------------------------------------------------------------------

@@ -22,6 +22,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::relationship::RelationshipTarget;
 use bevy_log::{error, info, warn};
+use bevy_reflect::prelude::*;
 use bevy_world_serialization::serde::WorldDeserializer;
 use bevy_world_serialization::{DynamicWorld, DynamicWorldBuilder};
 use serde::de::DeserializeSeed as _;
@@ -79,6 +80,13 @@ pub struct Journal {
     /// Last archive sweep, `Clock` milliseconds.
     last_sweep_ms: u64,
 }
+
+/// The journal generation the live document was written as; the only resource in the
+/// document. Restored into `Generation`, so generations (and `CreatedGeneration` ordering,
+/// CHECKS.md:41) never regress across incarnations.
+#[derive(Resource, Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[reflect(Resource)]
+pub struct GenerationCounter(pub u64);
 
 /// Between two sweeps for archivable tasks.
 const SWEEP_INTERVAL_MS: u64 = 60_000;
@@ -211,6 +219,18 @@ vocabulary!(
     MachineName,
     ControlBinding,
     ProducerLifetime,
+    crate::groups::Cursor,
+    crate::groups::MemberPrompt,
+    crate::worktrees::ForceRemoval,
+    crate::checks::CheckPolicy,
+    crate::checks::ArtifactPolicy,
+    crate::checks::CaptureRequests,
+    crate::checks::CheckCwd,
+    crate::checks::CapturedBy,
+    crate::checks::ArtifactBytes,
+    crate::checks::SourceState,
+    crate::lifecycle::LaunchTemplate,
+    crate::providers::Provider,
 );
 
 /// Every entity the journal persists.
@@ -237,16 +257,26 @@ fn persisted(world: &mut World) -> Vec<Entity> {
 // Snapshot
 // ---------------------------------------------------------------------------------------------
 
-/// The allowlisted subgraph of `entities` as a RON document, refused over any bound.
-pub fn snapshot(world: &mut World, entities: &[Entity]) -> Result<String, JournalError> {
+/// The allowlisted subgraph of `entities` as a RON document, refused over any bound. The live
+/// journal (`counter`) also carries [`GenerationCounter`]; archives never do.
+pub fn snapshot(
+    world: &mut World,
+    entities: &[Entity],
+    counter: bool,
+) -> Result<String, JournalError> {
     let limits = world.resource::<Limits>().clone();
     check_counts(world, &limits)?;
     let registry = world.resource::<AppTypeRegistry>().clone();
     let registry = registry.read();
-    let dynamic = allow(DynamicWorldBuilder::from_world(world, &registry).deny_all())
+    let mut builder = allow(DynamicWorldBuilder::from_world(world, &registry).deny_all())
         .extract_entities(entities.iter().copied())
-        .remove_empty_entities()
-        .build();
+        .remove_empty_entities();
+    if counter {
+        builder = builder
+            .allow_resource::<GenerationCounter>()
+            .extract_resources();
+    }
+    let dynamic = builder.build();
     let document = dynamic
         .serialize(&registry)
         .map_err(|e| JournalError::Parse(e.to_string()))?;
@@ -343,8 +373,13 @@ fn parse(world: &World, document: &str) -> Result<(DynamicWorld, World), Journal
     }
     .deserialize(&mut de)
     .map_err(|e| JournalError::Parse(de.span_error(e).to_string()))?;
-    if !dynamic.resources.is_empty() {
-        return Err(JournalError::NotAllowed("resources".into()));
+    for resource in &dynamic.resources {
+        let info = resource
+            .get_represented_type_info()
+            .ok_or_else(|| JournalError::NotAllowed(resource.reflect_type_path().to_owned()))?;
+        if info.type_id() != core::any::TypeId::of::<GenerationCounter>() {
+            return Err(JournalError::NotAllowed(info.type_path().to_owned()));
+        }
     }
     for entity in &dynamic.entities {
         for component in &entity.components {
@@ -358,6 +393,7 @@ fn parse(world: &World, document: &str) -> Result<(DynamicWorld, World), Journal
     }
     let mut scratch = World::new();
     scratch.insert_resource(registry.clone());
+    scratch.init_resource::<GenerationCounter>();
     scratch.init_resource::<Ids>();
     scratch.insert_resource(world.resource::<Limits>().clone());
     let mut map = EntityHashMap::<Entity>::default();
@@ -393,14 +429,15 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Option<String>, JournalErro
         .map_err(|e| JournalError::Parse(e.to_string()))
 }
 
-/// Restores `path` into `world` with fresh entities. Returns how many entities were rebuilt;
-/// `0` when there is no file. The World is untouched on any error.
+/// Restores `path` into `world` with fresh entities and continues the journal generation from
+/// the document's counter. Returns how many entities were rebuilt; `0` when there is no file.
+/// The World is untouched on any error.
 pub fn restore(world: &mut World, path: &Path) -> Result<usize, JournalError> {
     let limit = world.resource::<Limits>().journal_bytes;
     let Some(document) = read_bounded(path, limit)? else {
         return Ok(0);
     };
-    let (dynamic, _scratch) = parse(world, &document)?;
+    let (dynamic, scratch) = parse(world, &document)?;
     let registry = world.resource::<AppTypeRegistry>().clone();
     let mut map = EntityHashMap::<Entity>::default();
     dynamic
@@ -408,6 +445,9 @@ pub fn restore(world: &mut World, path: &Path) -> Result<usize, JournalError> {
         .map_err(|e| JournalError::Parse(e.to_string()))?;
     world.resource_mut::<Ids>().bump_counters();
     check_invariants(world).map_err(|(n, reason)| JournalError::Invariant(n, reason))?;
+    let counter = scratch.resource::<GenerationCounter>().0;
+    world.resource_mut::<Generation>().0 = counter;
+    world.insert_resource(GenerationCounter(counter));
     Ok(map.len())
 }
 
@@ -494,7 +534,7 @@ pub fn archive(
     entities.dedup();
     let limit = world.resource::<Limits>().journal_bytes;
     let document = match read_bounded(&path, limit)? {
-        None => snapshot(world, &entities)?,
+        None => snapshot(world, &entities, false)?,
         Some(existing) => {
             // Merge: the existing archive plus the new subgraph, both rebuilt into one inert
             // World so entity ids never collide.
@@ -517,7 +557,7 @@ pub fn archive(
                 .write_to_world_with(&mut merged, &mut map, &registry.read())
                 .map_err(|e| JournalError::Parse(e.to_string()))?;
             let all = persisted(&mut merged);
-            snapshot(&mut merged, &all)?
+            snapshot(&mut merged, &all, false)?
         }
     };
     if path.exists() {
@@ -596,6 +636,8 @@ pub struct JournalPlugin {
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Journal::new(&self.state_dir))
+            .init_resource::<GenerationCounter>()
+            .register_type::<GenerationCounter>()
             .add_systems(Startup, restore_at_startup)
             .add_systems(
                 PostUpdate,
@@ -641,6 +683,14 @@ type Lifecycle = (
     Changed<Problem>,
     Changed<OutputTail>,
     Changed<Observation>,
+    // `Or` tuples hold at most 15 filters: later owners nest theirs.
+    Or<(
+        Changed<crate::groups::Cursor>,
+        Changed<crate::checks::CheckPolicy>,
+        Changed<crate::checks::ArtifactPolicy>,
+        Changed<crate::checks::SourceState>,
+        Changed<PaneHandle>,
+    )>,
 );
 type Presence = (
     Added<Task>,
@@ -657,7 +707,7 @@ type Presence = (
     Added<Seal>,
     Added<Uncertain>,
     Added<Lost>,
-    Added<StopRequested>,
+    Or<(Added<StopRequested>, Added<crate::worktrees::ForceRemoval>)>,
 );
 
 /// Anything in the allowlisted subgraph changed, was added or was removed.
@@ -739,11 +789,13 @@ fn commit(world: &mut World) {
     }
     let entities = persisted(world);
     let path = world.resource::<Journal>().path.clone();
+    let next = world.resource::<Generation>().0 + 1;
+    world.resource_mut::<GenerationCounter>().0 = next;
     let result =
-        snapshot(world, &entities).and_then(|document| write_atomic(&path, &document, 0o600));
+        snapshot(world, &entities, true).and_then(|document| write_atomic(&path, &document, 0o600));
     match result {
         Ok(()) => {
-            world.resource_mut::<Generation>().0 += 1;
+            world.resource_mut::<Generation>().0 = next;
             world.resource_mut::<Journal>().dirty = false;
         }
         Err(e) => error!("journal: commit refused: {e}"),

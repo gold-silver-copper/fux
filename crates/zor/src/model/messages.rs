@@ -23,13 +23,16 @@ pub enum Inbound {
         attempt: Entity,
         code: i32,
     },
-    CheckOutput {
+    /// A check leader exited (`code`, `None` on signal), timed out or could not run
+    /// (`problem`: spawn/output/timeout cause → Uncertain); streams already clipped to
+    /// `MAX_FINAL_OUTPUT_BYTES` each (CHECKS.md:27-28, 46-49).
+    CheckDone {
         check: Entity,
-        bytes: Vec<u8>,
-    },
-    CheckExited {
-        check: Entity,
-        code: i32,
+        code: Option<i32>,
+        stdout: String,
+        stderr: String,
+        truncated: bool,
+        problem: Option<String>,
     },
     /// A git command requested by `Effect::RunGit { op }` finished.
     GitDone {
@@ -81,6 +84,10 @@ pub enum Effect {
         argv: Vec<String>,
         cwd: String,
         timeout_ms: u64,
+    },
+    /// Kill the process group of a running check (`zor/check.cancel`); answered by `CheckDone`.
+    KillCheck {
+        check: Entity,
     },
     RunGit {
         op: u64,

@@ -594,6 +594,52 @@ fn retired_streams_are_pruned_into_tombstones() {
 }
 
 #[test]
+fn tombstones_are_bounded_at_twice_the_retired_cap() {
+    let mut log = log_with(8, 1);
+    let retire = |scope: Entity, name: &str| WorkspaceRetired {
+        entity: scope,
+        scope,
+        workspace: name.into(),
+    };
+    // Retiring `a`..`d` in turn keeps one retired stream (`d`) and tombstones the rest; the
+    // bound (2) forgets the oldest tombstone, `a`.
+    for (n, name) in ["a", "b", "c", "d"].into_iter().enumerate() {
+        let ws = scope(n as u32 + 1);
+        log.append(&output(ws, 1), 0, || Some(name.into()));
+        log.append(&retire(ws, name), 0, || Some(name.into()));
+    }
+    assert_eq!(log.workspaces().collect::<Vec<_>>(), ["d"]);
+    assert_eq!(
+        log.read_after("b", 0),
+        Err(Gap {
+            since: 0,
+            resume: 4
+        }),
+        "a tombstone within the bound still reports its gap"
+    );
+    assert_eq!(
+        log.read_after("c", 0),
+        Err(Gap {
+            since: 0,
+            resume: 6
+        })
+    );
+    assert!(
+        log.read_after("a", 0).unwrap().is_empty(),
+        "the oldest tombstone aged out: the name answers like an unknown one"
+    );
+    let mut all = Vec::new();
+    assert_eq!(
+        log.read_any_after(0, &mut all),
+        Err(Gap {
+            since: 0,
+            resume: 6
+        }),
+        "the server-wide floor still covers what was dropped"
+    );
+}
+
+#[test]
 fn unknown_scope_is_not_retained() {
     let mut log = log_with(8, 8);
     log.append(&output(scope(1), 1), 0, || None);

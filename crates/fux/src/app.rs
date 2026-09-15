@@ -25,7 +25,7 @@ use crate::model::{Inbound, ModelPlugin};
 use crate::paths::Paths;
 use crate::pointer::PointerPlugin;
 use crate::pty::TerminalPlugin;
-use crate::remote::RemoteControlPlugin;
+use crate::remote::{HttpTransport, RemoteControlPlugin};
 use crate::scene::LayoutDir;
 use crate::session::{self, SessionPlugin};
 use crate::surface::SurfacePlugin;
@@ -62,6 +62,7 @@ pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound
             runtime_dir: paths.runtime_dir.clone(),
             server_name: name.into(),
             inbound: inbound.clone(),
+            transport: HttpTransport::default(),
         },
         AttachPlugin { inbound },
         SessionPlugin {

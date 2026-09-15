@@ -16,13 +16,14 @@
 //! plugin's `NoTabGroupForCurrentFocus` recovery.
 
 use core::time::Duration;
+use std::collections::VecDeque;
 
 use bevy_app::prelude::*;
 use bevy_asset::{AssetEvent, AssetEventSystems, AssetServer, Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemId;
 use bevy_input::ButtonState;
-use bevy_input::keyboard::{Key, KeyboardInput};
+use bevy_input::keyboard::KeyboardInput;
 use bevy_input_focus::directional_navigation::{
     AutoNavigationConfig, DirectionalNavigation, DirectionalNavigationMap, FocusableArea,
     auto_generate_navigation_edges,
@@ -47,7 +48,7 @@ use super::chrome::{ChromeRoots, PendingNotice, TabEntry};
 use super::keys::{self, KeyChord};
 use super::paint::CellRect;
 use super::replicate::{Grid, Replicated, Roots, ShowingRoot, TargetPane};
-use super::{LocalCamera, Mode, Outbox, ViewerSystems, Viewport};
+use super::{LocalCamera, Modal, Mode, Outbox, ViewerSystems, choosers, copy_mode, prompts};
 use crate::assets::Keybindings;
 use crate::model::{NodeId, PaneId, Shows, SplitDirection, ViewerRequest, Zoomed};
 use crate::wire::Modes;
@@ -113,18 +114,33 @@ impl Default for PendingTarget {
     }
 }
 
-/// The action `Confirm` mode commits on `y`.
-#[derive(Resource, Default, Debug, Clone, Copy)]
-pub struct PendingConfirm(pub Option<ViewerRequestKind>);
+/// Leaves that held focus, most recent last, bounded (`prefix ;` returns to the previous one).
+#[derive(Resource, Debug, Default)]
+pub struct FocusRing(VecDeque<NodeId>);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewerRequestKind {
-    ClosePane,
+impl FocusRing {
+    pub const CAPACITY: usize = 8;
+
+    pub fn entries(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.0.iter().copied()
+    }
+
+    /// Forgets every leaf (another workspace's ids mean nothing here).
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    fn push(&mut self, node: NodeId) {
+        if self.0.back() == Some(&node) {
+            return;
+        }
+        self.0.retain(|n| *n != node);
+        if self.0.len() == Self::CAPACITY {
+            self.0.pop_front();
+        }
+        self.0.push_back(node);
+    }
 }
-
-/// Recomputed from the bindings when they change.
-#[derive(Resource, Default)]
-struct HelpText(String);
 
 fn effective_mode(state: &State<Mode>, next: &NextState<Mode>) -> Mode {
     match next {
@@ -142,19 +158,21 @@ fn modes_of(entity: Entity, leaves: &Query<&Shows>, grids: &Query<&Grid>) -> Mod
         .unwrap_or_default()
 }
 
-/// The single keyboard consumer: every `FocusedInput<KeyboardInput>` stops here.
+/// The single keyboard consumer: every `FocusedInput<KeyboardInput>` stops here and is routed by
+/// mode; the modal modes run their handler as a one-shot system for the chord, which applies
+/// before the next key is dispatched. The pane is the live `InputFocus`, not the event's
+/// `focused_entity`: dispatch reads focus once per update, and a popup closed earlier in the
+/// same batch has already handed focus back.
 #[allow(clippy::too_many_arguments)]
 fn on_key(
     mut ev: On<FocusedInput<KeyboardInput>>,
     state: Res<State<Mode>>,
     mut next: ResMut<NextState<Mode>>,
     bindings: Res<Bindings>,
+    focus: Res<InputFocus>,
     leaves: Query<&Shows>,
     grids: Query<&Grid>,
-    nodes: Query<&NodeId>,
-    viewport: Res<Viewport>,
     mut outbox: ResMut<Outbox>,
-    mut confirm: ResMut<PendingConfirm>,
     mut notice: ResMut<PendingNotice>,
     mut commands: Commands,
     mut buf: Local<Vec<u8>>,
@@ -164,7 +182,7 @@ fn on_key(
         return;
     }
     let chord = KeyChord::of(&ev.input);
-    let focused = ev.focused_entity;
+    let focused = focus.get().unwrap_or(ev.focused_entity);
     match effective_mode(&state, &next) {
         Mode::Normal => {
             if chord == *bindings.prefix() {
@@ -186,83 +204,57 @@ fn on_key(
                 None => notice.0 = Some(format!("unbound: {chord}")),
             }
         }
-        Mode::Confirm => {
-            next.set(Mode::Normal);
-            let yes =
-                matches!(&chord.key, Key::Character(c) if c.as_str() == "y" || c.as_str() == "Y");
-            if let (true, Some(ViewerRequestKind::ClosePane)) = (yes, confirm.0.take()) {
-                outbox.push(ViewerRequest::ClosePane);
-            }
-            confirm.0 = None;
-        }
-        Mode::CopyMode => {
-            let page = i32::from(viewport.rows.saturating_sub(2).max(1));
-            let rows = match &chord.key {
-                Key::ArrowDown => 1,
-                Key::ArrowUp => -1,
-                Key::PageDown => page,
-                Key::PageUp => -page,
-                Key::Escape => {
-                    next.set(Mode::Normal);
-                    return;
-                }
-                Key::Character(c) => match c.as_str() {
-                    "j" => 1,
-                    "k" => -1,
-                    "q" => {
-                        next.set(Mode::Normal);
-                        return;
-                    }
-                    _ => return,
-                },
-                _ => return,
-            };
-            if let Ok(node) = nodes.get(focused) {
-                outbox.push(ViewerRequest::Scroll { node: *node, rows });
-            }
-        }
+        Mode::Confirm => commands.run_system_cached_with(prompts::handle_confirm_key, chord),
+        Mode::CopyMode => commands.run_system_cached_with(copy_mode::handle_key, chord),
+        Mode::Chooser => commands.run_system_cached_with(choosers::handle_key, chord),
+        Mode::Prompt => commands.run_system_cached_with(prompts::handle_key, chord),
     }
 }
 
-/// Bracketed paste reaches the focused pane as one `Input`, wrapped if the program asked.
+/// Bracketed paste reaches the focused pane as one `Input`, wrapped if the program asked, or
+/// the open prompt as one edit.
 fn on_paste(
     mut ev: On<FocusedInput<Ime>>,
     state: Res<State<Mode>>,
     next: Res<NextState<Mode>>,
+    focus: Res<InputFocus>,
     leaves: Query<&Shows>,
     grids: Query<&Grid>,
     mut outbox: ResMut<Outbox>,
+    mut commands: Commands,
     mut buf: Local<Vec<u8>>,
 ) {
     ev.propagate(false);
     let Ime::Commit { value, .. } = &ev.input else {
         return;
     };
-    if effective_mode(&state, &next) != Mode::Normal || !leaves.contains(ev.focused_entity) {
-        return;
+    let focused = focus.get().unwrap_or(ev.focused_entity);
+    match effective_mode(&state, &next) {
+        Mode::Prompt => commands.run_system_cached_with(prompts::handle_paste, value.clone()),
+        Mode::Normal if leaves.contains(focused) => {
+            buf.clear();
+            keys::encode_paste(value, modes_of(focused, &leaves, &grids), &mut buf);
+            outbox.push(ViewerRequest::Input(buf.clone()));
+        }
+        _ => {}
     }
-    buf.clear();
-    keys::encode_paste(
-        value,
-        modes_of(ev.focused_entity, &leaves, &grids),
-        &mut buf,
-    );
-    outbox.push(ViewerRequest::Input(buf.clone()));
 }
 
-/// Focus on a leaf retargets the server (unless exact).
+/// Focus on a leaf retargets the server (unless exact) and records the leaf in the ring.
 fn on_focus_gained(
     ev: On<FocusGained>,
-    leaves: Query<&Shows, With<Replicated>>,
+    leaves: Query<(&Shows, &NodeId), With<Replicated>>,
     panes: Query<&PaneId>,
     target: Res<TargetPane>,
     exact: Option<Res<ExactAttachment>>,
+    mut ring: ResMut<FocusRing>,
     mut pending: ResMut<PendingTarget>,
     mut outbox: ResMut<Outbox>,
 ) {
-    let Ok(shows) = leaves.get(ev.entity) else {
+    let Ok((shows, node)) = leaves.get(ev.entity) else {
         return;
     };
+    ring.push(*node);
     let Ok(pane) = panes.get(shows.0) else {
         return;
     };
@@ -449,9 +441,30 @@ fn split_below(mut outbox: ResMut<Outbox>) {
     });
 }
 
-fn confirm_close(mut next: ResMut<NextState<Mode>>, mut confirm: ResMut<PendingConfirm>) {
-    confirm.0 = Some(ViewerRequestKind::ClosePane);
-    next.set(Mode::Confirm);
+/// `prefix ;`: focus the most recently focused other leaf that still exists.
+fn previous_pane(
+    ring: Res<FocusRing>,
+    leaves: Query<(Entity, &NodeId), (With<Shows>, With<Replicated>)>,
+    exact: Option<Res<ExactAttachment>>,
+    mut focus: ResMut<InputFocus>,
+) {
+    if exact.is_some() {
+        return;
+    }
+    let current = focus
+        .get()
+        .and_then(|e| leaves.get(e).ok())
+        .map(|(_, n)| *n);
+    let previous = ring
+        .0
+        .iter()
+        .rev()
+        .copied()
+        .filter(|node| Some(*node) != current)
+        .find_map(|node| leaves.iter().find(|(_, n)| **n == node).map(|(e, _)| e));
+    if let Some(leaf) = previous {
+        focus.set(leaf, FocusCause::Navigated);
+    }
 }
 
 fn navigate(
@@ -567,14 +580,6 @@ fn toggle_zoom(
     }
 }
 
-fn copy_mode(mut next: ResMut<NextState<Mode>>) {
-    next.set(Mode::CopyMode);
-}
-
-fn help(text: Res<HelpText>, mut notice: ResMut<PendingNotice>) {
-    notice.0 = Some(text.0.clone());
-}
-
 /// Sends the prefix key itself to the focused pane (`prefix prefix` by default).
 fn send_prefix(
     bindings: Res<Bindings>,
@@ -596,47 +601,41 @@ fn send_prefix(
 pub const ACTIONS: &[(&str, fn(&mut World) -> SystemId)] = &[
     ("split-side", |w| w.register_system(split_right)),
     ("split-below", |w| w.register_system(split_below)),
-    ("close-pane", |w| w.register_system(confirm_close)),
     ("focus-left", |w| w.register_system(nav_west)),
     ("focus-down", |w| w.register_system(nav_south)),
     ("focus-up", |w| w.register_system(nav_north)),
     ("focus-right", |w| w.register_system(nav_east)),
     ("next-pane", |w| w.register_system(next_pane)),
     ("prev-pane", |w| w.register_system(prev_pane)),
+    ("previous-pane", |w| w.register_system(previous_pane)),
     ("next-root", |w| w.register_system(next_root)),
     ("prev-root", |w| w.register_system(prev_root)),
     ("new-root", |w| w.register_system(new_root)),
     ("detach", |w| w.register_system(detach)),
     ("zoom", |w| w.register_system(toggle_zoom)),
-    ("copy-mode", |w| w.register_system(copy_mode)),
-    ("help", |w| w.register_system(help)),
+    ("copy-mode", |w| w.register_system(copy_mode::enter)),
     ("send-prefix", |w| w.register_system(send_prefix)),
 ];
 
-/// Registers the one-shot systems and the default chord table; the loaded `fux.toml#bindings`
-/// replaces the table through [`reload_bindings`].
+/// Every bindable action of every viewer module, by name.
+pub fn all_actions() -> impl Iterator<Item = &'static (&'static str, fn(&mut World) -> SystemId)> {
+    ACTIONS
+        .iter()
+        .chain(choosers::ACTIONS)
+        .chain(prompts::ACTIONS)
+}
+
+/// Registers the one-shot systems of every module and the default chord table; the loaded
+/// `fux.toml#bindings` replaces the table through [`reload_bindings`].
 pub fn register_bindings(world: &mut World) {
     let actions = Actions(
-        ACTIONS
-            .iter()
+        all_actions()
             .map(|(name, register)| (*name, register(world)))
             .collect(),
     );
     let table = Keybindings::default();
-    world.insert_resource(HelpText(help_text(&table)));
     world.insert_resource(Bindings::build(&table, &actions));
     world.insert_resource(actions);
-}
-
-fn help_text(table: &Keybindings) -> String {
-    let mut text = format!("{}:", table.prefix);
-    for (chord, action) in table.sorted() {
-        text.push(' ');
-        text.push_str(&chord);
-        text.push(' ');
-        text.push_str(action);
-    }
-    text
 }
 
 /// Applies a loaded or reloaded `fux.toml#bindings` without reconnecting.
@@ -646,7 +645,6 @@ fn reload_bindings(
     tables: Res<Assets<Keybindings>>,
     actions: Res<Actions>,
     mut bindings: ResMut<Bindings>,
-    mut help: ResMut<HelpText>,
 ) {
     let changed = events.read().any(|event| {
         matches!(event, AssetEvent::Added { id } | AssetEvent::Modified { id } if *id == handle.0.id())
@@ -661,7 +659,6 @@ fn reload_bindings(
         return;
     }
     *bindings = Bindings::build(table, &actions);
-    help.0 = help_text(table);
 }
 
 /// The viewer's `fux.toml#bindings` handle.
@@ -677,7 +674,7 @@ impl Plugin for FocusPlugin {
             .resource::<AssetServer>()
             .load(crate::assets::BINDINGS_PATH);
         app.init_resource::<PendingTarget>()
-            .init_resource::<PendingConfirm>()
+            .init_resource::<FocusRing>()
             .insert_resource(BindingsHandle(handle))
             .add_message::<Ime>()
             .add_systems(
@@ -687,7 +684,12 @@ impl Plugin for FocusPlugin {
                     cell_backend.in_set(PickingSystems::Backend),
                 ),
             )
-            .add_systems(Update, sync_focus.in_set(ViewerSystems::Focus))
+            .add_systems(
+                Update,
+                sync_focus
+                    .in_set(ViewerSystems::Focus)
+                    .run_if(not(in_state(Modal))),
+            )
             .add_systems(
                 PostUpdate,
                 (

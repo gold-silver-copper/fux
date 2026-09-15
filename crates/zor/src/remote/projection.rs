@@ -12,10 +12,9 @@ use bevy_ecs::relationship::RelationshipTarget;
 use bevy_reflect::prelude::*;
 
 use crate::model::{
-    AgentState, AttemptId, AttemptState, Attempts, Check, CheckId, CheckOf, CheckState, Machine,
-    MachineId, MachineName, Mirrors, Observation, ObservedAgent, ObservedAgentId, PaneHandle,
-    ProjectionEntity, Projections, Required, Requirement, Task, TaskId, TaskState, Title,
-    Uncertain,
+    AttemptId, AttemptState, Attempts, Check, CheckId, CheckOf, CheckState, Machine, MachineId,
+    MachineName, Mirrors, ProjectionEntity, Projections, Required, Requirement, Task, TaskId,
+    TaskState, Title, Uncertain,
 };
 
 #[derive(Component, Reflect, Clone, Debug, Default, PartialEq)]
@@ -29,6 +28,8 @@ pub struct TaskView {
     pub uncertain: bool,
 }
 
+/// One observed pane: identity, the merged observation and its evidence
+/// (`providers::AgentRecord`, DASHBOARD.md:38-40).
 #[derive(Component, Reflect, Clone, Debug, Default, PartialEq)]
 #[reflect(Component)]
 pub struct AgentView {
@@ -38,7 +39,19 @@ pub struct AgentView {
     pub pane: u64,
     pub pid: Option<u32>,
     pub state: String,
+    /// `native`, `passive` or `none`.
+    pub source: String,
+    pub rule: Option<String>,
+    pub passive: String,
+    pub since_ms: u64,
     pub age_upper_bound_ms: u64,
+    pub attempt: Option<u64>,
+    pub task: Option<String>,
+    pub provider: Option<String>,
+    pub producer: Option<String>,
+    pub last_event: Option<String>,
+    pub last_event_ms: u64,
+    pub problem: Option<String>,
 }
 
 #[derive(Component, Reflect, Clone, Debug, Default, PartialEq)]
@@ -153,22 +166,28 @@ pub(super) fn sync(world: &mut World, mut scratch: Local<Scratch>) {
 
     // Agents.
     n = 0;
-    let rows: Vec<(Entity, u64, PaneHandle, AgentState, u64)> = world
-        .query_filtered::<(Entity, &ObservedAgentId, &PaneHandle, &Observation), With<ObservedAgent>>()
-        .iter(world)
-        .map(|(e, id, handle, obs)| (e, id.0, handle.clone(), obs.state, obs.age_upper_bound_ms))
-        .collect();
-    for (entity, id, handle, state, age) in rows {
+    for (entity, record) in crate::providers::agent_records(world) {
         let Some(view) = slot(&mut scratch.agents, n, entity) else {
             continue;
         };
-        view.id = id;
-        set_str(&mut view.instance, &handle.instance);
-        set_str(&mut view.workspace, &handle.workspace);
-        view.pane = handle.pane;
-        view.pid = handle.pid;
-        set_str(&mut view.state, &state_name(&state));
-        view.age_upper_bound_ms = age;
+        view.id = record.id;
+        set_str(&mut view.instance, &record.instance);
+        set_str(&mut view.workspace, &record.workspace);
+        view.pane = record.pane;
+        view.pid = record.pid;
+        set_str(&mut view.state, &record.state);
+        set_str(&mut view.source, &record.source);
+        view.rule = record.rule;
+        set_str(&mut view.passive, &record.passive);
+        view.since_ms = record.since_ms;
+        view.age_upper_bound_ms = record.age_upper_bound_ms;
+        view.attempt = record.attempt;
+        view.task = record.task;
+        view.provider = record.provider;
+        view.producer = record.producer;
+        view.last_event = record.last_event;
+        view.last_event_ms = record.last_event_ms;
+        view.problem = record.problem;
         n += 1;
     }
     scratch.agents.truncate(n);

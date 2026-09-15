@@ -20,7 +20,7 @@ use crate::events::{PaneExited, PaneSpawned};
 use crate::layout::{self, NavDirection, instances, ops};
 use crate::model::*;
 use crate::scene::templates;
-use crate::session::{Historical, RestoreDecision};
+use crate::session::{Historical, RestorePending};
 use crate::terminal::Terminal;
 
 /// Requests a viewer may have queued behind a creation barrier; beyond this the newest are
@@ -444,7 +444,7 @@ fn materialize(
         (
             With<Pane>,
             Without<Terminal>,
-            Without<RestoreDecision>,
+            Without<RestorePending>,
             Allow<Disabled>,
         ),
     >,

@@ -10,6 +10,7 @@ use bevy_ecs::entity::EntityHashMap;
 use bevy_ecs::error::BevyError;
 use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::AppTypeRegistry;
+use bevy_input_focus::InputFocus;
 use bevy_input_focus::tab_navigation::TabIndex;
 use bevy_platform::collections::HashSet;
 use bevy_ui::{Node, UiTargetCamera};
@@ -325,6 +326,26 @@ fn apply_terminal(world: &mut World, delta: &TerminalDelta) {
     if let Some(payload) = &delta.clipboard {
         world.write_message(ClipboardWrite(payload.clone()));
     }
+}
+
+/// Drops the replicated scene before a new attachment (another workspace): every replicated
+/// entity, the server map and the projection resources; focus is released so the next scene's
+/// target takes it.
+pub fn reset(world: &mut World) {
+    let replicated: Vec<Entity> = world
+        .query_filtered::<Entity, With<Replicated>>()
+        .iter(world)
+        .collect();
+    for entity in replicated {
+        let _ = world.try_despawn(entity);
+    }
+    world.resource_mut::<EntityMap>().0.clear();
+    world.resource_mut::<Roots>().0.clear();
+    world.insert_resource(TargetPane::default());
+    world.insert_resource(ShowingRoot::default());
+    world.insert_resource(Session::default());
+    world.insert_resource(SceneRevision::default());
+    world.resource_mut::<InputFocus>().clear();
 }
 
 pub struct ReplicatePlugin;

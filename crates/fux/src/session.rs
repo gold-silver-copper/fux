@@ -4,9 +4,11 @@
 //!   allowlisted template subgraph of `scene::export` (`Node`, `ChildOf`/`Children`, `ZIndex`,
 //!   colours, `Name`, `RootOrder`) plus, behind each placing leaf, a pane entity carrying
 //!   `LaunchAttribution`, `Title`, [`Historical`] (its last screen, bounded) and [`LastFocus`]
-//!   on the pane a viewer targeted. Public ids are not written: a restored session allocates
-//!   fresh ones. Nothing about sockets, PTYs, viewers, tokens or the instance nonce is
-//!   allowlisted, so it cannot leak into the file.
+//!   on the pane a viewer targeted. A pane launched with an environment also carries its
+//!   `PaneTemplate`, so the variables survive a restart; a pane launched without one does not,
+//!   so the file never holds an environment the launch did not put there. Public ids are not
+//!   written: a restored session allocates fresh ones. Nothing about sockets, PTYs, viewers,
+//!   tokens or the instance nonce is allowlisted, so it cannot leak into the file.
 //! * [`SessionPlugin`] writes the document to `<state_dir>/session/<server>.scn.ron` (atomic:
 //!   temp file + rename, 0600) at most once per [`SAVE_INTERVAL_MS`] while the layout, names,
 //!   focus or titles change, and once more on `OnEnter(ServerMode::ShuttingDown)`.
@@ -15,7 +17,7 @@
 //!   roots), split per workspace and rebuilt through `scene::apply` with templates allowed, so
 //!   every restored leaf launches through the same `Creation` path as any spawn. `auto`
 //!   materialises immediately (the lifecycle feeds the `Historical` lines above a dim
-//!   separator); `ask` parks every pane behind [`RestoreDecision::Pending`] until
+//!   separator); `ask` parks every pane behind [`RestorePending`] until
 //!   `fux/session.restore` or `fux/session.skip`. A file that fails validation is renamed
 //!   `*.rejected-<ms>` and the default workspace is bootstrapped instead.
 
@@ -88,7 +90,8 @@ impl Historical {
 }
 
 /// The pane a viewer of its workspace targeted when the session was saved (one per
-/// workspace); kept on the restored pane.
+/// workspace); kept on the restored pane until the first viewer attaches to the workspace
+/// (`ops::attach_viewer` targets it and removes the marker).
 #[derive(Component, Reflect, Debug, Default)]
 #[reflect(Component)]
 pub struct LastFocus;
@@ -96,10 +99,8 @@ pub struct LastFocus;
 /// A restored pane whose process has not been decided on (`--restore ask`): it stays
 /// `Disabled`/`Starting` and is not materialised until `fux/session.restore` (marker removed)
 /// or `fux/session.skip` (closed; its leaf collapses through the lifecycle).
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RestoreDecision {
-    Pending,
-}
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RestorePending;
 
 /// What `serve --restore` does with an existing session file.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -290,12 +291,14 @@ pub fn document(world: &World) -> R<String> {
         .allow_component::<Places>()
         .allow_component::<Pane>()
         .allow_component::<LaunchAttribution>()
+        .allow_component::<PaneTemplate>()
         .allow_component::<Title>()
         .extract_entities(extract.into_iter())
         .remove_empty_entities()
         .build();
     // As in `scene::export`: roots are parentless in the document and the workspace lists them
-    // only through `RootOrder`. Panes gain their history and focus; an empty title is noise.
+    // only through `RootOrder`. Panes gain their history and focus; an empty title is noise and
+    // a template without an environment adds nothing to the attribution.
     for entity in &mut dynamic.entities {
         if workspaces.iter().any(|(ws, _)| *ws == entity.entity) {
             entity.components.retain(|c| !is::<Children>(c.as_ref()));
@@ -303,8 +306,13 @@ pub fn document(world: &World) -> R<String> {
             entity.components.retain(|c| !is::<ChildOf>(c.as_ref()));
         } else if let Some((history, focused)) = panes.get(&entity.entity) {
             entity.components.retain(|c| {
-                !is::<Title>(c.as_ref())
-                    || Title::from_reflect(c.as_ref()).is_some_and(|t| !t.0.is_empty())
+                if is::<Title>(c.as_ref()) {
+                    Title::from_reflect(c.as_ref()).is_some_and(|t| !t.0.is_empty())
+                } else if is::<PaneTemplate>(c.as_ref()) {
+                    PaneTemplate::from_reflect(c.as_ref()).is_some_and(|t| !t.env.is_empty())
+                } else {
+                    true
+                }
             });
             entity.components.push(Box::new(history.clone()));
             if *focused {
@@ -347,20 +355,28 @@ pub fn save(world: &World) -> R<(PathBuf, usize)> {
     Ok((path, document.len()))
 }
 
-fn save_now(world: &mut World, now: u64) {
-    let outcome = save(world);
+/// The bookkeeping a successful write does; `fux/session.save` and the autosave share it.
+pub fn note_save(world: &mut World, now: u64) {
     let mut state = world.resource_mut::<SessionState>();
     state.dirty = false;
     state.last_save_ms = now;
     state.next_save_ms = None;
-    match outcome {
+    state.saves += 1;
+    state.last_error = None;
+}
+
+fn save_now(world: &mut World, now: u64) {
+    match save(world) {
         Ok((path, bytes)) => {
-            state.saves += 1;
-            state.last_error = None;
+            note_save(world, now);
             bevy_log::debug!("session saved: {} ({bytes} bytes)", path.display());
         }
         Err(error) => {
             warn!("session save failed: {error}");
+            let mut state = world.resource_mut::<SessionState>();
+            state.dirty = false;
+            state.last_save_ms = now;
+            state.next_save_ms = None;
             state.last_error = Some(error.to_string());
         }
     }
@@ -754,14 +770,16 @@ fn validate(world: &World, dynamic: &DynamicWorld) -> R<Vec<DocWorkspace>> {
                     if scratch.get::<Node>(pane).is_some() {
                         return Err(SceneError::BadPaneReference(pane).into());
                     }
+                    // The attribution is the resolved launch; only the environment comes from
+                    // the template (written only when the launch carried one).
                     let template = match (
                         scratch.get::<LaunchAttribution>(pane),
                         scratch.get::<PaneTemplate>(pane),
                     ) {
-                        (Some(a), _) => PaneTemplate {
+                        (Some(a), t) => PaneTemplate {
                             argv: a.argv.clone(),
                             cwd: a.cwd.clone(),
-                            env: Vec::new(),
+                            env: t.map(|t| t.env.clone()).unwrap_or_default(),
                             stream: a.stream.clone(),
                         },
                         (None, Some(t)) => t.clone(),
@@ -860,7 +878,7 @@ fn build_workspace(
             entity.insert(LastFocus);
         }
         if mode == RestoreMode::Ask {
-            entity.insert(RestoreDecision::Pending);
+            entity.insert(RestorePending);
         }
     }
     Ok((workspace, report.launched))
@@ -899,7 +917,7 @@ fn undo_workspace(world: &mut World, ws: Entity) {
 /// Panes awaiting a decision, in `PaneId` order.
 pub fn pending(world: &mut World) -> Vec<Entity> {
     let mut panes: Vec<(PaneId, Entity)> = world
-        .query_filtered::<(Entity, &PaneId), (With<RestoreDecision>, Allow<Disabled>)>()
+        .query_filtered::<(Entity, &PaneId), (With<RestorePending>, Allow<Disabled>)>()
         .iter(world)
         .map(|(e, id)| (*id, e))
         .collect();
@@ -912,7 +930,7 @@ pub fn decide_restore(world: &mut World, pane: Entity) -> R<()> {
     let mut entity = world
         .get_entity_mut(pane)
         .map_err(|_| invalid(format!("{pane} is not a pane")))?;
-    if entity.take::<RestoreDecision>().is_none() {
+    if entity.take::<RestorePending>().is_none() {
         return Err(invalid(format!("{pane} is not awaiting a decision")));
     }
     Ok(())

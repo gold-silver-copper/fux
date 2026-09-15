@@ -72,13 +72,7 @@ fn session_save(mut req: Request, world: &mut World) -> BrpResult {
     let NoParams {} = req.parse()?;
     let (path, bytes) = session::save(world).map_err(session_error)?;
     let now = crate::lifecycle::now_ms(world);
-    if let Some(mut state) = world.get_resource_mut::<SessionState>() {
-        state.dirty = false;
-        state.last_save_ms = now;
-        state.next_save_ms = None;
-        state.saves += 1;
-        state.last_error = None;
-    }
+    session::note_save(world, now);
     to_value(SessionSaved {
         path: path.display().to_string(),
         bytes,

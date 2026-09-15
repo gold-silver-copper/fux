@@ -12,10 +12,10 @@
 pub mod check_methods;
 pub mod events;
 pub mod group_methods;
-pub mod provider_methods;
-pub mod task_methods;
 pub mod methods;
 pub mod projection;
+pub mod provider_methods;
+pub mod task_methods;
 pub mod watch;
 
 use std::net::{Ipv4Addr, TcpListener};

@@ -3,20 +3,28 @@
 //! of the server's `roots`), the mode indicator and the target pane's title, plus a transient
 //! notice overlay whose lifetime is a `bevy_time` `Timer`. Colours come from the theme: every
 //! chrome node names a [`ThemeToken`] and the resolve pass writes its `CellStyle`.
+//!
+//! Popups (choosers, prompts, confirmations) share two idioms from `bevy_ui_widgets`: the
+//! [`Popup`] shell takes presentation focus and closes when focus leaves its subtree
+//! (`menu.rs`'s `MenuPopup` dismissal), and [`Popover`] places it beside an anchor node by
+//! scoring candidate placements against the viewport rect (`popover.rs`).
 
 use core::time::Duration;
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use bevy_input_focus::tab_navigation::TabGroup;
+use bevy_input_focus::{FocusCause, FocusLost, InputFocus, IsFocused, IsFocusedHelper};
+use bevy_math::IVec2;
 use bevy_state::prelude::*;
 use bevy_time::{Time, Timer, TimerMode};
 use bevy_ui::interaction_states::Selected;
 use bevy_ui::prelude::*;
-use bevy_ui::{UiTargetCamera, ZIndex};
+use bevy_ui::{ComputedNode, UiGlobalTransform, UiTargetCamera, ZIndex};
 
+use super::paint::CellRect;
 use super::replicate::{Grid, Roots, Session, ShowingRoot, TargetPane};
-use super::{LocalCamera, Mode, WakeDeadline};
+use super::{LocalCamera, Mode, Viewport, WakeDeadline};
 use crate::assets::ThemeToken;
 use crate::model::{Ids, NodeId};
 use crate::wire::ProcessSummary;
@@ -48,6 +56,56 @@ pub struct NoticeOverlay {
     timer: Timer,
 }
 
+/// A viewer-local popup over the chrome root: it holds presentation focus while open and is
+/// dismissed when focus leaves it ([`spawn_popup`]). `returns_to` is what had focus when it
+/// opened (the `FocusRoot` half of the menu idiom): a keyboard close hands focus straight back
+/// so the rest of the same key batch reaches the pane.
+#[derive(Component, Debug)]
+pub struct Popup {
+    pub returns_to: Option<Entity>,
+}
+
+/// Which side of the anchor a popover goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// Alignment along the anchor's edge perpendicular to the side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Align {
+    Start,
+    Center,
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub side: Side,
+    pub align: Align,
+}
+
+impl Placement {
+    pub const fn new(side: Side, align: Align) -> Self {
+        Self { side, align }
+    }
+}
+
+/// Places its node beside `anchor`: the first candidate that fits the viewport wins, otherwise
+/// the least occluded one, then the rect is shifted into the viewport (a cell grid has no room
+/// to spare). The node's own `width`/`height` in cells must be set, as text nodes do.
+#[derive(Component, Debug)]
+pub struct Popover {
+    pub anchor: Entity,
+    pub placements: &'static [Placement],
+}
+
+/// Stacking order of popups, above notices.
+pub const POPUP_Z: i32 = 20;
+
 /// The chrome entities other systems address.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ChromeRoots {
@@ -55,6 +113,8 @@ pub struct ChromeRoots {
     pub pane_area: Entity,
     pub status_bar: Entity,
     pub tab_strip: Entity,
+    /// The status bar's mode label: the anchor of confirmation popovers.
+    pub mode_indicator: Entity,
 }
 
 /// A notice waiting to be shown (from the server or a local binding).
@@ -170,15 +230,162 @@ pub fn spawn_chrome(world: &mut World) -> ChromeRoots {
         pane_area,
         status_bar,
         tab_strip,
+        mode_indicator: mode,
     }
 }
 
 /// Text nodes are as wide as their content.
-fn size_text_nodes(mut nodes: Query<(&Text, &mut Node), Changed<Text>>) {
+pub(super) fn size_text_nodes(mut nodes: Query<(&Text, &mut Node), Changed<Text>>) {
     for (text, mut node) in &mut nodes {
         let width = Val::Px(text.0.chars().count() as f32);
         if node.width != width {
             node.width = width;
+        }
+    }
+}
+
+/// Spawns a popup shell as a child of the chrome root, gives it focus and installs the
+/// focus-loss dismissal observer; `bundle` is the popup's own content.
+pub fn spawn_popup(
+    commands: &mut Commands,
+    chrome: &ChromeRoots,
+    focus: &mut InputFocus,
+    bundle: impl Bundle,
+) -> Entity {
+    let returns_to = focus.get();
+    let popup = commands
+        .spawn((
+            Chrome,
+            Popup { returns_to },
+            ChildOf(chrome.root),
+            ZIndex(POPUP_Z),
+            bundle,
+        ))
+        .observe(on_popup_focus_lost)
+        .id();
+    focus.set(popup, FocusCause::Navigated);
+    popup
+}
+
+/// Closes a popup from a key: despawns it, returns focus to the opener (or releases it, and
+/// the target pane takes it back through `sync_focus`) and enters `mode`.
+pub fn close_popup(
+    commands: &mut Commands,
+    focus: &mut InputFocus,
+    next: &mut NextState<Mode>,
+    (popup, shell): (Entity, &Popup),
+    mode: Mode,
+) {
+    commands.entity(popup).despawn();
+    if focus.get() == Some(popup) {
+        match shell.returns_to {
+            Some(previous) => focus.set(previous, FocusCause::Navigated),
+            None => focus.clear(),
+        }
+    }
+    next.set(mode);
+}
+
+/// The `MenuPopup` idiom: a popup that no longer contains the focus closes itself.
+fn on_popup_focus_lost(
+    ev: On<FocusLost>,
+    popups: Query<(), With<Popup>>,
+    focused: IsFocusedHelper,
+    mut next: ResMut<NextState<Mode>>,
+    mut commands: Commands,
+) {
+    let popup = ev.entity;
+    if !popups.contains(popup) || focused.is_focus_within(popup) {
+        return;
+    }
+    commands.entity(popup).despawn();
+    next.set(Mode::Normal);
+}
+
+fn px(val: Val) -> i32 {
+    match val {
+        Val::Px(v) => v.round() as i32,
+        _ => 0,
+    }
+}
+
+/// Places popovers when they appear or their anchor moves (`bevy_ui_widgets::popover`'s
+/// occlusion scoring against the viewport rect).
+fn position_popovers(
+    viewport: Res<Viewport>,
+    anchors: Query<(&ComputedNode, &UiGlobalTransform)>,
+    moved: Query<(), Or<(Changed<ComputedNode>, Changed<UiGlobalTransform>)>>,
+    mut popovers: Query<(Ref<Popover>, &mut Node)>,
+) {
+    let window = CellRect {
+        min: IVec2::ZERO,
+        max: IVec2::new(i32::from(viewport.cols), i32::from(viewport.rows)),
+    };
+    for (popover, mut node) in &mut popovers {
+        if !popover.is_added()
+            && !node.is_changed()
+            && !moved.contains(popover.anchor)
+            && !viewport.is_changed()
+        {
+            continue;
+        }
+        let Ok((anchor_node, anchor_transform)) = anchors.get(popover.anchor) else {
+            continue;
+        };
+        let anchor = CellRect::from_node(anchor_node, anchor_transform);
+        let size = IVec2::new(px(node.width).max(1), px(node.height).max(1));
+        let mut best: Option<(i32, IVec2)> = None;
+        for placement in popover.placements {
+            let mut min = IVec2::ZERO;
+            match placement.side {
+                Side::Top => min.y = anchor.min.y - size.y,
+                Side::Bottom => min.y = anchor.max.y,
+                Side::Left => min.x = anchor.min.x - size.x,
+                Side::Right => min.x = anchor.max.x,
+            }
+            let horizontal = matches!(placement.side, Side::Top | Side::Bottom);
+            let (anchor_len, len) = if horizontal {
+                (anchor.width(), size.x)
+            } else {
+                (anchor.height(), size.y)
+            };
+            let offset = match placement.align {
+                Align::Start => 0,
+                Align::Center => (anchor_len - len) / 2,
+                Align::End => anchor_len - len,
+            };
+            if horizontal {
+                min.x = anchor.min.x + offset;
+            } else {
+                min.y = anchor.min.y + offset;
+            }
+            let rect = CellRect {
+                min,
+                max: min + size,
+            };
+            let clipped = rect.intersect(window);
+            let occlusion = size.x * size.y - (clipped.width().max(0) * clipped.height().max(0));
+            if best.is_none_or(|(o, _)| occlusion < o) {
+                best = Some((occlusion, min));
+            }
+            if occlusion == 0 {
+                break;
+            }
+        }
+        let Some((_, mut min)) = best else {
+            continue;
+        };
+        min.x = min.x.min(window.max.x - size.x).max(0);
+        min.y = min.y.min(window.max.y - size.y).max(0);
+        let (left, top) = (Val::Px(min.x as f32), Val::Px(min.y as f32));
+        if node.position_type != PositionType::Absolute {
+            node.position_type = PositionType::Absolute;
+        }
+        if node.left != left {
+            node.left = left;
+        }
+        if node.top != top {
+            node.top = top;
         }
     }
 }
@@ -222,7 +429,7 @@ fn sync_tab_strip(
 }
 
 /// Mode indicator in the status bar.
-fn sync_mode(mode: Res<State<Mode>>, mut texts: Query<&mut Text, With<ModeIndicator>>) {
+pub(super) fn sync_mode(mode: Res<State<Mode>>, mut texts: Query<&mut Text, With<ModeIndicator>>) {
     if !mode.is_changed() {
         return;
     }
@@ -232,8 +439,10 @@ fn sync_mode(mode: Res<State<Mode>>, mut texts: Query<&mut Text, With<ModeIndica
     let label = match mode.get() {
         Mode::Normal => "",
         Mode::Prefix => " PREFIX ",
-        Mode::Confirm => " close pane? y/n ",
-        Mode::CopyMode => " COPY j/k/q ",
+        Mode::Confirm => " CONFIRM y/n ",
+        Mode::CopyMode => " COPY ",
+        Mode::Chooser => " CHOOSE ",
+        Mode::Prompt => " PROMPT ",
     };
     if text.0 != label {
         text.0.clear();
@@ -344,6 +553,7 @@ impl Plugin for ChromePlugin {
                 sync_title,
                 notices,
                 size_text_nodes,
+                position_popovers,
             )
                 .chain()
                 .in_set(super::ViewerSystems::Chrome),

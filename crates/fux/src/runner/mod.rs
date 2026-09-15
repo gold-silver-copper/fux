@@ -95,14 +95,17 @@ pub struct FuxHost {
     pty: PtyAdapter,
     attach: AttachAdapter,
     records: QueryState<&'static FinalRecord>,
+    /// The shutdown poll interval (`Params::tick`).
+    tick: Duration,
 }
 
 impl FuxHost {
-    pub fn new(world: &mut World, pty: PtyAdapter, attach: AttachAdapter) -> Self {
+    pub fn new(world: &mut World, pty: PtyAdapter, attach: AttachAdapter, tick: Duration) -> Self {
         Self {
             pty,
             attach,
             records: world.query::<&FinalRecord>(),
+            tick,
         }
     }
 }
@@ -122,7 +125,7 @@ impl Host for FuxHost {
             .get_resource::<State<ServerMode>>()
             .is_some_and(|s| *s.get() == ServerMode::ShuttingDown);
         if shutting_down {
-            return Some(Params::default().tick);
+            return Some(self.tick);
         }
         let now = wall_ms();
         let pacing = world.get_resource::<PacingWake>().and_then(|w| w.at_ms);
@@ -166,8 +169,9 @@ impl Host for FuxHost {
 
 /// Makes `app.run()` use [`run`] with fux's host.
 pub fn install(app: &mut App, sources: Sources<Inbound>, pty: PtyAdapter, attach: AttachAdapter) {
-    let host = FuxHost::new(app.world_mut(), pty, attach);
-    app.set_runner(move |app| run(app, sources, host, Params::default()));
+    let params = Params::default();
+    let host = FuxHost::new(app.world_mut(), pty, attach, params.tick);
+    app.set_runner(move |app| run(app, sources, host, params));
 }
 
 pub fn run<H: Host>(

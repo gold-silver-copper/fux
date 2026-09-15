@@ -21,6 +21,7 @@ use bevy_ui::{
 use super::{LayoutError, NavDirection, NodePatch, Side, ViewState, instances, picking, size};
 use crate::model::invariants::root_of_template;
 use crate::model::*;
+use crate::session::LastFocus;
 
 type R<T> = Result<T, LayoutError>;
 
@@ -730,7 +731,9 @@ pub fn remove_leaf(world: &mut World, pane: Entity) -> R<()> {
 // ---------------------------------------------------------------------------------------------
 
 /// Spawns a viewer with its layout camera and picking pointer, showing the first root in order
-/// (or the root placing `exact`) and targeting the first pane in it (or `exact`).
+/// (or the root placing `exact`) and targeting the first pane in it (or `exact`). Without
+/// `exact`, a restored workspace's first viewer resumes on the pane the session saved
+/// ([`LastFocus`], consumed here).
 pub fn attach_viewer(
     world: &mut World,
     ws: Entity,
@@ -749,19 +752,24 @@ pub fn attach_viewer(
             max,
         });
     }
-    let root = match exact {
+    let (root, target) = match exact {
         Some(pane) => {
             pane_entity(world, pane)?;
             if world.get::<PaneIn>(pane).map(|p| p.0) != Some(ws) {
                 return Err(LayoutError::CrossWorkspace);
             }
-            Some(root_of(world, leaf_of(world, pane)?)?)
+            (Some(root_of(world, leaf_of(world, pane)?)?), Some(pane))
         }
-        None => world
-            .get::<RootOrder>(ws)
-            .and_then(|o| o.0.first().copied()),
+        None => match resume_focus(world, ws) {
+            Some((root, pane)) => (Some(root), Some(pane)),
+            None => {
+                let root = world
+                    .get::<RootOrder>(ws)
+                    .and_then(|o| o.0.first().copied());
+                (root, root.and_then(|r| first_pane_in(world, r)))
+            }
+        },
     };
-    let target = exact.or_else(|| root.and_then(|r| first_pane_in(world, r)));
 
     let mut camera = Camera::default();
     let mut render_target = RenderTarget::None { size: UVec2::ZERO };
@@ -1203,6 +1211,19 @@ fn first_pane_in(world: &World, root: Entity) -> Option<Entity> {
         }
     });
     first
+}
+
+/// The pane a restored workspace's viewer targeted when the session was saved, with its root;
+/// the marker is removed, so only the first viewer resumes there.
+fn resume_focus(world: &mut World, ws: Entity) -> Option<(Entity, Entity)> {
+    let pane = world
+        .query_filtered::<(Entity, &PaneIn), (With<LastFocus>, Allow<Disabled>)>()
+        .iter(world)
+        .find(|(_, placed)| placed.0 == ws)
+        .map(|(pane, _)| pane)?;
+    world.entity_mut(pane).remove::<LastFocus>();
+    let root = root_of(world, leaf_of(world, pane).ok()?).ok()?;
+    Some((root, pane))
 }
 
 fn check_depth(depth: usize) -> R<()> {

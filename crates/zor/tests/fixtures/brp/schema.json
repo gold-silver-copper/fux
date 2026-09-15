@@ -1,0 +1,1030 @@
+{
+  "envelope": [
+    "token",
+    "instance"
+  ],
+  "methods": {
+    "zor/agent.inspect": {
+      "params": {
+        "fields": {
+          "agent": "u64"
+        },
+        "name": "AgentInspectParams"
+      },
+      "result": {
+        "fields": {
+          "age_upper_bound_ms": "u64",
+          "attempt": "Option<u64>",
+          "id": "u64",
+          "instance": "String",
+          "last_event": "Option<String>",
+          "last_event_ms": "u64",
+          "pane": "u64",
+          "passive": "String",
+          "pid": "Option<u32>",
+          "problem": "Option<String>",
+          "producer": "Option<String>",
+          "provider": "Option<String>",
+          "rule": "Option<String>",
+          "since_ms": "u64",
+          "source": "String",
+          "state": "String",
+          "task": "Option<String>",
+          "workspace": "String"
+        },
+        "name": "AgentRow"
+      }
+    },
+    "zor/agent.list": {
+      "params": {
+        "fields": {},
+        "name": "AgentListParams"
+      },
+      "result": {
+        "fields": {
+          "agents": "Vec<AgentRow>"
+        },
+        "name": "AgentList"
+      }
+    },
+    "zor/artifact.fetch": {
+      "params": {
+        "fields": {
+          "artifact": "String"
+        },
+        "name": "ArtifactParams"
+      },
+      "result": {
+        "fields": {
+          "artifact": "String",
+          "bytes": "Vec<u8>",
+          "path": "String"
+        },
+        "name": "ArtifactFetched"
+      }
+    },
+    "zor/artifact.list": {
+      "params": {
+        "fields": {
+          "task": "String"
+        },
+        "name": "TaskParams"
+      },
+      "result": {
+        "fields": {
+          "artifacts": "Vec<ArtifactView>",
+          "task": "String"
+        },
+        "name": "ArtifactList"
+      }
+    },
+    "zor/artifact.require": {
+      "params": {
+        "fields": {
+          "name": "String",
+          "path": "String",
+          "task": "String"
+        },
+        "name": "ArtifactRequireParams"
+      },
+      "result": {
+        "fields": {
+          "artifacts_sealed": "bool",
+          "checks_sealed": "bool",
+          "collected_count": "usize",
+          "passed_count": "usize",
+          "required_artifacts": "Vec<RequiredArtifactView>",
+          "required_checks": "Vec<RequiredCheckView>",
+          "task": "String"
+        },
+        "name": "TaskPolicy"
+      }
+    },
+    "zor/artifact.retain": {
+      "params": {
+        "fields": {
+          "artifact": "String",
+          "path": "String",
+          "requirement": "Option<String>",
+          "task": "String"
+        },
+        "name": "ArtifactRetainParams"
+      },
+      "result": {
+        "fields": {
+          "artifact": "String",
+          "attempt": "u64",
+          "bytes": "Option<usize>",
+          "check": "Option<String>",
+          "generation": "Option<u64>",
+          "path": "String",
+          "problem": "Option<String>",
+          "requirement": "Option<String>",
+          "state": "String",
+          "task": "String"
+        },
+        "name": "ArtifactView"
+      }
+    },
+    "zor/attempt.inspect": {
+      "params": {
+        "fields": {
+          "attempt": "u64"
+        },
+        "name": "AttemptParams"
+      },
+      "result": {
+        "fields": {
+          "attempt": "u64",
+          "final_evidence": "Option<FinalEvidence>",
+          "instance": "String",
+          "lost": "bool",
+          "marker": "Option<String>",
+          "needs_input": "bool",
+          "operations": "Vec<OperationRecord>",
+          "ownership": "Ownership",
+          "pane": "u64",
+          "pid": "Option<u32>",
+          "problem": "Option<String>",
+          "state": "AttemptState",
+          "stream": "String",
+          "task": "String",
+          "uncertain": "bool",
+          "workspace": "String"
+        },
+        "name": "AttemptRecord"
+      }
+    },
+    "zor/attempt.list": {
+      "params": {
+        "fields": {
+          "task": "Option<String>"
+        },
+        "name": "AttemptListParams"
+      },
+      "result": {
+        "fields": {
+          "attempts": "Vec<AttemptRecord>"
+        },
+        "name": "AttemptList"
+      }
+    },
+    "zor/check.cancel": {
+      "params": {
+        "fields": {
+          "check": "String"
+        },
+        "name": "CheckParams"
+      },
+      "result": {
+        "fields": {
+          "argv": "Vec<String>",
+          "artifacts": "Vec<CaptureView>",
+          "check": "String",
+          "created_generation": "u64",
+          "cwd": "String",
+          "exit_code": "Option<i32>",
+          "passed": "Option<bool>",
+          "problem": "Option<String>",
+          "requirement": "Option<String>",
+          "source": "Option<String>",
+          "state": "String",
+          "stderr": "String",
+          "stdout": "String",
+          "task": "String",
+          "timeout_ms": "u64",
+          "truncated": "bool"
+        },
+        "name": "CheckView"
+      }
+    },
+    "zor/check.inspect": {
+      "params": {
+        "fields": {
+          "check": "String"
+        },
+        "name": "CheckParams"
+      },
+      "result": {
+        "fields": {
+          "argv": "Vec<String>",
+          "artifacts": "Vec<CaptureView>",
+          "check": "String",
+          "created_generation": "u64",
+          "cwd": "String",
+          "exit_code": "Option<i32>",
+          "passed": "Option<bool>",
+          "problem": "Option<String>",
+          "requirement": "Option<String>",
+          "source": "Option<String>",
+          "state": "String",
+          "stderr": "String",
+          "stdout": "String",
+          "task": "String",
+          "timeout_ms": "u64",
+          "truncated": "bool"
+        },
+        "name": "CheckView"
+      }
+    },
+    "zor/check.list": {
+      "params": {
+        "fields": {
+          "task": "String"
+        },
+        "name": "TaskParams"
+      },
+      "result": {
+        "fields": {
+          "checks": "Vec<CheckSummary>",
+          "task": "String"
+        },
+        "name": "CheckList"
+      }
+    },
+    "zor/check.require": {
+      "params": {
+        "fields": {
+          "argv": "Vec<String>",
+          "name": "String",
+          "task": "String"
+        },
+        "name": "CheckRequireParams"
+      },
+      "result": {
+        "fields": {
+          "artifacts_sealed": "bool",
+          "checks_sealed": "bool",
+          "collected_count": "usize",
+          "passed_count": "usize",
+          "required_artifacts": "Vec<RequiredArtifactView>",
+          "required_checks": "Vec<RequiredCheckView>",
+          "task": "String"
+        },
+        "name": "TaskPolicy"
+      }
+    },
+    "zor/check.submit": {
+      "params": {
+        "fields": {
+          "argv": "Vec<String>",
+          "artifacts": "Option<Vec<CaptureRequestParams>>",
+          "check": "String",
+          "requirement": "Option<String>",
+          "source": "Option<String>",
+          "task": "String",
+          "timeout_ms": "Option<u64>"
+        },
+        "name": "CheckSubmitParams"
+      },
+      "result": {
+        "fields": {
+          "argv": "Vec<String>",
+          "artifacts": "Vec<CaptureView>",
+          "check": "String",
+          "created_generation": "u64",
+          "cwd": "String",
+          "exit_code": "Option<i32>",
+          "passed": "Option<bool>",
+          "problem": "Option<String>",
+          "requirement": "Option<String>",
+          "source": "Option<String>",
+          "state": "String",
+          "stderr": "String",
+          "stdout": "String",
+          "task": "String",
+          "timeout_ms": "u64",
+          "truncated": "bool"
+        },
+        "name": "CheckView"
+      }
+    },
+    "zor/events+watch": {
+      "params": {
+        "fields": {
+          "cursor": "Option<u64>"
+        },
+        "name": "EventsWatchParams"
+      },
+      "result": {
+        "fields": {
+          "events": "Vec<EventRecord>",
+          "gap": "Option<GapNotice>"
+        },
+        "name": "EventsWatchItem"
+      }
+    },
+    "zor/group.admit": {
+      "params": {
+        "fields": {
+          "group": "String"
+        },
+        "name": "GroupParams"
+      },
+      "result": {
+        "fields": {
+          "admitted": "Vec<String>",
+          "group": "String",
+          "info": "GroupInfo"
+        },
+        "name": "GroupAdmitted"
+      }
+    },
+    "zor/group.cancel": {
+      "params": {
+        "fields": {
+          "group": "String"
+        },
+        "name": "GroupParams"
+      },
+      "result": {
+        "fields": {
+          "active_count": "u32",
+          "concurrency": "u32",
+          "cursor": "u32",
+          "group": "String",
+          "intent": "String",
+          "members": "Vec<GroupMemberInfo>",
+          "problem": "Option<String>",
+          "status": "String"
+        },
+        "name": "GroupInfo"
+      }
+    },
+    "zor/group.create": {
+      "params": {
+        "fields": {
+          "after": "Vec<GroupAfter>",
+          "concurrency": "u32",
+          "group": "String",
+          "members": "Vec<GroupMember>"
+        },
+        "name": "GroupCreateParams"
+      },
+      "result": {
+        "fields": {
+          "active_count": "u32",
+          "concurrency": "u32",
+          "cursor": "u32",
+          "group": "String",
+          "intent": "String",
+          "members": "Vec<GroupMemberInfo>",
+          "problem": "Option<String>",
+          "status": "String"
+        },
+        "name": "GroupInfo"
+      }
+    },
+    "zor/group.inspect": {
+      "params": {
+        "fields": {
+          "group": "String"
+        },
+        "name": "GroupParams"
+      },
+      "result": {
+        "fields": {
+          "active_count": "u32",
+          "concurrency": "u32",
+          "cursor": "u32",
+          "group": "String",
+          "intent": "String",
+          "members": "Vec<GroupMemberInfo>",
+          "problem": "Option<String>",
+          "status": "String"
+        },
+        "name": "GroupInfo"
+      }
+    },
+    "zor/group.pause": {
+      "params": {
+        "fields": {
+          "group": "String"
+        },
+        "name": "GroupParams"
+      },
+      "result": {
+        "fields": {
+          "active_count": "u32",
+          "concurrency": "u32",
+          "cursor": "u32",
+          "group": "String",
+          "intent": "String",
+          "members": "Vec<GroupMemberInfo>",
+          "problem": "Option<String>",
+          "status": "String"
+        },
+        "name": "GroupInfo"
+      }
+    },
+    "zor/group.resume": {
+      "params": {
+        "fields": {
+          "group": "String"
+        },
+        "name": "GroupParams"
+      },
+      "result": {
+        "fields": {
+          "active_count": "u32",
+          "concurrency": "u32",
+          "cursor": "u32",
+          "group": "String",
+          "intent": "String",
+          "members": "Vec<GroupMemberInfo>",
+          "problem": "Option<String>",
+          "status": "String"
+        },
+        "name": "GroupInfo"
+      }
+    },
+    "zor/prompt.status": {
+      "params": {
+        "fields": {
+          "prompt": "String"
+        },
+        "name": "PromptParams"
+      },
+      "result": {
+        "fields": {
+          "attempt": "u64",
+          "binding": "Option<Binding>",
+          "deadline_ms": "u64",
+          "delivery": "Delivery",
+          "problem": "Option<String>",
+          "prompt": "String",
+          "receipt": "Option<Receipt>",
+          "response": "Option<ResponseEvent>",
+          "task": "String",
+          "text": "String",
+          "wait": "WaitState"
+        },
+        "name": "PromptRecord"
+      }
+    },
+    "zor/rules.list": {
+      "params": {
+        "fields": {},
+        "name": "RulesListParams"
+      },
+      "result": {
+        "fields": {
+          "bundles": "Vec<RuleBundleRow>",
+          "generation": "u64",
+          "problem": "Option<String>"
+        },
+        "name": "RulesList"
+      }
+    },
+    "zor/rules.reload": {
+      "params": {
+        "fields": {},
+        "name": "RulesReloadParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64",
+          "requested": "usize"
+        },
+        "name": "RulesReloaded"
+      }
+    },
+    "zor/schema": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "envelope": "Vec<String>",
+          "methods": "Map<String,Value>"
+        },
+        "name": "SchemaTable"
+      }
+    },
+    "zor/server.info": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "attempts": "usize",
+          "checks": "usize",
+          "events_retained": "usize",
+          "http": "Endpoint",
+          "journal_generation": "u64",
+          "limits": "LimitsInfo",
+          "machines": "usize",
+          "name": "String",
+          "nonce": "String",
+          "pid": "u32",
+          "started_ms": "u64",
+          "tasks": "usize",
+          "tokens_minted": "usize",
+          "watches": "usize"
+        },
+        "name": "ServerInfo"
+      }
+    },
+    "zor/source.inspect": {
+      "params": {
+        "fields": {
+          "source": "String"
+        },
+        "name": "SourceParams"
+      },
+      "result": {
+        "fields": {
+          "commit": "Option<String>",
+          "dirty": "Option<bool>",
+          "expression": "String",
+          "problem": "Option<String>",
+          "source": "String",
+          "state": "String",
+          "task": "String"
+        },
+        "name": "SourceView"
+      }
+    },
+    "zor/source.list": {
+      "params": {
+        "fields": {
+          "task": "String"
+        },
+        "name": "TaskParams"
+      },
+      "result": {
+        "fields": {
+          "sources": "Vec<SourceView>",
+          "task": "String"
+        },
+        "name": "SourceList"
+      }
+    },
+    "zor/source.retain": {
+      "params": {
+        "fields": {
+          "expression": "String",
+          "source": "String",
+          "task": "String"
+        },
+        "name": "SourceRetainParams"
+      },
+      "result": {
+        "fields": {
+          "commit": "Option<String>",
+          "dirty": "Option<bool>",
+          "expression": "String",
+          "problem": "Option<String>",
+          "source": "String",
+          "state": "String",
+          "task": "String"
+        },
+        "name": "SourceView"
+      }
+    },
+    "zor/task.abandon": {
+      "params": {
+        "fields": {
+          "prompt": "String"
+        },
+        "name": "PromptParams"
+      },
+      "result": {
+        "fields": {
+          "attempt": "u64",
+          "binding": "Option<Binding>",
+          "deadline_ms": "u64",
+          "delivery": "Delivery",
+          "problem": "Option<String>",
+          "prompt": "String",
+          "receipt": "Option<Receipt>",
+          "response": "Option<ResponseEvent>",
+          "task": "String",
+          "text": "String",
+          "wait": "WaitState"
+        },
+        "name": "PromptRecord"
+      }
+    },
+    "zor/task.adopt": {
+      "params": {
+        "fields": {
+          "instance": "String",
+          "pane": "u64",
+          "pid": "Option<u32>",
+          "stream": "Option<String>",
+          "task": "String",
+          "workspace": "String"
+        },
+        "name": "TaskAdoptParams"
+      },
+      "result": {
+        "fields": {
+          "attempt": "u64",
+          "final_evidence": "Option<FinalEvidence>",
+          "instance": "String",
+          "lost": "bool",
+          "marker": "Option<String>",
+          "needs_input": "bool",
+          "operations": "Vec<OperationRecord>",
+          "ownership": "Ownership",
+          "pane": "u64",
+          "pid": "Option<u32>",
+          "problem": "Option<String>",
+          "state": "AttemptState",
+          "stream": "String",
+          "task": "String",
+          "uncertain": "bool",
+          "workspace": "String"
+        },
+        "name": "AttemptRecord"
+      }
+    },
+    "zor/task.cancel": {
+      "params": {
+        "fields": {
+          "task": "String"
+        },
+        "name": "TaskParams"
+      },
+      "result": {
+        "fields": {
+          "archive": "Option<String>",
+          "attempts": "Vec<AttemptRecord>",
+          "closed_ms": "Option<u64>",
+          "created_ms": "Option<u64>",
+          "live": "bool",
+          "location": "Option<Location>",
+          "prompts": "Vec<PromptRecord>",
+          "sealed": "bool",
+          "state": "Option<String>",
+          "stop_requested": "bool",
+          "task": "String",
+          "title": "Option<String>"
+        },
+        "name": "TaskInspect"
+      }
+    },
+    "zor/task.create": {
+      "params": {
+        "fields": {
+          "cwd": "Option<String>",
+          "task": "String",
+          "title": "String",
+          "worktree": "Option<String>"
+        },
+        "name": "TaskCreateParams"
+      },
+      "result": {
+        "fields": {
+          "archive": "Option<String>",
+          "attempts": "Vec<AttemptRecord>",
+          "closed_ms": "Option<u64>",
+          "created_ms": "Option<u64>",
+          "live": "bool",
+          "location": "Option<Location>",
+          "prompts": "Vec<PromptRecord>",
+          "sealed": "bool",
+          "state": "Option<String>",
+          "stop_requested": "bool",
+          "task": "String",
+          "title": "Option<String>"
+        },
+        "name": "TaskInspect"
+      }
+    },
+    "zor/task.inspect": {
+      "params": {
+        "fields": {
+          "task": "String"
+        },
+        "name": "TaskParams"
+      },
+      "result": {
+        "fields": {
+          "archive": "Option<String>",
+          "attempts": "Vec<AttemptRecord>",
+          "closed_ms": "Option<u64>",
+          "created_ms": "Option<u64>",
+          "live": "bool",
+          "location": "Option<Location>",
+          "prompts": "Vec<PromptRecord>",
+          "sealed": "bool",
+          "state": "Option<String>",
+          "stop_requested": "bool",
+          "task": "String",
+          "title": "Option<String>"
+        },
+        "name": "TaskInspect"
+      }
+    },
+    "zor/task.launch": {
+      "params": {
+        "fields": {
+          "argv": "Vec<String>",
+          "env": "Vec<(String,String)>",
+          "ephemeral": "bool",
+          "integration": "Option<Integration>",
+          "operation": "String",
+          "task": "String",
+          "workspace": "String"
+        },
+        "name": "TaskLaunchParams"
+      },
+      "result": {
+        "fields": {
+          "attempt": "u64",
+          "final_evidence": "Option<FinalEvidence>",
+          "instance": "String",
+          "lost": "bool",
+          "marker": "Option<String>",
+          "needs_input": "bool",
+          "operations": "Vec<OperationRecord>",
+          "ownership": "Ownership",
+          "pane": "u64",
+          "pid": "Option<u32>",
+          "problem": "Option<String>",
+          "state": "AttemptState",
+          "stream": "String",
+          "task": "String",
+          "uncertain": "bool",
+          "workspace": "String"
+        },
+        "name": "AttemptRecord"
+      }
+    },
+    "zor/task.list": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "tasks": "Vec<TaskSummary>"
+        },
+        "name": "TaskList"
+      }
+    },
+    "zor/task.prompt": {
+      "params": {
+        "fields": {
+          "prompt": "String",
+          "submit": "bool",
+          "task": "String",
+          "text": "String",
+          "timeout_ms": "u64"
+        },
+        "name": "TaskPromptParams"
+      },
+      "result": {
+        "fields": {
+          "attempt": "u64",
+          "binding": "Option<Binding>",
+          "deadline_ms": "u64",
+          "delivery": "Delivery",
+          "problem": "Option<String>",
+          "prompt": "String",
+          "receipt": "Option<Receipt>",
+          "response": "Option<ResponseEvent>",
+          "task": "String",
+          "text": "String",
+          "wait": "WaitState"
+        },
+        "name": "PromptRecord"
+      }
+    },
+    "zor/task.results": {
+      "params": {
+        "fields": {
+          "task": "String"
+        },
+        "name": "TaskParams"
+      },
+      "result": {
+        "fields": {
+          "artifacts": "Vec<ArtifactView>",
+          "blockers": "Vec<String>",
+          "checks": "Vec<CheckSummary>",
+          "outcome": "Option<String>",
+          "policy": "TaskPolicy",
+          "sources": "Vec<SourceView>",
+          "state": "String",
+          "task": "String",
+          "verification": "SealView"
+        },
+        "name": "TaskResults"
+      }
+    },
+    "zor/task.stop": {
+      "params": {
+        "fields": {
+          "task": "String"
+        },
+        "name": "TaskParams"
+      },
+      "result": {
+        "fields": {
+          "archive": "Option<String>",
+          "attempts": "Vec<AttemptRecord>",
+          "closed_ms": "Option<u64>",
+          "created_ms": "Option<u64>",
+          "live": "bool",
+          "location": "Option<Location>",
+          "prompts": "Vec<PromptRecord>",
+          "sealed": "bool",
+          "state": "Option<String>",
+          "stop_requested": "bool",
+          "task": "String",
+          "title": "Option<String>"
+        },
+        "name": "TaskInspect"
+      }
+    },
+    "zor/task.verify": {
+      "params": {
+        "fields": {
+          "source": "String",
+          "task": "String"
+        },
+        "name": "VerifyParams"
+      },
+      "result": {
+        "fields": {
+          "artifacts": "Vec<String>",
+          "checks": "Vec<String>",
+          "generation": "Option<u64>",
+          "scope": "String",
+          "sealed_ms": "Option<u64>",
+          "source": "Option<String>",
+          "status": "String",
+          "task": "String"
+        },
+        "name": "SealView"
+      }
+    },
+    "zor/task.wait": {
+      "params": {
+        "fields": {
+          "prompt": "String"
+        },
+        "name": "PromptParams"
+      },
+      "result": {
+        "fields": {
+          "attempt": "u64",
+          "binding": "Option<Binding>",
+          "deadline_ms": "u64",
+          "delivery": "Delivery",
+          "problem": "Option<String>",
+          "prompt": "String",
+          "receipt": "Option<Receipt>",
+          "response": "Option<ResponseEvent>",
+          "task": "String",
+          "text": "String",
+          "wait": "WaitState"
+        },
+        "name": "PromptRecord"
+      }
+    },
+    "zor/token.mint": {
+      "params": {
+        "fields": {
+          "capabilities": "Vec<Capability>"
+        },
+        "name": "TokenMintParams"
+      },
+      "result": {
+        "fields": {
+          "capabilities": "Vec<Capability>",
+          "token": "String"
+        },
+        "name": "TokenMinted"
+      }
+    },
+    "zor/token.revoke": {
+      "params": {
+        "fields": {
+          "revoke": "String"
+        },
+        "name": "TokenRevokeParams"
+      },
+      "result": {
+        "fields": {
+          "revoked": "bool"
+        },
+        "name": "TokenRevoked"
+      }
+    },
+    "zor/worktree.allocate": {
+      "params": {
+        "fields": {
+          "base": "String",
+          "branch": "String",
+          "repo": "String",
+          "task": "String",
+          "worktree": "String"
+        },
+        "name": "WorktreeAllocateParams"
+      },
+      "result": {
+        "fields": {
+          "base": "String",
+          "branch": "String",
+          "force": "bool",
+          "in_flight": "bool",
+          "path": "String",
+          "problem": "Option<String>",
+          "repo": "String",
+          "state": "String",
+          "task": "String",
+          "worktree": "String"
+        },
+        "name": "WorktreeInfo"
+      }
+    },
+    "zor/worktree.inspect": {
+      "params": {
+        "fields": {
+          "worktree": "String"
+        },
+        "name": "WorktreeParams"
+      },
+      "result": {
+        "fields": {
+          "base": "String",
+          "branch": "String",
+          "force": "bool",
+          "in_flight": "bool",
+          "path": "String",
+          "problem": "Option<String>",
+          "repo": "String",
+          "state": "String",
+          "task": "String",
+          "worktree": "String"
+        },
+        "name": "WorktreeInfo"
+      }
+    },
+    "zor/worktree.list": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "worktrees": "Vec<WorktreeInfo>"
+        },
+        "name": "WorktreeList"
+      }
+    },
+    "zor/worktree.reconcile": {
+      "params": {
+        "fields": {
+          "worktree": "String"
+        },
+        "name": "WorktreeParams"
+      },
+      "result": {
+        "fields": {
+          "base": "String",
+          "branch": "String",
+          "force": "bool",
+          "in_flight": "bool",
+          "path": "String",
+          "problem": "Option<String>",
+          "repo": "String",
+          "state": "String",
+          "task": "String",
+          "worktree": "String"
+        },
+        "name": "WorktreeInfo"
+      }
+    },
+    "zor/worktree.remove": {
+      "params": {
+        "fields": {
+          "force": "bool",
+          "worktree": "String"
+        },
+        "name": "WorktreeRemoveParams"
+      },
+      "result": {
+        "fields": {
+          "base": "String",
+          "branch": "String",
+          "force": "bool",
+          "in_flight": "bool",
+          "path": "String",
+          "problem": "Option<String>",
+          "repo": "String",
+          "state": "String",
+          "task": "String",
+          "worktree": "String"
+        },
+        "name": "WorktreeInfo"
+      }
+    }
+  }
+}

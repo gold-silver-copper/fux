@@ -360,3 +360,70 @@ Real-process smoke (server `persist`, disposable XDG dirs, `fux.toml` in the con
   `auto` mode): the three panes come back live with fresh ids, the same root name, and each
   `pane.capture` shows the historical prompt line, the dim `─` separator and the new prompt;
   `fux/session.status` reports `pending: []`, `saves: 1`.
+
+## 2026-09-15 — BRP resource exhaustion (BrpHardening)
+
+`cargo test -p fux --test brp_exhaustion` (8 tests, 37 s in parallel, 118 s with
+`--test-threads=1`) against a real server in-process (`tests/common`), Apple M2 Max, debug
+build, macOS 27.0.0, shell `RLIMIT_NOFILE` 1048576 (the tests lift a lower soft limit to
+4096). RSS is the test process (`ps -o rss=`), so it includes the client side and, in the
+parallel run, the other scenarios' servers; the ranges below span the single-threaded run
+and two parallel runs. Every scenario probes `fux/server.info` from a second connection
+while it is in flight.
+
+### `RemoteHttpPlugin` (`HttpTransport::BevyRemote`), the prompt's four scenarios
+
+* **Oversized body.** `Content-Length: 64 MiB`, whitespace-padded valid request trickled in
+  1 MiB writes (5 ms apart; 449–469 ms total) and held one byte short: RSS +122 to +147 MiB
+  while held (the body buffered as hyper frames), +187 to +213 MiB after the reply
+  (`collect().to_bytes()` copies it once more); the request was answered normally once the
+  last byte arrived. Parallel `server.info`: 4–10 ms.
+* **10,000-element batch** (2,137 KiB, server stepped on `Inbound::Wake` as the runner does):
+  answered whole, 12.7–27.2 s (1.3–2.7 ms per element; each element is one mailbox round
+  trip through a full `App::update`). 49–105 parallel probes during it, worst 11–65 ms: the
+  batch never blocks other requests, it only spends server time.
+* **1,000 idle connections:** all 1,000 accepted in 55–73 ms, one task each, RSS +14 to +36
+  MiB; the 1,001st `server.info` answered in 6–13 ms. The last idle socket is closed by the
+  server after 30.1 s (hyper's default `header_read_timeout`; the only deadline the plugin
+  sets). **Under `ulimit -n 256`** (the macOS shell default) the same scenario opens 120
+  connections, then `accept` fails with `EMFILE`, `listen()` returns on the error and the
+  server task ends: every later connect, including after the idle sockets are dropped and 2 s
+  later, is `Connection refused`. The BRP listener is gone for the life of the process, with
+  no token involved. This fails the prompt's contract (a 1,001st request within 2 s) in the
+  default environment and triggered the 3.9 fallback.
+* **Stalled body** (headers announcing 4 KiB, then silence): probes 8/14/16 ms; the
+  connection is still open at 36 s (no body deadline at all) and was answered once the body
+  finally arrived; `server.info` after 36 s: 3–5 ms.
+
+### Fallback: fux's bounded acceptor (`HttpTransport::Bounded`, the default)
+
+`crates/fux/src/remote/http.rs`: hyper + `smol-hyper` on `IoTaskPool` feeding the same
+`BrpSender`; body 1 MiB, batch 64, 256 connections (permit channel, OS backlog as
+backpressure, the attachment listener's pattern), head and body deadlines 10 s, `accept`
+errors logged and retried after 100 ms. `RemoteHttpPlugin` stays selectable behind
+`RemoteControlPlugin.transport`; `brp`, `brp_watch` (SSE), `receipts`, `session` targets
+green on the new default.
+
+* **Oversized body.** 64 MiB `Content-Length` streamed at line rate: discarded, `413` after
+  56–63 ms with all 64 MiB sent, RSS flat (peak +0 to +1 MiB while it streamed). A 2 MiB
+  chunked body without `Content-Length`: `413` after the 2,048 KiB were read. Parallel
+  `server.info`: 11–13 ms. A client that stops sending mid-body gets `408` at the 10 s body
+  deadline instead (the body must end for the `413` to be sent, so the reply reaches the client
+  rather than a reset).
+* **Batch.** 10,000 elements: `413` (2,137 KiB > 1 MiB). 65 elements: one JSON-RPC error
+  under a null id, "batch of 65 requests exceeds the limit of 64". 64 elements: 64 results in
+  81–267 ms (1.3–4.2 ms per element, machine under sibling builds); parallel `server.info`
+  0–3 ms.
+* **1,000 idle connections:** 389–521 opened in 57–72 ms (256 served, 128 in the backlog, the
+  rest `ECONNRESET` by the kernel — macOS resets when the listen queue is full); a request
+  made meanwhile is reset the same way (first attempt `Connection reset by peer`); retried
+  every 250 ms it is answered 10.1–10.3 s after the connections opened (attempt 40–41), when
+  the first idle socket is closed by the 10 s head deadline (10.1–10.3 s). RSS +1 to +5 MiB.
+  `server.info` afterwards 8–12 ms. **Under `ulimit -n 256`:** 121 connections open, then
+  `EMFILE`; the acceptor logs and retries; the first successful request comes 10.0 s after
+  opening, and 4 ms after the idle sockets are dropped — the listener survives.
+* **Stalled body:** probes 2–17 ms; `408` at 10.0 s; `server.info` afterwards 12–16 ms.
+
+Recorded trade-off (also in `docs/security.md`): an unauthenticated local process can hold
+the 256 slots for 10 s at a time and make BRP refuse others meanwhile; the listener always
+recovers, which `RemoteHttpPlugin` under a 256-descriptor limit does not.

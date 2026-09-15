@@ -47,6 +47,8 @@ tokio runtime is started.
 | `serde`, `serde_json`, `ron` | Bevy's serialization backends and BRP JSON |
 | `clap`, `toml` | command line and user configuration |
 | `async-channel` | the mailboxes between `IoTaskPool` tasks and the runner (already a `bevy_remote` dependency) |
+| `hyper`, `smol-hyper`, `http-body-util` | fux's bounded BRP acceptor (`remote/http.rs`): `RemoteHttpPlugin` buffers bodies unbounded, caps nothing and loses its listener on `EMFILE` (`docs/verification.md`, "BRP resource exhaustion"); the same three crates and versions `bevy_remote`'s transport already pulls in |
 | `unicode-width` | cell width of glyphs in the painter |
+| `regex` | zor's passive observation rule bundles are regex-gated (`rules/*.toml`) |
 
 Forks (`fux-*` crates under `crates/`): none yet.

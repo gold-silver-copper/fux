@@ -33,7 +33,7 @@ use bevy_tasks::{BoxedFuture, IoTaskPool};
 use crate::config::{Config, ConfigError};
 use crate::lifecycle::DefaultCommand;
 use crate::model::{Inbound, Limits};
-use crate::viewer::focus::ACTIONS;
+use crate::viewer::focus::all_actions;
 use crate::viewer::keys::KeyChord;
 use crate::wire::Color as WireColor;
 
@@ -276,9 +276,15 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("o", "next-pane"),
     ("Tab", "next-pane"),
     ("S-Tab", "prev-pane"),
+    (";", "previous-pane"),
     ("n", "next-root"),
     ("p", "prev-root"),
     ("c", "new-root"),
+    ("w", "choose-tab"),
+    (",", "rename-root"),
+    ("s", "choose-workspace"),
+    ("S", "new-workspace"),
+    ("K", "kill-workspace"),
     ("d", "detach"),
     ("z", "zoom"),
     ("[", "copy-mode"),
@@ -287,8 +293,7 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
 
 /// The registered action with this name, as the static name the registry uses.
 pub fn action_name(name: &str) -> Option<&'static str> {
-    ACTIONS
-        .iter()
+    all_actions()
         .map(|(action, _)| *action)
         .find(|action| *action == name)
 }

@@ -13,11 +13,10 @@ use bevy_remote::{BrpError, BrpResult, error_codes};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
+use super::Endpoint;
 use super::projection::{ALLOWED_TYPE_PATHS, is_allowed_type_path};
 use super::token::{Capabilities, Capability, Grant, Tokens};
 use super::watch::{self, open_events};
-use super::{Endpoint, schema};
-use crate::journal::Journal;
 use crate::model::{Ids, Limits, ServerInstance};
 
 /// zor application error codes, in the range fux leaves free below its own `-3200x`.
@@ -49,6 +48,9 @@ pub struct MethodSpec {
     pub params_fields: fn() -> Value,
     pub result: &'static str,
     pub result_fields: fn() -> Value,
+    /// Deserialise-then-serialise through the typed shape (the fixture round trip).
+    pub roundtrip_params: fn(Value) -> Result<Value, String>,
+    pub roundtrip_result: fn(Value) -> Result<Value, String>,
 }
 
 pub(super) fn error(code: i16, message: impl Into<String>) -> BrpError {
@@ -250,20 +252,6 @@ described!(
         pub methods: Map<String, Value>,
     }
 );
-described!(
-    pub struct TaskInspectParams {
-        pub task: String,
-    }
-);
-described!(
-    /// Where a task's record lives: the live journal or a dated archive snapshot.
-    pub struct TaskInspect {
-        pub task: String,
-        pub live: bool,
-        pub archive: Option<String>,
-        pub state: Option<String>,
-    }
-);
 
 // ---------------------------------------------------------------------------------------------
 // Handlers
@@ -351,45 +339,9 @@ fn schema(mut req: Request, _world: &mut World) -> BrpResult {
     to_value(schema_table())
 }
 
-/// Skeleton of `zor/task.inspect`: answers from the live World, else from the archives
-/// read-only (the full record view is a later slice; here the state and the archive file).
-fn task_inspect(mut req: Request, world: &mut World) -> BrpResult {
-    let params: TaskInspectParams = req.parse()?;
-    if let Some(entity) = world.resource::<Ids>().task(&params.task) {
-        let state = world
-            .get::<crate::model::TaskState>(entity)
-            .map(|s| format!("{s:?}"));
-        return to_value(TaskInspect {
-            task: params.task,
-            live: true,
-            archive: None,
-            state,
-        });
-    }
-    let Some(journal) = world.get_resource::<Journal>() else {
-        return Err(error(
-            codes::NOT_FOUND,
-            format!("task {} not found", params.task),
-        ));
-    };
-    match journal.find_archived(world, &params.task) {
-        Ok(Some((archive, state))) => to_value(TaskInspect {
-            task: params.task,
-            live: false,
-            archive: Some(archive),
-            state,
-        }),
-        Ok(None) => Err(error(
-            codes::NOT_FOUND,
-            format!("task {} not found", params.task),
-        )),
-        Err(e) => Err(BrpError::internal(e)),
-    }
-}
-
 pub fn schema_table() -> SchemaTable {
     let mut methods = Map::new();
-    for spec in TABLE {
+    for spec in all_specs() {
         methods.insert(
             spec.name.to_owned(),
             json!({
@@ -523,28 +475,30 @@ macro_rules! handler {
 
 macro_rules! spec {
     ($method:literal, $handler:ident, $params:ty, $result:ty) => {
-        spec!(@row $method, Handler::Instant($handler), $params, $result)
+        spec!(@row $method, $crate::remote::methods::Handler::Instant($handler), $params, $result)
     };
     (watch $method:expr, $open:ident, $params:ty, $result:ty) => {
-        spec!(@row $method, Handler::Watch($open), $params, $result)
+        spec!(@row $method, $crate::remote::methods::Handler::Watch($open), $params, $result)
     };
     (@row $method:expr, $handler:expr, $params:ty, $result:ty) => {
-        MethodSpec {
+        $crate::remote::methods::MethodSpec {
             name: $method,
             handler: $handler,
-            params: <$params as schema::Described>::NAME,
-            params_fields: schema::fields_of::<$params>,
-            result: <$result as schema::Described>::NAME,
-            result_fields: schema::fields_of::<$result>,
+            params: <$params as $crate::remote::schema::Described>::NAME,
+            params_fields: $crate::remote::schema::fields_of::<$params>,
+            result: <$result as $crate::remote::schema::Described>::NAME,
+            result_fields: $crate::remote::schema::fields_of::<$result>,
+            roundtrip_params: $crate::remote::schema::roundtrip::<$params>,
+            roundtrip_result: $crate::remote::schema::roundtrip::<$result>,
         }
     };
 }
+pub(super) use {handler, spec};
 
 handler!(brp_server_info, server_info);
 handler!(brp_token_mint, token_mint);
 handler!(brp_token_revoke, token_revoke);
 handler!(brp_schema, schema);
-handler!(brp_task_inspect, task_inspect);
 handler!(brp_world_query, world_query);
 handler!(brp_world_get_components, world_get_components);
 handler!(brp_world_list_components, world_list_components);
@@ -567,12 +521,6 @@ pub static TABLE: &[MethodSpec] = &[
         TokenRevoked
     ),
     spec!("zor/schema", brp_schema, NoParams, SchemaTable),
-    spec!(
-        "zor/task.inspect",
-        brp_task_inspect,
-        TaskInspectParams,
-        TaskInspect
-    ),
     spec!(
         watch watch::EVENTS_WATCH_METHOD,
         open_events,

@@ -125,9 +125,12 @@ fn snapshot_and_restore_round_trip_preserves_the_graph() {
     );
     // Counters continue above the restored ids.
     assert_eq!(world.resource_mut::<Ids>().allocate_attempt(), AttemptId(3));
-    // The restored World commits again as generation 1 of this incarnation.
+    // The generation continues from the restored document (never regresses): the restored
+    // graph re-committed as generation 2 on this incarnation's first update; nothing changed
+    // since, so no third.
+    assert_eq!(world.resource::<Generation>().0, 2);
     app.update();
-    assert_eq!(app.world().resource::<Generation>().0, 1);
+    assert_eq!(app.world().resource::<Generation>().0, 2);
 }
 
 #[test]

@@ -581,6 +581,7 @@ impl WorktreeState {
             (Self::Allocating, Self::Prepared)
                 | (Self::Prepared, Self::Creating)
                 | (Self::Creating, Self::Ready | Self::Uncertain)
+                | (Self::Uncertain, Self::Ready)
                 | (Self::Ready, Self::Removing)
                 | (Self::Removing, Self::Removed)
         )

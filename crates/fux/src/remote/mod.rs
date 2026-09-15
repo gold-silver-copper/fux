@@ -1,6 +1,7 @@
-//! BRP control surface (prompt 3.9): `RemotePlugin` + `RemoteHttpPlugin` on a pre-probed
-//! loopback port, a method table replaced with the token-checked allowlist, the `brp.json`
-//! descriptor, reflected projections for the wrapped `world.*` reads, and the thin client.
+//! BRP control surface (prompt 3.9): `RemotePlugin` with fux's bounded HTTP acceptor
+//! ([`http`]; `RemoteHttpPlugin` stays selectable) on a pre-probed loopback port, a method
+//! table replaced with the token-checked allowlist, the `brp.json` descriptor, reflected
+//! projections for the wrapped `world.*` reads, and the thin client.
 //!
 //! Dispatch is fux's own: at `Startup` the plugin takes `bevy_remote`'s `BrpReceiver` out of the
 //! World and forwards its messages from `IoTaskPool` into a fux mailbox while sending
@@ -10,6 +11,7 @@
 
 pub mod client;
 pub mod descriptor;
+pub mod http;
 pub mod input_methods;
 pub mod methods;
 pub mod projection;
@@ -20,7 +22,7 @@ pub mod surface_methods;
 pub mod token;
 pub mod watch;
 
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, TcpListener};
 use std::path::PathBuf;
 
 use async_channel::{Receiver, Sender};
@@ -46,11 +48,24 @@ const MAILBOX_SIZE: usize = 64;
 /// Requests answered per update, matching the runner's batch bound.
 const DISPATCH_BATCH: usize = 1024;
 
+/// Which HTTP acceptor feeds the `BrpSender` mailbox.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HttpTransport {
+    /// fux's own acceptor ([`http`]): body, batch and connection bounds, read deadlines, an
+    /// accept loop that survives `EMFILE`.
+    #[default]
+    Bounded,
+    /// `bevy_remote`'s `RemoteHttpPlugin`: no bounds beyond hyper's 30 s header timeout;
+    /// kept for comparison (`tests/brp_exhaustion.rs`) and as the upstream reference.
+    BevyRemote,
+}
+
 pub struct RemoteControlPlugin {
     pub runtime_dir: PathBuf,
     pub server_name: String,
     /// The runner's inbound channel: `Inbound::Wake` is sent for every parked request.
     pub inbound: Sender<Inbound>,
+    pub transport: HttpTransport,
 }
 
 /// Requests forwarded from `bevy_remote`'s mailbox, drained by [`dispatch`].
@@ -106,15 +121,25 @@ impl Plugin for RemoteControlPlugin {
             &self.server_name,
         )));
 
-        // The listener is bound by `RemoteHttpPlugin` at `Startup`; the probe only finds a free
-        // port. The TOCTOU window is accepted (prompt 3.9).
+        // The listener is bound at `Startup`; the probe only finds a free port. The TOCTOU
+        // window is accepted (prompt 3.9): the bounded acceptor rebinds a fresh port and
+        // corrects `HostPort`, `RemoteHttpPlugin` fails its task.
         let port = probe_port().unwrap_or(0);
-        app.add_plugins((
-            RemotePlugin::default(),
-            RemoteHttpPlugin::default()
-                .with_address(Ipv4Addr::LOCALHOST)
-                .with_port(port),
-        ));
+        app.add_plugins(RemotePlugin::default());
+        match self.transport {
+            HttpTransport::Bounded => {
+                app.insert_resource(HostAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+                    .insert_resource(HostPort(port))
+                    .add_systems(Startup, http::start);
+            }
+            HttpTransport::BevyRemote => {
+                app.add_plugins(
+                    RemoteHttpPlugin::default()
+                        .with_address(Ipv4Addr::LOCALHOST)
+                        .with_port(port),
+                );
+            }
+        }
 
         // Replace the built-in table with the allowlist. A stream's `Watching` entry names one
         // placeholder system: fux's dispatcher opens streams through `watch::Watches`, and

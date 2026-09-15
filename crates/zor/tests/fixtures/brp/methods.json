@@ -1,0 +1,1470 @@
+[
+  {
+    "method": "zor/server.info",
+    "params": {},
+    "result": {
+      "name": "default",
+      "nonce": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "pid": 4242,
+      "started_ms": 1757894400000,
+      "http": {
+        "host": "127.0.0.1",
+        "port": 51234
+      },
+      "tasks": 2,
+      "attempts": 1,
+      "checks": 3,
+      "machines": 0,
+      "tokens_minted": 1,
+      "watches": 0,
+      "events_retained": 12,
+      "journal_generation": 7,
+      "limits": {
+        "tasks": 128,
+        "attempts": 512,
+        "prompts": 1024,
+        "checks": 128,
+        "groups": 32,
+        "journal_bytes": 4194304,
+        "tokens": 256,
+        "archive_after_ms": 604800000
+      }
+    }
+  },
+  {
+    "method": "zor/token.mint",
+    "params": {
+      "capabilities": [
+        "read",
+        "mutate"
+      ]
+    },
+    "result": {
+      "token": "5e6f0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d",
+      "capabilities": [
+        "read",
+        "mutate"
+      ]
+    }
+  },
+  {
+    "method": "zor/token.revoke",
+    "params": {
+      "revoke": "5e6f0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d"
+    },
+    "result": {
+      "revoked": true
+    }
+  },
+  {
+    "method": "zor/schema",
+    "params": {},
+    "result": {
+      "envelope": [
+        "token",
+        "instance"
+      ],
+      "methods": {
+        "zor/schema": {
+          "params": {
+            "name": "NoParams",
+            "fields": {}
+          },
+          "result": {
+            "name": "SchemaTable",
+            "fields": {
+              "envelope": "Vec<String>",
+              "methods": "Map<String, Value>"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "zor/events+watch",
+    "params": {
+      "cursor": 41
+    },
+    "result": {
+      "gap": {
+        "since": 41,
+        "resume": 900
+      },
+      "events": [
+        {
+          "cursor": 901,
+          "ms": 1757894401000,
+          "name": "TaskOpened",
+          "event": {
+            "task": "review-1"
+          }
+        },
+        {
+          "cursor": 902,
+          "ms": 1757894402000,
+          "name": "AttemptChanged",
+          "event": {
+            "attempt": 1,
+            "state": "live"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/task.create",
+    "params": {
+      "task": "review-1",
+      "title": "Review parser changes",
+      "cwd": "/home/me/project"
+    },
+    "result": {
+      "task": "review-1",
+      "live": true,
+      "state": "Open",
+      "title": "Review parser changes",
+      "location": {
+        "Cwd": "/home/me/project"
+      },
+      "created_ms": 1757894400000,
+      "stop_requested": false,
+      "sealed": false,
+      "attempts": [],
+      "prompts": []
+    }
+  },
+  {
+    "method": "zor/task.list",
+    "params": {},
+    "result": {
+      "tasks": [
+        {
+          "task": "review-1",
+          "title": "Review parser changes",
+          "state": "running",
+          "attempt": 1
+        },
+        {
+          "task": "worker-2",
+          "title": "Worker",
+          "state": {
+            "closed": {
+              "outcome": "cancelled"
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/task.inspect",
+    "params": {
+      "task": "review-1"
+    },
+    "result": {
+      "task": "review-1",
+      "live": true,
+      "state": "Running",
+      "title": "Review parser changes",
+      "location": {
+        "Worktree": "wt-1"
+      },
+      "created_ms": 1757894400000,
+      "stop_requested": false,
+      "sealed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "task": "review-1",
+          "ownership": "managed",
+          "state": "live",
+          "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+          "workspace": "default",
+          "stream": "launch-1",
+          "pane": 7,
+          "pid": 4243,
+          "marker": "3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e",
+          "uncertain": false,
+          "lost": false,
+          "needs_input": false,
+          "operations": [
+            {
+              "operation": "launch-1",
+              "kind": "launch",
+              "phase": "attached",
+              "launch": {
+                "argv": [
+                  "/usr/bin/env",
+                  "--",
+                  "ZOR_LAUNCH_ID=3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e",
+                  "/usr/local/bin/agent"
+                ],
+                "cwd": "/home/me/project",
+                "env": [
+                  [
+                    "TERM",
+                    "xterm-256color"
+                  ]
+                ],
+                "workspace": "default",
+                "stream": "launch-1",
+                "ephemeral": false,
+                "integration": "codex"
+              }
+            }
+          ]
+        }
+      ],
+      "prompts": [
+        {
+          "prompt": "prompt-1",
+          "attempt": 1,
+          "task": "review-1",
+          "text": "Review parser changes",
+          "deadline_ms": 1757894430000,
+          "delivery": "delivered",
+          "wait": "pending",
+          "receipt": {
+            "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+            "pane": 7,
+            "operation": 31,
+            "state": "submitted",
+            "bytes_written": 22,
+            "seq": 9,
+            "expires_ms": 60000
+          }
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/task.launch",
+    "params": {
+      "task": "review-1",
+      "operation": "launch-1",
+      "argv": [
+        "/usr/local/bin/agent",
+        "--model",
+        "x"
+      ],
+      "env": [
+        [
+          "TERM",
+          "xterm-256color"
+        ]
+      ],
+      "workspace": "default",
+      "ephemeral": false,
+      "integration": {
+        "kind": "codex",
+        "argv": [
+          "codex",
+          "app-server"
+        ]
+      }
+    },
+    "result": {
+      "attempt": 1,
+      "task": "review-1",
+      "ownership": "managed",
+      "state": "launching",
+      "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "workspace": "default",
+      "stream": "launch-1",
+      "pane": 0,
+      "marker": "3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e",
+      "uncertain": false,
+      "lost": false,
+      "needs_input": false,
+      "operations": [
+        {
+          "operation": "launch-1",
+          "kind": "launch",
+          "phase": "submitting"
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/task.adopt",
+    "params": {
+      "task": "review-2",
+      "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "workspace": "default",
+      "pane": 3,
+      "pid": 5151
+    },
+    "result": {
+      "attempt": 2,
+      "task": "review-2",
+      "ownership": "adopted",
+      "state": "launching",
+      "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "workspace": "default",
+      "stream": "",
+      "pane": 3,
+      "pid": 5151,
+      "uncertain": false,
+      "lost": false,
+      "needs_input": false,
+      "operations": []
+    }
+  },
+  {
+    "method": "zor/task.prompt",
+    "params": {
+      "task": "review-1",
+      "prompt": "prompt-1",
+      "text": "Review parser changes",
+      "timeout_ms": 30000,
+      "submit": true
+    },
+    "result": {
+      "prompt": "prompt-1",
+      "attempt": 1,
+      "task": "review-1",
+      "text": "Review parser changes",
+      "deadline_ms": 1757894430000,
+      "delivery": "prepared",
+      "wait": "pending"
+    }
+  },
+  {
+    "method": "zor/task.wait",
+    "params": {
+      "prompt": "prompt-1"
+    },
+    "result": {
+      "prompt": "prompt-1",
+      "attempt": 1,
+      "task": "review-1",
+      "text": "Review parser changes",
+      "deadline_ms": 1757894430000,
+      "delivery": "delivered",
+      "wait": "response_observed",
+      "receipt": {
+        "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+        "pane": 7,
+        "operation": 31,
+        "state": "submitted",
+        "bytes_written": 22,
+        "seq": 9,
+        "expires_ms": 60000
+      },
+      "response": {
+        "producer": "codex-1",
+        "sequence": 1,
+        "input_operation": 31,
+        "kind": "response"
+      },
+      "binding": {
+        "producer": "codex-1",
+        "sequence": 1,
+        "input_operation": 31,
+        "session": "sess-1",
+        "message": "msg-1",
+        "bound_ms": 1757894405000
+      }
+    }
+  },
+  {
+    "method": "zor/task.stop",
+    "params": {
+      "task": "review-1"
+    },
+    "result": {
+      "task": "review-1",
+      "live": true,
+      "state": "Closed { outcome: Cancelled }",
+      "title": "Review parser changes",
+      "location": {
+        "Cwd": "/home/me/project"
+      },
+      "created_ms": 1757894400000,
+      "closed_ms": 1757894500000,
+      "stop_requested": true,
+      "sealed": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "task": "review-1",
+          "ownership": "managed",
+          "state": "finishing",
+          "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+          "workspace": "default",
+          "stream": "launch-1",
+          "pane": 7,
+          "pid": 4243,
+          "marker": "3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e",
+          "uncertain": false,
+          "lost": false,
+          "needs_input": false,
+          "operations": []
+        }
+      ],
+      "prompts": []
+    }
+  },
+  {
+    "method": "zor/task.cancel",
+    "params": {
+      "task": "worker-2"
+    },
+    "result": {
+      "task": "worker-2",
+      "live": true,
+      "state": "Closed { outcome: Cancelled }",
+      "title": "Worker",
+      "location": {
+        "Cwd": "/home/me/project"
+      },
+      "created_ms": 1757894400000,
+      "closed_ms": 1757894500000,
+      "stop_requested": false,
+      "sealed": false,
+      "attempts": [],
+      "prompts": []
+    }
+  },
+  {
+    "method": "zor/task.abandon",
+    "params": {
+      "prompt": "prompt-1"
+    },
+    "result": {
+      "prompt": "prompt-1",
+      "attempt": 1,
+      "task": "review-1",
+      "text": "Review parser changes",
+      "deadline_ms": 1757894430000,
+      "delivery": "released",
+      "wait": "cancelled",
+      "problem": "submit: read: connection reset"
+    }
+  },
+  {
+    "method": "zor/attempt.list",
+    "params": {
+      "task": "review-1"
+    },
+    "result": {
+      "attempts": [
+        {
+          "attempt": 1,
+          "task": "review-1",
+          "ownership": "managed",
+          "state": "finished",
+          "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+          "workspace": "default",
+          "stream": "launch-1",
+          "pane": 7,
+          "pid": 4243,
+          "marker": "3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e",
+          "uncertain": false,
+          "lost": false,
+          "needs_input": false,
+          "final": {
+            "exit_code": 3,
+            "seq": 12,
+            "output": "hi\n",
+            "truncated": false
+          },
+          "operations": [
+            {
+              "operation": "launch-1",
+              "kind": "launch",
+              "phase": "closed"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/attempt.inspect",
+    "params": {
+      "attempt": 1
+    },
+    "result": {
+      "attempt": 1,
+      "task": "review-1",
+      "ownership": "managed",
+      "state": "live",
+      "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "workspace": "default",
+      "stream": "launch-1",
+      "pane": 7,
+      "pid": 4243,
+      "marker": "3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e",
+      "uncertain": true,
+      "lost": false,
+      "needs_input": true,
+      "problem": "fux link dropped",
+      "operations": []
+    }
+  },
+  {
+    "method": "zor/prompt.status",
+    "params": {
+      "prompt": "prompt-1"
+    },
+    "result": {
+      "prompt": "prompt-1",
+      "attempt": 1,
+      "task": "review-1",
+      "text": "Review parser changes",
+      "deadline_ms": 1757894430000,
+      "delivery": "uncertain",
+      "wait": "timed_out",
+      "receipt": {
+        "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+        "pane": 7,
+        "operation": 31,
+        "state": "uncertain",
+        "bytes_written": 0,
+        "expires_ms": 60000
+      },
+      "problem": "receipt expired before delivery was known"
+    }
+  },
+  {
+    "method": "zor/check.require",
+    "params": {
+      "task": "review-1",
+      "name": "tests",
+      "argv": [
+        "cargo",
+        "test"
+      ]
+    },
+    "result": {
+      "task": "review-1",
+      "checks_sealed": true,
+      "required_checks": [
+        {
+          "name": "tests",
+          "argv": [
+            "cargo",
+            "test"
+          ],
+          "status": "passed",
+          "latest": "tests-run-2"
+        }
+      ],
+      "passed_count": 1,
+      "artifacts_sealed": true,
+      "required_artifacts": [
+        {
+          "name": "report",
+          "path": "out/report.json",
+          "status": "collected",
+          "latest": "report-2"
+        }
+      ],
+      "collected_count": 1
+    }
+  },
+  {
+    "method": "zor/artifact.require",
+    "params": {
+      "task": "review-1",
+      "name": "report",
+      "path": "out/report.json"
+    },
+    "result": {
+      "task": "review-1",
+      "checks_sealed": true,
+      "required_checks": [
+        {
+          "name": "tests",
+          "argv": [
+            "cargo",
+            "test"
+          ],
+          "status": "passed",
+          "latest": "tests-run-2"
+        }
+      ],
+      "passed_count": 1,
+      "artifacts_sealed": true,
+      "required_artifacts": [
+        {
+          "name": "report",
+          "path": "out/report.json",
+          "status": "collected",
+          "latest": "report-2"
+        }
+      ],
+      "collected_count": 1
+    }
+  },
+  {
+    "method": "zor/check.submit",
+    "params": {
+      "task": "review-1",
+      "check": "tests-run-2",
+      "argv": [
+        "cargo",
+        "test"
+      ],
+      "timeout_ms": 300000,
+      "requirement": "tests",
+      "source": "revision-1",
+      "artifacts": [
+        {
+          "name": "report",
+          "artifact": "report-2"
+        }
+      ]
+    },
+    "result": {
+      "check": "tests-run-2",
+      "task": "review-1",
+      "state": "passed",
+      "argv": [
+        "cargo",
+        "test"
+      ],
+      "timeout_ms": 300000,
+      "cwd": "/work/review-1",
+      "requirement": "tests",
+      "source": "revision-1",
+      "created_generation": 9,
+      "passed": true,
+      "exit_code": 0,
+      "stdout": "test result: ok\n",
+      "stderr": "",
+      "truncated": false,
+      "problem": null,
+      "artifacts": [
+        {
+          "name": "report",
+          "artifact": "report-2",
+          "state": "collected",
+          "problem": null
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/check.list",
+    "params": {
+      "task": "review-1"
+    },
+    "result": {
+      "task": "review-1",
+      "checks": [
+        {
+          "check": "tests-run-2",
+          "state": "passed",
+          "requirement": "tests",
+          "source": "revision-1",
+          "created_generation": 9,
+          "passed": true
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/check.inspect",
+    "params": {
+      "check": "tests-run-2"
+    },
+    "result": {
+      "check": "tests-run-2",
+      "task": "review-1",
+      "state": "passed",
+      "argv": [
+        "cargo",
+        "test"
+      ],
+      "timeout_ms": 300000,
+      "cwd": "/work/review-1",
+      "requirement": "tests",
+      "source": "revision-1",
+      "created_generation": 9,
+      "passed": true,
+      "exit_code": 0,
+      "stdout": "test result: ok\n",
+      "stderr": "",
+      "truncated": false,
+      "problem": null,
+      "artifacts": [
+        {
+          "name": "report",
+          "artifact": "report-2",
+          "state": "collected",
+          "problem": null
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/check.cancel",
+    "params": {
+      "check": "tests-run-3"
+    },
+    "result": {
+      "check": "tests-run-3",
+      "task": "review-1",
+      "state": "uncertain",
+      "argv": [
+        "cargo",
+        "test"
+      ],
+      "timeout_ms": 300000,
+      "cwd": "/work/review-1",
+      "requirement": "tests",
+      "source": "revision-1",
+      "created_generation": 9,
+      "passed": null,
+      "exit_code": null,
+      "stdout": "",
+      "stderr": "",
+      "truncated": false,
+      "problem": "cancelled by zor/check.cancel",
+      "artifacts": []
+    }
+  },
+  {
+    "method": "zor/source.retain",
+    "params": {
+      "task": "review-1",
+      "source": "revision-1",
+      "expression": "HEAD"
+    },
+    "result": {
+      "source": "revision-1",
+      "task": "review-1",
+      "state": "resolving",
+      "expression": "HEAD",
+      "commit": null,
+      "dirty": null,
+      "problem": null
+    }
+  },
+  {
+    "method": "zor/source.list",
+    "params": {
+      "task": "review-1"
+    },
+    "result": {
+      "task": "review-1",
+      "sources": [
+        {
+          "source": "revision-1",
+          "task": "review-1",
+          "state": "retained",
+          "expression": "HEAD",
+          "commit": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+          "dirty": false,
+          "problem": null
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/source.inspect",
+    "params": {
+      "source": "revision-1"
+    },
+    "result": {
+      "source": "revision-1",
+      "task": "review-1",
+      "state": "retained",
+      "expression": "HEAD",
+      "commit": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+      "dirty": false,
+      "problem": null
+    }
+  },
+  {
+    "method": "zor/artifact.retain",
+    "params": {
+      "task": "review-1",
+      "artifact": "report-1",
+      "path": "out/report.json",
+      "requirement": "report"
+    },
+    "result": {
+      "artifact": "report-1",
+      "task": "review-1",
+      "attempt": 1,
+      "path": "out/report.json",
+      "state": "collected",
+      "requirement": "report",
+      "check": null,
+      "generation": 5,
+      "bytes": 42,
+      "problem": null
+    }
+  },
+  {
+    "method": "zor/artifact.list",
+    "params": {
+      "task": "review-1"
+    },
+    "result": {
+      "task": "review-1",
+      "artifacts": [
+        {
+          "artifact": "report-2",
+          "task": "review-1",
+          "attempt": 1,
+          "path": "out/report.json",
+          "state": "collected",
+          "requirement": "report",
+          "check": "tests-run-2",
+          "generation": 10,
+          "bytes": 42,
+          "problem": null
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/artifact.fetch",
+    "params": {
+      "artifact": "report-2"
+    },
+    "result": {
+      "artifact": "report-2",
+      "path": "out/report.json",
+      "bytes": [
+        123,
+        34,
+        111,
+        107,
+        34,
+        58,
+        116,
+        114,
+        117,
+        101,
+        125,
+        10
+      ]
+    }
+  },
+  {
+    "method": "zor/task.verify",
+    "params": {
+      "task": "review-1",
+      "source": "revision-1"
+    },
+    "result": {
+      "task": "review-1",
+      "status": "verified",
+      "scope": "declared-checks-and-artifacts-for-retained-source",
+      "source": "revision-1",
+      "checks": [
+        "tests-run-2"
+      ],
+      "artifacts": [
+        "report-2"
+      ],
+      "sealed_ms": 1757894500000,
+      "generation": 11
+    }
+  },
+  {
+    "method": "zor/task.results",
+    "params": {
+      "task": "review-1"
+    },
+    "result": {
+      "task": "review-1",
+      "state": "closed",
+      "outcome": "verified",
+      "policy": {
+        "task": "review-1",
+        "checks_sealed": true,
+        "required_checks": [
+          {
+            "name": "tests",
+            "argv": [
+              "cargo",
+              "test"
+            ],
+            "status": "passed",
+            "latest": "tests-run-2"
+          }
+        ],
+        "passed_count": 1,
+        "artifacts_sealed": true,
+        "required_artifacts": [
+          {
+            "name": "report",
+            "path": "out/report.json",
+            "status": "collected",
+            "latest": "report-2"
+          }
+        ],
+        "collected_count": 1
+      },
+      "checks": [
+        {
+          "check": "tests-run-2",
+          "state": "passed",
+          "requirement": "tests",
+          "source": "revision-1",
+          "created_generation": 9,
+          "passed": true
+        }
+      ],
+      "sources": [
+        {
+          "source": "revision-1",
+          "task": "review-1",
+          "state": "retained",
+          "expression": "HEAD",
+          "commit": "9fceb02d0ae598e95dc970b74767f19372d61af8",
+          "dirty": false,
+          "problem": null
+        }
+      ],
+      "artifacts": [
+        {
+          "artifact": "report-2",
+          "task": "review-1",
+          "attempt": 1,
+          "path": "out/report.json",
+          "state": "collected",
+          "requirement": "report",
+          "check": "tests-run-2",
+          "generation": 10,
+          "bytes": 42,
+          "problem": null
+        }
+      ],
+      "blockers": [],
+      "verification": {
+        "task": "review-1",
+        "status": "verified",
+        "scope": "declared-checks-and-artifacts-for-retained-source",
+        "source": "revision-1",
+        "checks": [
+          "tests-run-2"
+        ],
+        "artifacts": [
+          "report-2"
+        ],
+        "sealed_ms": 1757894500000,
+        "generation": 11
+      }
+    }
+  },
+  {
+    "method": "zor/group.create",
+    "params": {
+      "group": "workers",
+      "concurrency": 2,
+      "members": [
+        {
+          "operation": "alpha-work",
+          "prompt": "alpha-p"
+        },
+        {
+          "operation": "beta-work",
+          "prompt": "beta-p"
+        },
+        {
+          "operation": "gamma-work",
+          "prompt": "gamma-p"
+        }
+      ],
+      "after": [
+        {
+          "operation": "gamma-work",
+          "prerequisite": "alpha-work"
+        },
+        {
+          "operation": "gamma-work",
+          "prerequisite": "beta-work"
+        }
+      ]
+    },
+    "result": {
+      "group": "workers",
+      "intent": "manual",
+      "status": "active",
+      "concurrency": 2,
+      "cursor": 0,
+      "active_count": 0,
+      "members": [
+        {
+          "operation": "alpha-work",
+          "task": "alpha",
+          "prompt": "alpha-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "queued",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "beta-work",
+          "task": "beta",
+          "prompt": "beta-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "queued",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "gamma-work",
+          "task": "gamma",
+          "prompt": "gamma-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "dependencies-pending",
+          "after": [
+            "alpha-work",
+            "beta-work"
+          ],
+          "problem": null
+        }
+      ],
+      "problem": null
+    }
+  },
+  {
+    "method": "zor/group.inspect",
+    "params": {
+      "group": "workers"
+    },
+    "result": {
+      "group": "workers",
+      "intent": "manual",
+      "status": "active",
+      "concurrency": 2,
+      "cursor": 1,
+      "active_count": 1,
+      "members": [
+        {
+          "operation": "alpha-work",
+          "task": "alpha",
+          "prompt": "alpha-p",
+          "phase": "submitting",
+          "delivery": "prepared",
+          "status": "active",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "beta-work",
+          "task": "beta",
+          "prompt": "beta-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "queued",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "gamma-work",
+          "task": "gamma",
+          "prompt": "gamma-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "dependencies-pending",
+          "after": [
+            "alpha-work",
+            "beta-work"
+          ],
+          "problem": null
+        }
+      ],
+      "problem": null
+    }
+  },
+  {
+    "method": "zor/group.admit",
+    "params": {
+      "group": "workers"
+    },
+    "result": {
+      "group": "workers",
+      "admitted": [
+        "alpha-work"
+      ],
+      "info": {
+        "group": "workers",
+        "intent": "manual",
+        "status": "active",
+        "concurrency": 2,
+        "cursor": 1,
+        "active_count": 1,
+        "members": [
+          {
+            "operation": "alpha-work",
+            "task": "alpha",
+            "prompt": "alpha-p",
+            "phase": "submitting",
+            "delivery": "prepared",
+            "status": "active",
+            "after": [],
+            "problem": null
+          },
+          {
+            "operation": "beta-work",
+            "task": "beta",
+            "prompt": "beta-p",
+            "phase": "prepared",
+            "delivery": "prepared",
+            "status": "queued",
+            "after": [],
+            "problem": null
+          },
+          {
+            "operation": "gamma-work",
+            "task": "gamma",
+            "prompt": "gamma-p",
+            "phase": "prepared",
+            "delivery": "prepared",
+            "status": "dependencies-pending",
+            "after": [
+              "alpha-work",
+              "beta-work"
+            ],
+            "problem": null
+          }
+        ],
+        "problem": null
+      }
+    }
+  },
+  {
+    "method": "zor/group.pause",
+    "params": {
+      "group": "workers"
+    },
+    "result": {
+      "group": "workers",
+      "intent": "paused",
+      "status": "active",
+      "concurrency": 2,
+      "cursor": 1,
+      "active_count": 1,
+      "members": [
+        {
+          "operation": "alpha-work",
+          "task": "alpha",
+          "prompt": "alpha-p",
+          "phase": "submitting",
+          "delivery": "prepared",
+          "status": "active",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "beta-work",
+          "task": "beta",
+          "prompt": "beta-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "queued",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "gamma-work",
+          "task": "gamma",
+          "prompt": "gamma-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "dependencies-pending",
+          "after": [
+            "alpha-work",
+            "beta-work"
+          ],
+          "problem": null
+        }
+      ],
+      "problem": null
+    }
+  },
+  {
+    "method": "zor/group.resume",
+    "params": {
+      "group": "workers"
+    },
+    "result": {
+      "group": "workers",
+      "intent": "automatic",
+      "status": "active",
+      "concurrency": 2,
+      "cursor": 1,
+      "active_count": 1,
+      "members": [
+        {
+          "operation": "alpha-work",
+          "task": "alpha",
+          "prompt": "alpha-p",
+          "phase": "submitting",
+          "delivery": "prepared",
+          "status": "active",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "beta-work",
+          "task": "beta",
+          "prompt": "beta-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "queued",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "gamma-work",
+          "task": "gamma",
+          "prompt": "gamma-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "dependencies-pending",
+          "after": [
+            "alpha-work",
+            "beta-work"
+          ],
+          "problem": null
+        }
+      ],
+      "problem": null
+    }
+  },
+  {
+    "method": "zor/group.cancel",
+    "params": {
+      "group": "workers"
+    },
+    "result": {
+      "group": "workers",
+      "intent": "cancelled",
+      "status": "cancelled",
+      "concurrency": 2,
+      "cursor": 1,
+      "active_count": 1,
+      "members": [
+        {
+          "operation": "alpha-work",
+          "task": "alpha",
+          "prompt": "alpha-p",
+          "phase": "submitting",
+          "delivery": "prepared",
+          "status": "active",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "beta-work",
+          "task": "beta",
+          "prompt": "beta-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "queued",
+          "after": [],
+          "problem": null
+        },
+        {
+          "operation": "gamma-work",
+          "task": "gamma",
+          "prompt": "gamma-p",
+          "phase": "prepared",
+          "delivery": "prepared",
+          "status": "dependencies-pending",
+          "after": [
+            "alpha-work",
+            "beta-work"
+          ],
+          "problem": null
+        }
+      ],
+      "problem": null
+    }
+  },
+  {
+    "method": "zor/worktree.allocate",
+    "params": {
+      "worktree": "parser",
+      "task": "parser-task",
+      "repo": "/home/me/repo",
+      "branch": "agent/parser",
+      "base": "HEAD"
+    },
+    "result": {
+      "worktree": "parser",
+      "task": "parser-task",
+      "state": "allocating",
+      "repo": "/home/me/repo",
+      "branch": "agent/parser",
+      "base": "0123456789abcdef0123456789abcdef01234567",
+      "path": "/home/me/.local/state/zor/worktrees/wt-8f3a1c2d9e4b7a60/tree",
+      "force": false,
+      "problem": null,
+      "in_flight": true
+    }
+  },
+  {
+    "method": "zor/worktree.list",
+    "params": {},
+    "result": {
+      "worktrees": [
+        {
+          "worktree": "parser",
+          "task": "parser-task",
+          "state": "ready",
+          "repo": "/home/me/repo",
+          "branch": "agent/parser",
+          "base": "0123456789abcdef0123456789abcdef01234567",
+          "path": "/home/me/.local/state/zor/worktrees/wt-8f3a1c2d9e4b7a60/tree",
+          "force": false,
+          "problem": null,
+          "in_flight": false
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/worktree.inspect",
+    "params": {
+      "worktree": "parser"
+    },
+    "result": {
+      "worktree": "parser",
+      "task": "parser-task",
+      "state": "ready",
+      "repo": "/home/me/repo",
+      "branch": "agent/parser",
+      "base": "0123456789abcdef0123456789abcdef01234567",
+      "path": "/home/me/.local/state/zor/worktrees/wt-8f3a1c2d9e4b7a60/tree",
+      "force": false,
+      "problem": null,
+      "in_flight": false
+    }
+  },
+  {
+    "method": "zor/worktree.remove",
+    "params": {
+      "worktree": "parser",
+      "force": true
+    },
+    "result": {
+      "worktree": "parser",
+      "task": "parser-task",
+      "state": "removing",
+      "repo": "/home/me/repo",
+      "branch": "agent/parser",
+      "base": "0123456789abcdef0123456789abcdef01234567",
+      "path": "/home/me/.local/state/zor/worktrees/wt-8f3a1c2d9e4b7a60/tree",
+      "force": true,
+      "problem": null,
+      "in_flight": true
+    }
+  },
+  {
+    "method": "zor/worktree.reconcile",
+    "params": {
+      "worktree": "parser"
+    },
+    "result": {
+      "worktree": "parser",
+      "task": "parser-task",
+      "state": "removing",
+      "repo": "/home/me/repo",
+      "branch": "agent/parser",
+      "base": "0123456789abcdef0123456789abcdef01234567",
+      "path": "/home/me/.local/state/zor/worktrees/wt-8f3a1c2d9e4b7a60/tree",
+      "force": false,
+      "problem": "removal incomplete: path present=true, registered=true; resolve manually, then reconcile",
+      "in_flight": true
+    }
+  },
+  {
+    "method": "zor/agent.list",
+    "params": {},
+    "result": {
+      "agents": [
+        {
+          "id": 3,
+          "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+          "workspace": "default",
+          "pane": 7,
+          "pid": 4242,
+          "state": "Working",
+          "source": "native",
+          "rule": "codex-0.153.4-working",
+          "passive": "Working",
+          "since_ms": 1757894401000,
+          "age_upper_bound_ms": 812,
+          "attempt": 1,
+          "task": "t1",
+          "provider": "codex",
+          "producer": "codex:5150",
+          "last_event": "state Working",
+          "last_event_ms": 1757894401500,
+          "problem": null
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/agent.inspect",
+    "params": {
+      "agent": 3
+    },
+    "result": {
+      "id": 3,
+      "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "workspace": "default",
+      "pane": 7,
+      "pid": 4242,
+      "state": "Working",
+      "source": "native",
+      "rule": "codex-0.153.4-working",
+      "passive": "Working",
+      "since_ms": 1757894401000,
+      "age_upper_bound_ms": 812,
+      "attempt": 1,
+      "task": "t1",
+      "provider": "codex",
+      "producer": "codex:5150",
+      "last_event": "state Working",
+      "last_event_ms": 1757894401500,
+      "problem": null
+    }
+  },
+  {
+    "method": "zor/rules.list",
+    "params": {},
+    "result": {
+      "generation": 2,
+      "problem": "rules/custom.toml: rule r: visible flags disagree with the rule state",
+      "bundles": [
+        {
+          "id": "codex",
+          "source": "builtin:codex.toml",
+          "rules": 5,
+          "effective": true
+        },
+        {
+          "id": "custom",
+          "source": "rules/custom.toml",
+          "rules": 1,
+          "effective": true
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/rules.reload",
+    "params": {},
+    "result": {
+      "requested": 1,
+      "generation": 3
+    }
+  }
+]

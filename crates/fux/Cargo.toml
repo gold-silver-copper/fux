@@ -39,6 +39,9 @@ bevy_image.workspace = true
 bevy_audio = { workspace = true, optional = true }
 async-channel.workspace = true
 async-io.workspace = true
+hyper.workspace = true
+smol-hyper.workspace = true
+http-body-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ron.workspace = true

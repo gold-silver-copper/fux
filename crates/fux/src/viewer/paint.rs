@@ -25,6 +25,8 @@ use termina::escape::csi::{
 use termina::style::{ColorSpec, RgbaColor};
 
 use super::chrome::Text;
+use super::copy_mode::CopyView;
+use super::prompts::CursorAt;
 use super::replicate::{ClipboardWrite, Grid};
 use super::theme::{BorderStyles, CellStyle};
 use super::{Mode as ViewerMode, Viewport};
@@ -348,6 +350,8 @@ type NodeItem<'a> = (
     Option<&'a Shows>,
     Option<&'a Text>,
     Option<&'a SurfaceText>,
+    Option<&'a CopyView>,
+    Option<&'a CursorAt>,
 );
 
 /// Composes the screen from the UI stack and diffs it against the previous paint, then appends
@@ -390,6 +394,8 @@ pub fn paint(
             shows,
             text,
             surface_text,
+            copy_view,
+            cursor_at,
         )) = nodes.get(entity)
         else {
             continue;
@@ -444,15 +450,28 @@ pub fn paint(
         }
         let content = rect.inset(node).intersect(visible);
         if let Some(grid) = shows.and_then(|s| grids.get(s.0).ok()) {
-            draw_grid(&mut painter.next, grid, rect.inset(node), content, bg);
-            if focused == Some(entity)
-                && grid.cursor.visible
-                && matches!(**mode, ViewerMode::Normal | ViewerMode::Prefix)
-            {
-                let col = rect.inset(node).min.x + i32::from(grid.cursor.col);
-                let row = rect.inset(node).min.y + i32::from(grid.cursor.row);
-                if content.contains(col, row) {
-                    cursor = Some((col as u16, row as u16));
+            let origin = rect.inset(node);
+            if let Some(view) = copy_view {
+                draw_copy_view(&mut painter.next, view, grid, origin, content, bg);
+                let (row, col) = view.cursor();
+                if row >= view.offset() {
+                    let col = origin.min.x + col as i32;
+                    let row = origin.min.y + (row - view.offset()) as i32;
+                    if content.contains(col, row) {
+                        cursor = Some((col as u16, row as u16));
+                    }
+                }
+            } else {
+                draw_grid(&mut painter.next, grid, origin, content, bg);
+                if focused == Some(entity)
+                    && grid.cursor.visible
+                    && matches!(**mode, ViewerMode::Normal | ViewerMode::Prefix)
+                {
+                    let col = origin.min.x + i32::from(grid.cursor.col);
+                    let row = origin.min.y + i32::from(grid.cursor.row);
+                    if content.contains(col, row) {
+                        cursor = Some((col as u16, row as u16));
+                    }
                 }
             }
         }
@@ -465,6 +484,15 @@ pub fn paint(
                 content,
                 bg,
             );
+            if let Some(at) = cursor_at
+                && **mode == ViewerMode::Prompt
+            {
+                let col = rect.inset(node).min.x + i32::from(at.0);
+                let row = rect.inset(node).min.y;
+                if content.contains(col, row) {
+                    cursor = Some((col as u16, row as u16));
+                }
+            }
         }
         // A surface's text leaf: the provider styles through colours on the node itself.
         if let Some(text) = surface_text {
@@ -544,6 +572,77 @@ fn draw_grid(screen: &mut Screen, grid: &Grid, origin: CellRect, visible: CellRe
                 blank
             };
             screen.set(col, row, cell);
+        }
+    }
+}
+
+/// Copy mode: the history rows above the live grid, then the selection (inverse) and search
+/// matches (underlined) as highlights over whatever the row painted.
+fn draw_copy_view(
+    screen: &mut Screen,
+    view: &CopyView,
+    grid: &Grid,
+    origin: CellRect,
+    visible: CellRect,
+    bg: WireColor,
+) {
+    let plain = Style {
+        fg: WireColor::Default,
+        bg,
+        attrs: 0,
+    };
+    let blank = ScreenCell::blank(plain);
+    let history = view.history_len();
+    for row in visible.min.y..visible.max.y {
+        let index = view.offset() + (row - origin.min.y).max(0) as usize;
+        if let Some(line) = view.history_row(index) {
+            let mut chars = line.chars();
+            for col in origin.min.x..visible.max.x {
+                let cell = chars
+                    .next()
+                    .map_or(blank, |ch| ScreenCell::glyph(ch, plain));
+                if visible.contains(col, row) {
+                    screen.set(col, row, cell);
+                }
+            }
+        } else {
+            let grid_row = index.saturating_sub(history);
+            for col in visible.min.x..visible.max.x {
+                let grid_col = col - origin.min.x;
+                let cell = u16::try_from(grid_row)
+                    .ok()
+                    .filter(|_| grid_col >= 0)
+                    .and_then(|r| grid.cell(grid_col as u16, r))
+                    .copied()
+                    .unwrap_or(blank);
+                screen.set(col, row, cell);
+            }
+        }
+    }
+    let mut highlight = |index: usize, from: usize, to: usize, attr: u8| {
+        if index < view.offset() {
+            return;
+        }
+        let row = origin.min.y + (index - view.offset()) as i32;
+        for col in from..to {
+            let col = origin.min.x + col as i32;
+            if visible.contains(col, row)
+                && let Some(i) = screen.index(col, row)
+                && let Some(cell) = screen.cells.get_mut(i)
+            {
+                cell.style.attrs |= attr;
+            }
+        }
+    };
+    let width = usize::from(grid.cols());
+    for &(row, col, len) in view.matches() {
+        highlight(row, col, col + len, Style::UNDERLINE);
+    }
+    if let Some(((r0, c0), (r1, c1))) = view.selection() {
+        for row in r0..=r1 {
+            let from = if row == r0 { c0 } else { 0 };
+            let to = if row == r1 { c1 + 1 } else { width };
+            highlight(row, from, to, Style::INVERSE);
         }
     }
 }

@@ -21,6 +21,12 @@ use crate::remote::RemoteHostPlugin;
 
 /// The full server. Errors from systems are logged, never panic.
 pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound>) -> App {
+    // The asset file watcher compares canonical paths (`/var` vs `/private/var`); a config
+    // directory that does not exist yet stays as named.
+    let asset_root = paths
+        .config_dir
+        .canonicalize()
+        .unwrap_or_else(|_| paths.config_dir.clone());
     let mut app = App::new();
     app.add_plugins((
         TaskPoolPlugin::default(),
@@ -31,7 +37,7 @@ pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound
             ..Default::default()
         },
         AssetPlugin {
-            file_path: paths.config_dir.display().to_string(),
+            file_path: asset_root.display().to_string(),
             watch_for_changes_override: Some(true),
             ..Default::default()
         },
@@ -39,6 +45,9 @@ pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound
         EntityCountDiagnosticsPlugin::default(),
     ));
     core(&mut app, config, &paths.state_dir);
+    app.add_plugins(crate::providers::ProvidersPlugin {
+        asset_root: Some(asset_root),
+    });
     app.add_plugins(RemoteHostPlugin {
         runtime_dir: paths.runtime_dir.clone(),
         server_name: name.into(),
@@ -59,6 +68,7 @@ pub fn build_headless(config: &Config, state_dir: &Path) -> App {
         AssetPlugin::default(),
     ));
     core(&mut app, config, state_dir);
+    app.add_plugins(crate::providers::ProvidersPlugin::default());
     app
 }
 
@@ -68,5 +78,12 @@ fn core(app: &mut App, config: &Config, state_dir: &Path) {
         JournalPlugin {
             state_dir: state_dir.to_path_buf(),
         },
+        crate::git::GitPlugin,
+        crate::worktrees::WorktreesPlugin {
+            state_dir: state_dir.to_path_buf(),
+        },
+        crate::groups::GroupsPlugin,
+        crate::lifecycle::LifecyclePlugin,
+        crate::checks::ChecksPlugin,
     ));
 }

@@ -6,12 +6,15 @@
 //! channel (terminal events, server frames, the next timer deadline), fills [`Inbox`], steps the
 //! App once, then writes the painter's bytes to the terminal and the [`Outbox`] to the server.
 
+pub mod choosers;
 pub mod chrome;
 pub mod connection;
+pub mod copy_mode;
 pub mod focus;
 pub mod input;
 pub mod keys;
 pub mod paint;
+pub mod prompts;
 pub mod replicate;
 pub mod terminal_io;
 pub mod theme;
@@ -20,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
+
+use serde_json::Value;
 
 use bevy_app::prelude::*;
 use bevy_asset::AssetPlugin;
@@ -39,6 +44,7 @@ use crate::assets;
 use crate::model::{
     Ids, InstanceNode, NodeId, PaneId, ShownBy, Shows, Surface, ViewerRequest, Zoomed,
 };
+use crate::remote::client;
 use crate::wire::{ClientFrame, ExactTargetSpec, ServerFrame};
 
 pub use chrome::{ChromeRoots, Text};
@@ -63,8 +69,9 @@ pub enum Wake {
     TerminalClosed,
     Frame(ServerFrame),
     Disconnected(String),
-    /// `fux.toml` changed or finished loading: step once so the asset systems run.
-    Asset,
+    /// `fux.toml` changed or finished loading, or a BRP worker delivered a reply: step once so
+    /// the asset systems and [`BrpReply`] readers run.
+    Ready,
 }
 
 /// What the runner delivers to one update: terminal events and server frames, in arrival order.
@@ -128,9 +135,120 @@ pub enum Mode {
     Normal,
     /// The prefix was pressed; the next chord is a binding.
     Prefix,
-    /// A destructive binding awaits `y`.
+    /// A destructive binding awaits `y` in a confirmation popover.
     Confirm,
     CopyMode,
+    /// A tab, workspace or help list owns the keys.
+    Chooser,
+    /// A text prompt owns the keys.
+    Prompt,
+}
+
+/// "A modal is open": a viewer-local popup owns presentation focus, so the server's target is
+/// not re-imposed until it closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Modal;
+
+impl ComputedStates for Modal {
+    type SourceStates = Mode;
+
+    fn compute(mode: Mode) -> Option<Self> {
+        matches!(mode, Mode::Confirm | Mode::Chooser | Mode::Prompt).then_some(Self)
+    }
+}
+
+/// A BRP call the viewer made through a worker thread, identified for its reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrpTag {
+    WorkspaceList,
+    WorkspaceNew(String),
+    WorkspaceKill(String),
+    RootRename(NodeId),
+    Capture(PaneId),
+}
+
+/// A worker's reply, delivered as a message on the update after it arrived.
+#[derive(Message, Debug)]
+pub struct BrpReply {
+    pub tag: BrpTag,
+    pub result: Result<Value, String>,
+}
+
+/// The viewer's BRP client (prompt 3.11: prompts and choosers commit through
+/// `remote::client::call`): every call runs on its own worker thread so the update never
+/// blocks on the server; the reply wakes the runner and is read as a [`BrpReply`].
+#[derive(Resource)]
+pub struct Brp {
+    path: PathBuf,
+    tx: async_channel::Sender<BrpReply>,
+    rx: async_channel::Receiver<BrpReply>,
+    wake: assets::Wake,
+}
+
+impl Brp {
+    /// A client over `path`; `wake` is called when a reply is ready to be read.
+    pub fn new(path: PathBuf, wake: assets::Wake) -> Self {
+        let (tx, rx) = async_channel::unbounded();
+        Self { path, tx, rx, wake }
+    }
+
+    /// The `brp.json` calls read (empty when the viewer is headless).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Calls `method` on a worker thread; the reply arrives as a [`BrpReply`] tagged `tag`.
+    /// Without a descriptor (headless) nothing is called and no reply comes.
+    pub fn call(&self, tag: BrpTag, method: &'static str, params: Value) {
+        if self.path.as_os_str().is_empty() {
+            bevy_log::debug!("no brp.json: {method} not called");
+            return;
+        }
+        let path = self.path.clone();
+        let tx = self.tx.clone();
+        let wake = Arc::clone(&self.wake);
+        let spawned = std::thread::Builder::new()
+            .name("fux-viewer-brp".into())
+            .spawn(move || {
+                let result = client::call(&path, method, params).map_err(|e| e.to_string());
+                if tx.send_blocking(BrpReply { tag, result }).is_ok() {
+                    wake();
+                }
+            });
+        if let Err(e) = spawned {
+            bevy_log::warn!("BRP worker thread: {e}");
+        }
+    }
+
+    /// Delivers a reply as if a worker had produced it (tests).
+    pub fn deliver(&self, reply: BrpReply) {
+        let _ = self.tx.send_blocking(reply);
+    }
+}
+
+/// `First`: worker replies → [`BrpReply`] messages.
+fn drain_brp(brp: Res<Brp>, mut replies: MessageWriter<BrpReply>) {
+    while let Ok(reply) = brp.rx.try_recv() {
+        replies.write(reply);
+    }
+}
+
+/// Set by the workspace chooser or a created workspace: the runner closes the attachment and
+/// sends a new `Hello` for this workspace (no `ViewerRequest` is involved).
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct Reconnect(pub String);
+
+/// Test hook: `FUX_VIEWER_PANIC_AT=<n>` panics inside an `Update` system on the nth update, so
+/// the pseudo-terminal tests can prove the panic hook restores the outer terminal.
+#[derive(Resource, Debug)]
+struct PanicAt(u32);
+
+fn panic_at(mut hook: ResMut<PanicAt>) {
+    hook.0 = hook.0.saturating_sub(1);
+    assert!(
+        hook.0 > 0,
+        "FUX_VIEWER_PANIC_AT: deliberate panic inside a viewer system"
+    );
 }
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -165,7 +283,10 @@ pub fn build_in(cols: u16, rows: u16, config_dir: &Path, wake: assets::Wake) -> 
     let root = assets::asset_root(config_dir);
     app.world_mut()
         .get_resource_or_init::<AssetSourceBuilders>()
-        .insert(AssetSourceId::Default, assets::waking_source(&root, wake));
+        .insert(
+            AssetSourceId::Default,
+            assets::waking_source(&root, Arc::clone(&wake)),
+        );
     app.add_plugins((
         bevy_app::TaskPoolPlugin::default(),
         bevy_state::app::StatesPlugin,
@@ -207,16 +328,29 @@ pub fn build_in(cols: u16, rows: u16, config_dir: &Path, wake: assets::Wake) -> 
         .init_resource::<Outbox>()
         .init_resource::<WakeDeadline>()
         .insert_resource(Viewport { cols, rows })
+        .insert_resource(Brp::new(PathBuf::new(), wake))
+        .add_message::<BrpReply>()
         .init_state::<Mode>()
+        .add_computed_state::<Modal>()
         .configure_sets(
             Update,
             (ViewerSystems::Focus, ViewerSystems::Chrome).chain(),
         )
-        .add_systems(First, drain_terminal.in_set(ViewerSystems::Ingest))
+        .add_systems(
+            First,
+            (drain_terminal, drain_brp).in_set(ViewerSystems::Ingest),
+        )
         .configure_sets(
             First,
             ViewerSystems::Ingest.after(bevy_ecs::message::MessageUpdateSystems),
         );
+    if let Some(n) = std::env::var("FUX_VIEWER_PANIC_AT")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+    {
+        app.insert_resource(PanicAt(n.max(1)))
+            .add_systems(Update, panic_at);
+    }
 
     let world = app.world_mut();
     let window = world
@@ -242,6 +376,9 @@ pub fn build_in(cols: u16, rows: u16, config_dir: &Path, wake: assets::Wake) -> 
         replicate::ReplicatePlugin,
         focus::FocusPlugin,
         chrome::ChromePlugin,
+        choosers::ChoosersPlugin,
+        prompts::PromptsPlugin,
+        copy_mode::CopyModePlugin,
         theme::ThemePlugin,
         paint::PaintPlugin,
     ));
@@ -365,17 +502,15 @@ pub fn run(opts: ViewerOptions) -> Result<i32, BevyError> {
             return Err(e.into());
         }
     };
-    let asset_wake = wake_tx.clone();
-    let _reader = term.spawn_reader(wake_tx)?;
+    let ready_wake = wake_tx.clone();
+    let _reader = term.spawn_reader(wake_tx.clone())?;
 
-    let mut app = build_in(
-        cols,
-        rows,
-        &opts.config_dir,
-        Arc::new(move || {
-            let _ = asset_wake.send(Wake::Asset);
-        }),
-    );
+    let wake: assets::Wake = Arc::new(move || {
+        let _ = ready_wake.send(Wake::Ready);
+    });
+    let mut app = build_in(cols, rows, &opts.config_dir, Arc::clone(&wake));
+    app.world_mut()
+        .insert_resource(Brp::new(opts.brp_path.clone(), wake));
     if opts.exact.is_some() {
         app.world_mut().insert_resource(focus::ExactAttachment);
     }
@@ -417,7 +552,7 @@ pub fn run(opts: ViewerOptions) -> Result<i32, BevyError> {
                 match wake {
                     Wake::Terminal(event) => inbox.events.push(event),
                     Wake::Frame(frame) => inbox.frames.push(frame),
-                    Wake::Asset => {}
+                    Wake::Ready => {}
                     Wake::TerminalClosed => {
                         fatal = Some(Exit {
                             code: 1,
@@ -468,6 +603,39 @@ pub fn run(opts: ViewerOptions) -> Result<i32, BevyError> {
         }
         if let Some(exit) = deferred_exit {
             break exit;
+        }
+        if let Some(Reconnect(workspace)) = world.remove_resource::<Reconnect>() {
+            // Attach to another workspace: the old stream is closed and drained, the replicated
+            // scene is dropped, and a fresh `Hello` starts the next one.
+            connection.close();
+            let mut kept = Vec::new();
+            while let Ok(wake) = wake_rx.try_recv() {
+                match wake {
+                    Wake::Frame(_) | Wake::Disconnected(_) => {}
+                    other => kept.push(other),
+                }
+            }
+            for wake in kept {
+                let _ = wake_tx.send(wake);
+            }
+            replicate::reset(world);
+            world.resource_mut::<focus::FocusRing>().clear();
+            let viewport = world.resource::<Viewport>().pane_area();
+            connection = match connection::Connection::connect(
+                &opts.brp_path,
+                &workspace,
+                viewport,
+                None,
+                wake_tx.clone(),
+            ) {
+                Ok(connection) => connection,
+                Err(e) => {
+                    break Exit {
+                        code: 1,
+                        message: Some(format!("fux: {e}")),
+                    };
+                }
+            };
         }
     };
     connection.close();

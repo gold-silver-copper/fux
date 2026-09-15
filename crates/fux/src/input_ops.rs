@@ -47,10 +47,21 @@ struct Unconfirmed;
 #[derive(Component, Debug)]
 struct SubmittedBytes(Vec<u8>);
 
-/// Monotonic public operation ids.
-#[derive(Resource, Debug, Default)]
-struct OperationIds {
+/// Monotonic public operation ids and the cached query over every operation, so
+/// `fux/input.*` lookups and the sweep do not rebuild a `QueryState` per call.
+#[derive(Resource)]
+struct Operations {
     next: u64,
+    all: QueryState<(Entity, &'static mut InputOperation, &'static Receipt)>,
+}
+
+impl FromWorld for Operations {
+    fn from_world(world: &mut World) -> Self {
+        Self {
+            next: 0,
+            all: world.query(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -169,10 +180,11 @@ pub fn parse_keys(input: &str) -> Result<Vec<u8>, KeyError> {
 
 /// The operation entity behind a public id.
 pub fn find(world: &mut World, id: u64) -> Option<Entity> {
-    world
-        .query::<(Entity, &InputOperation)>()
-        .iter(world)
-        .find_map(|(e, op)| (op.id == id).then_some(e))
+    world.resource_scope(|world, mut ops: Mut<Operations>| {
+        ops.all
+            .iter(world)
+            .find_map(|(e, op, _)| (op.id == id).then_some(e))
+    })
 }
 
 /// Reserves an operation on `pane` for `retain_ms` (clamped to [`MAX_INPUT_RETENTION_MS`]).
@@ -192,16 +204,18 @@ pub fn reserve(world: &mut World, pane: Entity, retain_ms: u64) -> R<Entity> {
     }
     let now = crate::lifecycle::now_ms(world);
     sweep(world, now);
-    let mut ops = world.query::<(Entity, &InputOperation, &Receipt)>();
-    if ops.iter(world).count() >= MAX_INPUT_OPERATIONS {
-        let oldest_expired = ops
+    let victim = world.resource_scope(|world, mut ops: Mut<Operations>| {
+        if ops.all.iter(world).count() < MAX_INPUT_OPERATIONS {
+            return Ok(None);
+        }
+        ops.all
             .iter(world)
             .filter(|(_, op, _)| op.state == InputState::Expired)
             .min_by_key(|(_, _, r)| r.expires_ms)
-            .map(|(e, _, _)| e);
-        let Some(victim) = oldest_expired else {
-            return Err(InputError::Capacity);
-        };
+            .map(|(e, _, _)| Some(e))
+            .ok_or(InputError::Capacity)
+    })?;
+    if let Some(victim) = victim {
         world.despawn(victim);
     }
     let workspace = world
@@ -209,9 +223,9 @@ pub fn reserve(world: &mut World, pane: Entity, retain_ms: u64) -> R<Entity> {
         .and_then(|p| world.get::<WorkspaceName>(p.0))
         .map(|n| n.0.clone())
         .unwrap_or_default();
-    let mut ids = world.resource_mut::<OperationIds>();
-    ids.next = ids.next.saturating_add(1);
-    let id = ids.next;
+    let mut ops = world.resource_mut::<Operations>();
+    ops.next = ops.next.saturating_add(1);
+    let id = ops.next;
     Ok(world
         .spawn((
             InputOperation {
@@ -302,7 +316,7 @@ pub struct InputOpsPlugin;
 
 impl Plugin for InputOpsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<OperationIds>().add_systems(
+        app.init_resource::<Operations>().add_systems(
             First,
             (settle, expire).chain().after(crate::model::Phase::Ingest),
         );
@@ -350,20 +364,22 @@ fn expire(world: &mut World) {
 }
 
 fn sweep(world: &mut World, now: u64) {
-    let due: Vec<(Entity, bool)> = world
-        .query::<(Entity, &Receipt)>()
-        .iter(world)
-        .filter(|(_, r)| r.expires_ms <= now)
-        .map(|(e, r)| (e, r.expires_ms.saturating_add(r.retain_ms) <= now))
-        .collect();
-    for (operation, forget) in due {
-        if forget {
-            world.despawn(operation);
-        } else if let Some(mut op) = world.get_mut::<InputOperation>(operation)
-            && op.state != InputState::Expired
-        {
-            op.state = InputState::Expired;
+    let forget: Vec<Entity> = world.resource_scope(|world, mut ops: Mut<Operations>| {
+        let mut forget = Vec::new();
+        for (entity, mut op, receipt) in ops.all.iter_mut(world) {
+            if receipt.expires_ms > now {
+                continue;
+            }
+            if receipt.expires_ms.saturating_add(receipt.retain_ms) <= now {
+                forget.push(entity);
+            } else if op.state != InputState::Expired {
+                op.state = InputState::Expired;
+            }
         }
+        forget
+    });
+    for operation in forget {
+        world.despawn(operation);
     }
 }
 

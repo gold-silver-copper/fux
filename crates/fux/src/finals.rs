@@ -96,21 +96,35 @@ impl ForgottenFinals {
     }
 }
 
+/// The record lookup behind [`read`], cached so `fux/pane.final` does not rebuild a query per
+/// call.
+#[derive(Resource)]
+struct Records(QueryState<(Entity, &'static FinalRecord)>);
+
+impl FromWorld for Records {
+    fn from_world(world: &mut World) -> Self {
+        Self(world.query())
+    }
+}
+
 pub struct FinalsPlugin;
 
 impl Plugin for FinalsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ForgottenFinals>()
+            .init_resource::<Records>()
             .add_systems(Update, maintain.after(Phase::Lifecycle));
     }
 }
 
 /// The record entity for a pane id, if any.
 fn record_of(world: &mut World, pane: PaneId) -> Option<(Entity, u64)> {
-    world
-        .query::<(Entity, &FinalRecord)>()
-        .iter(world)
-        .find_map(|(e, r)| (r.pane == pane).then_some((e, r.expires_ms)))
+    world.resource_scope(|world, mut records: Mut<Records>| {
+        records
+            .0
+            .iter(world)
+            .find_map(|(e, r)| (r.pane == pane).then_some((e, r.expires_ms)))
+    })
 }
 
 /// The retained record for `pane`, or why there is none. `instance` is the caller's nonce.

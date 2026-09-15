@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::path::Path;
 use std::sync::mpsc::{self, Sender, SyncSender, TrySendError};
+use std::thread::JoinHandle;
 
 use bevy_ecs::error::BevyError;
 
@@ -49,6 +50,7 @@ impl From<io::Error> for ConnectError {
 pub struct Connection {
     writer: SyncSender<Vec<u8>>,
     stream: TcpStream,
+    reader: Option<JoinHandle<()>>,
     encode_buf: Vec<u8>,
     pub descriptor: Descriptor,
 }
@@ -82,7 +84,7 @@ impl Connection {
         let mut writer_stream = stream.try_clone()?;
         writer_stream.write_all(&encode_buf)?;
         let reader_stream = stream.try_clone()?;
-        std::thread::Builder::new()
+        let reader = std::thread::Builder::new()
             .name("fux-attach-reader".into())
             .spawn(move || read_frames(reader_stream, &wake))?;
         let (writer, rx) = mpsc::sync_channel::<Vec<u8>>(WRITER_QUEUE);
@@ -98,6 +100,7 @@ impl Connection {
         Ok(Self {
             writer,
             stream,
+            reader: Some(reader),
             encode_buf,
             descriptor,
         })
@@ -115,8 +118,13 @@ impl Connection {
         }
     }
 
-    pub fn close(&self) {
+    /// Shuts the stream down and waits for the reader thread, so every wake it could send is
+    /// already in the channel when this returns.
+    pub fn close(&mut self) {
         let _ = self.stream.shutdown(Shutdown::Both);
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 

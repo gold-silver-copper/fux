@@ -30,7 +30,7 @@ use fux::model::invariants::check_invariants;
 use fux::model::*;
 use fux::remote::methods::codes;
 use fux::session::{
-    self, Historical, LastFocus, RestoreDecision, RestoreMode, SessionFile, SessionPlugin,
+    self, Historical, LastFocus, RestoreMode, RestorePending, SessionFile, SessionPlugin,
     SessionState,
 };
 use fux::terminal::Terminal;
@@ -58,6 +58,14 @@ fn sh(tag: &str) -> PaneTemplate {
         argv: vec!["/bin/sh".to_owned(), "-c".to_owned(), tag.to_owned()],
         cwd: Some(format!("/tmp/{tag}")),
         ..Default::default()
+    }
+}
+
+/// `sh` launched with an environment, as `fux/pane.new { env }` or `zor` would.
+fn sh_env(tag: &str) -> PaneTemplate {
+    PaneTemplate {
+        env: vec![("ZOR_LAUNCH_ID".to_owned(), tag.to_owned())],
+        ..sh(tag)
     }
 }
 
@@ -156,7 +164,7 @@ fn entries(dir: &Path) -> Vec<String> {
 
 /// `default`: root `main` = Row [ leaf one, Column "stack" [ leaf two, leaf three ] ], a
 /// viewer targeting `three`; `alpha`: one pane `solo`. Materialised once; `one` has screen
-/// content and a title.
+/// content and a title; `three` was launched with an environment.
 fn populate(app: &mut App) -> Entity {
     let world = app.world_mut();
     let ws = ops::new_workspace(world, "default").unwrap();
@@ -164,7 +172,7 @@ fn populate(app: &mut App) -> Entity {
     let leaf1 = ops::spawn_node(world, root, None, grow(), Some(sh("one"))).unwrap();
     let pane1 = placed(world, leaf1).unwrap();
     let (_, pane2) = ops::split(world, pane1, SplitDirection::Right, sh("two")).unwrap();
-    let (_, pane3) = ops::split(world, pane2, SplitDirection::Below, sh("three")).unwrap();
+    let (_, pane3) = ops::split(world, pane2, SplitDirection::Below, sh_env("three")).unwrap();
     let column = world
         .get::<ChildOf>(world.get::<PlacedIn>(pane2).unwrap().iter().next().unwrap())
         .unwrap()
@@ -281,6 +289,15 @@ fn session_is_written_atomically_throttled_and_restored_in_auto_mode() {
         world.get::<LaunchAttribution>(one).unwrap().cwd.as_deref(),
         Some("/tmp/one")
     );
+    assert_eq!(
+        world.get::<PaneTemplate>(three),
+        Some(&sh_env("three")),
+        "the launch environment survives the restart"
+    );
+    assert!(
+        world.get::<PaneTemplate>(one).unwrap().env.is_empty(),
+        "a pane launched without an environment restores without one"
+    );
     assert_eq!(world.get::<Title>(one).unwrap().0, "make");
     assert_eq!(
         world.get::<Historical>(one).unwrap().lines,
@@ -288,8 +305,15 @@ fn session_is_written_atomically_throttled_and_restored_in_auto_mode() {
     );
     assert!(world.get::<LastFocus>(three).is_some());
     assert!(world.get::<LastFocus>(one).is_none());
-    assert!(world.get::<RestoreDecision>(one).is_none(), "auto decides");
+    assert!(world.get::<RestorePending>(one).is_none(), "auto decides");
     assert!(world.get::<Disabled>(one).is_some() && world.get::<Terminal>(one).is_none());
+
+    // The first viewer resumes on the saved focus; later ones start at the first pane.
+    let viewer = ops::attach_viewer(world, ws2, Viewport { rows: 24, cols: 80 }, None).unwrap();
+    assert_eq!(world.get::<Targets>(viewer).map(|t| t.0), Some(three));
+    assert!(world.get::<LastFocus>(three).is_none(), "focus consumed");
+    let viewer = ops::attach_viewer(world, ws2, Viewport { rows: 24, cols: 80 }, None).unwrap();
+    assert_eq!(world.get::<Targets>(viewer).map(|t| t.0), Some(one));
 
     second.update();
     check(&mut second);
@@ -468,7 +492,7 @@ fn brp_methods_save_report_and_decide() {
         // The bootstrap pane pretends to be a restored one awaiting a decision.
         let pane = *world.resource::<Ids>().panes.values().next().unwrap();
         world.entity_mut(pane).insert((
-            RestoreDecision::Pending,
+            RestorePending,
             Historical {
                 lines: vec!["old".into()],
             },

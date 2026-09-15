@@ -8,6 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use bevy_ecs::resource::Resource;
+use bevy_log::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::assets::{Keybindings, Theme, ThemeToken, action_name};
@@ -347,7 +348,8 @@ impl Config {
     }
 
     /// The prefix and `[bindings]` merged over the default table; refuses a chord that does not
-    /// parse or an action nobody registers.
+    /// parse. A chord bound to an action this build does not register is logged and skipped,
+    /// so a file written for today's vocabulary keeps the rest of its meaning.
     pub fn keybindings(&self) -> Result<Keybindings, ConfigError> {
         let Some(prefix) = KeyChord::parse(&self.prefix) else {
             return invalid("prefix", format!("{:?} is not a key", self.prefix));
@@ -357,10 +359,12 @@ impl Config {
             let Some(chord) = KeyChord::parse(chord) else {
                 return invalid("bindings", format!("{chord:?} is not a key"));
             };
-            let Some(action) = action_name(action) else {
-                return invalid("bindings", format!("{action:?} is not an action"));
-            };
-            bindings.bindings.insert(chord, action);
+            match action_name(action) {
+                Some(action) => {
+                    bindings.bindings.insert(chord, action);
+                }
+                None => warn!("bindings: {action:?} is not an action in this build; ignoring"),
+            }
         }
         Ok(bindings)
     }
@@ -495,7 +499,18 @@ mod tests {
             Some("send-prefix"),
             "the prefix sends itself"
         );
-        assert!(Config::from_toml("[bindings]\nx = 'explode'").is_err());
+        let lenient = Config::from_toml("prefix = 'C-a'\n[bindings]\ne = 'explode'").unwrap();
+        let lenient = lenient.keybindings().unwrap();
+        assert_eq!(
+            lenient.prefix,
+            KeyChord::ctrl('a'),
+            "the rest of the file applies"
+        );
+        assert_eq!(
+            lenient.bindings.get(&KeyChord::character('e')),
+            None,
+            "an action this build lacks binds nothing"
+        );
         assert!(Config::from_toml("[bindings]\n'C-' = 'zoom'").is_err());
         assert!(Config::from_toml("[bindings]\n'Hyper' = 'zoom'").is_err());
         assert!(Config::from_toml("prefix = ''").is_err());

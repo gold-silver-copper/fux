@@ -1535,3 +1535,718 @@ fn clipboard_policy_gates_osc_52_both_ways() {
     app.update();
     assert!(!out(&mut app).windows(osc.len()).any(|w| w == osc));
 }
+
+// ---------------------------------------------------------------------------------------------
+// (9) choosers, prompts, confirmations, copy mode, focus ring
+// ---------------------------------------------------------------------------------------------
+
+mod common;
+
+use bevy_state::prelude::State;
+use bevy_ui::interaction_states::Selected;
+use fux::viewer::choosers::{ActiveDescendant, Chooser, ChooserKind};
+use fux::viewer::chrome::Popup;
+use fux::viewer::copy_mode::CopyView;
+use fux::viewer::focus::FocusRing;
+use fux::viewer::prompts::{Confirmation, Prompt};
+use fux::viewer::{Brp, BrpReply, BrpTag, Mode, Reconnect};
+use fux::wire::Welcome;
+
+fn prefix() -> Event {
+    key(TKey::Char('b'), Modifiers::CONTROL)
+}
+
+fn chord(app: &mut App, c: char) {
+    push_keys(app, [prefix(), key(TKey::Char(c), Modifiers::NONE)]);
+    app.update();
+}
+
+fn press(app: &mut App, code: TKey, modifiers: Modifiers) {
+    push_keys(app, [key(code, modifiers)]);
+    app.update();
+}
+
+fn type_str(app: &mut App, text: &str) {
+    push_keys(
+        app,
+        text.chars().map(|c| key(TKey::Char(c), Modifiers::NONE)),
+    );
+    app.update();
+}
+
+fn mode(app: &App) -> Mode {
+    *app.world().resource::<State<Mode>>().get()
+}
+
+fn popups(app: &mut App) -> Vec<Entity> {
+    app.world_mut()
+        .query_filtered::<Entity, With<Popup>>()
+        .iter(app.world())
+        .collect()
+}
+
+/// The painted text of one screen row, surrounding blanks trimmed.
+fn row_text(app: &App, row: u16) -> String {
+    let screen = app.world().resource::<Painter>().screen();
+    let text: String = (0..screen.cols())
+        .filter_map(|col| screen.get(col, row))
+        .filter(|c| c.width > 0)
+        .map(|c| c.text.as_str().to_owned())
+        .collect();
+    text.trim().to_owned()
+}
+
+fn cell_attrs(app: &App, col: u16, row: u16) -> u8 {
+    app.world()
+        .resource::<Painter>()
+        .screen()
+        .get(col, row)
+        .map_or(0, |c| c.style.attrs)
+}
+
+/// The chooser's rows in order with their selection state.
+fn chooser_rows(app: &mut App) -> Vec<(String, bool)> {
+    let world = app.world_mut();
+    let Ok(popup) = world
+        .query_filtered::<Entity, With<Chooser>>()
+        .single(world)
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut rows = world.query::<(&fux::viewer::Text, Has<Selected>)>();
+    for row in world.entity(popup).get::<Children>().unwrap().iter() {
+        let Some(list) = world.entity(row).get::<Children>() else {
+            continue;
+        };
+        if world.entity(row).get::<ActiveDescendant>().is_none() {
+            continue;
+        }
+        for item in list.iter() {
+            if let Ok((text, selected)) = rows.get(world, item) {
+                out.push((text.0.clone(), selected));
+            }
+        }
+    }
+    out
+}
+
+fn welcome(workspace: &str) -> ServerFrame {
+    ServerFrame::Welcome(Welcome {
+        viewer: fux::model::ViewerId(1),
+        instance: "i".into(),
+        workspace: workspace.into(),
+    })
+}
+
+fn two_roots(scene: &ServerScene) -> SceneFrame {
+    SceneFrame {
+        roots: Some(vec![
+            RootEntry {
+                node: NodeId(1),
+                name: "main".into(),
+            },
+            RootEntry {
+                node: NodeId(9),
+                name: "other".into(),
+            },
+        ]),
+        ..scene.frame(1)
+    }
+}
+
+#[test]
+fn tab_chooser_lists_roots_and_enter_shows_the_chosen_one() {
+    let scene = ServerScene::grid(1, 1);
+    let mut app = viewer::build(80, 24);
+    push_frame(&mut app, two_roots(&scene));
+    app.update();
+    let leaf = local(&app, scene.leaves[0]);
+    take_requests(&mut app);
+
+    chord(&mut app, 'w');
+    assert_eq!(mode(&app), Mode::Chooser);
+    assert_eq!(popups(&mut app).len(), 1);
+    assert_eq!(
+        chooser_rows(&mut app),
+        vec![
+            (" 1:main ".to_owned(), true),
+            (" 2:other ".to_owned(), false)
+        ],
+        "the shown root starts under the cursor"
+    );
+    assert_ne!(focused(&app), Some(leaf), "the popup holds focus");
+    // The list sits above the tab strip (bottom-left), the cursor row reversed.
+    assert_eq!(row_text(&app, 20), "tabs");
+    assert_eq!(row_text(&app, 21), "1:main");
+    assert_eq!(row_text(&app, 22), "2:other");
+    let active = ThemeToken::TAB_ACTIVE.default_color();
+    assert_eq!(
+        cell_bg(&app, 1, 21),
+        Some(active),
+        "the cursor row is reversed"
+    );
+    assert_ne!(cell_bg(&app, 1, 22), Some(active));
+
+    press(&mut app, TKey::Char('j'), Modifiers::NONE);
+    assert_eq!(
+        chooser_rows(&mut app).iter().position(|(_, s)| *s),
+        Some(1),
+        "j moves the cursor"
+    );
+    press(&mut app, TKey::Char('j'), Modifiers::NONE);
+    assert_eq!(
+        chooser_rows(&mut app).iter().position(|(_, s)| *s),
+        Some(0),
+        "and wraps"
+    );
+    press(&mut app, TKey::Up, Modifiers::NONE);
+    assert_eq!(chooser_rows(&mut app).iter().position(|(_, s)| *s), Some(1));
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::Show(NodeId(9))]
+    );
+    assert_eq!(mode(&app), Mode::Normal);
+    assert!(popups(&mut app).is_empty(), "Enter closes the chooser");
+    assert_eq!(focused(&app), Some(leaf), "focus returns to the pane");
+    assert_eq!(row_text(&app, 21), "", "and the popup is unpainted");
+
+    // Escape cancels without a request; keys after it in the same batch reach the pane.
+    chord(&mut app, 'w');
+    push_keys(
+        &mut app,
+        [
+            key(TKey::Escape, Modifiers::NONE),
+            key(TKey::Char('z'), Modifiers::NONE),
+        ],
+    );
+    app.update();
+    assert!(popups(&mut app).is_empty());
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::Input(b"z".to_vec())]
+    );
+
+    // The prefix chord closes the chooser and starts a new command.
+    chord(&mut app, 'w');
+    chord(&mut app, 'c');
+    assert!(popups(&mut app).is_empty());
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::NewRoot { template: None }]
+    );
+}
+
+#[test]
+fn chooser_dismisses_when_a_click_moves_focus_away() {
+    let scene = ServerScene::grid(1, 2);
+    let mut app = viewer::build(80, 24);
+    push_frame(&mut app, two_roots(&scene));
+    app.update();
+    take_requests(&mut app);
+    chord(&mut app, 'w');
+    assert_eq!(popups(&mut app).len(), 1);
+    assert_eq!(mode(&app), Mode::Chooser);
+
+    let requests = click(&mut app, 60, 5);
+    assert!(
+        popups(&mut app).is_empty(),
+        "focus left the popup: it is gone"
+    );
+    assert_eq!(requests, vec![ViewerRequest::Target(PaneId(2))]);
+    app.update();
+    assert_eq!(mode(&app), Mode::Normal);
+    assert_eq!(focused(&app), Some(local(&app, scene.leaves[1])));
+    assert_eq!(row_text(&app, 21), "");
+}
+
+#[test]
+fn workspace_chooser_fills_from_brp_and_reconnects_elsewhere() {
+    let scene = ServerScene::grid(1, 1);
+    let mut app = viewer::build(80, 24);
+    app.world_mut()
+        .resource_mut::<Inbox>()
+        .frames
+        .push(welcome("alpha"));
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    take_requests(&mut app);
+
+    chord(&mut app, 's');
+    assert_eq!(mode(&app), Mode::Chooser);
+    assert_eq!(
+        chooser_rows(&mut app),
+        vec![(" loading… ".to_owned(), true)],
+        "the list waits for the worker's reply"
+    );
+    app.world().resource::<Brp>().deliver(BrpReply {
+        tag: BrpTag::WorkspaceList,
+        result: Ok(serde_json::json!({
+            "workspaces": [
+                { "name": "alpha", "open": true, "viewers": 1, "roots": [] },
+                { "name": "beta", "open": true, "viewers": 0, "roots": [] },
+            ]
+        })),
+    });
+    app.update();
+    assert_eq!(
+        chooser_rows(&mut app),
+        vec![
+            (" * alpha ".to_owned(), true),
+            ("   beta ".to_owned(), false)
+        ],
+        "the current workspace is marked and under the cursor"
+    );
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert!(
+        app.world().get_resource::<Reconnect>().is_none(),
+        "choosing the current workspace is a no-op"
+    );
+    assert!(popups(&mut app).is_empty());
+
+    chord(&mut app, 's');
+    app.world().resource::<Brp>().deliver(BrpReply {
+        tag: BrpTag::WorkspaceList,
+        result: Ok(serde_json::json!({
+            "workspaces": [
+                { "name": "alpha", "open": true, "viewers": 1, "roots": [] },
+                { "name": "beta", "open": true, "viewers": 0, "roots": [] },
+            ]
+        })),
+    });
+    app.update();
+    press(&mut app, TKey::Char('j'), Modifiers::NONE);
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert_eq!(
+        app.world().get_resource::<Reconnect>(),
+        Some(&Reconnect("beta".into())),
+        "another workspace reconnects locally, without a ViewerRequest"
+    );
+    assert!(take_requests(&mut app).is_empty());
+    assert_eq!(mode(&app), Mode::Normal);
+}
+
+#[test]
+fn help_panel_lists_every_binding_and_scrolls_to_the_cursor() {
+    let scene = ServerScene::grid(1, 1);
+    let mut app = viewer::build(80, 12);
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    chord(&mut app, '?');
+    assert_eq!(mode(&app), Mode::Chooser);
+    let rows = chooser_rows(&mut app);
+    let table = app
+        .world()
+        .resource::<fux::viewer::focus::Bindings>()
+        .table
+        .clone();
+    assert_eq!(rows.len(), table.bindings.len());
+    assert!(rows.iter().any(|(t, _)| t.contains("copy-mode")));
+    assert!(rows.iter().all(|(t, _)| t.starts_with(" C-b ")));
+    let kind = {
+        let world = app.world_mut();
+        world
+            .query::<&Chooser>()
+            .single(world)
+            .map(|c| c.kind)
+            .unwrap()
+    };
+    assert_eq!(kind, ChooserKind::Help);
+    assert_eq!(row_text(&app, 1), "bindings", "header above the rows");
+    let first_visible = row_text(&app, 2);
+    press(&mut app, TKey::Char('G'), Modifiers::NONE);
+    let scroll = {
+        let world = app.world_mut();
+        world
+            .query::<(&ActiveDescendant, &bevy_ui::ScrollPosition)>()
+            .single(world)
+            .map(|(_, s)| s.0.y)
+            .unwrap()
+    };
+    assert!(scroll > 0.0, "the last row is scrolled into view");
+    assert_ne!(row_text(&app, 2), first_visible, "the viewport moved");
+    let last = rows.last().unwrap().0.trim().to_owned();
+    assert_eq!(row_text(&app, 10), last, "last row just above the bar");
+    press(&mut app, TKey::Char('q'), Modifiers::NONE);
+    assert!(popups(&mut app).is_empty());
+    assert_eq!(mode(&app), Mode::Normal);
+}
+
+#[test]
+fn confirmations_commit_on_y_and_cancel_otherwise() {
+    let scene = ServerScene::grid(1, 1);
+    let mut app = viewer::build(80, 24);
+    app.world_mut()
+        .resource_mut::<Inbox>()
+        .frames
+        .push(welcome("alpha"));
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    take_requests(&mut app);
+
+    chord(&mut app, 'x');
+    assert_eq!(mode(&app), Mode::Confirm);
+    assert_eq!(
+        row_text(&app, 22),
+        "close pane 1? y/n",
+        "a popover above the bar"
+    );
+    assert!(row_text(&app, 23).contains("CONFIRM"));
+    press(&mut app, TKey::Char('n'), Modifiers::NONE);
+    assert!(popups(&mut app).is_empty());
+    assert!(take_requests(&mut app).is_empty(), "n sends nothing");
+    assert_eq!(mode(&app), Mode::Normal);
+
+    chord(&mut app, 'x');
+    press(&mut app, TKey::Char('y'), Modifiers::NONE);
+    assert_eq!(take_requests(&mut app), vec![ViewerRequest::ClosePane]);
+    assert!(popups(&mut app).is_empty());
+
+    chord(&mut app, 'K');
+    let action = {
+        let world = app.world_mut();
+        world
+            .query::<&Confirmation>()
+            .single(world)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(action, Confirmation::KillWorkspace("alpha".into()));
+    assert_eq!(row_text(&app, 22), "kill workspace alpha? y/n");
+    press(&mut app, TKey::Escape, Modifiers::NONE);
+    assert!(popups(&mut app).is_empty());
+    assert!(take_requests(&mut app).is_empty());
+}
+
+#[test]
+fn prompts_edit_locally_and_commit_over_brp() {
+    let server = common::Server::start();
+    let list = server
+        .call("fux/workspace.list", serde_json::json!({}))
+        .unwrap();
+    let root = list["workspaces"][0]["roots"][0]["id"].as_u64().unwrap();
+    let scene = ServerScene::grid(1, 1);
+    let mut app = viewer::build(80, 24);
+    app.insert_resource(Brp::new(server.brp.clone(), std::sync::Arc::new(|| {})));
+    app.world_mut()
+        .resource_mut::<Inbox>()
+        .frames
+        .push(welcome("default"));
+    push_frame(
+        &mut app,
+        SceneFrame {
+            roots: Some(vec![RootEntry {
+                node: NodeId(root),
+                name: "main".into(),
+            }]),
+            showing: Some(NodeId(root)),
+            ..scene.frame(1)
+        },
+    );
+    app.update();
+    take_requests(&mut app);
+
+    chord(&mut app, ',');
+    assert_eq!(mode(&app), Mode::Prompt);
+    let prompt = |app: &mut App| {
+        let world = app.world_mut();
+        world
+            .query::<&Prompt>()
+            .single(world)
+            .map(|p| (p.text().to_owned(), p.cursor()))
+            .unwrap()
+    };
+    assert_eq!(
+        prompt(&mut app),
+        ("main".into(), 4),
+        "starts from the current name"
+    );
+    assert_eq!(row_text(&app, 22), "rename: main");
+    assert_eq!(
+        app.world().resource::<Painter>().cursor(),
+        Some((12, 22)),
+        "the terminal cursor sits after the text"
+    );
+    // Motions and word edits: Home, Alt-f, Backspace, Ctrl-w, typed text.
+    press(&mut app, TKey::Home, Modifiers::NONE);
+    type_str(&mut app, "the ");
+    assert_eq!(prompt(&mut app), ("the main".into(), 4));
+    press(&mut app, TKey::End, Modifiers::NONE);
+    press(&mut app, TKey::Char('w'), Modifiers::CONTROL);
+    assert_eq!(prompt(&mut app), ("the ".into(), 4), "word delete");
+    press(&mut app, TKey::Left, Modifiers::NONE);
+    press(&mut app, TKey::Backspace, Modifiers::NONE);
+    assert_eq!(prompt(&mut app), ("th ".into(), 2));
+    press(&mut app, TKey::Char('f'), Modifiers::ALT);
+    assert_eq!(prompt(&mut app), ("th ".into(), 3), "Alt-f to the word end");
+    // Bracketed paste lands as one insert, control characters dropped.
+    push_keys(&mut app, [Event::Paste("work\nspace".into())]);
+    app.update();
+    assert_eq!(prompt(&mut app), ("th workspace".into(), 12));
+    press(&mut app, TKey::Char('a'), Modifiers::CONTROL);
+    press(&mut app, TKey::Delete, Modifiers::NONE);
+    press(&mut app, TKey::Delete, Modifiers::NONE);
+    press(&mut app, TKey::Delete, Modifiers::NONE);
+    assert_eq!(prompt(&mut app), ("workspace".into(), 0));
+    assert_eq!(row_text(&app, 22), "rename: workspace");
+    assert!(take_requests(&mut app).is_empty(), "editing sends nothing");
+
+    // Escape cancels: nothing reaches the server.
+    press(&mut app, TKey::Escape, Modifiers::NONE);
+    assert!(popups(&mut app).is_empty());
+    assert_eq!(mode(&app), Mode::Normal);
+    chord(&mut app, ',');
+    assert_eq!(prompt(&mut app).0, "main");
+
+    // Enter commits `fux/root.rename` through the viewer's BRP worker.
+    press(&mut app, TKey::End, Modifiers::NONE);
+    type_str(&mut app, "-renamed");
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert!(popups(&mut app).is_empty());
+    assert!(
+        settle(&mut app, |_| {
+            let list = server
+                .call("fux/workspace.list", serde_json::json!({}))
+                .unwrap();
+            list["workspaces"][0]["roots"][0]["name"] == "main-renamed"
+        }),
+        "the server applied the rename"
+    );
+    assert!(
+        take_requests(&mut app).is_empty(),
+        "no ViewerRequest is involved"
+    );
+
+    // `prefix S` creates a workspace and attaches to it.
+    chord(&mut app, 'S');
+    assert_eq!(row_text(&app, 22), "new workspace:");
+    type_str(&mut app, "beta");
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert!(
+        settle(&mut app, |app| app
+            .world()
+            .get_resource::<Reconnect>()
+            .is_some()),
+        "a created workspace is attached to"
+    );
+    assert_eq!(
+        app.world().get_resource::<Reconnect>(),
+        Some(&Reconnect("beta".into()))
+    );
+    assert!(server.workspace_names().contains(&"beta".to_owned()));
+    app.world_mut().remove_resource::<Reconnect>();
+
+    // An empty name is refused locally; a server refusal becomes a notice.
+    chord(&mut app, 'S');
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert!(popups(&mut app).is_empty());
+    assert_eq!(row_text(&app, 22), "empty name");
+    chord(&mut app, 'S');
+    type_str(&mut app, "beta");
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert!(
+        settle(&mut app, |app| row_text(app, 22)
+            .starts_with("workspace beta:")),
+        "duplicate workspace: {:?}",
+        row_text(&app, 22)
+    );
+    assert!(app.world().get_resource::<Reconnect>().is_none());
+}
+
+#[test]
+fn copy_mode_selects_searches_and_yanks_over_history() {
+    let scene = ServerScene::grid(1, 1);
+    let mut app = viewer::build(80, 24);
+    app.insert_resource(ClipboardPolicy::WriteOnly);
+    let mut frame = scene.frame(1);
+    let mut screen = delta(1, 80, 23, "hello world");
+    screen.lines.push(fux::wire::Line {
+        row: 1,
+        cells: "foo bar foo"
+            .chars()
+            .map(|c| Cell {
+                text: String::from(c),
+                width: 1,
+                style: Style::default(),
+            })
+            .collect(),
+    });
+    screen.cursor = Cursor {
+        row: 2,
+        col: 0,
+        visible: true,
+    };
+    frame.terminals = vec![screen];
+    push_frame(&mut app, frame);
+    app.update();
+    take_requests(&mut app);
+    let out = |app: &mut App| core::mem::take(&mut app.world_mut().resource_mut::<Painter>().out);
+    out(&mut app);
+    let view = |app: &mut App| {
+        let world = app.world_mut();
+        world
+            .query::<&CopyView>()
+            .single(world)
+            .map(|v| (v.offset(), v.cursor(), v.selection(), v.history_len()))
+            .unwrap()
+    };
+
+    chord(&mut app, '[');
+    assert_eq!(mode(&app), Mode::CopyMode);
+    assert_eq!(
+        view(&mut app),
+        (0, (2, 0), None, 0),
+        "starts at the pane cursor"
+    );
+    assert!(row_text(&app, 23).contains("COPY"));
+    // Search: `/foo` Enter lands on the first match, n/N walk them with wrap.
+    type_str(&mut app, "/foo");
+    assert!(
+        row_text(&app, 23).contains("/foo"),
+        "the query shows while typing"
+    );
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert_eq!(view(&mut app).1, (1, 0));
+    assert_ne!(
+        cell_attrs(&app, 8, 1) & Style::UNDERLINE,
+        0,
+        "matches are underlined"
+    );
+    assert_eq!(cell_attrs(&app, 4, 1) & Style::UNDERLINE, 0);
+    press(&mut app, TKey::Char('n'), Modifiers::NONE);
+    assert_eq!(view(&mut app).1, (1, 8));
+    press(&mut app, TKey::Char('n'), Modifiers::NONE);
+    assert_eq!(view(&mut app).1, (1, 0), "wraps");
+    press(&mut app, TKey::Char('N'), Modifiers::NONE);
+    assert_eq!(view(&mut app).1, (1, 8));
+    assert_eq!(
+        app.world().resource::<Painter>().cursor(),
+        Some((8, 1)),
+        "the terminal cursor follows the copy cursor"
+    );
+
+    // Selection with v + motions, painted inverse; y copies it as OSC 52 and leaves.
+    press(&mut app, TKey::Char('0'), Modifiers::NONE);
+    press(&mut app, TKey::Char('v'), Modifiers::NONE);
+    press(&mut app, TKey::Char('l'), Modifiers::NONE);
+    press(&mut app, TKey::Char('l'), Modifiers::NONE);
+    press(&mut app, TKey::Char('k'), Modifiers::NONE);
+    assert_eq!(view(&mut app).2, Some(((0, 2), (1, 0))));
+    assert_ne!(cell_attrs(&app, 2, 0) & Style::INVERSE, 0);
+    assert_ne!(cell_attrs(&app, 10, 0) & Style::INVERSE, 0);
+    assert_ne!(cell_attrs(&app, 0, 1) & Style::INVERSE, 0);
+    assert_eq!(cell_attrs(&app, 1, 1) & Style::INVERSE, 0);
+    assert_eq!(cell_attrs(&app, 1, 0) & Style::INVERSE, 0);
+    out(&mut app);
+    press(&mut app, TKey::Char('y'), Modifiers::NONE);
+    let bytes = out(&mut app);
+    // "llo world\nf"
+    let osc = b"\x1b]52;c;bGxvIHdvcmxkCmY=\x07";
+    assert!(
+        bytes.windows(osc.len()).any(|w| w == osc),
+        "the selection reaches the terminal clipboard: {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(mode(&app), Mode::Normal);
+    assert!(
+        app.world_mut()
+            .query::<&CopyView>()
+            .iter(app.world())
+            .next()
+            .is_none(),
+        "yank leaves copy mode"
+    );
+    assert!(
+        take_requests(&mut app).is_empty(),
+        "copy mode is viewer-local"
+    );
+
+    // History arrives from the capture worker and is prepended without moving the view.
+    chord(&mut app, '[');
+    let lines: Vec<String> = ["older", "old foo", "hello world", "foo bar foo"]
+        .into_iter()
+        .map(String::from)
+        .chain(std::iter::repeat_n(String::new(), 21))
+        .collect();
+    app.world().resource::<Brp>().deliver(BrpReply {
+        tag: BrpTag::Capture(PaneId(1)),
+        result: Ok(serde_json::json!({
+            "pane": 1, "seq": 1, "rows": 23, "cols": 80, "title": "", "state": "live",
+            "cursor": { "row": 0, "col": 0, "visible": true },
+            "lines": lines,
+            "truncated": false
+        })),
+    });
+    app.update();
+    assert_eq!(
+        view(&mut app),
+        (2, (4, 0), None, 2),
+        "two history rows above the screen"
+    );
+    assert_eq!(row_text(&app, 0), "hello world", "the view did not move");
+    press(&mut app, TKey::Char('k'), Modifiers::NONE);
+    press(&mut app, TKey::Char('k'), Modifiers::NONE);
+    press(&mut app, TKey::Char('k'), Modifiers::NONE);
+    assert_eq!(
+        view(&mut app).0,
+        1,
+        "scrolled the minimum to show the cursor row"
+    );
+    assert_eq!(row_text(&app, 0), "old foo");
+    assert_eq!(row_text(&app, 1), "hello world");
+    press(&mut app, TKey::Char('g'), Modifiers::NONE);
+    assert_eq!(row_text(&app, 0), "older");
+    type_str(&mut app, "/foo");
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert_eq!(view(&mut app).1, (1, 4), "search covers history");
+    press(&mut app, TKey::Char('G'), Modifiers::NONE);
+    assert_eq!(view(&mut app).0, 2, "back to the live screen");
+    press(&mut app, TKey::Char('q'), Modifiers::NONE);
+    assert_eq!(mode(&app), Mode::Normal);
+    assert_eq!(row_text(&app, 0), "hello world");
+    assert_eq!(cell_attrs(&app, 8, 1), 0, "highlights are gone");
+}
+
+#[test]
+fn focus_ring_returns_to_the_previous_pane() {
+    let scene = ServerScene::grid(2, 2);
+    let mut app = viewer::build(80, 24);
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    let leaf = |app: &App, i: usize| local(app, scene.leaves[i]);
+    chord(&mut app, 'l');
+    chord(&mut app, 'j');
+    assert_eq!(focused(&app), Some(leaf(&app, 3)));
+    take_requests(&mut app);
+    chord(&mut app, ';');
+    assert_eq!(
+        focused(&app),
+        Some(leaf(&app, 1)),
+        "back to the previous pane"
+    );
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::Target(PaneId(2))]
+    );
+    chord(&mut app, ';');
+    assert_eq!(focused(&app), Some(leaf(&app, 3)), "and forth");
+    let ring: Vec<NodeId> = app.world().resource::<FocusRing>().entries().collect();
+    assert_eq!(ring.len(), 3, "each leaf once, most recent last: {ring:?}");
+    assert!(ring.len() <= FocusRing::CAPACITY);
+
+    // A leaf that disappeared is skipped.
+    let mut gone = scene.frame(2);
+    gone.scene = String::new();
+    gone.despawned = vec![scene.leaves[1].to_bits()];
+    gone.roots = None;
+    push_frame(&mut app, gone);
+    app.update();
+    take_requests(&mut app);
+    chord(&mut app, ';');
+    assert_eq!(
+        focused(&app),
+        Some(leaf(&app, 0)),
+        "leaf 1 is gone: the one before it"
+    );
+}

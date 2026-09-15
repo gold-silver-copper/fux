@@ -14,21 +14,41 @@ use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use async_channel::{Receiver, Sender};
+use async_io::Timer;
 use bevy_app::App;
 use bevy_ecs::world::World;
+use bevy_tasks::futures_lite::future;
 use fux::config::Config;
+use fux::model::Inbound;
 use fux::remote::client::{self, ClientError, Descriptor};
-use fux::remote::{RemoteControlPlugin, descriptor};
+use fux::remote::{HttpTransport, RemoteControlPlugin, descriptor};
 use serde_json::{Value, json};
 
 pub fn build(runtime_dir: &Path, name: &str) -> App {
     let (inbound, _keep) = async_channel::unbounded();
     // The receiver is dropped: `Wake` sends fail harmlessly; the test loop polls instead.
+    build_with(runtime_dir, name, inbound)
+}
+
+/// [`build`] with the runner's inbound channel supplied by the caller.
+pub fn build_with(runtime_dir: &Path, name: &str, inbound: Sender<Inbound>) -> App {
+    build_on(runtime_dir, name, inbound, HttpTransport::default())
+}
+
+/// [`build_with`] on a chosen HTTP transport.
+pub fn build_on(
+    runtime_dir: &Path,
+    name: &str,
+    inbound: Sender<Inbound>,
+    transport: HttpTransport,
+) -> App {
     let mut app = fux::app::build_headless(&Config::default());
     app.add_plugins(RemoteControlPlugin {
         runtime_dir: runtime_dir.to_path_buf(),
         server_name: name.into(),
         inbound,
+        transport,
     });
     app
 }
@@ -52,6 +72,21 @@ impl Server {
 
     /// Like [`Server::start`], with `setup` run on the built App before its first update.
     pub fn start_with(setup: impl FnOnce(&mut World) + Send + 'static) -> Self {
+        Self::start_inner(setup, false, HttpTransport::default())
+    }
+
+    /// [`Server::start`] on a chosen HTTP transport; `woken` makes the loop also step as soon
+    /// as an `Inbound::Wake` arrives, as the real runner does, so request latency is the
+    /// server's rather than the 10 ms poll.
+    pub fn start_on(transport: HttpTransport, woken: bool) -> Self {
+        Self::start_inner(|_| {}, woken, transport)
+    }
+
+    fn start_inner(
+        setup: impl FnOnce(&mut World) + Send + 'static,
+        woken: bool,
+        transport: HttpTransport,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let runtime = dir.path().join("run");
         let brp = descriptor::descriptor_path(&runtime, "test");
@@ -61,7 +96,8 @@ impl Server {
             let stop = Arc::clone(&stop);
             let runtime = runtime.clone();
             std::thread::spawn(move || {
-                let mut app = build(&runtime, "test");
+                let (inbound, wake) = async_channel::unbounded();
+                let mut app = build_on(&runtime, "test", inbound, transport);
                 // As `fux serve` does through its Startup system: the workspace exists before
                 // the first update publishes the descriptor, so a client that reads it never
                 // observes an empty server.
@@ -75,7 +111,12 @@ impl Server {
                         step(app.world_mut());
                     }
                     app.update();
-                    std::thread::sleep(Duration::from_millis(10));
+                    if woken {
+                        wait_wake(&wake, Duration::from_millis(10));
+                    } else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        while wake.try_recv().is_ok() {}
+                    }
                 }
             })
         };
@@ -144,6 +185,19 @@ impl Drop for Server {
             thread.join().unwrap();
         }
     }
+}
+
+/// Sleeps until a message arrives on `wake` or `timeout` elapses, draining what queued up.
+fn wait_wake(wake: &Receiver<Inbound>, timeout: Duration) {
+    bevy_tasks::block_on(future::or(
+        async {
+            let _ = wake.recv().await;
+        },
+        async {
+            Timer::after(timeout).await;
+        },
+    ));
+    while wake.try_recv().is_ok() {}
 }
 
 pub fn code(result: Result<Value, ClientError>) -> i16 {
