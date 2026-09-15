@@ -26,23 +26,38 @@ renamed to `ecs-rewrite-2026-09-05-merged` so the orphan branch could take the p
 
 ## 2026-09-15 — Milestone 2: fux App shell
 
-Commands (results filled in at the milestone commit):
+Commit `0e49c4b`. 14.7k lines in `crates/fux/src`. Results:
 
-* `cargo check --workspace` / `cargo clippy --workspace --all-targets -- -D warnings`: result.
-* `cargo test -p fux --test lifecycle`: World-only pane/viewer lifecycle through
-  `app::build_headless` (one `SpawnPane` per pane, `PaneSpawned` lifts `Disabled`, exit →
-  `FinalRecord` + leaf removal + retarget, exact viewer detaches on target loss, split queues
-  input until the new pane is live, `ViewerGone` detaches, workspace retires on its last exit;
-  `check_invariants` after every update): result.
-* `cargo test -p fux --test shutdown`: `Signal` → `Terminate` for every live pane → `Exit`
-  after both exited; the 5 s `Clock` deadline exits regardless; late spawns are terminated:
-  result.
-* `cargo test -p fux --lib`: unit tests of `paths`, `config` and the other modules: result.
-* `cargo test -p fux --test layout_mechanism` and the layout/terminal/remote/attach suites:
-  result.
-* Smoke: `XDG_RUNTIME_DIR=$(mktemp -d) cargo run -p fux -- serve --name t-$RANDOM`, observe
-  `<runtime>/fux/t-*.brp.json` written; `kill -TERM <pid>` exits within 6 s with status 0:
-  result.
-* Smoke: `fux` (no args) starts the `default` server detached, attaches a viewer; `C-b %`,
-  `C-b "`, `C-b x`, `C-b d` behave; a second `fux` attaches to the same root at another size:
-  result.
+* `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`: clean
+  (`type_complexity` allowed workspace-wide; test files carry a crate-level allow for
+  unwrap/expect/panic/indexing in helpers, since `clippy.toml` only relaxes `#[test]` bodies).
+* `cargo test -p fux`: 80 tests green across `--lib` (27), `attach` (7), `brp` (4),
+  `layout_mechanism` (2), `layout_ops` (14), `layout_props` (1 proptest: random template edits
+  interleaved with attach/detach/show/resize/zoom, `check_invariants` + instance==template after
+  every update), `lifecycle` (6), `pty_adapter` (5), `shutdown` (3), `viewer` (11).
+* Smoke (real processes, disposable XDG dirs, hub-supervised `fux serve --name smoke`):
+  `<runtime>/fux/smoke.brp.json` written 0600 with http/attach ports and tokens;
+  `fux --server smoke fux/server.info`, `fux/workspace.list`, `world.query` over `PaneView`
+  answer; `world.query` over `fux::model::components::Process` is refused (-32002);
+  `rpc.discover` lists exactly the allowlist (32 methods, no `world.*` mutators).
+* Smoke (viewer over a Python `pty.fork`, 24x80): attach shows the shell; `echo` echoes;
+  `C-b %` splits and the second pane goes starting → live and receives input; `C-b d`
+  detaches with exit status 0 (fixed during integration: a `Bye` and the socket EOF in the same
+  batch used to let the EOF win, `viewer/mod.rs`).
+* Smoke (two viewers, 24x80 and 40x120, one root): `fux/workspace.list` shows 2 viewers and
+  every pane's size folded to the minimum (23 rows: 24 minus the status bar; 16 cols across
+  five panes); exact attach `--pane 1 --pid <pid>` attaches, `--pid 1` is refused with
+  `Refused: pane pid mismatch`; all viewers detached cleanly.
+* Smoke (shutdown): `kill -TERM` with five live shells: server exited within 1 s with status 0,
+  descriptor removed, no orphaned shells.
+
+Recorded deviations from the prompt (all in code comments / HANDOFF):
+* `SpawnPane` is emitted in `PostUpdate` after the size fold (so the PTY opens at the laid-out
+  size), not in `Requests`.
+* Close ownership: lifecycle marks viewers `Detaching`; the attachment projection sends `Bye`
+  with the reason derived from world state and emits `Effect::CloseViewer`.
+* Frames are JSON (`serde_json`) rather than a binary row format; per-cell `String`s are the
+  known allocation on the frame path, to be measured in milestone 8.
+* `bevy_remote` requests are forwarded from `BrpReceiver` into a fux mailbox with
+  `Inbound::Wake` so the runner sleeps with no polling; dispatch runs in `RemoteLast` moved
+  after `First`.

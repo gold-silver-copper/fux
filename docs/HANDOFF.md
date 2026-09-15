@@ -8,7 +8,10 @@ behavioural oracle. Bevy source: `../many_rigs/inspirations/bevy` (0.19.1).
 1b. Headless `bevy_ui` layout proof (`crates/fux/tests/layout_mechanism.rs`) and the model
    foundation (`crates/fux/src/model/*`, `wire.rs`).
 
-## In progress: Milestone 2 (fux App shell)
+2. fux App shell (commit `0e49c4b`): runner, lifecycle, layout instances, terminal/PTY, BRP,
+   attachment stream, viewer, CLI; 80 tests; real-process smokes in `docs/verification.md`.
+
+## Module ownership (milestone 2)
 
 Module ownership (one owner per file; shared contracts live in `model/` and `wire.rs`):
 
@@ -26,7 +29,10 @@ Module ownership (one owner per file; shared contracts live in `model/` and `wir
 | `app.rs`, `runner.rs`, `cli.rs`, `config.rs`, `paths.rs` | App assembly, custom runner, signals, CLI, config, XDG paths | `fux::app::build`, `runner::run` |
 
 ## Next task
-Finish milestone 2; milestone commit with `docs/verification.md` record.
+Milestone 3 (scene completeness): picking border regions, border drag, drag-to-move, full
+`node.*`/`root.*`/`viewer.*` over flex/grid/absolute/overflow, per-viewer zoom/scroll, scene
+export/apply/save/load, user layout assets, `Surface` hosting and the `Text` leaf. ECS-native
+review of milestone 2 is running alongside.
 
 ## Open blockers
 * none. `bevy_render` in graph via `bevy_remote -> bevy_dev_tools` is an accepted deviation (docs/dependencies.md).
