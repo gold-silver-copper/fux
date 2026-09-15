@@ -1519,6 +1519,7 @@ pub fn all_specs() -> impl Iterator<Item = &'static MethodSpec> {
         .iter()
         .chain(super::scene_methods::METHODS)
         .chain(super::input_methods::METHODS)
+        .chain(super::session_methods::METHODS)
         .chain(super::surface_methods::METHODS)
 }
 

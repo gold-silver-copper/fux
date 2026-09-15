@@ -6,6 +6,7 @@
 #![deny(unsafe_code)]
 
 pub mod app;
+pub mod assets;
 pub mod attach;
 pub mod cli;
 pub mod config;
@@ -20,6 +21,7 @@ pub mod pointer;
 pub mod pty;
 pub mod remote;
 pub mod runner;
+pub mod session;
 pub mod scene;
 pub mod surface;
 pub mod terminal;

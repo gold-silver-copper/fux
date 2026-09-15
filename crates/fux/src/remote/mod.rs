@@ -14,6 +14,7 @@ pub mod input_methods;
 pub mod methods;
 pub mod projection;
 pub mod scene_methods;
+pub mod session_methods;
 pub mod schema;
 pub mod surface_methods;
 pub mod token;
