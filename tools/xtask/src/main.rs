@@ -4,7 +4,7 @@
 //! dependency graph of `fux` and `zor` and fails when a rule is violated:
 //!
 //! * no direct dependency on tokio, ratatui, tracing-subscriber, anyhow, bevy_render, bevy_winit,
-//!   bevy_dev_tools, bevy_text, bevy_sprite (prompt section 2);
+//!   bevy_text, bevy_sprite (prompt section 2; bevy_dev_tools is allowed);
 //! * every path to `bevy_render`/`wgpu`/`naga` goes through `bevy_remote -> bevy_dev_tools`
 //!   (the one recorded exception, see `docs/dependencies.md`).
 
@@ -55,7 +55,6 @@ const FORBIDDEN_DIRECT: &[&str] = &[
     "anyhow",
     "bevy_render",
     "bevy_winit",
-    "bevy_dev_tools",
     "bevy_text",
     "bevy_sprite",
     "bevy_animation",

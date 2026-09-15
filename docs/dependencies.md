@@ -28,7 +28,7 @@ those crates and no render plugin is added; the code compiles but is never used.
 `cargo run --manifest-path tools/xtask/Cargo.toml -- deps` enforces the narrowed rule: every path
 to a render crate goes through `bevy_remote -> bevy_dev_tools`, the only `bevy_render` dependants
 are that stack, and neither binary has a direct dependency on tokio, ratatui,
-tracing-subscriber, anyhow, bevy_render, bevy_winit, bevy_dev_tools, bevy_text or bevy_sprite.
+tracing-subscriber, anyhow, bevy_render, bevy_winit, bevy_text or bevy_sprite. `bevy_dev_tools` (its `schedule_data` module) is allowed (user, 2026-09-15).
 
 Upstream fix to propose: make `bevy_dev_tools` optional in `bevy_remote` (feature
 `schedule_data`), or make `bevy_render` optional in `bevy_dev_tools`. Until then the graph is
