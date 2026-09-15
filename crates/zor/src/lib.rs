@@ -4,6 +4,12 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod checks;
+pub mod git;
+pub mod groups;
+pub mod lifecycle;
+pub mod providers;
+pub mod worktrees;
 pub mod cli;
 pub mod config;
 pub mod fux_client;

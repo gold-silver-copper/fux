@@ -9,7 +9,11 @@
 //! Reused from fux: `Tokens`/`Grant`/`Capabilities`, the descriptor reader/writer and the
 //! thin client. `Grant.workspace` is a scope name; zor tokens are unscoped for now.
 
+pub mod check_methods;
 pub mod events;
+pub mod group_methods;
+pub mod provider_methods;
+pub mod task_methods;
 pub mod methods;
 pub mod projection;
 pub mod watch;
@@ -108,7 +112,7 @@ impl Plugin for RemoteHostPlugin {
         let mut watches = watch::Watches::default();
         let placeholder = world.register_system(watch::placeholder);
         let mut table = RemoteMethods::new();
-        for spec in methods::TABLE {
+        for spec in methods::all_specs() {
             let id = match spec.handler {
                 methods::Handler::Instant(handler) => {
                     RemoteMethodSystemId::Instant(world.register_system(handler))

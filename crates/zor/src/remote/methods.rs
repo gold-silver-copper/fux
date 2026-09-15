@@ -590,10 +590,19 @@ pub static WRAPPED: &[(&str, Instant)] = &[
     (RPC_DISCOVER_METHOD, brp_rpc_discover),
 ];
 
-/// Every registered method name; the allowlist test compares `RemoteMethods::methods()` to it.
-pub fn allowlist() -> Vec<&'static str> {
+/// Every `zor/*` method from every owner table.
+pub fn all_specs() -> impl Iterator<Item = &'static MethodSpec> {
     TABLE
         .iter()
+        .chain(super::task_methods::METHODS)
+        .chain(super::check_methods::METHODS)
+        .chain(super::group_methods::METHODS)
+        .chain(super::provider_methods::METHODS)
+}
+
+/// Every registered method name; the allowlist test compares `RemoteMethods::methods()` to it.
+pub fn allowlist() -> Vec<&'static str> {
+    all_specs()
         .map(|s| s.name)
         .chain(WRAPPED.iter().map(|(n, _)| *n))
         .chain(watch::WATCHED.iter().map(|(n, _)| *n))
