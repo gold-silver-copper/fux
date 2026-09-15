@@ -246,6 +246,94 @@
         "name": "Done"
       }
     },
+    "fux/scene.apply": {
+      "params": {
+        "fields": {
+          "adopt": "Option<bool>",
+          "allow_templates": "Option<bool>",
+          "close_unplaced": "Option<bool>",
+          "document": "String",
+          "expected": "Option<Vec<RootState>>",
+          "workspace": "String"
+        },
+        "name": "SceneApplyParams"
+      },
+      "result": {
+        "fields": {
+          "adopted": "Vec<u64>",
+          "closed": "Vec<u64>",
+          "launched": "Vec<u64>",
+          "roots": "Vec<AppliedRoot>"
+        },
+        "name": "SceneApplied"
+      }
+    },
+    "fux/scene.export": {
+      "params": {
+        "fields": {
+          "workspace": "String"
+        },
+        "name": "SceneExportParams"
+      },
+      "result": {
+        "fields": {
+          "document": "String",
+          "roots": "Vec<RootState>"
+        },
+        "name": "SceneExported"
+      }
+    },
+    "fux/scene.list": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "builtin": "Vec<String>",
+          "saved": "Vec<String>"
+        },
+        "name": "SceneListed"
+      }
+    },
+    "fux/scene.restore": {
+      "params": {
+        "fields": {
+          "adopt": "Option<bool>",
+          "close_unplaced": "Option<bool>",
+          "expected": "Option<Vec<RootState>>",
+          "name": "String",
+          "workspace": "String"
+        },
+        "name": "SceneRestoreParams"
+      },
+      "result": {
+        "fields": {
+          "adopted": "Vec<u64>",
+          "closed": "Vec<u64>",
+          "launched": "Vec<u64>",
+          "roots": "Vec<AppliedRoot>"
+        },
+        "name": "SceneApplied"
+      }
+    },
+    "fux/scene.save": {
+      "params": {
+        "fields": {
+          "name": "String",
+          "workspace": "String"
+        },
+        "name": "SceneSaveParams"
+      },
+      "result": {
+        "fields": {
+          "bytes": "usize",
+          "name": "String",
+          "path": "String"
+        },
+        "name": "SceneSaved"
+      }
+    },
     "fux/schema": {
       "params": {
         "fields": {},
@@ -278,6 +366,58 @@
           "workspaces": "usize"
         },
         "name": "ServerInfo"
+      }
+    },
+    "fux/surface.close": {
+      "params": {
+        "fields": {
+          "surface": "u64"
+        },
+        "name": "SurfaceCloseParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64"
+        },
+        "name": "SurfaceClosed"
+      }
+    },
+    "fux/surface.open": {
+      "params": {
+        "fields": {
+          "generation": "u64",
+          "node": "u64",
+          "provider": "String",
+          "workspace": "String"
+        },
+        "name": "SurfaceOpenParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64",
+          "revision": "u64",
+          "surface": "u64"
+        },
+        "name": "SurfaceOpened"
+      }
+    },
+    "fux/surface.update": {
+      "params": {
+        "fields": {
+          "delta": "String",
+          "full": "bool",
+          "revision": "u64",
+          "surface": "u64"
+        },
+        "name": "SurfaceUpdateParams"
+      },
+      "result": {
+        "fields": {
+          "generation": "u64",
+          "nodes": "usize",
+          "revision": "u64"
+        },
+        "name": "SurfaceUpdated"
       }
     },
     "fux/token.mint": {

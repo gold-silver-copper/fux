@@ -1,7 +1,8 @@
 //! Instance sync (prompt 3.4): each viewer's instance tree is a clone of the template root it
 //! shows, re-cloned with `EntityCloner` (linked cloning over `Children`) whenever the template's
 //! `LayoutGeneration` moves, and despawned when the viewer stops showing the root. Per-viewer
-//! state ([`ViewState`]: zoom, scroll) is re-applied by `NodeId` after every clone.
+//! state ([`ViewState`]: zoom, scroll, display overrides) is re-applied by `NodeId` after every
+//! clone.
 
 use bevy_ecs::entity::{EntityCloner, EntityHashMap};
 use bevy_ecs::prelude::*;
@@ -14,8 +15,9 @@ use bevy_ui::{
 use super::{InstanceGeneration, ViewState};
 use crate::model::{
     InstanceNode, InstanceOf, Instances, LayoutGeneration, MAX_DEPTH, NodeId, Places, Showing,
-    Shows, TemplateRoot, Viewer, ViewerCamera, Zoomed,
+    Shows, Surface, TemplateRoot, Viewer, ViewerCamera, Zoomed,
 };
+use crate::surface::Text;
 
 #[derive(Default)]
 pub struct Scratch {
@@ -108,8 +110,11 @@ fn clone_instance(world: &mut World, viewer: Entity, camera: Entity, root: Entit
             ZIndex,
             BackgroundColor,
             BorderColor,
+            ScrollPosition,
             Name,
             NodeId,
+            Surface,
+            Text,
             Children,
             ChildOf,
         )>()
@@ -180,8 +185,9 @@ pub fn find_by_node_id(world: &World, root: Entity, id: NodeId) -> Option<Entity
 }
 
 /// Re-derives the viewer's instance nodes from their templates and applies [`ViewState`]:
-/// the zoomed node fills the root and everything off its path is `Display::None`; scrolled
-/// nodes get their `ScrollPosition`. No-op without an instance.
+/// transient `Display` overrides replace the template's; the zoomed node fills the root and
+/// everything off its path is `Display::None`; scrolled nodes get their `ScrollPosition`.
+/// No-op without an instance.
 pub fn apply_view_state(world: &mut World, viewer: Entity) {
     let Some(root) = instance_root(world, viewer) else {
         return;
@@ -192,9 +198,16 @@ pub fn apply_view_state(world: &mut World, viewer: Entity) {
         let Some(template) = world.get::<InstanceOf>(instance).map(|o| o.0) else {
             continue;
         };
-        let Some(node) = world.get::<Node>(template).cloned() else {
+        let Some(mut node) = world.get::<Node>(template).cloned() else {
             continue;
         };
+        if let Some(id) = world.get::<NodeId>(template)
+            && let Some(display) = world
+                .get::<ViewState>(viewer)
+                .and_then(|s| s.display.get(id))
+        {
+            node.display = *display;
+        }
         if let Some(mut current) = world.get_mut::<Node>(instance) {
             current.set_if_neq(node);
         }

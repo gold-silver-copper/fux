@@ -94,10 +94,11 @@ pub struct OperationOn(pub Entity);
 #[relationship_target(relationship = OperationOn, linked_spawn)]
 pub struct PaneOperations(Vec<Entity>);
 
-/// User-visible order of a workspace's template roots; validated against `Roots`.
+/// User-visible order of a workspace's template roots; validated against `Roots`. The entities
+/// are mapped when a scene document is written into a World (`scene::apply`).
 #[derive(Component, Reflect, Clone, Debug, Default, PartialEq, Eq)]
 #[reflect(Component)]
-pub struct RootOrder(pub Vec<Entity>);
+pub struct RootOrder(#[entities] pub Vec<Entity>);
 
 /// Which template root a viewer currently shows (a plain component, not a relationship, because
 /// a viewer shows at most one root and the instance graph already links the rest).

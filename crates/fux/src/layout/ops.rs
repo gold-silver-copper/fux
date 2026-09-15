@@ -17,7 +17,7 @@ use bevy_ui::{
     FlexWrap, Node, ScrollPosition, UiGlobalTransform, Val, ZIndex,
 };
 
-use super::{LayoutError, NavDirection, NodePatch, ViewState, instances, size};
+use super::{LayoutError, NavDirection, NodePatch, Side, ViewState, instances, size};
 use crate::model::invariants::root_of_template;
 use crate::model::*;
 
@@ -196,9 +196,7 @@ pub fn spawn_node(
     template: Option<PaneTemplate>,
 ) -> R<Entity> {
     template_node(world, parent)?;
-    if world.get::<Places>(parent).is_some() {
-        return Err(LayoutError::LeafHasChildren(parent));
-    }
+    editable_container(world, parent)?;
     let root = root_of(world, parent)?;
     let ws = workspace_of_root(world, root)?;
     open_workspace(world, ws)?;
@@ -252,9 +250,8 @@ pub fn reparent_node(
     if world.get::<TemplateRoot>(node).is_some() {
         return Err(LayoutError::IsATemplateRoot(node));
     }
-    if world.get::<Places>(new_parent).is_some() {
-        return Err(LayoutError::LeafHasChildren(new_parent));
-    }
+    editable_container(world, new_parent)?;
+    editable_slot(world, node)?;
     if new_parent == node || is_descendant(world, node, new_parent) {
         return Err(LayoutError::Cycle(node));
     }
@@ -299,6 +296,67 @@ pub fn reorder_node(world: &mut World, node: Entity, index: usize) -> R<()> {
     let root = root_of(world, node)?;
     world.entity_mut(parent).insert_children(index, &[node]);
     bump(world, root);
+    Ok(())
+}
+
+/// Swaps the tree slots of two non-root template nodes of the same workspace (leaves or whole
+/// subtrees, under the same or different parents and roots); each keeps its own `Node` style
+/// and the pane it places. Refused for a node and its own ancestor.
+pub fn exchange(world: &mut World, a: Entity, b: Entity) -> R<()> {
+    template_node(world, a)?;
+    template_node(world, b)?;
+    if a == b {
+        return Err(LayoutError::Cycle(a));
+    }
+    let parent_a = world
+        .get::<ChildOf>(a)
+        .map(ChildOf::parent)
+        .ok_or(LayoutError::IsATemplateRoot(a))?;
+    let parent_b = world
+        .get::<ChildOf>(b)
+        .map(ChildOf::parent)
+        .ok_or(LayoutError::IsATemplateRoot(b))?;
+    editable_container(world, parent_a)?;
+    editable_container(world, parent_b)?;
+    if is_descendant(world, a, b) {
+        return Err(LayoutError::Cycle(b));
+    }
+    if is_descendant(world, b, a) {
+        return Err(LayoutError::Cycle(a));
+    }
+    let root_a = root_of(world, a)?;
+    let root_b = root_of(world, b)?;
+    if workspace_of_root(world, root_a)? != workspace_of_root(world, root_b)? {
+        return Err(LayoutError::CrossWorkspace);
+    }
+    let (_, height_a) = subtree_stats(world, a);
+    let (_, height_b) = subtree_stats(world, b);
+    check_depth(depth_of(world, parent_b) + 1 + height_a)?;
+    check_depth(depth_of(world, parent_a) + 1 + height_b)?;
+    let index_a = children(world, parent_a)
+        .iter()
+        .position(|c| *c == a)
+        .ok_or(LayoutError::NotATemplateNode(a))?;
+    let index_b = children(world, parent_b)
+        .iter()
+        .position(|c| *c == b)
+        .ok_or(LayoutError::NotATemplateNode(b))?;
+    if parent_a == parent_b {
+        if let Some(mut kids) = world.get_mut::<Children>(parent_a) {
+            kids.swap(index_a, index_b);
+        }
+    } else {
+        // Each insert first detaches the node from its old parent, so the second slot index is
+        // still the one read above: `a` left `parent_a` before `b` is placed there.
+        world.entity_mut(parent_b).insert_children(index_b, &[a]);
+        world.entity_mut(parent_a).insert_children(index_a, &[b]);
+    }
+    bump(world, root_a);
+    if root_b != root_a {
+        bump(world, root_b);
+        retarget_after_move(world, a, root_a, root_b);
+        retarget_after_move(world, b, root_b, root_a);
+    }
     Ok(())
 }
 
@@ -416,6 +474,111 @@ pub fn split(
         .map(|p| p.0)
         .ok_or(LayoutError::PaneNotPlaced(new_leaf))?;
     Ok((new_leaf, new_pane))
+}
+
+/// Moves an existing non-root template subtree `node` beside `target` (a non-root template
+/// node of the same workspace, outside `node`'s subtree) the way [`split`] would place a new
+/// leaf: when `target`'s parent already flexes along the side's axis, `node` becomes `target`'s
+/// neighbour with `target`'s `flex_grow`; otherwise `target` is wrapped in a Row/Column
+/// container that inherits its placement and both fill it equally.
+pub fn place_beside(world: &mut World, node: Entity, target: Entity, side: Side) -> R<()> {
+    template_node(world, node)?;
+    template_node(world, target)?;
+    if node == target || is_descendant(world, node, target) {
+        return Err(LayoutError::Cycle(node));
+    }
+    let target_parent = world
+        .get::<ChildOf>(target)
+        .map(ChildOf::parent)
+        .ok_or(LayoutError::IsATemplateRoot(target))?;
+    if world.get::<ChildOf>(node).is_none() {
+        return Err(LayoutError::IsATemplateRoot(node));
+    }
+    editable_container(world, target_parent)?;
+    editable_slot(world, node)?;
+    let old_root = root_of(world, node)?;
+    let new_root = root_of(world, target)?;
+    let ws = workspace_of_root(world, new_root)?;
+    if workspace_of_root(world, old_root)? != ws {
+        return Err(LayoutError::CrossWorkspace);
+    }
+    open_workspace(world, ws)?;
+    let (axis, after) = match side {
+        Side::Left => (FlexDirection::Row, false),
+        Side::Right => (FlexDirection::Row, true),
+        Side::Top => (FlexDirection::Column, false),
+        Side::Bottom => (FlexDirection::Column, true),
+    };
+    let target_node = world
+        .get::<Node>(target)
+        .cloned()
+        .ok_or(LayoutError::NotATemplateNode(target))?;
+    let parent_node = world
+        .get::<Node>(target_parent)
+        .cloned()
+        .ok_or(LayoutError::NotATemplateNode(target_parent))?;
+    let node_style = world
+        .get::<Node>(node)
+        .cloned()
+        .ok_or(LayoutError::NotATemplateNode(node))?;
+    let (_, height) = subtree_stats(world, node);
+    let same_axis = parent_node.display == Display::Flex
+        && parent_node.flex_direction == axis
+        && parent_node.flex_wrap == FlexWrap::NoWrap
+        && target_node.flex_grow > 0.0;
+    if same_axis {
+        check_depth(depth_of(world, target_parent) + 1 + height)?;
+        // `insert_children` detaches `node` first, so its index is taken after that removal.
+        world.entity_mut(node).remove::<ChildOf>();
+        let index = children(world, target_parent)
+            .iter()
+            .position(|c| *c == target)
+            .ok_or(LayoutError::NotATemplateNode(target))?;
+        world
+            .entity_mut(target_parent)
+            .insert_children(index + usize::from(after), &[node]);
+        if let Some(mut style) = world.get_mut::<Node>(node) {
+            style.set_if_neq(with_placement(
+                node_style,
+                &Node {
+                    flex_grow: target_node.flex_grow,
+                    ..Node::default()
+                },
+            ));
+        }
+    } else {
+        check_depth(depth_of(world, target) + 1 + height)?;
+        check_capacity(world, ws, 1, 0)?;
+        let index = children(world, target_parent)
+            .iter()
+            .position(|c| *c == target)
+            .ok_or(LayoutError::NotATemplateNode(target))?;
+        let container = spawn_node(
+            world,
+            target_parent,
+            Some(index),
+            placement_of(&target_node, axis),
+            None,
+        )?;
+        let pair = if after {
+            [target, node]
+        } else {
+            [node, target]
+        };
+        world.entity_mut(container).add_children(&pair);
+        if let Some(mut style) = world.get_mut::<Node>(target) {
+            style.set_if_neq(without_placement(target_node));
+        }
+        if let Some(mut style) = world.get_mut::<Node>(node) {
+            style.set_if_neq(without_placement(node_style));
+        }
+    }
+    bump(world, old_root);
+    if new_root != old_root {
+        bump(world, new_root);
+        retarget_after_move(world, node, old_root, new_root);
+    }
+    Ok(())
 }
 
 /// Swaps the leaf placing `pane` with its next sibling (the previous one when it is last).
@@ -708,6 +871,30 @@ pub fn scroll(world: &mut World, viewer: Entity, node: Entity, rows: i32) -> R<(
     Ok(())
 }
 
+/// Overrides the `Display` of the viewer's instance of `node` (a template or instance node in
+/// the shown root); `None` restores the template's value. Transient: kept in [`ViewState`] and
+/// re-applied on re-clone, never written to the template.
+pub fn set_display(
+    world: &mut World,
+    viewer: Entity,
+    node: Entity,
+    display: Option<Display>,
+) -> R<()> {
+    let id = shown_node_id(world, viewer, node)?;
+    if let Some(mut state) = world.get_mut::<ViewState>(viewer) {
+        match display {
+            Some(display) => {
+                state.display.insert(id, display);
+            }
+            None => {
+                state.display.remove(&id);
+            }
+        }
+    }
+    instances::apply_view_state(world, viewer);
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------------------------
 // Read-only geometry queries
 // ---------------------------------------------------------------------------------------------
@@ -820,6 +1007,27 @@ fn template_node(world: &World, node: Entity) -> R<()> {
         Ok(entity) if entity.contains::<TemplateNode>() => Ok(()),
         Ok(_) => Err(LayoutError::NotATemplateNode(node)),
         Err(_) => Err(LayoutError::NoSuchEntity(node)),
+    }
+}
+
+/// A template node that may take children: not a placing leaf, not a surface leaf.
+fn editable_container(world: &World, node: Entity) -> R<()> {
+    if world.get::<Places>(node).is_some() {
+        return Err(LayoutError::LeafHasChildren(node));
+    }
+    if world.get::<Surface>(node).is_some() {
+        return Err(LayoutError::SurfaceSubtree(node));
+    }
+    Ok(())
+}
+
+/// A template node that may be moved out of its slot: its parent is not a surface leaf.
+fn editable_slot(world: &World, node: Entity) -> R<()> {
+    match world.get::<ChildOf>(node).map(ChildOf::parent) {
+        Some(parent) if world.get::<Surface>(parent).is_some() => {
+            Err(LayoutError::SurfaceSubtree(parent))
+        }
+        _ => Ok(()),
     }
 }
 

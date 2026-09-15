@@ -63,6 +63,8 @@ pub enum SplitDirection {
     Below,
 }
 
+/// A viewer mouse event in viewport cells. `modifiers` is a bit set of
+/// [`PointerEvent::SHIFT`], [`PointerEvent::ALT`] and [`PointerEvent::CTRL`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PointerEvent {
     pub col: u16,
@@ -70,6 +72,16 @@ pub struct PointerEvent {
     pub kind: PointerKind,
     pub button: PointerButton,
     pub modifiers: u8,
+}
+
+impl PointerEvent {
+    /// Modifier bits in xterm parameter order (the same order the keyboard `1 + bits` parameter
+    /// uses): shift, alt (meta), control.
+    pub const SHIFT: u8 = 1;
+    /// Alt held: with a primary press on a pane's content this starts a pane move
+    /// (`crate::pointer`) instead of reaching the pane.
+    pub const ALT: u8 = 2;
+    pub const CTRL: u8 = 4;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

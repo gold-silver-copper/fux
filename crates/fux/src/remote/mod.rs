@@ -138,7 +138,7 @@ impl Plugin for RemoteControlPlugin {
         let inbound = self.inbound.clone();
         // `setup_mailbox_channel` is `PreStartup`; the receiver exists by `Startup`.
         app.add_systems(Startup, move |world: &mut World| {
-            take_mailbox(world, &inbound)
+            take_mailbox(world, &inbound);
         });
         app.add_systems(PostStartup, write_descriptor)
             .configure_sets(

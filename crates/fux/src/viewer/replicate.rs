@@ -323,7 +323,8 @@ pub struct ReplicatePlugin;
 
 impl Plugin for ReplicatePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EntityMap>()
+        app.register_type::<crate::surface::Text>()
+            .init_resource::<EntityMap>()
             .init_resource::<Roots>()
             .init_resource::<TargetPane>()
             .init_resource::<ShowingRoot>()

@@ -5,8 +5,8 @@ use bevy_camera::{Camera, RenderTarget, RenderTargetInfo};
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::Allow;
-use bevy_math::UVec2;
-use bevy_ui::{ComputedNode, Display, Node};
+use bevy_math::{Rect, UVec2};
+use bevy_ui::{CalculatedClip, ComputedNode, Display, Node, UiGlobalTransform};
 
 use crate::model::{
     InstanceNode, MIN_PANE_COLS, MIN_PANE_ROWS, Pane, PaneSize, ShownBy, ViewerCamera, Viewport,
@@ -64,32 +64,36 @@ pub fn sync_cameras(
 }
 
 /// `PostUpdate` after `bevy_ui` layout ([`super::LayoutSystems::SizeFold`]): `PaneSize` is the
-/// minimum over the pane's shown instances of `ComputedNode.size` minus its borders, in cells,
-/// clamped to the emulator limits. Instances that are hidden (`Display::None`) or smaller than a
-/// usable pane do not count; a pane with no usable instance keeps its size. Includes `Disabled`
-/// (`Starting`) panes so a process is spawned at its laid-out size.
+/// minimum over the pane's shown instances of the visible content box in cells — `ComputedNode`
+/// minus its borders, cut to the ancestors' `CalculatedClip` (an `Overflow::scroll`/`clip`
+/// container or a `Display::None` subtree) — clamped to the emulator limits. Instances that are
+/// hidden, clipped away or smaller than a usable pane do not count; a pane with no usable
+/// instance keeps its size. Includes `Disabled` (`Starting`) panes so a process is spawned at
+/// its laid-out size.
 pub fn fold_pane_sizes(
-    leaves: Query<(&ComputedNode, &Node), With<InstanceNode>>,
+    leaves: Query<
+        (
+            &ComputedNode,
+            &Node,
+            &UiGlobalTransform,
+            Option<&CalculatedClip>,
+        ),
+        With<InstanceNode>,
+    >,
     mut panes: Query<(&mut PaneSize, &ShownBy), (With<Pane>, Allow<Disabled>)>,
 ) {
     for (mut size, shown_by) in &mut panes {
         let mut best: Option<(u16, u16)> = None;
         for leaf in shown_by.iter() {
-            let Ok((computed, node)) = leaves.get(leaf) else {
+            let Ok((computed, node, transform, clip)) = leaves.get(leaf) else {
                 continue;
             };
             if node.display == Display::None {
                 continue;
             }
-            let border = computed.border;
-            let cols = (computed.size.x - border.min_inset.x - border.max_inset.x).floor();
-            let rows = (computed.size.y - border.min_inset.y - border.max_inset.y).floor();
-            if cols < f32::from(MIN_PANE_COLS) || rows < f32::from(MIN_PANE_ROWS) {
+            let Some((rows, cols)) = visible_content_cells(computed, transform, clip) else {
                 continue;
-            }
-            // Bounded by `MAX_DIM` below; the float is a whole number of cells here.
-            let cols = cols.min(f32::from(u16::MAX)) as u16;
-            let rows = rows.min(f32::from(u16::MAX)) as u16;
+            };
             best = Some(match best {
                 Some((r, c)) => (r.min(rows), c.min(cols)),
                 None => (rows, cols),
@@ -100,4 +104,31 @@ pub fn fold_pane_sizes(
             size.set_if_neq(PaneSize { rows, cols });
         }
     }
+}
+
+/// `(rows, cols)` of the visible content box of a laid-out node: its border box in viewport
+/// cells inset by the borders, intersected with the inherited clip rect; `None` below the
+/// minimum usable pane.
+pub fn visible_content_cells(
+    computed: &ComputedNode,
+    transform: &UiGlobalTransform,
+    clip: Option<&CalculatedClip>,
+) -> Option<(u16, u16)> {
+    let border = computed.border;
+    let mut content = Rect::from_center_size(transform.translation, computed.size);
+    content.min += border.min_inset;
+    content.max -= border.max_inset;
+    if let Some(clip) = clip {
+        content = content.intersect(clip.clip);
+    }
+    let cols = content.width().floor();
+    let rows = content.height().floor();
+    if cols < f32::from(MIN_PANE_COLS) || rows < f32::from(MIN_PANE_ROWS) {
+        return None;
+    }
+    // Bounded by `MAX_DIM` at the caller; the float is a whole number of cells here.
+    Some((
+        rows.min(f32::from(u16::MAX)) as u16,
+        cols.min(f32::from(u16::MAX)) as u16,
+    ))
 }

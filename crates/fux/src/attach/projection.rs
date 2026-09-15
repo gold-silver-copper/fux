@@ -16,9 +16,10 @@ use bevy_world_serialization::DynamicWorldBuilder;
 use crate::model::Effect;
 use crate::model::{
     Detaching, ExactTarget, InstanceNode, NodeId, Notice, PaneBaseline, PaneId, Process,
-    ProjectionBaseline, Retiring, RootOrder, ServerMode, Showing, Shows, Targets, TemplateRoot,
-    Viewer, ViewerCamera, Viewing, Zoomed,
+    ProjectionBaseline, Retiring, RootOrder, ServerMode, Showing, Shows, Surface, Targets,
+    TemplateRoot, Viewer, ViewerCamera, Viewing, Zoomed,
 };
+use crate::surface::Text;
 use crate::terminal::Terminal;
 use crate::wire::{ByeReason, ProcessSummary, RootEntry, SceneFrame, ServerFrame, TerminalDelta};
 
@@ -46,6 +47,8 @@ type ChangedInstance = Or<(
     Changed<Shows>,
     Changed<NodeId>,
     Changed<Zoomed>,
+    Changed<Text>,
+    Changed<Surface>,
 )>;
 
 type Viewers<'w, 's> = Query<
@@ -217,6 +220,8 @@ fn collect(
                 .allow_component::<Children>()
                 .allow_component::<Shows>()
                 .allow_component::<InstanceNode>()
+                .allow_component::<Text>()
+                .allow_component::<Surface>()
                 .extract_entities(scratch.extract.iter().copied())
                 .remove_empty_entities()
                 .build();

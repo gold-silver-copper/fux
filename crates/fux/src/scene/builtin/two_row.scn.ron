@@ -1,0 +1,72 @@
+// Built-in template scene `two_row`: leaves carry `PaneTemplate` with an empty argv (the
+// configured default command). Entity ids are document-local (an index stored inverted in the low
+// 32 bits); `scene::apply` maps them.
+(
+  resources: {},
+  entities: {
+    4294967294: (
+      components: {
+        "fux::model::components::Workspace": (),
+        "fux::model::ids::WorkspaceName": "two_row",
+        "fux::model::relations::RootOrder": ([
+          4294967293,
+        ]),
+      },
+    ),
+    4294967293: (
+      components: {
+        "bevy_ecs::name::Name": "main",
+        "fux::model::components::TemplateRoot": (),
+        "fux::model::components::TemplateNode": (),
+        "fux::model::relations::RootOf": (4294967294),
+        "bevy_ui::ui_node::Node": (
+          width: Percent(100.0),
+          height: Percent(100.0),
+          flex_direction: Column,
+        ),
+        "bevy_ecs::hierarchy::Children": ([
+          4294967292,
+          4294967291,
+        ]),
+      },
+    ),
+    4294967292: (
+      components: {
+        "bevy_ecs::name::Name": "top",
+        "fux::model::components::TemplateNode": (),
+        "bevy_ecs::hierarchy::ChildOf": (4294967293),
+        "bevy_ui::ui_node::Node": (
+          flex_grow: 1.0,
+          flex_shrink: 1.0,
+          min_width: Px(2.0),
+          min_height: Px(2.0),
+        ),
+        "fux::model::components::PaneTemplate": (
+          argv: [],
+          cwd: None,
+          env: [],
+          stream: "",
+        ),
+      },
+    ),
+    4294967291: (
+      components: {
+        "bevy_ecs::name::Name": "bottom",
+        "fux::model::components::TemplateNode": (),
+        "bevy_ecs::hierarchy::ChildOf": (4294967293),
+        "bevy_ui::ui_node::Node": (
+          flex_grow: 1.0,
+          flex_shrink: 1.0,
+          min_width: Px(2.0),
+          min_height: Px(2.0),
+        ),
+        "fux::model::components::PaneTemplate": (
+          argv: [],
+          cwd: None,
+          env: [],
+          stream: "",
+        ),
+      },
+    ),
+  },
+)

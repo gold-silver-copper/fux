@@ -18,8 +18,11 @@ use crate::layout::LayoutPlugin;
 use crate::lifecycle::{DefaultCommand, LifecyclePlugin};
 use crate::model::{Inbound, ModelPlugin};
 use crate::paths::Paths;
+use crate::pointer::PointerPlugin;
 use crate::pty::TerminalPlugin;
 use crate::remote::RemoteControlPlugin;
+use crate::scene::LayoutDir;
+use crate::surface::SurfacePlugin;
 
 /// The full server: OS-facing plugins included. Errors from systems are logged, never panic.
 pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound>) -> App {
@@ -48,6 +51,7 @@ pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound
         },
         AttachPlugin { inbound },
     ))
+    .insert_resource(LayoutDir::new(paths))
     .insert_resource(FallbackErrorHandler(bevy_ecs::error::error));
     app
 }
@@ -70,5 +74,12 @@ pub fn build_headless(config: &Config) -> App {
 fn core(app: &mut App, config: &Config) {
     app.insert_resource(config.limits())
         .insert_resource(DefaultCommand(config.default_command.argv.clone()))
-        .add_plugins((ModelPlugin, LayoutPlugin, TerminalPlugin, LifecyclePlugin));
+        .add_plugins((
+            ModelPlugin,
+            LayoutPlugin,
+            TerminalPlugin,
+            LifecyclePlugin,
+            PointerPlugin,
+            SurfacePlugin,
+        ));
 }

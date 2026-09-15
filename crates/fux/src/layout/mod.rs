@@ -50,6 +50,17 @@ pub struct ViewState {
     pub zoom: Option<NodeId>,
     /// Vertical scroll offset in cells per scrolled node.
     pub scroll: bevy_platform::collections::HashMap<NodeId, f32>,
+    /// Transient `Display` overrides; the template's value is restored when an entry is removed.
+    pub display: bevy_platform::collections::HashMap<NodeId, bevy_ui::Display>,
+}
+
+/// Which edge of a target node an existing node is placed beside ([`ops::place_beside`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
 }
 
 /// Which way a viewer navigates between the panes it shows.
@@ -79,6 +90,8 @@ pub enum LayoutError {
     NotAViewer(Entity),
     /// The node is a placing leaf and cannot take children.
     LeafHasChildren(Entity),
+    /// The node is a surface leaf; its subtree belongs to its provider.
+    SurfaceSubtree(Entity),
     PaneLive(Entity),
     PaneNotPlaced(Entity),
     /// Reparenting a node into its own subtree.
@@ -131,6 +144,12 @@ impl core::fmt::Display for LayoutError {
             Self::NotAPane(e) => write!(f, "{e} is not a pane"),
             Self::NotAViewer(e) => write!(f, "{e} is not a viewer"),
             Self::LeafHasChildren(e) => write!(f, "{e} places a pane and cannot have children"),
+            Self::SurfaceSubtree(e) => {
+                write!(
+                    f,
+                    "{e} is a surface leaf; its subtree belongs to its provider"
+                )
+            }
             Self::PaneLive(e) => write!(f, "pane {e} is still live"),
             Self::PaneNotPlaced(e) => write!(f, "pane {e} is not placed by a template leaf"),
             Self::Cycle(e) => write!(f, "{e} cannot be moved into its own subtree"),

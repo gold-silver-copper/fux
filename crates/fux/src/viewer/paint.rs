@@ -26,6 +26,7 @@ use super::chrome::Text;
 use super::replicate::Grid;
 use super::{Mode as ViewerMode, Viewport};
 use crate::model::Shows;
+use crate::surface::Text as SurfaceText;
 use crate::wire::{Color as WireColor, Style};
 
 /// Inline cell text: a grapheme cluster of up to fifteen UTF-8 bytes. Longer clusters keep their
@@ -346,6 +347,7 @@ type NodeItem<'a> = (
     Option<&'a CalculatedClip>,
     Option<&'a Shows>,
     Option<&'a Text>,
+    Option<&'a SurfaceText>,
 );
 
 /// Composes the screen from the UI stack and diffs it against the previous paint.
@@ -370,7 +372,8 @@ pub fn paint(
     let focused = focus.get();
     let mut cursor = None;
     for &entity in &stack.uinodes {
-        let Ok((entity, node, transform, bg, border_color, clip, shows, text)) = nodes.get(entity)
+        let Ok((entity, node, transform, bg, border_color, clip, shows, text, surface_text)) =
+            nodes.get(entity)
         else {
             continue;
         };
@@ -427,7 +430,25 @@ pub fn paint(
             }
         }
         if let Some(text) = text {
-            draw_text(&mut painter.next, text, rect.inset(node), content, bg);
+            draw_text(
+                &mut painter.next,
+                &text.text,
+                text.style,
+                rect.inset(node),
+                content,
+                bg,
+            );
+        }
+        // A surface's text leaf: the provider styles through colours on the node itself.
+        if let Some(text) = surface_text {
+            draw_text(
+                &mut painter.next,
+                &text.0,
+                Style::default(),
+                rect.inset(node),
+                content,
+                bg,
+            );
         }
     }
     emit(painter, cursor);
@@ -477,15 +498,22 @@ fn draw_grid(screen: &mut Screen, grid: &Grid, origin: CellRect, visible: CellRe
 }
 
 /// Text keeps whatever background is already painted underneath unless it names its own, so
-/// labels sit on their bar's fill.
-fn draw_text(screen: &mut Screen, text: &Text, origin: CellRect, visible: CellRect, bg: WireColor) {
-    let own_bg = if text.style.bg == WireColor::Default {
+/// labels sit on their bar's fill. One line, left-aligned, clipped to `visible`.
+fn draw_text(
+    screen: &mut Screen,
+    text: &str,
+    style: Style,
+    origin: CellRect,
+    visible: CellRect,
+    bg: WireColor,
+) {
+    let own_bg = if style.bg == WireColor::Default {
         bg
     } else {
-        text.style.bg
+        style.bg
     };
     let row = origin.min.y;
-    for (col, ch) in (origin.min.x..visible.max.x).zip(text.text.chars()) {
+    for (col, ch) in (origin.min.x..visible.max.x).zip(text.chars()) {
         if !visible.contains(col, row) {
             continue;
         }
@@ -497,14 +525,16 @@ fn draw_text(screen: &mut Screen, text: &Text, origin: CellRect, visible: CellRe
         } else {
             own_bg
         };
-        screen.set(col, row, ScreenCell::glyph(ch, Style { bg, ..text.style }));
+        screen.set(col, row, ScreenCell::glyph(ch, Style { bg, ..style }));
     }
 }
 
 /// Writes the difference between `next` and `current` as terminal commands, then makes `next`
-/// the current screen.
+/// the current screen. `out` is rebuilt from scratch each paint (the runner hands the buffer
+/// back after writing it, so only its capacity survives).
 fn emit(painter: &mut Painter, cursor: Option<(u16, u16)>) {
     let out = &mut painter.out;
+    out.clear();
     let full = painter.full;
     painter.full = false;
     let mut wrote = false;

@@ -17,7 +17,7 @@ use serde_json::{Map, Value, json};
 
 use super::descriptor::Endpoint;
 use super::projection::is_allowed_type_path;
-use super::schema::{Described, described, fields_of, roundtrip};
+use super::schema::described;
 use super::token::{Capabilities, Capability, Grant, Tokens};
 use crate::layout::{LayoutError, NodePatch, ops};
 use crate::model::components::ExactTarget;
@@ -71,7 +71,7 @@ pub const MAX_CAPTURE_LINES: usize = 10_000;
 // Errors
 // ---------------------------------------------------------------------------------------------
 
-fn error(code: i16, message: impl Into<String>) -> BrpError {
+pub(super) fn error(code: i16, message: impl Into<String>) -> BrpError {
     BrpError {
         code,
         message: message.into(),
@@ -79,27 +79,27 @@ fn error(code: i16, message: impl Into<String>) -> BrpError {
     }
 }
 
-fn unauthorized(message: impl Into<String>) -> BrpError {
+pub(super) fn unauthorized(message: impl Into<String>) -> BrpError {
     error(codes::UNAUTHORIZED, message)
 }
 
-fn not_found(what: &str, id: u64) -> BrpError {
+pub(super) fn not_found(what: &str, id: u64) -> BrpError {
     error(codes::NOT_FOUND, format!("{what} {id} not found"))
 }
 
-fn invalid(message: impl Into<String>) -> BrpError {
+pub(super) fn invalid(message: impl Into<String>) -> BrpError {
     error(codes::INVALID, message)
 }
 
-fn layout_error(e: LayoutError) -> BrpError {
+pub(super) fn layout_error(e: LayoutError) -> BrpError {
     invalid(e.to_string())
 }
 
-fn bevy_error(e: bevy_ecs::error::BevyError) -> BrpError {
+pub(super) fn bevy_error(e: bevy_ecs::error::BevyError) -> BrpError {
     invalid(e.to_string())
 }
 
-fn to_value<T: serde::Serialize>(value: T) -> BrpResult {
+pub(super) fn to_value<T: serde::Serialize>(value: T) -> BrpResult {
     serde_json::to_value(value).map_err(BrpError::internal)
 }
 
@@ -272,11 +272,11 @@ pub fn root_of(world: &World, mut node: Entity) -> Option<Entity> {
     None
 }
 
-fn generation(world: &World, root: Entity) -> u64 {
+pub(super) fn generation(world: &World, root: Entity) -> u64 {
     world.get::<LayoutGeneration>(root).map_or(0, |g| g.0)
 }
 
-fn check_generation(world: &World, root: Entity, expected: u64) -> Result<(), BrpError> {
+pub(super) fn check_generation(world: &World, root: Entity, expected: u64) -> Result<(), BrpError> {
     let current = generation(world, root);
     if current == expected {
         Ok(())
@@ -289,14 +289,14 @@ fn check_generation(world: &World, root: Entity, expected: u64) -> Result<(), Br
     }
 }
 
-fn node_id(world: &World, node: Entity) -> Result<u64, BrpError> {
+pub(super) fn node_id(world: &World, node: Entity) -> Result<u64, BrpError> {
     world
         .get::<NodeId>(node)
         .map(|id| id.0)
         .ok_or_else(|| BrpError::internal("node without id"))
 }
 
-fn pane_id(world: &World, pane: Entity) -> Result<u64, BrpError> {
+pub(super) fn pane_id(world: &World, pane: Entity) -> Result<u64, BrpError> {
     world
         .get::<PaneId>(pane)
         .map(|id| id.0)
@@ -1583,29 +1583,37 @@ fn rpc_discover(mut req: Request, world: &mut World) -> BrpResult {
 // Table
 // ---------------------------------------------------------------------------------------------
 
+/// `handler!(brp_name, inner)`: the `fn(In<Option<Value>>, &mut World)` system that opens the
+/// envelope and calls `inner(Request, &mut World)`.
 macro_rules! handler {
     ($name:ident, $inner:ident) => {
-        fn $name(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
-            let req = Request::open(params, world)?;
+        fn $name(
+            bevy_ecs::system::In(params): bevy_ecs::system::In<Option<serde_json::Value>>,
+            world: &mut bevy_ecs::world::World,
+        ) -> bevy_remote::BrpResult {
+            let req = $crate::remote::methods::Request::open(params, world)?;
             $inner(req, world)
         }
     };
 }
+pub(super) use handler;
 
+/// `spec!("fux/x.y", brp_handler, Params, Result)`: one [`MethodSpec`] row.
 macro_rules! spec {
     ($method:literal, $handler:ident, $params:ty, $result:ty) => {
-        MethodSpec {
+        $crate::remote::methods::MethodSpec {
             name: $method,
             handler: $handler,
-            params: <$params as Described>::NAME,
-            params_fields: fields_of::<$params>,
-            result: <$result as Described>::NAME,
-            result_fields: fields_of::<$result>,
-            roundtrip_params: roundtrip::<$params>,
-            roundtrip_result: roundtrip::<$result>,
+            params: <$params as $crate::remote::schema::Described>::NAME,
+            params_fields: $crate::remote::schema::fields_of::<$params>,
+            result: <$result as $crate::remote::schema::Described>::NAME,
+            result_fields: $crate::remote::schema::fields_of::<$result>,
+            roundtrip_params: $crate::remote::schema::roundtrip::<$params>,
+            roundtrip_result: $crate::remote::schema::roundtrip::<$result>,
         }
     };
 }
+pub(super) use spec;
 
 handler!(brp_server_info, server_info);
 handler!(brp_token_mint, token_mint);

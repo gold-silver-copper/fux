@@ -77,10 +77,13 @@ impl Server {
             let runtime = runtime.clone();
             std::thread::spawn(move || {
                 let mut app = build(&runtime, "test");
+                // As `fux serve` does through its Startup system: the workspace exists before
+                // the first update publishes the descriptor, so a client that reads it never
+                // observes an empty server.
+                fux::lifecycle::bootstrap(app.world_mut(), "default", &[]).unwrap();
                 app.finish();
                 app.cleanup();
                 app.update();
-                fux::lifecycle::bootstrap(app.world_mut(), "default", &[]).unwrap();
                 while !stop.load(Ordering::Relaxed) {
                     app.update();
                     std::thread::sleep(Duration::from_millis(10));

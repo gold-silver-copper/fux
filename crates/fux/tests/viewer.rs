@@ -629,6 +629,9 @@ fn painter_composes_panes_and_chrome_and_diffs() {
         first.windows(5).any(|w| w == b"hello"),
         "pane content reaches the terminal"
     );
+    // The runner hands the written buffer back for its capacity; the next paint must not
+    // resend what it still contains.
+    app.world_mut().resource_mut::<Painter>().out = first;
 
     app.update();
     let second = core::mem::take(&mut app.world_mut().resource_mut::<Painter>().out);

@@ -1,7 +1,8 @@
 //! Command line (prompt 3.12): `fux` attaches to (or starts) the `default` server, `fux NAME`
 //! attaches to workspace NAME, `fux serve --name` runs a server in the foreground,
-//! `fux attach --brp FILE`, `fux workspace list|new|kill`, and `fux [SERVER] <method> [json]`
-//! is a thin BRP client. The CLI holds no World.
+//! `fux attach --brp FILE`, `fux workspace list|new|kill`, `fux [WORKSPACE] layout
+//! save|load NAME | list`, and `fux [SERVER] <method> [json]` is a thin BRP client. The CLI
+//! holds no World.
 
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -53,6 +54,12 @@ enum Cmd {
         #[command(subcommand)]
         command: WorkspaceCmd,
     },
+    /// Save, load or list named layouts of the `default` workspace (`fux WORKSPACE layout …`
+    /// for another).
+    Layout {
+        #[command(subcommand)]
+        command: LayoutCmd,
+    },
     /// `fux NAME` attaches to workspace NAME; `fux [SERVER] <method> [json]` calls BRP.
     #[command(external_subcommand)]
     Other(Vec<String>),
@@ -77,6 +84,30 @@ enum WorkspaceCmd {
     List,
     New { name: String },
     Kill { name: String },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum LayoutCmd {
+    /// Names of the saved layouts and the built-in templates.
+    List,
+    /// Export the workspace's layout to `<config>/layouts/NAME.scn.ron`.
+    Save { name: String },
+    /// Apply the saved layout NAME (or the built-in of that name); existing panes fill its
+    /// leaves in order.
+    Load {
+        name: String,
+        /// Close the panes the layout has no leaf for instead of refusing.
+        #[arg(long)]
+        close_unplaced: bool,
+    },
+}
+
+/// `fux WORKSPACE layout …`: the words after WORKSPACE parsed as the `layout` subcommand.
+#[derive(Parser, Debug)]
+#[command(name = "layout", no_binary_name = true)]
+struct LayoutWords {
+    #[command(subcommand)]
+    command: LayoutCmd,
 }
 
 pub fn main() -> ExitCode {
@@ -117,6 +148,7 @@ fn dispatch(cli: Cli) -> Result<i32, BevyError> {
             };
             print_reply(client::call(&brp, method, params)?)
         }
+        Some(Cmd::Layout { command }) => layout(&cli.server, DEFAULT_WORKSPACE, command),
         Some(Cmd::Other(words)) => other(&cli.server, words),
         None => attach_workspace(&cli.server, DEFAULT_WORKSPACE),
     }
@@ -133,6 +165,10 @@ fn other(server: &str, words: Vec<String>) -> Result<i32, BevyError> {
         return print_reply(client::call(&brp, &first, params)?);
     }
     match words.next() {
+        Some(word) if word == "layout" => {
+            let parsed = LayoutWords::try_parse_from(words)?;
+            layout(server, &first, parsed.command)
+        }
         Some(method) if is_method(&method) => {
             let params = parse_params(words.next())?;
             let brp = descriptor_or_error(&first)?;
@@ -147,6 +183,30 @@ fn other(server: &str, words: Vec<String>) -> Result<i32, BevyError> {
 
 fn is_method(word: &str) -> bool {
     word.contains('.') || word.contains('/')
+}
+
+fn layout(server: &str, workspace: &str, command: LayoutCmd) -> Result<i32, BevyError> {
+    let brp = descriptor_or_error(server)?;
+    let (method, params) = match command {
+        LayoutCmd::List => ("fux/scene.list", serde_json::json!({})),
+        LayoutCmd::Save { name } => (
+            "fux/scene.save",
+            serde_json::json!({ "workspace": workspace, "name": name }),
+        ),
+        LayoutCmd::Load {
+            name,
+            close_unplaced,
+        } => (
+            "fux/scene.restore",
+            serde_json::json!({
+                "workspace": workspace,
+                "name": name,
+                "adopt": true,
+                "close_unplaced": close_unplaced,
+            }),
+        ),
+    };
+    print_reply(client::call(&brp, method, params)?)
 }
 
 fn parse_params(json: Option<String>) -> Result<serde_json::Value, BevyError> {

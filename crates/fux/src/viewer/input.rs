@@ -19,11 +19,6 @@ use termina::event::{
 
 use crate::model::{PointerEvent, PointerKind};
 
-/// Modifier bits carried in `PointerEvent::modifiers` (xterm order: shift, alt, ctrl).
-pub const MOD_SHIFT: u8 = 1;
-pub const MOD_ALT: u8 = 2;
-pub const MOD_CTRL: u8 = 4;
-
 /// One terminal event after translation.
 #[derive(Debug, Clone)]
 pub enum Input {
@@ -213,13 +208,13 @@ impl Translator {
 fn modifier_bits(m: Modifiers) -> u8 {
     let mut bits = 0;
     if m.contains(Modifiers::SHIFT) {
-        bits |= MOD_SHIFT;
+        bits |= PointerEvent::SHIFT;
     }
     if m.contains(Modifiers::ALT) {
-        bits |= MOD_ALT;
+        bits |= PointerEvent::ALT;
     }
     if m.contains(Modifiers::CONTROL) {
-        bits |= MOD_CTRL;
+        bits |= PointerEvent::CTRL;
     }
     bits
 }

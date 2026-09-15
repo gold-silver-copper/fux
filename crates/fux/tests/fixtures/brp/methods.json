@@ -245,5 +245,73 @@
         }
       }
     }
+  },
+  {
+    "method": "fux/surface.open",
+    "params": { "workspace": "default", "node": 9, "provider": "zor-dashboard", "generation": 3 },
+    "result": { "surface": 9, "revision": 0, "generation": 4 }
+  },
+  {
+    "method": "fux/surface.update",
+    "params": {
+      "surface": 9,
+      "revision": 1,
+      "full": true,
+      "delta": "(resources: {}, entities: {4294967294: (components: {\"bevy_ui::ui_node::Node\": (flex_direction: Column), \"fux::surface::Text\": (\"tasks\")})})"
+    },
+    "result": { "revision": 1, "nodes": 1, "generation": 5 }
+  },
+  {
+    "method": "fux/surface.close",
+    "params": { "surface": 9 },
+    "result": { "generation": 6 }
+  },
+  {
+    "method": "fux/scene.export",
+    "params": { "workspace": "default" },
+    "result": {
+      "document": "(resources: {}, entities: {4294967295: (components: {\"fux::model::ids::WorkspaceName\": \"default\", \"fux::model::relations::RootOrder\": ([4294967294])}), 4294967294: (components: {\"bevy_ecs::name::Name\": \"main\", \"bevy_ui::ui_node::Node\": (width: Percent(100.0), height: Percent(100.0)), \"fux::model::ids::NodeId\": 1, \"fux::model::relations::Places\": (4294967293)}), 4294967293: (components: {\"fux::model::ids::PaneId\": 1, \"fux::model::components::LaunchAttribution\": (workspace_name: \"default\", stream: \"\", argv: [\"/bin/zsh\", \"-l\"], cwd: None)})})",
+      "roots": [{ "root": 1, "generation": 3 }]
+    }
+  },
+  {
+    "method": "fux/scene.apply",
+    "params": {
+      "workspace": "default",
+      "document": "(resources: {}, entities: {4294967295: (components: {\"fux::model::relations::RootOrder\": ([4294967294])}), 4294967294: (components: {\"bevy_ui::ui_node::Node\": (width: Percent(100.0), height: Percent(100.0), flex_direction: Row), \"bevy_ecs::hierarchy::Children\": ([4294967293, 4294967292])}), 4294967293: (components: {\"bevy_ecs::hierarchy::ChildOf\": (4294967294), \"bevy_ui::ui_node::Node\": (flex_grow: 1.0), \"fux::model::relations::Places\": (4294967291)}), 4294967292: (components: {\"bevy_ecs::hierarchy::ChildOf\": (4294967294), \"bevy_ui::ui_node::Node\": (flex_grow: 1.0), \"fux::model::components::PaneTemplate\": (argv: [], cwd: None, env: [], stream: \"\")}), 4294967291: (components: {\"fux::model::ids::PaneId\": 1})})",
+      "expected": [{ "root": 1, "generation": 3 }],
+      "allow_templates": true,
+      "adopt": false,
+      "close_unplaced": false
+    },
+    "result": {
+      "roots": [{ "root": 8, "name": "root", "generation": 2 }],
+      "launched": [6],
+      "adopted": [],
+      "closed": []
+    }
+  },
+  {
+    "method": "fux/scene.list",
+    "params": {},
+    "result": {
+      "saved": ["mine"],
+      "builtin": ["two_column", "two_row", "three_column", "main_side"]
+    }
+  },
+  {
+    "method": "fux/scene.save",
+    "params": { "workspace": "default", "name": "mine" },
+    "result": { "name": "mine", "path": "/home/user/.config/fux/layouts/mine.scn.ron", "bytes": 4096 }
+  },
+  {
+    "method": "fux/scene.restore",
+    "params": { "workspace": "default", "name": "two_column", "adopt": true },
+    "result": {
+      "roots": [{ "root": 11, "name": "main", "generation": 2 }],
+      "launched": [7],
+      "adopted": [6],
+      "closed": []
+    }
   }
 ]

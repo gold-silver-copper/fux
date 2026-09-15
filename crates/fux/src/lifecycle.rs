@@ -7,19 +7,12 @@
 //! [`Clock`] the runner writes before each step (wall-clock milliseconds), never an OS handle.
 
 use bevy_app::prelude::*;
-use bevy_camera::RenderTarget;
 use bevy_ecs::entity_disabling::Disabled;
 use bevy_ecs::error::BevyError;
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::Allow;
-use bevy_input::mouse::MouseScrollUnit;
-use bevy_input::touch::TouchPhase;
 use bevy_log::{debug, warn};
-use bevy_math::{UVec2, Vec2};
-use bevy_picking::events::{Pointer, Press};
-use bevy_picking::pointer::{
-    Location, PointerAction, PointerButton as PickButton, PointerId, PointerInput, PointerLocation,
-};
+use bevy_picking::PickingSystems;
 use bevy_state::prelude::*;
 use bevy_ui::Node;
 
@@ -72,7 +65,13 @@ impl Plugin for LifecyclePlugin {
         app.init_resource::<Clock>()
             .init_resource::<DefaultCommand>()
             .add_systems(Startup, start_serving)
-            .add_systems(PreUpdate, requests.in_set(Phase::Requests))
+            // Viewer pointer events are picked in the same update.
+            .add_systems(
+                PreUpdate,
+                requests
+                    .in_set(Phase::Requests)
+                    .before(PickingSystems::ProcessInput),
+            )
             .add_systems(PreUpdate, completions.in_set(Phase::Completions))
             .add_systems(
                 Update,
@@ -89,8 +88,7 @@ impl Plugin for LifecyclePlugin {
                     .after(crate::pty::TerminalSystems::Resize)
                     .run_if(not(in_state(ServerMode::ShuttingDown))),
             )
-            .add_systems(OnEnter(ServerMode::ShuttingDown), enter_shutdown)
-            .add_observer(target_on_press);
+            .add_systems(OnEnter(ServerMode::ShuttingDown), enter_shutdown);
     }
 }
 
@@ -287,7 +285,7 @@ fn handle(world: &mut World, viewer: Entity, request: ViewerRequest) -> Result<(
         ViewerRequest::Resize { rows, cols } => {
             ops::resize_viewer(world, viewer, Viewport { rows, cols })?;
         }
-        ViewerRequest::Pointer(event) => pointer(world, viewer, event),
+        ViewerRequest::Pointer(event) => crate::pointer::forward(world, viewer, event),
         ViewerRequest::Scroll { node, rows } => {
             let node = node_entity(world, node)?;
             ops::scroll(world, viewer, node, rows)?;
@@ -356,93 +354,6 @@ fn begin_creation(world: &mut World, viewer: Entity, pane: Entity) {
         warn!("target new pane {pane} for {viewer}: {error}");
     }
     world.entity_mut(viewer).insert(CreationBarrier(Some(pane)));
-}
-
-fn pointer(world: &mut World, viewer: Entity, event: PointerEvent) {
-    let Some((pointer_entity, viewport)) = world
-        .get::<ViewerPointer>(viewer)
-        .map(|p| p.0)
-        .zip(world.get::<Viewport>(viewer).copied())
-    else {
-        return;
-    };
-    let Some(id) = world.get::<PointerId>(pointer_entity).copied() else {
-        return;
-    };
-    let Some(target) = (RenderTarget::None {
-        size: UVec2::new(u32::from(viewport.cols), u32::from(viewport.rows)),
-    })
-    .normalize(None) else {
-        return;
-    };
-    let position = Vec2::new(f32::from(event.col) + 0.5, f32::from(event.row) + 0.5);
-    let previous = world
-        .get::<PointerLocation>(pointer_entity)
-        .and_then(|l| l.location().map(|l| l.position))
-        .unwrap_or(position);
-    let location = Location { target, position };
-    let Some(mut messages) = world.get_resource_mut::<Messages<PointerInput>>() else {
-        return;
-    };
-    // `PointerInput::receive` only updates the pointer's location on `Move`, so every action
-    // is preceded by the move that put the pointer at this cell.
-    messages.write(PointerInput::new(
-        id,
-        location.clone(),
-        PointerAction::Move {
-            delta: position - previous,
-        },
-    ));
-    let button = match event.button {
-        PointerButton::Right => PickButton::Secondary,
-        PointerButton::Middle => PickButton::Middle,
-        PointerButton::Left | PointerButton::None => PickButton::Primary,
-    };
-    let action = match event.kind {
-        PointerKind::Move => return,
-        PointerKind::Press => PointerAction::Press(button),
-        PointerKind::Release => PointerAction::Release(button),
-        PointerKind::ScrollUp | PointerKind::ScrollDown => PointerAction::Scroll {
-            unit: MouseScrollUnit::Line,
-            x: 0.0,
-            y: if event.kind == PointerKind::ScrollUp {
-                1.0
-            } else {
-                -1.0
-            },
-            phase: TouchPhase::Moved,
-        },
-    };
-    messages.write(PointerInput::new(id, location, action));
-}
-
-/// Click-to-target: a press on an instance leaf targets the pane it shows for the viewer that
-/// owns the pressing pointer.
-fn target_on_press(
-    press: On<Pointer<Press>>,
-    shows: Query<&Shows>,
-    viewers: Query<(Entity, &ViewerPointer), With<Viewer>>,
-    pointers: Query<&PointerId>,
-    mut commands: Commands,
-) {
-    let Ok(pane) = shows.get(press.entity).map(|s| s.0) else {
-        return;
-    };
-    let Some(viewer) = viewers
-        .iter()
-        .find(|(_, p)| pointers.get(p.0).is_ok_and(|id| *id == press.pointer_id))
-        .map(|(v, _)| v)
-    else {
-        return;
-    };
-    commands.queue(move |world: &mut World| {
-        if world.get::<ExactTarget>(viewer).is_some() {
-            return;
-        }
-        if let Err(error) = ops::target(world, viewer, pane) {
-            warn!("click target {pane} for {viewer}: {error}");
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------------------------
