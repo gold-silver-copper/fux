@@ -50,6 +50,12 @@ pub enum ViewerRequest {
     Swap {
         direction: SplitDirection,
     },
+    /// Keys typed while the viewer's focus is on a surface leaf; routed to the surface's
+    /// provider as a `SurfaceInput { kind: Key }` event, never to a PTY.
+    SurfaceKey {
+        node: super::ids::NodeId,
+        bytes: Vec<u8>,
+    },
     /// Create a new template root in the viewer's workspace with one pane and show it.
     NewRoot {
         template: Option<super::components::PaneTemplate>,

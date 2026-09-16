@@ -218,6 +218,14 @@ vocabulary!(
     WorktreeState,
     MachineName,
     ControlBinding,
+    HostedPlugin,
+    PluginAction,
+    PluginId,
+    PluginActionId,
+    PluginManifest,
+    ActionOf,
+    Actions,
+    crate::plugins::PluginEnabled,
     ProducerLifetime,
     crate::groups::Cursor,
     crate::groups::MemberPrompt,
@@ -248,6 +256,8 @@ fn persisted(world: &mut World) -> Vec<Entity> {
             With<Group>,
             With<Worktree>,
             With<Machine>,
+            With<HostedPlugin>,
+            With<PluginAction>,
         )>>()
         .iter(world)
         .collect()
@@ -707,7 +717,13 @@ type Presence = (
     Added<Seal>,
     Added<Uncertain>,
     Added<Lost>,
-    Or<(Added<StopRequested>, Added<crate::worktrees::ForceRemoval>)>,
+    // `Presence` is at the 15-entry tuple limit, so later owners join this group instead.
+    Or<(
+        Added<StopRequested>,
+        Added<crate::worktrees::ForceRemoval>,
+        Added<HostedPlugin>,
+        Added<crate::plugins::PluginEnabled>,
+    )>,
 );
 
 /// Anything in the allowlisted subgraph changed, was added or was removed.
@@ -723,6 +739,7 @@ fn mark_dirty(
         mut removed_lost,
         mut removed_needs,
         mut removed_stop,
+        mut removed_plugin_enabled,
     ): (
         RemovedComponents<Task>,
         RemovedComponents<Attempt>,
@@ -731,6 +748,7 @@ fn mark_dirty(
         RemovedComponents<Lost>,
         RemovedComponents<NeedsInput>,
         RemovedComponents<StopRequested>,
+        RemovedComponents<crate::plugins::PluginEnabled>,
     ),
 ) {
     let removed = removed_task.read().next().is_some()
@@ -739,7 +757,8 @@ fn mark_dirty(
         | removed_uncertain.read().next().is_some()
         | removed_lost.read().next().is_some()
         | removed_needs.read().next().is_some()
-        | removed_stop.read().next().is_some();
+        | removed_stop.read().next().is_some()
+        | removed_plugin_enabled.read().next().is_some();
     if removed || !lifecycle.is_empty() || !presence.is_empty() {
         journal.dirty = true;
     }

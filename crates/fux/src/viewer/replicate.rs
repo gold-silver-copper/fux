@@ -20,7 +20,7 @@ use serde::de::DeserializeSeed as _;
 use super::chrome::{ChromeRoots, PendingNotice};
 use super::paint::{CellText, ScreenCell};
 use super::{Exit, Inbox, LocalCamera, Outbox};
-use crate::model::{Ids, NodeId, PaneId, Shows};
+use crate::model::{Ids, NodeId, PaneId, Shows, Surface};
 use crate::wire::{
     ByeReason, ClientFrame, Cursor, Modes, ProcessSummary, RootEntry, SceneFrame, ServerFrame,
     Style, TerminalDelta, Welcome,
@@ -277,7 +277,9 @@ fn apply_dynamic_world(world: &mut World, ron_text: &str) -> Result<(), BevyErro
             // camera is rewritten to the local one so the whole tree lays out here.
             entity.insert((ChildOf(area), UiTargetCamera(camera)));
         }
-        if entity.contains::<Shows>() && !entity.contains::<TabIndex>() {
+        if (entity.contains::<Shows>() || entity.contains::<Surface>())
+            && !entity.contains::<TabIndex>()
+        {
             entity.insert(TabIndex(0));
         }
     }

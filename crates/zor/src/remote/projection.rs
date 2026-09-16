@@ -13,8 +13,8 @@ use bevy_reflect::prelude::*;
 
 use crate::model::{
     AttemptId, AttemptState, Attempts, Check, CheckId, CheckOf, CheckState, Machine, MachineId,
-    MachineName, Mirrors, ProjectionEntity, Projections, Required, Requirement, Task, TaskId,
-    TaskState, Title, Uncertain,
+    MachineName, Mirrors, NeedsInput, ProjectionEntity, Projections, Required, Requirement, Task,
+    TaskId, TaskState, Title, Uncertain,
 };
 
 #[derive(Component, Reflect, Clone, Debug, Default, PartialEq)]
@@ -26,6 +26,8 @@ pub struct TaskView {
     pub attempts: usize,
     pub current_attempt: Option<u64>,
     pub uncertain: bool,
+    /// An attempt of the task asked for input (`NeedsInput`).
+    pub needs_input: bool,
 }
 
 /// One observed pane: identity, the merged observation and its evidence
@@ -151,6 +153,9 @@ pub(super) fn sync(world: &mut World, mut scratch: Local<Scratch>) {
         let uncertain = attempts
             .iter()
             .any(|a| world.get::<Uncertain>(*a).is_some());
+        let needs_input = attempts
+            .iter()
+            .any(|a| world.get::<NeedsInput>(*a).is_some());
         let Some(view) = slot(&mut scratch.tasks, n, entity) else {
             continue;
         };
@@ -160,6 +165,7 @@ pub(super) fn sync(world: &mut World, mut scratch: Local<Scratch>) {
         view.attempts = attempts.len();
         view.current_attempt = current;
         view.uncertain = uncertain;
+        view.needs_input = needs_input;
         n += 1;
     }
     scratch.tasks.truncate(n);

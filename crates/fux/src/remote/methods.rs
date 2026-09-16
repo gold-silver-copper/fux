@@ -367,12 +367,14 @@ described!(
 );
 described!(
     /// `bevy_diagnostic` counters the server keeps (owner `events`): runner wake-ups since
-    /// start, live panes, attached viewers, retained event entries.
+    /// start, live panes, attached viewers, retained event entries, `SurfaceInput` events the
+    /// per-surface rate bound dropped.
     pub struct Diagnostics {
         pub wakeups: u64,
         pub panes_live: u32,
         pub viewers: u32,
         pub events_retained: u32,
+        pub surface_inputs_dropped: u64,
     }
 );
 
@@ -383,6 +385,7 @@ impl From<DiagnosticsSnapshot> for Diagnostics {
             panes_live: snapshot.panes_live,
             viewers: snapshot.viewers,
             events_retained: snapshot.events_retained,
+            surface_inputs_dropped: snapshot.surface_inputs_dropped,
         }
     }
 }

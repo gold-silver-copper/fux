@@ -313,6 +313,11 @@ fn handle(world: &mut World, viewer: Entity, request: ViewerRequest) -> Result<(
         ViewerRequest::Swap { direction } => {
             ops::swap(world, viewer, direction)?;
         }
+        ViewerRequest::SurfaceKey { node, bytes } => {
+            // Routed to the surface's provider as a `SurfaceInput { kind: Key }` event by the
+            // surface module (milestone 7, SurfaceEvents); never written to a PTY.
+            crate::surface::key_input(world, viewer, node, &bytes)?;
+        }
         ViewerRequest::NewRoot { template } => {
             let ws = world
                 .get::<Viewing>(viewer)
@@ -408,6 +413,7 @@ fn request_shape(request: &ViewerRequest) -> (&'static str, usize) {
         ViewerRequest::Split { .. } => ("Split", 0),
         ViewerRequest::ClosePane => ("ClosePane", 0),
         ViewerRequest::Swap { .. } => ("Swap", 0),
+        ViewerRequest::SurfaceKey { bytes, .. } => ("SurfaceKey", bytes.len()),
         ViewerRequest::NewRoot { .. } => ("NewRoot", 0),
         ViewerRequest::Detach => ("Detach", 0),
     }

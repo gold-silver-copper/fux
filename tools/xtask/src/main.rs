@@ -1,4 +1,5 @@
-//! Repository checks that are not unit tests: the dependency report of prompt section 2.
+//! Repository checks that are not unit tests: the dependency report of prompt section 2 and
+//! the multi-machine scenarios of prompt section 4.5.
 //!
 //! `cargo run --manifest-path tools/xtask/Cargo.toml -- deps` prints the resolved normal
 //! dependency graph of `fux` and `zor` and fails when a rule is violated:
@@ -7,6 +8,11 @@
 //!   bevy_text, bevy_sprite (prompt section 2; bevy_dev_tools is allowed);
 //! * every path to `bevy_render`/`wgpu`/`naga` goes through `bevy_remote -> bevy_dev_tools`
 //!   (the one recorded exception, see `docs/dependencies.md`).
+//!
+//! `… -- scenarios` builds `fux` and `zor`, runs two disposable stacks and drives the
+//! multi-machine scenarios through the CLIs and BRP (see [`scenarios`]).
+
+mod scenarios;
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -72,8 +78,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("scenarios") => match scenarios::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("scenarios: {e}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
-            eprintln!("usage: xtask deps");
+            eprintln!("usage: xtask deps | scenarios");
             ExitCode::FAILURE
         }
     }

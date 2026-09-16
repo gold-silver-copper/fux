@@ -38,13 +38,18 @@ Module ownership (one owner per file; shared contracts live in `model/` and `wir
 | `app.rs`, `runner.rs`, `cli.rs`, `config.rs`, `paths.rs` | App assembly, custom runner, signals, CLI, config, XDG paths | `fux::app::build`, `runner::run` |
 
 ## Next task
-Milestone 7: zor plugin host (`zor-plugin.toml`), machines catalog / supervision workers /
-resume intents, dashboard as a fux surface, koh composition (unavailable until koh forwards TCP
-upstream), multi-machine scenario harness in `tools/xtask`. Then milestone 8 (docs, changelog,
-benchmarks vs `main`, capability status refresh).
+Milestone 7 is in flight and the tree does not compile in `crates/zor`: finish the module roots
+(`machines.rs`, `dashboard.rs`, `plugins/hooks.rs`), the three method tables
+(`remote/{plugin,machine,dashboard}_methods.rs`), the milestone-7 tests, and the xtask scenario
+harness; then milestone 8 (docs, changelog, benchmarks vs `main`, capability status refresh).
+Full state transfer, contracts and ordered next actions:
+[`docs/prompts/continuation-prompt.md`](prompts/continuation-prompt.md).
 
 ## Open blockers
-* none. `bevy_render` in graph via `bevy_remote -> bevy_dev_tools` is an accepted deviation (docs/dependencies.md).
+* none blocking work. koh cannot forward the attachment stream until it gains TCP forwarding
+  upstream (milestone 7 reports `unavailable`); audible bell playback is unverified headless.
+* `bevy_render` in graph via `bevy_remote -> bevy_dev_tools` is an accepted deviation
+  (docs/dependencies.md).
 
 ## Resume
 ```

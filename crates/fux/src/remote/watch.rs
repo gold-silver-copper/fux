@@ -28,7 +28,7 @@ use std::collections::VecDeque;
 use super::methods::{Request, check_paths, invalid, to_value};
 use super::projection::is_allowed_type_path;
 use super::schema::described;
-use crate::events::{EVENT_TYPE_PATHS, Entry, EventLog, Gap};
+use crate::events::{EVENT_TYPE_PATHS, Entry, EventLog, Gap, Logged, SurfaceInput};
 use crate::model::ServerInstance;
 
 pub const EVENTS_WATCH_METHOD: &str = "fux/events+watch";
@@ -57,6 +57,9 @@ described!(
         pub workspace: Option<String>,
         /// The last cursor seen; absent starts at the present. Needs `instance`.
         pub cursor: Option<u64>,
+        /// Only `SurfaceInput` events of this surface leaf (its node id); the cursor still
+        /// advances past everything else.
+        pub surface: Option<u64>,
     }
 );
 described!(
@@ -98,6 +101,8 @@ pub enum State {
         cursor: u64,
         /// Reported before the next events.
         gap: Option<GapNotice>,
+        /// Only `SurfaceInput` events of this surface leaf.
+        surface: Option<u64>,
     },
     Observe {
         /// The observer entity, carrying its [`ObserveBuffer`]; despawned with the stream.
@@ -247,6 +252,7 @@ pub(super) fn open_events(req: &mut Request, world: &mut World) -> Result<State,
         workspace,
         cursor,
         gap,
+        surface: params.surface,
     })
 }
 
@@ -375,12 +381,13 @@ pub fn poll(world: &mut World) {
                 workspace,
                 cursor,
                 gap,
+                surface,
             } => {
                 // Retained entries wait for the channel; nothing is lost by skipping a tick.
                 if watch.sender.is_full() {
                     return true;
                 }
-                poll_events(world, workspace.as_deref(), cursor, gap)
+                poll_events(world, workspace.as_deref(), cursor, gap, *surface)
             }
             State::Observe { observer } => {
                 if watch.sender.is_full() {
@@ -412,6 +419,7 @@ fn poll_events(
     workspace: Option<&str>,
     cursor: &mut u64,
     gap: &mut Option<GapNotice>,
+    surface: Option<u64>,
 ) -> Option<BrpResult> {
     if let Some(gap) = gap.take() {
         return Some(to_value(EventsWatchItem {
@@ -420,29 +428,33 @@ fn poll_events(
         }));
     }
     let log = world.resource::<EventLog>();
-    let (events, missed) = match workspace {
-        Some(ws) => match log.read_after(ws, *cursor) {
-            Ok(entries) => (entries.iter().map(record).collect::<Vec<_>>(), None),
-            Err(gap) => (Vec::new(), Some(gap)),
-        },
-        None => {
-            let mut merged = Vec::new();
-            match log.read_any_after(*cursor, &mut merged) {
-                Ok(()) => (merged.into_iter().map(record).collect(), None),
-                Err(gap) => (Vec::new(), Some(gap)),
-            }
-        }
+    let mut merged = Vec::new();
+    let read = match workspace {
+        Some(ws) => log.read_after(ws, *cursor).map(|entries| merged.extend(entries)),
+        None => log.read_any_after(*cursor, &mut merged),
     };
-    if let Some(missed) = missed {
+    if let Err(missed) = read {
         *cursor = missed.resume;
         return Some(to_value(EventsWatchItem {
             gap: Some(notice(missed)),
             events: Vec::new(),
         }));
     }
-    let last = events.last()?.cursor;
-    *cursor = last;
+    *cursor = merged.last()?.cursor;
+    let events: Vec<EventRecord> = merged
+        .into_iter()
+        .filter(|entry| surface.is_none_or(|id| of_surface(entry, id)))
+        .map(record)
+        .collect();
+    if events.is_empty() {
+        return None;
+    }
     Some(to_value(EventsWatchItem { gap: None, events }))
+}
+
+/// Whether an entry is a `SurfaceInput` of the surface leaf `id`.
+fn of_surface(entry: &Entry, id: u64) -> bool {
+    entry.name == SurfaceInput::NAME && entry.event.get("surface").and_then(Value::as_u64) == Some(id)
 }
 
 fn record(entry: &Entry) -> EventRecord {

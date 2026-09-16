@@ -8,6 +8,11 @@
 //! picking backend turns the local mouse pointer into `Pointer<Press>` events for click-to-focus
 //! and tab-strip clicks.
 //!
+//! A surface leaf (`Surface` replicated, no `Shows`) is a focus target like a pane leaf: it
+//! sits in the navigation map, the ring and the tab order, but focusing it retargets nothing
+//! (it shows no pane) and keys typed on it leave as `ViewerRequest::SurfaceKey` for the
+//! surface's provider, never as pane `Input`.
+//!
 //! `TabNavigationPlugin` stays registered for its `AcquireFocus` observer (click-to-focus), but
 //! its window-level Tab handler is shadowed on purpose: `on_key` stops every keyboard event
 //! because the terminal never reports Shift as a key (`Shift-Tab` is one `CSI Z` event, so the
@@ -50,8 +55,11 @@ use super::paint::CellRect;
 use super::replicate::{Grid, Replicated, Roots, ShowingRoot, TargetPane};
 use super::{LocalCamera, Modal, Mode, Outbox, ViewerSystems, choosers, copy_mode, prompts};
 use crate::assets::Keybindings;
-use crate::model::{NodeId, PaneId, Shows, SplitDirection, ViewerRequest, Zoomed};
+use crate::model::{NodeId, PaneId, Shows, SplitDirection, Surface, ViewerRequest, Zoomed};
 use crate::wire::Modes;
+
+/// A focusable replicated leaf: a pane leaf or a surface leaf.
+type Leaf = (With<Replicated>, Or<(With<Shows>, With<Surface>)>);
 
 /// Prefix-mode chords bound to one-shot systems (`world.register_system`): the loaded
 /// [`Keybindings`] resolved through the [`Actions`] registry. Rebuilt on every reload.
@@ -171,6 +179,7 @@ fn on_key(
     bindings: Res<Bindings>,
     focus: Res<InputFocus>,
     leaves: Query<&Shows>,
+    surfaces: Query<&NodeId, (With<Surface>, With<Replicated>)>,
     grids: Query<&Grid>,
     mut outbox: ResMut<Outbox>,
     mut notice: ResMut<PendingNotice>,
@@ -187,6 +196,16 @@ fn on_key(
         Mode::Normal => {
             if chord == *bindings.prefix() {
                 next.set(Mode::Prefix);
+                return;
+            }
+            if let Ok(node) = surfaces.get(focused) {
+                buf.clear();
+                if keys::encode(&ev.input, Modes::default(), &mut buf) {
+                    outbox.push(ViewerRequest::SurfaceKey {
+                        node: *node,
+                        bytes: buf.clone(),
+                    });
+                }
                 return;
             }
             if !leaves.contains(focused) {
@@ -211,14 +230,15 @@ fn on_key(
     }
 }
 
-/// Bracketed paste reaches the focused pane as one `Input`, wrapped if the program asked, or
-/// the open prompt as one edit.
+/// Bracketed paste reaches the focused pane as one `Input`, wrapped if the program asked, the
+/// focused surface as one `SurfaceKey`, or the open prompt as one edit.
 fn on_paste(
     mut ev: On<FocusedInput<Ime>>,
     state: Res<State<Mode>>,
     next: Res<NextState<Mode>>,
     focus: Res<InputFocus>,
     leaves: Query<&Shows>,
+    surfaces: Query<&NodeId, (With<Surface>, With<Replicated>)>,
     grids: Query<&Grid>,
     mut outbox: ResMut<Outbox>,
     mut commands: Commands,
@@ -236,14 +256,23 @@ fn on_paste(
             keys::encode_paste(value, modes_of(focused, &leaves, &grids), &mut buf);
             outbox.push(ViewerRequest::Input(buf.clone()));
         }
+        Mode::Normal => {
+            if let Ok(node) = surfaces.get(focused) {
+                outbox.push(ViewerRequest::SurfaceKey {
+                    node: *node,
+                    bytes: value.as_bytes().to_vec(),
+                });
+            }
+        }
         _ => {}
     }
 }
 
-/// Focus on a leaf retargets the server (unless exact) and records the leaf in the ring.
+/// Focus on a leaf records it in the ring and, for a pane leaf, retargets the server (unless
+/// exact).
 fn on_focus_gained(
     ev: On<FocusGained>,
-    leaves: Query<(&Shows, &NodeId), With<Replicated>>,
+    leaves: Query<(Option<&Shows>, &NodeId), Leaf>,
     panes: Query<&PaneId>,
     target: Res<TargetPane>,
     exact: Option<Res<ExactAttachment>>,
@@ -255,7 +284,7 @@ fn on_focus_gained(
         return;
     };
     ring.push(*node);
-    let Ok(pane) = panes.get(shows.0) else {
+    let Ok(pane) = shows.map_or(Err(()), |s| panes.get(s.0).map_err(|_| ())) else {
         return;
     };
     if exact.is_some() || target.0 == Some(*pane) {
@@ -267,13 +296,14 @@ fn on_focus_gained(
 }
 
 /// Keeps `InputFocus` on the leaf showing the server's target pane: when the server's target
-/// changes, or when the focused leaf disappeared (re-instanced after a template edit). Local
-/// navigation is left alone while its `Target` request is in flight.
+/// changes, or when the focused leaf (pane or surface) disappeared (re-instanced after a
+/// template edit). Local navigation is left alone while its `Target` request is in flight.
 fn sync_focus(
     time: Res<Time>,
     target: Res<TargetPane>,
     panes: Query<&PaneId>,
     leaves: Query<(Entity, &Shows), With<Replicated>>,
+    focusable: Query<(), Leaf>,
     mut focus: ResMut<InputFocus>,
     mut pending: ResMut<PendingTarget>,
 ) {
@@ -281,7 +311,7 @@ fn sync_focus(
     if pending.pane.is_some() && (pending.pane == target.0 || pending.timer.is_finished()) {
         pending.pane = None;
     }
-    let focus_on_leaf = focus.get().is_some_and(|e| leaves.contains(e));
+    let focus_on_leaf = focus.get().is_some_and(|e| focusable.contains(e));
     if focus_on_leaf && (pending.pane.is_some() || !target.is_changed()) {
         return;
     }
@@ -300,12 +330,12 @@ fn sync_focus(
 }
 
 type LeafGeometryChanged = (
-    With<Shows>,
-    With<Replicated>,
+    Leaf,
     Or<(
         Changed<ComputedNode>,
         Changed<UiGlobalTransform>,
         Added<Shows>,
+        Added<Surface>,
     )>,
 );
 
@@ -322,13 +352,14 @@ const NAV_CONFIG: AutoNavigationConfig = AutoNavigationConfig {
 fn rebuild_nav_map(
     chrome: Res<ChromeRoots>,
     children: Query<&Children>,
-    leaves: Query<(&ComputedNode, &UiGlobalTransform), (With<Shows>, With<Replicated>)>,
+    leaves: Query<(&ComputedNode, &UiGlobalTransform), Leaf>,
     changed: Query<(), LeafGeometryChanged>,
     mut removed: RemovedComponents<Shows>,
+    mut removed_surfaces: RemovedComponents<Surface>,
     mut map: ResMut<DirectionalNavigationMap>,
     mut areas: Local<Vec<FocusableArea>>,
 ) {
-    let any_removed = removed.read().next().is_some();
+    let any_removed = removed.read().next().is_some() | removed_surfaces.read().next().is_some();
     if changed.is_empty() && !any_removed {
         return;
     }
@@ -444,7 +475,7 @@ fn split_below(mut outbox: ResMut<Outbox>) {
 /// `prefix ;`: focus the most recently focused other leaf that still exists.
 fn previous_pane(
     ring: Res<FocusRing>,
-    leaves: Query<(Entity, &NodeId), (With<Shows>, With<Replicated>)>,
+    leaves: Query<(Entity, &NodeId), Leaf>,
     exact: Option<Res<ExactAttachment>>,
     mut focus: ResMut<InputFocus>,
 ) {

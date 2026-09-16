@@ -10,6 +10,9 @@
 //! thin client. `Grant.workspace` is a scope name; zor tokens are unscoped for now.
 
 pub mod check_methods;
+pub mod dashboard_methods;
+pub mod machine_methods;
+pub mod plugin_methods;
 pub mod events;
 pub mod group_methods;
 pub mod methods;

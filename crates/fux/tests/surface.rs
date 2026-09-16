@@ -1,6 +1,7 @@
 //! Surfaces (prompt 3.13): a provider streams RON `DynamicWorld` deltas into a template leaf;
 //! fux validates them against the layout limits, applies them under the leaf, lays them out
-//! with everyone else and replicates them to viewers. `check_invariants` runs after every step.
+//! with everyone else and replicates them to viewers; a viewer's clicks, wheel and keys on the
+//! surface travel back as `SurfaceInput` events. `check_invariants` runs after every step.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -31,16 +32,22 @@ use serde_json::{Value, json};
 
 use fux::attach::{AttachAdapter, AttachEndpoint, AttachPlugin, AttachToken};
 use fux::config::Config;
+use fux::events::{DiagnosticsSnapshot, EventLog};
 use fux::layout::{LayoutError, ops};
 use fux::lifecycle::Clock;
 use fux::model::invariants::check_invariants;
 use fux::model::{
     Effect, Ids, Inbound, InstanceNode, InstanceOf, LayoutGeneration, Limits, NodeId, PaneTemplate,
-    ServerInstance, Surface, TemplateNode, ViewerCamera, Viewport,
+    PointerButton, PointerEvent, PointerKind, ServerInstance, Surface, TemplateNode, ViewerCamera,
+    ViewerId, ViewerRequest, Viewport,
 };
 use fux::remote::methods::{self, codes};
 use fux::remote::token::Tokens;
-use fux::surface::{self, MAX_UPDATES_PER_SECOND, SurfaceError, SurfaceState, Text};
+use fux::remote::watch::{self, EVENTS_WATCH_METHOD, Watches};
+use fux::surface::{
+    self, MAX_INPUT_BYTES, MAX_INPUTS_PER_SECOND, MAX_UPDATES_PER_SECOND, SurfaceError,
+    SurfaceInputDrops, SurfaceState, Text,
+};
 use fux::viewer::{self, Inbox, Painter};
 use fux::wire::{self, Hello, SceneFrame, ServerFrame};
 
@@ -849,6 +856,355 @@ fn close_despawns_the_subtree_and_frees_the_leaf() {
     ops::spawn_node(world, leaf, None, grow(), None).unwrap();
     let again = call(&mut app, "fux/surface.close", json!({ "surface": leaf_id }));
     assert_eq!(again.unwrap_err().code, codes::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Input back to the provider
+// ---------------------------------------------------------------------------------------------
+
+/// Sends one viewer request through the request path and runs an update.
+fn request(app: &mut App, viewer: Entity, request: ViewerRequest) {
+    app.world_mut()
+        .write_message(Inbound::ViewerRequest { viewer, request });
+    app.update();
+    check(app);
+}
+
+fn mouse(app: &mut App, viewer: Entity, col: u16, row: u16, kind: PointerKind) {
+    request(
+        app,
+        viewer,
+        ViewerRequest::Pointer(PointerEvent {
+            col,
+            row,
+            kind,
+            button: PointerButton::Left,
+            modifiers: 0,
+        }),
+    );
+}
+
+/// Every retained `SurfaceInput` of the `default` workspace.
+fn surface_inputs(world: &World) -> Vec<Value> {
+    world
+        .resource::<EventLog>()
+        .read_after("default", 0)
+        .unwrap()
+        .iter()
+        .filter(|e| e.name == "SurfaceInput")
+        .map(|e| e.event.clone())
+        .collect()
+}
+
+/// Opens `fux/events+watch` the way the dispatcher does, without the HTTP layer: the stream's
+/// items arrive on the receiver after each [`watch::poll`].
+fn events_watch(app: &mut App, params: Value) -> async_channel::Receiver<bevy_remote::BrpResult> {
+    let spec = methods::all_specs()
+        .find(|s| s.name == EVENTS_WATCH_METHOD)
+        .unwrap();
+    let methods::Handler::Watch(open) = spec.handler else {
+        panic!("{EVENTS_WATCH_METHOD} is not a stream");
+    };
+    let world = app.world_mut();
+    if !world.contains_resource::<Watches>() {
+        let mut watches = Watches::default();
+        watches.register(EVENTS_WATCH_METHOD, open);
+        world.insert_resource(watches);
+    }
+    let mut params = params;
+    params["token"] = json!(TOKEN);
+    params["instance"] = json!(NONCE);
+    let (sender, receiver) = async_channel::bounded(8);
+    watch::open(
+        world,
+        bevy_remote::BrpMessage {
+            method: EVENTS_WATCH_METHOD.to_owned(),
+            params: Some(params),
+            sender,
+        },
+    );
+    receiver
+}
+
+/// The names of the events one stream item carries, or nothing when the stream had none.
+fn item_names(receiver: &async_channel::Receiver<bevy_remote::BrpResult>) -> Vec<(String, Value)> {
+    let Ok(item) = receiver.try_recv() else {
+        return Vec::new();
+    };
+    let item = item.unwrap();
+    assert!(item["gap"].is_null(), "{item}");
+    item["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["name"].as_str().unwrap().to_owned(), e["event"].clone()))
+        .collect()
+}
+
+#[test]
+fn a_click_inside_a_surface_text_node_emits_one_press_with_the_ids() {
+    let mut app = app();
+    let (ws, _, pane_leaf, leaf) = opened(&mut app);
+    let viewer =
+        ops::attach_viewer(app.world_mut(), ws, Viewport { rows: 24, cols: 80 }, None).unwrap();
+    let viewer_id = app.world().get::<ViewerId>(viewer).unwrap().0;
+    let mut provider = Provider::new(&app);
+    let (_, rows) = provider.column(&["tasks", "checks", "notes"]);
+    let delta = provider.export_all();
+    surface::update(app.world_mut(), leaf, 1, true, &delta).unwrap();
+    app.update();
+    app.update();
+    check(&mut app);
+    let checks = app
+        .world()
+        .get::<SurfaceState>(leaf)
+        .unwrap()
+        .entity(rows[1])
+        .unwrap();
+    let (surface_id, checks_id, pane_leaf_id) = {
+        let world = app.world();
+        (
+            node_id(world, leaf),
+            node_id(world, checks),
+            node_id(world, pane_leaf),
+        )
+    };
+    let surface_stream = events_watch(&mut app, json!({ "workspace": "default", "cursor": 0, "surface": surface_id }));
+    let other_stream = events_watch(&mut app, json!({ "workspace": "default", "cursor": 0, "surface": pane_leaf_id }));
+    let plain_stream = events_watch(&mut app, json!({ "workspace": "default", "cursor": 0 }));
+
+    // The "checks" row spans columns 40..80 of row 1; press and release inside it.
+    mouse(&mut app, viewer, 45, 1, PointerKind::Move);
+    mouse(&mut app, viewer, 45, 1, PointerKind::Press);
+    let inputs = surface_inputs(app.world());
+    assert_eq!(inputs.len(), 1, "{inputs:?}");
+    assert_eq!(
+        inputs[0],
+        json!({
+            "surface": surface_id,
+            "node": checks_id,
+            "viewer": viewer_id,
+            "kind": "Press",
+            "col": 5,
+            "row": 1,
+            "bytes": [],
+        })
+    );
+    mouse(&mut app, viewer, 45, 1, PointerKind::Release);
+    mouse(&mut app, viewer, 45, 1, PointerKind::ScrollDown);
+    let inputs = surface_inputs(app.world());
+    assert_eq!(inputs.len(), 3, "{inputs:?}");
+    assert_eq!(inputs[1]["kind"], json!("Release"));
+    assert_eq!(inputs[2]["kind"], json!({ "Scroll": { "rows": 1 } }));
+    assert_eq!(inputs[2]["node"], json!(checks_id));
+    // Nothing reached the pane the viewer targets: a surface hit is the provider's alone.
+    assert!(
+        app.world_mut()
+            .resource_mut::<Messages<Effect>>()
+            .drain()
+            .all(|e| !matches!(e, Effect::WritePty { .. })),
+        "surface hits are never written to a PTY"
+    );
+    // A click on the pane leaf beside it is not a surface input.
+    mouse(&mut app, viewer, 10, 1, PointerKind::Move);
+    mouse(&mut app, viewer, 10, 1, PointerKind::Press);
+    assert_eq!(surface_inputs(app.world()).len(), 3);
+
+    // The filtered stream carries the surface's inputs and nothing else; the other surface's
+    // stream stays silent although its cursor moved; the plain stream carries everything.
+    watch::poll(app.world_mut());
+    let filtered = item_names(&surface_stream);
+    assert_eq!(filtered.len(), 3, "{filtered:?}");
+    assert!(filtered.iter().all(|(name, _)| name == "SurfaceInput"));
+    assert_eq!(filtered[0].1["node"], json!(checks_id));
+    assert!(item_names(&other_stream).is_empty());
+    let plain = item_names(&plain_stream);
+    assert!(
+        plain.iter().any(|(name, _)| name == "ViewerAttached"),
+        "{plain:?}"
+    );
+    assert_eq!(
+        plain.iter().filter(|(name, _)| name == "SurfaceInput").count(),
+        3
+    );
+    // Both streams are at the present now.
+    watch::poll(app.world_mut());
+    assert!(item_names(&surface_stream).is_empty());
+    assert!(item_names(&plain_stream).is_empty());
+    mouse(&mut app, viewer, 45, 2, PointerKind::Press);
+    watch::poll(app.world_mut());
+    let next = item_names(&surface_stream);
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].1["row"], json!(2));
+    assert!(item_names(&other_stream).is_empty());
+}
+
+#[test]
+fn keys_on_a_focused_surface_leaf_arrive_as_key_events_with_bytes() {
+    let mut app = app();
+    let (ws, _, pane_leaf, leaf) = opened(&mut app);
+    let viewer =
+        ops::attach_viewer(app.world_mut(), ws, Viewport { rows: 24, cols: 80 }, None).unwrap();
+    let mut provider = Provider::new(&app);
+    let (_, rows) = provider.column(&["tasks"]);
+    let delta = provider.export_all();
+    surface::update(app.world_mut(), leaf, 1, true, &delta).unwrap();
+    app.update();
+    let row = app
+        .world()
+        .get::<SurfaceState>(leaf)
+        .unwrap()
+        .entity(rows[0])
+        .unwrap();
+    let (surface_id, row_id) = (node_id(app.world(), leaf), node_id(app.world(), row));
+
+    request(
+        &mut app,
+        viewer,
+        ViewerRequest::SurfaceKey {
+            node: NodeId(surface_id),
+            bytes: b"\x1b[A".to_vec(),
+        },
+    );
+    let inputs = surface_inputs(app.world());
+    assert_eq!(inputs.len(), 1, "{inputs:?}");
+    assert_eq!(inputs[0]["kind"], json!("Key"));
+    assert_eq!(inputs[0]["surface"], json!(surface_id));
+    assert_eq!(inputs[0]["node"], json!(surface_id));
+    assert_eq!(inputs[0]["bytes"], json!([27, 91, 65]));
+    assert_eq!(inputs[0]["col"], json!(0));
+
+    // A node under the surface names itself and its leaf.
+    request(
+        &mut app,
+        viewer,
+        ViewerRequest::SurfaceKey {
+            node: NodeId(row_id),
+            bytes: b"x".to_vec(),
+        },
+    );
+    let inputs = surface_inputs(app.world());
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(inputs[1]["node"], json!(row_id));
+    assert_eq!(inputs[1]["surface"], json!(surface_id));
+
+    // Long runs (a paste) are split so every body stays bounded.
+    let long: Vec<u8> = (0..100u8).collect();
+    request(
+        &mut app,
+        viewer,
+        ViewerRequest::SurfaceKey {
+            node: NodeId(surface_id),
+            bytes: long.clone(),
+        },
+    );
+    let inputs = surface_inputs(app.world());
+    assert_eq!(inputs.len(), 4);
+    let chunk = |i: usize| -> Vec<u8> {
+        inputs[i]["bytes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_u64().unwrap() as u8)
+            .collect()
+    };
+    assert_eq!(chunk(2), long[..MAX_INPUT_BYTES]);
+    assert_eq!(chunk(3), long[MAX_INPUT_BYTES..]);
+
+    // Keys for a pane leaf, an unknown node or from a viewer of another workspace are refused
+    // and never reach a PTY.
+    let pane_leaf_id = node_id(app.world(), pane_leaf);
+    request(
+        &mut app,
+        viewer,
+        ViewerRequest::SurfaceKey {
+            node: NodeId(pane_leaf_id),
+            bytes: b"q".to_vec(),
+        },
+    );
+    request(
+        &mut app,
+        viewer,
+        ViewerRequest::SurfaceKey {
+            node: NodeId(9_999),
+            bytes: b"q".to_vec(),
+        },
+    );
+    assert_eq!(surface_inputs(app.world()).len(), 4);
+    assert_eq!(
+        surface::key_input(app.world_mut(), viewer, NodeId(9_999), b"q"),
+        Err(SurfaceError::UnknownNode(NodeId(9_999)))
+    );
+    assert_eq!(
+        surface::key_input(app.world_mut(), viewer, NodeId(pane_leaf_id), b"q"),
+        Err(SurfaceError::NotASurface(pane_leaf))
+    );
+    let other_ws = ops::new_workspace(app.world_mut(), "other").unwrap();
+    let stranger =
+        ops::attach_viewer(app.world_mut(), other_ws, Viewport { rows: 24, cols: 80 }, None)
+            .unwrap();
+    assert_eq!(
+        surface::key_input(app.world_mut(), stranger, NodeId(surface_id), b"q"),
+        Err(SurfaceError::NotViewing(stranger))
+    );
+    assert!(
+        app.world_mut()
+            .resource_mut::<Messages<Effect>>()
+            .drain()
+            .all(|e| !matches!(e, Effect::WritePty { .. })),
+        "surface keys are never written to a PTY"
+    );
+}
+
+#[test]
+fn surface_inputs_are_bounded_per_surface_per_second() {
+    let mut app = app();
+    let (ws, root, _, leaf) = opened(&mut app);
+    let viewer =
+        ops::attach_viewer(app.world_mut(), ws, Viewport { rows: 24, cols: 80 }, None).unwrap();
+    let other = ops::spawn_node(app.world_mut(), root, None, grow(), None).unwrap();
+    surface::open(app.world_mut(), other, "zor").unwrap();
+    app.update();
+    let id = NodeId(node_id(app.world(), leaf));
+    let other_id = NodeId(node_id(app.world(), other));
+    let excess = 50;
+    for _ in 0..MAX_INPUTS_PER_SECOND + excess {
+        surface::key_input(app.world_mut(), viewer, id, b"k").unwrap();
+    }
+    assert_eq!(
+        surface_inputs(app.world()).len(),
+        MAX_INPUTS_PER_SECOND as usize
+    );
+    assert_eq!(
+        app.world().resource::<SurfaceInputDrops>().0,
+        u64::from(excess)
+    );
+    // The bound is per surface: the other one still has its full budget.
+    surface::key_input(app.world_mut(), viewer, other_id, b"k").unwrap();
+    assert_eq!(
+        surface_inputs(app.world()).len(),
+        MAX_INPUTS_PER_SECOND as usize + 1
+    );
+    // The counter reaches `fux/server.info`.
+    app.update();
+    assert_eq!(
+        app.world()
+            .resource::<DiagnosticsSnapshot>()
+            .surface_inputs_dropped,
+        u64::from(excess)
+    );
+    // The window moves with the server clock.
+    app.world_mut().resource_mut::<Clock>().now_ms += 1000;
+    surface::key_input(app.world_mut(), viewer, id, b"k").unwrap();
+    assert_eq!(
+        surface_inputs(app.world()).len(),
+        MAX_INPUTS_PER_SECOND as usize + 2
+    );
+    assert_eq!(
+        app.world().resource::<SurfaceInputDrops>().0,
+        u64::from(excess)
+    );
+    check(&mut app);
 }
 
 // ---------------------------------------------------------------------------------------------

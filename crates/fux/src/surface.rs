@@ -3,8 +3,12 @@
 //! the surface vocabulary and writes it into the **template** subtree under the leaf through the
 //! surface's provider-id → entity map (`DynamicWorld::write_to_world_with`), [`close`] despawns
 //! the subtree. Every commit bumps the root's [`LayoutGeneration`], so instances re-clone and
-//! viewers receive the subtree like any other nodes. Input back to the provider is milestone 4
-//! (`fux/events+watch`).
+//! viewers receive the subtree like any other nodes. Input travels back to the provider as
+//! [`SurfaceInput`] events on `fux/events+watch`: [`pointer_input`] from the pointer policy
+//! (`pointer.rs`) for presses, releases and the wheel on any node under the leaf,
+//! [`key_input`] from `ViewerRequest::SurfaceKey` for keys typed while a viewer's focus is on
+//! the leaf. Both are bounded per surface by [`MAX_INPUTS_PER_SECOND`]; the excess is dropped
+//! and counted ([`SurfaceInputDrops`], `fux/server.info`).
 //!
 //! Delta contract: entity ids are the provider's and stable across updates; `ChildOf` names a
 //! parent inside the delta (or, in a partial update, an entity already in the surface); an
@@ -27,11 +31,13 @@ use bevy_world_serialization::serde::WorldDeserializer;
 use bevy_world_serialization::{DynamicEntity, DynamicWorld};
 use serde::de::DeserializeSeed as _;
 
+use crate::events::{SurfaceInput, SurfaceInputKind};
 use crate::layout::instances;
+use crate::lifecycle::now_ms;
 use crate::model::invariants::root_of_template;
 use crate::model::{
-    Ids, LayoutGeneration, Limits, MAX_DEPTH, Places, RootOf, Roots, Surface, TemplateNode,
-    TemplateRoot,
+    Ids, LayoutGeneration, Limits, MAX_DEPTH, NodeId, Places, RootOf, Roots, Surface,
+    TemplateNode, TemplateRoot, ViewerId, Viewing,
 };
 
 // Provider pacing bounds. They are not configuration (`Limits` is the user's `[limits]` table
@@ -45,6 +51,14 @@ pub const MAX_BYTES_PER_SECOND: usize = 256 * 1024;
 pub const MAX_TEXT_BYTES: usize = 4096;
 /// Per-surface node bound as a divisor of `Limits.nodes_per_workspace`.
 pub const NODES_PER_WORKSPACE_DIVISOR: usize = 4;
+/// `SurfaceInput` events one surface emits per second; the excess is dropped and counted.
+pub const MAX_INPUTS_PER_SECOND: u32 = 200;
+/// Bytes one `SurfaceInput { kind: Key }` carries; longer key runs are split into several.
+pub const MAX_INPUT_BYTES: usize = 64;
+
+/// `SurfaceInput` events dropped by the rate bound since start, server-wide.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SurfaceInputDrops(pub u64);
 
 /// A single line of text a node paints, left-aligned and clipped to its content rect. fux
 /// defines it because `bevy_text` is unused (prompt 3.13).
@@ -60,6 +74,7 @@ pub struct SurfaceState {
     pub revision: u64,
     entities: EntityHashMap<Entity>,
     pacing: Pacing,
+    inputs: InputPacing,
 }
 
 impl SurfaceState {
@@ -97,6 +112,29 @@ impl Pacing {
         self.updates += 1;
         self.bytes += bytes;
         Ok(())
+    }
+}
+
+/// The per-surface `SurfaceInput` window.
+#[derive(Debug, Default, Clone, Copy)]
+struct InputPacing {
+    window_start_ms: u64,
+    events: u32,
+}
+
+impl InputPacing {
+    fn admit(&mut self, now_ms: u64) -> bool {
+        if now_ms.saturating_sub(self.window_start_ms) >= 1000 {
+            *self = Self {
+                window_start_ms: now_ms,
+                events: 0,
+            };
+        }
+        if self.events >= MAX_INPUTS_PER_SECOND {
+            return false;
+        }
+        self.events += 1;
+        true
     }
 }
 
@@ -143,6 +181,10 @@ pub enum SurfaceError {
         bytes: usize,
         max: usize,
     },
+    /// `SurfaceKey` named a node id no template node carries.
+    UnknownNode(NodeId),
+    /// The viewer views another workspace than the surface's.
+    NotViewing(Entity),
 }
 
 impl core::fmt::Display for SurfaceError {
@@ -178,6 +220,8 @@ impl core::fmt::Display for SurfaceError {
             Self::DepthExceeded { depth, max } => write!(f, "template depth {depth} exceeds {max}"),
             Self::TooManyNodes { count, max } => write!(f, "{count} surface nodes exceed {max}"),
             Self::TextTooLong { bytes, max } => write!(f, "text of {bytes} bytes exceeds {max}"),
+            Self::UnknownNode(id) => write!(f, "no node {id}"),
+            Self::NotViewing(v) => write!(f, "viewer {v} does not view the surface's workspace"),
         }
     }
 }
@@ -215,9 +259,104 @@ pub fn open(world: &mut World, node: Entity, provider: &str) -> R<()> {
             revision: 0,
             entities: EntityHashMap::default(),
             pacing: Pacing::default(),
+            inputs: InputPacing::default(),
         },
     ));
     bump(world, root);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Input back to the provider
+// ---------------------------------------------------------------------------------------------
+
+/// The surface leaf a template node is or lies under.
+pub fn surface_of(world: &World, mut node: Entity) -> Option<Entity> {
+    for _ in 0..=MAX_DEPTH {
+        if world.get::<Surface>(node).is_some() {
+            return Some(node);
+        }
+        node = world.get::<ChildOf>(node)?.parent();
+    }
+    None
+}
+
+/// A viewer's pointer press, release or wheel on the template node `node` (the leaf or one
+/// under it) at cell (`col`, `row`) of the leaf's content box.
+pub fn pointer_input(
+    world: &mut World,
+    viewer: Entity,
+    node: Entity,
+    kind: SurfaceInputKind,
+    col: u16,
+    row: u16,
+) -> R<()> {
+    let surface = surface_of(world, node).ok_or(SurfaceError::NotASurface(node))?;
+    emit(world, viewer, surface, node, kind, col, row, &[])
+}
+
+/// Keys a viewer typed while its focus was on the surface leaf `node` (or a node under it):
+/// one `Key` event per [`MAX_INPUT_BYTES`] chunk, each spending the rate budget.
+pub fn key_input(world: &mut World, viewer: Entity, node: NodeId, bytes: &[u8]) -> R<()> {
+    let entity = world
+        .resource::<Ids>()
+        .node(node)
+        .ok_or(SurfaceError::UnknownNode(node))?;
+    let surface = surface_of(world, entity).ok_or(SurfaceError::NotASurface(entity))?;
+    for chunk in bytes.chunks(MAX_INPUT_BYTES.max(1)) {
+        emit(world, viewer, surface, entity, SurfaceInputKind::Key, 0, 0, chunk)?;
+    }
+    Ok(())
+}
+
+/// Triggers one `SurfaceInput` for `viewer` on `node` under `surface`, or drops it (counted)
+/// when the surface's window is spent.
+fn emit(
+    world: &mut World,
+    viewer: Entity,
+    surface: Entity,
+    node: Entity,
+    kind: SurfaceInputKind,
+    col: u16,
+    row: u16,
+    bytes: &[u8],
+) -> R<()> {
+    let root = root_of_template(world, surface).ok_or(SurfaceError::NotATemplateNode(surface))?;
+    let scope = world
+        .get::<RootOf>(root)
+        .map(|r| r.0)
+        .ok_or(SurfaceError::NotATemplateNode(surface))?;
+    if world.get::<Viewing>(viewer).map(|v| v.0) != Some(scope) {
+        return Err(SurfaceError::NotViewing(viewer));
+    }
+    let (Some(&viewer_id), Some(&surface_id), Some(&node_id)) = (
+        world.get::<ViewerId>(viewer),
+        world.get::<NodeId>(surface),
+        world.get::<NodeId>(node),
+    ) else {
+        return Err(SurfaceError::NotViewing(viewer));
+    };
+    let now = now_ms(world);
+    let admitted = world
+        .get_mut::<SurfaceState>(surface)
+        .ok_or(SurfaceError::NotASurface(surface))?
+        .inputs
+        .admit(now);
+    if !admitted {
+        world.resource_mut::<SurfaceInputDrops>().0 += 1;
+        return Ok(());
+    }
+    world.trigger(SurfaceInput {
+        entity: surface,
+        scope,
+        surface: surface_id,
+        node: node_id,
+        viewer: viewer_id,
+        kind,
+        col,
+        row,
+        bytes: bytes.to_vec(),
+    });
     Ok(())
 }
 
@@ -639,6 +778,7 @@ pub struct SurfacePlugin;
 
 impl Plugin for SurfacePlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<Text>();
+        app.init_resource::<SurfaceInputDrops>()
+            .register_type::<Text>();
     }
 }

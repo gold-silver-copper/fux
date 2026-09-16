@@ -61,6 +61,12 @@ pub enum Inbound {
         call: u64,
         result: Result<Value, String>,
     },
+    /// A plugin process (action, build, startup or hook) exited.
+    PluginExited {
+        plugin: Entity,
+        run: u64,
+        code: Option<i32>,
+    },
     Signal(Signal),
     /// An adapter queued work for an in-World drain (a parked BRP request); carries nothing.
     Wake,
@@ -99,6 +105,20 @@ pub enum Effect {
         call: u64,
         method: String,
         params: Value,
+    },
+    /// Run a plugin process with its environment; answered by `Inbound::PluginExited`.
+    RunPlugin {
+        plugin: Entity,
+        run: u64,
+        argv: Vec<String>,
+        cwd: Option<String>,
+        env: Vec<(String, String)>,
+        log: std::path::PathBuf,
+    },
+    /// Kill a plugin process group (disable, restart); answered by `PluginExited`.
+    KillPlugin {
+        plugin: Entity,
+        run: u64,
     },
     /// The World has nothing live left; the runner returns `AppExit`.
     Exit {

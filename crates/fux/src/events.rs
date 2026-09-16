@@ -28,11 +28,12 @@ use serde_json::Value;
 use crate::lifecycle::Clock;
 use crate::model::*;
 use crate::runner::StepCounter;
+use crate::surface::SurfaceInputDrops;
 
 /// Bytes of event bodies retained per workspace stream (the old protocol's 512 KiB).
 pub const MAX_STREAM_BYTES: usize = 512 * 1024;
 /// Reflected type paths of the public events, the `world.observe+watch` allowlist.
-pub const EVENT_TYPE_PATHS: [&str; 10] = [
+pub const EVENT_TYPE_PATHS: [&str; 11] = [
     "fux::events::PaneSpawned",
     "fux::events::PaneOutput",
     "fux::events::PaneTitleChanged",
@@ -43,6 +44,7 @@ pub const EVENT_TYPE_PATHS: [&str; 10] = [
     "fux::events::ViewerAttached",
     "fux::events::ViewerDetached",
     "fux::events::Bell",
+    "fux::events::SurfaceInput",
 ];
 
 /// Runner steps since start (`fux/runner/wakeups`).
@@ -53,6 +55,9 @@ pub const PANES_LIVE: DiagnosticPath = DiagnosticPath::const_new("fux/panes/live
 pub const VIEWERS: DiagnosticPath = DiagnosticPath::const_new("fux/viewers");
 /// Entries retained by the event log across every stream.
 pub const EVENTS_RETAINED: DiagnosticPath = DiagnosticPath::const_new("fux/events/retained");
+/// `SurfaceInput` events dropped by the per-surface rate bound since start.
+pub const SURFACE_INPUTS_DROPPED: DiagnosticPath =
+    DiagnosticPath::const_new("fux/surface/inputs_dropped");
 
 // ---------------------------------------------------------------------------------------------
 // Events
@@ -137,6 +142,35 @@ lifecycle_event!(ViewerDetached { viewer: ViewerId });
 lifecycle_event!(
     /// The terminal rang (BEL); one event per update however many rang.
     Bell { pane: PaneId }
+);
+
+/// What a viewer did on a surface node.
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum SurfaceInputKind {
+    Press,
+    Release,
+    Scroll { rows: i32 },
+    /// Keys typed while the viewer's focus was on the surface leaf; the event's `bytes` carry
+    /// them.
+    Key,
+}
+
+lifecycle_event!(
+    /// A viewer acted on a surface (prompt 3.13): a pointer press, release or wheel on `node`
+    /// (the surface leaf itself or a node the provider streamed under it) at cell (`col`,
+    /// `row`) of the leaf's content box, or keys typed while the viewer's focus was on the
+    /// leaf. `bytes` is empty except for `Key`, where it holds at most
+    /// [`crate::surface::MAX_INPUT_BYTES`]. At most [`crate::surface::MAX_INPUTS_PER_SECOND`]
+    /// per surface; the excess is dropped and counted in `fux/server.info`.
+    SurfaceInput {
+        surface: NodeId,
+        node: NodeId,
+        viewer: ViewerId,
+        kind: SurfaceInputKind,
+        col: u16,
+        row: u16,
+        bytes: Vec<u8>,
+    }
 );
 
 // ---------------------------------------------------------------------------------------------
@@ -464,6 +498,7 @@ pub struct DiagnosticsSnapshot {
     pub panes_live: u32,
     pub viewers: u32,
     pub events_retained: u32,
+    pub surface_inputs_dropped: u64,
 }
 
 pub struct EventsPlugin;
@@ -488,10 +523,12 @@ impl Plugin for EventsPlugin {
             .register_type::<ViewerAttached>()
             .register_type::<ViewerDetached>()
             .register_type::<Bell>()
+            .register_type::<SurfaceInput>()
             .register_diagnostic(Diagnostic::new(WAKEUPS))
             .register_diagnostic(Diagnostic::new(PANES_LIVE))
             .register_diagnostic(Diagnostic::new(VIEWERS))
             .register_diagnostic(Diagnostic::new(EVENTS_RETAINED))
+            .register_diagnostic(Diagnostic::new(SURFACE_INPUTS_DROPPED))
             .add_observer(log_event::<PaneSpawned>)
             .add_observer(log_event::<PaneOutput>)
             .add_observer(log_event::<PaneTitleChanged>)
@@ -502,6 +539,7 @@ impl Plugin for EventsPlugin {
             .add_observer(log_event::<ViewerAttached>)
             .add_observer(log_event::<ViewerDetached>)
             .add_observer(log_event::<Bell>)
+            .add_observer(log_event::<SurfaceInput>)
             .add_observer(viewer_attached)
             .add_observer(viewer_detached)
             .add_observer(pane_closed)
@@ -615,6 +653,7 @@ fn diagnostics(
     mut diagnostics: Diagnostics,
     steps: Res<StepCounter>,
     log: Res<EventLog>,
+    drops: Res<SurfaceInputDrops>,
     panes: Query<&Process, (With<Pane>, Allow<Disabled>)>,
     viewers: Query<(), With<Viewer>>,
 ) {
@@ -623,12 +662,14 @@ fn diagnostics(
         panes_live: u32::try_from(panes.iter().filter(|p| p.is_live()).count()).unwrap_or(u32::MAX),
         viewers: u32::try_from(viewers.iter().count()).unwrap_or(u32::MAX),
         events_retained: u32::try_from(log.retained()).unwrap_or(u32::MAX),
+        surface_inputs_dropped: drops.0,
     };
     snapshot.set_if_neq(next);
     diagnostics.add_measurement(&WAKEUPS, || next.wakeups as f64);
     diagnostics.add_measurement(&PANES_LIVE, || f64::from(next.panes_live));
     diagnostics.add_measurement(&VIEWERS, || f64::from(next.viewers));
     diagnostics.add_measurement(&EVENTS_RETAINED, || f64::from(next.events_retained));
+    diagnostics.add_measurement(&SURFACE_INPUTS_DROPPED, || next.surface_inputs_dropped as f64);
 }
 
 // ---------------------------------------------------------------------------------------------

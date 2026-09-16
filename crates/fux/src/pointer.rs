@@ -14,6 +14,9 @@
 //! * Panes that report the mouse (`Terminal::modes`) receive the press, release, motion and
 //!   wheel translated to their protocol (SGR 1006 or X10) as `Effect::WritePty`; the right
 //!   button follows the pane's [`RightClickPolicy`].
+//! * A press, release or wheel on any instance node under a surface leaf (prompt 3.13) is the
+//!   provider's: it becomes a `SurfaceInput` event through [`surface::pointer_input`], with
+//!   the cell relative to the leaf's content box, and stops there.
 //!
 //! Drag state lives on the viewer's pointer entity ([`PointerDrag`]), not on the dragged
 //! instance: a live resize re-clones the instances under the pointer, and `bevy_picking` keeps
@@ -40,10 +43,12 @@ use bevy_ui::{
     UiGlobalTransform,
 };
 
+use crate::events::SurfaceInputKind;
 use crate::layout::Side;
 use crate::layout::ops::{self, GridAxis};
 use crate::layout::picking::HitRegion;
 use crate::model::*;
+use crate::surface;
 use crate::terminal::Terminal;
 use crate::wire::{Modes, MouseMode};
 
@@ -258,22 +263,107 @@ fn shown_pane(leaves: &Query<&Shows>, entity: Entity) -> Option<Entity> {
     leaves.get(entity).ok().map(|s| s.0)
 }
 
+/// The instance surface leaf a picked instance node is or lies under (instances carry the
+/// `Surface` marker of their template).
+#[derive(SystemParam)]
+struct Surfaces<'w, 's> {
+    surfaces: Query<'w, 's, (), With<Surface>>,
+    child_of: Query<'w, 's, &'static ChildOf>,
+}
+
+impl Surfaces<'_, '_> {
+    /// Whether the chain from `node` up to (and including) its surface leaf `leaf` contains a
+    /// scroll container: such a node scrolls itself and must keep the event bubbling to it,
+    /// rather than being reported to the provider as `SurfaceInput` at the child that was hit.
+    fn scroll_ancestor(&self, nodes: &Query<&Node>, leaf: Entity, node: Entity) -> bool {
+        let mut cursor = Some(node);
+        for _ in 0..=MAX_DEPTH {
+            let Some(current) = cursor else {
+                return false;
+            };
+            if nodes
+                .get(current)
+                .is_ok_and(|n| n.overflow.y == OverflowAxis::Scroll)
+            {
+                return true;
+            }
+            if current == leaf {
+                return false;
+            }
+            cursor = self.child_of.get(current).ok().map(ChildOf::parent);
+        }
+        false
+    }
+
+    fn leaf_of(&self, mut node: Entity) -> Option<Entity> {
+        for _ in 0..=MAX_DEPTH {
+            if self.surfaces.contains(node) {
+                return Some(node);
+            }
+            node = self.child_of.get(node).ok()?.parent();
+        }
+        None
+    }
+}
+
+/// Queues one `SurfaceInput` for the picked instance `node` under the instance leaf `leaf`.
+fn surface_input(
+    commands: &mut Commands,
+    viewer: Entity,
+    leaf: Entity,
+    node: Entity,
+    position: Vec2,
+    kind: SurfaceInputKind,
+) {
+    commands.queue(move |world: &mut World| {
+        let Some(template) = world.get::<InstanceOf>(node).map(|i| i.0) else {
+            return;
+        };
+        let (col, row) = surface_cell(world, leaf, position).unwrap_or((0, 0));
+        if let Err(error) = surface::pointer_input(world, viewer, template, kind, col, row) {
+            debug!("surface input on {node}: {error}");
+        }
+    });
+}
+
+/// The 0-based cell of the instance surface leaf's content box under a viewport position.
+fn surface_cell(world: &World, leaf: Entity, position: Vec2) -> Option<(u16, u16)> {
+    let computed = world.get::<ComputedNode>(leaf)?;
+    let transform = world.get::<UiGlobalTransform>(leaf)?;
+    let origin = transform.translation - computed.size * 0.5 + computed.content_inset().min_inset;
+    let local = (position - origin).floor().max(Vec2::ZERO);
+    let cell = |v: f32| u16::try_from(v as u32).ok();
+    cell(local.x).zip(cell(local.y))
+}
+
 fn on_press(
-    press: On<Pointer<Press>>,
+    mut press: On<Pointer<Press>>,
     owners: Owners,
     leaves: Query<&Shows>,
+    surfaces: Surfaces,
     mut commands: Commands,
 ) {
-    let Some(pane) = shown_pane(&leaves, press.entity) else {
-        return;
-    };
     let Some((viewer, pointer)) = owners.of(press.pointer_id) else {
         return;
     };
-    let modifiers = owners.modifiers(pointer);
     let leaf = press.entity;
-    let button = press.event.button;
     let position = press.pointer_location.position;
+    let Some(pane) = shown_pane(&leaves, leaf) else {
+        if let Some(surface) = surfaces.leaf_of(leaf) {
+            press.propagate(false);
+            surface_input(
+                &mut commands,
+                viewer,
+                surface,
+                leaf,
+                position,
+                SurfaceInputKind::Press,
+            );
+        }
+        return;
+    };
+    let modifiers = owners.modifiers(pointer);
+    let button = press.event.button;
     commands.queue(move |world: &mut World| {
         if world.get::<ExactTarget>(viewer).is_none()
             && let Err(error) = ops::target(world, viewer, pane)
@@ -297,21 +387,33 @@ fn on_press(
 }
 
 fn on_release(
-    release: On<Pointer<Release>>,
+    mut release: On<Pointer<Release>>,
     owners: Owners,
     leaves: Query<&Shows>,
+    surfaces: Surfaces,
     mut commands: Commands,
 ) {
-    let Some(pane) = shown_pane(&leaves, release.entity) else {
-        return;
-    };
     let Some((viewer, pointer)) = owners.of(release.pointer_id) else {
         return;
     };
-    let modifiers = owners.modifiers(pointer);
     let leaf = release.entity;
-    let button = release.event.button;
     let position = release.pointer_location.position;
+    let Some(pane) = shown_pane(&leaves, leaf) else {
+        if let Some(surface) = surfaces.leaf_of(leaf) {
+            release.propagate(false);
+            surface_input(
+                &mut commands,
+                viewer,
+                surface,
+                leaf,
+                position,
+                SurfaceInputKind::Release,
+            );
+        }
+        return;
+    };
+    let modifiers = owners.modifiers(pointer);
+    let button = release.event.button;
     commands.queue(move |world: &mut World| {
         if button == PickButton::Primary && modifiers & PointerEvent::ALT != 0 {
             return;
@@ -512,11 +614,13 @@ fn on_drag_drop(
 }
 
 /// Wheel over a pane that reports the mouse goes to the pane; otherwise it scrolls the pane's
-/// history, or the nearest `Overflow::scroll` container's `ScrollPosition`.
+/// history, or the nearest `Overflow::scroll` container's `ScrollPosition`. Under a surface
+/// leaf the wheel is the provider's.
 fn on_scroll(
     mut scroll: On<Pointer<Scroll>>,
     owners: Owners,
     leaves: Query<&Shows>,
+    surfaces: Surfaces,
     nodes: Query<&Node>,
     mut commands: Commands,
 ) {
@@ -525,34 +629,10 @@ fn on_scroll(
     };
     let rows = -scroll.event.y.round() as i32;
     let node = scroll.entity;
-    if let Some(pane) = shown_pane(&leaves, node) {
-        scroll.propagate(false);
-        let modifiers = owners.modifiers(pointer);
-        let position = scroll.pointer_location.position;
-        let button = if scroll.event.y > 0.0 {
-            Report::WHEEL_UP
-        } else {
-            Report::WHEEL_DOWN
-        };
-        commands.queue(move |world: &mut World| {
-            if modes_of(world, pane).is_some_and(|m| m.mouse != MouseMode::None) {
-                report_code(
-                    world,
-                    node,
-                    pane,
-                    position,
-                    button,
-                    modifiers,
-                    Report::Press,
-                );
-            } else if rows != 0
-                && let Err(error) = ops::scroll(world, viewer, node, rows)
-            {
-                debug!("wheel history on {node}: {error}");
-            }
-        });
-        return;
-    }
+
+    // A scroll container scrolls itself wherever it lives, including inside a surface: the
+    // provider's `ScrollPosition` vocabulary (prompt 3.13) is laid out by fux, not by the
+    // provider's own input handling.
     if nodes
         .get(node)
         .is_ok_and(|n| n.overflow.y == OverflowAxis::Scroll)
@@ -564,6 +644,46 @@ fn on_scroll(
         commands.queue(move |world: &mut World| {
             if let Err(error) = ops::scroll(world, viewer, node, rows) {
                 debug!("wheel scroll on {node}: {error}");
+            }
+        });
+        return;
+    }
+    // Anything else under a surface leaf belongs to the provider (prompt 3.13) — unless the
+    // chain up to the surface leaf holds a scroll container, which scrolls itself through the
+    // bubble below when the event is left to propagate.
+    if let Some(surface) = surfaces.leaf_of(node) {
+        if surfaces.scroll_ancestor(&nodes, surface, node) {
+            return;
+        }
+        scroll.propagate(false);
+        if rows != 0 {
+            surface_input(
+                &mut commands,
+                viewer,
+                surface,
+                node,
+                scroll.pointer_location.position,
+                SurfaceInputKind::Scroll { rows },
+            );
+        }
+        return;
+    }
+    if let Some(pane) = shown_pane(&leaves, node) {
+        scroll.propagate(false);
+        let modifiers = owners.modifiers(pointer);
+        let position = scroll.pointer_location.position;
+        let button = if scroll.event.y > 0.0 {
+            Report::WHEEL_UP
+        } else {
+            Report::WHEEL_DOWN
+        };
+        commands.queue(move |world: &mut World| {
+            if modes_of(world, pane).is_some_and(|m| m.mouse != MouseMode::None) {
+                report_code(world, node, pane, position, button, modifiers, Report::Press);
+            } else if rows != 0
+                && let Err(error) = ops::scroll(world, viewer, node, rows)
+            {
+                debug!("wheel history on {node}: {error}");
             }
         });
     }

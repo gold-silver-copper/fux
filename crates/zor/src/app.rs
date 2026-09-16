@@ -44,6 +44,13 @@ pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound
         DiagnosticsPlugin,
         EntityCountDiagnosticsPlugin::default(),
     ));
+    app.insert_resource(crate::plugins::FuxDescriptor(
+        paths.fux_descriptor(&config.fux_server),
+    ));
+    app.insert_resource(crate::machines::MachinesFile {
+        path: paths.config_dir.join(crate::machines::CATALOG_FILE),
+        asset_root: Some(asset_root.clone()),
+    });
     core(&mut app, config, &paths.state_dir);
     app.add_plugins(crate::providers::ProvidersPlugin {
         asset_root: Some(asset_root),
@@ -85,5 +92,10 @@ fn core(app: &mut App, config: &Config, state_dir: &Path) {
         crate::groups::GroupsPlugin,
         crate::lifecycle::LifecyclePlugin,
         crate::checks::ChecksPlugin,
+        crate::plugins::PluginsPlugin {
+            state_dir: state_dir.to_path_buf(),
+        },
+        crate::dashboard::DashboardPlugin,
+        crate::machines::MachinesPlugin,
     ));
 }

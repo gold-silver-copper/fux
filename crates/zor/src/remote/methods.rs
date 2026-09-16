@@ -546,6 +546,9 @@ pub fn all_specs() -> impl Iterator<Item = &'static MethodSpec> {
         .chain(super::check_methods::METHODS)
         .chain(super::group_methods::METHODS)
         .chain(super::provider_methods::METHODS)
+        .chain(super::plugin_methods::METHODS)
+        .chain(super::machine_methods::METHODS)
+        .chain(super::dashboard_methods::METHODS)
 }
 
 /// Every registered method name; the allowlist test compares `RemoteMethods::methods()` to it.

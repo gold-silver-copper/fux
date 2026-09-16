@@ -30,7 +30,10 @@ use termina::event::{
 use bevy_asset::Assets;
 use fux::assets::{ConfigAsset, ConfigHandle, ThemeToken};
 use fux::config::ClipboardPolicy;
-use fux::model::{Ids, InstanceNode, NodeId, PaneId, PointerKind, Shows, ViewerRequest};
+use fux::model::{
+    Ids, InstanceNode, NodeId, PaneId, PointerKind, Shows, Surface, ViewerRequest,
+};
+use fux::surface::Text as SurfaceText;
 use fux::viewer::input::{Input, Translator};
 use fux::viewer::keys::{self, KeyChord};
 use fux::viewer::replicate::EntityMap;
@@ -299,6 +302,8 @@ impl ServerScene {
             r.register::<Children>();
             r.register::<Shows>();
             r.register::<InstanceNode>();
+            r.register::<Surface>();
+            r.register::<SurfaceText>();
         }
         registry
     }
@@ -427,6 +432,58 @@ impl ServerScene {
         }
     }
 
+    /// `[pane 1 | surface]`: pane 1 fills the left half; the right half is a surface leaf
+    /// (node 3) holding one streamed text row (node 4). `leaves[1]` is the surface leaf.
+    fn beside_surface() -> Self {
+        let mut world = World::new();
+        world.init_resource::<Ids>();
+        let root = world
+            .spawn((
+                InstanceNode,
+                NodeId(1),
+                Name::new("main"),
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Row,
+                    ..Default::default()
+                },
+            ))
+            .id();
+        let (a, pane_a) = Self::leaf(&mut world, root, 2, 1);
+        let surface = world
+            .spawn((
+                InstanceNode,
+                NodeId(3),
+                ChildOf(root),
+                Surface,
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    flex_grow: 1.0,
+                    flex_basis: Val::Px(0.0),
+                    ..Default::default()
+                },
+            ))
+            .id();
+        world.spawn((
+            InstanceNode,
+            NodeId(4),
+            ChildOf(surface),
+            SurfaceText("tasks".into()),
+            Node {
+                height: Val::Px(1.0),
+                ..Default::default()
+            },
+        ));
+        Self {
+            world,
+            registry: Self::registry(),
+            root,
+            leaves: vec![a, surface],
+            panes: vec![pane_a],
+        }
+    }
+
     /// A 40-column root that clips its overflow, holding a 20-column pane 1 and a 60-column
     /// pane 2: pane 2's cells past column 40 are laid out but never painted.
     fn clipped_overflow() -> Self {
@@ -477,6 +534,8 @@ impl ServerScene {
             .allow_component::<Children>()
             .allow_component::<Shows>()
             .allow_component::<InstanceNode>()
+            .allow_component::<Surface>()
+            .allow_component::<SurfaceText>()
             .extract_entities(entities.into_iter())
             .build()
             .serialize(&registry)
@@ -2249,4 +2308,81 @@ fn focus_ring_returns_to_the_previous_pane() {
         Some(leaf(&app, 0)),
         "leaf 1 is gone: the one before it"
     );
+}
+
+#[test]
+fn focus_on_a_surface_leaf_routes_keys_to_surface_key_not_input() {
+    let scene = ServerScene::beside_surface();
+    let mut app = viewer::build(80, 24);
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    let pane_leaf = local(&app, scene.leaves[0]);
+    let surface_leaf = local(&app, scene.leaves[1]);
+    assert_eq!(focused(&app), Some(pane_leaf));
+    assert!(
+        app.world().get::<TabIndex>(surface_leaf).is_some(),
+        "a surface leaf is in the tab order"
+    );
+    take_requests(&mut app);
+
+    // `prefix l` lands on the surface leaf and retargets nothing: it shows no pane.
+    chord(&mut app, 'l');
+    assert_eq!(focused(&app), Some(surface_leaf));
+    assert_eq!(take_requests(&mut app), vec![]);
+
+    // Keys leave as `SurfaceKey` for node 3 with their terminal bytes, never as pane input.
+    press(&mut app, TKey::Char('x'), Modifiers::NONE);
+    press(&mut app, TKey::Up, Modifiers::NONE);
+    press(&mut app, TKey::Char('c'), Modifiers::CONTROL);
+    assert_eq!(
+        take_requests(&mut app),
+        vec![
+            ViewerRequest::SurfaceKey {
+                node: NodeId(3),
+                bytes: b"x".to_vec()
+            },
+            ViewerRequest::SurfaceKey {
+                node: NodeId(3),
+                bytes: b"\x1b[A".to_vec()
+            },
+            ViewerRequest::SurfaceKey {
+                node: NodeId(3),
+                bytes: b"\x03".to_vec()
+            },
+        ]
+    );
+    // The prefix still opens a chord, and the focus stays where it was for the rest.
+    chord(&mut app, 'h');
+    assert_eq!(focused(&app), Some(pane_leaf));
+    assert_eq!(
+        take_requests(&mut app),
+        vec![],
+        "back on the server's target: nothing to request"
+    );
+    press(&mut app, TKey::Char('y'), Modifiers::NONE);
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::Input(b"y".to_vec())]
+    );
+
+    // A click on the streamed text row focuses the surface leaf above it; the server's
+    // target does not pull the focus back while it stays unchanged.
+    assert_eq!(click(&mut app, 60, 0), vec![]);
+    assert_eq!(focused(&app), Some(surface_leaf));
+    app.update();
+    app.update();
+    assert_eq!(focused(&app), Some(surface_leaf));
+    press(&mut app, TKey::Enter, Modifiers::NONE);
+    assert_eq!(
+        take_requests(&mut app),
+        vec![ViewerRequest::SurfaceKey {
+            node: NodeId(3),
+            bytes: b"\r".to_vec()
+        }]
+    );
+    // `prefix ;` returns through the ring to the pane and back to the surface.
+    chord(&mut app, ';');
+    assert_eq!(focused(&app), Some(pane_leaf));
+    chord(&mut app, ';');
+    assert_eq!(focused(&app), Some(surface_leaf));
 }

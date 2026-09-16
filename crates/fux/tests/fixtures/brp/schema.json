@@ -8,6 +8,7 @@
       "params": {
         "fields": {
           "cursor": "Option<u64>",
+          "surface": "Option<u64>",
           "workspace": "Option<String>"
         },
         "name": "EventsWatchParams"
