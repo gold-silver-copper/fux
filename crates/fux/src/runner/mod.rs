@@ -77,6 +77,12 @@ pub trait Host {
     /// Runs before every `update`, after the batch was written: stamp clocks here.
     fn before_step(&mut self, world: &mut World);
 
+    /// Final authority barrier after schedules and before any external effect is dispatched.
+    /// Returning an exit code rejects this entire effect batch.
+    fn after_step(&mut self, _world: &mut World, _sources: &Sources<Self::Inbound>) -> Option<u8> {
+        None
+    }
+
     /// How long the runner may sleep before the next step; `None` sleeps until a message
     /// arrives, `Some(ZERO)` steps at once.
     fn deadline(&mut self, world: &mut World) -> Option<Duration>;
@@ -206,6 +212,9 @@ pub fn run<H: Host>(
             .write_batch(batch.drain(..));
         host.before_step(world);
         app.update();
+        if let Some(code) = host.after_step(app.world_mut(), &sources) {
+            return NonZero::new(code).map_or(AppExit::Success, AppExit::Error);
+        }
 
         let mut exit: Option<u8> = None;
         for effect in app

@@ -19,7 +19,7 @@ use super::descriptor::Endpoint;
 use super::projection::{ALLOWED_TYPE_PATHS, is_allowed_type_path};
 use super::schema::described;
 use super::token::{Capabilities, Capability, Grant, Tokens};
-use super::watch::{self, open_events};
+use super::watch::{self, events_poll, open_events};
 use crate::events::DiagnosticsSnapshot;
 use crate::layout::{LayoutError, NodePatch, ops};
 use crate::model::components::ExactTarget;
@@ -488,18 +488,22 @@ described!(
         pub name: String,
         #[serde(default)]
         pub template: Option<TemplateSpec>,
+        /// Create a pane-less root for hosted surfaces; no process is launched.
+        pub empty: Option<bool>,
     }
 );
 described!(
     pub struct WorkspaceCreated {
         pub name: String,
         pub root: u64,
-        pub pane: u64,
+        pub pane: Option<u64>,
     }
 );
 described!(
     pub struct WorkspaceKillParams {
         pub name: String,
+        /// Refuse unless no pane, viewer or active surface belongs to this workspace.
+        pub empty_only: Option<bool>,
     }
 );
 
@@ -1035,12 +1039,24 @@ fn workspace_new(mut req: Request, world: &mut World) -> BrpResult {
     req.mutation(world)?;
     req.unscoped()?;
     let params: WorkspaceNewParams = req.parse()?;
-    let template = resolve_template(world, params.template)?;
+    let template = if params.empty.unwrap_or(false) {
+        if params.template.is_some() {
+            return Err(invalid("an empty workspace cannot carry a process template"));
+        }
+        None
+    } else {
+        Some(resolve_template(world, params.template)?)
+    };
     if world.resource::<Ids>().workspaces.len() >= world.resource::<Limits>().workspaces {
         return Err(invalid("workspace limit reached"));
     }
     let workspace = ops::new_workspace(world, &params.name).map_err(layout_error)?;
-    let (root, leaf) = match new_root_with_pane(world, workspace, "main", template) {
+    let created = match template {
+        Some(template) => new_root_with_pane(world, workspace, "main", template)
+            .map(|(root, leaf)| (root, Some(leaf))),
+        None => ops::new_root(world, workspace, "main").map(|root| (root, None)).map_err(layout_error),
+    };
+    let (root, leaf) = match created {
         Ok(created) => created,
         Err(e) => {
             let now = crate::lifecycle::now_ms(world);
@@ -1051,7 +1067,7 @@ fn workspace_new(mut req: Request, world: &mut World) -> BrpResult {
     to_value(WorkspaceCreated {
         name: params.name,
         root: node_id(world, root)?,
-        pane: placed_pane(world, leaf)?,
+        pane: leaf.map(|leaf| placed_pane(world, leaf)).transpose()?,
     })
 }
 
@@ -1059,6 +1075,21 @@ fn workspace_kill(mut req: Request, world: &mut World) -> BrpResult {
     req.mutation(world)?;
     let params: WorkspaceKillParams = req.parse()?;
     let workspace = req.workspace(world, &params.name)?;
+    if params.empty_only == Some(true) {
+        let panes = world.get::<crate::model::WorkspacePanes>(workspace).is_some_and(|panes| !panes.is_empty());
+        let viewers = world.get::<ViewedBy>(workspace).is_some_and(|viewers| !viewers.is_empty());
+        let mut surface = false;
+        if let Some(roots) = world.get::<crate::model::Roots>(workspace) {
+            for root in roots.iter() {
+                crate::layout::instances::walk(world, root, &mut |node, _| {
+                    surface |= world.get::<crate::surface::SurfaceState>(node).is_some();
+                });
+            }
+        }
+        if panes || viewers || surface {
+            return Err(error(codes::INVALID, "workspace is not empty"));
+        }
+    }
     let now = crate::lifecycle::now_ms(world);
     ops::retire_workspace(world, workspace, now).map_err(layout_error)?;
     to_value(Done {})
@@ -1555,6 +1586,7 @@ pub(super) fn check_paths<'a>(paths: impl IntoIterator<Item = &'a String>) -> Re
 }
 
 fn world_query(mut req: Request, world: &mut World) -> BrpResult {
+    req.unscoped()?;
     let params: BrpQueryParams = req.parse()?;
     check_paths(&params.data.components)?;
     match &params.data.option {
@@ -1578,6 +1610,7 @@ fn world_query(mut req: Request, world: &mut World) -> BrpResult {
 }
 
 fn world_get_components(mut req: Request, world: &mut World) -> BrpResult {
+    req.unscoped()?;
     let params: BrpGetComponentsParams = req.parse()?;
     check_paths(&params.components)?;
     let params = to_value(params)?;
@@ -1585,6 +1618,7 @@ fn world_get_components(mut req: Request, world: &mut World) -> BrpResult {
 }
 
 fn world_list_components(mut req: Request, world: &mut World) -> BrpResult {
+    req.unscoped()?;
     let params = match core::mem::take(&mut req.params) {
         Value::Object(fields) if fields.is_empty() => None,
         other => Some(other),
@@ -1845,6 +1879,7 @@ pub static TABLE: &[MethodSpec] = &[
         Capture
     ),
     spec!("fux/schema", brp_schema, NoParams, SchemaTable),
+    spec!("fux/events.poll", events_poll, watch::EventsWatchParams, watch::EventsPollResult),
     spec!(
         watch watch::EVENTS_WATCH_METHOD,
         open_events,

@@ -10,6 +10,9 @@
     reason = "integration-test helpers outside #[test] fns; clippy.toml only relaxes test fns"
 )]
 
+#[path = "viewer/painted.rs"]
+mod painted;
+
 use bevy_app::App;
 use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::AppTypeRegistry;
@@ -2338,14 +2341,17 @@ fn focus_on_a_surface_leaf_routes_keys_to_surface_key_not_input() {
         take_requests(&mut app),
         vec![
             ViewerRequest::SurfaceKey {
+                revision: 1,
                 node: NodeId(3),
                 bytes: b"x".to_vec()
             },
             ViewerRequest::SurfaceKey {
+                revision: 1,
                 node: NodeId(3),
                 bytes: b"\x1b[A".to_vec()
             },
             ViewerRequest::SurfaceKey {
+                revision: 1,
                 node: NodeId(3),
                 bytes: b"\x03".to_vec()
             },
@@ -2376,6 +2382,7 @@ fn focus_on_a_surface_leaf_routes_keys_to_surface_key_not_input() {
     assert_eq!(
         take_requests(&mut app),
         vec![ViewerRequest::SurfaceKey {
+            revision: 1,
             node: NodeId(3),
             bytes: b"\r".to_vec()
         }]
@@ -2385,4 +2392,49 @@ fn focus_on_a_surface_leaf_routes_keys_to_surface_key_not_input() {
     assert_eq!(focused(&app), Some(pane_leaf));
     chord(&mut app, ';');
     assert_eq!(focused(&app), Some(surface_leaf));
+}
+
+#[test]
+fn surface_focus_survives_instance_replacement_before_the_next_key() {
+    let mut scene = ServerScene::beside_surface();
+    let mut app = viewer::build(80, 24);
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    chord(&mut app, 'l');
+    take_requests(&mut app);
+    let old = scene.leaves[1];
+    let child = scene.world.get::<Children>(old).unwrap().iter().next().unwrap();
+    let node = scene.world.get::<Node>(old).unwrap().clone();
+    scene.world.entity_mut(old).despawn();
+    let replacement = scene.world.spawn((
+        InstanceNode, NodeId(3), ChildOf(scene.root), Surface, node,
+    )).id();
+    scene.world.spawn((
+        InstanceNode, NodeId(4), ChildOf(replacement),
+        SurfaceText("selected task".into()), Node { height: Val::Px(1.0), ..Default::default() },
+    ));
+    scene.leaves[1] = replacement;
+    let mut frame = scene.frame(2);
+    frame.despawned = vec![old.to_bits(), child.to_bits()];
+    push_frame(&mut app, frame);
+    app.update();
+    press(&mut app, TKey::Char('s'), Modifiers::NONE);
+    assert_eq!(take_requests(&mut app), vec![
+        ViewerRequest::SurfaceKey { revision: 2, node: NodeId(3), bytes: b"s".to_vec() }
+    ]);
+}
+
+#[test]
+fn surface_labels_cannot_emit_outer_terminal_control_sequences() {
+    let mut scene = ServerScene::beside_surface();
+    for mut text in scene.world.query::<&mut SurfaceText>().iter_mut(&mut scene.world) {
+        text.0 = "label \u{1b}]52;c;c2VjcmV0\u{7}".into();
+    }
+    let mut app = viewer::build(80, 24);
+    push_frame(&mut app, scene.frame(1));
+    app.update();
+    let output = &app.world().resource::<Painter>().out;
+    assert!(output.windows(5).any(|bytes| bytes == b"label"));
+    assert!(!output.windows(5).any(|bytes| bytes == b"\x1b]52;"));
+    assert!(!output.contains(&7));
 }

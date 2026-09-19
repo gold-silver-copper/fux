@@ -21,6 +21,24 @@
         "name": "EventsWatchItem"
       }
     },
+    "fux/events.poll": {
+      "params": {
+        "fields": {
+          "cursor": "Option<u64>",
+          "surface": "Option<u64>",
+          "workspace": "Option<String>"
+        },
+        "name": "EventsWatchParams"
+      },
+      "result": {
+        "fields": {
+          "cursor": "u64",
+          "events": "Vec<EventRecord>",
+          "gap": "Option<GapNotice>"
+        },
+        "name": "EventsPollResult"
+      }
+    },
     "fux/input.reserve": {
       "params": {
         "fields": {
@@ -531,6 +549,7 @@
     "fux/surface.close": {
       "params": {
         "fields": {
+          "expected_provider": "Option<String>",
           "surface": "u64"
         },
         "name": "SurfaceCloseParams"
@@ -561,10 +580,29 @@
         "name": "SurfaceOpened"
       }
     },
+    "fux/surface.scroll": {
+      "params": {
+        "fields": {
+          "absolute": "bool",
+          "expected_provider": "String",
+          "provider_node": "u64",
+          "revision": "u64",
+          "rows": "i32",
+          "surface": "u64",
+          "viewer": "u64"
+        },
+        "name": "SurfaceScrollParams"
+      },
+      "result": {
+        "fields": {},
+        "name": "Done"
+      }
+    },
     "fux/surface.update": {
       "params": {
         "fields": {
           "delta": "String",
+          "expected_provider": "String",
           "full": "bool",
           "revision": "u64",
           "surface": "u64"
@@ -691,6 +729,7 @@
     "fux/workspace.kill": {
       "params": {
         "fields": {
+          "empty_only": "Option<bool>",
           "name": "String"
         },
         "name": "WorkspaceKillParams"
@@ -715,6 +754,7 @@
     "fux/workspace.new": {
       "params": {
         "fields": {
+          "empty": "Option<bool>",
           "name": "String",
           "template": "Option<TemplateSpec>"
         },
@@ -723,7 +763,7 @@
       "result": {
         "fields": {
           "name": "String",
-          "pane": "u64",
+          "pane": "Option<u64>",
           "root": "u64"
         },
         "name": "WorkspaceCreated"

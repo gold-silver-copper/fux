@@ -10,7 +10,7 @@ use bevy_ecs::entity::EntityHashMap;
 use bevy_ecs::error::BevyError;
 use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::AppTypeRegistry;
-use bevy_input_focus::InputFocus;
+use bevy_input_focus::{FocusCause, InputFocus};
 use bevy_input_focus::tab_navigation::TabIndex;
 use bevy_platform::collections::HashSet;
 use bevy_ui::{Node, UiTargetCamera};
@@ -53,6 +53,22 @@ pub struct Session(pub Option<Welcome>);
 /// Last applied scene revision (acknowledged to the server).
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneRevision(pub u64);
+
+/// Last scene composed for the terminal, not merely received or acknowledged.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaintedSceneRevision(pub u64);
+
+/// Old input may survive terminal-output frames, but not a changed input scene.
+#[derive(Resource, Default)]
+pub struct InputSceneRevision(pub u64);
+
+/// Original paint revision carried by the currently dispatched terminal batch.
+#[derive(Resource, Default)]
+pub struct InputRevision(pub u64);
+
+fn record_paint(revision: Res<SceneRevision>, mut painted: ResMut<PaintedSceneRevision>) {
+    painted.0 = revision.0;
+}
 
 /// A shown pane wrote OSC 52 since its last delta (the base64 payload as the pane sent it); the
 /// painter forwards it to the outer terminal.
@@ -201,6 +217,17 @@ pub fn ingest_frames(world: &mut World) -> Result<(), BevyError> {
 
 /// Applies one scene frame: entities, despawns, terminal deltas, projection resources, ack.
 pub fn apply_scene(world: &mut World, frame: &SceneFrame) -> Result<(), BevyError> {
+    let surface_focus = world.resource::<InputFocus>().get().and_then(|entity| {
+        world.get::<Surface>(entity)?;
+        world.get::<NodeId>(entity).copied()
+    });
+    let same_target = world.resource::<TargetPane>().0 == frame.target
+        && world.resource::<ShowingRoot>().0 == frame.showing;
+    if frame.full || !same_target || !frame.scene.is_empty()
+        || !frame.despawned.is_empty() || frame.roots.is_some()
+    {
+        world.resource_mut::<InputSceneRevision>().0 = frame.revision;
+    }
     if !frame.scene.is_empty() {
         apply_dynamic_world(world, &frame.scene)?;
     }
@@ -233,6 +260,18 @@ pub fn apply_scene(world: &mut World, frame: &SceneFrame) -> Result<(), BevyErro
     target.set_if_neq(TargetPane(frame.target));
     let mut showing = world.resource_mut::<ShowingRoot>();
     showing.set_if_neq(ShowingRoot(frame.showing));
+    // Instance entities are replaced on template edits; a stable surface leaf remains the
+    // keyboard owner. Restore it in First, before PreUpdate dispatches the next input batch.
+    if same_target && let Some(node) = surface_focus {
+        let replacement = world.query_filtered::<(Entity, &NodeId), (With<Surface>, With<Replicated>)>()
+            .iter(world).find_map(|(entity, id)| (*id == node).then_some(entity));
+        let mut focus = world.resource_mut::<InputFocus>();
+        if let Some(entity) = replacement {
+            focus.set(entity, FocusCause::Navigated);
+        } else {
+            focus.clear();
+        }
+    }
     if let Some(notice) = &frame.notice {
         world.resource_mut::<PendingNotice>().0 = Some(notice.clone());
     }
@@ -347,6 +386,9 @@ pub fn reset(world: &mut World) {
     world.insert_resource(ShowingRoot::default());
     world.insert_resource(Session::default());
     world.insert_resource(SceneRevision::default());
+    world.insert_resource(PaintedSceneRevision::default());
+    world.insert_resource(InputSceneRevision::default());
+    world.insert_resource(InputRevision::default());
     world.resource_mut::<InputFocus>().clear();
 }
 
@@ -361,6 +403,10 @@ impl Plugin for ReplicatePlugin {
             .init_resource::<ShowingRoot>()
             .init_resource::<Session>()
             .init_resource::<SceneRevision>()
+            .init_resource::<PaintedSceneRevision>()
+            .init_resource::<InputSceneRevision>()
+            .init_resource::<InputRevision>()
+            .add_systems(Last, record_paint)
             .add_message::<ClipboardWrite>()
             .add_systems(First, ingest_frames.in_set(super::ViewerSystems::Ingest));
     }

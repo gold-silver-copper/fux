@@ -53,6 +53,8 @@ pub enum ViewerRequest {
     /// Keys typed while the viewer's focus is on a surface leaf; routed to the surface's
     /// provider as a `SurfaceInput { kind: Key }` event, never to a PTY.
     SurfaceKey {
+        /// Scene revision actually painted when these bytes were read.
+        revision: u64,
         node: super::ids::NodeId,
         bytes: Vec<u8>,
     },
@@ -73,6 +75,8 @@ pub enum SplitDirection {
 /// [`PointerEvent::SHIFT`], [`PointerEvent::ALT`] and [`PointerEvent::CTRL`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PointerEvent {
+    /// Scene revision actually painted when the event was read.
+    pub revision: u64,
     pub col: u16,
     pub row: u16,
     pub kind: PointerKind,

@@ -91,7 +91,7 @@ impl Bindings {
     }
 }
 
-/// Action name → registered one-shot system; the closed set config may bind.
+/// Built-in action name → registered one-shot system.
 #[derive(Resource)]
 pub struct Actions(HashMap<&'static str, SystemId>);
 
@@ -181,6 +181,7 @@ fn on_key(
     leaves: Query<&Shows>,
     surfaces: Query<&NodeId, (With<Surface>, With<Replicated>)>,
     grids: Query<&Grid>,
+    painted: Res<super::replicate::InputRevision>,
     mut outbox: ResMut<Outbox>,
     mut notice: ResMut<PendingNotice>,
     mut commands: Commands,
@@ -202,6 +203,7 @@ fn on_key(
                 buf.clear();
                 if keys::encode(&ev.input, Modes::default(), &mut buf) {
                     outbox.push(ViewerRequest::SurfaceKey {
+                        revision: painted.0,
                         node: *node,
                         bytes: buf.clone(),
                     });
@@ -220,13 +222,62 @@ fn on_key(
             next.set(Mode::Normal);
             match bindings.get(&chord) {
                 Some(system) => commands.run_system(system),
-                None => notice.0 = Some(format!("unbound: {chord}")),
+                None => {
+                    if let Some(action) = bindings.table.bindings.get(&chord)
+                        && crate::assets::plugin_action(action).is_some()
+                    {
+                        commands.run_system_cached_with(run_plugin_action, action.to_string());
+                    } else {
+                        notice.0 = Some(format!("unbound: {chord}"));
+                    }
+                }
             }
         }
         Mode::Confirm => commands.run_system_cached_with(prompts::handle_confirm_key, chord),
         Mode::CopyMode => commands.run_system_cached_with(copy_mode::handle_key, chord),
         Mode::Chooser => commands.run_system_cached_with(choosers::handle_key, chord),
         Mode::Prompt => commands.run_system_cached_with(prompts::handle_key, chord),
+    }
+}
+
+fn run_plugin_action(
+    In(action): In<String>,
+    brp: Res<super::Brp>,
+    session: Res<super::replicate::Session>,
+    mut notice: ResMut<PendingNotice>,
+) {
+    let Some((name, id)) = crate::assets::plugin_action(&action) else { return; };
+    let Some(session) = session.0.as_ref() else { return; };
+    if brp.path().as_os_str().is_empty() {
+        notice.0 = Some("plugin action requires a connected viewer".into());
+        return;
+    }
+    let path = std::env::var_os("ZOR_BRP").filter(|p| !p.is_empty())
+        .map(std::path::PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(|| crate::paths::Paths::discover().map(|paths| {
+            let runtime = paths.runtime_dir;
+            let name = runtime.file_name().unwrap().to_string_lossy().replacen("fux", "zor", 1);
+            runtime.with_file_name(name).join("default.brp.json")
+        }));
+    let result = path.map_err(|e| e.to_string()).and_then(|path| {
+        brp.call_at(path, super::BrpTag::PluginAction(action.clone()), "zor/plugin.run",
+            serde_json::json!({
+                "name": name, "action": id, "workspace": session.workspace,
+                "expected_fux_instance": session.instance
+            }))
+    });
+    if let Err(error) = result { notice.0 = Some(format!("{action}: {error}")); }
+}
+
+fn plugin_replies(mut replies: MessageReader<super::BrpReply>, mut notice: ResMut<PendingNotice>) {
+    for reply in replies.read() {
+        if let super::BrpTag::PluginAction(action) = &reply.tag {
+            notice.0 = Some(match &reply.result {
+                Ok(_) => format!("{action}: accepted"),
+                Err(error) => format!("{action}: {error}"),
+            });
+        }
     }
 }
 
@@ -240,6 +291,7 @@ fn on_paste(
     leaves: Query<&Shows>,
     surfaces: Query<&NodeId, (With<Surface>, With<Replicated>)>,
     grids: Query<&Grid>,
+    painted: Res<super::replicate::InputRevision>,
     mut outbox: ResMut<Outbox>,
     mut commands: Commands,
     mut buf: Local<Vec<u8>>,
@@ -259,6 +311,7 @@ fn on_paste(
         Mode::Normal => {
             if let Ok(node) = surfaces.get(focused) {
                 outbox.push(ViewerRequest::SurfaceKey {
+                    revision: painted.0,
                     node: *node,
                     bytes: value.as_bytes().to_vec(),
                 });
@@ -304,6 +357,7 @@ fn sync_focus(
     panes: Query<&PaneId>,
     leaves: Query<(Entity, &Shows), With<Replicated>>,
     focusable: Query<(), Leaf>,
+    surfaces: Query<(Entity, &NodeId), (With<Replicated>, With<Surface>)>,
     mut focus: ResMut<InputFocus>,
     mut pending: ResMut<PendingTarget>,
 ) {
@@ -316,6 +370,9 @@ fn sync_focus(
         return;
     }
     let Some(target) = target.0 else {
+        if let Some((surface, _)) = surfaces.iter().min_by_key(|(_, node)| node.0) {
+            focus.set(surface, FocusCause::Navigated);
+        }
         return;
     };
     let leaf = leaves
@@ -721,6 +778,7 @@ impl Plugin for FocusPlugin {
                     .in_set(ViewerSystems::Focus)
                     .run_if(not(in_state(Modal))),
             )
+            .add_systems(Update, plugin_replies)
             .add_systems(
                 PostUpdate,
                 (

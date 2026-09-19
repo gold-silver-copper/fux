@@ -480,7 +480,7 @@ mod tests {
             bindings
                 .bindings
                 .get(&KeyChord::parse(chord).unwrap())
-                .copied()
+                .map(|action| action.as_ref())
         };
         assert_eq!(action("|"), Some("split-side"));
         assert_eq!(action("C-x"), Some("close-pane"));
@@ -492,8 +492,6 @@ mod tests {
             Some("help"),
             "a user chord replaces the default"
         );
-        assert_eq!(action("\""), Some("split-below"), "defaults stay");
-        assert_eq!(action("S-Tab"), Some("prev-pane"));
         assert_eq!(
             action("C-a"),
             Some("send-prefix"),

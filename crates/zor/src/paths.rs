@@ -60,11 +60,12 @@ impl Paths {
         }
     }
 
-    /// Creates the runtime and state directories privately (0700) and verifies ownership.
+    /// Prepares private storage, including the catalog's credential-bearing configuration directory.
     pub fn prepare(&self) -> Result<(), PathError> {
         private_dir(&self.runtime_dir)?;
         private_dir(&self.state_dir)?;
-        private_dir(&self.archive_dir())
+        private_dir(&self.archive_dir())?;
+        private_dir(&self.config_dir)
     }
 
     pub fn descriptor(&self, server: &str) -> PathBuf {

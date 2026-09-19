@@ -10,7 +10,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::system::SystemState;
 use bevy_state::prelude::State;
-use bevy_ui::{BackgroundColor, BorderColor, ComputedNode, Node, UiTargetCamera, ZIndex};
+use bevy_ui::{BackgroundColor, BorderColor, ComputedNode, Node, ScrollPosition, UiTargetCamera, ZIndex};
 use bevy_world_serialization::DynamicWorldBuilder;
 
 use crate::model::Effect;
@@ -30,6 +30,62 @@ use crate::wire::{ByeReason, ProcessSummary, RootEntry, SceneFrame, ServerFrame,
 #[derive(Component, Default)]
 pub(crate) struct Projected {
     known: EntityHashSet,
+    input_revision: u64,
+    input_state: InputState,
+}
+
+/// The inputs that can change hit testing before the next projection has run.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InputState {
+    showing: Option<Entity>,
+    generation: Option<u64>,
+    viewport: Option<crate::model::Viewport>,
+    view_state_tick: Option<u32>,
+}
+
+impl InputState {
+    pub(crate) fn capture(world: &World, viewer: Entity) -> Self {
+        let showing = world.get::<Showing>(viewer).map(|s| s.0);
+        Self {
+            showing,
+            generation: showing.and_then(|root| {
+                world.get::<crate::model::LayoutGeneration>(root).map(|g| g.0)
+            }),
+            viewport: world.get::<crate::model::Viewport>(viewer).copied(),
+            view_state_tick: world.get_entity(viewer).ok().and_then(|e| {
+                e.get_ref::<crate::layout::ViewState>().map(|state| state.last_changed().get())
+            }),
+        }
+    }
+}
+
+/// A painted revision remains usable through terminal-output-only frames, but never
+/// through a scene replacement or an unprojected layout/view-state mutation.
+pub(crate) fn admits_input(world: &World, viewer: Entity, revision: u64) -> bool {
+    let Some(projected) = world.get::<Projected>(viewer) else {
+        return false;
+    };
+    admits_captured_input(world, viewer, revision, &projected.input_state)
+}
+
+/// Deferred pointer policy can retain the state after its own resize, without admitting
+/// an older painted revision or any intervening mutation by another operation.
+pub(crate) fn admits_captured_input(
+    world: &World,
+    viewer: Entity,
+    revision: u64,
+    input_state: &InputState,
+) -> bool {
+    let Some(projected) = world.get::<Projected>(viewer) else {
+        return false;
+    };
+    let Some(baseline) = world.get::<ProjectionBaseline>(viewer) else {
+        return false;
+    };
+    revision != 0
+        && revision >= projected.input_revision
+        && revision <= baseline.scene_revision
+        && *input_state == InputState::capture(world, viewer)
 }
 
 /// An instance node whose allowlisted components changed since the last projection.
@@ -48,6 +104,7 @@ type ChangedInstance = Or<(
     Changed<Zoomed>,
     Changed<Text>,
     Changed<Surface>,
+    Changed<ScrollPosition>,
 )>;
 
 type Viewers<'w, 's> = Query<
@@ -227,6 +284,7 @@ fn collect(
                 .allow_component::<InstanceNode>()
                 .allow_component::<Text>()
                 .allow_component::<Surface>()
+                .allow_component::<ScrollPosition>()
                 .extract_entities(scratch.extract.iter().copied())
                 .remove_empty_entities()
                 .build();
@@ -369,6 +427,13 @@ fn collect(
 
 fn commit(world: &mut World, scratch: &mut Scratch) {
     for mut out in scratch.outgoing.drain(..) {
+        let input_state = InputState::capture(world, out.viewer);
+        let input_changed = out.frame.full
+            || !out.frame.scene.is_empty()
+            || !out.frame.despawned.is_empty()
+            || out.frame.roots.is_some()
+            || world.get::<Projected>(out.viewer)
+                .is_none_or(|projected| projected.input_state != input_state);
         let Ok(mut viewer) = world.get_entity_mut(out.viewer) else {
             scratch.spare.push(out);
             continue;
@@ -379,6 +444,10 @@ fn commit(world: &mut World, scratch: &mut Scratch) {
             baseline.panes.extend(out.panes.iter().copied());
         }
         if let Some(mut projected) = viewer.get_mut::<Projected>() {
+            if input_changed {
+                projected.input_revision = out.revision;
+            }
+            projected.input_state = input_state;
             core::mem::swap(&mut projected.known, &mut out.current);
         }
         let frame = core::mem::take(&mut out.frame);

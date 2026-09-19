@@ -22,7 +22,7 @@ pub mod surface_methods;
 pub mod token;
 pub mod watch;
 
-use std::net::{IpAddr, Ipv4Addr, TcpListener};
+use std::net::{Ipv4Addr, TcpListener};
 use std::path::PathBuf;
 
 use async_channel::{Receiver, Sender};
@@ -121,18 +121,13 @@ impl Plugin for RemoteControlPlugin {
             &self.server_name,
         )));
 
-        // The listener is bound at `Startup`; the probe only finds a free port. The TOCTOU
-        // window is accepted (prompt 3.9): the bounded acceptor rebinds a fresh port and
-        // corrects `HostPort`, `RemoteHttpPlugin` fails its task.
-        let port = probe_port().unwrap_or(0);
         app.add_plugins(RemotePlugin::default());
         match self.transport {
             HttpTransport::Bounded => {
-                app.insert_resource(HostAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)))
-                    .insert_resource(HostPort(port))
-                    .add_systems(Startup, http::start);
+                app.add_plugins(http::BoundedHttpPlugin);
             }
             HttpTransport::BevyRemote => {
+                let port = probe_port().unwrap_or(0);
                 app.add_plugins(
                     RemoteHttpPlugin::default()
                         .with_address(Ipv4Addr::LOCALHOST)

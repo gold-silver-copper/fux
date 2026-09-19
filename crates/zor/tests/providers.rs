@@ -55,7 +55,7 @@ impl Harness {
         Self {
             app,
             inbound: rx,
-            adapter: ProviderAdapter::new(tx),
+            adapter: ProviderAdapter::with_executable(tx, env!("CARGO_BIN_EXE_zor").into()),
             spawn: true,
             writes: Vec::new(),
             fux_calls: Vec::new(),
@@ -696,6 +696,7 @@ fn rules_app(root: &Path) -> App {
             asset_root: Some(root.to_path_buf()),
         },
     ));
+    app.insert_resource(zor::journal::Journal::new(&root.join("state")));
     app.finish();
     app.cleanup();
     app

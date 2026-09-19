@@ -86,6 +86,35 @@ described!(
     }
 );
 described!(
+    /// A finite watch snapshot, including the durable resume point even when no events exist.
+    pub struct EventsPollResult {
+        pub cursor: u64,
+        pub gap: Option<GapNotice>,
+        pub events: Vec<EventRecord>,
+    }
+);
+
+pub(super) fn events_poll(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let mut req = Request::open(params, world)?;
+    let State::Events { workspace, mut cursor, gap, surface } = open_events(&mut req, world)? else {
+        unreachable!("event opener returns event state")
+    };
+    let mut entries = Vec::new();
+    if gap.is_none() {
+        let log = world.resource::<EventLog>();
+        let read = match workspace.as_deref() {
+            Some(ws) => log.read_after(ws, cursor).map(|events| entries.extend(events)),
+            None => log.read_any_after(cursor, &mut entries),
+        };
+        if let Err(missed) = read {
+            return to_value(EventsPollResult { cursor: missed.resume, gap: Some(notice(missed)), events: Vec::new() });
+        }
+        if let Some(last) = entries.last() { cursor = last.cursor; }
+    }
+    let events = entries.into_iter().filter(|entry| surface.is_none_or(|id| of_surface(entry, id))).map(record).collect();
+    to_value(EventsPollResult { cursor, gap, events })
+}
+described!(
     pub struct ObserveItem {
         pub events: Vec<Value>,
         pub dropped: u64,
@@ -286,6 +315,7 @@ fn notice(gap: Gap) -> GapNotice {
 }
 
 fn open_observe(req: &mut Request, world: &mut World) -> Result<State, BrpError> {
+    req.unscoped()?;
     let BrpObserveParams { event, entity } = req.parse()?;
     if entity.is_some() {
         return Err(invalid(
@@ -329,6 +359,7 @@ fn open_observe(req: &mut Request, world: &mut World) -> Result<State, BrpError>
 }
 
 fn open_get_components(req: &mut Request, world: &mut World) -> Result<State, BrpError> {
+    req.unscoped()?;
     let params: BrpGetComponentsParams = req.parse()?;
     check_paths(&params.components)?;
     Ok(State::Builtin {
@@ -340,6 +371,7 @@ fn open_get_components(req: &mut Request, world: &mut World) -> Result<State, Br
 }
 
 fn open_list_components(req: &mut Request, world: &mut World) -> Result<State, BrpError> {
+    req.unscoped()?;
     let params: BrpListComponentsParams = req.parse()?;
     Ok(State::Builtin {
         system: world

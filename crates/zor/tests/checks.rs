@@ -59,7 +59,7 @@ impl Harness {
         app.finish();
         app.cleanup();
         let adapters: Vec<Box<dyn Adapter>> = vec![
-            Box::new(CheckRunner::new(sender.clone())),
+            Box::new(CheckRunner::with_executable(sender.clone(), env!("CARGO_BIN_EXE_zor").into())),
             Box::new(GitAdapter::new(sender)),
         ];
         Self {

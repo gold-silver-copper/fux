@@ -11,6 +11,9 @@
     reason = "integration-test helpers outside #[test] fns; clippy.toml only relaxes test fns"
 )]
 
+#[path = "surface/painted.rs"]
+mod painted;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -363,7 +366,7 @@ fn open_over_brp_checks_workspace_and_generation() {
     let not_surface = call(
         &mut app,
         "fux/surface.update",
-        json!({ "surface": pane_leaf_id, "revision": 1, "full": true, "delta": "" }),
+        json!({ "surface": pane_leaf_id, "expected_provider": "zor", "revision": 1, "full": true, "delta": "" }),
     );
     assert_eq!(not_surface.unwrap_err().code, codes::NOT_FOUND);
 }
@@ -592,7 +595,7 @@ fn stale_revision_is_refused_with_the_generation_code() {
     let ok = call(
         &mut app,
         "fux/surface.update",
-        json!({ "surface": leaf_id, "revision": 5, "full": true, "delta": delta }),
+        json!({ "surface": leaf_id, "expected_provider": "zor", "revision": 5, "full": true, "delta": delta }),
     )
     .unwrap();
     assert_eq!(ok["revision"], json!(5));
@@ -601,7 +604,7 @@ fn stale_revision_is_refused_with_the_generation_code() {
         let err = call(
             &mut app,
             "fux/surface.update",
-            json!({ "surface": leaf_id, "revision": stale, "full": true, "delta": delta }),
+            json!({ "surface": leaf_id, "expected_provider": "zor", "revision": stale, "full": true, "delta": delta }),
         )
         .unwrap_err();
         assert_eq!(err.code, codes::STALE_GENERATION, "revision {stale}");
@@ -612,6 +615,33 @@ fn stale_revision_is_refused_with_the_generation_code() {
         5,
         "a refused update leaves the revision"
     );
+}
+
+#[test]
+fn delayed_provider_updates_and_cleanup_cannot_replace_a_new_owner() {
+    let mut app = app();
+    let (_, _, _, leaf) = opened(&mut app);
+    let surface = node_id(app.world(), leaf);
+    surface::close(app.world_mut(), leaf).unwrap();
+    surface::open(app.world_mut(), leaf, "replacement").unwrap();
+    let mut provider = Provider::new(&app);
+    provider.column(&["replacement row"]);
+    let delta = provider.export_all();
+    let updated = call(&mut app, "fux/surface.update", json!({
+        "surface":surface, "expected_provider":"replacement",
+        "revision":1, "full":true, "delta":delta,
+    })).unwrap();
+    assert_eq!(updated["revision"], 1);
+    assert!(call(&mut app, "fux/surface.update", json!({
+        "surface":surface, "expected_provider":"zor",
+        "revision":10, "full":true, "delta":delta,
+    })).is_err());
+    assert!(call(&mut app, "fux/surface.close", json!({
+        "surface":surface, "expected_provider":"zor",
+    })).is_err());
+    let state = app.world().get::<SurfaceState>(leaf).unwrap();
+    assert_eq!(state.provider, "replacement");
+    assert_eq!(state.revision, 1);
 }
 
 #[test]
@@ -871,10 +901,12 @@ fn request(app: &mut App, viewer: Entity, request: ViewerRequest) {
 }
 
 fn mouse(app: &mut App, viewer: Entity, col: u16, row: u16, kind: PointerKind) {
+    let revision = app.world().get::<fux::model::ProjectionBaseline>(viewer).unwrap().scene_revision;
     request(
         app,
         viewer,
         ViewerRequest::Pointer(PointerEvent {
+            revision,
             col,
             row,
             kind,
@@ -983,6 +1015,9 @@ fn a_click_inside_a_surface_text_node_emits_one_press_with_the_ids() {
         json!({
             "surface": surface_id,
             "node": checks_id,
+            "provider": "zor",
+            "provider_node": rows[1].to_bits(),
+            "revision": 1,
             "viewer": viewer_id,
             "kind": "Press",
             "col": 5,
@@ -1057,11 +1092,13 @@ fn keys_on_a_focused_surface_leaf_arrive_as_key_events_with_bytes() {
         .entity(rows[0])
         .unwrap();
     let (surface_id, row_id) = (node_id(app.world(), leaf), node_id(app.world(), row));
+    let revision = app.world().get::<fux::model::ProjectionBaseline>(viewer).unwrap().scene_revision;
 
     request(
         &mut app,
         viewer,
         ViewerRequest::SurfaceKey {
+            revision,
             node: NodeId(surface_id),
             bytes: b"\x1b[A".to_vec(),
         },
@@ -1079,6 +1116,7 @@ fn keys_on_a_focused_surface_leaf_arrive_as_key_events_with_bytes() {
         &mut app,
         viewer,
         ViewerRequest::SurfaceKey {
+            revision,
             node: NodeId(row_id),
             bytes: b"x".to_vec(),
         },
@@ -1094,6 +1132,7 @@ fn keys_on_a_focused_surface_leaf_arrive_as_key_events_with_bytes() {
         &mut app,
         viewer,
         ViewerRequest::SurfaceKey {
+            revision,
             node: NodeId(surface_id),
             bytes: long.clone(),
         },
@@ -1118,6 +1157,7 @@ fn keys_on_a_focused_surface_leaf_arrive_as_key_events_with_bytes() {
         &mut app,
         viewer,
         ViewerRequest::SurfaceKey {
+            revision,
             node: NodeId(pane_leaf_id),
             bytes: b"q".to_vec(),
         },
@@ -1126,6 +1166,7 @@ fn keys_on_a_focused_surface_leaf_arrive_as_key_events_with_bytes() {
         &mut app,
         viewer,
         ViewerRequest::SurfaceKey {
+            revision,
             node: NodeId(9_999),
             bytes: b"q".to_vec(),
         },

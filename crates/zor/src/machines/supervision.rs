@@ -5,7 +5,7 @@
 //! stale without renewing its timestamp; failures are named by the transport-loss taxonomy.
 //! The same worker performs guarded remote actions: it re-reads the remote's instance nonce
 //! and the task's current attempt/pane identity and refuses a changed service, attempt or pane
-//! before dispatching one call. Nothing here is persisted.
+//! before dispatching one call. The owner commits intent before handing work to this adapter.
 
 use core::time::Duration;
 use std::collections::VecDeque;
@@ -155,6 +155,8 @@ pub enum ActionPhase {
     Failed,
     /// The remote's nonce, attempt or pane identity no longer matched at dispatch time.
     Refused,
+    /// Dispatch may have reached the peer; never retried automatically.
+    Uncertain,
 }
 
 /// A guarded remote action and its outcome.
@@ -195,7 +197,12 @@ impl Supervision {
 
     pub fn push_action(&mut self, record: ActionRecord) {
         if self.actions.len() >= MAX_ACTIONS {
-            self.actions.pop_front();
+            if let Some(index) = self.actions.iter().position(|a| a.phase != ActionPhase::Submitting) {
+                self.actions.remove(index);
+            } else {
+                // Admission reserves a retained slot before an action reaches the worker.
+                return;
+            }
         }
         self.actions.push_back(record);
     }
@@ -303,6 +310,7 @@ pub enum Report {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionFailure {
     Refused(String),
+    Uncertain(String),
     Failed(String),
 }
 
@@ -316,7 +324,7 @@ pub struct Reports {
 
 impl Default for Reports {
     fn default() -> Self {
-        let (tx, rx) = async_channel::unbounded();
+        let (tx, rx) = async_channel::bounded(super::catalog::MAX_MACHINES * 2);
         Self {
             tx,
             rx,
@@ -325,8 +333,7 @@ impl Default for Reports {
     }
 }
 
-/// The running reader of one machine; dropping it cancels the task and, for Koh, kills the
-/// owned helper.
+/// The running reader of one machine. Dropping it cancels its future and closes its sockets.
 #[derive(Component)]
 pub struct Worker {
     pub generation: u64,
@@ -340,9 +347,10 @@ impl Worker {
         generation: u64,
         transport: Transport,
         reports: Sender<Report>,
+        wake: Option<Sender<crate::model::Inbound>>,
     ) -> Self {
         let (actions, requests) = async_channel::bounded(MAX_ACTIONS);
-        let task = IoTaskPool::get().spawn(run(machine, generation, transport, reports, requests));
+        let task = IoTaskPool::get().spawn(run(machine, generation, transport, reports, requests, wake));
         Self {
             generation,
             actions,
@@ -361,67 +369,38 @@ async fn run(
     transport: Transport,
     reports: Sender<Report>,
     requests: Receiver<ActionRequest>,
+    wake: Option<Sender<crate::model::Inbound>>,
 ) {
-    let resolved = match transport.resolve() {
-        Ok(resolved) => resolved,
+    let descriptor = match transport.resolve() {
+        Ok(resolved) => resolved.descriptor,
         Err(Unavailable(reason)) => {
-            // Nothing to read from; every poll reports the reason and every action is refused.
-            while !requests.is_closed() && !reports.is_closed() {
-                let _ = reports
-                    .send(Report::Poll {
-                        machine,
-                        generation,
-                        at_ms: fux::runner::wall_ms(),
-                        outcome: Err(Failure::Unavailable(format!("unavailable: {reason}"))),
-                    })
-                    .await;
-                let next = Instant::now() + POLL_INTERVAL;
-                while let Some(request) = until(&requests, next).await {
-                    let _ = reports
-                        .send(Report::Action {
-                            machine,
-                            generation,
-                            id: request.id,
-                            at_ms: fux::runner::wall_ms(),
-                            outcome: Err(ActionFailure::Refused(format!(
-                                "unavailable: {reason}"
-                            ))),
-                        })
-                        .await;
-                }
-            }
+            publish(&reports, &wake, Report::Poll {
+                machine, generation, at_ms: fux::runner::wall_ms(),
+                outcome: Err(Failure::Unavailable(reason)),
+            }).await;
             return;
         }
     };
-    let descriptor = &resolved.descriptor;
     while !requests.is_closed() && !reports.is_closed() {
-        let outcome = budgeted(read(descriptor)).await;
-        let _ = reports
-            .send(Report::Poll {
-                machine,
-                generation,
-                at_ms: fux::runner::wall_ms(),
-                outcome,
-            })
-            .await;
+        let outcome = budgeted(read(&descriptor)).await;
+        if !publish(&reports, &wake, Report::Poll {
+            machine, generation, at_ms: fux::runner::wall_ms(), outcome,
+        }).await { return; }
         let next = Instant::now() + POLL_INTERVAL;
         while let Some(request) = until(&requests, next).await {
             let id = request.id;
-            let outcome = match budgeted(dispatch(descriptor, request)).await {
-                Ok(value) => Ok(value),
-                Err(failure) => Err(failure),
-            };
-            let _ = reports
-                .send(Report::Action {
-                    machine,
-                    generation,
-                    id,
-                    at_ms: fux::runner::wall_ms(),
-                    outcome,
-                })
-                .await;
+            let outcome = budgeted(dispatch(&descriptor, request)).await;
+            if !publish(&reports, &wake, Report::Action {
+                machine, generation, id, at_ms: fux::runner::wall_ms(), outcome,
+            }).await { return; }
         }
     }
+}
+
+async fn publish(reports: &Sender<Report>, wake: &Option<Sender<crate::model::Inbound>>, report: Report) -> bool {
+    if reports.send(report).await.is_err() { return false; }
+    if let Some(wake) = wake { let _ = wake.try_send(crate::model::Inbound::Wake); }
+    true
 }
 
 /// The next queued action before `deadline`, else `None` at the deadline (or when closed).
@@ -445,7 +424,7 @@ impl Budget for Failure {
 
 impl Budget for ActionFailure {
     fn budget_exceeded() -> Self {
-        Self::Failed(format!(
+        Self::Uncertain(format!(
             "no reply within {READ_BUDGET:?}; the outcome is unknown and is not replayed"
         ))
     }
@@ -480,6 +459,9 @@ async fn read(descriptor: &Descriptor) -> Result<RemoteView, Failure> {
     let info = call_async(descriptor, "zor/server.info", json!({}))
         .await
         .map_err(|e| classify(&e))?;
+    if info.get("nonce").and_then(Value::as_str) != Some(descriptor.instance.as_str()) {
+        return Err(Failure::Expired("remote service identity changed".into()));
+    }
     let task_view = TaskView::type_path();
     let agent_view = AgentView::type_path();
     let tasks = call_async(descriptor, "world.query", query(task_view))
@@ -548,6 +530,9 @@ async fn dispatch(descriptor: &Descriptor, request: ActionRequest) -> Result<Val
     .await
     .map_err(failed)?;
     let current = current_attempt(&inspect);
+    if current.as_ref().map(|(attempt, _)| *attempt) != request.attempt {
+        return Err(refused("current attempt no longer matches the observed selection"));
+    }
     if let Some(expected) = request.attempt {
         match &current {
             Some((attempt, _)) if *attempt == expected => {}
@@ -589,13 +574,19 @@ async fn dispatch(descriptor: &Descriptor, request: ActionRequest) -> Result<Val
     let mut guarded = descriptor.clone();
     guarded.instance = request.instance.clone();
     let task = request.task;
+    let guard = json!({ "attempt": request.attempt, "pane": request.pane });
+    let mutation_failed = |e: ClientError| match e {
+        ClientError::Rpc { code, .. } if code == codes::UNCERTAIN => ActionFailure::Uncertain(e.to_string()),
+        ClientError::Rpc { .. } => ActionFailure::Failed(e.to_string()),
+        _ => ActionFailure::Uncertain(format!("{e}; dispatch is never replayed")),
+    };
     match request.kind {
-        ActionKind::Cancel => call_async(&guarded, "zor/task.cancel", json!({ "task": task }))
+        ActionKind::Cancel => call_async(&guarded, "zor/task.cancel", json!({ "task": task, "guard": guard }))
             .await
-            .map_err(failed),
-        ActionKind::Stop => call_async(&guarded, "zor/task.stop", json!({ "task": task }))
+            .map_err(mutation_failed),
+        ActionKind::Stop => call_async(&guarded, "zor/task.stop", json!({ "task": task, "guard": guard }))
             .await
-            .map_err(failed),
+            .map_err(mutation_failed),
         ActionKind::Reconcile => Ok(inspect),
         ActionKind::Resume {
             operation,
@@ -603,10 +594,10 @@ async fn dispatch(descriptor: &Descriptor, request: ActionRequest) -> Result<Val
         } => call_async(
             &guarded,
             "zor/task.resume",
-            json!({ "task": task, "operation": operation, "instance": fux_instance }),
+            json!({ "task": task, "operation": operation, "fux_instance": fux_instance, "guard": guard }),
         )
         .await
-        .map_err(failed),
+        .map_err(mutation_failed),
     }
 }
 

@@ -165,6 +165,11 @@ lifecycle_event!(
     SurfaceInput {
         surface: NodeId,
         node: NodeId,
+        /// Provider identity and its scene-local entity, never a fux entity id.
+        provider: String,
+        provider_node: Option<u64>,
+        /// Provider revision at input admission; rejects stale row activations.
+        revision: u64,
         viewer: ViewerId,
         kind: SurfaceInputKind,
         col: u16,

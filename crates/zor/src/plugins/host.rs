@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,7 +36,7 @@ pub const GRACE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(20);
 
 struct Live {
-    pgid: Pid,
+    pgid: Option<Pid>,
     terminate: Arc<AtomicBool>,
 }
 
@@ -44,9 +45,24 @@ struct Live {
 struct Registry(Arc<Mutex<HashMap<(Entity, u64), Live>>>);
 
 impl Registry {
-    fn insert(&self, key: (Entity, u64), live: Live) {
-        if let Ok(mut map) = self.0.lock() {
-            map.insert(key, live);
+    fn reserve(&self, key: (Entity, u64)) -> Option<Arc<AtomicBool>> {
+        let mut map = self.0.lock().ok()?;
+        if map.len() >= super::MAX_PLUGINS * super::MAX_RUNS_RETAINED || map.contains_key(&key) {
+            return None;
+        }
+        let terminate = Arc::new(AtomicBool::new(false));
+        map.insert(key, Live { pgid: None, terminate: terminate.clone() });
+        Some(terminate)
+    }
+
+    fn started(&self, key: (Entity, u64), pgid: Pid) {
+        if let Ok(mut map) = self.0.lock()
+            && let Some(live) = map.get_mut(&key)
+        {
+            live.pgid = Some(pgid);
+            if live.terminate.load(Ordering::SeqCst) {
+                let _ = killpg(pgid, Signal::SIGTERM);
+            }
         }
     }
 
@@ -64,7 +80,9 @@ impl Registry {
             return false;
         };
         live.terminate.store(true, Ordering::SeqCst);
-        let _ = killpg(live.pgid, Signal::SIGTERM);
+        if let Some(pgid) = live.pgid {
+            let _ = killpg(pgid, Signal::SIGTERM);
+        }
         true
     }
 }
@@ -72,13 +90,32 @@ impl Registry {
 pub struct PluginAdapter {
     inbound: Sender<Inbound>,
     live: Registry,
+    executable: PathBuf,
 }
 
 impl PluginAdapter {
     pub fn new(inbound: Sender<Inbound>) -> Self {
+        Self::with_executable(inbound, std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zor")))
+    }
+
+    pub fn with_executable(inbound: Sender<Inbound>, executable: PathBuf) -> Self {
         Self {
             inbound,
             live: Registry::default(),
+            executable,
+        }
+    }
+}
+
+impl Drop for PluginAdapter {
+    fn drop(&mut self) {
+        if let Ok(map) = self.live.0.lock() {
+            for live in map.values() {
+                live.terminate.store(true, Ordering::SeqCst);
+                if let Some(pgid) = live.pgid {
+                    let _ = killpg(pgid, Signal::SIGKILL);
+                }
+            }
         }
     }
 }
@@ -100,12 +137,20 @@ impl Adapter for PluginAdapter {
             } => {
                 let inbound = self.inbound.clone();
                 let live = self.live.clone();
+                let executable = self.executable.clone();
+                let terminate = live.reserve((plugin, run))
+                    .ok_or_else(|| BevyError::from("plugin process capacity exhausted or duplicate run"))?;
                 IoTaskPool::get()
                     .spawn(async move {
-                        let code = execute(plugin, run, &argv, cwd.as_deref(), &env, &log, &live).await;
+                        let code = if terminate.load(Ordering::SeqCst) {
+                            None
+                        } else {
+                            execute(plugin, run, &argv, cwd.as_deref(), &env, &log, &live, &terminate, &executable).await
+                        };
                         let _ = inbound
                             .send(Inbound::PluginExited { plugin, run, code })
                             .await;
+                        live.remove((plugin, run));
                     })
                     .detach();
                 Ok(())
@@ -120,6 +165,21 @@ impl Adapter for PluginAdapter {
             ))),
         }
     }
+
+    fn pending(&self) -> bool {
+        self.live.0.lock().is_ok_and(|map| !map.is_empty())
+    }
+
+    fn shutdown(&mut self) {
+        if let Ok(map) = self.live.0.lock() {
+            for live in map.values() {
+                live.terminate.store(true, Ordering::SeqCst);
+                if let Some(pgid) = live.pgid {
+                    let _ = killpg(pgid, Signal::SIGTERM);
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -129,6 +189,9 @@ impl Adapter for PluginAdapter {
 /// Appends one line to the plugin log, rotating first when the file is past the bound. The
 /// line is clipped to [`MAX_LINE_BYTES`].
 pub fn append_line(log: &Path, prefix: &str, line: &[u8]) -> std::io::Result<()> {
+    // All runs of a plugin share a log. Serialize rotation and append as one operation.
+    static LOG_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOG_LOCK.lock().map_err(|_| std::io::Error::other("log lock poisoned"))?;
     if let Some(parent) = log.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -137,7 +200,7 @@ pub fn append_line(log: &Path, prefix: &str, line: &[u8]) -> std::io::Result<()>
         rotated.push(".1");
         std::fs::rename(log, PathBuf::from(rotated))?;
     }
-    let mut file = OpenOptions::new().create(true).append(true).open(log)?;
+    let mut file = OpenOptions::new().create(true).append(true).mode(0o600).open(log)?;
     let mut buf = Vec::with_capacity(prefix.len() + line.len().min(MAX_LINE_BYTES) + 32);
     buf.extend_from_slice(prefix.as_bytes());
     if line.len() > MAX_LINE_BYTES {
@@ -157,17 +220,21 @@ pub fn append_line(log: &Path, prefix: &str, line: &[u8]) -> std::io::Result<()>
 
 /// The last `limit` lines of the log (the rotated file first when the live one is short).
 pub fn read_tail(log: &Path, limit: usize) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
+    let mut lines = std::collections::VecDeque::with_capacity(limit.min(1000));
     let mut rotated = log.as_os_str().to_owned();
     rotated.push(".1");
     for path in [PathBuf::from(rotated), log.to_path_buf()] {
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            lines.extend(text.lines().map(str::to_owned));
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        if File::open(&path).and_then(|file| file.take(MAX_LOG_BYTES + MAX_LINE_BYTES as u64 + 1024).read_to_end(&mut bytes)).is_ok() {
+            for line in String::from_utf8_lossy(&bytes).lines() {
+                if limit == 0 { return Vec::new(); }
+                if lines.len() == limit.min(1000) { lines.pop_front(); }
+                lines.push_back(line.to_owned());
+            }
         }
     }
-    let skip = lines.len().saturating_sub(limit);
-    lines.drain(..skip);
-    lines
+    lines.into_iter().collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -192,6 +259,7 @@ async fn drain<R: AsyncRead + Unpin>(mut pipe: R, log: &Path, prefix: &str) {
                     let line = core::mem::take(&mut pending);
                     let _ = append_line(log, prefix, &line);
                 }
+                future::yield_now().await;
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break,
@@ -207,7 +275,12 @@ async fn wait_exit(child: &mut Child, pgid: Pid, terminate: &AtomicBool) -> Opti
     let mut asked_at: Option<Instant> = None;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return status.code(),
+            Ok(Some(status)) => {
+                // The leader may exit while descendants keep its pipes open. They remain
+                // owned by this run and must not outlive it or pin the drain forever.
+                let _ = killpg(pgid, Signal::SIGKILL);
+                return status.code();
+            }
             Ok(None) => {}
             Err(_) => return None,
         }
@@ -233,15 +306,23 @@ async fn execute(
     env: &[(String, String)],
     log: &Path,
     live: &Registry,
+    terminate: &AtomicBool,
+    executable: &Path,
 ) -> Option<i32> {
     let prefix = format!("[{run}] ");
-    let Some((program, args)) = argv.split_first() else {
+    let Some((program, _)) = argv.split_first() else {
         let _ = append_line(log, &prefix, b"zor: empty command");
         return None;
     };
-    let mut command = Command::new(program);
+    let mut command = Command::new(executable);
     command
-        .args(args)
+        .args(["plugin", "supervise"])
+        .env("ZOR_PLUGIN_ARGV", serde_json::to_string(argv).ok()?)
+        .env("ZOR_HOST_PID", std::process::id().to_string())
+        .env_remove("ZOR_TOKEN")
+        .env_remove("ZOR_BRP")
+        .env_remove("FUX_TOKEN")
+        .env_remove("FUX_BRP")
         .envs(env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -263,14 +344,7 @@ async fn execute(
         format!("zor: started pid {} {}", child.id(), argv.join(" ")).as_bytes(),
     );
     let pgid = Pid::from_raw(i32::try_from(child.id()).unwrap_or(0));
-    let terminate = Arc::new(AtomicBool::new(false));
-    live.insert(
-        (plugin, run),
-        Live {
-            pgid,
-            terminate: Arc::clone(&terminate),
-        },
-    );
+    live.started((plugin, run), pgid);
     let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
     let reads = async {
         match (stdout.and_then(|p| Async::new(p).ok()), stderr.and_then(|p| Async::new(p).ok())) {
@@ -282,8 +356,7 @@ async fn execute(
             (None, None) => {}
         }
     };
-    let (_, code) = future::zip(reads, wait_exit(&mut child, pgid, &terminate)).await;
-    live.remove((plugin, run));
+    let (_, code) = future::zip(reads, wait_exit(&mut child, pgid, terminate)).await;
     let _ = append_line(
         log,
         &prefix,
@@ -294,4 +367,63 @@ async fn execute(
         .as_bytes(),
     );
     code
+}
+
+/// Internal process-group supervisor, invoked only by the host adapter. A separate process
+/// is essential: threads and Drop cannot run after the server receives SIGKILL.
+pub fn supervise() -> Result<i32, String> {
+    let parent: i32 = std::env::var("ZOR_HOST_PID").map_err(|e| e.to_string())?
+        .parse().map_err(|_| "invalid host pid")?;
+    let argv: Vec<String> = serde_json::from_str(&std::env::var("ZOR_PLUGIN_ARGV").map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    if nix::unistd::getppid().as_raw() != parent {
+        return Err("plugin host no longer owns supervisor".into());
+    }
+    let (program, args) = argv.split_first().ok_or("empty supervised command")?;
+    // Optional bounded status channel for adapters that must distinguish signal exit and
+    // spawn failure from an ordinary nonzero exit. Default children retain inherited stdin.
+    let mut report = if std::env::var("ZOR_CHILD_STATUS").as_deref() == Ok("1") {
+        use std::os::fd::AsFd;
+        Some(File::from(std::io::stdin().as_fd().try_clone_to_owned().map_err(|e| e.to_string())?))
+    } else { None };
+    let mut command = Command::new(program);
+    command.args(args).env_remove("ZOR_PLUGIN_ARGV").env_remove("ZOR_HOST_PID")
+        .env_remove("ZOR_CHILD_STATUS");
+    if report.is_some() { command.stdin(Stdio::null()); }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let problem = format!("spawn {program}: {e}");
+            report_status(&mut report, None, Some(&problem));
+            return Err(problem);
+        }
+    };
+    loop {
+        if nix::unistd::getppid().as_raw() != parent {
+            let _ = killpg(nix::unistd::getpgrp(), Signal::SIGKILL);
+            return Err("plugin host exited".into());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                report_status(&mut report, status.code(), None);
+                return Ok(status.code().unwrap_or(128));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let problem = e.to_string();
+                report_status(&mut report, None, Some(&problem));
+                return Err(problem);
+            }
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+fn report_status(file: &mut Option<File>, code: Option<i32>, problem: Option<&str>) {
+    if let Some(mut file) = file.take() {
+        let problem = problem.map(|p| p.chars().take(1024).collect::<String>());
+        if let Ok(bytes) = serde_json::to_vec(&(code, problem)) {
+            let _ = file.write_all(&bytes);
+        }
+    }
 }

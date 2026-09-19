@@ -718,7 +718,7 @@ fn reconcile(world: &mut World, list: &WorkspaceList) {
 /// for prompts whose delivery or wait is unsettled, a capture while a delivered prompt waits,
 /// and final evidence while it is due.
 pub fn heartbeat(world: &mut World) {
-    let delta = world.resource::<Time>().delta();
+    let delta = world.resource::<Time<bevy_time::Real>>().delta();
     let due: Vec<Entity> = world
         .query::<(Entity, &mut Heartbeat)>()
         .iter_mut(world)

@@ -520,6 +520,156 @@ fn observe_watch_serves_public_events_only() {
 }
 
 #[test]
+fn scoped_tokens_cannot_read_global_world_state() {
+    let server = Server::start();
+    let pane = new_workspace(&server, "beta");
+    let rows = server
+        .call(
+            "world.query",
+            json!({ "data": { "components": ["fux::remote::projection::PaneView"] } }),
+        )
+        .unwrap();
+    let entity = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["components"]["fux::remote::projection::PaneView"]["id"] == pane)
+        .unwrap()["entity"]
+        .clone();
+    let minted = server
+        .call(
+            "fux/token.mint",
+            json!({ "workspace": "default", "capabilities": ["read"] }),
+        )
+        .unwrap();
+    let mut narrow = server.descriptor.clone();
+    narrow.token = minted["token"].as_str().unwrap().to_owned();
+
+    for (method, params) in [
+        (
+            "world.query",
+            json!({ "data": { "components": ["fux::remote::projection::PaneView"] } }),
+        ),
+        (
+            "world.get_components",
+            json!({ "entity": entity, "components": ["fux::remote::projection::PaneView"] }),
+        ),
+        ("world.list_components", json!({ "entity": entity })),
+    ] {
+        assert_eq!(
+            code(client::call_with(&narrow, method, params)),
+            codes::UNAUTHORIZED,
+            "{method}"
+        );
+    }
+    for (method, params) in [
+        (
+            "world.observe+watch",
+            json!({ "event": "fux::events::SurfaceInput" }),
+        ),
+        (
+            "world.get_components+watch",
+            json!({ "entity": entity, "components": ["fux::remote::projection::PaneView"] }),
+        ),
+        ("world.list_components+watch", json!({ "entity": entity })),
+    ] {
+        let mut refused = watch_as(&server, &narrow, method, params);
+        assert_eq!(
+            error_code(refused.next(WAIT)),
+            i64::from(codes::UNAUTHORIZED),
+            "{method}"
+        );
+        assert!(refused.ended(WAIT), "{method} remained open");
+    }
+    assert_eq!(
+        server.call("fux/server.info", json!({})).unwrap()["watches"],
+        0
+    );
+}
+
+#[test]
+fn surface_input_streams_preserve_workspace_scope_and_revocation() {
+    use fux::events::{SurfaceInput, SurfaceInputKind};
+    use fux::model::{NodeId, ViewerId};
+
+    let server = Server::start();
+    new_workspace(&server, "beta");
+    let mut narrow = server.descriptor.clone();
+    narrow.token = server
+        .call(
+            "fux/token.mint",
+            json!({ "workspace": "default", "capabilities": ["read"] }),
+        )
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut global = server.descriptor.clone();
+    global.token = server
+        .call("fux/token.mint", json!({ "capabilities": ["read"] }))
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut scoped = watch_as(&server, &narrow, "fux/events+watch", json!({}));
+    let mut observed = watch_as(
+        &server,
+        &global,
+        "world.observe+watch",
+        json!({ "event": "fux::events::SurfaceInput" }),
+    );
+    // A round trip through the dispatcher ensures both streams have opened.
+    assert_eq!(
+        server.call("fux/server.info", json!({})).unwrap()["watches"],
+        2
+    );
+    server.with_world(|world| {
+        for (workspace, surface, bytes) in [
+            ("beta", 200, b"beta-secret".to_vec()),
+            ("default", 100, b"default-key".to_vec()),
+        ] {
+            let scope = world.resource::<Ids>().workspace(workspace).unwrap();
+            world.trigger(SurfaceInput {
+                entity: scope,
+                scope,
+                surface: NodeId(surface),
+                node: NodeId(surface),
+                provider: "test".into(),
+                provider_node: None,
+                revision: 0,
+                viewer: ViewerId(1),
+                kind: SurfaceInputKind::Key,
+                col: 0,
+                row: 0,
+                bytes,
+            });
+        }
+    });
+    let item = result(scoped.next(WAIT));
+    let events = item["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "{item}");
+    assert_eq!(events[0]["workspace"], "default");
+    assert_eq!(events[0]["event"]["bytes"], json!(b"default-key".to_vec()));
+    assert!(scoped.next(Duration::from_millis(200)).is_none());
+
+    let public = result(observed.next(WAIT));
+    let events = public["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2, "{public}");
+    assert_eq!(events[0]["bytes"], json!(b"beta-secret".to_vec()));
+    assert_eq!(events[1]["bytes"], json!(b"default-key".to_vec()));
+
+    server
+        .call("fux/token.revoke", json!({ "revoke": global.token }))
+        .unwrap();
+    assert!(observed.ended(WAIT), "revoked observer still open");
+    assert!(!scoped.ended(Duration::from_millis(200)));
+    server
+        .call("fux/token.revoke", json!({ "revoke": narrow.token }))
+        .unwrap();
+    assert!(scoped.ended(WAIT), "revoked workspace stream still open");
+}
+
+#[test]
 fn builtin_watches_are_wrapped_over_projections() {
     let server = Server::start();
     let pane = new_workspace(&server, "alpha");
@@ -547,13 +697,22 @@ fn builtin_watches_are_wrapped_over_projections() {
         i64::from(codes::UNAUTHORIZED)
     );
 
-    let mut view = watch(
+    let mut reader = server.descriptor.clone();
+    reader.token = server
+        .call("fux/token.mint", json!({ "capabilities": ["read"] }))
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut view = watch_as(
         &server,
+        &reader,
         "world.get_components+watch",
         json!({ "entity": entity, "components": ["fux::remote::projection::PaneView"] }),
     );
-    let mut listed = watch(
+    let mut listed = watch_as(
         &server,
+        &reader,
         "world.list_components+watch",
         json!({ "entity": entity }),
     );
@@ -568,6 +727,11 @@ fn builtin_watches_are_wrapped_over_projections() {
     // Nothing was added or removed on the projection entity: silence, not a leak of the
     // relationship components it also carries.
     assert!(listed.next(Duration::from_millis(300)).is_none());
+    server
+        .call("fux/token.revoke", json!({ "revoke": reader.token }))
+        .unwrap();
+    assert!(view.ended(WAIT), "revoked component watch still open");
+    assert!(listed.ended(WAIT), "revoked component-list watch still open");
 }
 
 #[test]

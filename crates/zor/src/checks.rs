@@ -690,6 +690,9 @@ fn complete(world: &mut World) {
 /// already committed becomes `Running` with its `Effect::RunCheck`; a refused or pending
 /// commit leaves it queued (invariant 13).
 fn dispatch(world: &mut World) {
+    if world.resource::<bevy_state::prelude::State<ServerMode>>().get() == &ServerMode::ShuttingDown {
+        return;
+    }
     if !journal_committed(world) {
         return;
     }

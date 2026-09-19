@@ -72,7 +72,6 @@ impl Plugin for ModelPlugin {
             .configure_sets(Last, Phase::Effects)
             .add_systems(Startup, serving)
             .add_systems(First, ingest_signals.in_set(Phase::Ingest))
-            .add_systems(OnEnter(ServerMode::ShuttingDown), exit)
             .add_systems(Last, clear_inbound.after(Phase::Effects));
         components::register_types(app);
     }
@@ -82,8 +81,8 @@ fn serving(mut next: ResMut<NextState<ServerMode>>) {
     next.set(ServerMode::Serving);
 }
 
-/// `SIGINT`/`SIGTERM` ask for shutdown; the transition runs after `PreUpdate`, so the journal
-/// still commits this update before the runner sees the exit effect.
+/// Signals request the server-wide transition. The runner drains owned adapters and commits
+/// their final evidence before exiting; a shutdown never kills fux-owned task panes.
 fn ingest_signals(mut inbound: MessageReader<Inbound>, mut next: ResMut<NextState<ServerMode>>) {
     if inbound
         .read()
@@ -93,10 +92,6 @@ fn ingest_signals(mut inbound: MessageReader<Inbound>, mut next: ResMut<NextStat
     }
 }
 
-/// Nothing in the World outlives a shutdown yet (provider adapters are a later slice).
-fn exit(mut effects: MessageWriter<Effect>) {
-    effects.write(Effect::Exit { code: 0 });
-}
 
 /// Bevy `Messages` are used only within one `update`: the runner writes the batch and this
 /// system clears it, so nothing is retained across steps.

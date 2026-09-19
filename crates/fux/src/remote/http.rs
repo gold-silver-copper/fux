@@ -45,6 +45,18 @@ pub const MAX_CONNECTIONS: usize = 256;
 pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
+/// Bounded HTTP transport shared by the fux and zor BRP hosts.
+/// Add after `RemotePlugin`; the bound ephemeral port is published through `HostPort`.
+pub struct BoundedHttpPlugin;
+
+impl bevy_app::Plugin for BoundedHttpPlugin {
+    fn build(&self, app: &mut bevy_app::App) {
+        app.insert_resource(HostAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)))
+            .insert_resource(HostPort(0))
+            .add_systems(bevy_app::Startup, start);
+    }
+}
+
 /// `Startup`: binds the pre-probed [`HostPort`] (a fresh port if that one was taken in the
 /// meantime, and [`HostPort`] follows) and spawns the acceptor.
 pub(super) fn start(world: &mut World) -> Result<(), BevyError> {

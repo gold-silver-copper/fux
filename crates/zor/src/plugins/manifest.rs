@@ -191,8 +191,13 @@ impl Manifest {
                 file.display()
             )));
         }
-        let text = std::fs::read_to_string(&file)
+        use std::io::Read;
+        let mut text = String::new();
+        std::fs::File::open(&file).and_then(|file| file.take(MAX_MANIFEST_BYTES + 1).read_to_string(&mut text))
             .map_err(|e| ManifestError::Io(format!("{}: {e}", file.display())))?;
+        if text.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err(ManifestError::Io("manifest grew beyond byte bound".into()));
+        }
         Self::parse(&text)
     }
 
@@ -374,12 +379,25 @@ pub fn manifest_file(path: &Path) -> std::path::PathBuf {
 
 /// `*`-glob match of an event name (`zor/TaskClosed`) against a hook pattern.
 pub fn pattern_matches(pattern: &str, name: &str) -> bool {
-    fn go(p: &[u8], n: &[u8]) -> bool {
-        match p.split_first() {
-            None => n.is_empty(),
-            Some((b'*', rest)) => (0..=n.len()).any(|i| go(rest, n.get(i..).unwrap_or_default())),
-            Some((c, rest)) => n.first() == Some(c) && go(rest, n.get(1..).unwrap_or_default()),
+    // Greedy wildcard matching avoids exponential recursion on many adjacent stars.
+    let (p, n) = (pattern.as_bytes(), name.as_bytes());
+    let (mut pi, mut ni, mut star, mut retry) = (0, 0, None, 0);
+    while ni < n.len() {
+        if p.get(pi) == Some(&b'*') {
+            star = Some(pi);
+            pi += 1;
+            retry = ni;
+        } else if p.get(pi) == n.get(ni) {
+            pi += 1;
+            ni += 1;
+        } else if let Some(at) = star {
+            retry += 1;
+            ni = retry;
+            pi = at + 1;
+        } else {
+            return false;
         }
     }
-    go(pattern.as_bytes(), name.as_bytes())
+    while p.get(pi) == Some(&b'*') { pi += 1; }
+    pi == p.len()
 }

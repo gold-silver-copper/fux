@@ -56,6 +56,9 @@ impl CellText {
             len: 0,
         };
         for ch in text.chars() {
+            // Display content is never terminal protocol. OSC/CSI output is emitted only
+            // by the painter's explicit, policy-checked control paths.
+            let ch = if ch.is_control() { '\u{fffd}' } else { ch };
             let width = ch.len_utf8();
             let end = usize::from(cell.len) + width;
             let Some(slot) = cell.bytes.get_mut(usize::from(cell.len)..end) else {

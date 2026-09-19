@@ -7,6 +7,7 @@ use async_channel::Sender;
 use bevy_app::TaskPoolPlugin;
 use bevy_app::prelude::*;
 use bevy_asset::AssetPlugin;
+use bevy_asset::io::{AssetSourceBuilders, AssetSourceId};
 use bevy_diagnostic::{DiagnosticsPlugin, EntityCountDiagnosticsPlugin};
 use bevy_ecs::error::FallbackErrorHandler;
 use bevy_log::LogPlugin;
@@ -28,6 +29,16 @@ pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound
         .canonicalize()
         .unwrap_or_else(|_| paths.config_dir.clone());
     let mut app = App::new();
+    let wake_sender = inbound.clone();
+    let wake: fux::assets::Wake = std::sync::Arc::new(move || {
+        let _ = wake_sender.try_send(Inbound::Wake);
+    });
+    app.world_mut()
+        .get_resource_or_init::<AssetSourceBuilders>()
+        .insert(
+            AssetSourceId::Default,
+            fux::assets::waking_source(&asset_root.display().to_string(), wake),
+        );
     app.add_plugins((
         TaskPoolPlugin::default(),
         StatesPlugin,
@@ -52,6 +63,8 @@ pub fn build(config: &Config, paths: &Paths, name: &str, inbound: Sender<Inbound
         asset_root: Some(asset_root.clone()),
     });
     core(&mut app, config, &paths.state_dir);
+    crate::machines::install_wake(app.world_mut(), inbound.clone());
+    crate::plugins::install_wake(app.world_mut(), inbound.clone());
     app.add_plugins(crate::providers::ProvidersPlugin {
         asset_root: Some(asset_root),
     });

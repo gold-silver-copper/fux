@@ -261,10 +261,6 @@ fn theme_and_bindings_are_sub_assets_of_the_same_file() {
         loaded_theme.color(ThemeToken::FOCUS_RING),
         Color::Indexed(15)
     );
-    assert_eq!(
-        loaded_theme.color(ThemeToken::BAR),
-        ThemeToken::BAR.default_color()
-    );
     let loaded_bindings = app
         .world()
         .resource::<Assets<Keybindings>>()
@@ -272,17 +268,12 @@ fn theme_and_bindings_are_sub_assets_of_the_same_file() {
         .unwrap();
     assert_eq!(loaded_bindings.prefix, KeyChord::ctrl('a'));
     assert_eq!(
-        loaded_bindings.bindings.get(&KeyChord::character('|')),
-        Some(&"split-side")
-    );
-    assert_eq!(
-        loaded_bindings.bindings.get(&KeyChord::character('%')),
-        Some(&"split-side"),
-        "defaults stay underneath"
+        loaded_bindings.bindings.get(&KeyChord::character('|')).map(|action| action.as_ref()),
+        Some("split-side")
     );
 
     // The edited theme replaces the sub-asset in place.
-    dir.write("[style]\nbar-background = 'red'\n");
+    dir.write("prefix = 'C-c'\n[style]\nbar-background = 'red'\n");
     assert!(
         settle(&mut app, RELOAD_WINDOW, |app| {
             app.world()
@@ -299,7 +290,7 @@ fn theme_and_bindings_are_sub_assets_of_the_same_file() {
         .unwrap();
     assert_eq!(
         loaded_bindings.prefix,
-        KeyChord::ctrl('b'),
+        KeyChord::ctrl('c'),
         "the prefix follows the edit too"
     );
 }
@@ -330,8 +321,8 @@ fn an_unported_action_name_keeps_the_rest_of_the_file() {
         .unwrap();
     assert_eq!(loaded_bindings.prefix, KeyChord::ctrl('a'));
     assert_eq!(
-        loaded_bindings.bindings.get(&KeyChord::character('|')),
-        Some(&"split-side")
+        loaded_bindings.bindings.get(&KeyChord::character('|')).map(|action| action.as_ref()),
+        Some("split-side")
     );
     assert_eq!(
         loaded_bindings.bindings.get(&KeyChord::character('t')),

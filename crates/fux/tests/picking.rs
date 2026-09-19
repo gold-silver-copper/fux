@@ -11,6 +11,9 @@
     reason = "integration-test helpers outside #[test] fns; clippy.toml only relaxes test fns; flex_grow is compared against exact cell counts"
 )]
 
+#[path = "picking/painted.rs"]
+mod painted;
+
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use bevy_math::UVec2;
@@ -125,9 +128,11 @@ fn mouse(
     button: PointerButton,
     modifiers: u8,
 ) {
+    let revision = app.world().get::<ProjectionBaseline>(viewer).unwrap().scene_revision;
     app.world_mut().write_message(Inbound::ViewerRequest {
         viewer,
         request: ViewerRequest::Pointer(PointerEvent {
+            revision,
             col,
             row,
             kind,
@@ -463,29 +468,16 @@ fn press_on_a_leaf_targets_its_pane() {
 fn border_drag_resizes_the_template_and_every_viewer_relayouts() {
     let mut app = app();
     let world = app.world_mut();
-    let (ws, root, left, right) = two_pane_row(world);
+    let (ws, _root, left, right) = two_pane_row(world);
     let viewer = ops::attach_viewer(world, ws, viewport(24, 80), None).unwrap();
     let other = ops::attach_viewer(world, ws, viewport(30, 120), None).unwrap();
     app.update();
     check(&mut app);
-    let generation = app.world().get::<LayoutGeneration>(root).unwrap().0;
     assert_eq!(instance_size(&mut app, viewer, left), UVec2::new(40, 24));
 
     // The left pane's right border is column 39; dragging it 10 cells right widens the left pane.
     drag(&mut app, viewer, (39, 10), (49, 10), 0);
     let world = app.world();
-    assert_eq!(
-        flex_grow(world, left),
-        48.0,
-        "flex_grow is the target width minus the two border cells"
-    );
-    assert_eq!(flex_grow(world, right), 28.0);
-    assert_eq!(world.get::<Node>(left).unwrap().flex_basis, Val::Px(0.0));
-    assert_eq!(
-        world.get::<LayoutGeneration>(root).unwrap().0,
-        generation + 2,
-        "one bump when the drag starts (every sibling in the drag's unit), one per step"
-    );
     assert!(
         world
             .get::<PointerDrag>(pointer_entity(world, viewer))
@@ -500,15 +492,13 @@ fn border_drag_resizes_the_template_and_every_viewer_relayouts() {
 
     // The minimum pane size bounds a drag: the right pane keeps `MIN_PANE_COLS` of content.
     drag(&mut app, viewer, (49, 10), (79, 10), 0);
-    let world = app.world();
-    assert_eq!(flex_grow(world, right), f32::from(MIN_PANE_COLS));
-    assert_eq!(
-        flex_grow(world, left),
-        80.0 - f32::from(MIN_PANE_COLS) - 4.0
-    );
     assert_eq!(
         instance_size(&mut app, viewer, right),
         UVec2::new(u32::from(MIN_PANE_COLS) + 2, 24)
+    );
+    assert_eq!(
+        instance_size(&mut app, viewer, left),
+        UVec2::new(80 - u32::from(MIN_PANE_COLS) - 2, 24)
     );
 }
 
@@ -540,22 +530,21 @@ fn border_drag_walks_up_to_the_axis_that_has_the_edge() {
     )
     .unwrap();
     let a = ops::spawn_node(world, row, None, framed(), Some(shell())).unwrap();
-    let _b = ops::spawn_node(world, row, None, framed(), Some(shell())).unwrap();
+    let b = ops::spawn_node(world, row, None, framed(), Some(shell())).unwrap();
     let c = ops::spawn_node(world, root, None, framed(), Some(shell())).unwrap();
     let viewer = ops::attach_viewer(world, ws, viewport(24, 80), None).unwrap();
     app.update();
     check(&mut app);
     assert_eq!(instance_size(&mut app, viewer, a), UVec2::new(40, 12));
     drag(&mut app, viewer, (10, 11), (10, 17), 0);
-    let world = app.world();
-    assert_eq!(flex_grow(world, row), 18.0, "the row has no insets");
-    assert_eq!(flex_grow(world, c), 4.0, "6 cells minus two border cells");
-    assert_eq!(flex_grow(world, a), 1.0, "the row's children are untouched");
     assert_eq!(instance_size(&mut app, viewer, a), UVec2::new(40, 18));
+    assert_eq!(instance_size(&mut app, viewer, b), UVec2::new(40, 18));
+    assert_eq!(instance_size(&mut app, viewer, row), UVec2::new(80, 18));
+    assert_eq!(instance_size(&mut app, viewer, c), UVec2::new(80, 6));
 }
 
 #[test]
-fn border_drag_on_a_grid_writes_px_tracks() {
+fn border_drag_resizes_grid_columns_without_changing_rows() {
     let mut app = app();
     let world = app.world_mut();
     let (ws, root) = workspace(world);
@@ -596,20 +585,6 @@ fn border_drag_on_a_grid_writes_px_tracks() {
     check(&mut app);
     // Top-left cell's right border (column 39) dragged 10 left: columns become 30px / 50px.
     drag(&mut app, viewer, (39, 5), (29, 5), 0);
-    let world = app.world();
-    let node = world.get::<Node>(root).unwrap();
-    assert_eq!(
-        node.grid_template_columns,
-        vec![
-            RepeatedGridTrack::px(1, 30.0),
-            RepeatedGridTrack::px(1, 50.0)
-        ]
-    );
-    assert_eq!(
-        node.grid_template_rows,
-        vec![RepeatedGridTrack::flex(2, 1.0)],
-        "rows are untouched"
-    );
     assert_eq!(
         instance_size(&mut app, viewer, cells[0]),
         UVec2::new(30, 12)
@@ -617,6 +592,14 @@ fn border_drag_on_a_grid_writes_px_tracks() {
     assert_eq!(
         instance_size(&mut app, viewer, cells[3]),
         UVec2::new(50, 12)
+    );
+    assert_eq!(
+        instance_size(&mut app, viewer, cells[1]),
+        UVec2::new(50, 12)
+    );
+    assert_eq!(
+        instance_size(&mut app, viewer, cells[2]),
+        UVec2::new(30, 12)
     );
 }
 

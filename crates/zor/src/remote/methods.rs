@@ -172,6 +172,14 @@ impl Request {
     /// A mutation needs `mutate` and the current instance nonce.
     pub fn mutation(&self, world: &World) -> Result<(), BrpError> {
         self.require(Capabilities::MUTATE)?;
+        if world.resource::<crate::journal::Journal>().is_frozen() {
+            return Err(invalid("journal is frozen; mutations are disabled until recovery"));
+        }
+        if world.get_resource::<bevy_state::prelude::State<crate::model::ServerMode>>()
+            .is_some_and(|state| *state.get() == crate::model::ServerMode::ShuttingDown)
+        {
+            return Err(invalid("server is shutting down; mutations are disabled"));
+        }
         let nonce = &world.resource::<ServerInstance>().nonce;
         match self.instance.as_deref() {
             Some(instance) if instance == nonce => Ok(()),
@@ -543,6 +551,7 @@ pub fn all_specs() -> impl Iterator<Item = &'static MethodSpec> {
     TABLE
         .iter()
         .chain(super::task_methods::METHODS)
+        .chain(super::resume_methods::METHODS)
         .chain(super::check_methods::METHODS)
         .chain(super::group_methods::METHODS)
         .chain(super::provider_methods::METHODS)

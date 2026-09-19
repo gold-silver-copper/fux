@@ -31,6 +31,7 @@ described!(
 described!(
     pub struct SurfaceUpdateParams {
         pub surface: u64,
+        pub expected_provider: String,
         pub revision: u64,
         /// A full update replaces the subtree: entities it omits are despawned and sibling
         /// order is set exactly. A partial one adds, reparents and rewrites components.
@@ -50,11 +51,27 @@ described!(
 described!(
     pub struct SurfaceCloseParams {
         pub surface: u64,
+        /// Refuse cleanup if another provider has replaced this surface.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub expected_provider: Option<String>,
     }
 );
 described!(
     pub struct SurfaceClosed {
         pub generation: u64,
+    }
+);
+
+described!(
+    pub struct SurfaceScrollParams {
+        pub surface: u64,
+        pub expected_provider: String,
+        pub revision: u64,
+        pub viewer: u64,
+        pub provider_node: u64,
+        pub rows: i32,
+        #[serde(default)]
+        pub absolute: bool,
     }
 );
 
@@ -110,6 +127,9 @@ fn surface_update(mut req: Request, world: &mut World) -> BrpResult {
     req.mutation(world)?;
     let params: SurfaceUpdateParams = req.parse()?;
     let (node, root) = surface_node(&req, world, params.surface)?;
+    if world.get::<SurfaceState>(node).is_none_or(|state| state.provider != params.expected_provider) {
+        return Err(invalid("surface provider changed; refusing stale update"));
+    }
     let nodes = surface::update(world, node, params.revision, params.full, &params.delta)
         .map_err(surface_error)?;
     to_value(SurfaceUpdated {
@@ -123,17 +143,48 @@ fn surface_close(mut req: Request, world: &mut World) -> BrpResult {
     req.mutation(world)?;
     let params: SurfaceCloseParams = req.parse()?;
     let (node, root) = surface_node(&req, world, params.surface)?;
+    if params.expected_provider.as_ref().is_some_and(|expected| {
+        world.get::<SurfaceState>(node).is_none_or(|state| &state.provider != expected)
+    }) {
+        return Err(invalid("surface provider changed; refusing stale cleanup"));
+    }
     surface::close(world, node).map_err(surface_error)?;
     to_value(SurfaceClosed {
         generation: generation(world, root),
     })
 }
+fn surface_scroll(mut req: Request, world: &mut World) -> BrpResult {
+    req.mutation(world)?;
+    let params: SurfaceScrollParams = req.parse()?;
+    let (surface, _) = surface_node(&req, world, params.surface)?;
+    let viewer = req.viewer(world, params.viewer)?;
+    let state = world.get::<SurfaceState>(surface).ok_or_else(|| invalid("not a surface"))?;
+    if state.provider != params.expected_provider || state.revision != params.revision {
+        return Err(invalid("surface changed; refusing stale scroll"));
+    }
+    let source = Entity::try_from_bits(params.provider_node).ok_or_else(|| invalid("invalid provider node"))?;
+    let node = state.entity(source).ok_or_else(|| invalid("provider node is no longer present"))?;
+    let rows = if params.absolute {
+        let id = world.get::<crate::model::NodeId>(node).ok_or_else(|| invalid("node identity absent"))?;
+        let current = world.get::<crate::layout::ViewState>(viewer)
+            .and_then(|view| view.scroll.get(id)).copied().unwrap_or(0.0);
+        params.rows.max(0).saturating_sub(current as i32)
+    } else {
+        params.rows
+    };
+    crate::layout::ops::scroll(world, viewer, node, rows)
+        .map_err(|error| invalid(error.to_string()))?;
+    to_value(super::methods::Done {})
+}
+
+handler!(brp_surface_scroll, surface_scroll);
 
 handler!(brp_surface_open, surface_open);
 handler!(brp_surface_update, surface_update);
 handler!(brp_surface_close, surface_close);
 
 pub const METHODS: &[super::methods::MethodSpec] = &[
+    spec!("fux/surface.scroll", brp_surface_scroll, SurfaceScrollParams, super::methods::Done),
     spec!(
         "fux/surface.open",
         brp_surface_open,

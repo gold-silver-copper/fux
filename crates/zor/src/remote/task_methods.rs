@@ -24,6 +24,28 @@ described!(
     }
 );
 described!(
+    /// Exact identity observed by a controller before a mutation.
+    pub struct PaneGuard {
+        pub instance: String,
+        pub workspace: String,
+        pub pane: u64,
+        pub pid: Option<u32>,
+    }
+);
+described!(
+    pub struct TaskGuard {
+        pub attempt: Option<u64>,
+        pub pane: Option<PaneGuard>,
+    }
+);
+described!(
+    pub struct TaskMutationParams {
+        pub task: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub guard: Option<TaskGuard>,
+    }
+);
+described!(
     /// Exactly one of `cwd` (absolute) or `worktree` (a zor-owned worktree id).
     pub struct TaskCreateParams {
         pub task: String,
@@ -52,7 +74,7 @@ described!(
 described!(
     pub struct TaskAdoptParams {
         pub task: String,
-        pub instance: String,
+        pub fux_instance: String,
         pub workspace: String,
         #[serde(default)]
         pub stream: Option<String>,
@@ -194,6 +216,35 @@ fn task_entity(world: &World, id: &str) -> Result<Entity, BrpError> {
         .resource::<Ids>()
         .task(id)
         .ok_or_else(|| error(codes::NOT_FOUND, format!("task {id} not found")))
+}
+
+/// Check the controller's observation in the same World transaction as the mutation.
+/// A present guard with no attempt means "still no live attempt", not a wildcard.
+pub(super) fn validate_guard(
+    world: &World,
+    task: Entity,
+    guard: Option<&TaskGuard>,
+) -> Result<(), BrpError> {
+    let Some(guard) = guard else {
+        return Ok(());
+    };
+    let current = lifecycle::attempt_of(world, task);
+    let attempt = current.and_then(|entity| world.get::<AttemptId>(entity)).map(|id| id.0);
+    if attempt != guard.attempt {
+        return Err(invalid("task attempt changed since the controller observation"));
+    }
+    if let Some(expected) = &guard.pane {
+        let handle = current.and_then(|entity| world.get::<PaneHandle>(entity));
+        if !handle.is_some_and(|actual| {
+            actual.instance == expected.instance
+                && actual.workspace == expected.workspace
+                && actual.pane == expected.pane
+                && actual.pid == expected.pid
+        }) {
+            return Err(invalid("task pane identity changed since the controller observation"));
+        }
+    }
+    Ok(())
 }
 
 fn prompt_entity(world: &World, id: &str) -> Result<Entity, BrpError> {
@@ -431,7 +482,7 @@ fn task_adopt(mut req: Request, world: &mut World) -> BrpResult {
         world,
         task,
         PaneHandle {
-            instance: params.instance,
+            instance: params.fux_instance,
             workspace: params.workspace,
             stream: params.stream.unwrap_or_default(),
             pane: params.pane,
@@ -474,16 +525,18 @@ fn task_wait(mut req: Request, world: &mut World) -> BrpResult {
 
 fn task_stop(mut req: Request, world: &mut World) -> BrpResult {
     req.mutation(world)?;
-    let params: TaskParams = req.parse()?;
+    let params: TaskMutationParams = req.parse()?;
     let task = task_entity(world, &params.task)?;
+    validate_guard(world, task, params.guard.as_ref())?;
     lifecycle::request_stop(world, task).map_err(lifecycle_error)?;
     to_value(task_inspect_record(world, task))
 }
 
 fn task_cancel(mut req: Request, world: &mut World) -> BrpResult {
     req.mutation(world)?;
-    let params: TaskParams = req.parse()?;
+    let params: TaskMutationParams = req.parse()?;
     let task = task_entity(world, &params.task)?;
+    validate_guard(world, task, params.guard.as_ref())?;
     lifecycle::cancel_task(world, task).map_err(lifecycle_error)?;
     to_value(task_inspect_record(world, task))
 }
@@ -572,8 +625,8 @@ pub const METHODS: &[MethodSpec] = &[
         PromptRecord
     ),
     spec!("zor/task.wait", brp_task_wait, PromptParams, PromptRecord),
-    spec!("zor/task.stop", brp_task_stop, TaskParams, TaskInspect),
-    spec!("zor/task.cancel", brp_task_cancel, TaskParams, TaskInspect),
+    spec!("zor/task.stop", brp_task_stop, TaskMutationParams, TaskInspect),
+    spec!("zor/task.cancel", brp_task_cancel, TaskMutationParams, TaskInspect),
     spec!(
         "zor/task.abandon",
         brp_task_abandon,

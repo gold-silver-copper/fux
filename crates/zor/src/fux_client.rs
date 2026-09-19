@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_channel::Sender;
 use async_io::{Async, Timer};
 use bevy_ecs::error::BevyError;
-use bevy_tasks::IoTaskPool;
+use bevy_tasks::{IoTaskPool, Task};
 use bevy_tasks::futures_lite::future;
 use fux::remote::client::{
     self, ClientError, Descriptor, encode_request, parse_response, read_descriptor, unwrap_reply,
@@ -186,13 +186,14 @@ impl FuxClient {
     pub fn surface_update(
         &self,
         surface: u64,
+        expected_provider: &str,
         revision: u64,
         full: bool,
         delta: &str,
     ) -> Result<SurfaceUpdated, ClientError> {
         self.call(
             "fux/surface.update",
-            json!({ "surface": surface, "revision": revision, "full": full, "delta": delta }),
+            json!({ "surface": surface, "expected_provider": expected_provider, "revision": revision, "full": full, "delta": delta }),
         )
     }
 
@@ -298,17 +299,22 @@ pub fn ensure_pid(entry: &PaneEntry, handle: &PaneHandle) -> Result<(), Identity
 pub struct FuxAdapter {
     brp: PathBuf,
     inbound: Sender<Inbound>,
+    calls: Vec<Task<()>>,
 }
 
 impl FuxAdapter {
     pub fn new(brp: PathBuf, inbound: Sender<Inbound>) -> Self {
-        Self { brp, inbound }
+        Self { brp, inbound, calls: Vec::new() }
     }
 }
 
 impl Adapter for FuxAdapter {
     fn handles(&self, effect: &Effect) -> bool {
         matches!(effect, Effect::FuxCall { .. })
+    }
+
+    fn pending(&self) -> bool {
+        self.calls.iter().any(|call| !call.is_finished())
     }
 
     fn apply(&mut self, effect: Effect) -> Result<(), BevyError> {
@@ -320,9 +326,16 @@ impl Adapter for FuxAdapter {
         else {
             return Err(BevyError::from("fux adapter: not a FuxCall"));
         };
+        self.calls.retain(|call| !call.is_finished());
+        if self.calls.len() >= 256 {
+            self.inbound.try_send(Inbound::FuxReply {
+                call, result: Err("fux call capacity reached before dispatch".into()),
+            }).map_err(|error| BevyError::from(error.to_string()))?;
+            return Ok(());
+        }
         let brp = self.brp.clone();
         let inbound = self.inbound.clone();
-        IoTaskPool::get()
+        self.calls.push(IoTaskPool::get()
             .spawn(async move {
                 let result = match read_descriptor(&brp) {
                     Ok(descriptor) => call_async(&descriptor, &method, params)
@@ -331,8 +344,7 @@ impl Adapter for FuxAdapter {
                     Err(e) => Err(e.to_string()),
                 };
                 let _ = inbound.send(Inbound::FuxReply { call, result }).await;
-            })
-            .detach();
+            }));
         Ok(())
     }
 }
@@ -343,9 +355,41 @@ pub async fn call_async(
     method: &str,
     params: Value,
 ) -> Result<Value, ClientError> {
+    future::race(
+        call_inner(descriptor, method, params),
+        async {
+            Timer::after(client::TIMEOUT).await;
+            Err(ClientError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "BRP call deadline elapsed; reconcile mutation outcome before retrying",
+            )))
+        },
+    )
+    .await
+}
+
+async fn call_inner(
+    descriptor: &Descriptor,
+    method: &str,
+    params: Value,
+) -> Result<Value, ClientError> {
     let Value::Object(mut fields) = params else {
         return Err(ClientError::Params);
     };
+    if let Some(expected) = fields.remove("_expected_instance") {
+        if expected.as_str() != Some(descriptor.instance.as_str()) {
+            return Err(ClientError::Malformed(
+                "instance mismatch: fux descriptor was replaced before dispatch".into(),
+            ));
+        }
+    }
+    if fields.get("instance").is_some_and(|expected| {
+        expected.as_str() != Some(descriptor.instance.as_str())
+    }) {
+        return Err(ClientError::Malformed(
+            "instance mismatch: refusing to replace caller authority with a new descriptor".into(),
+        ));
+    }
     fields.insert("token".into(), Value::String(descriptor.token.clone()));
     fields.insert(
         "instance".into(),

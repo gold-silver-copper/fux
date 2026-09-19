@@ -14,6 +14,9 @@ pub use super::descriptor::{Descriptor, DescriptorError, read_descriptor};
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// Bound on a reply body; captures are bounded server-side well below this.
 pub const MAX_REPLY_BYTES: usize = 64 * 1024 * 1024;
+/// Bound one event record and every HTTP chunk before allocation.
+pub const MAX_STREAM_BYTES: usize = 4 * 1024 * 1024;
+const MAX_HEADER_BYTES: usize = 32 * 1024;
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -142,6 +145,7 @@ pub fn stream(
         .ok_or_else(|| std::io::Error::other("unresolvable host"))?;
     let mut tcp = TcpStream::connect_timeout(&address, TIMEOUT)?;
     tcp.set_write_timeout(Some(TIMEOUT))?;
+    tcp.set_read_timeout(Some(TIMEOUT))?;
     let header = format!(
         "POST / HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         body.len()
@@ -152,16 +156,25 @@ pub fn stream(
     let mut reader = std::io::BufReader::new(tcp);
     let mut line = String::new();
     // Status line and headers.
-    reader.read_line(&mut line)?;
+    read_bounded_line(&mut reader, &mut line, MAX_HEADER_BYTES)?;
     let status: u16 = line
         .split(' ')
         .nth(1)
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| ClientError::Malformed(format!("status line `{}`", line.trim())))?;
     let mut chunked = false;
+    let mut header_bytes = line.len();
     loop {
         line.clear();
-        if reader.read_line(&mut line)? == 0 || line == "\r\n" {
+        let n = read_bounded_line(&mut reader, &mut line, MAX_HEADER_BYTES)?;
+        header_bytes = header_bytes.saturating_add(n);
+        if header_bytes > MAX_HEADER_BYTES {
+            return Err(ClientError::Malformed("response headers too large".into()));
+        }
+        if n == 0 {
+            return Err(ClientError::Malformed("truncated response headers".into()));
+        }
+        if line == "\r\n" {
             break;
         }
         if let Some((name, value)) = line.split_once(':')
@@ -172,54 +185,88 @@ pub fn stream(
     }
     if status != 200 {
         let mut rest = String::new();
-        let _ = reader.read_to_string(&mut rest);
+        reader.take(MAX_STREAM_BYTES as u64).read_to_string(&mut rest)?;
         return Err(ClientError::Http { status, body: rest });
     }
-    // Chunk framing carries whole SSE records; each record is `data: <json>\n\n`.
+    // A quiet accepted watch may wait indefinitely; only its framing and record sizes are bounded.
+    reader.get_ref().set_read_timeout(None)?;
     let mut chunk = Vec::new();
+    let mut record = Vec::new();
     loop {
         let payload: &[u8] = if chunked {
             line.clear();
-            if reader.read_line(&mut line)? == 0 {
-                return Ok(());
+            if read_bounded_line(&mut reader, &mut line, MAX_HEADER_BYTES)? == 0 {
+                return Err(ClientError::Malformed("truncated chunked stream".into()));
             }
             let size_hex = line.split(';').next().unwrap_or_default().trim();
             let size = usize::from_str_radix(size_hex, 16)
                 .map_err(|_| ClientError::Malformed("bad chunked encoding".into()))?;
             if size == 0 {
+                if !record.is_empty() {
+                    return Err(ClientError::Malformed("truncated event record".into()));
+                }
                 return Ok(());
+            }
+            if size > MAX_STREAM_BYTES {
+                return Err(ClientError::Malformed("stream chunk too large".into()));
             }
             chunk.clear();
             chunk.resize(size + 2, 0);
             reader.read_exact(&mut chunk)?;
+            if chunk.get(size..) != Some(b"\r\n") {
+                return Err(ClientError::Malformed("bad chunk terminator".into()));
+            }
             chunk.get(..size).unwrap_or_default()
         } else {
             line.clear();
-            if reader.read_line(&mut line)? == 0 {
+            if read_bounded_line(&mut reader, &mut line, MAX_STREAM_BYTES)? == 0 {
+                if !record.is_empty() {
+                    return Err(ClientError::Malformed("truncated event record".into()));
+                }
                 return Ok(());
             }
             line.as_bytes()
         };
-        for record in payload.split(|b| *b == b'\n') {
-            let Some(data) = record.strip_prefix(b"data:") else {
-                continue;
-            };
-            let item: Value = serde_json::from_slice(data.trim_ascii())
-                .map_err(|e| ClientError::Malformed(e.to_string()))?;
-            let item = match item {
-                Value::Object(mut reply) => {
-                    if let Some(Value::Object(error)) = reply.remove("error") {
-                        return Err(rpc_error(&error));
-                    }
-                    reply.remove("result").unwrap_or(Value::Null)
-                }
-                other => other,
-            };
-            if !on_item(item) {
-                return Ok(());
+        for piece in payload.split_inclusive(|b| *b == b'\n') {
+            if record.len().saturating_add(piece.len()) > MAX_STREAM_BYTES {
+                return Err(ClientError::Malformed("stream record too large".into()));
             }
+            record.extend_from_slice(piece);
+            if !piece.ends_with(b"\n") {
+                continue;
+            }
+            if let Some(data) = record.strip_prefix(b"data:") {
+                let item: Value = serde_json::from_slice(data.trim_ascii())
+                    .map_err(|e| ClientError::Malformed(e.to_string()))?;
+                let item = match item {
+                    Value::Object(mut reply) => {
+                        if let Some(Value::Object(error)) = reply.remove("error") {
+                            return Err(rpc_error(&error));
+                        }
+                        reply.remove("result").unwrap_or(Value::Null)
+                    }
+                    other => other,
+                };
+                if !on_item(item) {
+                    return Ok(());
+                }
+            }
+            record.clear();
         }
     }
+}
+
+fn read_bounded_line(
+    reader: &mut impl std::io::BufRead,
+    line: &mut String,
+    limit: usize,
+) -> Result<usize, ClientError> {
+    line.clear();
+    let n = reader.take(limit as u64 + 1).read_line(line)?;
+    if n > limit {
+        return Err(ClientError::Malformed("stream line too large".into()));
+    }
+    Ok(n)
 }
 
 fn rpc_error(error: &Map<String, Value>) -> ClientError {

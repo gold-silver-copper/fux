@@ -85,7 +85,8 @@ pub enum ByeReason {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SceneFrame {
-    /// Monotonic per-viewer scene revision.
+    /// Monotonic per-viewer scene revision. Pointer and surface-key requests echo the
+    /// last completed paint, not a newer applied-frame acknowledgement.
     pub revision: u64,
     /// `true` when `scene` is a full snapshot (first frame, resync); otherwise a delta.
     pub full: bool,

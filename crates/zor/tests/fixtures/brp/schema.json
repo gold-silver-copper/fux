@@ -299,6 +299,149 @@
         "name": "CheckView"
       }
     },
+    "zor/dashboard.close": {
+      "params": {
+        "fields": {
+          "id": "u64"
+        },
+        "name": "DashboardParams"
+      },
+      "result": {
+        "fields": {
+          "handoff": "Option<Handoff>",
+          "id": "u64",
+          "node": "u64",
+          "problem": "Option<String>",
+          "provider": "String",
+          "revision": "u64",
+          "row_nodes": "Vec<(String,u64)>",
+          "rows": "Vec<Row>",
+          "selected": "Option<String>",
+          "status": "String",
+          "workspace": "String"
+        },
+        "name": "DashboardState"
+      }
+    },
+    "zor/dashboard.input": {
+      "params": {
+        "fields": {
+          "id": "u64",
+          "input": "Input",
+          "provider_node": "Option<u64>",
+          "revision": "u64",
+          "viewer": "u64"
+        },
+        "name": "DashboardInputParams"
+      },
+      "result": {
+        "fields": {
+          "handoff": "Option<Handoff>",
+          "id": "u64",
+          "node": "u64",
+          "problem": "Option<String>",
+          "provider": "String",
+          "revision": "u64",
+          "row_nodes": "Vec<(String,u64)>",
+          "rows": "Vec<Row>",
+          "selected": "Option<String>",
+          "status": "String",
+          "workspace": "String"
+        },
+        "name": "DashboardState"
+      }
+    },
+    "zor/dashboard.open": {
+      "params": {
+        "fields": {
+          "generation": "u64",
+          "machine": "Option<String>",
+          "node": "u64",
+          "viewer": "Option<u64>",
+          "workspace": "String"
+        },
+        "name": "DashboardOpenParams"
+      },
+      "result": {
+        "fields": {
+          "handoff": "Option<Handoff>",
+          "id": "u64",
+          "node": "u64",
+          "problem": "Option<String>",
+          "provider": "String",
+          "revision": "u64",
+          "row_nodes": "Vec<(String,u64)>",
+          "rows": "Vec<Row>",
+          "selected": "Option<String>",
+          "status": "String",
+          "workspace": "String"
+        },
+        "name": "DashboardState"
+      }
+    },
+    "zor/dashboard.return": {
+      "params": {
+        "fields": {
+          "handoff": "u64",
+          "id": "u64"
+        },
+        "name": "DashboardReturnParams"
+      },
+      "result": {
+        "fields": {
+          "handoff": "Option<Handoff>",
+          "id": "u64",
+          "node": "u64",
+          "problem": "Option<String>",
+          "provider": "String",
+          "revision": "u64",
+          "row_nodes": "Vec<(String,u64)>",
+          "rows": "Vec<Row>",
+          "selected": "Option<String>",
+          "status": "String",
+          "workspace": "String"
+        },
+        "name": "DashboardState"
+      }
+    },
+    "zor/dashboard.rows": {
+      "params": {
+        "fields": {
+          "machine": "Option<String>"
+        },
+        "name": "DashboardRowsParams"
+      },
+      "result": {
+        "fields": {
+          "rows": "Vec<Row>"
+        },
+        "name": "DashboardRows"
+      }
+    },
+    "zor/dashboard.state": {
+      "params": {
+        "fields": {
+          "id": "u64"
+        },
+        "name": "DashboardParams"
+      },
+      "result": {
+        "fields": {
+          "handoff": "Option<Handoff>",
+          "id": "u64",
+          "node": "u64",
+          "problem": "Option<String>",
+          "provider": "String",
+          "revision": "u64",
+          "row_nodes": "Vec<(String,u64)>",
+          "rows": "Vec<Row>",
+          "selected": "Option<String>",
+          "status": "String",
+          "workspace": "String"
+        },
+        "name": "DashboardState"
+      }
+    },
     "zor/events+watch": {
       "params": {
         "fields": {
@@ -436,6 +579,463 @@
           "status": "String"
         },
         "name": "GroupInfo"
+      }
+    },
+    "zor/machine.add": {
+      "params": {
+        "fields": {
+          "attachments": "BTreeMap<String,Transport>",
+          "control": "Option<Transport>",
+          "name": "String"
+        },
+        "name": "MachineAddParams"
+      },
+      "result": {
+        "fields": {
+          "id": "String"
+        },
+        "name": "MachineChanged"
+      }
+    },
+    "zor/machine.attach": {
+      "params": {
+        "fields": {
+          "guard": "MachineGuard",
+          "machine": "String",
+          "task": "String"
+        },
+        "name": "MachineAttachParams"
+      },
+      "result": {
+        "fields": {
+          "attempt": "u64",
+          "machine": "String",
+          "pane": "PaneIdentity",
+          "task": "String"
+        },
+        "name": "MachineAttachment"
+      }
+    },
+    "zor/machine.bind": {
+      "params": {
+        "fields": {
+          "attachment": "Option<Transport>",
+          "machine": "String",
+          "workspace": "String"
+        },
+        "name": "MachineBindParams"
+      },
+      "result": {
+        "fields": {
+          "id": "String"
+        },
+        "name": "MachineChanged"
+      }
+    },
+    "zor/machine.cancel": {
+      "params": {
+        "fields": {
+          "guard": "MachineGuard",
+          "machine": "String",
+          "operation": "String",
+          "task": "String"
+        },
+        "name": "MachineActionParams"
+      },
+      "result": {
+        "fields": {
+          "action": "ActionRecord"
+        },
+        "name": "MachineActionResult"
+      }
+    },
+    "zor/machine.control": {
+      "params": {
+        "fields": {
+          "control": "Option<Transport>",
+          "machine": "String"
+        },
+        "name": "MachineControlParams"
+      },
+      "result": {
+        "fields": {
+          "id": "String"
+        },
+        "name": "MachineChanged"
+      }
+    },
+    "zor/machine.endpoint": {
+      "params": {
+        "fields": {
+          "machine": "String",
+          "workspace": "Option<String>"
+        },
+        "name": "MachineEndpointParams"
+      },
+      "result": {
+        "fields": {
+          "descriptor": "Descriptor"
+        },
+        "name": "MachineEndpoint"
+      }
+    },
+    "zor/machine.inspect": {
+      "params": {
+        "fields": {
+          "machine": "String"
+        },
+        "name": "MachineParams"
+      },
+      "result": {
+        "fields": {
+          "machine": "MachineSnapshot"
+        },
+        "name": "MachineInspect"
+      }
+    },
+    "zor/machine.intents": {
+      "params": {
+        "fields": {
+          "operation": "Option<String>"
+        },
+        "name": "MachineIntentParams"
+      },
+      "result": {
+        "fields": {
+          "intents": "Vec<ActionIntent>"
+        },
+        "name": "MachineIntents"
+      }
+    },
+    "zor/machine.list": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "machines": "Vec<MachineSnapshot>",
+          "problem": "Option<String>"
+        },
+        "name": "MachineList"
+      }
+    },
+    "zor/machine.reconcile": {
+      "params": {
+        "fields": {
+          "guard": "MachineGuard",
+          "machine": "String",
+          "operation": "String",
+          "task": "String"
+        },
+        "name": "MachineActionParams"
+      },
+      "result": {
+        "fields": {
+          "action": "ActionRecord"
+        },
+        "name": "MachineActionResult"
+      }
+    },
+    "zor/machine.reload": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "reloaded": "bool"
+        },
+        "name": "MachineReloaded"
+      }
+    },
+    "zor/machine.remove": {
+      "params": {
+        "fields": {
+          "machine": "String"
+        },
+        "name": "MachineParams"
+      },
+      "result": {
+        "fields": {
+          "id": "String"
+        },
+        "name": "MachineChanged"
+      }
+    },
+    "zor/machine.rename": {
+      "params": {
+        "fields": {
+          "machine": "String",
+          "name": "String"
+        },
+        "name": "MachineRenameParams"
+      },
+      "result": {
+        "fields": {
+          "id": "String"
+        },
+        "name": "MachineChanged"
+      }
+    },
+    "zor/machine.resume": {
+      "params": {
+        "fields": {
+          "fux_instance": "String",
+          "guard": "MachineGuard",
+          "machine": "String",
+          "operation": "String",
+          "task": "String"
+        },
+        "name": "MachineResumeParams"
+      },
+      "result": {
+        "fields": {
+          "action": "ActionRecord"
+        },
+        "name": "MachineActionResult"
+      }
+    },
+    "zor/machine.status": {
+      "params": {
+        "fields": {
+          "operation": "Option<String>"
+        },
+        "name": "MachineIntentParams"
+      },
+      "result": {
+        "fields": {
+          "intents": "Vec<ActionIntent>"
+        },
+        "name": "MachineIntents"
+      }
+    },
+    "zor/machine.stop": {
+      "params": {
+        "fields": {
+          "guard": "MachineGuard",
+          "machine": "String",
+          "operation": "String",
+          "task": "String"
+        },
+        "name": "MachineActionParams"
+      },
+      "result": {
+        "fields": {
+          "action": "ActionRecord"
+        },
+        "name": "MachineActionResult"
+      }
+    },
+    "zor/plugin.bindings": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "bindings": "Vec<Binding>"
+        },
+        "name": "PluginBindings"
+      }
+    },
+    "zor/plugin.cursor": {
+      "params": {
+        "fields": {
+          "fux": "Option<u64>",
+          "fux_instance": "Option<String>",
+          "name": "String",
+          "zor": "Option<u64>",
+          "zor_instance": "Option<String>"
+        },
+        "name": "PluginCursorParams"
+      },
+      "result": {
+        "fields": {
+          "cursors": "HookCursors"
+        },
+        "name": "PluginCursor"
+      }
+    },
+    "zor/plugin.disable": {
+      "params": {
+        "fields": {
+          "name": "String"
+        },
+        "name": "PluginNameParams"
+      },
+      "result": {
+        "fields": {
+          "plugin": "PluginRecord"
+        },
+        "name": "PluginInspected"
+      }
+    },
+    "zor/plugin.enable": {
+      "params": {
+        "fields": {
+          "name": "String"
+        },
+        "name": "PluginNameParams"
+      },
+      "result": {
+        "fields": {
+          "plugin": "PluginRecord"
+        },
+        "name": "PluginInspected"
+      }
+    },
+    "zor/plugin.inspect": {
+      "params": {
+        "fields": {
+          "name": "String"
+        },
+        "name": "PluginNameParams"
+      },
+      "result": {
+        "fields": {
+          "plugin": "PluginRecord"
+        },
+        "name": "PluginInspected"
+      }
+    },
+    "zor/plugin.install": {
+      "params": {
+        "fields": {
+          "enabled": "bool",
+          "path": "String"
+        },
+        "name": "PluginPathParams"
+      },
+      "result": {
+        "fields": {
+          "operation": "u64"
+        },
+        "name": "PluginSubmitted"
+      }
+    },
+    "zor/plugin.link": {
+      "params": {
+        "fields": {
+          "enabled": "bool",
+          "path": "String"
+        },
+        "name": "PluginPathParams"
+      },
+      "result": {
+        "fields": {
+          "operation": "u64"
+        },
+        "name": "PluginSubmitted"
+      }
+    },
+    "zor/plugin.list": {
+      "params": {
+        "fields": {},
+        "name": "NoParams"
+      },
+      "result": {
+        "fields": {
+          "plugins": "Vec<PluginRecord>"
+        },
+        "name": "PluginList"
+      }
+    },
+    "zor/plugin.logs": {
+      "params": {
+        "fields": {
+          "limit": "usize",
+          "name": "String"
+        },
+        "name": "PluginLogsParams"
+      },
+      "result": {
+        "fields": {
+          "lines": "Vec<String>"
+        },
+        "name": "PluginLogs"
+      }
+    },
+    "zor/plugin.open_link": {
+      "params": {
+        "fields": {
+          "url": "String"
+        },
+        "name": "PluginLinkParams"
+      },
+      "result": {
+        "fields": {
+          "name": "String",
+          "run": "u64"
+        },
+        "name": "PluginLinkOpened"
+      }
+    },
+    "zor/plugin.operation": {
+      "params": {
+        "fields": {
+          "operation": "u64"
+        },
+        "name": "PluginOperationParams"
+      },
+      "result": {
+        "fields": {
+          "name": "Option<String>",
+          "operation": "u64",
+          "problem": "Option<String>",
+          "state": "String"
+        },
+        "name": "PluginOperation"
+      }
+    },
+    "zor/plugin.pane": {
+      "params": {
+        "fields": {
+          "name": "String",
+          "pane": "String",
+          "target": "Option<u64>",
+          "task": "Option<String>",
+          "workspace": "String"
+        },
+        "name": "PluginPaneParams"
+      },
+      "result": {
+        "fields": {
+          "opening": "u64"
+        },
+        "name": "PluginPaneOpened"
+      }
+    },
+    "zor/plugin.run": {
+      "params": {
+        "fields": {
+          "action": "String",
+          "expected_fux_instance": "Option<String>",
+          "name": "String",
+          "task": "Option<String>",
+          "workspace": "Option<String>"
+        },
+        "name": "PluginRunParams"
+      },
+      "result": {
+        "fields": {
+          "run": "u64"
+        },
+        "name": "PluginRunStarted"
+      }
+    },
+    "zor/plugin.uninstall": {
+      "params": {
+        "fields": {
+          "name": "String"
+        },
+        "name": "PluginNameParams"
+      },
+      "result": {
+        "fields": {
+          "name": "String"
+        },
+        "name": "PluginUninstalled"
       }
     },
     "zor/prompt.status": {
@@ -611,7 +1211,7 @@
     "zor/task.adopt": {
       "params": {
         "fields": {
-          "instance": "String",
+          "fux_instance": "String",
           "pane": "u64",
           "pid": "Option<u32>",
           "stream": "Option<String>",
@@ -645,9 +1245,10 @@
     "zor/task.cancel": {
       "params": {
         "fields": {
+          "guard": "Option<TaskGuard>",
           "task": "String"
         },
-        "name": "TaskParams"
+        "name": "TaskMutationParams"
       },
       "result": {
         "fields": {
@@ -817,12 +1418,64 @@
         "name": "TaskResults"
       }
     },
-    "zor/task.stop": {
+    "zor/task.resume": {
+      "params": {
+        "fields": {
+          "fux_instance": "String",
+          "guard": "Option<TaskGuard>",
+          "operation": "String",
+          "task": "String"
+        },
+        "name": "TaskResumeParams"
+      },
+      "result": {
+        "fields": {
+          "attempt": "u64",
+          "final_evidence": "Option<FinalEvidence>",
+          "instance": "String",
+          "lost": "bool",
+          "marker": "Option<String>",
+          "needs_input": "bool",
+          "operations": "Vec<OperationRecord>",
+          "ownership": "Ownership",
+          "pane": "u64",
+          "pid": "Option<u32>",
+          "problem": "Option<String>",
+          "state": "AttemptState",
+          "stream": "String",
+          "task": "String",
+          "uncertain": "bool",
+          "workspace": "String"
+        },
+        "name": "AttemptRecord"
+      }
+    },
+    "zor/task.resume-status": {
       "params": {
         "fields": {
           "task": "String"
         },
         "name": "TaskParams"
+      },
+      "result": {
+        "fields": {
+          "eligible": "bool",
+          "native_session": "Option<String>",
+          "previous_attempt": "Option<u64>",
+          "provider": "Option<String>",
+          "reason": "Option<String>",
+          "task": "String"
+        },
+        "name": "ResumeStatus"
+      }
+    },
+    "zor/task.stop": {
+      "params": {
+        "fields": {
+          "guard": "Option<TaskGuard>",
+          "task": "String"
+        },
+        "name": "TaskMutationParams"
       },
       "result": {
         "fields": {

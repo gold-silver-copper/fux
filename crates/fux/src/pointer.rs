@@ -60,6 +60,46 @@ const NOTICE_SECS: f32 = 3.0;
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PointerModifiers(pub u8);
 
+/// Admission provenance retained until picking's deferred policy commands run.
+#[derive(Component, Clone, Copy)]
+struct PointerRevision {
+    revision: u64,
+    /// Only this event's own resize may advance its captured input state. A new inbound
+    /// event must pass ordinary painted-scene admission and clears this exception.
+    resize_state: Option<crate::attach::projection::InputState>,
+}
+
+fn admits_pointer(world: &World, viewer: Entity) -> bool {
+    world.get::<ViewerPointer>(viewer)
+        .and_then(|p| world.get::<PointerRevision>(p.0))
+        .is_some_and(|admission| {
+            crate::attach::projection::admits_input(world, viewer, admission.revision)
+        })
+}
+
+fn admits_resize(world: &World, viewer: Entity) -> bool {
+    world.get::<ViewerPointer>(viewer)
+        .and_then(|p| world.get::<PointerRevision>(p.0))
+        .is_some_and(|admission| match &admission.resize_state {
+            Some(state) => crate::attach::projection::admits_captured_input(
+                world, viewer, admission.revision, state,
+            ),
+            None => crate::attach::projection::admits_input(world, viewer, admission.revision),
+        })
+}
+
+fn retain_resize_state(world: &mut World, viewer: Entity, pointer: Entity) {
+    let state = crate::attach::projection::InputState::capture(world, viewer);
+    if let Some(mut admission) = world.get_mut::<PointerRevision>(pointer) {
+        admission.resize_state = Some(state);
+    }
+}
+
+fn admits_pane(world: &World, viewer: Entity, pane: Entity) -> bool {
+    world.get::<ExactTarget>(viewer).is_none()
+        || world.get::<Targets>(viewer).is_some_and(|target| target.0 == pane)
+}
+
 /// What the viewer's primary-button drag is doing, on its pointer entity for the drag's life.
 /// `Copy`: every drag step reads it in place, nothing is cloned per event.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
@@ -155,6 +195,19 @@ impl Plugin for PointerPlugin {
 /// Turns a viewer's mouse event into `PointerInput` for its pointer: a `Move` to the cell (the
 /// pointer's location only changes on `Move`), then the press/release/scroll action.
 pub fn forward(world: &mut World, viewer: Entity, event: PointerEvent) {
+    if !crate::attach::projection::admits_input(world, viewer, event.revision) {
+        // Stale input must not hit the replacement scene or leave a held gesture alive.
+        if let Some(pointer) = world.get::<ViewerPointer>(viewer).map(|p| p.0)
+            && let Some(id) = world.get::<PointerId>(pointer).copied()
+            && let Some(location) = world.get::<PointerLocation>(pointer)
+                .and_then(|p| p.location().cloned())
+        {
+            world.entity_mut(pointer).remove::<PointerDrag>();
+            world.entity_mut(pointer).insert(PointerPress::default());
+            world.write_message(PointerInput::new(id, location, PointerAction::Cancel));
+        }
+        return;
+    }
     let Some((pointer_entity, viewport)) = world
         .get::<ViewerPointer>(viewer)
         .map(|p| p.0)
@@ -171,6 +224,10 @@ pub fn forward(world: &mut World, viewer: Entity, event: PointerEvent) {
     .normalize(None) else {
         return;
     };
+    world.entity_mut(pointer_entity).insert(PointerRevision {
+        revision: event.revision,
+        resize_state: None,
+    });
     let modifiers = PointerModifiers(event.modifiers);
     match world.get_mut::<PointerModifiers>(pointer_entity) {
         Some(mut current) => {
@@ -316,6 +373,9 @@ fn surface_input(
     kind: SurfaceInputKind,
 ) {
     commands.queue(move |world: &mut World| {
+        if !admits_pointer(world, viewer) {
+            return;
+        }
         let Some(template) = world.get::<InstanceOf>(node).map(|i| i.0) else {
             return;
         };
@@ -365,6 +425,9 @@ fn on_press(
     let modifiers = owners.modifiers(pointer);
     let button = press.event.button;
     commands.queue(move |world: &mut World| {
+        if !admits_pointer(world, viewer) {
+            return;
+        }
         if world.get::<ExactTarget>(viewer).is_none()
             && let Err(error) = ops::target(world, viewer, pane)
         {
@@ -415,6 +478,9 @@ fn on_release(
     let modifiers = owners.modifiers(pointer);
     let button = release.event.button;
     commands.queue(move |world: &mut World| {
+        if !admits_pointer(world, viewer) {
+            return;
+        }
         if button == PickButton::Primary && modifiers & PointerEvent::ALT != 0 {
             return;
         }
@@ -452,6 +518,9 @@ fn on_move(
     let leaf = motion.entity;
     let position = motion.pointer_location.position;
     commands.queue(move |world: &mut World| {
+        if !admits_pointer(world, viewer) {
+            return;
+        }
         report(
             world,
             viewer,
@@ -474,7 +543,7 @@ fn on_drag_start(
     if start.entity != start.original_event_target() || start.event.button != PickButton::Primary {
         return;
     }
-    let Some((_, pointer)) = owners.of(start.pointer_id) else {
+    let Some((viewer, pointer)) = owners.of(start.pointer_id) else {
         return;
     };
     let Some(region) = start.event.hit.extra_as::<HitRegion>().copied() else {
@@ -484,6 +553,9 @@ fn on_drag_start(
     match region {
         HitRegion::Border(side) => {
             commands.queue(move |world: &mut World| {
+                if !admits_pointer(world, viewer) {
+                    return;
+                }
                 let Some((resize, sizes)) = plan_resize(world, node, side) else {
                     return;
                 };
@@ -504,6 +576,7 @@ fn on_drag_start(
                 world
                     .entity_mut(pointer)
                     .insert(PointerDrag::Resize(resize));
+                retain_resize_state(world, viewer, pointer);
             });
         }
         HitRegion::Content => {
@@ -513,6 +586,9 @@ fn on_drag_start(
                 return;
             }
             commands.queue(move |world: &mut World| {
+                if !admits_pointer(world, viewer) {
+                    return;
+                }
                 if let Some(leaf) = world.get::<InstanceOf>(node).map(|i| i.0) {
                     world.entity_mut(pointer).insert(PointerDrag::Move { leaf });
                 }
@@ -533,7 +609,12 @@ fn on_drag(drag: On<Pointer<Drag>>, owners: Owners, leaves: Query<&Shows>, mut c
                 return;
             }
             let distance = drag.event.distance;
-            commands.queue(move |world: &mut World| apply_resize(world, pointer, distance));
+            commands.queue(move |world: &mut World| {
+                if admits_resize(world, viewer) {
+                    apply_resize(world, pointer, distance);
+                    retain_resize_state(world, viewer, pointer);
+                }
+            });
         }
         (Some(PointerDrag::Move { .. }), PickButton::Primary) => {}
         _ => {
@@ -544,6 +625,9 @@ fn on_drag(drag: On<Pointer<Drag>>, owners: Owners, leaves: Query<&Shows>, mut c
             let leaf = drag.entity;
             let position = drag.pointer_location.position;
             commands.queue(move |world: &mut World| {
+                if !admits_pointer(world, viewer) {
+                    return;
+                }
                 report(
                     world,
                     viewer,
@@ -582,7 +666,7 @@ fn on_drag_drop(
     if drop.entity != drop.original_event_target() || drop.event.button != PickButton::Primary {
         return;
     }
-    let Some((_, pointer)) = owners.of(drop.pointer_id) else {
+    let Some((viewer, pointer)) = owners.of(drop.pointer_id) else {
         return;
     };
     let Some(PointerDrag::Move { leaf }) = owners.drag(pointer).cloned() else {
@@ -597,6 +681,9 @@ fn on_drag_drop(
     let target = drop.entity;
     commands.queue(move |world: &mut World| {
         world.entity_mut(pointer).remove::<PointerDrag>();
+        if !admits_pointer(world, viewer) {
+            return;
+        }
         let Some(target) = world.get::<InstanceOf>(target).map(|i| i.0) else {
             return;
         };
@@ -642,6 +729,9 @@ fn on_scroll(
             return;
         }
         commands.queue(move |world: &mut World| {
+            if !admits_pointer(world, viewer) {
+                return;
+            }
             if let Err(error) = ops::scroll(world, viewer, node, rows) {
                 debug!("wheel scroll on {node}: {error}");
             }
@@ -678,6 +768,9 @@ fn on_scroll(
             Report::WHEEL_DOWN
         };
         commands.queue(move |world: &mut World| {
+            if !admits_pointer(world, viewer) || !admits_pane(world, viewer, pane) {
+                return;
+            }
             if modes_of(world, pane).is_some_and(|m| m.mouse != MouseMode::None) {
                 report_code(world, node, pane, position, button, modifiers, Report::Press);
             } else if rows != 0
@@ -1003,6 +1096,9 @@ fn report(
     modifiers: u8,
     kind: Report,
 ) {
+    if !admits_pane(world, viewer, pane) {
+        return;
+    }
     let Some(modes) = modes_of(world, pane) else {
         return;
     };

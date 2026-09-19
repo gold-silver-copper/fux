@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
@@ -109,7 +109,14 @@ pub fn read_private(path: &Path) -> Result<Option<Vec<u8>>, CatalogError> {
     if meta.len() > MAX_BYTES {
         return Err(CatalogError::TooLarge(meta.len()));
     }
-    Ok(Some(fs::read(path)?))
+    let file = OpenOptions::new().read(true).custom_flags(nix::libc::O_NOFOLLOW).open(path)?;
+    let opened = file.metadata()?;
+    if !opened.is_file() { return Err(CatalogError::Insecure(path.display().to_string())); }
+    private(path, &opened)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_BYTES { return Err(CatalogError::TooLarge(bytes.len() as u64)); }
+    Ok(Some(bytes))
 }
 
 /// Atomic private write (0600 temp + fsync + rename + directory sync); the directory is
@@ -184,6 +191,9 @@ impl Catalog {
             return invalid(format!("{} machines exceed {MAX_MACHINES}", self.machines.len()));
         }
         for (i, machine) in self.machines.iter().enumerate() {
+            if machine.id.eq_ignore_ascii_case("local") || machine.name.eq_ignore_ascii_case("local") {
+                return invalid("local is reserved for this controller".into());
+            }
             if !valid_id(&machine.id) {
                 return invalid(format!("machine {i}: invalid id {:?}", machine.id));
             }
@@ -220,7 +230,7 @@ impl Catalog {
             }
             if self.machines[..i]
                 .iter()
-                .any(|m| m.id == machine.id || m.name == machine.name)
+                .any(|m| m.id == machine.id || m.name == machine.name || m.id == machine.name || m.name == machine.id)
             {
                 return invalid(format!(
                     "machine {:?} ({:?}) duplicates an earlier id or name",
@@ -261,14 +271,18 @@ impl Catalog {
                 "{MAX_MACHINES} machines are the limit"
             )));
         }
-        if self.machines.iter().any(|m| m.name == entry.name || m.id == entry.id) {
+        if self.machines.iter().any(|m| m.name == entry.name || m.id == entry.id || m.name == entry.id || m.id == entry.name) {
             return Err(CatalogError::Invalid(format!(
                 "machine {:?} already exists",
                 entry.name
             )));
         }
         self.machines.push(entry);
-        self.validate()
+        if let Err(error) = self.validate() {
+            self.machines.pop();
+            return Err(error);
+        }
+        Ok(())
     }
 }
 

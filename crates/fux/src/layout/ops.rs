@@ -791,6 +791,7 @@ pub fn attach_viewer(
             RequestQueue::default(),
             CreationBarrier::default(),
             ProjectionBaseline::default(),
+            crate::attach::projection::Projected::default(),
             ViewState::default(),
         ))
         .id();

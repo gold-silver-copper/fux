@@ -19,9 +19,9 @@ pub mod methods;
 pub mod projection;
 pub mod provider_methods;
 pub mod task_methods;
+pub mod resume_methods;
 pub mod watch;
 
-use std::net::{Ipv4Addr, TcpListener};
 use std::path::PathBuf;
 
 use async_channel::{Receiver, Sender};
@@ -29,7 +29,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::error::BevyError;
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::ScheduleLabel;
-use bevy_remote::http::{HostAddress, HostPort, RemoteHttpPlugin};
+use bevy_remote::http::{HostAddress, HostPort};
 use bevy_remote::{
     BrpError, BrpMessage, BrpReceiver, RemoteLast, RemoteMethodSystemId, RemoteMethods,
     RemotePlugin, RemoteSystems, error_codes,
@@ -101,14 +101,9 @@ impl Plugin for RemoteHostPlugin {
             &self.server_name,
         )));
 
-        // The listener is bound by `RemoteHttpPlugin` at `Startup`; the probe only finds a free
-        // port. The TOCTOU window is accepted (prompt 3.9).
-        let port = probe_port().unwrap_or(0);
         app.add_plugins((
             RemotePlugin::default(),
-            RemoteHttpPlugin::default()
-                .with_address(Ipv4Addr::LOCALHOST)
-                .with_port(port),
+            fux::remote::http::BoundedHttpPlugin,
         ));
 
         let world = app.world_mut();
@@ -170,9 +165,6 @@ impl Plugin for RemoteHostPlugin {
     }
 }
 
-fn probe_port() -> Result<u16, std::io::Error> {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).and_then(|l| l.local_addr().map(|a| a.port()))
-}
 
 /// Moves `bevy_remote`'s receiver into a forwarder task that wakes the runner per request.
 fn take_mailbox(world: &mut World, inbound: &Sender<Inbound>) {

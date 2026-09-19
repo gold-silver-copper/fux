@@ -125,6 +125,7 @@ fn core(app: &mut App, config: &Config) {
             LifecyclePlugin,
             PointerPlugin,
             SurfacePlugin,
+            crate::attach::ProjectionPlugin,
             (InputOpsPlugin, FinalsPlugin, EventsPlugin),
         ));
 }

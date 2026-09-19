@@ -291,11 +291,21 @@ pub const DEFAULT_BINDINGS: &[(&str, &str)] = &[
     ("?", "help"),
 ];
 
-/// The registered action with this name, as the static name the registry uses.
-pub fn action_name(name: &str) -> Option<&'static str> {
+/// A built-in action or explicitly namespaced plugin invocation.
+pub fn action_name(name: &str) -> Option<std::borrow::Cow<'static, str>> {
     all_actions()
         .map(|(action, _)| *action)
         .find(|action| *action == name)
+        .map(std::borrow::Cow::Borrowed)
+        .or_else(|| plugin_action(name).map(|_| std::borrow::Cow::Owned(name.to_owned())))
+}
+
+/// The unambiguous `plugin:NAME/ACTION` configuration vocabulary.
+pub fn plugin_action(name: &str) -> Option<(&str, &str)> {
+    let (plugin, action) = name.strip_prefix("plugin:")?.split_once('/')?;
+    let valid = |id: &str| !id.is_empty() && id.len() <= 64
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+    (valid(plugin) && valid(action)).then_some((plugin, action))
 }
 
 /// The prefix chord and the prefix-mode table: action names by chord, user bindings merged over
@@ -303,7 +313,7 @@ pub fn action_name(name: &str) -> Option<&'static str> {
 #[derive(Asset, TypePath, Clone, Debug, PartialEq, Eq)]
 pub struct Keybindings {
     pub prefix: KeyChord,
-    pub bindings: HashMap<KeyChord, &'static str>,
+    pub bindings: HashMap<KeyChord, std::borrow::Cow<'static, str>>,
 }
 
 impl Default for Keybindings {
@@ -315,20 +325,20 @@ impl Default for Keybindings {
 impl Keybindings {
     /// The default table under `prefix`.
     pub fn with_prefix(prefix: KeyChord) -> Self {
-        let mut bindings: HashMap<KeyChord, &'static str> = DEFAULT_BINDINGS
+        let mut bindings: HashMap<KeyChord, std::borrow::Cow<'static, str>> = DEFAULT_BINDINGS
             .iter()
             .filter_map(|(chord, action)| Some((KeyChord::parse(chord)?, action_name(action)?)))
             .collect();
-        bindings.insert(prefix.clone(), "send-prefix");
+        bindings.insert(prefix.clone(), "send-prefix".into());
         Self { prefix, bindings }
     }
 
     /// The table sorted by chord text, for listing.
-    pub fn sorted(&self) -> Vec<(String, &'static str)> {
-        let mut rows: Vec<(String, &'static str)> = self
+    pub fn sorted(&self) -> Vec<(String, &str)> {
+        let mut rows: Vec<(String, &str)> = self
             .bindings
             .iter()
-            .map(|(chord, action)| (chord.to_string(), *action))
+            .map(|(chord, action)| (chord.to_string(), action.as_ref()))
             .collect();
         rows.sort();
         rows

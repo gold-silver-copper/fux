@@ -5,8 +5,8 @@
 //! ephemeral fux workspace under a task and exits with the process's status once zor holds
 //! its final evidence. The CLI holds no World.
 
+mod operations;
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bevy_app::AppExit;
@@ -25,6 +25,9 @@ struct Cli {
     /// The zor server to talk to (its `brp.json` name).
     #[arg(long, default_value = DEFAULT_SERVER)]
     server: String,
+    /// Select a saved machine; destructive task actions are journaled by the local controller.
+    #[arg(long, global = true)]
+    machine: Option<String>,
     #[command(subcommand)]
     command: Cmd,
 }
@@ -38,6 +41,8 @@ enum Cmd {
     },
     /// Stream `zor/events+watch`, one JSON line per item.
     Events(EventsArgs),
+    /// Read the selected controller's server, task and agent projections without starting an observer.
+    Status,
     /// Run a command in an ephemeral fux workspace as a task; print the final screen and exit
     /// with the process's status (final evidence, never PTY text alone).
     Run(RunArgs),
@@ -46,6 +51,20 @@ enum Cmd {
         #[command(subcommand)]
         verb: TaskCmd,
     },
+    /// Manage saved direct endpoints.
+    Machine {
+        #[command(subcommand)]
+        verb: operations::MachineCmd,
+    },
+    /// Manage plugin installation, execution and event hooks.
+    Plugin {
+        #[command(subcommand)]
+        verb: operations::PluginCmd,
+    },
+    /// Open the Bevy scene dashboard hosted by fux.
+    Dashboard(operations::DashboardArgs),
+    /// Attach to the exact live pane of a task.
+    Attach { task: String },
     /// `zor <method> [json]`: one BRP call with the envelope injected.
     #[command(external_subcommand)]
     Other(Vec<String>),
@@ -95,6 +114,15 @@ enum TaskCmd {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Recreate an eligible native provider session without resending a prompt.
+    Resume {
+        task: String,
+        #[arg(long)]
+        operation: String,
+        #[arg(long)]
+        fux_instance: String,
+    },
+    ResumeStatus { task: String },
     Adopt {
         task: String,
         #[arg(long)]
@@ -145,15 +173,77 @@ pub fn main() -> ExitCode {
 
 fn dispatch(cli: Cli) -> Result<i32, BevyError> {
     match cli.command {
-        Cmd::Serve { name } => serve(&name),
-        Cmd::Events(args) => events(&cli.server, args),
-        Cmd::Run(args) => run(&cli.server, args),
-        Cmd::Task { verb } => task(&cli.server, verb),
-        Cmd::Other(words) => other(&cli.server, words),
+        Cmd::Serve { name } => {
+            if cli.machine.is_some() {
+                return Err("serve is local; --machine cannot start a remote service".into());
+            }
+            serve(&name)
+        }
+        Cmd::Plugin { verb: operations::PluginCmd::Hook { name } } => {
+            crate::plugins::hooks::run(&name).map_err(BevyError::from)?;
+            Ok(0)
+        }
+        Cmd::Plugin { verb: operations::PluginCmd::Supervise } => {
+            crate::plugins::host::supervise().map_err(BevyError::from)
+        }
+        command => {
+            let paths = Paths::discover()?;
+            let local = operations::control_descriptor(&paths, &cli.server, None)?;
+            if let (Some(machine), Cmd::Task { verb }) = (
+                cli.machine.as_deref().filter(|name| !name.eq_ignore_ascii_case("local")),
+                &command,
+            ) {
+                if matches!(verb, TaskCmd::Stop { .. } | TaskCmd::Cancel { .. } | TaskCmd::Resume { .. }) {
+                    return operations::machine_task(&local, machine, verb);
+                }
+            }
+            let selection = if matches!(&command, Cmd::Machine { .. } | Cmd::Dashboard(_)) {
+                None
+            } else {
+                cli.machine.as_deref()
+            };
+            let descriptor = operations::selected_control(&local, selection)?;
+            match command {
+                Cmd::Events(args) => events(&descriptor, args),
+                Cmd::Status => status(&descriptor),
+                Cmd::Run(args) => run(&descriptor, args),
+                Cmd::Task { verb } => task(&descriptor, verb),
+                Cmd::Other(words) => other(&descriptor, words),
+                Cmd::Machine { verb } => operations::machine(&descriptor, verb),
+                Cmd::Plugin { verb } => operations::plugin(&descriptor, verb),
+                Cmd::Dashboard(args) => operations::dashboard(&paths, &descriptor, cli.machine.as_deref(), args),
+                Cmd::Attach { task } => operations::attach(&paths, &local, &descriptor, cli.machine.as_deref(), &task, None),
+                Cmd::Serve { .. } => Err("serve dispatch requires local execution".into()),
+            }
+        }
     }
 }
 
-fn other(server: &str, words: Vec<String>) -> Result<i32, BevyError> {
+fn status(descriptor: &client::Descriptor) -> Result<i32, BevyError> {
+    let server: crate::remote::methods::ServerInfo = serde_json::from_value(
+        client::call_with(descriptor, "zor/server.info", serde_json::json!({}))?,
+    )?;
+    if server.nonce != descriptor.instance {
+        return Err("selected controller incarnation changed".into());
+    }
+    let tasks: crate::remote::task_methods::TaskList = serde_json::from_value(
+        client::call_with(descriptor, "zor/task.list", serde_json::json!({}))?,
+    )?;
+    let agents: crate::remote::provider_methods::AgentList = serde_json::from_value(
+        client::call_with(descriptor, "zor/agent.list", serde_json::json!({}))?,
+    )?;
+    // Reads do not require an incarnation nonce. Refuse a snapshot if the endpoint restarted
+    // between projections instead of combining rows from different controller instances.
+    let current: crate::remote::methods::ServerInfo = serde_json::from_value(
+        client::call_with(descriptor, "zor/server.info", serde_json::json!({}))?,
+    )?;
+    if current.nonce != descriptor.instance {
+        return Err("selected controller incarnation changed".into());
+    }
+    print_reply(serde_json::json!({"server":server, "tasks":tasks.tasks, "agents":agents.agents}))
+}
+
+fn other(descriptor: &client::Descriptor, words: Vec<String>) -> Result<i32, BevyError> {
     let mut words = words.into_iter();
     let Some(method) = words.next() else {
         return Err(BevyError::from("expected `zor <method> [json]`"));
@@ -168,15 +258,14 @@ fn other(server: &str, words: Vec<String>) -> Result<i32, BevyError> {
     if let Some(extra) = words.next() {
         return Err(BevyError::from(format!("unexpected argument {extra:?}")));
     }
-    let brp = descriptor_or_error(server)?;
-    print_reply(client::call(&brp, &method, params)?)
+    print_reply(client::call_with(descriptor, &method, params)?)
 }
 
 fn is_method(word: &str) -> bool {
     word.contains('.') || word.contains('/')
 }
 
-fn task(server: &str, verb: TaskCmd) -> Result<i32, BevyError> {
+fn task(descriptor: &client::Descriptor, verb: TaskCmd) -> Result<i32, BevyError> {
     let (method, params) = match verb {
         TaskCmd::Create {
             task,
@@ -202,6 +291,11 @@ fn task(server: &str, verb: TaskCmd) -> Result<i32, BevyError> {
                 "workspace": workspace, "ephemeral": ephemeral,
             }),
         ),
+        TaskCmd::Resume { task, operation, fux_instance } => (
+            "zor/task.resume",
+            serde_json::json!({"task":task,"operation":operation,"fux_instance":fux_instance}),
+        ),
+        TaskCmd::ResumeStatus { task } => ("zor/task.resume-status", serde_json::json!({"task":task})),
         TaskCmd::Adopt {
             task,
             instance,
@@ -211,7 +305,7 @@ fn task(server: &str, verb: TaskCmd) -> Result<i32, BevyError> {
         } => (
             "zor/task.adopt",
             serde_json::json!({
-                "task": task, "instance": instance, "workspace": workspace, "pane": pane, "pid": pid,
+                "task": task, "fux_instance": instance, "workspace": workspace, "pane": pane, "pid": pid,
             }),
         ),
         TaskCmd::Prompt {
@@ -234,8 +328,7 @@ fn task(server: &str, verb: TaskCmd) -> Result<i32, BevyError> {
             ("zor/task.abandon", serde_json::json!({ "prompt": prompt }))
         }
     };
-    let brp = descriptor_or_error(server)?;
-    print_reply(client::call(&brp, method, params)?)
+    print_reply(client::call_with(descriptor, method, params)?)
 }
 
 /// Poll period of `zor run`.
@@ -248,9 +341,7 @@ const RUN_TIMED_OUT: i32 = 124;
 /// One command under a task in a fresh workspace: creation and launch are journaled intents
 /// on the server; the CLI only polls `zor/attempt.inspect` until the attempt is `Finished`
 /// with final evidence, prints its final screen and exits with the recorded status.
-fn run(server: &str, args: RunArgs) -> Result<i32, BevyError> {
-    let brp = descriptor_or_error(server)?;
-    let descriptor = client::read_descriptor(&brp)?;
+fn run(descriptor: &client::Descriptor, args: RunArgs) -> Result<i32, BevyError> {
     let mut suffix = fux::attach::random_hex256()?;
     suffix.truncate(12);
     let task = format!("run-{suffix}");
@@ -259,12 +350,12 @@ fn run(server: &str, args: RunArgs) -> Result<i32, BevyError> {
         .unwrap_or_else(|| format!("zor-run-{suffix}"));
     let cwd = std::env::current_dir()?.display().to_string();
     client::call_with(
-        &descriptor,
+        descriptor,
         "zor/task.create",
         serde_json::json!({ "task": task, "title": args.command.join(" "), "cwd": cwd }),
     )?;
     let attempt = client::call_with(
-        &descriptor,
+        descriptor,
         "zor/task.launch",
         serde_json::json!({
             "task": task, "operation": format!("launch-{suffix}"), "argv": args.command,
@@ -280,7 +371,7 @@ fn run(server: &str, args: RunArgs) -> Result<i32, BevyError> {
     let mut stopped_at: Option<std::time::Instant> = None;
     loop {
         let record = client::call_with(
-            &descriptor,
+            descriptor,
             "zor/attempt.inspect",
             serde_json::json!({ "attempt": attempt }),
         )?;
@@ -327,7 +418,7 @@ fn run(server: &str, args: RunArgs) -> Result<i32, BevyError> {
             }
             None if timeout.is_some_and(|t| started.elapsed() > t) => {
                 client::call_with(
-                    &descriptor,
+                    descriptor,
                     "zor/task.stop",
                     serde_json::json!({ "task": task }),
                 )?;
@@ -341,16 +432,14 @@ fn run(server: &str, args: RunArgs) -> Result<i32, BevyError> {
 
 /// Streams `zor/events+watch`, printing one JSON line per item; ends when the server closes
 /// the stream.
-fn events(server: &str, args: EventsArgs) -> Result<i32, BevyError> {
-    let brp = descriptor_or_error(server)?;
-    let descriptor = client::read_descriptor(&brp)?;
+fn events(descriptor: &client::Descriptor, args: EventsArgs) -> Result<i32, BevyError> {
     let mut params = serde_json::Map::new();
     if let Some(cursor) = args.cursor {
         params.insert("cursor".into(), serde_json::json!(cursor));
     }
     let mut out = std::io::stdout().lock();
     client::stream(
-        &descriptor,
+        descriptor,
         crate::remote::watch::EVENTS_WATCH_METHOD,
         serde_json::Value::Object(params),
         |item| writeln!(out, "{item}").is_ok(),
@@ -371,17 +460,6 @@ fn print_reply(reply: serde_json::Value) -> Result<i32, BevyError> {
     Ok(0)
 }
 
-fn descriptor_or_error(server: &str) -> Result<PathBuf, BevyError> {
-    let paths = Paths::discover()?;
-    let brp = paths.descriptor(server);
-    if !brp.is_file() {
-        return Err(BevyError::from(format!(
-            "server {server} is not running ({} missing)",
-            brp.display()
-        )));
-    }
-    Ok(brp)
-}
 
 fn serve(name: &str) -> Result<i32, BevyError> {
     let paths = Paths::discover()?;
@@ -400,6 +478,7 @@ fn serve(name: &str) -> Result<i32, BevyError> {
         Box::new(crate::git::GitAdapter::new(sender.clone())),
         Box::new(crate::providers::ProviderAdapter::new(sender.clone())),
         Box::new(crate::checks::runner::CheckRunner::new(sender.clone())),
+        Box::new(crate::plugins::host::PluginAdapter::new(sender.clone())),
     ];
     // The consumer needs the task pools, which `TaskPoolPlugin` created during `build`.
     crate::fux_client::spawn_events_consumer(fux_brp, 0, sender);

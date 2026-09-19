@@ -6,7 +6,7 @@
   {
     "type": "request",
     "request": {
-      "Pointer": { "col": 10, "row": 2, "kind": "Press", "button": "Left", "modifiers": 0 }
+      "Pointer": { "revision": 7, "col": 10, "row": 2, "kind": "Press", "button": "Left", "modifiers": 0 }
     }
   },
   { "type": "request", "request": { "Scroll": { "node": 5, "rows": -3 } } },
@@ -16,6 +16,7 @@
   { "type": "request", "request": "ClosePane" },
   { "type": "request", "request": { "Swap": { "direction": "Below" } } },
   { "type": "request", "request": { "NewRoot": { "template": null } } },
+  { "type": "request", "request": { "SurfaceKey": { "revision": 7, "node": 5, "bytes": [106] } } },
   { "type": "request", "request": "Detach" },
   { "type": "ack", "revision": 7 }
 ]

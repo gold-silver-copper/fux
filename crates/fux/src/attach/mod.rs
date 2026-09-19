@@ -12,7 +12,7 @@
 
 mod adapter;
 mod listener;
-mod projection;
+pub(crate) mod projection;
 
 use async_channel::Sender;
 use bevy_app::prelude::*;
@@ -39,14 +39,23 @@ impl Plugin for AttachPlugin {
         app.insert_resource(listener::Inbox::new(self.inbound.clone()))
             .init_resource::<adapter::Registry>()
             .add_systems(Startup, listener::start)
-            .add_systems(First, admit.in_set(Phase::Ingest))
-            .add_systems(
-                PostUpdate,
-                projection::project
-                    .in_set(Phase::Projection)
-                    .after(LayoutSystems::SizeFold)
-                    .after(crate::pty::TerminalSystems::Resize),
-            );
+            .add_systems(First, admit.in_set(Phase::Ingest));
+    }
+}
+
+/// Projection is part of the model even without a socket adapter: input admission always
+/// uses the same per-viewer painted-scene contract.
+pub struct ProjectionPlugin;
+
+impl Plugin for ProjectionPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            PostUpdate,
+            projection::project
+                .in_set(Phase::Projection)
+                .after(LayoutSystems::SizeFold)
+                .after(crate::pty::TerminalSystems::Resize),
+        );
     }
 }
 
@@ -128,7 +137,6 @@ fn admit_one(world: &mut World, hello: &Hello) -> Result<(Entity, Welcome), Refu
     if !hello.stream.is_empty() {
         entity.insert(WorkspaceStream(hello.stream.clone()));
     }
-    entity.insert(projection::Projected::default());
     let id = *entity
         .get::<ViewerId>()
         .ok_or(Refusal::Layout("viewer has no ViewerId".to_owned()))?;

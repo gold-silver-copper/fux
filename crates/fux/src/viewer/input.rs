@@ -195,6 +195,7 @@ impl Translator {
             pointer_move,
             pointer_action,
             event: PointerEvent {
+                revision: 0, // Filled from the completed paint when admitted to the outbox.
                 col: mouse.column,
                 row: mouse.row,
                 kind,

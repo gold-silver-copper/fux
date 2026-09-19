@@ -346,11 +346,23 @@ fn emit(
         world.resource_mut::<SurfaceInputDrops>().0 += 1;
         return Ok(());
     }
+    let state = world
+        .get::<SurfaceState>(surface)
+        .ok_or(SurfaceError::NotASurface(surface))?;
+    let provider = state.provider.clone();
+    let revision = state.revision;
+    let provider_node = state
+        .entities
+        .iter()
+        .find_map(|(source, target)| (*target == node).then_some(source.to_bits()));
     world.trigger(SurfaceInput {
         entity: surface,
         scope,
         surface: surface_id,
         node: node_id,
+        provider,
+        provider_node,
+        revision,
         viewer: viewer_id,
         kind,
         col,

@@ -10,7 +10,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_scene::prelude::*;
 use bevy_scene::{ResolvedSceneRoot, ScenePatch};
-use bevy_ui::{BackgroundColor, BorderColor, FlexDirection, Node, ScrollPosition, ZIndex, percent, px};
+use bevy_ui::{BackgroundColor, BorderColor, FlexDirection, Node, Overflow, ScrollPosition, ZIndex, percent, px};
 use bevy_world_serialization::DynamicWorldBuilder;
 use fux::surface::Text;
 
@@ -38,8 +38,10 @@ pub fn dashboard(rows: &[Row]) -> impl Scene {
             width: percent(100.0),
             height: percent(100.0),
             flex_direction: FlexDirection::Column,
+            overflow: Overflow::scroll_y(),
         }
         Name(ROOT_NAME)
+        ScrollPosition({bevy_math::Vec2::ZERO})
         Children [ {rows} ]
     }
 }
@@ -105,6 +107,16 @@ impl SceneWorld {
         self.entities.len() + 1
     }
 
+    /// Exact provider identities, never positional row numbers or fux's remapped NodeIds.
+    pub fn row_nodes(&self) -> Vec<(String, u64)> {
+        self.rows.iter().zip(&self.entities).map(|(row, entity)| (row.key.clone(), entity.to_bits())).collect()
+    }
+
+    pub fn key_for_node(&self, bits: u64) -> Option<&str> {
+        self.entities.iter().position(|entity| entity.to_bits() == bits).map(|i| self.rows[i].key.as_str())
+    }
+
+
     /// The next delta is a full snapshot.
     pub fn force_full(&mut self) {
         self.resend_full = true;
@@ -115,6 +127,9 @@ impl SceneWorld {
     /// despawned, and the root's children are set to the new order. Returns the delta to
     /// stream, `None` when nothing changed.
     pub fn sync(&mut self, main: &World, rows: &[Row]) -> Result<Option<Delta>, String> {
+        if !self.resend_full && self.rows == rows {
+            return Ok(None);
+        }
         let mut structural = self.resend_full;
         self.next.clear();
         self.changed.clear();

@@ -500,6 +500,7 @@
     "method": "fux/surface.update",
     "params": {
       "surface": 9,
+      "expected_provider": "zor-dashboard",
       "revision": 1,
       "full": true,
       "delta": "(resources: {}, entities: {4294967294: (components: {\"bevy_ui::ui_node::Node\": (flex_direction: Column), \"fux::surface::Text\": (\"tasks\")})})"
@@ -731,6 +732,28 @@
         "ok",
         "$ "
       ]
+    }
+  },
+  {
+    "method": "fux/surface.scroll",
+    "params": {
+      "surface": 9,
+      "expected_provider": "zor-dashboard",
+      "revision": 1,
+      "viewer": 1,
+      "provider_node": 4294967294,
+      "rows": 3,
+      "absolute": true
+    },
+    "result": {}
+  },
+  {
+    "method": "fux/events.poll",
+    "params": {},
+    "result": {
+      "cursor": 42,
+      "gap": null,
+      "events": []
     }
   }
 ]

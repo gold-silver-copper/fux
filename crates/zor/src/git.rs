@@ -12,6 +12,8 @@ use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use std::os::unix::process::CommandExt;
+use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
 
 use async_channel::Sender;
 use bevy_app::prelude::*;
@@ -124,15 +126,34 @@ impl Plugin for GitPlugin {
 /// Runner-side applier of `Effect::RunGit`: one blocking task per command on `IoTaskPool`.
 pub struct GitAdapter {
     inbound: Sender<Inbound>,
+    stopping: Arc<AtomicBool>,
+    pending: Arc<AtomicUsize>,
+    jobs: Vec<bevy_tasks::Task<()>>,
 }
 
 impl GitAdapter {
     pub fn new(inbound: Sender<Inbound>) -> Self {
-        Self { inbound }
+        Self { inbound, stopping: Arc::new(AtomicBool::new(false)), pending: Arc::new(AtomicUsize::new(0)), jobs: Vec::new() }
     }
 }
 
+struct PendingGit(Arc<AtomicUsize>);
+impl Drop for PendingGit {
+    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+}
+
+impl Drop for GitAdapter {
+    fn drop(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.pending.load(Ordering::SeqCst) != 0 && Instant::now() < deadline {
+            std::thread::sleep(POLL);
+        }
+    }
+}
 impl Adapter for GitAdapter {
+    fn shutdown(&mut self) { self.stopping.store(true, Ordering::SeqCst); }
+    fn pending(&self) -> bool { self.pending.load(Ordering::SeqCst) != 0 }
     fn handles(&self, effect: &Effect) -> bool {
         matches!(effect, Effect::RunGit { .. })
     }
@@ -141,10 +162,21 @@ impl Adapter for GitAdapter {
         let Effect::RunGit { op, argv, cwd } = effect else {
             return Err(BevyError::from("git adapter: not a RunGit"));
         };
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err("git adapter is shutting down".into());
+        }
+        if self.pending.load(Ordering::SeqCst) >= 64 {
+            return Err("git adapter concurrency limit reached".into());
+        }
+        self.jobs.retain(|job| !job.is_finished());
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        let pending = PendingGit(Arc::clone(&self.pending));
+        let stopping = Arc::clone(&self.stopping);
         let inbound = self.inbound.clone();
-        IoTaskPool::get()
+        self.jobs.push(IoTaskPool::get()
             .spawn(async move {
-                let done = run(op, &argv, Path::new(&cwd));
+                let _pending = pending;
+                let done = run_with_cancel(op, &argv, Path::new(&cwd), Some(&stopping));
                 let _ = inbound
                     .send(Inbound::GitDone {
                         op: done.op,
@@ -153,8 +185,7 @@ impl Adapter for GitAdapter {
                         stderr: done.stderr,
                     })
                     .await;
-            })
-            .detach();
+            }));
         Ok(())
     }
 }
@@ -163,12 +194,19 @@ impl Adapter for GitAdapter {
 /// or the deadline killed it. Public so tests and the worktree reconciler can call git directly
 /// with the same environment.
 pub fn run(op: u64, argv: &[String], cwd: &Path) -> GitDone {
+    run_with_cancel(op, argv, cwd, None)
+}
+
+fn run_with_cancel(op: u64, argv: &[String], cwd: &Path, stopping: Option<&AtomicBool>) -> GitDone {
     let unknown = |stderr: String| GitDone {
         op,
         code: None,
         stdout: String::new(),
         stderr,
     };
+    if stopping.is_some_and(|stop| stop.load(Ordering::SeqCst)) {
+        return unknown("git cancelled before spawn".into());
+    }
     let mut child = match Command::new("git")
         .args(["-c", "core.hooksPath=/dev/null"])
         .args(argv)
@@ -183,6 +221,7 @@ pub fn run(op: u64, argv: &[String], cwd: &Path) -> GitDone {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
     {
         Ok(child) => child,
@@ -200,7 +239,7 @@ pub fn run(op: u64, argv: &[String], cwd: &Path) -> GitDone {
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
-            Ok(None) if started.elapsed() < DEADLINE => std::thread::sleep(POLL),
+            Ok(None) if started.elapsed() < DEADLINE && !stopping.is_some_and(|stop| stop.load(Ordering::SeqCst)) => std::thread::sleep(POLL),
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -213,6 +252,11 @@ pub fn run(op: u64, argv: &[String], cwd: &Path) -> GitDone {
             }
         }
     };
+    // The leader can exit while a helper still owns a pipe. Retire the entire owned group
+    // before joining readers, including the normal-exit case.
+    if let Ok(pgid) = i32::try_from(child.id()) {
+        let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pgid), nix::sys::signal::Signal::SIGKILL);
+    }
     let join = |reader: Option<std::thread::JoinHandle<Option<String>>>| {
         reader.and_then(|r| r.join().ok()).flatten()
     };

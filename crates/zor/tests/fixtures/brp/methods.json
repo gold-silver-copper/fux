@@ -290,7 +290,7 @@
     "method": "zor/task.adopt",
     "params": {
       "task": "review-2",
-      "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "fux_instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
       "workspace": "default",
       "pane": 3,
       "pid": 5151
@@ -1465,6 +1465,652 @@
     "result": {
       "requested": 1,
       "generation": 3
+    }
+  },
+  {
+    "method": "zor/task.resume",
+    "params": {
+      "task": "review-1",
+      "operation": "resume-1",
+      "fux_instance": "fux-fixture",
+      "guard": {
+        "attempt": null,
+        "pane": null
+      }
+    },
+    "result": {
+      "attempt": 1,
+      "task": "review-1",
+      "ownership": "managed",
+      "state": "launching",
+      "instance": "0f9c2c0e7b1e4d2f9a3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "workspace": "default",
+      "stream": "resume-1",
+      "pane": 0,
+      "marker": "3b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e",
+      "uncertain": false,
+      "lost": false,
+      "needs_input": false,
+      "operations": [
+        {
+          "operation": "resume-1",
+          "kind": "launch",
+          "phase": "submitting"
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/task.resume-status",
+    "params": {
+      "task": "review-1"
+    },
+    "result": {
+      "task": "review-1",
+      "eligible": false,
+      "reason": "task has a live attempt"
+    }
+  },
+  {
+    "method": "zor/plugin.list",
+    "params": {},
+    "result": {
+      "plugins": [
+        {
+          "name": "example",
+          "version": "1.0.0",
+          "source": "linked",
+          "path": "/private/plugins/example/zor-plugin.toml",
+          "enabled": true,
+          "active": true,
+          "actions": [],
+          "events": [],
+          "panes": [],
+          "links": [],
+          "runs": [],
+          "open_panes": []
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/plugin.inspect",
+    "params": {
+      "name": "example"
+    },
+    "result": {
+      "plugin": {
+        "name": "example",
+        "version": "1.0.0",
+        "source": "linked",
+        "path": "/private/plugins/example/zor-plugin.toml",
+        "enabled": true,
+        "active": true,
+        "actions": [],
+        "events": [],
+        "panes": [],
+        "links": [],
+        "runs": [],
+        "open_panes": []
+      }
+    }
+  },
+  {
+    "method": "zor/plugin.enable",
+    "params": {
+      "name": "example"
+    },
+    "result": {
+      "plugin": {
+        "name": "example",
+        "version": "1.0.0",
+        "source": "linked",
+        "path": "/private/plugins/example/zor-plugin.toml",
+        "enabled": true,
+        "active": true,
+        "actions": [],
+        "events": [],
+        "panes": [],
+        "links": [],
+        "runs": [],
+        "open_panes": []
+      }
+    }
+  },
+  {
+    "method": "zor/plugin.disable",
+    "params": {
+      "name": "example"
+    },
+    "result": {
+      "plugin": {
+        "name": "example",
+        "version": "1.0.0",
+        "source": "linked",
+        "path": "/private/plugins/example/zor-plugin.toml",
+        "enabled": false,
+        "active": false,
+        "actions": [],
+        "events": [],
+        "panes": [],
+        "links": [],
+        "runs": [],
+        "open_panes": []
+      }
+    }
+  },
+  {
+    "method": "zor/plugin.install",
+    "params": {
+      "path": "/private/plugins/example",
+      "enabled": true
+    },
+    "result": {
+      "operation": 1
+    }
+  },
+  {
+    "method": "zor/plugin.link",
+    "params": {
+      "path": "/private/plugins/example",
+      "enabled": true
+    },
+    "result": {
+      "operation": 1
+    }
+  },
+  {
+    "method": "zor/plugin.operation",
+    "params": {
+      "operation": 1
+    },
+    "result": {
+      "operation": 1,
+      "state": "complete",
+      "name": "example"
+    }
+  },
+  {
+    "method": "zor/plugin.uninstall",
+    "params": {
+      "name": "example"
+    },
+    "result": {
+      "name": "example"
+    }
+  },
+  {
+    "method": "zor/plugin.run",
+    "params": {
+      "name": "example",
+      "action": "inspect",
+      "workspace": "default",
+      "task": "review-1"
+    },
+    "result": {
+      "run": 1
+    }
+  },
+  {
+    "method": "zor/plugin.pane",
+    "params": {
+      "name": "example",
+      "pane": "inspector",
+      "workspace": "default",
+      "target": 7,
+      "task": "review-1"
+    },
+    "result": {
+      "opening": 1
+    }
+  },
+  {
+    "method": "zor/plugin.open_link",
+    "params": {
+      "url": "example://review-1"
+    },
+    "result": {
+      "name": "example",
+      "run": 2
+    }
+  },
+  {
+    "method": "zor/plugin.logs",
+    "params": {
+      "name": "example",
+      "limit": 100
+    },
+    "result": {
+      "lines": [
+        "action completed"
+      ]
+    }
+  },
+  {
+    "method": "zor/plugin.bindings",
+    "params": {},
+    "result": {
+      "bindings": [
+        {
+          "chord": "x",
+          "plugin": "example",
+          "action": "plugin:example/inspect"
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/plugin.cursor",
+    "params": {
+      "name": "example",
+      "zor": 12,
+      "fux": 9,
+      "zor_instance": "zor-fixture",
+      "fux_instance": "fux-fixture"
+    },
+    "result": {
+      "cursors": {
+        "zor": 12,
+        "fux": 9,
+        "zor_instance": "zor-fixture",
+        "fux_instance": "fux-fixture"
+      }
+    }
+  },
+  {
+    "method": "zor/machine.list",
+    "params": {},
+    "result": {
+      "machines": [
+        {
+          "id": "machine-1",
+          "name": "Remote",
+          "freshness": {
+            "freshness": "offline"
+          },
+          "observed_ms": 0,
+          "actions": []
+        }
+      ]
+    }
+  },
+  {
+    "method": "zor/machine.inspect",
+    "params": {
+      "machine": "Remote"
+    },
+    "result": {
+      "machine": {
+        "id": "machine-1",
+        "name": "Remote",
+        "freshness": {
+          "freshness": "offline"
+        },
+        "observed_ms": 0,
+        "actions": []
+      }
+    }
+  },
+  {
+    "method": "zor/machine.add",
+    "params": {
+      "name": "Remote",
+      "attachments": {}
+    },
+    "result": {
+      "id": "machine-1"
+    }
+  },
+  {
+    "method": "zor/machine.rename",
+    "params": {
+      "machine": "Remote",
+      "name": "Build"
+    },
+    "result": {
+      "id": "machine-1"
+    }
+  },
+  {
+    "method": "zor/machine.remove",
+    "params": {
+      "machine": "Remote"
+    },
+    "result": {
+      "id": "machine-1"
+    }
+  },
+  {
+    "method": "zor/machine.control",
+    "params": {
+      "machine": "Remote",
+      "control": null
+    },
+    "result": {
+      "id": "machine-1"
+    }
+  },
+  {
+    "method": "zor/machine.bind",
+    "params": {
+      "machine": "Remote",
+      "workspace": "default",
+      "attachment": null
+    },
+    "result": {
+      "id": "machine-1"
+    }
+  },
+  {
+    "method": "zor/machine.reload",
+    "params": {},
+    "result": {
+      "reloaded": true
+    }
+  },
+  {
+    "method": "zor/machine.cancel",
+    "params": {
+      "machine": "Remote",
+      "task": "review-1",
+      "operation": "cancel-1",
+      "guard": {
+        "instance": "zor-fixture",
+        "attempt": 12,
+        "pane": {
+          "instance": "fux-fixture",
+          "workspace": "default",
+          "pane": 7,
+          "pid": 4242
+        }
+      }
+    },
+    "result": {
+      "action": {
+        "id": 1,
+        "kind": {
+          "kind": "cancel"
+        },
+        "task": "review-1",
+        "attempt": 12,
+        "instance": "zor-fixture",
+        "pane": {
+          "instance": "fux-fixture",
+          "workspace": "default",
+          "pane": 7,
+          "pid": 4242
+        },
+        "phase": "submitting",
+        "requested_ms": 1000
+      }
+    }
+  },
+  {
+    "method": "zor/machine.stop",
+    "params": {
+      "machine": "Remote",
+      "task": "review-1",
+      "operation": "stop-1",
+      "guard": {
+        "instance": "zor-fixture",
+        "attempt": 12,
+        "pane": {
+          "instance": "fux-fixture",
+          "workspace": "default",
+          "pane": 7,
+          "pid": 4242
+        }
+      }
+    },
+    "result": {
+      "action": {
+        "id": 1,
+        "kind": {
+          "kind": "stop"
+        },
+        "task": "review-1",
+        "attempt": 12,
+        "instance": "zor-fixture",
+        "pane": {
+          "instance": "fux-fixture",
+          "workspace": "default",
+          "pane": 7,
+          "pid": 4242
+        },
+        "phase": "submitting",
+        "requested_ms": 1000
+      }
+    }
+  },
+  {
+    "method": "zor/machine.reconcile",
+    "params": {
+      "machine": "Remote",
+      "task": "review-1",
+      "operation": "reconcile-1",
+      "guard": {
+        "instance": "zor-fixture",
+        "attempt": 12,
+        "pane": {
+          "instance": "fux-fixture",
+          "workspace": "default",
+          "pane": 7,
+          "pid": 4242
+        }
+      }
+    },
+    "result": {
+      "action": {
+        "id": 1,
+        "kind": {
+          "kind": "reconcile"
+        },
+        "task": "review-1",
+        "attempt": 12,
+        "instance": "zor-fixture",
+        "pane": {
+          "instance": "fux-fixture",
+          "workspace": "default",
+          "pane": 7,
+          "pid": 4242
+        },
+        "phase": "submitting",
+        "requested_ms": 1000
+      }
+    }
+  },
+  {
+    "method": "zor/machine.resume",
+    "params": {
+      "machine": "Remote",
+      "task": "review-1",
+      "operation": "resume-1",
+      "guard": {
+        "instance": "zor-fixture",
+        "attempt": null,
+        "pane": null
+      },
+      "fux_instance": "fux-fixture"
+    },
+    "result": {
+      "action": {
+        "id": 1,
+        "kind": {
+          "kind": "resume",
+          "operation": "resume-1",
+          "fux_instance": "fux-fixture"
+        },
+        "task": "review-1",
+        "attempt": null,
+        "instance": "zor-fixture",
+        "pane": null,
+        "phase": "submitting",
+        "requested_ms": 1000
+      }
+    }
+  },
+  {
+    "method": "zor/machine.intents",
+    "params": {
+      "operation": "stop-1"
+    },
+    "result": {
+      "intents": []
+    }
+  },
+  {
+    "method": "zor/machine.status",
+    "params": {
+      "operation": "stop-1"
+    },
+    "result": {
+      "intents": []
+    }
+  },
+  {
+    "method": "zor/machine.attach",
+    "params": {
+      "machine": "Remote",
+      "task": "review-1",
+      "guard": {
+        "instance": "zor-fixture",
+        "attempt": 12,
+        "pane": {
+          "instance": "fux-fixture",
+          "workspace": "default",
+          "pane": 7,
+          "pid": 4242
+        }
+      }
+    },
+    "result": {
+      "machine": "machine-1",
+      "task": "review-1",
+      "attempt": 12,
+      "pane": {
+        "instance": "fux-fixture",
+        "workspace": "default",
+        "pane": 7,
+        "pid": 4242
+      }
+    }
+  },
+  {
+    "method": "zor/dashboard.rows",
+    "params": {
+      "machine": "local"
+    },
+    "result": {
+      "rows": []
+    }
+  },
+  {
+    "method": "zor/dashboard.open",
+    "params": {
+      "workspace": "dashboard",
+      "node": 9,
+      "generation": 1,
+      "machine": "local",
+      "viewer": 1
+    },
+    "result": {
+      "id": 1,
+      "provider": "zor-dashboard:zor-fixture:1",
+      "workspace": "dashboard",
+      "node": 9,
+      "revision": 0,
+      "status": "opening",
+      "rows": [],
+      "row_nodes": []
+    }
+  },
+  {
+    "method": "zor/dashboard.state",
+    "params": {
+      "id": 1
+    },
+    "result": {
+      "id": 1,
+      "provider": "zor-dashboard:zor-fixture:1",
+      "workspace": "dashboard",
+      "node": 9,
+      "revision": 1,
+      "status": "open",
+      "rows": [],
+      "row_nodes": []
+    }
+  },
+  {
+    "method": "zor/dashboard.close",
+    "params": {
+      "id": 1
+    },
+    "result": {
+      "id": 1,
+      "provider": "zor-dashboard:zor-fixture:1",
+      "workspace": "dashboard",
+      "node": 9,
+      "revision": 1,
+      "status": "closing",
+      "rows": [],
+      "row_nodes": []
+    }
+  },
+  {
+    "method": "zor/dashboard.input",
+    "params": {
+      "id": 1,
+      "viewer": 1,
+      "revision": 1,
+      "input": {
+        "kind": "next"
+      }
+    },
+    "result": {
+      "id": 1,
+      "provider": "zor-dashboard:zor-fixture:1",
+      "workspace": "dashboard",
+      "node": 9,
+      "revision": 1,
+      "status": "open",
+      "rows": [],
+      "row_nodes": []
+    }
+  },
+  {
+    "method": "zor/dashboard.return",
+    "params": {
+      "id": 1,
+      "handoff": 1
+    },
+    "result": {
+      "id": 1,
+      "provider": "zor-dashboard:zor-fixture:1",
+      "workspace": "dashboard",
+      "node": 9,
+      "revision": 1,
+      "status": "open",
+      "rows": [],
+      "row_nodes": []
+    }
+  },
+  {
+    "method": "zor/machine.endpoint",
+    "params": {
+      "machine": "machine-1",
+      "workspace": null
+    },
+    "result": {
+      "descriptor": {
+        "instance": "remote-zor-incarnation",
+        "pid": 1234,
+        "http": {
+          "host": "127.0.0.1",
+          "port": 42000
+        },
+        "attach": null,
+        "token": "fixture-admin-only-token"
+      }
     }
   }
 ]

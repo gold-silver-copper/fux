@@ -3,6 +3,8 @@
 //! explicit allows, bounded at extraction (bytes and record counts), written atomically to
 //! `<state_dir>/journal.scn.ron` (temp + fsync + rename + directory sync, TASKS.md:427-433),
 //! restored at startup into an inert World, validated, then rebuilt with fresh entities.
+//! Machine configuration and action evidence belong exclusively to the private catalog and
+//! intent log; machine entities and runtime observations are never part of this snapshot.
 //!
 //! Archive lifecycle: closed tasks older than `Limits.archive_after_ms` move with their
 //! subgraph into `<state_dir>/archive/<date>.scn.ron` (read-only, merged when the date's file
@@ -110,6 +112,10 @@ impl Journal {
         self.frozen
     }
 
+    pub fn next_sweep_ms(&self) -> Option<u64> {
+        (!self.frozen).then(|| self.last_sweep_ms.saturating_add(SWEEP_INTERVAL_MS))
+    }
+
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
@@ -142,7 +148,6 @@ vocabulary!(
     Artifact,
     Group,
     Worktree,
-    Machine,
     TaskId,
     AttemptId,
     PromptId,
@@ -153,7 +158,6 @@ vocabulary!(
     ArtifactId,
     GroupId,
     WorktreeId,
-    MachineId,
     AttemptOf,
     Attempts,
     PromptOf,
@@ -216,8 +220,6 @@ vocabulary!(
     Concurrency,
     WorktreeSpec,
     WorktreeState,
-    MachineName,
-    ControlBinding,
     HostedPlugin,
     PluginAction,
     PluginId,
@@ -226,9 +228,12 @@ vocabulary!(
     ActionOf,
     Actions,
     crate::plugins::PluginEnabled,
+    crate::plugins::DispatchIntent,
+    crate::plugins::Runs,
     ProducerLifetime,
     crate::groups::Cursor,
     crate::groups::MemberPrompt,
+    crate::plugins::Uninstalling,
     crate::worktrees::ForceRemoval,
     crate::checks::CheckPolicy,
     crate::checks::ArtifactPolicy,
@@ -238,27 +243,29 @@ vocabulary!(
     crate::checks::ArtifactBytes,
     crate::checks::SourceState,
     crate::lifecycle::LaunchTemplate,
+    crate::lifecycle::resume::ResumeIntent,
     crate::providers::Provider,
 );
+
+type Persisted = Or<(
+    With<Task>,
+    With<Attempt>,
+    With<Prompt>,
+    With<Operation>,
+    With<Check>,
+    With<CheckResult>,
+    With<Source>,
+    With<Artifact>,
+    With<Group>,
+    With<Worktree>,
+    With<HostedPlugin>,
+    With<PluginAction>,
+)>;
 
 /// Every entity the journal persists.
 fn persisted(world: &mut World) -> Vec<Entity> {
     world
-        .query_filtered::<Entity, Or<(
-            With<Task>,
-            With<Attempt>,
-            With<Prompt>,
-            With<Operation>,
-            With<Check>,
-            With<CheckResult>,
-            With<Source>,
-            With<Artifact>,
-            With<Group>,
-            With<Worktree>,
-            With<Machine>,
-            With<HostedPlugin>,
-            With<PluginAction>,
-        )>>()
+        .query_filtered::<Entity, Persisted>()
         .iter(world)
         .collect()
 }
@@ -325,7 +332,6 @@ fn check_counts(world: &mut World, limits: &Limits) -> Result<(), JournalError> 
     within!(Artifact, limits.artifacts, "artifacts");
     within!(Group, limits.groups, "groups");
     within!(Worktree, limits.worktrees, "worktrees");
-    within!(Machine, limits.machines, "machines");
     Ok(())
 }
 
@@ -692,7 +698,6 @@ type Lifecycle = (
     Changed<Receipt>,
     Changed<Problem>,
     Changed<OutputTail>,
-    Changed<Observation>,
     // `Or` tuples hold at most 15 filters: later owners nest theirs.
     Or<(
         Changed<crate::groups::Cursor>,
@@ -700,6 +705,9 @@ type Lifecycle = (
         Changed<crate::checks::ArtifactPolicy>,
         Changed<crate::checks::SourceState>,
         Changed<PaneHandle>,
+        Changed<ProducerLifetime>,
+        Changed<Binding>,
+        Changed<ResponseEvent>,
     )>,
 );
 type Presence = (
@@ -713,11 +721,10 @@ type Presence = (
     Added<Artifact>,
     Added<Group>,
     Added<Worktree>,
-    Added<Machine>,
     Added<Seal>,
     Added<Uncertain>,
     Added<Lost>,
-    // `Presence` is at the 15-entry tuple limit, so later owners join this group instead.
+    // Keep later owners nested within the 15-entry tuple limit.
     Or<(
         Added<StopRequested>,
         Added<crate::worktrees::ForceRemoval>,
@@ -729,8 +736,8 @@ type Presence = (
 /// Anything in the allowlisted subgraph changed, was added or was removed.
 fn mark_dirty(
     mut journal: ResMut<Journal>,
-    lifecycle: Query<(), Or<Lifecycle>>,
-    presence: Query<(), Or<Presence>>,
+    lifecycle: Query<(), (Persisted, Or<Lifecycle>)>,
+    presence: Query<(), (Persisted, Or<Presence>)>,
     (
         mut removed_task,
         mut removed_attempt,

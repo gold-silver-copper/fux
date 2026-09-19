@@ -14,6 +14,7 @@
 pub mod calls;
 pub mod recovery;
 pub mod waits;
+pub mod resume;
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
@@ -456,7 +457,8 @@ pub(crate) fn set_delivery(world: &mut World, prompt: Entity, next: Delivery) {
 /// (the journal commits before the effect drains). An identical retry under the operation id
 /// returns the attempt; different arguments fail; a `Submitting`/`Uncertain` operation is never
 /// resent (invariants 13-15).
-pub fn launch(world: &mut World, task: Entity, spec: LaunchSpec) -> Res<Entity> {
+pub fn launch(world: &mut World, task: Entity, mut spec: LaunchSpec) -> Res<Entity> {
+    resume::capture_storage_env(world, &mut spec);
     let state = task_state(world, task)?;
     if state.is_closed() {
         return refused("task is closed");
@@ -599,7 +601,7 @@ fn submit_launch(world: &mut World, operation: Entity, attempt: Entity, template
         "env": template.env,
         "stream": template.stream,
     });
-    let (method, params) = if template.ephemeral {
+    let (method, mut params) = if template.ephemeral {
         (
             "fux/workspace.new",
             serde_json::json!({ "name": template.workspace, "template": template_spec }),
@@ -614,6 +616,7 @@ fn submit_launch(world: &mut World, operation: Entity, attempt: Entity, template
             }),
         )
     };
+    params["_expected_instance"] = serde_json::json!(world.resource::<Link>().instance);
     world
         .entity_mut(operation)
         .insert(OperationPhase::Submitting);
@@ -1103,6 +1106,7 @@ pub struct LifecyclePlugin;
 impl Plugin for LifecyclePlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<LaunchTemplate>()
+            .register_type::<resume::ResumeIntent>()
             .init_resource::<Link>()
             .init_resource::<calls::Calls>()
             .add_systems(PostStartup, recovery::recover)
