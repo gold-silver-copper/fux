@@ -37,19 +37,30 @@ Module ownership (one owner per file; shared contracts live in `model/` and `wir
 | `viewer.rs` | the viewer App (input parser, focus, chrome, painter, panic hook) | `viewer::run` |
 | `app.rs`, `runner.rs`, `cli.rs`, `config.rs`, `paths.rs` | App assembly, custom runner, signals, CLI, config, XDG paths | `fux::app::build`, `runner::run` |
 
-## Next task
-Milestone 7 is in flight and the tree does not compile in `crates/zor`: finish the module roots
-(`machines.rs`, `dashboard.rs`, `plugins/hooks.rs`), the three method tables
-(`remote/{plugin,machine,dashboard}_methods.rs`), the milestone-7 tests, and the xtask scenario
-harness; then milestone 8 (docs, changelog, benchmarks vs `main`, capability status refresh).
-Full state transfer, contracts and ordered next actions:
-[`docs/prompts/continuation-prompt.md`](prompts/continuation-prompt.md).
+## Active execution — 2026-09-19
 
-## Open blockers
-* none blocking work. koh cannot forward the attachment stream until it gains TCP forwarding
-  upstream (milestone 7 reports `unavailable`); audible bell playback is unverified headless.
-* `bevy_render` in graph via `bevy_remote -> bevy_dev_tools` is an accepted deviation
-  (docs/dependencies.md).
+Governing assignment: [`docs/prompts/ecs-native-continuation-prompt.md`](prompts/ecs-native-continuation-prompt.md).
+Scope is fux + zor only. koh and future iroh-ssh integration are not dependencies or acceptance
+gates. Earlier koh blocker statements are superseded.
+
+Baseline: `9260d3bf4b7bf4fb6e6d287c50a8d5852d120845`; rustc
+`1.96.0-nightly (80381278a 2026-03-01)`, aarch64-apple-darwin, Bevy 0.19.1.
+Pre-existing changes: deleted tracked `tools/xtask/target` artifacts and the new continuation
+prompt. Do not restore or commit the artifact deletions as part of implementation.
+
+Milestone 7 is being completed: plugin host/hooks, direct-endpoint machine supervision,
+fux-hosted dashboard, CLI/runner integration and real-process scenarios. Recorded milestone-6
+and fux surface-input results above are historical; current acceptance is not yet established.
+Next: integrate the completed modules, run focused regression and real-process acceptance,
+review ECS/security boundaries, then milestone-8 documentation and release benchmarks.
+
+The user authorized incremental commits of completed, verified work. Main is the integration
+and commit owner. No push, tag or publication is authorized; the user's running sessions and
+the `main` worktree remain untouched.
+
+Accepted dependency exception: `bevy_remote -> bevy_dev_tools` brings render crates into the
+graph without adding a renderer (see `docs/dependencies.md`). Audible bell playback still
+requires a device-backed check; it has only historical headless compile evidence.
 
 ## Resume
 ```
