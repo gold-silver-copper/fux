@@ -70,7 +70,8 @@ struct PointerRevision {
 }
 
 fn admits_pointer(world: &World, viewer: Entity) -> bool {
-    world.get::<ViewerPointer>(viewer)
+    world
+        .get::<ViewerPointer>(viewer)
         .and_then(|p| world.get::<PointerRevision>(p.0))
         .is_some_and(|admission| {
             crate::attach::projection::admits_input(world, viewer, admission.revision)
@@ -78,11 +79,15 @@ fn admits_pointer(world: &World, viewer: Entity) -> bool {
 }
 
 fn admits_resize(world: &World, viewer: Entity) -> bool {
-    world.get::<ViewerPointer>(viewer)
+    world
+        .get::<ViewerPointer>(viewer)
         .and_then(|p| world.get::<PointerRevision>(p.0))
         .is_some_and(|admission| match &admission.resize_state {
             Some(state) => crate::attach::projection::admits_captured_input(
-                world, viewer, admission.revision, state,
+                world,
+                viewer,
+                admission.revision,
+                state,
             ),
             None => crate::attach::projection::admits_input(world, viewer, admission.revision),
         })
@@ -97,7 +102,9 @@ fn retain_resize_state(world: &mut World, viewer: Entity, pointer: Entity) {
 
 fn admits_pane(world: &World, viewer: Entity, pane: Entity) -> bool {
     world.get::<ExactTarget>(viewer).is_none()
-        || world.get::<Targets>(viewer).is_some_and(|target| target.0 == pane)
+        || world
+            .get::<Targets>(viewer)
+            .is_some_and(|target| target.0 == pane)
 }
 
 /// What the viewer's primary-button drag is doing, on its pointer entity for the drag's life.
@@ -199,7 +206,8 @@ pub fn forward(world: &mut World, viewer: Entity, event: PointerEvent) {
         // Stale input must not hit the replacement scene or leave a held gesture alive.
         if let Some(pointer) = world.get::<ViewerPointer>(viewer).map(|p| p.0)
             && let Some(id) = world.get::<PointerId>(pointer).copied()
-            && let Some(location) = world.get::<PointerLocation>(pointer)
+            && let Some(location) = world
+                .get::<PointerLocation>(pointer)
                 .and_then(|p| p.location().cloned())
         {
             world.entity_mut(pointer).remove::<PointerDrag>();
@@ -772,7 +780,15 @@ fn on_scroll(
                 return;
             }
             if modes_of(world, pane).is_some_and(|m| m.mouse != MouseMode::None) {
-                report_code(world, node, pane, position, button, modifiers, Report::Press);
+                report_code(
+                    world,
+                    node,
+                    pane,
+                    position,
+                    button,
+                    modifiers,
+                    Report::Press,
+                );
             } else if rows != 0
                 && let Err(error) = ops::scroll(world, viewer, node, rows)
             {

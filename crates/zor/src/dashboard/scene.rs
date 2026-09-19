@@ -10,7 +10,10 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_scene::prelude::*;
 use bevy_scene::{ResolvedSceneRoot, ScenePatch};
-use bevy_ui::{BackgroundColor, BorderColor, FlexDirection, Node, Overflow, ScrollPosition, ZIndex, percent, px};
+use bevy_ui::{
+    BackgroundColor, BorderColor, FlexDirection, Node, Overflow, ScrollPosition, ZIndex, percent,
+    px,
+};
 use bevy_world_serialization::DynamicWorldBuilder;
 use fux::surface::Text;
 
@@ -81,6 +84,9 @@ impl SceneWorld {
             .get::<Children>(root)
             .map(|c| c.iter().collect())
             .unwrap_or_default();
+        if entities.len() != rows.len() {
+            return Err("dashboard scene row/entity count mismatch".into());
+        }
         Ok(Self {
             world,
             registry,
@@ -109,13 +115,20 @@ impl SceneWorld {
 
     /// Exact provider identities, never positional row numbers or fux's remapped NodeIds.
     pub fn row_nodes(&self) -> Vec<(String, u64)> {
-        self.rows.iter().zip(&self.entities).map(|(row, entity)| (row.key.clone(), entity.to_bits())).collect()
+        self.rows
+            .iter()
+            .zip(&self.entities)
+            .map(|(row, entity)| (row.key.clone(), entity.to_bits()))
+            .collect()
     }
 
     pub fn key_for_node(&self, bits: u64) -> Option<&str> {
-        self.entities.iter().position(|entity| entity.to_bits() == bits).map(|i| self.rows[i].key.as_str())
+        self.rows
+            .iter()
+            .zip(&self.entities)
+            .find(|(_, entity)| entity.to_bits() == bits)
+            .map(|(row, _)| row.key.as_str())
     }
-
 
     /// The next delta is a full snapshot.
     pub fn force_full(&mut self) {
@@ -127,6 +140,9 @@ impl SceneWorld {
     /// despawned, and the root's children are set to the new order. Returns the delta to
     /// stream, `None` when nothing changed.
     pub fn sync(&mut self, main: &World, rows: &[Row]) -> Result<Option<Delta>, String> {
+        if self.rows.len() != self.entities.len() {
+            return Err("dashboard scene row/entity count mismatch".into());
+        }
         if !self.resend_full && self.rows == rows {
             return Ok(None);
         }
@@ -140,31 +156,36 @@ impl SceneWorld {
             let old = self
                 .rows
                 .iter()
-                .position(|r| r.key == row.key)
-                .filter(|&i| !reused[i]);
+                .zip(&self.entities)
+                .zip(&mut reused)
+                .find(|((old, _), used)| old.key == row.key && !**used);
             match old {
-                Some(i) => {
-                    reused[i] = true;
-                    let entity = self.entities[i];
-                    if self.rows[i].text != row.text {
-                        if let Some(mut text) = self.world.get_mut::<Text>(entity) {
-                            text.0.clear();
-                            text.0.push_str(&row.text);
-                        }
+                Some(((old, &entity), used)) => {
+                    *used = true;
+                    if old.text != row.text {
+                        let mut text = self
+                            .world
+                            .get_mut::<Text>(entity)
+                            .ok_or("dashboard scene row text disappeared")?;
+                        text.0.clear();
+                        text.0.push_str(&row.text);
                         self.changed.push(entity);
                     }
                     self.next.push(entity);
                 }
                 None => {
                     let entity = spawn(main, &mut self.world, self::row(&row.key, &row.text))?;
-                    self.world.entity_mut(self.root).add_child(entity);
+                    self.world
+                        .get_entity_mut(self.root)
+                        .map_err(|e| e.to_string())?
+                        .add_child(entity);
                     self.next.push(entity);
                     structural = true;
                 }
             }
         }
-        for (i, &entity) in self.entities.iter().enumerate() {
-            if !reused[i] {
+        for (&entity, used) in self.entities.iter().zip(reused) {
+            if !used {
                 self.world.despawn(entity);
                 structural = true;
             }
@@ -177,7 +198,10 @@ impl SceneWorld {
         }
         if structural {
             let order = self.next.clone();
-            self.world.entity_mut(self.root).replace_children(&order);
+            self.world
+                .get_entity_mut(self.root)
+                .map_err(|e| e.to_string())?
+                .replace_children(&order);
         }
         core::mem::swap(&mut self.entities, &mut self.next);
         self.rows.clear();
@@ -233,7 +257,7 @@ fn spawn(main: &World, target: &mut World, scene: impl Scene) -> Result<Entity, 
     let patches = main
         .get_resource::<Assets<ScenePatch>>()
         .ok_or("dashboard: no Assets<ScenePatch> (bevy_scene::ScenePlugin missing)")?;
-    let resolved = ResolvedSceneRoot::resolve(Box::new(scene), assets, patches)
-        .map_err(|e| e.to_string())?;
+    let resolved =
+        ResolvedSceneRoot::resolve(Box::new(scene), assets, patches).map_err(|e| e.to_string())?;
     Ok(resolved.spawn(target).map_err(|e| e.to_string())?.id())
 }

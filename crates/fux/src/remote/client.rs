@@ -185,7 +185,9 @@ pub fn stream(
     }
     if status != 200 {
         let mut rest = String::new();
-        reader.take(MAX_STREAM_BYTES as u64).read_to_string(&mut rest)?;
+        reader
+            .take(MAX_STREAM_BYTES as u64)
+            .read_to_string(&mut rest)?;
         return Err(ClientError::Http { status, body: rest });
     }
     // A quiet accepted watch may wait indefinitely; only its framing and record sizes are bounded.

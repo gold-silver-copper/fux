@@ -9,11 +9,15 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::os::fd::AsFd;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
-use std::os::unix::process::CommandExt;
-use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
 
 use async_channel::Sender;
 use bevy_app::prelude::*;
@@ -133,13 +137,20 @@ pub struct GitAdapter {
 
 impl GitAdapter {
     pub fn new(inbound: Sender<Inbound>) -> Self {
-        Self { inbound, stopping: Arc::new(AtomicBool::new(false)), pending: Arc::new(AtomicUsize::new(0)), jobs: Vec::new() }
+        Self {
+            inbound,
+            stopping: Arc::new(AtomicBool::new(false)),
+            pending: Arc::new(AtomicUsize::new(0)),
+            jobs: Vec::new(),
+        }
     }
 }
 
 struct PendingGit(Arc<AtomicUsize>);
 impl Drop for PendingGit {
-    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Drop for GitAdapter {
@@ -152,41 +163,55 @@ impl Drop for GitAdapter {
     }
 }
 impl Adapter for GitAdapter {
-    fn shutdown(&mut self) { self.stopping.store(true, Ordering::SeqCst); }
-    fn pending(&self) -> bool { self.pending.load(Ordering::SeqCst) != 0 }
+    fn shutdown(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
+    }
+    fn pending(&self) -> bool {
+        self.pending.load(Ordering::SeqCst) != 0
+    }
     fn handles(&self, effect: &Effect) -> bool {
         matches!(effect, Effect::RunGit { .. })
     }
 
-    fn apply(&mut self, effect: Effect) -> Result<(), BevyError> {
+    fn apply(&mut self, effect: Effect) -> Result<Option<Inbound>, BevyError> {
         let Effect::RunGit { op, argv, cwd } = effect else {
             return Err(BevyError::from("git adapter: not a RunGit"));
         };
-        if self.stopping.load(Ordering::SeqCst) {
-            return Err("git adapter is shutting down".into());
-        }
-        if self.pending.load(Ordering::SeqCst) >= 64 {
-            return Err("git adapter concurrency limit reached".into());
+        let rejection = if self.stopping.load(Ordering::SeqCst) {
+            Some("git adapter is shutting down")
+        } else if self.pending.load(Ordering::SeqCst) >= 64 {
+            Some("git adapter concurrency limit reached")
+        } else {
+            None
+        };
+        if let Some(reason) = rejection {
+            // This request is already committed. Return its completion directly to the
+            // runner: the shared inbound queue may be full, and effects have no batch limit.
+            return Ok(Some(Inbound::GitDone {
+                op,
+                code: None,
+                stdout: String::new(),
+                stderr: format!("{reason}; git was not spawned"),
+            }));
         }
         self.jobs.retain(|job| !job.is_finished());
         self.pending.fetch_add(1, Ordering::SeqCst);
         let pending = PendingGit(Arc::clone(&self.pending));
         let stopping = Arc::clone(&self.stopping);
         let inbound = self.inbound.clone();
-        self.jobs.push(IoTaskPool::get()
-            .spawn(async move {
-                let _pending = pending;
-                let done = run_with_cancel(op, &argv, Path::new(&cwd), Some(&stopping));
-                let _ = inbound
-                    .send(Inbound::GitDone {
-                        op: done.op,
-                        code: done.code,
-                        stdout: done.stdout,
-                        stderr: done.stderr,
-                    })
-                    .await;
-            }));
-        Ok(())
+        self.jobs.push(IoTaskPool::get().spawn(async move {
+            let _pending = pending;
+            let done = run_with_cancel(op, &argv, Path::new(&cwd), Some(&stopping));
+            let _ = inbound
+                .send(Inbound::GitDone {
+                    op: done.op,
+                    code: done.code,
+                    stdout: done.stdout,
+                    stderr: done.stderr,
+                })
+                .await;
+        }));
+        Ok(None)
     }
 }
 
@@ -227,36 +252,46 @@ fn run_with_cancel(op: u64, argv: &[String], cwd: &Path, stopping: Option<&Atomi
         Ok(child) => child,
         Err(e) => return unknown(format!("spawn: {e}")),
     };
+    let started = Instant::now();
+    let read_deadline = started + DEADLINE + Duration::from_secs(2);
     let stdout = child
         .stdout
         .take()
-        .map(|pipe| std::thread::spawn(move || read_bounded(pipe)));
+        .map(|pipe| std::thread::spawn(move || read_bounded(pipe, read_deadline)));
     let stderr = child
         .stderr
         .take()
-        .map(|pipe| std::thread::spawn(move || read_bounded(pipe)));
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if started.elapsed() < DEADLINE && !stopping.is_some_and(|stop| stop.load(Ordering::SeqCst)) => std::thread::sleep(POLL),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
+        .map(|pipe| std::thread::spawn(move || read_bounded(pipe, read_deadline)));
+    let (exited, owned) = loop {
+        match fux::runner::signals::child_exited(child.id()) {
+            Ok(true) => break (true, true),
+            Ok(false)
+                if started.elapsed() < DEADLINE
+                    && !stopping.is_some_and(|stop| stop.load(Ordering::SeqCst)) =>
+            {
+                std::thread::sleep(POLL);
             }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
+            Ok(false) => break (false, true),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => break (false, error.raw_os_error() != Some(nix::libc::ECHILD)),
         }
     };
-    // The leader can exit while a helper still owns a pipe. Retire the entire owned group
-    // before joining readers, including the normal-exit case.
-    if let Ok(pgid) = i32::try_from(child.id()) {
-        let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pgid), nix::sys::signal::Signal::SIGKILL);
-    }
+    let status = if owned {
+        // This thread is the only signal holder/reaper. The unreaped leader pins its PID
+        // through group cleanup on normal exit, cancellation, deadline, and wait errors.
+        if let Ok(pgid) = i32::try_from(child.id()) {
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(pgid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+        let _ = child.kill();
+        let status = child.wait().ok();
+        if exited { status } else { None }
+    } else {
+        // ECHILD has revoked signal authority, even if descendants still hold the pipes.
+        None
+    };
     let join = |reader: Option<std::thread::JoinHandle<Option<String>>>| {
         reader.and_then(|r| r.join().ok()).flatten()
     };
@@ -274,19 +309,32 @@ fn run_with_cancel(op: u64, argv: &[String], cwd: &Path, stopping: Option<&Atomi
             DEADLINE.as_secs(),
             err.map(|e| format!(": {e}")).unwrap_or_default()
         )),
-        (Some(_), _, _) => unknown("git output exceeded the retention bound".into()),
+        (Some(_), _, _) => {
+            unknown("git output was incomplete or exceeded the retention bound".into())
+        }
     }
 }
 
-/// Reads at most `MAX_STREAM_BYTES`; `None` when the stream overflowed (the rest is drained so
-/// the child never blocks on a full pipe).
-fn read_bounded(mut pipe: impl Read) -> Option<String> {
+/// Retains at most `MAX_STREAM_BYTES`, draining overflow until EOF. Nonblocking reads also
+/// bound cleanup when signal authority is lost and a descendant still holds a pipe.
+fn read_bounded(mut pipe: impl Read + AsFd, deadline: Instant) -> Option<String> {
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+    let flags = OFlag::from_bits_truncate(fcntl(&pipe, FcntlArg::F_GETFL).ok()?);
+    fcntl(&pipe, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)).ok()?;
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 8192];
     let mut overflow = false;
     loop {
+        if Instant::now() >= deadline {
+            return None;
+        }
         match pipe.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(POLL);
+            }
+            Err(_) => return None,
             Ok(n) => {
                 if overflow {
                     continue;

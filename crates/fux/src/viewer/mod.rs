@@ -65,7 +65,10 @@ pub struct ViewerOptions {
 /// What wakes the runner.
 #[derive(Debug)]
 pub enum Wake {
-    Terminal { event: termina::Event, revision: u64 },
+    Terminal {
+        event: termina::Event,
+        revision: u64,
+    },
     TerminalClosed,
     Frame(ServerFrame),
     Disconnected(String),
@@ -200,7 +203,13 @@ impl Brp {
     /// A client over `path`; `wake` is called when a reply is ready to be read.
     pub fn new(path: PathBuf, wake: assets::Wake) -> Self {
         let (tx, rx) = async_channel::bounded(32);
-        Self { path, tx, rx, wake, pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)) }
+        Self {
+            path,
+            tx,
+            rx,
+            wake,
+            pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
     }
 
     /// The `brp.json` calls read (empty when the viewer is headless).
@@ -220,10 +229,18 @@ impl Brp {
         }
     }
 
-    fn call_at(&self, path: PathBuf, tag: BrpTag, method: &'static str, params: Value) -> Result<(), String> {
+    fn call_at(
+        &self,
+        path: PathBuf,
+        tag: BrpTag,
+        method: &'static str,
+        params: Value,
+    ) -> Result<(), String> {
         use std::sync::atomic::Ordering;
-        self.pending.fetch_update(Ordering::AcqRel, Ordering::Relaxed,
-            |count| (count < 32).then_some(count + 1))
+        self.pending
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |count| {
+                (count < 32).then_some(count + 1)
+            })
             .map_err(|_| "viewer has 32 outstanding BRP calls".to_owned())?;
         let permit = PendingCall(Arc::clone(&self.pending));
         let tx = self.tx.clone();
@@ -232,7 +249,10 @@ impl Brp {
             .name("fux-viewer-brp".into())
             .spawn(move || {
                 let result = client::call(&path, method, params).map_err(|e| e.to_string());
-                if tx.try_send((BrpReply { tag, result }, Some(permit))).is_ok() {
+                if tx
+                    .try_send((BrpReply { tag, result }, Some(permit)))
+                    .is_ok()
+                {
                     wake();
                 }
             })
@@ -457,7 +477,11 @@ pub fn resize(world: &mut World, cols: u16, rows: u16) {
 /// inside the pane area are forwarded to the server, which owns pane mouse policy.
 fn drain_terminal(world: &mut World) {
     let painted = world.resource::<replicate::PaintedSceneRevision>().0;
-    let revision = world.resource_mut::<Inbox>().input_revision.take().unwrap_or(painted);
+    let revision = world
+        .resource_mut::<Inbox>()
+        .input_revision
+        .take()
+        .unwrap_or(painted);
     world.resource_mut::<replicate::InputRevision>().0 = revision;
     let events = core::mem::take(&mut world.resource_mut::<Inbox>().events);
     for event in &events {
@@ -511,7 +535,10 @@ fn drain_terminal(world: &mut World) {
 pub fn queue_terminal(world: &mut World, event: termina::Event, revision: u64) {
     let current = world.resource::<replicate::PaintedSceneRevision>().0;
     let oldest = world.resource::<replicate::InputSceneRevision>().0;
-    if matches!(&event, termina::Event::WindowResized(_) | termina::Event::FocusIn | termina::Event::FocusOut) {
+    if matches!(
+        &event,
+        termina::Event::WindowResized(_) | termina::Event::FocusIn | termina::Event::FocusOut
+    ) {
         world.resource_mut::<Inbox>().events.push(event);
         return;
     }
@@ -525,7 +552,10 @@ pub fn queue_terminal(world: &mut World, event: termina::Event, revision: u64) {
             if let Some(button) = mouse.button {
                 world.write_message(button);
             }
-            for (id, mut press) in world.query::<(&PointerId, &mut bevy_picking::pointer::PointerPress)>().iter_mut(world) {
+            for (id, mut press) in world
+                .query::<(&PointerId, &mut bevy_picking::pointer::PointerPress)>()
+                .iter_mut(world)
+            {
                 if *id == PointerId::Mouse {
                     *press = Default::default();
                 }
@@ -535,12 +565,18 @@ pub fn queue_terminal(world: &mut World, event: termina::Event, revision: u64) {
                 world.write_message(action);
             }
             mouse.event.revision = revision;
-            world.resource_mut::<Outbox>().push(ViewerRequest::Pointer(mouse.event));
+            world
+                .resource_mut::<Outbox>()
+                .push(ViewerRequest::Pointer(mouse.event));
         }
         return;
     }
     let mut inbox = world.resource_mut::<Inbox>();
-    inbox.input_revision = Some(inbox.input_revision.map_or(revision, |old| old.min(revision)));
+    inbox.input_revision = Some(
+        inbox
+            .input_revision
+            .map_or(revision, |old| old.min(revision)),
+    );
     inbox.events.push(event);
 }
 
@@ -630,17 +666,16 @@ pub fn run(opts: ViewerOptions) -> Result<i32, BevyError> {
         // been applied by an update: the batch stops at the disconnect and it is re-checked below.
         let mut fatal = None;
         {
-            let mut inbox = app.world_mut().resource_mut::<Inbox>();
             let mut count = 0;
             let mut pending = first;
             while let Some(wake) = pending.take() {
                 match wake {
                     Wake::Terminal { event, revision } => {
-                        drop(inbox);
                         queue_terminal(app.world_mut(), event, revision);
-                        inbox = app.world_mut().resource_mut::<Inbox>();
                     }
-                    Wake::Frame(frame) => inbox.frames.push(frame),
+                    Wake::Frame(frame) => {
+                        app.world_mut().resource_mut::<Inbox>().frames.push(frame);
+                    }
                     Wake::Ready => {}
                     Wake::TerminalClosed => {
                         fatal = Some(Exit {
@@ -675,7 +710,10 @@ pub fn run(opts: ViewerOptions) -> Result<i32, BevyError> {
         if !out.is_empty() {
             term.write_all(&out)?;
         }
-        painted.store(world.resource::<replicate::PaintedSceneRevision>().0, std::sync::atomic::Ordering::Release);
+        painted.store(
+            world.resource::<replicate::PaintedSceneRevision>().0,
+            std::sync::atomic::Ordering::Release,
+        );
         // Hand the buffer back so its capacity is reused.
         world.resource_mut::<Painter>().out = out;
         let frames = core::mem::take(&mut world.resource_mut::<Outbox>().0);

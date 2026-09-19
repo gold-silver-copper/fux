@@ -46,7 +46,9 @@ pub enum Freshness {
     Fresh,
     /// The retained view is older than [`FRESH_MS`] or the last read failed; `since_ms` is
     /// when freshness lapsed.
-    Stale { since_ms: u64 },
+    Stale {
+        since_ms: u64,
+    },
     /// The remote refused the token.
     Unauthorized,
     /// The bound incarnation is over: the remote refused the recorded instance nonce.
@@ -197,7 +199,11 @@ impl Supervision {
 
     pub fn push_action(&mut self, record: ActionRecord) {
         if self.actions.len() >= MAX_ACTIONS {
-            if let Some(index) = self.actions.iter().position(|a| a.phase != ActionPhase::Submitting) {
+            if let Some(index) = self
+                .actions
+                .iter()
+                .position(|a| a.phase != ActionPhase::Submitting)
+            {
                 self.actions.remove(index);
             } else {
                 // Admission reserves a retained slot before an action reaches the worker.
@@ -216,7 +222,8 @@ impl Supervision {
 
     /// Fresh views lapse into stale after [`FRESH_MS`].
     pub fn expire(&mut self, now_ms: u64) {
-        if self.freshness == Freshness::Fresh && now_ms.saturating_sub(self.observed_ms) > FRESH_MS {
+        if self.freshness == Freshness::Fresh && now_ms.saturating_sub(self.observed_ms) > FRESH_MS
+        {
             self.enter(Freshness::Stale { since_ms: now_ms }, now_ms);
         }
     }
@@ -350,7 +357,8 @@ impl Worker {
         wake: Option<Sender<crate::model::Inbound>>,
     ) -> Self {
         let (actions, requests) = async_channel::bounded(MAX_ACTIONS);
-        let task = IoTaskPool::get().spawn(run(machine, generation, transport, reports, requests, wake));
+        let task =
+            IoTaskPool::get().spawn(run(machine, generation, transport, reports, requests, wake));
         Self {
             generation,
             actions,
@@ -374,32 +382,70 @@ async fn run(
     let descriptor = match transport.resolve() {
         Ok(resolved) => resolved.descriptor,
         Err(Unavailable(reason)) => {
-            publish(&reports, &wake, Report::Poll {
-                machine, generation, at_ms: fux::runner::wall_ms(),
-                outcome: Err(Failure::Unavailable(reason)),
-            }).await;
+            publish(
+                &reports,
+                &wake,
+                Report::Poll {
+                    machine,
+                    generation,
+                    at_ms: fux::runner::wall_ms(),
+                    outcome: Err(Failure::Unavailable(reason)),
+                },
+            )
+            .await;
             return;
         }
     };
     while !requests.is_closed() && !reports.is_closed() {
         let outcome = budgeted(read(&descriptor)).await;
-        if !publish(&reports, &wake, Report::Poll {
-            machine, generation, at_ms: fux::runner::wall_ms(), outcome,
-        }).await { return; }
+        if !publish(
+            &reports,
+            &wake,
+            Report::Poll {
+                machine,
+                generation,
+                at_ms: fux::runner::wall_ms(),
+                outcome,
+            },
+        )
+        .await
+        {
+            return;
+        }
         let next = Instant::now() + POLL_INTERVAL;
         while let Some(request) = until(&requests, next).await {
             let id = request.id;
             let outcome = budgeted(dispatch(&descriptor, request)).await;
-            if !publish(&reports, &wake, Report::Action {
-                machine, generation, id, at_ms: fux::runner::wall_ms(), outcome,
-            }).await { return; }
+            if !publish(
+                &reports,
+                &wake,
+                Report::Action {
+                    machine,
+                    generation,
+                    id,
+                    at_ms: fux::runner::wall_ms(),
+                    outcome,
+                },
+            )
+            .await
+            {
+                return;
+            }
         }
     }
 }
 
-async fn publish(reports: &Sender<Report>, wake: &Option<Sender<crate::model::Inbound>>, report: Report) -> bool {
-    if reports.send(report).await.is_err() { return false; }
-    if let Some(wake) = wake { let _ = wake.try_send(crate::model::Inbound::Wake); }
+async fn publish(
+    reports: &Sender<Report>,
+    wake: &Option<Sender<crate::model::Inbound>>,
+    report: Report,
+) -> bool {
+    if reports.send(report).await.is_err() {
+        return false;
+    }
+    if let Some(wake) = wake {
+        let _ = wake.try_send(crate::model::Inbound::Wake);
+    }
     true
 }
 
@@ -515,7 +561,10 @@ async fn dispatch(descriptor: &Descriptor, request: ActionRequest) -> Result<Val
     let info = call_async(descriptor, "zor/server.info", json!({}))
         .await
         .map_err(failed)?;
-    let nonce = info.get("nonce").and_then(Value::as_str).unwrap_or_default();
+    let nonce = info
+        .get("nonce")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if nonce != request.instance {
         return Err(refused(format!(
             "instance mismatch: the remote is now incarnation {nonce}, the action was guarded by {}",
@@ -531,7 +580,9 @@ async fn dispatch(descriptor: &Descriptor, request: ActionRequest) -> Result<Val
     .map_err(failed)?;
     let current = current_attempt(&inspect);
     if current.as_ref().map(|(attempt, _)| *attempt) != request.attempt {
-        return Err(refused("current attempt no longer matches the observed selection"));
+        return Err(refused(
+            "current attempt no longer matches the observed selection",
+        ));
     }
     if let Some(expected) = request.attempt {
         match &current {
@@ -576,7 +627,9 @@ async fn dispatch(descriptor: &Descriptor, request: ActionRequest) -> Result<Val
     let task = request.task;
     let guard = json!({ "attempt": request.attempt, "pane": request.pane });
     let mutation_failed = |e: ClientError| match e {
-        ClientError::Rpc { code, .. } if code == codes::UNCERTAIN => ActionFailure::Uncertain(e.to_string()),
+        ClientError::Rpc { code, .. } if code == codes::UNCERTAIN => {
+            ActionFailure::Uncertain(e.to_string())
+        }
         ClientError::Rpc { .. } => ActionFailure::Failed(e.to_string()),
         _ => ActionFailure::Uncertain(format!("{e}; dispatch is never replayed")),
     };
@@ -627,7 +680,9 @@ mod tests {
         s.expire(4_000 + FRESH_MS);
         assert_eq!(s.freshness, Freshness::Fresh);
         s.expire(4_001 + FRESH_MS);
-        assert!(matches!(s.freshness, Freshness::Stale { since_ms } if since_ms == 4_001 + FRESH_MS));
+        assert!(
+            matches!(s.freshness, Freshness::Stale { since_ms } if since_ms == 4_001 + FRESH_MS)
+        );
     }
 
     #[test]

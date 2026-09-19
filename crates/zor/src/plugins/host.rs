@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::unix::process::CommandExt;
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,7 +51,13 @@ impl Registry {
             return None;
         }
         let terminate = Arc::new(AtomicBool::new(false));
-        map.insert(key, Live { pgid: None, terminate: terminate.clone() });
+        map.insert(
+            key,
+            Live {
+                pgid: None,
+                terminate: Arc::clone(&terminate),
+            },
+        );
         Some(terminate)
     }
 
@@ -64,6 +70,22 @@ impl Registry {
                 let _ = killpg(pgid, Signal::SIGTERM);
             }
         }
+    }
+
+    fn clear_signal(&self, key: (Entity, u64)) {
+        let mut map = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(live) = map.get_mut(&key) {
+            live.pgid = None;
+        }
+    }
+
+    fn finish(&self, key: (Entity, u64), child: &mut Child, pgid: Pid) -> Option<i32> {
+        // Retire all concurrent signal authority before reaping. The unreaped leader still
+        // reserves its PID while its descendants are killed, even after natural exit.
+        self.clear_signal(key);
+        let _ = killpg(pgid, Signal::SIGKILL);
+        let _ = child.kill();
+        child.wait().ok().and_then(|status| status.code())
     }
 
     fn remove(&self, key: (Entity, u64)) {
@@ -95,7 +117,10 @@ pub struct PluginAdapter {
 
 impl PluginAdapter {
     pub fn new(inbound: Sender<Inbound>) -> Self {
-        Self::with_executable(inbound, std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zor")))
+        Self::with_executable(
+            inbound,
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zor")),
+        )
     }
 
     pub fn with_executable(inbound: Sender<Inbound>, executable: PathBuf) -> Self {
@@ -125,7 +150,7 @@ impl Adapter for PluginAdapter {
         matches!(effect, Effect::RunPlugin { .. } | Effect::KillPlugin { .. })
     }
 
-    fn apply(&mut self, effect: Effect) -> Result<(), BevyError> {
+    fn apply(&mut self, effect: Effect) -> Result<Option<Inbound>, BevyError> {
         match effect {
             Effect::RunPlugin {
                 plugin,
@@ -138,14 +163,26 @@ impl Adapter for PluginAdapter {
                 let inbound = self.inbound.clone();
                 let live = self.live.clone();
                 let executable = self.executable.clone();
-                let terminate = live.reserve((plugin, run))
-                    .ok_or_else(|| BevyError::from("plugin process capacity exhausted or duplicate run"))?;
+                let terminate = live.reserve((plugin, run)).ok_or_else(|| {
+                    BevyError::from("plugin process capacity exhausted or duplicate run")
+                })?;
                 IoTaskPool::get()
                     .spawn(async move {
                         let code = if terminate.load(Ordering::SeqCst) {
                             None
                         } else {
-                            execute(plugin, run, &argv, cwd.as_deref(), &env, &log, &live, &terminate, &executable).await
+                            execute(
+                                plugin,
+                                run,
+                                &argv,
+                                cwd.as_deref(),
+                                &env,
+                                &log,
+                                &live,
+                                &terminate,
+                                &executable,
+                            )
+                            .await
                         };
                         let _ = inbound
                             .send(Inbound::PluginExited { plugin, run, code })
@@ -153,12 +190,12 @@ impl Adapter for PluginAdapter {
                         live.remove((plugin, run));
                     })
                     .detach();
-                Ok(())
+                Ok(None)
             }
             Effect::KillPlugin { plugin, run } => {
                 // A run that is not live any more already answered; nothing to kill.
                 self.live.terminate((plugin, run));
-                Ok(())
+                Ok(None)
             }
             other => Err(BevyError::from(format!(
                 "plugin adapter: not a plugin effect: {other:?}"
@@ -191,7 +228,9 @@ impl Adapter for PluginAdapter {
 pub fn append_line(log: &Path, prefix: &str, line: &[u8]) -> std::io::Result<()> {
     // All runs of a plugin share a log. Serialize rotation and append as one operation.
     static LOG_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = LOG_LOCK.lock().map_err(|_| std::io::Error::other("log lock poisoned"))?;
+    let _guard = LOG_LOCK
+        .lock()
+        .map_err(|_| std::io::Error::other("log lock poisoned"))?;
     if let Some(parent) = log.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -200,7 +239,11 @@ pub fn append_line(log: &Path, prefix: &str, line: &[u8]) -> std::io::Result<()>
         rotated.push(".1");
         std::fs::rename(log, PathBuf::from(rotated))?;
     }
-    let mut file = OpenOptions::new().create(true).append(true).mode(0o600).open(log)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(log)?;
     let mut buf = Vec::with_capacity(prefix.len() + line.len().min(MAX_LINE_BYTES) + 32);
     buf.extend_from_slice(prefix.as_bytes());
     if line.len() > MAX_LINE_BYTES {
@@ -226,10 +269,20 @@ pub fn read_tail(log: &Path, limit: usize) -> Vec<String> {
     for path in [PathBuf::from(rotated), log.to_path_buf()] {
         use std::io::Read;
         let mut bytes = Vec::new();
-        if File::open(&path).and_then(|file| file.take(MAX_LOG_BYTES + MAX_LINE_BYTES as u64 + 1024).read_to_end(&mut bytes)).is_ok() {
+        if File::open(&path)
+            .and_then(|file| {
+                file.take(MAX_LOG_BYTES + MAX_LINE_BYTES as u64 + 1024)
+                    .read_to_end(&mut bytes)
+            })
+            .is_ok()
+        {
             for line in String::from_utf8_lossy(&bytes).lines() {
-                if limit == 0 { return Vec::new(); }
-                if lines.len() == limit.min(1000) { lines.pop_front(); }
+                if limit == 0 {
+                    return Vec::new();
+                }
+                if lines.len() == limit.min(1000) {
+                    lines.pop_front();
+                }
                 lines.push_back(line.to_owned());
             }
         }
@@ -271,25 +324,29 @@ async fn drain<R: AsyncRead + Unpin>(mut pipe: R, log: &Path, prefix: &str) {
 }
 
 /// Reaps the leader; after a terminate request the group gets [`GRACE`] before `SIGKILL`.
-async fn wait_exit(child: &mut Child, pgid: Pid, terminate: &AtomicBool) -> Option<i32> {
+async fn wait_exit(
+    child: &mut Child,
+    pgid: Pid,
+    terminate: &AtomicBool,
+    live: &Registry,
+    key: (Entity, u64),
+) -> Option<i32> {
     let mut asked_at: Option<Instant> = None;
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // The leader may exit while descendants keep its pipes open. They remain
-                // owned by this run and must not outlive it or pin the drain forever.
-                let _ = killpg(pgid, Signal::SIGKILL);
-                return status.code();
+        match fux::runner::signals::child_exited(child.id()) {
+            Ok(true) => return live.finish(key, child, pgid),
+            Ok(false) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.raw_os_error() == Some(nix::libc::ECHILD) => {
+                live.clear_signal(key);
+                return None;
             }
-            Ok(None) => {}
-            Err(_) => return None,
+            Err(_) => return live.finish(key, child, pgid),
         }
         if terminate.load(Ordering::SeqCst) {
             let at = *asked_at.get_or_insert_with(Instant::now);
             if at.elapsed() >= GRACE {
-                let _ = killpg(pgid, Signal::SIGKILL);
-                let _ = child.kill();
-                return child.wait().ok().and_then(|s| s.code());
+                return live.finish(key, child, pgid);
             }
         }
         Timer::after(POLL).await;
@@ -334,7 +391,11 @@ async fn execute(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
-            let _ = append_line(log, &prefix, format!("zor: spawn {program}: {e}").as_bytes());
+            let _ = append_line(
+                log,
+                &prefix,
+                format!("zor: spawn {program}: {e}").as_bytes(),
+            );
             return None;
         }
     };
@@ -347,7 +408,10 @@ async fn execute(
     live.started((plugin, run), pgid);
     let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
     let reads = async {
-        match (stdout.and_then(|p| Async::new(p).ok()), stderr.and_then(|p| Async::new(p).ok())) {
+        match (
+            stdout.and_then(|p| Async::new(p).ok()),
+            stderr.and_then(|p| Async::new(p).ok()),
+        ) {
             (Some(out), Some(err)) => {
                 future::zip(drain(out, log, &prefix), drain(err, log, &prefix)).await;
             }
@@ -356,7 +420,11 @@ async fn execute(
             (None, None) => {}
         }
     };
-    let (_, code) = future::zip(reads, wait_exit(&mut child, pgid, terminate)).await;
+    let (_, code) = future::zip(
+        reads,
+        wait_exit(&mut child, pgid, terminate, live, (plugin, run)),
+    )
+    .await;
     let _ = append_line(
         log,
         &prefix,
@@ -372,10 +440,13 @@ async fn execute(
 /// Internal process-group supervisor, invoked only by the host adapter. A separate process
 /// is essential: threads and Drop cannot run after the server receives SIGKILL.
 pub fn supervise() -> Result<i32, String> {
-    let parent: i32 = std::env::var("ZOR_HOST_PID").map_err(|e| e.to_string())?
-        .parse().map_err(|_| "invalid host pid")?;
-    let argv: Vec<String> = serde_json::from_str(&std::env::var("ZOR_PLUGIN_ARGV").map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let parent: i32 = std::env::var("ZOR_HOST_PID")
+        .map_err(|e| e.to_string())?
+        .parse()
+        .map_err(|_| "invalid host pid")?;
+    let argv: Vec<String> =
+        serde_json::from_str(&std::env::var("ZOR_PLUGIN_ARGV").map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
     if nix::unistd::getppid().as_raw() != parent {
         return Err("plugin host no longer owns supervisor".into());
     }
@@ -384,12 +455,24 @@ pub fn supervise() -> Result<i32, String> {
     // spawn failure from an ordinary nonzero exit. Default children retain inherited stdin.
     let mut report = if std::env::var("ZOR_CHILD_STATUS").as_deref() == Ok("1") {
         use std::os::fd::AsFd;
-        Some(File::from(std::io::stdin().as_fd().try_clone_to_owned().map_err(|e| e.to_string())?))
-    } else { None };
+        Some(File::from(
+            std::io::stdin()
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|e| e.to_string())?,
+        ))
+    } else {
+        None
+    };
     let mut command = Command::new(program);
-    command.args(args).env_remove("ZOR_PLUGIN_ARGV").env_remove("ZOR_HOST_PID")
+    command
+        .args(args)
+        .env_remove("ZOR_PLUGIN_ARGV")
+        .env_remove("ZOR_HOST_PID")
         .env_remove("ZOR_CHILD_STATUS");
-    if report.is_some() { command.stdin(Stdio::null()); }
+    if report.is_some() {
+        command.stdin(Stdio::null());
+    }
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {

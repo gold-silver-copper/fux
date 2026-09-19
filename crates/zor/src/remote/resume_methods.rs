@@ -4,7 +4,9 @@
 use bevy_ecs::prelude::*;
 use bevy_remote::{BrpError, BrpResult};
 
-use super::methods::{MethodSpec, Request, codes, described, error, handler, invalid, spec, to_value};
+use super::methods::{
+    MethodSpec, Request, codes, described, error, handler, invalid, spec, to_value,
+};
 use super::task_methods::{AttemptRecord, TaskGuard, TaskParams, attempt_record, validate_guard};
 use crate::lifecycle::LifecycleError;
 use crate::lifecycle::resume::{self, ResumeSpec};
@@ -39,7 +41,9 @@ fn lifecycle_error(error_value: LifecycleError) -> BrpError {
 }
 
 fn task_entity(world: &World, id: &str) -> Result<Entity, BrpError> {
-    world.resource::<Ids>().task(id)
+    world
+        .resource::<Ids>()
+        .task(id)
         .ok_or_else(|| error(codes::NOT_FOUND, format!("task {id} not found")))
 }
 
@@ -47,13 +51,22 @@ fn task_resume(mut request: Request, world: &mut World) -> BrpResult {
     request.mutation(world)?;
     let params: TaskResumeParams = request.parse()?;
     let task = task_entity(world, &params.task)?;
-    let spec = ResumeSpec { operation: params.operation, fux_instance: params.fux_instance };
+    let spec = ResumeSpec {
+        operation: params.operation,
+        fux_instance: params.fux_instance,
+    };
     if let Some(attempt) = resume::retained(world, task, &spec).map_err(lifecycle_error)? {
         // A successful new resume necessarily invalidates the original no-live-attempt guard.
         // Returning retained evidence cannot mutate anything. Non-null guards were never
         // eligible for a new resume and therefore cannot be used as an alternate retry intent.
-        if params.guard.as_ref().is_some_and(|guard| guard.attempt.is_some() || guard.pane.is_some()) {
-            return Err(invalid("resume retry guard differs from the original no-live-attempt intent"));
+        if params
+            .guard
+            .as_ref()
+            .is_some_and(|guard| guard.attempt.is_some() || guard.pane.is_some())
+        {
+            return Err(invalid(
+                "resume retry guard differs from the original no-live-attempt intent",
+            ));
         }
         return to_value(attempt_record(world, attempt));
     }
@@ -90,6 +103,16 @@ handler!(brp_task_resume, task_resume);
 handler!(brp_task_resume_status, task_resume_status);
 
 pub const METHODS: &[MethodSpec] = &[
-    spec!("zor/task.resume", brp_task_resume, TaskResumeParams, AttemptRecord),
-    spec!("zor/task.resume-status", brp_task_resume_status, TaskParams, ResumeStatus),
+    spec!(
+        "zor/task.resume",
+        brp_task_resume,
+        TaskResumeParams,
+        AttemptRecord
+    ),
+    spec!(
+        "zor/task.resume-status",
+        brp_task_resume_status,
+        TaskParams,
+        ResumeStatus
+    ),
 ];

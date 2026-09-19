@@ -1,9 +1,12 @@
 //! Private, bounded intent-before-dispatch evidence for every remote mutation. Loading this
 //! log never creates worker requests: uncertain operations are inspected, never replayed.
-use std::path::{Path, PathBuf};
+use super::{
+    catalog::{CatalogError, read_private, write_private},
+    supervision::ActionRecord,
+};
 use bevy_ecs::prelude::Resource;
 use serde::{Deserialize, Serialize};
-use super::{catalog::{CatalogError, read_private, write_private}, supervision::ActionRecord};
+use std::path::{Path, PathBuf};
 
 pub const MAX_RECORDS: usize = 256;
 pub const SUFFIX: &str = ".action-intents.json";
@@ -19,29 +22,48 @@ pub struct ActionIntent {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct File { version: u32, intents: Vec<ActionIntent> }
+struct File {
+    version: u32,
+    intents: Vec<ActionIntent>,
+}
 
 #[derive(Resource, Debug, Default)]
-pub struct IntentLog { path: PathBuf, records: Vec<ActionIntent> }
+pub struct IntentLog {
+    path: PathBuf,
+    records: Vec<ActionIntent>,
+}
 impl IntentLog {
     pub fn path_beside(catalog: &Path) -> PathBuf {
-        let mut name = catalog.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+        let mut name = catalog
+            .file_name()
+            .map(|n| n.to_os_string())
+            .unwrap_or_default();
         name.push(SUFFIX);
         catalog.with_file_name(name)
     }
     pub fn load(catalog: &Path) -> Result<Self, CatalogError> {
-        if catalog.as_os_str().is_empty() { return Ok(Self::default()); }
+        if catalog.as_os_str().is_empty() {
+            return Ok(Self::default());
+        }
         let path = Self::path_beside(catalog);
         let mut records = match read_private(&path)? {
             None => Vec::new(),
             Some(bytes) => {
                 let file: File = serde_json::from_slice(&bytes)?;
                 if file.version != 1 || file.intents.len() > MAX_RECORDS {
-                    return Err(CatalogError::Invalid("invalid action intent version or capacity".into()));
+                    return Err(CatalogError::Invalid(
+                        "invalid action intent version or capacity".into(),
+                    ));
                 }
                 for (i, record) in file.intents.iter().enumerate() {
-                    if !crate::model::valid_id(&record.operation) || file.intents[..i].iter().any(|r| r.operation == record.operation || r.record.id == record.record.id) {
-                        return Err(CatalogError::Invalid("invalid or duplicate action intent identity".into()));
+                    if !crate::model::valid_id(&record.operation)
+                        || file.intents.iter().take(i).any(|r| {
+                            r.operation == record.operation || r.record.id == record.record.id
+                        })
+                    {
+                        return Err(CatalogError::Invalid(
+                            "invalid or duplicate action intent identity".into(),
+                        ));
                     }
                 }
                 file.intents
@@ -50,25 +72,54 @@ impl IntentLog {
         for intent in &mut records {
             if intent.record.phase == super::supervision::ActionPhase::Submitting {
                 intent.record.phase = super::supervision::ActionPhase::Uncertain;
-                intent.record.problem = Some("controller restarted; inspect remote evidence, never replay".into());
+                intent.record.problem =
+                    Some("controller restarted; inspect remote evidence, never replay".into());
             }
         }
-        Ok(Self {path, records})
+        Ok(Self { path, records })
     }
-    pub fn records(&self) -> &[ActionIntent] { &self.records }
-    pub fn find(&self, operation: &str) -> Option<&ActionIntent> { self.records.iter().find(|r| r.operation == operation) }
+    pub fn records(&self) -> &[ActionIntent] {
+        &self.records
+    }
+    pub fn find(&self, operation: &str) -> Option<&ActionIntent> {
+        self.records.iter().find(|r| r.operation == operation)
+    }
     /// Identical operation keys are never dispatched again, including after a lost reply.
     pub fn commit(&mut self, intent: ActionIntent) -> Result<(), CatalogError> {
-        if self.find(&intent.operation).is_some() { return Err(CatalogError::Invalid("operation intent already retained; inspect its outcome, do not replay".into())); }
-        if self.records.len() >= MAX_RECORDS { return Err(CatalogError::Invalid("remote action intent capacity reached".into())); }
+        if self.find(&intent.operation).is_some() {
+            return Err(CatalogError::Invalid(
+                "operation intent already retained; inspect its outcome, do not replay".into(),
+            ));
+        }
+        if self.records.len() >= MAX_RECORDS {
+            return Err(CatalogError::Invalid(
+                "remote action intent capacity reached".into(),
+            ));
+        }
         self.records.push(intent);
-        if let Err(error) = self.save() { self.records.pop(); return Err(error); }
+        if let Err(error) = self.save() {
+            self.records.pop();
+            return Err(error);
+        }
         Ok(())
     }
     pub fn complete(&mut self, record: &ActionRecord) -> Result<(), CatalogError> {
-        let Some(index) = self.records.iter().position(|r| r.record.id == record.id) else { return Ok(()); };
-        let old = std::mem::replace(&mut self.records[index].record, record.clone());
-        if let Err(error) = self.save() { self.records[index].record = old; return Err(error); }
+        let Some(index) = self.records.iter().position(|r| r.record.id == record.id) else {
+            return Ok(());
+        };
+        let intent = self.records.get_mut(index).ok_or_else(|| {
+            CatalogError::Invalid("action intent disappeared before completion".into())
+        })?;
+        let old = std::mem::replace(&mut intent.record, record.clone());
+        if let Err(error) = self.save() {
+            let intent = self.records.get_mut(index).ok_or_else(|| {
+                CatalogError::Invalid(format!(
+                    "action intent disappeared while rolling back failed completion: {error}"
+                ))
+            })?;
+            intent.record = old;
+            return Err(error);
+        }
         Ok(())
     }
     fn save(&self) -> Result<(), CatalogError> {

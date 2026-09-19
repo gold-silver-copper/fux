@@ -96,23 +96,47 @@ described!(
 
 pub(super) fn events_poll(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
     let mut req = Request::open(params, world)?;
-    let State::Events { workspace, mut cursor, gap, surface } = open_events(&mut req, world)? else {
-        unreachable!("event opener returns event state")
+    let State::Events {
+        workspace,
+        mut cursor,
+        gap,
+        surface,
+    } = open_events(&mut req, world)?
+    else {
+        return Err(BrpError::internal(
+            "event opener returned a non-event state",
+        ));
     };
     let mut entries = Vec::new();
     if gap.is_none() {
         let log = world.resource::<EventLog>();
         let read = match workspace.as_deref() {
-            Some(ws) => log.read_after(ws, cursor).map(|events| entries.extend(events)),
+            Some(ws) => log
+                .read_after(ws, cursor)
+                .map(|events| entries.extend(events)),
             None => log.read_any_after(cursor, &mut entries),
         };
         if let Err(missed) = read {
-            return to_value(EventsPollResult { cursor: missed.resume, gap: Some(notice(missed)), events: Vec::new() });
+            return to_value(EventsPollResult {
+                cursor: missed.resume,
+                gap: Some(notice(missed)),
+                events: Vec::new(),
+            });
         }
-        if let Some(last) = entries.last() { cursor = last.cursor; }
+        if let Some(last) = entries.last() {
+            cursor = last.cursor;
+        }
     }
-    let events = entries.into_iter().filter(|entry| surface.is_none_or(|id| of_surface(entry, id))).map(record).collect();
-    to_value(EventsPollResult { cursor, gap, events })
+    let events = entries
+        .into_iter()
+        .filter(|entry| surface.is_none_or(|id| of_surface(entry, id)))
+        .map(record)
+        .collect();
+    to_value(EventsPollResult {
+        cursor,
+        gap,
+        events,
+    })
 }
 described!(
     pub struct ObserveItem {
@@ -462,7 +486,9 @@ fn poll_events(
     let log = world.resource::<EventLog>();
     let mut merged = Vec::new();
     let read = match workspace {
-        Some(ws) => log.read_after(ws, *cursor).map(|entries| merged.extend(entries)),
+        Some(ws) => log
+            .read_after(ws, *cursor)
+            .map(|entries| merged.extend(entries)),
         None => log.read_any_after(*cursor, &mut merged),
     };
     if let Err(missed) = read {
@@ -486,7 +512,8 @@ fn poll_events(
 
 /// Whether an entry is a `SurfaceInput` of the surface leaf `id`.
 fn of_surface(entry: &Entry, id: u64) -> bool {
-    entry.name == SurfaceInput::NAME && entry.event.get("surface").and_then(Value::as_u64) == Some(id)
+    entry.name == SurfaceInput::NAME
+        && entry.event.get("surface").and_then(Value::as_u64) == Some(id)
 }
 
 fn record(entry: &Entry) -> EventRecord {

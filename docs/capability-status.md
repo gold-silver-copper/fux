@@ -1,101 +1,78 @@
-<!-- Snapshot taken mid-milestone-6 by the audit scout; updated again at milestone 8. -->
-# Capability audit → rewrite status
+# Capability status — 2026-09-19 checkpoint
 
-Deliverable: `local://capability-audit-status.md` (returned inline; this session is read-only and has no write tool).
+This replaces the mid-milestone-6 inventory. Source implementation and acceptance are separate.
+Exact commands, failures and final checkpoint results are in [verification.md](verification.md).
+The user requested committing/pushing the checkpoint and stopping, not claiming every original
+milestone-8 deliverable complete. koh and future iroh-ssh integration are out of scope.
 
-**Method.** Row set = every capability the 2026-09-15 capability audit marks implemented in the old tree (matrix clauses, provider table, resource-ceiling table, recovery/scheduling/cleanup prose, module links) ∪ every Herdr-parity row (the 20-row capability matrix plus the herdr-parity prompt's five workstreams and section-5 gap bullets). New-tree status comes from reading `crates/fux/src`, `crates/zor/src`, `crates/zor/docs/model.md`, `docs/verification.md`, `docs/HANDOFF.md`, `tools/xtask/src/main.rs`, `.github/workflows/ci.yml` — no build, test, formatter or linter was run (siblings edit concurrently). Milestone numbering is the rewrite prompt's section 6: **6** = zor model/journal/providers/checks/sources/artifacts/verification/groups; **7** = zor BRP surface, plugin host, machines/dashboard, koh composition re-pin; **8** = docs, changelog, benchmark comparison. Anything with no home in milestones 1–8 is a *fux area* (new workstream).
+Evidence labels: **U** = unit/property/integration assertions exercised; **R** = real local
+process or terminal exercised; **F** = provider fixture, not upstream-service compatibility.
+A source implementation is not evidence of paid-provider, WAN, Linux or Windows acceptance.
+The original 58 capability IDs are retained below; grouped IDs share the stated boundary.
 
-Work in flight at capture time: milestone 6 slices are landing in `crates/zor` (owners `TaskLifecycle`, `Providers`, `ChecksSources`, `GroupsWorktrees`); `crates/zor/src/{checks,providers,groups,worktrees,git,lifecycle}.rs` and `crates/zor/src/remote/{task,check,group,provider}_methods.rs` are today comment-only stubs or empty `METHODS` tables, and a `ViewerChrome` task is editing `crates/fux/src/viewer/`.
+## fux
 
-## fux — standalone terminal surface (matrix rows + carried-over old capabilities)
+| IDs | Capability | Implementation and evidence boundary |
+|---|---|---|
+| 1 | Persistent terminals, detach/reattach, independent viewers | Implemented; U/R. Viewer/controller death preserves the independently owned remote PTY. |
+| 2–3 | Split/close/focus/resize, zoom, move/swap/order, root/workspace transfers | Implemented; layout/property/picking/viewer U. Real multi-viewer scenario covers drag, reparent, resize, zoom and focus; see final scenario result rather than inferring success from source. |
+| 4 | Layout export/apply/archive/assets | Implemented; scene/template/asset U and historical runtime evidence. |
+| 5–6 | Keyboard/mouse, picking, captured gestures, viewer-local zoom/scroll | Implemented; U/R. Input is pinned to the painted scene; stale geometry cannot retarget it. |
+| 7 | Layout validation and structural invariants | Implemented; U/property coverage for bounded scenes, foreign references and stale generations. |
+| 8–9 | BRP method allowlist, capabilities, private descriptors, discovered schemas | Implemented; U/R. Independent attachment credentials are not scoped BRP grants. |
+| 10 | Retained events, watches, explicit gaps | Implemented; U/R. `fux/events.poll` establishes an authenticated finite cursor baseline. |
+| 11 | Input reservation/receipts, exact target identity | Implemented; U/R. Accepted-but-lost input replies reconcile without a second submission. |
+| 12 | Final records and explicit forgotten evidence | Implemented; receipts/lifecycle U and runtime task completion paths. |
+| 13 | Coherent bounded capture/history | Implemented; U/R. Captured physical rows can soft-wrap text; capture is not provider-native completion evidence. |
+| 14 | Exact attachment and multiple viewports | Implemented; U/R. Pane/PID mismatch is refused, not retargeted. |
+| 15 | Resource ceilings and bounded transport | Implemented; U/R pressure, slow-viewer and shutdown scenarios. Slot exhaustion can temporarily deny service; no hostile-local-process availability guarantee. |
+| 16 | Config/theme/bindings/clipboard | Implemented; U and terminal binding R. Plugin bindings use `plugin:NAME/ACTION`. |
+| 17 | Bell/diagnostics/server information | Diagnostics implemented and exercised. Audible bell/device playback not validated. |
+| 18 | Session shape/cwd/history restoration, explicit restore/skip | Implemented; session U and historical real-process restore evidence. This restores a recipe/history, not the old OS process. |
+| 19 | Exclusive controller leases/read-only attachment observers | Unsupported parity work; not supplied by ordinary BRP capability scope. |
+| 20 | Agent transcript retrieval by controlled alternate-screen paging | Partial primitives only: capture/history exist; no complete idle-gated paging/viewport-restoration workflow. |
+| 21 | Kitty graphics/image API and IME richness | Unsupported parity work. |
+| 22 | Generic plugin/dashboard surfaces | Implemented; U/R, provider/revision/viewer guards, sanitized text, stable provider-node mapping and viewer-local scrolling. |
 
-| # | Capability (old-tree clause) | Old status | New-tree status — proof or missing | Closes in |
-|---|---|---|---|---|
-| 1 | Persistent terminals: workspaces/panes, detach/reattach, bounded history, retained grids, independent viewer focus | implemented | **implemented** — `crates/fux/src/pty.rs` (`PtyAdapter`, per-pane reader/reaper, process-group kill), `terminal.rs` (`Terminal`: vt100 grid, bounded scrollback, `seq()`), `layout/instances.rs` (`sync_instances`, per-viewer clone), `attach/` (detach/reattach, `Bye` path) | — |
-| 2 | Interactive layout ops: split/close/focus/resize, zoom/unzoom, move/swap, ordering, ratio | implemented | **implemented** — `layout/ops.rs` (`split`, `swap`, `exchange`, `reparent_node`, `reorder_node`, `zoom`/`unzoom`, `resize_viewer`, `set_flex_grows` for border resize; `NodePatch.aspect_ratio` in `layout/patch.rs`). Old separator-cell `split_rect` arithmetic deliberately replaced (recorded in `docs/verification.md`, milestone 3) | — |
-| 3 | Live tab/workspace transfers, labels/order | implemented | **implemented** — `layout/ops.rs::{move_root, order_roots, rename}`, `fux/root.{move,order,rename}` in `remote/methods.rs::TABLE` | — |
-| 4 | Layout export/apply, workspace archives, user layout assets | implemented | **implemented** — `scene/mod.rs` (`export`, `apply` with `ApplyOptions::expected` (NodeId, LayoutGeneration), `save`/`load`/`list`), `scene/layout_asset.rs` (`LayoutAssetLoader` + `LayoutAssetPlugin` hot reload), `scene/builtin.rs` (`bsn!` templates), `remote/scene_methods.rs` | — |
-| 5 | Keyboard/mouse modes, contextual mouse UI, application mouse forwarding | implemented | **implemented** — `pointer.rs` (border drag, drag-to-move, SGR 1006 / X10 forwarding per pane mode, `RightClickPolicy`), `viewer/focus.rs` (prefix chords, `h j k l`, geometry `DirectionalNavigationMap`), `viewer/keys.rs`, `fux bindings` in `cli.rs` | — |
-| 6 | Picking backend, hit testing, per-viewer zoom/scroll | implemented | **implemented** — `layout/picking.rs` (`cell_backend`, `hits`), `layout/ops.rs::{pane_at, zoom, scroll, set_display}` | — |
-| 7 | Layout validation: duplicate/missing pane ids, invalid ratios, excessive depth/size, foreign references, stale generations | implemented | **implemented** — `layout/mod.rs::LayoutError`, `scene/mod.rs::SceneError` (allowlist, depth, count, `ForeignPane`, `StaleGeneration`, `UnplacedPanes`), `model/invariants.rs`; tests `layout_matrix`, `layout_ops`, `layout_props` | — |
-| 8 | Command registry / method allowlist / JSON APIs | implemented | **implemented** — `remote/methods.rs::{TABLE, allowlist, WRAPPED}`, fixtures `crates/fux/tests/fixtures/brp/{methods,schema}.json`, `tests/brp.rs` | — |
-| 9 | Capability tokens, 0600 descriptor, `rpc.discover`/`fux/schema` | implemented | **implemented** — `remote/token.rs` (constant-time compare, mint/revoke, `Capabilities`), `remote/descriptor.rs`, `remote/methods.rs` (`fux/token.*`, `fux/schema`), `remote/schema.rs` | — |
-| 10 | Lifecycle events, retained log, `fux/events+watch`, `world.observe+watch` | implemented | **implemented** — `events.rs` (`PaneSpawned`…`Bell`, `Logged`, `EventLog` with `Gap`, diagnostics), `remote/watch.rs` (`EVENTS_WATCH_METHOD`, `WATCHED` observe/get_components/list_components), tests `events.rs`, `brp_watch.rs` | — |
-| 11 | Durable input receipts: reservation/receipt reconciliation, pinned target identity | implemented | **implemented** — `input_ops.rs` (`reserve`/`submit`/`status`, `MAX_INPUT_OPERATIONS=128`, `MAX_INPUT_RETENTION_MS`, `Uncertain`), `remote/input_methods.rs`, tests `receipts.rs`; zor side reads it via `fux_client.rs` | — |
-| 12 | Final records (`fux/pane.final`) with evicted/expired/unknown reasons | implemented | **implemented** — `finals.rs` (`FinalRecord`, `ForgottenFinals`, `MAX_FINAL_RECORDS`, four-hour ceiling), `remote/input_methods.rs` code range `-32010..=-32014` | — |
-| 13 | Capture/history: coherent text/ANSI capture with source/freshness/truncation | implemented | **implemented** — `remote/methods.rs::brp_pane_capture` (scrollback by distance, `MAX_CAPTURE_LINES`, `truncated`), `terminal.rs::{screen_lines, scrollback_line, write_delta}` | — |
-| 14 | Exact attachment: instance/workspace/stream/pane/pid, multi-viewer with different viewports | implemented | **implemented** — `attach/mod.rs::admit_one` (token+instance constant-time, `pane pid mismatch` refusal), `layout/ops.rs::attach_viewer`, `wire.rs::ExactTargetSpec`, CLI `fux attach --pane/--pid`, smoke in `docs/verification.md` (milestones 2, 4) | — |
-| 15 | fux resource ceilings (receipts, finals, events, workspaces, viewers, panes) | implemented | **implemented** — `model/limits.rs` (`Limits`, `MIN_DIM`/`MAX_DIM`, `MAX_LEAVES`), `config.rs` (clamped `fux.toml`), `events.rs::MAX_STREAM_BYTES`, `attach/listener.rs` (pre-auth cap, `WRITER_QUEUE`) | — |
-| 16 | Configuration/theme/keybinding/clipboard behaviour (copy + OSC 52 policy) | implemented | **implemented** — `assets.rs` (loaders + hot reload), `viewer/theme.rs`, `viewer/mod.rs` (`Clipboard`→OSC 52 per milestone-4 record), `tests/assets.rs`; graphics/IME still absent — see row 21 | — |
-| 17 | Bell, diagnostics, `server.info` | implemented | **implemented** — `events.rs` (`bell` feature, `DiagnosticsSnapshot`, `WAKEUPS`/`PANES_LIVE`/`VIEWERS`/`EVENTS_RETAINED`), `remote/methods.rs::brp_server_info`, `assets/bell.wav` (audible playback unverified) | — |
-| 18 | Server/machine restart: session shape/cwd/focus restore, optional bounded screen replay *(parity row)* | absent in old tree ("no general fux restart restore") | **implemented** for the fux half — `session.rs` (`document`, `restore_or_bootstrap`, `RestoreMode::{Auto,Ask,None}`, `Historical`, `LastFocus`, autosave + shutdown save, rejected-file quarantine), `remote/session_methods.rs` (`fux/session.{save,status,restore,skip}`), smoke in `docs/verification.md` milestone 5 (three panes restored live). zor half (lifecycle sweep, provider resume) is rows 33/37/38 | milestone 6 for the zor half |
-| 19 | Direct control and observation: per-terminal controller lease, one writable controller, read-only observers *(matrix row)* | absent in old tree | **missing** — no lease/takeover/single-writer/observer authority anywhere in `crates/fux/src` (grep for lease/takeover/observer finds only Bevy entity observers); viewers remain the only writable path, no separate read-only grant, no server-enforced exclusion of a second controller | fux area (new workstream; not in milestones 1–8) |
-| 20 | Agent transcript retrieval: application-driven alternate-screen scrolling with refusal for working/blocked agents *(matrix row)* | absent in old tree | **partial** — primitive exists (`fux/pane.capture` + `Terminal::scrollback_line` + `Historical` replay), but no overlapping-page walk, no `agent_not_idle`-style refusal, no viewport restore; zor has no policy module (`providers.rs` stub) | fux area (retrieval primitive) + milestone 6 `Providers` (policy) |
-| 21 | Terminal richness: Kitty graphics/image API, IME options *(matrix row)* | absent in old tree | **missing** — no graphics/image/IME code in `crates/fux/src` (grep: no `graphics`/`kitty`/`ime` hits outside unrelated `TimePlugin`/`Timer` lines) | fux area |
-| 22 | Non-terminal content hosting for plugin/dashboard panes (`surface.*`) | n/a — new mechanism (old dashboard was its own TUI) | **implemented** — `surface.rs` (`open`/`update`/`close`, `Text` leaf, revision + pacing bounds), `remote/surface_methods.rs`, `tests/surface.rs`, viewer replication case | — |
+## zor
 
-## zor — agent/task policy layer
+| IDs | Capability | Implementation and evidence boundary |
+|---|---|---|
+| 23 | Task/attempt/prompt/operation model and relationships | Implemented; U, invariant checks and runtime task workflows. |
+| 24 | Journal, bounded extraction, atomic persistence/archive | Implemented; U. Failed persistence prevents effect dispatch. Machine configuration is deliberately not duplicated in this journal. |
+| 25 | Durable prompt/input delivery and identity reconciliation | Implemented; lifecycle/receipt U and lost-reply R. No blind input replay. |
+| 26 | Native response correlation | Implemented correlation/claim parsing; U/F. Live upstream acceptance remains separate. |
+| 27–30 | Verified seals, committed-tree sources, bounded checks, artifact capture | Implemented; U with real temporary Git repositories and subprocesses. This is not representative-project or paid-provider acceptance. |
+| 31–32 | Dependency groups and owned worktrees | Implemented; U with real Git. Git admission refusal now produces a scheduled completion even when inbound transport is full. |
+| 33 | Startup reconciliation, uncertainty and lost evidence | Implemented; U/R. In-flight effects are not automatically repeated. |
+| 34 | Task forgetting/compaction and general uncertain-effect administration | Partial: archive and typed reconciliation exist; do not claim a complete task-forget/general compaction API. |
+| 35 | Owned helper/check/provider cleanup | Implemented; U/R, bounded cancellation and guardians. Signal authority ends before reaping; no OS sandbox or deliberate group-escape guarantee. Git has in-process cleanup, not the helper guardian's hard-parent-death guarantee. |
+| 36 | Legacy standalone adapter capabilities API | Not established as a standalone parity API; schema discovery and typed provider configuration are not equivalent evidence. |
+| 37 | Codex native adapter | JSON-RPC initialization/thread/turn and correlated claims implemented; U/F. Full interrupt/history/recreation parity and live upstream compatibility are not claimed. |
+| 38 | OpenCode armed-input ancestry and guarded resume | Implemented sidecar contract and explicit native resume; U/F/R fixture. Real upstream bridge/service compatibility remains unvalidated. |
+| 39 | Claude generic launch/passive rules | Generic process and observation paths exist. Native resume is explicitly refused; no full native Claude adapter claim. |
+| 40 | Passive discovery/rules and observation states | Implemented; asset/provider U and machine/dashboard R. |
+| 41–43 | Authenticated BRP, secret-free projections, retained event watches | Implemented; U/R, typed fixtures and generated schemas. Arbitrary World mutation stays disabled. |
+| 44 | Machine catalog and separate control/attachment bindings | Implemented; U/R, private atomic catalog, stable IDs and last-valid reload. CLI resolves active catalog authority through ADMIN-only endpoint access. |
+| 45 | Independent machine supervision/freshness | Implemented; U/R. Wrong token, expired incarnation, offline endpoint and healthy peers remain independent. |
+| 46 | Hosted dashboard, attention/selection, exact handoff/return | Implemented; U/R keyboard, mouse, local scrolling, stale refusal and exact selected task attachment. Closing dashboard does not cancel the task. |
+| 47 | Durable remote operation/resume intents | Implemented; U/R before-forward and accepted-reply-lost crashes, restart and read-only reconciliation without replay. |
+| 48 | Exact destructive-call ownership guards | Implemented; U/R using machine/controller incarnation, attempt, fux instance/workspace/pane/PID. |
+| 49 | Legacy service lane layout/deadlines | Replaced by bounded independent workers/adapters and explicit deadlines; the old fixed lane counts are not preserved as an API or separately claimed. |
+| 50 | Plugin host/actions/hooks/panes/links/logs | Implemented; U/R. Scoped descriptors omit universal attachment secrets; disable revokes grants and cleans owned children. Hook claims precede dispatch; crashes can omit work, never imply exactly-once side effects. |
+| 51 | koh composition / future iroh-ssh transport | Out of scope, not an acceptance blocker. |
+| 52 | Multi-stack and terminal scenario harness | Implemented, thirteen scenarios. Final recorded run is authoritative; earlier failing probes are retained as diagnostic evidence. |
 
-| # | Capability (old-tree clause) | Old status | New-tree status — proof or missing | Closes in |
-|---|---|---|---|---|
-| 23 | Task/attempt/prompt/operation entity model, per-entity state machines, structural invariants | implemented | **implemented** — `crates/zor/src/model/{components,graph,invariants,ids,relations,limits}.rs` (all kinds incl. Check/Source/Artifact/Group/Worktree/Machine/Plugin; invariants 1–12 S-rules; `crates/zor/docs/model.md`), tests `tests/model.rs` | — |
-| 24 | Durable journal + bounded extraction + atomic write + dated read-only archive | implemented | **implemented** — `journal.rs` (`snapshot`, `write_atomic` temp+fsync+rename+dir sync, `restore`, `archivable`, `archive_candidates`, `archive` merge, `find_archived`, minute sweep), `Limits.journal_bytes`, tests `tests/journal.rs` | — |
-| 25 | Prompt delivery: stable operations, reservation/receipt reconciliation, pinned target identity, generic multiline | implemented | **partial** — fux half is real (row 11) and `fux_client.rs::ensure_pane_identity` pins instance/workspace/pane/pid; zor policy is only declarative (`Delivery`, `PromptText`, `ArmInputStarted`, `Receipt`, `WaitState` in `model/components.rs`; invariant 6/7) — `lifecycle.rs` stub, `remote/task_methods.rs` empty | milestone 6 (`TaskLifecycle`) |
-| 26 | Prompt completion: Codex thread/turn/user-item correlation, OpenCode session/message ancestry | implemented | **missing** — no adapter code; only `ResponseEvent`/`Binding` component declarations and `Inbound::Provider*` messages in `model/messages.rs` | milestone 6 (`Providers`) |
-| 27 | Verified task results: immutable seal over required checks and captured artifacts | implemented | **partial** — `Seal`/`Verdict`/`Required` components, `Required`+`CheckOf` relations, invariants 4/21/22, journal preserves the seal; no `task.verify` transition or check execution (`checks.rs` stub, `remote/check_methods.rs` empty) | milestone 6 (`ChecksSources`) |
-| 28 | Source collection: whole committed Git tree, bounded, revision-pinned | implemented | **partial** — `Source`/`SourceRevision`, `CheckOn`, journal coverage, limits (128 sources); no collection/materialisation, no Git metadata handling (token `git.rs` is a stub) | milestone 6 (`ChecksSources` + `GroupsWorktrees` git adapter) |
-| 29 | Check execution: queued→running→passed/failed/uncertain, timeout/output caps, cancellation/cleanup | implemented | **missing** — `Effect::RunCheck`/`Inbound::Check{Output,Exited}` shapes and `CheckState` exist; no runner, no output caps in code, no cancel (old 300 s/256 KiB/4 KiB policy not re-established) | milestone 6 (`ChecksSources`) |
-| 30 | Artifact capture and retention (bytes, per-file/total bounds) | implemented | **missing** — `Artifact`, `ArtifactPath`, `ArtifactState`, `ArtifactOf`, bounds counting only; no capture, storage or retention path | milestone 6 (`ChecksSources`) |
-| 31 | Scheduling: durable dependency groups, admission concurrency, explicit/automatic advancement, pause/cancel | implemented | **partial** — `Group`/`Members`/`Concurrency`/`After`/`GroupIntent`, `spawn_group`/`retire_group`, invariants 10/24; no admission, no cursor, no advancement (`groups.rs` stub) | milestone 6 (`GroupsWorktrees`) |
-| 32 | Worktrees: owned create/remove, intent-before-git, checkout identity, task linkage, guards | implemented | **partial** — `Worktree` state machine, `Repo/Branch/Base`, `OwnedWorktree`, invariant 9/25 documented; no git adapter (`worktrees.rs`, `git.rs` stubs) | milestone 6 (`GroupsWorktrees`) |
-| 33 | Recovery: startup lifecycle sweep, uncertain checks/launches, `Lost` marking, no replay | implemented | **missing** — only documented (invariant 27, `crates/zor/docs/model.md`); nothing sweeps at startup (`lifecycle.rs` stub; `journal.rs::restore_at_startup` restores records only) | milestone 6 (`TaskLifecycle`) |
-| 34 | Task forgetting/compaction, group deletion/rebinding, uncertain-effect resolution API | partial in old tree | **missing** — archive sweep exists, but no `zor/task.forget`-class method (`remote/task_methods.rs` empty) and no uncertain-resolution command | milestone 6 (`TaskLifecycle`) |
-| 35 | Owned process cleanup for controller-owned helpers/check subprocesses | implemented | **partial** — fux panes get bounded process-group `SIGKILL` plus a detached reaper that avoids re-signalling reaped identities (`pty.rs`); zor owns no subprocess yet, so the check/helper half has no home | milestone 6 (`ChecksSources`) + fux `pty.rs` |
-| 36 | Adapter capability declarations (`*/capabilities`, static, availability-not-probed) | implemented | **missing** — no capabilities method/table; `remote/provider_methods.rs` is an empty table | milestone 6 (`Providers`) |
-| 37 | Codex adapter: app-server stdio, persistent thread, correlated submit/response, structured blockers, interrupt, history reconciliation, recreation | implemented | **missing** — no `providers/` or `tasks/codex/` code; `Inbound::Provider{Started,Output,Exited}` and `Effect::SpawnProvider/WriteProvider` are the only shapes | milestone 6 (`Providers`) |
-| 38 | OpenCode adapter: exact armed-input/message ancestry, needs-input evidence, guarded native resume | implemented | **missing** — no adapter, no `resume`/eligibility code | milestone 6 (`Providers`) |
-| 39 | Claude Code integration: generic managed launch, passive lifecycle rules, headless policy | partial in old tree | **missing** — nothing in the new tree | milestone 6 (`Providers`) |
-| 40 | Agent discovery: versioned passive rules (Codex/Claude/OpenCode), observation states `Unknown/Working/Blocked/Idle/None` | implemented | **missing** — `AgentState`/`Observation`/`ProducerLifetime` components and `AgentView` exist, but no rule bundles, no rule loader, no observation transition system (invariant 26 documented only) | milestone 6 (`Providers`) |
-| 41 | zor BRP surface: token-checked `zor/*` method table, descriptor, `zor/schema` | implemented | **partial** — framework complete in `remote/mod.rs` + `remote/methods.rs` (`zor/server.info`, `zor/token.mint/revoke`, `zor/schema`, `zor/task.inspect`, wrapped `world.*`, unknown-name handling, 0600 descriptor, tests `tests/remote.rs`); every owner table (`task_methods`, `check_methods`, `group_methods`, `provider_methods`) is `&[]` | milestone 7 (surface) on milestone-6 owners |
-| 42 | zor read-only projections for `world.query` (`TaskView`/`AgentView`/`MachineView`/`CheckView`) | implemented | **implemented** — `remote/projection.rs` (`ALLOWED_TYPE_PATHS`, `Mirrors`/`Projections`, in-place `sync`), `remote/methods.rs` wrapped built-ins | — |
-| 43 | zor events + `zor/events+watch` (cursor, explicit gaps) | implemented | **implemented** — `remote/events.rs` (`EventLog`, 512 KiB bound), `remote/watch.rs`, CLI `zor events --cursor` | — |
-| 44 | Machine catalog: saved koh-backed profiles, control binding, per-workspace attachment bindings, catalog reload | implemented | **partial** — model only: `Machine`/`MachineName`/`ControlBinding`/`Service`/`Bound`/`BoundAgents`, `spawn_machine`/`spawn_service`, `MachineView`, `Limits.machines=32`, tests `tests/journal.rs`; no catalog store, no CLI/`--machine` routing | milestone 7 |
-| 45 | Independent per-machine supervision workers (read budget, poll interval, freshness, stale-state preservation) | implemented | **missing** — no supervision module or worker code | milestone 7 |
-| 46 | Aggregate/machine-scoped dashboard, notifications/attention rows, exact handoff and return | implemented | **missing** — nothing in `crates/zor/src`; the hosting primitive exists (row 22) but no dashboard scene or actions | milestone 7 |
-| 47 | Durable controller resume intents (route/task/attempt committed before dispatch, no auto-replay) | implemented | **missing** — `Operation`/`OperationKind`/`OperationPhase` + journal exist as the general intent record; no machines/intents store or status surface | milestone 7 |
-| 48 | Service ownership: exact-process identity validated before every destructive fux call | implemented | **implemented** — `fux_client.rs::ensure_pane_identity`/`ensure_instance`/`ensure_pid` + `PaneHandle` (`model/components.rs`), refused-not-retargeted semantics | — |
-| 49 | Service task lanes and deadlines (two workers, four queued, 3 s + 12 s reply budget, started work outlives the reply) | implemented | **missing** — no zor service lane/queue; `runner.rs::ZorHost::deadline` only bounds sleep by the earliest stored `Deadline` | milestone 7 |
-| 50 | Plugin host: manifest (`zor-plugin.toml`), install/link/enable, logs, actions/events/panes/link handlers, invocation env | absent in old tree (parity gap) | **missing** — model entities only (`HostedPlugin`, `PluginAction`, `PluginManifest`, `RawJson`, `Enabled`, `ActionOf`/`Actions`, `spawn_plugin`/`spawn_plugin_action`, `PluginId` indexing + invariants); no host runtime | milestone 7 |
-| 51 | koh transport composition: saved profiles on the published pin, gateway setup/diagnostics, reconnect, `companions.json` re-pin | implemented in old stack | **missing** — the rewrite has no koh integration, no `tools/xtask/companions.json`, and no transport-status handling; the published-pin `--status-file` limitation is unchanged upstream | milestone 7 (+ upstream koh change) |
-| 52 | Multi-machine scenario assertions (exact-target input, independent authorization failure, catalog reload, viewer SIGKILL, remote-owner survival) | implemented | **missing** — `tools/xtask/src/main.rs` implements only the dependency report; no scenario harness | milestone 7 (scenarios) / 8 (CI wiring) |
+## Delivery and external acceptance
 
-## Cross-cutting and delivery
+| ID | Capability | Status |
+|---|---|---|
+| 53 | Representative-repository source-bound verification | Temporary-repository checks/seals exercised; realistic representative-project acceptance remains. |
+| 54 | Platforms/distribution | This execution validates macOS/Apple Silicon. Linux CI is configured, not observed here. Native Windows and Android acceptance remain unsupported/unvalidated. |
+| 55 | Design/protocol/ownership/security documentation | Updated source-grounded documents and typed protocol fixtures. Verification/handoff distinguish observed runs from recipes. |
+| 56 | Composed package and clean install/update | Source installation/update instructions and CI paths added. A successful fresh install/package smoke must be recorded before claiming delivery acceptance. No release published. |
+| 57 | Comparative release performance | Measurement harness and old-main/candidate release builds exist. No valid completed comparison yet; no performance improvement claim. |
+| 58 | Long-running retention/archival sustainability | Bounded retention and local pressure tests exist. Multi-day soak, thousand-cycle and broad archival administration evidence remain. |
 
-| # | Capability | Old status | New-tree status — proof or missing | Closes in |
-|---|---|---|---|---|
-| 53 | Representative-repository source-bound verification (whole-tree source → required checks → captured artifacts → seal at realistic bounds) | old tree-verified gap; priority-1 acceptance gate | **missing** — source/check/artifact execution absent (rows 28–30); only the model/bounds side exists | milestone 6 |
-| 54 | Platforms/distribution: Linux/macOS, native Windows, Android checks, install/update path | partial in old tree (no native Windows) | **partial** — `.github/workflows/ci.yml` covers ubuntu + macos (fmt, clippy, build, test, doc, `cargo package -p fux`, deps report); no Windows job, no Android compile check, `paths.rs` is XDG/`getuid`-Unix | milestone 8 (docs) + out-of-plan platform work |
-| 55 | Documentation set: design, generated protocol docs, ownership contract, security, verification index | implemented in old tree | **partial** — present: `docs/verification.md` (detailed milestone records), `docs/HANDOFF.md`, `docs/dependencies.md`, `docs/bevy-source-patterns.md`, `crates/zor/docs/model.md`; absent: design, ownership contract, security, protocol docs generated from `rpc.discover`/`registry.schema`, and the old `docs/*` (multi-machine, pane-layout, zor-lifecycle, service-ownership) | milestone 8 |
-| 56 | Packaging and documented clean install/update of the composed fux+zor product | partial in old tree | **missing** — only `cargo package -p fux --no-verify` in CI; no composed-product packaging or install/update documentation | milestone 8 |
-| 57 | Comparative performance: startup, idle CPU, all-process memory, input-to-visible latency, many viewers | old tree: no current evidence | **missing** — no benchmark tooling; the delta architecture that a benchmark would measure is present (`wire::TerminalDelta`, `terminal.rs` row sequences, `viewer/paint.rs`), and `docs/verification.md` records the per-cell `String` frame allocation as an explicit milestone-8 measurement debt | milestone 8 |
-| 58 | Long-running operation, retention and archival sustainability | partial in old tree | **partial** — bounded journal with archive sweep (`journal.rs`), bounded fux receipts/finals/event log (`input_ops.rs`, `finals.rs`, `events.rs`); no multi-day soak, no journal/controller-intent archival command, no 1,000-cycle evidence | milestone 6 (resolution APIs) / 7 (intents) / 8 (soak evidence) |
-
-## Counts
-
-| Status | Rows |
-|---|---:|
-| `implemented` | 24 |
-| `partial` | 12 |
-| `missing` | 22 |
-| **Total** | **58** |
-
-- fux group (rows 1–22): 19 implemented, 1 partial (transcript retrieval), 2 missing (controller lease, graphics/IME).
-- zor group (rows 23–52): 5 implemented (model, journal, projections, zor events, service-ownership identity), 8 partial, 17 missing.
-- Cross-cutting (rows 53–58): 0 implemented, 3 partial, 3 missing.
-
-## Reading notes
-
-- Every fux capability the old audit marked implemented has a landed proof in the new tree except the three named gaps (rows 19–21), which the old audit also recorded as absent. The claim "the old missing-layout claim is removed" therefore holds again on the new tree, and the old "no general fux restart restore" gap is now closed by `session.rs`.
-- The zor half of the rewrite is mid-milestone-6: the model, journal, projections and BRP framework are real and tested (`crates/zor/tests/{model,journal,remote,fux_client}.rs`), while every provider/check/source/artifact/group/worktree/lifecycle module is a comment-only stub and every owner method table is `&[]`.
-- Rows 44–47, 49–52 are milestone 7 by the rewrite prompt's own ordering; they are listed here because the old tree marked them implemented and the audit/parity prompt treat them as protected shipped subsystems.
-- Cited symbols were read directly; nothing in this report rests on a build or test run performed now. Test names appear only as pointers to committed test sources, not as observed passing results.
+No aggregate “parity percentage” is reported: these rows deliberately separate implemented
+mechanisms, actual execution, fixtures and unavailable external acceptance.

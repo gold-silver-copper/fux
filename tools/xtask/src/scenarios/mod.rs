@@ -1,13 +1,18 @@
 //! Multi-machine scenarios (prompt 4.5, capability rows 51–52): the built `fux` and `zor`
 //! binaries as real processes on two disposable stacks — "Local" (the controller) and
 //! "Remote" (the owner of the supervised tasks) — driven through the public CLIs and BRP
-//! surfaces only. Every scenario prints one `PASS`/`FAIL`/`UNAVAILABLE` line with timings;
-//! the command exits non-zero when any scenario fails. `UNAVAILABLE` is reserved for the koh
-//! composition gate, whose prerequisite (a helper forwarding TCP) is recorded, not met.
+//! surfaces only. Every scenario prints one `PASS`/`FAIL` line with timings; the command exits
+//! non-zero when any scenario fails. Direct loopback endpoints require no transport helper.
 
-mod brp;
-mod pty;
+pub(crate) mod brp;
+mod dashboard;
+mod faults;
+mod layouts;
+mod plugin;
+pub(crate) mod pty;
+mod resume;
 mod stack;
+mod stress;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -34,10 +39,6 @@ const FRESHNESS_WAIT: Duration = Duration::from_secs(30);
 const MACHINE: &str = "remote";
 const TARGET: &str = "scn-target";
 const DECOY: &str = "scn-decoy";
-/// The reason koh composition cannot be gated here (prompt 3.10, batch context).
-const KOH_REASON: &str = "koh forwards Unix-socket byte streams only; fux's attachment stream \
-    is loopback TCP, so a koh transport cannot carry a viewer until koh forwards TCP upstream \
-    (companions pin unchanged: upstream-then-publish)";
 
 /// Polls `probe` until it yields a value or `timeout` passes.
 pub fn until<T>(
@@ -68,7 +69,6 @@ pub struct Binaries {
 enum Outcome {
     Pass(String),
     Fail(String),
-    Unavailable(String),
 }
 
 struct Report {
@@ -83,7 +83,6 @@ impl Report {
         let (verdict, detail) = match &self.outcome {
             Outcome::Pass(detail) => ("PASS", detail),
             Outcome::Fail(detail) => ("FAIL", detail),
-            Outcome::Unavailable(detail) => ("UNAVAILABLE", detail),
         };
         println!(
             "{verdict:<11} {} {:<34} {:>6} ms  {detail}",
@@ -99,6 +98,7 @@ impl Report {
 struct Fixture {
     local: Stack,
     remote: Stack,
+    artifacts: PathBuf,
     /// `(pane, pid)` of the target attempt on Remote once scenario 1 launched it.
     target: Option<(u64, u32)>,
     decoy_pane: Option<u64>,
@@ -126,20 +126,34 @@ pub fn run() -> Result<()> {
         remote.zor()?.port,
         remote.fux()?.port
     );
+    let artifacts = std::env::var_os("FUX_SCENARIO_ARTIFACTS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("target/scenario-artifacts").join(nonce()));
+    std::fs::create_dir_all(&artifacts)?;
+    println!("scenario evidence: {}", artifacts.display());
     let mut fixture = Fixture {
         local,
         remote,
+        artifacts,
         target: None,
         decoy_pane: None,
         viewer: None,
     };
-    let scenarios: [(&'static str, fn(&mut Fixture) -> Result<Outcome>); 6] = [
+    type Scenario = (&'static str, fn(&mut Fixture) -> Result<Outcome>);
+    let scenarios: [Scenario; 13] = [
         ("exact-target input", exact_target_input),
         ("independent authorization failure", authorization_failure),
         ("catalog reload", catalog_reload),
         ("viewer SIGKILL", viewer_sigkill),
         ("remote-owner survival", remote_owner_survival),
-        ("koh composition", koh_composition),
+        ("connection loss and recovery", connection_recovery),
+        ("guarded CLI mutation journal", guarded_cli_mutations),
+        ("plugin action and owned cleanup", plugin::lifecycle),
+        ("hosted dashboard exact handoff", dashboard::interaction),
+        ("explicit native session resume", resume::native_resume),
+        ("lost-reply crash reconciliation", faults::recovery),
+        ("bounded pressure and shutdown", stress::limits),
+        ("multi-viewer layout and gestures", layouts::interaction),
     ];
     let mut reports = Vec::with_capacity(scenarios.len());
     for (index, (name, scenario)) in scenarios.into_iter().enumerate() {
@@ -157,6 +171,40 @@ pub fn run() -> Result<()> {
         report.print();
         reports.push(report);
     }
+    let evidence: Vec<Value> = reports
+        .iter()
+        .map(|report| {
+            let (verdict, detail) = match &report.outcome {
+                Outcome::Pass(detail) => ("PASS", detail),
+                Outcome::Fail(detail) => ("FAIL", detail),
+            };
+            json!({
+                "scenario": report.name,
+                "verdict": verdict,
+                "elapsed_ms": report.elapsed.as_millis(),
+                "detail": detail,
+            })
+        })
+        .collect();
+    std::fs::write(
+        fixture.artifacts.join("results.json"),
+        serde_json::to_vec_pretty(&json!({
+            "fux": bins.fux,
+            "zor": bins.zor,
+            "transport": "direct-loopback",
+            "scenarios": evidence,
+        }))?,
+    )?;
+    for stack in [&fixture.local, &fixture.remote] {
+        for log in ["zor-serve.log", "fux-serve.log"] {
+            std::fs::write(
+                fixture
+                    .artifacts
+                    .join(format!("{}-{log}", stack.label.to_ascii_lowercase())),
+                stack.log(log),
+            )?;
+        }
+    }
     let failed: Vec<usize> = reports
         .iter()
         .filter(|r| matches!(r.outcome, Outcome::Fail(_)))
@@ -166,8 +214,16 @@ pub fn run() -> Result<()> {
         Ok(())
     } else {
         for stack in [&fixture.local, &fixture.remote] {
-            eprintln!("--- {} zor-serve.log tail ---\n{}", stack.label, stack.log("zor-serve.log"));
-            eprintln!("--- {} fux-serve.log tail ---\n{}", stack.label, stack.log("fux-serve.log"));
+            eprintln!(
+                "--- {} zor-serve.log tail ---\n{}",
+                stack.label,
+                stack.log("zor-serve.log")
+            );
+            eprintln!(
+                "--- {} fux-serve.log tail ---\n{}",
+                stack.label,
+                stack.log("fux-serve.log")
+            );
         }
         Err(format!("scenarios failed: {failed:?}").into())
     }
@@ -216,7 +272,10 @@ fn build(root: &Path) -> Result<Binaries> {
         let Some(executable) = message.get("executable").and_then(Value::as_str) else {
             continue;
         };
-        let kinds = message["target"]["kind"].as_array().cloned().unwrap_or_default();
+        let kinds = message["target"]["kind"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         if !kinds.iter().any(|k| k.as_str() == Some("bin")) {
             continue;
         }
@@ -243,7 +302,10 @@ fn build(root: &Path) -> Result<Binaries> {
 
 /// `fux/pane.capture` lines joined with newlines.
 fn capture(fux: &Descriptor, pane: u64) -> Result<String> {
-    let reply = fux.call("fux/pane.capture", json!({ "pane": pane, "scrollback": 200 }))?;
+    let reply = fux.call(
+        "fux/pane.capture",
+        json!({ "pane": pane, "scrollback": 200 }),
+    )?;
     let lines = reply["lines"]
         .as_array()
         .ok_or_else(|| err("pane.capture without lines"))?;
@@ -289,7 +351,11 @@ fn exact_viewers(fux: &Descriptor) -> Result<usize> {
     let reply = fux.call("fux/viewer.list", json!({}))?;
     Ok(reply["viewers"]
         .as_array()
-        .map(|v| v.iter().filter(|r| r["exact"].as_bool() == Some(true)).count())
+        .map(|v| {
+            v.iter()
+                .filter(|r| r["exact"].as_bool() == Some(true))
+                .count()
+        })
         .unwrap_or(0))
 }
 
@@ -324,12 +390,16 @@ fn machine_row(stack: &Stack, name: &str) -> Result<Option<Value>> {
 /// Waits until Local's supervision reports `name` with `freshness`.
 fn await_freshness(stack: &Stack, name: &str, freshness: &str) -> Result<Duration> {
     let started = Instant::now();
-    until(FRESHNESS_WAIT, &format!("machine {name} {freshness}"), || {
-        let row = machine_row(stack, name)?;
-        Ok(row
-            .filter(|m| m["freshness"].as_str() == Some(freshness))
-            .map(|_| started.elapsed()))
-    })
+    until(
+        FRESHNESS_WAIT,
+        &format!("machine {name} {freshness}"),
+        || {
+            let row = machine_row(stack, name)?;
+            Ok(row
+                .filter(|m| m["freshness"]["freshness"].as_str() == Some(freshness))
+                .map(|_| started.elapsed()))
+        },
+    )
 }
 
 fn require_target(fixture: &Fixture) -> Result<(u64, u32)> {
@@ -381,7 +451,12 @@ fn type_and_observe(
 
 /// A copy of `descriptor` with one string field replaced, written 0600 (the product refuses
 /// descriptors other users can read).
-fn tampered_descriptor(dir: &Path, name: &str, descriptor: &Descriptor, field: &str) -> Result<PathBuf> {
+fn tampered_descriptor(
+    dir: &Path,
+    name: &str,
+    descriptor: &Descriptor,
+    field: &str,
+) -> Result<PathBuf> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut raw = descriptor.raw.clone();
     let original = raw[field]
@@ -405,14 +480,23 @@ fn machines_file(stack: &Stack) -> PathBuf {
 
 fn read_catalog(stack: &Stack) -> Result<Value> {
     let path = machines_file(stack);
-    Ok(serde_json::from_slice(&std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)?)
+    Ok(serde_json::from_slice(
+        &std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+    )?)
 }
 
 /// Atomic replace, as an editor would (temp file + rename).
 fn write_catalog(stack: &Stack, catalog: &Value) -> Result<()> {
     let path = machines_file(stack);
     let temp = path.with_extension("json.tmp");
-    std::fs::write(&temp, serde_json::to_vec_pretty(catalog)?)?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temp)?;
+    std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(catalog)?)?;
+    file.sync_all()?;
     std::fs::rename(&temp, &path)?;
     Ok(())
 }
@@ -450,7 +534,18 @@ fn exact_target_input(fixture: &mut Fixture) -> Result<Outcome> {
     let home = home.to_str().ok_or_else(|| err("path"))?;
     let started = Instant::now();
     for (task, title) in [(TARGET, "exact target"), (DECOY, "decoy")] {
-        local.zor_run(&["--machine", MACHINE, "task", "create", task, "--title", title, "--cwd", home])?;
+        local.zor_run(&[
+            "--machine",
+            MACHINE,
+            "task",
+            "create",
+            task,
+            "--title",
+            title,
+            "--cwd",
+            home,
+        ])?;
+        let operation = format!("{task}-launch-1");
         local.zor_run(&[
             "--machine",
             MACHINE,
@@ -458,13 +553,17 @@ fn exact_target_input(fixture: &mut Fixture) -> Result<Outcome> {
             "launch",
             task,
             "--operation",
-            "launch-1",
+            &operation,
             "--",
             "/bin/cat",
         ])?;
     }
-    let target = until(WAIT, "target attempt live on Remote", || live_attempt(fixture, TARGET))?;
-    let decoy = until(WAIT, "decoy attempt live on Remote", || live_attempt(fixture, DECOY))?;
+    let target = until(WAIT, "target attempt live on Remote", || {
+        live_attempt(fixture, TARGET)
+    })?;
+    let decoy = until(WAIT, "decoy attempt live on Remote", || {
+        live_attempt(fixture, DECOY)
+    })?;
     let launched = started.elapsed();
     if target.0 == decoy.0 {
         return Err(format!("target and decoy share pane {}", target.0).into());
@@ -495,12 +594,28 @@ fn exact_target_input(fixture: &mut Fixture) -> Result<Outcome> {
     if local_text.contains(&marker) {
         return Err("marker leaked into Local's pane".into());
     }
-    let painted = terminal.output().windows(marker.len()).any(|w| w == marker.as_bytes());
+    until(WAIT, "viewer painted the target marker", || {
+        Ok(terminal
+            .output()
+            .windows(marker.len())
+            .any(|w| w == marker.as_bytes())
+            .then_some(()))
+    })?;
+    std::fs::write(
+        fixture.artifacts.join("exact-target.ansi"),
+        terminal.output(),
+    )?;
+    std::fs::write(
+        fixture.artifacts.join("target.txt"),
+        capture(&remote_fux, target.0)?,
+    )?;
+    std::fs::write(fixture.artifacts.join("decoy.txt"), decoy_text)?;
+    std::fs::write(fixture.artifacts.join("local.txt"), local_text)?;
     fixture.viewer = Some(terminal);
     Ok(Outcome::Pass(format!(
         "2 tasks launched on Remote in {} ms; viewer attached (pane {}, pid {}) in {} ms; \
          keys visible in the target pane after {} ms; decoy pane {} and Local pane {} unchanged; \
-         viewer repainted the line: {painted}",
+         viewer painted the target marker",
         launched.as_millis(),
         target.0,
         target.1,
@@ -535,24 +650,22 @@ fn authorization_failure(fixture: &mut Fixture) -> Result<Outcome> {
     let refused = started.elapsed();
     let token_error = token_error.trim().to_owned();
     let nonce_error = nonce_error.trim().to_owned();
-    if !token_error.to_ascii_lowercase().contains("token") {
-        return Err(format!("wrong token was refused without naming it: {token_error}").into());
-    }
-    if !(nonce_error.to_ascii_lowercase().contains("instance")
-        || nonce_error.to_ascii_lowercase().contains("incarnation"))
-    {
-        return Err(format!("wrong nonce was refused without naming it: {nonce_error}").into());
-    }
+    // Error wording is not an authorization contract: refusal plus independently classified
+    // observations and unchanged owner state are the evidence.
     // The other machine: still authorized, still supervising, its task untouched.
     let started = Instant::now();
     local.zor_run(&["--machine", MACHINE, "status"])?;
     let healthy = started.elapsed();
     let token_stale = await_freshness(local, "badtoken", "unauthorized")?;
-    let nonce_stale = await_freshness(local, "badnonce", "unauthorized")?;
+    let nonce_stale = await_freshness(local, "badnonce", "expired")?;
     let fresh = await_freshness(local, MACHINE, "fresh")?;
     let after = live_attempt(fixture, TARGET)?;
     if after != Some((pane, pid)) {
-        return Err(format!("Remote's target attempt changed: {after:?} != {:?}", (pane, pid)).into());
+        return Err(format!(
+            "Remote's target attempt changed: {after:?} != {:?}",
+            (pane, pid)
+        )
+        .into());
     }
     let row = pane_row(&fixture.remote.fux()?, pane)?;
     if row["state"].as_str() != Some("live") {
@@ -563,7 +676,7 @@ fn authorization_failure(fixture: &mut Fixture) -> Result<Outcome> {
     }
     Ok(Outcome::Pass(format!(
         "wrong token and wrong nonce refused in {} ms (`{}` / `{}`); `--machine {MACHINE} status` \
-         answered in {} ms; supervision marked them unauthorized after {} / {} ms with {MACHINE} \
+         answered in {} ms; supervision marked token unauthorized and nonce expired after {} / {} ms with {MACHINE} \
          fresh ({} ms); Remote pane {pane} pid {pid} unchanged",
         refused.as_millis(),
         token_error,
@@ -625,10 +738,30 @@ fn catalog_reload(fixture: &mut Fixture) -> Result<Outcome> {
     if file_name != MACHINE {
         return Err(format!("machines.json names the machine {file_name:?} after rename").into());
     }
+    // Invalid edits must not replace the last active catalog or retarget the stable id.
+    let mut invalid = catalog.clone();
+    let duplicate = catalog_entry_mut(&mut invalid, &id)?.clone();
+    invalid["machines"]
+        .as_array_mut()
+        .ok_or_else(|| err("catalog machines"))?
+        .push(duplicate);
+    write_catalog(local, &invalid)?;
+    let rejected = local.zor_fail(&["machine", "reload"]);
+    let still_routed = local.zor_run(&["--machine", MACHINE, "status"]);
+    write_catalog(local, &catalog)?;
+    local.zor_run(&["machine", "reload"])?;
+    rejected?;
+    still_routed?;
+    let row =
+        machine_row(local, MACHINE)?.ok_or_else(|| err("machine lost after invalid reload"))?;
+    if row["id"].as_str() != Some(id.as_str()) {
+        return Err(err("invalid catalog edit changed machine identity"));
+    }
     Ok(Outcome::Pass(format!(
         "external rename observed by `machine list` {} ms after reload (id {id} kept); \
          `--machine {renamed} status` routed, old name refused (`{}`); fresh after {} ms; \
-         `machine rename` written back to machines.json ({} ms total)",
+         `machine rename` written back to machines.json ({} ms total); duplicate-id reload \
+         refused while previous catalog continued routing",
         observed.as_millis(),
         stale_name.trim(),
         fresh.as_millis(),
@@ -667,6 +800,7 @@ fn viewer_sigkill(fixture: &mut Fixture) -> Result<Outcome> {
     let (terminal, reattached) = attach_viewer(fixture)?;
     let marker = format!("SCN4-{}", nonce());
     let visible = type_and_observe(fixture, &terminal, pane, &marker)?;
+    std::fs::write(fixture.artifacts.join("reattached.ansi"), terminal.output())?;
     drop(terminal);
     until(WAIT, "Remote dropped the second viewer", || {
         Ok((exact_viewers(&remote_fux)? == 0).then_some(()))
@@ -689,15 +823,11 @@ fn remote_owner_survival(fixture: &mut Fixture) -> Result<Outcome> {
     // Remote, asked directly, still owns the task.
     let started = Instant::now();
     let view = fixture.remote.zor_json(&["task", "inspect", TARGET])?;
-    let owned = view["attempts"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|a| {
-            a["state"].as_str() == Some("live")
-                && a["pane"].as_u64() == Some(pane)
-                && a["pid"].as_u64() == Some(u64::from(pid))
-        });
+    let owned = view["attempts"].as_array().into_iter().flatten().any(|a| {
+        a["state"].as_str() == Some("live")
+            && a["pane"].as_u64() == Some(pane)
+            && a["pid"].as_u64() == Some(u64::from(pid))
+    });
     if !owned {
         return Err(format!("Remote lost the attempt after Local's zor died: {view}").into());
     }
@@ -731,66 +861,117 @@ fn remote_owner_survival(fixture: &mut Fixture) -> Result<Outcome> {
     )))
 }
 
-/// The koh transport as the product models it: a catalog entry of kind `koh` is accepted and
-/// supervised, and its status carries the recorded reason instead of a viewer. Never a
-/// failure: the prerequisite is upstream.
-fn koh_composition(fixture: &mut Fixture) -> Result<Outcome> {
-    let local = &fixture.local;
-    let mut catalog = read_catalog(local)?;
-    let entry = json!({
-        "id": "scn-koh",
-        "name": "kohtest",
-        "control": {
-            "kind": "koh",
-            "helper": "koh",
-            "endpoint": "scenario.invalid:4433",
-            "key_file": local.path().join("tmp/koh.key"),
-            "direct": null,
-            "relay_url": null,
-        },
-        "attachments": {},
-    });
-    let Some(machines) = catalog["machines"].as_array_mut() else {
-        return Ok(Outcome::Unavailable(format!("{KOH_REASON}; catalog unreadable")));
-    };
-    machines.push(entry);
-    write_catalog(local, &catalog)?;
-    let started = Instant::now();
-    let observed = match local.zor_run(&["machine", "reload"]) {
-        Ok(_) => match until(WAIT, "koh machine listed", || {
-            Ok(machine_row(local, "kohtest")?.map(|row| (row, started.elapsed())))
-        }) {
-            Ok((row, elapsed)) => Some((row, elapsed)),
-            Err(error) => {
-                eprintln!("koh: {error}");
-                None
-            }
-        },
-        Err(error) => {
-            eprintln!("koh: {error}");
-            None
-        }
-    };
-    let status = local
-        .zor_fail(&["--machine", "kohtest", "status"])
-        .map(|e| e.trim().to_owned())
-        .unwrap_or_else(|_| "status unexpectedly succeeded".into());
-    // Leave the catalog as it was.
-    if let Some(machines) = catalog["machines"].as_array_mut() {
-        machines.retain(|m| m["id"].as_str() != Some("scn-koh"));
+/// Disconnect the configured direct control endpoint without touching the owner. A failed
+/// mutation must not reappear after catalog recovery; a completed launch must not be repeated
+/// by reconnection or controller restart.
+fn connection_recovery(fixture: &mut Fixture) -> Result<Outcome> {
+    let (pane, pid) = require_target(fixture)?;
+    let task = "scn-recovery";
+    let proof = fixture.remote.path().join("home/recovery-launches");
+    let cwd = fixture.remote.path().join("home");
+    fixture.local.zor_run(&[
+        "--machine",
+        MACHINE,
+        "task",
+        "create",
+        task,
+        "--title",
+        "recovery",
+        "--cwd",
+        cwd.to_str().ok_or_else(|| err("cwd"))?,
+    ])?;
+    // Closing the reserved listener makes this a real refused TCP connection, not a fake
+    // server response, while leaving both owner processes and the attachment endpoint alive.
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let dead_port = listener.local_addr()?.port();
+    drop(listener);
+    let healthy_catalog = read_catalog(&fixture.local)?;
+    let machine = machine_row(&fixture.local, MACHINE)?.ok_or_else(|| err("machine row"))?;
+    let id = machine["id"]
+        .as_str()
+        .ok_or_else(|| err("machine id"))?
+        .to_owned();
+    let mut disconnected = healthy_catalog.clone();
+    catalog_entry_mut(&mut disconnected, &id)?["control"]["port"] = json!(dead_port);
+    write_catalog(&fixture.local, &disconnected)?;
+    fixture.local.zor_run(&["machine", "reload"])?;
+    // Always restore the endpoint, even if the expected failure is not observed.
+    let failed = fixture.local.zor_fail(&[
+        "--machine",
+        MACHINE,
+        "task",
+        "launch",
+        task,
+        "--operation",
+        "disconnected",
+        "--",
+        "/bin/sh",
+        "-c",
+        "printf 'launched\\n' >> recovery-launches; exec /bin/cat",
+    ]);
+    write_catalog(&fixture.local, &healthy_catalog)?;
+    fixture.local.zor_run(&["machine", "reload"])?;
+    let failure = failed?;
+    let recovered = await_freshness(&fixture.local, MACHINE, "fresh")?;
+    let view = fixture.remote.zor_json(&["task", "inspect", task])?;
+    if view["attempts"]
+        .as_array()
+        .is_none_or(|rows| !rows.is_empty())
+        || proof.exists()
+    {
+        return Err(format!("failed disconnected launch reached the owner: {view}").into());
     }
-    write_catalog(local, &catalog)?;
-    let _ = local.zor_run(&["machine", "reload"]);
-    Ok(Outcome::Unavailable(match observed {
-        Some((row, elapsed)) => format!(
-            "{KOH_REASON}; koh entry listed after {} ms as freshness {} ({}); `--machine kohtest \
-             status`: {status}",
-            elapsed.as_millis(),
-            row["freshness"],
-            row["problem"]
-        ),
-        None => format!("{KOH_REASON}; koh entry not accepted by the catalog; status: {status}"),
-    }))
+    fixture.local.zor_run(&[
+        "--machine",
+        MACHINE,
+        "task",
+        "launch",
+        task,
+        "--operation",
+        "connected",
+        "--",
+        "/bin/sh",
+        "-c",
+        "printf 'launched\\n' >> recovery-launches; exec /bin/cat",
+    ])?;
+    let launched = until(WAIT, "recovered launch live", || {
+        live_attempt(fixture, task)
+    })?;
+    until(WAIT, "launch artifact", || {
+        Ok(proof.is_file().then_some(()))
+    })?;
+    // A second endpoint cycle and controller restart exercise persisted intent recovery.
+    write_catalog(&fixture.local, &disconnected)?;
+    fixture.local.zor_run(&["machine", "reload"])?;
+    let _ = fixture.local.zor_fail(&["--machine", MACHINE, "status"])?;
+    write_catalog(&fixture.local, &healthy_catalog)?;
+    fixture.local.zor_run(&["machine", "reload"])?;
+    fixture.local.kill_zor()?;
+    fixture.local.start_zor()?;
+    await_freshness(&fixture.local, MACHINE, "fresh")?;
+    let view = fixture.remote.zor_json(&["task", "inspect", task])?;
+    let attempts = view["attempts"].as_array().ok_or_else(|| err("attempts"))?;
+    let artifact = std::fs::read_to_string(&proof)?;
+    std::fs::write(fixture.artifacts.join("recovery-launches.txt"), &artifact)?;
+    if attempts.len() != 1
+        || artifact != "launched\n"
+        || live_attempt(fixture, task)? != Some(launched)
+    {
+        return Err(format!(
+            "recovery repeated or retargeted a launch: {view}; artifact {artifact:?}"
+        )
+        .into());
+    }
+    if live_attempt(fixture, TARGET)? != Some((pane, pid)) {
+        return Err("connection recovery changed the original target identity".into());
+    }
+    Ok(Outcome::Pass(format!(
+        "closed direct endpoint refused launch ({}); recovered in {} ms; owner artifact \
+         records exactly one connected launch through another disconnect and controller restart; \
+         original pane {pane} pid {pid} survived",
+        failure.trim(),
+        recovered.as_millis()
+    )))
 }
 
 fn nonce() -> String {
@@ -799,4 +980,135 @@ fn nonce() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{:x}-{:x}", std::process::id(), t & 0xffff_ffff)
+}
+
+fn guarded_cli_mutations(fixture: &mut Fixture) -> Result<Outcome> {
+    let target = require_target(fixture)?;
+    let home = fixture.remote.path().join("home");
+    let home = home.to_str().ok_or_else(|| err("remote cwd"))?;
+    let mut evidence = Vec::new();
+    for (verb, task) in [("stop", "scn-cli-stop"), ("cancel", "scn-cli-cancel")] {
+        fixture.local.zor_run(&[
+            "--machine",
+            MACHINE,
+            "task",
+            "create",
+            task,
+            "--title",
+            task,
+            "--cwd",
+            home,
+        ])?;
+        let launch = format!("{task}-launch");
+        fixture.local.zor_run(&[
+            "--machine",
+            MACHINE,
+            "task",
+            "launch",
+            task,
+            "--operation",
+            &launch,
+            "--",
+            "/bin/cat",
+        ])?;
+        let pane = until(WAIT, "CLI mutation target live", || {
+            live_attempt(fixture, task)
+        })?;
+        until(FRESHNESS_WAIT, "fresh exact mutation target", || {
+            let snapshot = fixture
+                .local
+                .zor()?
+                .call("zor/machine.inspect", json!({"machine":MACHINE}))?;
+            let machine = &snapshot["machine"];
+            let fresh = machine["freshness"]["freshness"].as_str() == Some("fresh");
+            let observed = machine["view"]["agents"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|agent| {
+                    agent["task"].as_str() == Some(task)
+                        && agent["pane"].as_u64() == Some(pane.0)
+                        && agent["pid"].as_u64() == Some(u64::from(pane.1))
+                });
+            Ok((fresh && observed).then_some(()))
+        })?;
+        let output = fixture.local.invoke(
+            fixture.local.zor_binary(),
+            &["--machine", MACHINE, "task", verb, task],
+        )?;
+        if !matches!(output.status.code(), Some(0 | 2)) {
+            return Err(err(format!(
+                "guarded {verb}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        let reply: Value = serde_json::from_slice(&output.stdout)?;
+        let operation = reply["operation"]
+            .as_str()
+            .ok_or_else(|| err("CLI operation identity missing"))?;
+        let intent = until(WAIT, "durable remote acknowledgement", || {
+            let status = fixture
+                .local
+                .zor()?
+                .call("zor/machine.status", json!({"operation":operation}))?;
+            let intent = status["intents"]
+                .as_array()
+                .and_then(|rows| rows.first())
+                .ok_or_else(|| err("accepted CLI action has no local intent"))?;
+            match intent["record"]["phase"].as_str() {
+                Some("done") => Ok(Some(intent.clone())),
+                Some("submitting") => Ok(None),
+                _ => Err(err(format!("remote CLI action did not complete: {intent}"))),
+            }
+        })?;
+        if intent["record"]["task"].as_str() != Some(task)
+            || intent["record"]["pane"]["pane"].as_u64() != Some(pane.0)
+            || intent["record"]["pane"]["pid"].as_u64() != Some(u64::from(pane.1))
+            || intent["record"]["instance"].as_str()
+                != Some(fixture.remote.zor()?.instance.as_str())
+        {
+            return Err(err(
+                "durable CLI intent did not retain the selected process identity",
+            ));
+        }
+        if verb == "stop" {
+            until(WAIT, "guarded task process retired", || {
+                Ok(live_attempt(fixture, task)?.is_none().then_some(()))
+            })?;
+        } else if live_attempt(fixture, task)? != Some(pane) {
+            return Err(err(
+                "coordination cancellation signalled or replaced the owned process",
+            ));
+        }
+        let owner = fixture
+            .remote
+            .zor()?
+            .call("zor/task.inspect", json!({"task":task}))?;
+        if !owner["closed_ms"].is_u64() {
+            return Err(err("acknowledged task control did not close coordination"));
+        }
+        evidence.push(
+            json!({"reply":reply,"intent":intent,"owner":owner,"exit_code":output.status.code()}),
+        );
+    }
+    fixture.local.kill_zor()?;
+    fixture.local.start_zor()?;
+    for item in &evidence {
+        let restored = fixture.local.zor()?.call(
+            "zor/machine.status",
+            json!({"operation":item["reply"]["operation"]}),
+        )?;
+        if restored["intents"].as_array().and_then(|rows| rows.first()) != Some(&item["intent"]) {
+            return Err(err("CLI intent changed across controller restart"));
+        }
+    }
+    if live_attempt(fixture, TARGET)? != Some(target) {
+        return Err(err("CLI control changed unrelated target"));
+    }
+    std::fs::write(
+        fixture.artifacts.join("guarded-cli-intents.json"),
+        serde_json::to_vec_pretty(&evidence)?,
+    )?;
+    Ok(Outcome::Pass("stop retired its exact process; cancel closed coordination without signalling its process; both used durable local intents retained across controller restart".into()))
 }

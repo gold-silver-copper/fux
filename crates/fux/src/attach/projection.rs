@@ -10,7 +10,9 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::AppTypeRegistry;
 use bevy_ecs::system::SystemState;
 use bevy_state::prelude::State;
-use bevy_ui::{BackgroundColor, BorderColor, ComputedNode, Node, ScrollPosition, UiTargetCamera, ZIndex};
+use bevy_ui::{
+    BackgroundColor, BorderColor, ComputedNode, Node, ScrollPosition, UiTargetCamera, ZIndex,
+};
 use bevy_world_serialization::DynamicWorldBuilder;
 
 use crate::model::Effect;
@@ -49,11 +51,14 @@ impl InputState {
         Self {
             showing,
             generation: showing.and_then(|root| {
-                world.get::<crate::model::LayoutGeneration>(root).map(|g| g.0)
+                world
+                    .get::<crate::model::LayoutGeneration>(root)
+                    .map(|g| g.0)
             }),
             viewport: world.get::<crate::model::Viewport>(viewer).copied(),
             view_state_tick: world.get_entity(viewer).ok().and_then(|e| {
-                e.get_ref::<crate::layout::ViewState>().map(|state| state.last_changed().get())
+                e.get_ref::<crate::layout::ViewState>()
+                    .map(|state| state.last_changed().get())
             }),
         }
     }
@@ -432,7 +437,8 @@ fn commit(world: &mut World, scratch: &mut Scratch) {
             || !out.frame.scene.is_empty()
             || !out.frame.despawned.is_empty()
             || out.frame.roots.is_some()
-            || world.get::<Projected>(out.viewer)
+            || world
+                .get::<Projected>(out.viewer)
                 .is_none_or(|projected| projected.input_state != input_state);
         let Ok(mut viewer) = world.get_entity_mut(out.viewer) else {
             scratch.spare.push(out);

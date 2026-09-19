@@ -143,7 +143,15 @@ impl Plugin for GroupsPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<Cursor>()
             .register_type::<MemberPrompt>()
-            .add_systems(Update, (settle, schedule.run_if(bevy_state::condition::in_state(ServerMode::Serving))).chain().in_set(Phase::Lifecycle));
+            .add_systems(
+                Update,
+                (
+                    settle,
+                    schedule.run_if(bevy_state::condition::in_state(ServerMode::Serving)),
+                )
+                    .chain()
+                    .in_set(Phase::Lifecycle),
+            );
     }
 }
 

@@ -731,7 +731,10 @@ fn builtin_watches_are_wrapped_over_projections() {
         .call("fux/token.revoke", json!({ "revoke": reader.token }))
         .unwrap();
     assert!(view.ended(WAIT), "revoked component watch still open");
-    assert!(listed.ended(WAIT), "revoked component-list watch still open");
+    assert!(
+        listed.ended(WAIT),
+        "revoked component-list watch still open"
+    );
 }
 
 #[test]

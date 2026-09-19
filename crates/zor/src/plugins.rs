@@ -23,8 +23,8 @@
 
 pub mod hooks;
 pub mod host;
-pub mod manifest;
 pub mod loading;
+pub mod manifest;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -44,11 +44,11 @@ pub use manifest::{Manifest, ManifestError, PaneKind, Placement};
 use crate::journal::Journal;
 use crate::model::graph::{spawn_plugin, spawn_plugin_action};
 use crate::model::{
-    Actions, ActionOf, Clock, Effect, HostedPlugin, Ids, Inbound, ModelError, Phase, PluginActionId,
-    PluginId, PluginManifest, ServerInstance,
+    ActionOf, Actions, Clock, Effect, HostedPlugin, Ids, Inbound, ModelError, Phase,
+    PluginActionId, PluginId, PluginManifest, ServerInstance,
 };
-use crate::remote::token::{Capabilities, Grant, Tokens};
 use crate::remote::DescriptorGuard;
+use crate::remote::token::{Capabilities, Grant, Tokens};
 
 /// Tag in the high byte of every `Effect::FuxCall.call` this module issues (lifecycle `0x01`,
 /// providers `0x03`, dashboard `0x06`).
@@ -116,7 +116,9 @@ impl PluginPaths {
     }
     /// The per-run fux descriptor (`FUX_BRP`).
     pub fn fux_descriptor(&self, name: &str, run: u64) -> PathBuf {
-        self.dir(name).join("runs").join(format!("{}-{run}.fux.brp.json", self.session))
+        self.dir(name)
+            .join("runs")
+            .join(format!("{}-{run}.fux.brp.json", self.session))
     }
 }
 
@@ -150,18 +152,47 @@ enum Item {
 }
 
 enum Pending {
-    Retire { path: PathBuf },
+    Retire {
+        path: PathBuf,
+    },
     /// `fux/token.mint` for a run; the reply spawns it.
-    Mint { plugin: Entity, run: u64 },
+    Mint {
+        plugin: Entity,
+        run: u64,
+    },
     /// `fux/token.mint` for a pane composition.
-    PaneMint { plugin: Entity, opening: u64 },
-    PaneList { plugin: Entity, opening: u64 },
-    PaneCreate { plugin: Entity, opening: u64 },
-    PaneViewers { plugin: Entity, opening: u64 },
-    PaneSurface { plugin: Entity, opening: u64 },
-    PaneClose { plugin: Entity, opening: u64, node: u64 },
-    PaneRemoved { plugin: Entity, opening: u64 },
-    ReconcilePanes { openings: Vec<(Entity, u64)> },
+    PaneMint {
+        plugin: Entity,
+        opening: u64,
+    },
+    PaneList {
+        plugin: Entity,
+        opening: u64,
+    },
+    PaneCreate {
+        plugin: Entity,
+        opening: u64,
+    },
+    PaneViewers {
+        plugin: Entity,
+        opening: u64,
+    },
+    PaneSurface {
+        plugin: Entity,
+        opening: u64,
+    },
+    PaneClose {
+        plugin: Entity,
+        opening: u64,
+        node: u64,
+    },
+    PaneRemoved {
+        plugin: Entity,
+        opening: u64,
+    },
+    ReconcilePanes {
+        openings: Vec<(Entity, u64)>,
+    },
     /// Fire-and-forget (`viewer.zoom`, `surface.close`).
     Ignore,
 }
@@ -259,7 +290,10 @@ pub enum RunState {
     Stopping,
     /// Recovered intent whose external completion cannot be established; never replayed.
     Uncertain,
-    Exited { code: Option<i32>, ms: u64 },
+    Exited {
+        code: Option<i32>,
+        ms: u64,
+    },
 }
 
 /// One process run (bounded history in [`Runs`]).
@@ -290,7 +324,10 @@ impl Runs {
 
     fn push(&mut self, run: Run) {
         if self.0.len() >= MAX_RUNS_RETAINED
-            && let Some(index) = self.0.iter().position(|r| matches!(r.state, RunState::Exited { .. }))
+            && let Some(index) = self
+                .0
+                .iter()
+                .position(|r| matches!(r.state, RunState::Exited { .. }))
         {
             self.0.remove(index);
         }
@@ -472,7 +509,9 @@ impl Plugin for PluginsPlugin {
             )
             .add_systems(
                 Update,
-                (activate, restart_hooks, flush_effects, finish_uninstall).chain().in_set(Phase::Lifecycle),
+                (activate, restart_hooks, flush_effects, finish_uninstall)
+                    .chain()
+                    .in_set(Phase::Lifecycle),
             );
     }
 }
@@ -514,7 +553,9 @@ pub fn install(world: &mut World, source: &Path, enabled: bool) -> Res<u64> {
 /// Registers the plugin at `dir` in place (development); the manifest is re-read at every
 /// server start. Runs `build` when declared.
 pub fn link(world: &mut World, dir: &Path, enabled: bool) -> Res<u64> {
-    if !dir.is_absolute() { return refused("link path must be absolute"); }
+    if !dir.is_absolute() {
+        return refused("link path must be absolute");
+    }
     loading::submit(world, dir.to_path_buf(), enabled, false)
 }
 
@@ -525,25 +566,37 @@ fn source_dir(source: &Path) -> Res<PathBuf> {
         source.to_path_buf()
     };
     if !dir.is_dir() {
-        return Err(PluginError::NotFound(format!("plugin directory {}", dir.display())));
+        return Err(PluginError::NotFound(format!(
+            "plugin directory {}",
+            dir.display()
+        )));
     }
     dir.canonicalize()
         .map_err(|e| PluginError::Io(format!("{}: {e}", dir.display())))
 }
 
-
 fn copy_tree(from: &Path, to: &Path, copied: &mut u64) -> Result<(), String> {
     copy_tree_bounded(from, to, copied, &mut 0, 0)
 }
 
-fn copy_tree_bounded(from: &Path, to: &Path, copied: &mut u64, entries_seen: &mut usize, depth: usize) -> Result<(), String> {
-    if depth > 32 { return Err("plugin directory nesting exceeds 32".into()); }
+fn copy_tree_bounded(
+    from: &Path,
+    to: &Path,
+    copied: &mut u64,
+    entries_seen: &mut usize,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > 32 {
+        return Err("plugin directory nesting exceeds 32".into());
+    }
     std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
     let entries = std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))?;
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         *entries_seen += 1;
-        if *entries_seen > 4096 { return Err("plugin contains more than 4096 entries".into()); }
+        if *entries_seen > 4096 {
+            return Err("plugin contains more than 4096 entries".into());
+        }
         let name = entry.file_name();
         if name == ".git" || name == "node_modules" || name == "target" {
             continue;
@@ -557,14 +610,19 @@ fn copy_tree_bounded(from: &Path, to: &Path, copied: &mut u64, entries_seen: &mu
         if meta.is_dir() {
             copy_tree_bounded(&path, &dest, copied, entries_seen, depth + 1)?;
         } else {
-            if !meta.is_file() { return Err("plugin contains a non-regular file".into()); }
+            if !meta.is_file() {
+                return Err("plugin contains a non-regular file".into());
+            }
             use std::io::Read;
             let remaining = MAX_INSTALL_BYTES.saturating_sub(*copied);
             let input = std::fs::File::open(&path).map_err(|e| e.to_string())?;
             let mut output = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
-            let bytes = std::io::copy(&mut input.take(remaining + 1), &mut output).map_err(|e| e.to_string())?;
+            let bytes = std::io::copy(&mut input.take(remaining + 1), &mut output)
+                .map_err(|e| e.to_string())?;
             *copied += bytes;
-            if *copied > MAX_INSTALL_BYTES { return Err(format!("plugin larger than {MAX_INSTALL_BYTES} bytes")); }
+            if *copied > MAX_INSTALL_BYTES {
+                return Err(format!("plugin larger than {MAX_INSTALL_BYTES} bytes"));
+            }
             std::fs::set_permissions(&dest, meta.permissions()).map_err(|e| e.to_string())?;
         }
     }
@@ -572,7 +630,13 @@ fn copy_tree_bounded(from: &Path, to: &Path, copied: &mut u64, entries_seen: &mu
 }
 
 /// Creates or updates the entities for `manifest` and marks the journal.
-fn register(world: &mut World, manifest: Manifest, file: PathBuf, enabled: bool, cursors: HookCursors) -> Res<Entity> {
+fn register(
+    world: &mut World,
+    manifest: Manifest,
+    file: PathBuf,
+    enabled: bool,
+    cursors: HookCursors,
+) -> Res<Entity> {
     for action in &manifest.actions {
         if qualified_action(&manifest.name, &action.id).len() > crate::model::ids::MAX_ID_LEN {
             return refused(format!(
@@ -581,14 +645,20 @@ fn register(world: &mut World, manifest: Manifest, file: PathBuf, enabled: bool,
             ));
         }
     }
-    let existing = world.resource::<Ids>().plugins.get(manifest.name.as_str()).copied();
+    let existing = world
+        .resource::<Ids>()
+        .plugins
+        .get(manifest.name.as_str())
+        .copied();
     let record = PluginManifest {
         path: file.display().to_string(),
         version: manifest.version.clone(),
     };
     let plugin = match existing {
         Some(plugin) => {
-            if world.get::<Uninstalling>(plugin).is_some() { return refused("plugin is uninstalling"); }
+            if world.get::<Uninstalling>(plugin).is_some() {
+                return refused("plugin is uninstalling");
+            }
             deactivate(world, plugin);
             world.entity_mut(plugin).insert(record);
             plugin
@@ -689,13 +759,19 @@ fn reload_manifests(world: &mut World) {
         ));
         if let Some(mut runs) = world.get_mut::<Runs>(plugin) {
             for run in &mut runs.0 {
-                if matches!(run.state, RunState::Minting | RunState::Running | RunState::Stopping) {
+                if matches!(
+                    run.state,
+                    RunState::Minting | RunState::Running | RunState::Stopping
+                ) {
                     run.state = RunState::Uncertain;
                 }
             }
         }
         world.resource_mut::<Journal>().mark_dirty();
-        let last = world.get::<Runs>(plugin).and_then(|runs| runs.0.iter().map(|r| r.id).max()).unwrap_or(0);
+        let last = world
+            .get::<Runs>(plugin)
+            .and_then(|runs| runs.0.iter().map(|r| r.id).max())
+            .unwrap_or(0);
         let last = world.resource::<Host>().next_run.max(last);
         world.resource_mut::<Host>().next_run = last;
         loading::reload(world, plugin, PathBuf::from(path));
@@ -708,7 +784,9 @@ fn reload_manifests(world: &mut World) {
 
 pub fn enable(world: &mut World, plugin: Entity) -> Res<()> {
     check_plugin(world, plugin)?;
-    if world.get::<Uninstalling>(plugin).is_some() { return refused("plugin is uninstalling"); }
+    if world.get::<Uninstalling>(plugin).is_some() {
+        return refused("plugin is uninstalling");
+    }
     world.entity_mut(plugin).insert(PluginEnabled);
     world.resource_mut::<Journal>().mark_dirty();
     Ok(())
@@ -731,17 +809,42 @@ pub fn uninstall(world: &mut World, plugin: Entity) -> Res<()> {
 }
 
 fn finish_uninstall(world: &mut World) {
-    let ready: Vec<_> = world.query_filtered::<Entity, With<Uninstalling>>().iter(world)
-        .filter(|plugin| world.get::<Runs>(*plugin).is_none_or(|runs| runs.0.iter().all(|r| r.state != RunState::Stopping)))
-        .filter(|plugin| !world.resource::<Host>().calls.values().any(|pending| match pending {
-            Pending::Mint { plugin: owner, .. } | Pending::PaneMint { plugin: owner, .. } |
-            Pending::PaneList { plugin: owner, .. } | Pending::PaneCreate { plugin: owner, .. } |
-            Pending::PaneViewers { plugin: owner, .. } | Pending::PaneSurface { plugin: owner, .. } => owner == plugin,
-            Pending::Ignore | Pending::PaneClose { .. } | Pending::PaneRemoved { .. } | Pending::ReconcilePanes { .. } | Pending::Retire { .. } => false,
-        })).collect();
+    let ready: Vec<_> = world
+        .query_filtered::<Entity, With<Uninstalling>>()
+        .iter(world)
+        .filter(|plugin| {
+            world
+                .get::<Runs>(*plugin)
+                .is_none_or(|runs| runs.0.iter().all(|r| r.state != RunState::Stopping))
+        })
+        .filter(|plugin| {
+            !world
+                .resource::<Host>()
+                .calls
+                .values()
+                .any(|pending| match pending {
+                    Pending::Mint { plugin: owner, .. }
+                    | Pending::PaneMint { plugin: owner, .. }
+                    | Pending::PaneList { plugin: owner, .. }
+                    | Pending::PaneCreate { plugin: owner, .. }
+                    | Pending::PaneViewers { plugin: owner, .. }
+                    | Pending::PaneSurface { plugin: owner, .. } => owner == plugin,
+                    Pending::Ignore
+                    | Pending::PaneClose { .. }
+                    | Pending::PaneRemoved { .. }
+                    | Pending::ReconcilePanes { .. }
+                    | Pending::Retire { .. } => false,
+                })
+        })
+        .collect();
     for plugin in ready {
-        let actions = world.get::<Actions>(plugin).map(|a| a.iter().collect::<Vec<_>>()).unwrap_or_default();
-        for action in actions { world.despawn(action); }
+        let actions = world
+            .get::<Actions>(plugin)
+            .map(|a| a.iter().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for action in actions {
+            world.despawn(action);
+        }
         world.despawn(plugin);
         world.resource_mut::<Journal>().mark_dirty();
     }
@@ -762,12 +865,17 @@ fn deactivate(world: &mut World, plugin: Entity) {
     }
     let ms = now(world);
     world.resource_mut::<Journal>().mark_dirty();
-    let queued_runs: Vec<_> = world.resource::<Host>().effects.iter().filter_map(|(_, effect)| {
-        match effect {
-            Effect::RunPlugin { plugin: owner, run, .. } if *owner == plugin => Some(*run),
+    let queued_runs: Vec<_> = world
+        .resource::<Host>()
+        .effects
+        .iter()
+        .filter_map(|(_, effect)| match effect {
+            Effect::RunPlugin {
+                plugin: owner, run, ..
+            } if *owner == plugin => Some(*run),
             _ => None,
-        }
-    }).collect();
+        })
+        .collect();
     let mut kills = Vec::new();
     if let Some(mut runs) = world.get_mut::<Runs>(plugin) {
         for run in &mut runs.0 {
@@ -775,7 +883,9 @@ fn deactivate(world: &mut World, plugin: Entity) {
                 kills.push(run.id);
                 run.state = if run.state == RunState::Minting || queued_runs.contains(&run.id) {
                     RunState::Exited { code: None, ms }
-                } else { RunState::Stopping };
+                } else {
+                    RunState::Stopping
+                };
             }
         }
     }
@@ -787,16 +897,26 @@ fn deactivate(world: &mut World, plugin: Entity) {
     }
     let queued_calls: Vec<u64> = {
         let host = world.resource::<Host>();
-        host.effects.iter().filter_map(|(_, effect)| {
-            let Effect::FuxCall { call, .. } = effect else { return None };
-            let owned = match host.calls.get(call) {
-                Some(Pending::Mint { plugin: owner, .. } | Pending::PaneMint { plugin: owner, .. } |
-                    Pending::PaneList { plugin: owner, .. } | Pending::PaneCreate { plugin: owner, .. } |
-                    Pending::PaneViewers { plugin: owner, .. } | Pending::PaneSurface { plugin: owner, .. }) => *owner == plugin,
-                _ => false,
-            };
-            owned.then_some(*call)
-        }).collect()
+        host.effects
+            .iter()
+            .filter_map(|(_, effect)| {
+                let Effect::FuxCall { call, .. } = effect else {
+                    return None;
+                };
+                let owned = match host.calls.get(call) {
+                    Some(
+                        Pending::Mint { plugin: owner, .. }
+                        | Pending::PaneMint { plugin: owner, .. }
+                        | Pending::PaneList { plugin: owner, .. }
+                        | Pending::PaneCreate { plugin: owner, .. }
+                        | Pending::PaneViewers { plugin: owner, .. }
+                        | Pending::PaneSurface { plugin: owner, .. },
+                    ) => *owner == plugin,
+                    _ => false,
+                };
+                owned.then_some(*call)
+            })
+            .collect()
     };
     let mut host = world.resource_mut::<Host>();
     host.effects.retain(|(_, effect)| match effect {
@@ -804,35 +924,61 @@ fn deactivate(world: &mut World, plugin: Entity) {
         Effect::FuxCall { call, .. } => !queued_calls.contains(call),
         _ => true,
     });
-    for call in queued_calls { host.calls.remove(&call); }
+    for call in queued_calls {
+        host.calls.remove(&call);
+    }
     for run in kills {
         world.write_message(Effect::KillPlugin { plugin, run });
         retire_run_token(world, plugin, run);
     }
-    let panes = world.get::<Panes>(plugin).map(|p| p.0.iter().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    let panes = world
+        .get::<Panes>(plugin)
+        .map(|p| p.0.iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
     for pane in panes {
         fail_pane(world, plugin, pane.id, "plugin disabled".into());
     }
 }
 
 fn revoke_fux_token(world: &mut World, token: String) {
-    fux_call(world, Pending::Ignore, "fux/token.revoke", json!({"revoke": token}));
+    fux_call(
+        world,
+        Pending::Ignore,
+        "fux/token.revoke",
+        json!({"revoke": token}),
+    );
 }
 
 fn retire_run_token(world: &mut World, plugin: Entity, run: u64) {
-    if let Some(token) = world.get_mut::<RunTokens>(plugin).and_then(|mut t| t.0.remove(&run)) {
+    if let Some(token) = world
+        .get_mut::<RunTokens>(plugin)
+        .and_then(|mut t| t.0.remove(&run))
+    {
         let name = name_of(world, plugin);
         let path = world.resource::<PluginPaths>().fux_descriptor(&name, run);
-        fux_call(world, Pending::Retire { path }, "fux/token.revoke", json!({"revoke": token}));
+        fux_call(
+            world,
+            Pending::Retire { path },
+            "fux/token.revoke",
+            json!({"revoke": token}),
+        );
     }
 }
 
 fn queue_effect(world: &mut World, plugin: Entity, description: &str, effect: Effect) {
     let generation = world.resource::<crate::model::Generation>().0;
-    let serial = world.get::<DispatchIntent>(plugin).map_or(1, |i| i.serial.saturating_add(1));
-    world.entity_mut(plugin).insert(DispatchIntent { serial, description: description.into() });
+    let serial = world
+        .get::<DispatchIntent>(plugin)
+        .map_or(1, |i| i.serial.saturating_add(1));
+    world.entity_mut(plugin).insert(DispatchIntent {
+        serial,
+        description: description.into(),
+    });
     world.resource_mut::<Journal>().mark_dirty();
-    world.resource_mut::<Host>().effects.push_back((generation, effect));
+    world
+        .resource_mut::<Host>()
+        .effects
+        .push_back((generation, effect));
 }
 
 fn flush_effects(world: &mut World) {
@@ -847,8 +993,15 @@ fn flush_effects(world: &mut World) {
     let generation = world.resource::<crate::model::Generation>().0;
     let ready: Vec<_> = {
         let mut host = world.resource_mut::<Host>();
-        let count = host.effects.iter().take_while(|(before, _)| *before < generation).count();
-        host.effects.drain(..count).map(|(_, effect)| effect).collect()
+        let count = host
+            .effects
+            .iter()
+            .take_while(|(before, _)| *before < generation)
+            .count();
+        host.effects
+            .drain(..count)
+            .map(|(_, effect)| effect)
+            .collect()
     };
     world.write_message_batch(ready);
 }
@@ -857,12 +1010,17 @@ fn flush_effects(world: &mut World) {
 pub fn next_deadline(world: &mut World) -> Option<u64> {
     let host = world.resource::<Host>();
     let journal = world.resource::<Journal>();
-    if !journal.is_dirty() && !journal.is_frozen()
-        && host.effects.front().is_some_and(|(g, _)| *g < world.resource::<crate::model::Generation>().0)
+    if !journal.is_dirty()
+        && !journal.is_frozen()
+        && host
+            .effects
+            .front()
+            .is_some_and(|(g, _)| *g < world.resource::<crate::model::Generation>().0)
     {
         return Some(now(world));
     }
-    world.query_filtered::<(&Hook, &Loaded), With<Active>>()
+    world
+        .query_filtered::<(&Hook, &Loaded), With<Active>>()
         .iter(world)
         .filter(|(h, l)| h.run.is_none() && !l.manifest.events.is_empty())
         .map(|(h, _)| h.next_ms)
@@ -876,20 +1034,28 @@ pub fn install_wake(world: &mut World, wake: async_channel::Sender<Inbound>) {
 
 /// Plugin tokens may acknowledge only their own cursor, never another plugin's.
 pub fn owns_token(world: &World, plugin: Entity, token: &str) -> bool {
-    world.get::<Active>(plugin).is_some_and(|a| a.token == token)
+    world
+        .get::<Active>(plugin)
+        .is_some_and(|a| a.token == token)
 }
 
 /// `Update`: enabled plugins become `Active` once zor's own descriptor is written (token
 /// minted, per-plugin descriptor written, `startup` run); plugins no longer enabled lose it.
 fn shutting_down(world: &World) -> bool {
-    world.get_resource::<bevy_state::prelude::State<crate::model::ServerMode>>()
+    world
+        .get_resource::<bevy_state::prelude::State<crate::model::ServerMode>>()
         .is_some_and(|s| *s.get() == crate::model::ServerMode::ShuttingDown)
 }
 
 fn activate(world: &mut World) {
     if shutting_down(world) {
-        let active: Vec<_> = world.query_filtered::<Entity, With<Active>>().iter(world).collect();
-        for plugin in active { deactivate(world, plugin); }
+        let active: Vec<_> = world
+            .query_filtered::<Entity, With<Active>>()
+            .iter(world)
+            .collect();
+        for plugin in active {
+            deactivate(world, plugin);
+        }
         return;
     }
     let Some(zor_brp) = world.get_resource::<DescriptorGuard>().map(|g| g.0.clone()) else {
@@ -903,7 +1069,12 @@ fn activate(world: &mut World) {
         deactivate(world, plugin);
     }
     let fresh: Vec<Entity> = world
-        .query_filtered::<Entity, (With<PluginEnabled>, With<Loaded>, Without<Active>, Without<PluginProblem>)>()
+        .query_filtered::<Entity, (
+            With<PluginEnabled>,
+            With<Loaded>,
+            Without<Active>,
+            Without<PluginProblem>,
+        )>()
         .iter(world)
         .collect();
     if fresh.is_empty() {
@@ -913,8 +1084,11 @@ fn activate(world: &mut World) {
         return;
     };
     for plugin in fresh {
-        if world.get::<Runs>(plugin).and_then(|runs| runs.0.iter().rev().find(|r| r.kind == RunKind::Build))
-            .is_some_and(|run| !matches!(run.state, RunState::Exited { code: Some(0), .. })) {
+        if world
+            .get::<Runs>(plugin)
+            .and_then(|runs| runs.0.iter().rev().find(|r| r.kind == RunKind::Build))
+            .is_some_and(|run| !matches!(run.state, RunState::Exited { code: Some(0), .. }))
+        {
             continue;
         }
         let name = name_of(world, plugin);
@@ -942,21 +1116,38 @@ fn activate(world: &mut World) {
         let own_path = paths.descriptor(&name, &token);
         if let Err(e) = write_descriptor(&own_path, &own) {
             world.resource_mut::<Tokens>().revoke(&token);
-            world.entity_mut(plugin).insert(PluginProblem(format!("descriptor: {e}")));
+            world
+                .entity_mut(plugin)
+                .insert(PluginProblem(format!("descriptor: {e}")));
             continue;
         }
         // Seed at activation, not when the delayed child finally opens its stream. Events
         // arriving between enable and the connection are retained and delivered normally.
-        if world.get::<Hook>(plugin).is_some_and(|h| h.cursors.zor_instance != descriptor.instance) {
+        if world
+            .get::<Hook>(plugin)
+            .is_some_and(|h| h.cursors.zor_instance != descriptor.instance)
+        {
             let latest = world.resource::<crate::remote::events::EventLog>().latest();
-            if let Err(e) = set_cursor_for(world, plugin, Some(latest), None, Some(descriptor.instance.clone()), None) {
+            if let Err(e) = set_cursor_for(
+                world,
+                plugin,
+                Some(latest),
+                None,
+                Some(descriptor.instance.clone()),
+                None,
+            ) {
                 world.resource_mut::<Tokens>().revoke(&token);
                 let _ = std::fs::remove_file(&own_path);
-                world.entity_mut(plugin).insert(PluginProblem(e.to_string()));
+                world
+                    .entity_mut(plugin)
+                    .insert(PluginProblem(e.to_string()));
                 continue;
             }
         }
-        world.entity_mut(plugin).insert(Active { token, descriptor: own_path });
+        world.entity_mut(plugin).insert(Active {
+            token,
+            descriptor: own_path,
+        });
         if let Some(mut hook) = world.get_mut::<Hook>(plugin) {
             hook.restarts = 0;
             hook.next_ms = 0;
@@ -966,7 +1157,13 @@ fn activate(world: &mut World) {
             .map(|l| l.manifest.startup.clone())
             .unwrap_or_default();
         if !startup.is_empty()
-            && let Err(e) = start_run(world, plugin, RunKind::Startup, startup, RunContext::default())
+            && let Err(e) = start_run(
+                world,
+                plugin,
+                RunKind::Startup,
+                startup,
+                RunContext::default(),
+            )
         {
             bevy_log::warn!("plugin {name}: startup: {e}");
         }
@@ -976,7 +1173,9 @@ fn activate(world: &mut World) {
 /// `Update`: an active plugin with `[[events]]` and no live hook process gets one once its
 /// backoff passed.
 fn restart_hooks(world: &mut World) {
-    if shutting_down(world) { return; }
+    if shutting_down(world) {
+        return;
+    }
     let now = now(world);
     let due: Vec<Entity> = world
         .query_filtered::<(Entity, &Hook, &Loaded), With<Active>>()
@@ -1024,7 +1223,13 @@ pub fn run_action(world: &mut World, plugin: Entity, action: &str, ctx: RunConte
         .and_then(|l| l.manifest.action(action).cloned())
         .ok_or_else(|| PluginError::NotFound(format!("action {action}")))?;
     if spec.placement == Placement::None {
-        return start_run(world, plugin, RunKind::Action(action.into()), spec.command, ctx);
+        return start_run(
+            world,
+            plugin,
+            RunKind::Action(action.into()),
+            spec.command,
+            ctx,
+        );
     }
     let Some(workspace) = ctx.workspace.clone() else {
         return refused("a placed action needs `workspace`");
@@ -1122,7 +1327,9 @@ impl From<RunContext> for LinkContext {
 }
 
 fn check_active(world: &World, plugin: Entity) -> Res<()> {
-    if shutting_down(world) { return refused("server is shutting down"); }
+    if shutting_down(world) {
+        return refused("server is shutting down");
+    }
     check_plugin(world, plugin)?;
     if world.get::<PluginEnabled>(plugin).is_none() {
         return refused("plugin is disabled");
@@ -1145,8 +1352,16 @@ fn start_run(
     argv: Vec<String>,
     ctx: impl Into<LinkContext>,
 ) -> Res<u64> {
-    if shutting_down(world) { return refused("server is shutting down"); }
-    if world.get::<Runs>(plugin).is_some_and(|runs| runs.0.iter().filter(|r| !matches!(r.state, RunState::Exited { .. })).count() >= MAX_RUNS_RETAINED) {
+    if shutting_down(world) {
+        return refused("server is shutting down");
+    }
+    if world.get::<Runs>(plugin).is_some_and(|runs| {
+        runs.0
+            .iter()
+            .filter(|r| !matches!(r.state, RunState::Exited { .. }))
+            .count()
+            >= MAX_RUNS_RETAINED
+    }) {
         return refused("plugin live run limit reached");
     }
     let ctx: LinkContext = ctx.into();
@@ -1170,7 +1385,13 @@ fn start_run(
         return Err(PluginError::NotFound(format!("plugin {plugin}")));
     };
     runs.push(run);
-    world.entity_mut(plugin).entry::<RunArgv>().or_default().into_mut().0.insert(id, argv);
+    world
+        .entity_mut(plugin)
+        .entry::<RunArgv>()
+        .or_default()
+        .into_mut()
+        .0
+        .insert(id, argv);
     let has_fux = world
         .get_resource::<FuxDescriptor>()
         .is_some_and(|d| d.0.is_file());
@@ -1195,12 +1416,17 @@ fn start_run(
 #[derive(Component, Default)]
 struct RunArgv(HashMap<u64, Vec<String>>);
 
-
 /// Emits `Effect::RunPlugin` for a recorded run with the full plugin environment.
 fn spawn_run(world: &mut World, plugin: Entity, run: u64, fux_token: Option<String>) {
-    let pending = world.get::<Runs>(plugin).is_some_and(|runs| runs.0.iter().any(|r| r.id == run && r.state == RunState::Minting));
+    let pending = world.get::<Runs>(plugin).is_some_and(|runs| {
+        runs.0
+            .iter()
+            .any(|r| r.id == run && r.state == RunState::Minting)
+    });
     if !pending {
-        if let Some(token) = fux_token { revoke_fux_token(world, token); }
+        if let Some(token) = fux_token {
+            revoke_fux_token(world, token);
+        }
         return;
     }
     let name = name_of(world, plugin);
@@ -1209,7 +1435,10 @@ fn spawn_run(world: &mut World, plugin: Entity, run: u64, fux_token: Option<Stri
         .get_mut::<RunArgv>(plugin)
         .and_then(|mut a| a.0.remove(&run))
         .unwrap_or_default();
-    let Some(record) = world.get::<Runs>(plugin).and_then(|r| r.0.iter().find(|r| r.id == run).cloned()) else {
+    let Some(record) = world
+        .get::<Runs>(plugin)
+        .and_then(|r| r.0.iter().find(|r| r.id == run).cloned())
+    else {
         return;
     };
     let mut env = base_env(world, plugin, &name);
@@ -1240,7 +1469,13 @@ fn spawn_run(world: &mut World, plugin: Entity, run: u64, fux_token: Option<Stri
     }
     if let Some(surface) = record.surface {
         env.push(("ZOR_PLUGIN_SURFACE".into(), surface.to_string()));
-        env.push(("ZOR_PLUGIN_PROVIDER".into(), format!("plugin:{name}:{}:{surface}", world.resource::<ServerInstance>().nonce)));
+        env.push((
+            "ZOR_PLUGIN_PROVIDER".into(),
+            format!(
+                "plugin:{name}:{}:{surface}",
+                world.resource::<ServerInstance>().nonce
+            ),
+        ));
     }
     if let Some(link) = &record.link {
         env.push(("ZOR_PLUGIN_LINK".into(), link.clone()));
@@ -1249,44 +1484,66 @@ fn spawn_run(world: &mut World, plugin: Entity, run: u64, fux_token: Option<Stri
         let (cursors, hooks) = world
             .get::<Hook>(plugin)
             .map(|h| h.cursors.clone())
-            .zip(world.get::<Loaded>(plugin).map(|l| l.manifest.events.clone()))
+            .zip(
+                world
+                    .get::<Loaded>(plugin)
+                    .map(|l| l.manifest.events.clone()),
+            )
             .unwrap_or_default();
         env.push(("ZOR_PLUGIN_CURSOR_ZOR".into(), cursors.zor.to_string()));
         env.push(("ZOR_PLUGIN_CURSOR_FUX".into(), cursors.fux.to_string()));
-        env.push(("ZOR_PLUGIN_CURSORS".into(), serde_json::to_string(&cursors).unwrap_or_default()));
+        env.push((
+            "ZOR_PLUGIN_CURSORS".into(),
+            serde_json::to_string(&cursors).unwrap_or_default(),
+        ));
         env.push((
             "ZOR_PLUGIN_HOOKS".into(),
             serde_json::to_string(&hooks).unwrap_or_else(|_| "[]".into()),
         ));
     }
     if let Some(token) = fux_token {
-        world.entity_mut(plugin).entry::<RunTokens>().or_default().into_mut().0.insert(run, token.clone());
+        world
+            .entity_mut(plugin)
+            .entry::<RunTokens>()
+            .or_default()
+            .into_mut()
+            .0
+            .insert(run, token.clone());
         match write_fux_descriptor(world, &name, run, &token) {
             Ok(path) => {
                 env.push(("FUX_BRP".into(), path.display().to_string()));
                 env.push(("FUX_TOKEN".into(), token));
             }
             Err(e) => {
-                world.entity_mut(plugin).insert(PluginProblem(format!("fux descriptor: {e}")));
+                world
+                    .entity_mut(plugin)
+                    .insert(PluginProblem(format!("fux descriptor: {e}")));
                 on_exit(world, plugin, run, None);
                 return;
             }
         }
     }
-    let cwd = world.get::<Loaded>(plugin).map(|l| l.root.display().to_string());
+    let cwd = world
+        .get::<Loaded>(plugin)
+        .map(|l| l.root.display().to_string());
     if let Some(mut runs) = world.get_mut::<Runs>(plugin)
         && let Some(r) = runs.get_mut(run)
     {
         r.state = RunState::Running;
     }
-    queue_effect(world, plugin, "run plugin process", Effect::RunPlugin {
+    queue_effect(
+        world,
         plugin,
-        run,
-        argv,
-        cwd,
-        env,
-        log: paths.log(&name),
-    });
+        "run plugin process",
+        Effect::RunPlugin {
+            plugin,
+            run,
+            argv,
+            cwd,
+            env,
+            log: paths.log(&name),
+        },
+    );
 }
 
 /// The environment every plugin process gets.
@@ -1294,7 +1551,17 @@ fn base_env(world: &World, plugin: Entity, name: &str) -> Vec<(String, String)> 
     let paths = world.resource::<PluginPaths>();
     let instance = world.resource::<ServerInstance>();
     let mut env = vec![
-        ("ZOR_BRP".into(), world.get::<Active>(plugin).map(|a| a.descriptor.clone()).unwrap_or_else(|| paths.descriptor(name, "inactive")).display().to_string()),
+        (
+            "ZOR_BRP".into(),
+            world
+                .get::<Active>(plugin)
+                .map_or_else(
+                    || paths.descriptor(name, "inactive"),
+                    |a| a.descriptor.clone(),
+                )
+                .display()
+                .to_string(),
+        ),
         ("ZOR_INSTANCE".into(), instance.nonce.clone()),
         ("ZOR_SERVER".into(), instance.name.clone()),
         ("ZOR_PLUGIN_NAME".into(), name.to_owned()),
@@ -1302,7 +1569,10 @@ fn base_env(world: &World, plugin: Entity, name: &str) -> Vec<(String, String)> 
             "ZOR_PLUGIN_STATE_DIR".into(),
             paths.state_dir(name).display().to_string(),
         ),
-        ("ZOR_PLUGIN_LOG".into(), paths.log(name).display().to_string()),
+        (
+            "ZOR_PLUGIN_LOG".into(),
+            paths.log(name).display().to_string(),
+        ),
     ];
     if let Some(active) = world.get::<Active>(plugin) {
         env.push(("ZOR_TOKEN".into(), active.token.clone()));
@@ -1315,13 +1585,25 @@ fn base_env(world: &World, plugin: Entity, name: &str) -> Vec<(String, String)> 
 }
 
 /// fux's descriptor with the minted token, under the plugin's run directory.
-fn write_fux_descriptor(world: &World, name: &str, run: u64, token: &str) -> Result<PathBuf, String> {
+fn write_fux_descriptor(
+    world: &World,
+    name: &str,
+    run: u64,
+    token: &str,
+) -> Result<PathBuf, String> {
     let fux = world
         .get_resource::<FuxDescriptor>()
         .ok_or_else(|| "fux is not configured".to_owned())?;
     let descriptor = read_descriptor(&fux.0).map_err(|e| e.to_string())?;
-    if world.resource::<Host>().fux_instance.as_ref().is_some_and(|expected| *expected != descriptor.instance) {
-        return Err("fux incarnation changed during plugin dispatch; reconcile before retrying".into());
+    if world
+        .resource::<Host>()
+        .fux_instance
+        .as_ref()
+        .is_some_and(|expected| *expected != descriptor.instance)
+    {
+        return Err(
+            "fux incarnation changed during plugin dispatch; reconcile before retrying".into(),
+        );
     }
     let path = world.resource::<PluginPaths>().fux_descriptor(name, run);
     if let Some(parent) = path.parent() {
@@ -1331,6 +1613,8 @@ fn write_fux_descriptor(world: &World, name: &str, run: u64, token: &str) -> Res
         &path,
         &Descriptor {
             token: token.to_owned(),
+            // Attachment is an independent, server-wide credential, not this BRP grant.
+            attach: None,
             ..descriptor
         },
     )
@@ -1340,25 +1624,35 @@ fn write_fux_descriptor(world: &World, name: &str, run: u64, token: &str) -> Res
 
 fn fux_call(world: &mut World, pending: Pending, method: &str, mut params: Value) -> u64 {
     if world.resource::<Host>().fux_instance.is_none() {
-        let instance = world.get_resource::<FuxDescriptor>()
-            .and_then(|f| read_descriptor(&f.0).ok()).map(|d| d.instance);
+        let instance = world
+            .get_resource::<FuxDescriptor>()
+            .and_then(|f| read_descriptor(&f.0).ok())
+            .map(|d| d.instance);
         world.resource_mut::<Host>().fux_instance = instance;
     }
-    if params.get("_expected_instance").is_none()
-        && let Some(instance) = &world.resource::<Host>().fux_instance {
-        params["_expected_instance"] = json!(instance);
+    if let Value::Object(fields) = &mut params
+        && !fields.contains_key("_expected_instance")
+        && let Some(instance) = &world.resource::<Host>().fux_instance
+    {
+        fields.insert("_expected_instance".into(), json!(instance));
     }
     let call = {
         let mut host = world.resource_mut::<Host>();
         host.next_call += 1;
-        let call = CALL_TAG | (host.next_call & !TAG_MASK);
-        call
+        CALL_TAG | (host.next_call & !TAG_MASK)
     };
     let plugin = match &pending {
-        Pending::Mint { plugin, .. } | Pending::PaneMint { plugin, .. } |
-        Pending::PaneList { plugin, .. } | Pending::PaneCreate { plugin, .. } |
-        Pending::PaneViewers { plugin, .. } | Pending::PaneSurface { plugin, .. } => Some(*plugin),
-        Pending::Ignore | Pending::PaneClose { .. } | Pending::PaneRemoved { .. } | Pending::ReconcilePanes { .. } | Pending::Retire { .. } => None,
+        Pending::Mint { plugin, .. }
+        | Pending::PaneMint { plugin, .. }
+        | Pending::PaneList { plugin, .. }
+        | Pending::PaneCreate { plugin, .. }
+        | Pending::PaneViewers { plugin, .. }
+        | Pending::PaneSurface { plugin, .. } => Some(*plugin),
+        Pending::Ignore
+        | Pending::PaneClose { .. }
+        | Pending::PaneRemoved { .. }
+        | Pending::ReconcilePanes { .. }
+        | Pending::Retire { .. } => None,
     };
     world.resource_mut::<Host>().calls.insert(call, pending);
     let effect = Effect::FuxCall {
@@ -1392,7 +1686,9 @@ fn open_composition(
     {
         return refused("fux is not configured; panes need a fux server");
     }
-    if spec.kind == PaneKind::Surface && !matches!(spec.placement, Placement::Overlay | Placement::Popup) {
+    if spec.kind == PaneKind::Surface
+        && !matches!(spec.placement, Placement::Overlay | Placement::Popup)
+    {
         return refused("surface panes use the overlay or popup placement");
     }
     let id = {
@@ -1404,7 +1700,10 @@ fn open_composition(
         return Err(PluginError::NotFound(format!("plugin {plugin}")));
     };
     if panes.0.len() >= MAX_RUNS_RETAINED {
-        if let Some(index) = panes.0.iter().position(|p| p.cleanup_state.is_none() && matches!(p.state, PaneState::Failed { .. } | PaneState::Closed)) {
+        if let Some(index) = panes.0.iter().position(|p| {
+            p.cleanup_state.is_none()
+                && matches!(p.state, PaneState::Failed { .. } | PaneState::Closed)
+        }) {
             panes.0.remove(index);
         } else {
             return refused("plugin pane limit reached");
@@ -1424,7 +1723,13 @@ fn open_composition(
         cleanup_state: None,
         generation: None,
     });
-    world.entity_mut(plugin).entry::<RunArgv>().or_default().into_mut().0.insert(id, spec.command);
+    world
+        .entity_mut(plugin)
+        .entry::<RunArgv>()
+        .or_default()
+        .into_mut()
+        .0
+        .insert(id, spec.command);
     fux_call(
         world,
         Pending::PaneMint {
@@ -1444,48 +1749,108 @@ fn pane_mut(world: &mut World, plugin: Entity, opening: u64) -> Option<Mut<'_, P
 }
 
 fn provider(world: &World, plugin: Entity, node: u64) -> String {
-    format!("plugin:{}:{}:{node}", name_of(world, plugin), world.resource::<ServerInstance>().nonce)
+    format!(
+        "plugin:{}:{}:{node}",
+        name_of(world, plugin),
+        world.resource::<ServerInstance>().nonce
+    )
 }
 
 /// A surface close must succeed before its container can be removed. Its returned layout
 /// generation prevents a replacement installed between those calls from being despawned.
 fn cleanup_pane(world: &mut World, plugin: Entity, open: &OpenPane) {
     let state = open.cleanup_state.as_ref().unwrap_or(&open.state);
-    let &PaneState::Open { node, pane, surface } = state else { return };
+    let &PaneState::Open {
+        node,
+        pane,
+        surface,
+    } = state
+    else {
+        return;
+    };
     if let Some(surface) = surface {
         let expected = provider(world, plugin, surface);
-        fux_call(world, Pending::PaneClose { plugin, opening: open.id, node }, "fux/surface.close",
-            json!({"surface": surface, "expected_provider": expected}));
+        fux_call(
+            world,
+            Pending::PaneClose {
+                plugin,
+                opening: open.id,
+                node,
+            },
+            "fux/surface.close",
+            json!({"surface": surface, "expected_provider": expected}),
+        );
     } else if let Some(pane) = pane {
-        fux_call(world, Pending::PaneRemoved { plugin, opening: open.id }, "fux/pane.close", json!({"pane": pane}));
+        fux_call(
+            world,
+            Pending::PaneRemoved {
+                plugin,
+                opening: open.id,
+            },
+            "fux/pane.close",
+            json!({"pane": pane}),
+        );
     } else if let Some(generation) = open.generation {
-        fux_call(world, Pending::PaneRemoved { plugin, opening: open.id }, "fux/node.despawn",
-            json!({"node": node, "generation": generation}));
+        fux_call(
+            world,
+            Pending::PaneRemoved {
+                plugin,
+                opening: open.id,
+            },
+            "fux/node.despawn",
+            json!({"node": node, "generation": generation}),
+        );
     }
 }
 
 fn retire_pane(world: &mut World, plugin: Entity, opening: u64) {
     let token = world.get_mut::<Panes>(plugin).and_then(|mut panes| {
         let open = panes.0.iter_mut().find(|o| o.id == opening)?;
-        if !matches!(open.state, PaneState::Failed { .. }) { open.state = PaneState::Closed; }
+        if !matches!(open.state, PaneState::Failed { .. }) {
+            open.state = PaneState::Closed;
+        }
         open.cleanup_state = None;
         open.fux_token.take()
     });
     if let Some(token) = token {
-        let path = world.resource::<PluginPaths>().fux_descriptor(&name_of(world, plugin), opening);
-        fux_call(world, Pending::Retire { path }, "fux/token.revoke", json!({"revoke": token}));
+        let path = world
+            .resource::<PluginPaths>()
+            .fux_descriptor(&name_of(world, plugin), opening);
+        fux_call(
+            world,
+            Pending::Retire { path },
+            "fux/token.revoke",
+            json!({"revoke": token}),
+        );
     }
 }
 
 fn fail_pane(world: &mut World, plugin: Entity, opening: u64, problem: String) {
-    if let Some(open) = world.get::<Panes>(plugin).and_then(|p| p.0.iter().find(|o| o.id == opening)).cloned() {
+    if let Some(open) = world
+        .get::<Panes>(plugin)
+        .and_then(|p| p.0.iter().find(|o| o.id == opening))
+        .cloned()
+    {
         cleanup_pane(world, plugin, &open);
     }
     let name = name_of(world, plugin);
-    let path = world.resource::<PluginPaths>().fux_descriptor(&name, opening);
-    let token = world.get_mut::<Panes>(plugin).and_then(|mut panes| panes.0.iter_mut().find(|o| o.id == opening).and_then(|o| o.fux_token.take()));
+    let path = world
+        .resource::<PluginPaths>()
+        .fux_descriptor(&name, opening);
+    let token = world.get_mut::<Panes>(plugin).and_then(|mut panes| {
+        panes
+            .0
+            .iter_mut()
+            .find(|o| o.id == opening)
+            .and_then(|o| o.fux_token.take())
+    });
     if let Some(token) = token {
-        fux_call(world, Pending::Retire { path }, "fux/token.revoke", json!({"revoke": token}));
+        fux_call(
+            world,
+            Pending::Retire { path },
+            "fux/token.revoke",
+            json!({"revoke": token}),
+        );
     }
     if let Some(mut panes) = pane_mut(world, plugin, opening)
         && let Some(open) = panes.0.iter_mut().find(|o| o.id == opening)
@@ -1495,9 +1860,12 @@ fn fail_pane(world: &mut World, plugin: Entity, opening: u64, problem: String) {
         }
         open.state = PaneState::Failed { problem };
     }
-    world.entity_mut(plugin).entry::<RunArgv>().and_modify(|mut a| {
-        a.0.remove(&opening);
-    });
+    world
+        .entity_mut(plugin)
+        .entry::<RunArgv>()
+        .and_modify(|mut a| {
+            a.0.remove(&opening);
+        });
 }
 
 /// The template for a terminal pane: the command with the plugin environment.
@@ -1523,7 +1891,9 @@ fn pane_template(world: &mut World, plugin: Entity, opening: u64) -> Value {
             env.push(("FUX_BRP".into(), brp.display().to_string()));
         }
     }
-    let cwd = world.get::<Loaded>(plugin).map(|l| l.root.display().to_string());
+    let cwd = world
+        .get::<Loaded>(plugin)
+        .map(|l| l.root.display().to_string());
     json!({ "argv": argv, "cwd": cwd, "env": env, "stream": format!("{name}-{opening}") })
 }
 
@@ -1542,19 +1912,38 @@ fn absolute_patch(placement: Placement) -> Value {
 
 /// One step of a pane composition after `result` of the previous call.
 fn pane_step(world: &mut World, pending: Pending, result: Result<Value, String>) {
-    if let Pending::PaneClose { plugin, opening, node } = pending {
+    if let Pending::PaneClose {
+        plugin,
+        opening,
+        node,
+    } = pending
+    {
         match result {
-            Ok(value) => if let Some(generation) = value.get("generation").and_then(Value::as_u64) {
-                if let Some(mut panes) = world.get_mut::<Panes>(plugin)
-                    && let Some(open) = panes.0.iter_mut().find(|o| o.id == opening)
-                {
-                    let state = PaneState::Open { node, pane: None, surface: None };
-                    if open.cleanup_state.is_some() { open.cleanup_state = Some(state); } else { open.state = state; }
-                    open.generation = Some(generation);
+            Ok(value) => {
+                if let Some(generation) = value.get("generation").and_then(Value::as_u64) {
+                    if let Some(mut panes) = world.get_mut::<Panes>(plugin)
+                        && let Some(open) = panes.0.iter_mut().find(|o| o.id == opening)
+                    {
+                        let state = PaneState::Open {
+                            node,
+                            pane: None,
+                            surface: None,
+                        };
+                        if open.cleanup_state.is_some() {
+                            open.cleanup_state = Some(state);
+                        } else {
+                            open.state = state;
+                        }
+                        open.generation = Some(generation);
+                    }
+                    fux_call(
+                        world,
+                        Pending::PaneRemoved { plugin, opening },
+                        "fux/node.despawn",
+                        json!({"node": node, "generation": generation}),
+                    );
                 }
-                fux_call(world, Pending::PaneRemoved { plugin, opening }, "fux/node.despawn",
-                    json!({"node": node, "generation": generation}));
-            },
+            }
             Err(e) => bevy_log::warn!("plugin surface closure unresolved; ownership retained: {e}"),
         }
         return;
@@ -1570,13 +1959,33 @@ fn pane_step(world: &mut World, pending: Pending, result: Result<Value, String>)
         if let Ok(value) = result
             && let Ok(list) = serde_json::from_value::<WorkspaceList>(value)
         {
-            let closed: Vec<_> = openings.into_iter().filter(|(plugin, opening)| {
-                let Some(open) = world.get::<Panes>(*plugin).and_then(|panes| panes.0.iter().find(|p| p.id == *opening)) else { return false };
-                let PaneState::Open { pane: Some(pane), .. } = open.state else { return false };
-                !list.workspaces.iter().filter(|w| w.name == open.workspace)
-                    .flat_map(|w| &w.roots).flat_map(|r| &r.panes).any(|p| p.id == pane)
-            }).collect();
-            for (plugin, opening) in closed { retire_pane(world, plugin, opening); }
+            let closed: Vec<_> = openings
+                .into_iter()
+                .filter(|(plugin, opening)| {
+                    let Some(open) = world
+                        .get::<Panes>(*plugin)
+                        .and_then(|panes| panes.0.iter().find(|p| p.id == *opening))
+                    else {
+                        return false;
+                    };
+                    let PaneState::Open {
+                        pane: Some(pane), ..
+                    } = open.state
+                    else {
+                        return false;
+                    };
+                    !list
+                        .workspaces
+                        .iter()
+                        .filter(|w| w.name == open.workspace)
+                        .flat_map(|w| &w.roots)
+                        .flat_map(|r| &r.panes)
+                        .any(|p| p.id == pane)
+                })
+                .collect();
+            for (plugin, opening) in closed {
+                retire_pane(world, plugin, opening);
+            }
         }
         return;
     }
@@ -1586,7 +1995,12 @@ fn pane_step(world: &mut World, pending: Pending, result: Result<Value, String>)
         | Pending::PaneCreate { plugin, opening }
         | Pending::PaneViewers { plugin, opening }
         | Pending::PaneSurface { plugin, opening } => (plugin, opening),
-        Pending::Mint { .. } | Pending::Ignore | Pending::PaneClose { .. } | Pending::PaneRemoved { .. } | Pending::ReconcilePanes { .. } | Pending::Retire { .. } => return,
+        Pending::Mint { .. }
+        | Pending::Ignore
+        | Pending::PaneClose { .. }
+        | Pending::PaneRemoved { .. }
+        | Pending::ReconcilePanes { .. }
+        | Pending::Retire { .. } => return,
     };
     let value = match result {
         Ok(value) => value,
@@ -1606,17 +2020,38 @@ fn pane_step(world: &mut World, pending: Pending, result: Result<Value, String>)
         }
         if matches!(pending, Pending::PaneCreate { .. }) {
             if let Some(pane) = value.get("pane").and_then(Value::as_u64) {
-                fux_call(world, Pending::Ignore, "fux/pane.close", json!({"pane": pane}));
-            } else if let (Some(node), Some(generation)) = (value.get("node").and_then(Value::as_u64), value.get("generation").and_then(Value::as_u64)) {
-                fux_call(world, Pending::Ignore, "fux/node.despawn", json!({"node": node, "generation": generation}));
+                fux_call(
+                    world,
+                    Pending::Ignore,
+                    "fux/pane.close",
+                    json!({"pane": pane}),
+                );
+            } else if let (Some(node), Some(generation)) = (
+                value.get("node").and_then(Value::as_u64),
+                value.get("generation").and_then(Value::as_u64),
+            ) {
+                fux_call(
+                    world,
+                    Pending::Ignore,
+                    "fux/node.despawn",
+                    json!({"node": node, "generation": generation}),
+                );
             }
         }
         if matches!(pending, Pending::PaneSurface { .. })
             && let Some(surface) = value.get("surface").and_then(Value::as_u64)
         {
             let expected = provider(world, plugin, surface);
-            fux_call(world, Pending::PaneClose { plugin, opening, node: surface }, "fux/surface.close",
-                json!({"surface": surface, "expected_provider": expected}));
+            fux_call(
+                world,
+                Pending::PaneClose {
+                    plugin,
+                    opening,
+                    node: surface,
+                },
+                "fux/surface.close",
+                json!({"surface": surface, "expected_provider": expected}),
+            );
         }
         return;
     }
@@ -1628,7 +2063,14 @@ fn pane_step(world: &mut World, pending: Pending, result: Result<Value, String>)
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            if token.is_empty() { return fail_pane(world, plugin, opening, "fux returned no scoped token".into()); }
+            if token.is_empty() {
+                return fail_pane(
+                    world,
+                    plugin,
+                    opening,
+                    "fux returned no scoped token".into(),
+                );
+            }
             match write_fux_descriptor(world, &name, opening, &token) {
                 Ok(path) => {
                     if let Some(mut panes) = pane_mut(world, plugin, opening)
@@ -1656,17 +2098,35 @@ fn pane_step(world: &mut World, pending: Pending, result: Result<Value, String>)
                 Err(e) => return fail_pane(world, plugin, opening, e.to_string()),
             };
             let Some(ws) = list.workspaces.iter().find(|w| w.name == open.workspace) else {
-                return fail_pane(world, plugin, opening, format!("workspace {} not found", open.workspace));
+                return fail_pane(
+                    world,
+                    plugin,
+                    opening,
+                    format!("workspace {} not found", open.workspace),
+                );
             };
             let selected = if let Some(target) = open.target {
-                match ws.roots.iter().find(|r| r.panes.iter().any(|p| p.id == target)) {
+                match ws
+                    .roots
+                    .iter()
+                    .find(|r| r.panes.iter().any(|p| p.id == target))
+                {
                     Some(root) => Some(root),
-                    None => return fail_pane(world, plugin, opening, "target pane is outside requested workspace".into()),
+                    None => {
+                        return fail_pane(
+                            world,
+                            plugin,
+                            opening,
+                            "target pane is outside requested workspace".into(),
+                        );
+                    }
                 }
-            } else { ws.roots.first() };
-            let (root, generation, first_pane) = selected
-                .map(|r| (r.id, r.generation, r.panes.first().map(|p| p.id)))
-                .unwrap_or((0, 0, None));
+            } else {
+                ws.roots.first()
+            };
+            let (root, generation, first_pane) = selected.map_or((0, 0, None), |r| {
+                (r.id, r.generation, r.panes.first().map(|p| p.id))
+            });
             let target = open.target.or(first_pane);
             let template = if open.kind == PaneKind::Terminal {
                 Some(pane_template(world, plugin, opening))
@@ -1702,14 +2162,21 @@ fn pane_step(world: &mut World, pending: Pending, result: Result<Value, String>)
                     )
                 }
             };
-            fux_call(world, Pending::PaneCreate { plugin, opening }, method, params);
+            fux_call(
+                world,
+                Pending::PaneCreate { plugin, opening },
+                method,
+                params,
+            );
         }
         Pending::PaneCreate { .. } => {
             let (node, pane, generation) = match open.placement {
-                Placement::Split | Placement::Zoomed => match serde_json::from_value::<PaneCreated>(value) {
-                    Ok(c) => (c.node, Some(c.pane), c.generation),
-                    Err(e) => return fail_pane(world, plugin, opening, e.to_string()),
-                },
+                Placement::Split | Placement::Zoomed => {
+                    match serde_json::from_value::<PaneCreated>(value) {
+                        Ok(c) => (c.node, Some(c.pane), c.generation),
+                        Err(e) => return fail_pane(world, plugin, opening, e.to_string()),
+                    }
+                }
                 Placement::Tab => match serde_json::from_value::<RootCreated>(value) {
                     Ok(c) => (c.root, Some(c.pane), c.generation),
                     Err(e) => return fail_pane(world, plugin, opening, e.to_string()),
@@ -1719,15 +2186,20 @@ fn pane_step(world: &mut World, pending: Pending, result: Result<Value, String>)
                     Err(e) => return fail_pane(world, plugin, opening, e.to_string()),
                 },
             };
-            world.entity_mut(plugin).entry::<RunArgv>().and_modify(|mut a| {
-                if open.kind == PaneKind::Terminal {
-                    a.0.remove(&opening);
-                }
-            });
+            world
+                .entity_mut(plugin)
+                .entry::<RunArgv>()
+                .and_modify(|mut a| {
+                    if open.kind == PaneKind::Terminal {
+                        a.0.remove(&opening);
+                    }
+                });
             set_open(world, plugin, opening, node, pane, None);
             if let Some(mut panes) = world.get_mut::<Panes>(plugin)
                 && let Some(open) = panes.0.iter_mut().find(|o| o.id == opening)
-            { open.generation = Some(generation); }
+            {
+                open.generation = Some(generation);
+            }
             match (open.kind, open.placement) {
                 (PaneKind::Surface, _) => {
                     fux_call(
@@ -1791,22 +2263,51 @@ fn pane_step(world: &mut World, pending: Pending, result: Result<Value, String>)
                 link: None,
                 surface: Some(surface),
             };
-            if let Err(e) = start_run(world, plugin, RunKind::Surface(open.pane.clone()), argv, ctx) {
+            if let Err(e) = start_run(
+                world,
+                plugin,
+                RunKind::Surface(open.pane.clone()),
+                argv,
+                ctx,
+            ) {
                 fail_pane(world, plugin, opening, e.to_string());
             }
         }
-        Pending::Mint { .. } | Pending::Ignore | Pending::PaneClose { .. } | Pending::PaneRemoved { .. } | Pending::ReconcilePanes { .. } | Pending::Retire { .. } => {}
+        Pending::Mint { .. }
+        | Pending::Ignore
+        | Pending::PaneClose { .. }
+        | Pending::PaneRemoved { .. }
+        | Pending::ReconcilePanes { .. }
+        | Pending::Retire { .. } => {}
     }
 }
 
-fn set_open(world: &mut World, plugin: Entity, opening: u64, node: u64, pane: Option<u64>, surface: Option<u64>) {
+fn set_open(
+    world: &mut World,
+    plugin: Entity,
+    opening: u64,
+    node: u64,
+    pane: Option<u64>,
+    surface: Option<u64>,
+) {
     if let Some(mut panes) = pane_mut(world, plugin, opening)
         && let Some(o) = panes.0.iter_mut().find(|o| o.id == opening)
     {
-        o.state = PaneState::Open { node, pane, surface };
+        o.state = PaneState::Open {
+            node,
+            pane,
+            surface,
+        };
     }
     if pane.is_some() {
-        fux_call(world, Pending::ReconcilePanes { openings: vec![(plugin, opening)] }, "fux/workspace.list", json!({}));
+        fux_call(
+            world,
+            Pending::ReconcilePanes {
+                openings: vec![(plugin, opening)],
+            },
+            "fux/workspace.list",
+            json!({}),
+        );
     }
 }
 
@@ -1851,13 +2352,24 @@ fn ingest(world: &mut World) {
             Item::Gap => reconcile_panes(world),
             Item::PaneClosed(pane) => {
                 let host = world.resource::<Host>();
-                if host.observed_fux_instance.is_none() || host.observed_fux_instance != host.fux_instance { continue; }
-                let closed: Vec<_> = world.query::<(Entity, &Panes)>().iter(world)
-                    .flat_map(|(plugin, panes)| panes.0.iter().filter_map(|open| {
+                if host.observed_fux_instance.is_none()
+                    || host.observed_fux_instance != host.fux_instance
+                {
+                    continue;
+                }
+                let closed: Vec<_> = world
+                    .query::<(Entity, &Panes)>()
+                    .iter(world)
+                    .flat_map(|(plugin, panes)| {
+                        panes.0.iter().filter_map(|open| {
                         matches!(open.state, PaneState::Open { pane: Some(id), .. } if id == pane)
                             .then_some((plugin, open.id))
-                    }).collect::<Vec<_>>()).collect();
-                for (plugin, opening) in closed { retire_pane(world, plugin, opening); }
+                    }).collect::<Vec<_>>()
+                    })
+                    .collect();
+                for (plugin, opening) in closed {
+                    retire_pane(world, plugin, opening);
+                }
             }
             Item::Exited { plugin, run, code } => on_exit(world, plugin, run, code),
             Item::Reply { call, result } => {
@@ -1866,11 +2378,17 @@ fn ingest(world: &mut World) {
                 };
                 match pending {
                     Pending::Mint { plugin, run } => {
-                        let wanted = world.get::<Runs>(plugin).is_some_and(|runs| runs.0.iter().any(|r| r.id == run && r.state == RunState::Minting));
+                        let wanted = world.get::<Runs>(plugin).is_some_and(|runs| {
+                            runs.0
+                                .iter()
+                                .any(|r| r.id == run && r.state == RunState::Minting)
+                        });
                         if !wanted {
                             if let Ok(value) = result
                                 && let Some(token) = value.get("token").and_then(Value::as_str)
-                            { revoke_fux_token(world, token.to_owned()); }
+                            {
+                                revoke_fux_token(world, token.to_owned());
+                            }
                             continue;
                         }
                         let token = match result {
@@ -1879,7 +2397,9 @@ fn ingest(world: &mut World) {
                                 .and_then(Value::as_str)
                                 .map(str::to_owned),
                             Err(e) => {
-                                world.entity_mut(plugin).insert(PluginProblem(format!("fux token not minted: {e}")));
+                                world
+                                    .entity_mut(plugin)
+                                    .insert(PluginProblem(format!("fux token not minted: {e}")));
                                 on_exit(world, plugin, run, None);
                                 continue;
                             }
@@ -1891,11 +2411,17 @@ fn ingest(world: &mut World) {
                         spawn_run(world, plugin, run, token);
                     }
                     Pending::Retire { path } => match result {
-                        Ok(_) => { let _ = std::fs::remove_file(path); }
-                        Err(e) => bevy_log::warn!("plugin grant retirement unresolved; descriptor retained: {e}"),
+                        Ok(_) => {
+                            let _ = std::fs::remove_file(path);
+                        }
+                        Err(e) => bevy_log::warn!(
+                            "plugin grant retirement unresolved; descriptor retained: {e}"
+                        ),
                     },
                     Pending::Ignore => {
-                        if let Err(e) = result { bevy_log::warn!("plugin cleanup or viewer update failed: {e}"); }
+                        if let Err(e) = result {
+                            bevy_log::warn!("plugin cleanup or viewer update failed: {e}");
+                        }
                     }
                     other => pane_step(world, other, result),
                 }
@@ -1906,20 +2432,51 @@ fn ingest(world: &mut World) {
 
 fn reconcile_panes(world: &mut World) {
     let host = world.resource::<Host>();
-    if host.observed_fux_instance.is_none() || host.observed_fux_instance != host.fux_instance
-        || host.calls.values().any(|p| matches!(p, Pending::ReconcilePanes { .. })) { return; }
-    let openings: Vec<_> = world.query::<(Entity, &Panes)>().iter(world).flat_map(|(plugin, panes)| {
-        panes.0.iter().filter_map(|open| matches!(open.state, PaneState::Open { pane: Some(_), .. }).then_some((plugin, open.id))).collect::<Vec<_>>()
-    }).collect();
+    if host.observed_fux_instance.is_none()
+        || host.observed_fux_instance != host.fux_instance
+        || host
+            .calls
+            .values()
+            .any(|p| matches!(p, Pending::ReconcilePanes { .. }))
+    {
+        return;
+    }
+    let openings: Vec<_> = world
+        .query::<(Entity, &Panes)>()
+        .iter(world)
+        .flat_map(|(plugin, panes)| {
+            panes
+                .0
+                .iter()
+                .filter_map(|open| {
+                    matches!(open.state, PaneState::Open { pane: Some(_), .. })
+                        .then_some((plugin, open.id))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
     if !openings.is_empty() {
-        fux_call(world, Pending::ReconcilePanes { openings }, "fux/workspace.list", json!({}));
+        fux_call(
+            world,
+            Pending::ReconcilePanes { openings },
+            "fux/workspace.list",
+            json!({}),
+        );
     }
 }
 
 fn on_exit(world: &mut World, plugin: Entity, run: u64, code: Option<i32>) {
-    let canceled = world.get::<Runs>(plugin).is_some_and(|runs| runs.0.iter().any(|r| r.id == run && r.state == RunState::Stopping));
+    let canceled = world.get::<Runs>(plugin).is_some_and(|runs| {
+        runs.0
+            .iter()
+            .any(|r| r.id == run && r.state == RunState::Stopping)
+    });
     retire_run_token(world, plugin, run);
-    if world.get::<Runs>(plugin).is_none_or(|runs| runs.0.iter().all(|r| r.id != run || matches!(r.state, RunState::Exited { .. }))) {
+    if world.get::<Runs>(plugin).is_none_or(|runs| {
+        runs.0
+            .iter()
+            .all(|r| r.id != run || matches!(r.state, RunState::Exited { .. }))
+    }) {
         return;
     }
     let ms = now(world);
@@ -1932,7 +2489,9 @@ fn on_exit(world: &mut World, plugin: Entity, run: u64, code: Option<i32>) {
         return;
     };
     world.resource_mut::<Journal>().mark_dirty();
-    if canceled { return; }
+    if canceled {
+        return;
+    }
     match record.kind {
         RunKind::Hook => {
             let enabled = world.get::<Active>(plugin).is_some();
@@ -1986,18 +2545,34 @@ fn read_cursors(path: &Path) -> Result<HookCursors, String> {
         Err(e) => return Err(format!("hook cursors: {e}")),
     };
     let mut bytes = Vec::new();
-    file.take(16 * 1024 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-    if bytes.len() > 16 * 1024 { return Err("hook cursor file exceeds bound".into()); }
+    file.take(16 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 16 * 1024 {
+        return Err("hook cursor file exceeds bound".into());
+    }
     serde_json::from_slice(&bytes).map_err(|e| format!("hook cursors corrupt; replay refused: {e}"))
 }
 
 /// The hook process reports the last cursor it processed on either stream; persisted at once.
-pub fn set_cursor(world: &mut World, plugin: Entity, zor: Option<u64>, fux: Option<u64>) -> Res<HookCursors> {
+pub fn set_cursor(
+    world: &mut World,
+    plugin: Entity,
+    zor: Option<u64>,
+    fux: Option<u64>,
+) -> Res<HookCursors> {
     set_cursor_for(world, plugin, zor, fux, None, None)
 }
 
 /// Cursors are scoped to server incarnation. Switching incarnation resets only that stream.
-pub fn set_cursor_for(world: &mut World, plugin: Entity, zor: Option<u64>, fux: Option<u64>, zor_instance: Option<String>, fux_instance: Option<String>) -> Res<HookCursors> {
+pub fn set_cursor_for(
+    world: &mut World,
+    plugin: Entity,
+    zor: Option<u64>,
+    fux: Option<u64>,
+    zor_instance: Option<String>,
+    fux_instance: Option<String>,
+) -> Res<HookCursors> {
     check_plugin(world, plugin)?;
     let Some(hook) = world.get::<Hook>(plugin) else {
         return Err(PluginError::NotFound("hook".into()));
@@ -2024,7 +2599,9 @@ pub fn set_cursor_for(world: &mut World, plugin: Entity, zor: Option<u64>, fux: 
     let name = name_of(world, plugin);
     let path = world.resource::<PluginPaths>().cursors(&name);
     write_cursors(&path, &cursors).map_err(PluginError::Io)?;
-    if let Some(mut hook) = world.get_mut::<Hook>(plugin) { hook.cursors = cursors.clone(); }
+    if let Some(mut hook) = world.get_mut::<Hook>(plugin) {
+        hook.cursors = cursors.clone();
+    }
     Ok(cursors)
 }
 
@@ -2110,7 +2687,13 @@ pub fn record(world: &World, plugin: Entity) -> PluginRecord {
         problem: world.get::<PluginProblem>(plugin).map(|p| p.0.clone()),
         actions,
         events: loaded
-            .map(|l| l.manifest.events.iter().map(|e| e.pattern.clone()).collect())
+            .map(|l| {
+                l.manifest
+                    .events
+                    .iter()
+                    .map(|e| e.pattern.clone())
+                    .collect()
+            })
             .unwrap_or_default(),
         panes: loaded
             .map(|l| l.manifest.panes.iter().map(|p| p.id.clone()).collect())

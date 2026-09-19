@@ -4,14 +4,15 @@
 //! `cargo run --manifest-path tools/xtask/Cargo.toml -- deps` prints the resolved normal
 //! dependency graph of `fux` and `zor` and fails when a rule is violated:
 //!
-//! * no direct dependency on tokio, ratatui, tracing-subscriber, anyhow, bevy_render, bevy_winit,
-//!   bevy_text, bevy_sprite (prompt section 2; bevy_dev_tools is allowed);
+//! * no forbidden direct runtime dependency, except fux's resource-only `bevy_text` use
+//!   required by headless `UiPlugin` (execution-time amendment 3 in the rewrite prompt);
 //! * every path to `bevy_render`/`wgpu`/`naga` goes through `bevy_remote -> bevy_dev_tools`
 //!   (the one recorded exception, see `docs/dependencies.md`).
 //!
 //! `… -- scenarios` builds `fux` and `zor`, runs two disposable stacks and drives the
 //! multi-machine scenarios through the CLIs and BRP (see [`scenarios`]).
 
+mod measure;
 mod scenarios;
 
 use serde::Deserialize;
@@ -85,8 +86,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("measure") => match measure::run(args.collect()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("measure: {e}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
-            eprintln!("usage: xtask deps | scenarios");
+            eprintln!("usage: xtask deps | scenarios | measure [options]");
             ExitCode::FAILURE
         }
     }
@@ -129,7 +137,10 @@ fn deps() -> Result<(), String> {
         let direct = normal.get(root.id.as_str()).cloned().unwrap_or_default();
         for d in &direct {
             let (n, _) = names[d];
-            if FORBIDDEN_DIRECT.contains(&n) {
+            // UiPlugin validates these text resources even without text entities. Amendment
+            // 3 permits their initialization; neither application installs a text renderer.
+            let headless_ui_resources = root_name == "fux" && n == "bevy_text";
+            if FORBIDDEN_DIRECT.contains(&n) && !headless_ui_resources {
                 failures.push(format!("{root_name}: forbidden direct dependency {n}"));
             }
         }
@@ -167,9 +178,13 @@ fn deps() -> Result<(), String> {
                 // Every render-crate path must pass through bevy_remote -> bevy_dev_tools.
                 // The BFS parent chain is one shortest path; verify the edge into bevy_render
                 // (the only wgpu owner) originates from bevy_dev_tools's subtree.
-                let through_dev_tools = path.windows(2).any(|w| w == ["bevy_remote", "bevy_dev_tools"]);
+                let through_dev_tools = path
+                    .windows(2)
+                    .any(|w| w == ["bevy_remote", "bevy_dev_tools"]);
                 if !through_dev_tools {
-                    failures.push(format!("{root_name}: {n} reachable outside bevy_remote->bevy_dev_tools: {joined}"));
+                    failures.push(format!(
+                        "{root_name}: {n} reachable outside bevy_remote->bevy_dev_tools: {joined}"
+                    ));
                 }
             }
         }
@@ -183,9 +198,24 @@ fn deps() -> Result<(), String> {
                 .map(|id| names[id].0)
                 .collect();
             dependants.sort_unstable();
-            println!("{root_name}: bevy_render dependants: {}", dependants.join(", "));
+            println!(
+                "{root_name}: bevy_render dependants: {}",
+                dependants.join(", ")
+            );
             for d in dependants {
-                if !["bevy_dev_tools", "bevy_core_pipeline", "bevy_pbr", "bevy_sprite_render", "bevy_ui_render", "bevy_light", "bevy_material", "bevy_anti_alias", "bevy_post_process"].contains(&d) {
+                if ![
+                    "bevy_dev_tools",
+                    "bevy_core_pipeline",
+                    "bevy_pbr",
+                    "bevy_sprite_render",
+                    "bevy_ui_render",
+                    "bevy_light",
+                    "bevy_material",
+                    "bevy_anti_alias",
+                    "bevy_post_process",
+                ]
+                .contains(&d)
+                {
                     failures.push(format!("{root_name}: unexpected bevy_render dependant {d}"));
                 }
             }

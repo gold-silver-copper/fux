@@ -10,8 +10,8 @@ use bevy_ecs::entity::EntityHashMap;
 use bevy_ecs::error::BevyError;
 use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::AppTypeRegistry;
-use bevy_input_focus::{FocusCause, InputFocus};
 use bevy_input_focus::tab_navigation::TabIndex;
+use bevy_input_focus::{FocusCause, InputFocus};
 use bevy_platform::collections::HashSet;
 use bevy_ui::{Node, UiTargetCamera};
 use bevy_world_serialization::serde::WorldDeserializer;
@@ -223,8 +223,11 @@ pub fn apply_scene(world: &mut World, frame: &SceneFrame) -> Result<(), BevyErro
     });
     let same_target = world.resource::<TargetPane>().0 == frame.target
         && world.resource::<ShowingRoot>().0 == frame.showing;
-    if frame.full || !same_target || !frame.scene.is_empty()
-        || !frame.despawned.is_empty() || frame.roots.is_some()
+    if frame.full
+        || !same_target
+        || !frame.scene.is_empty()
+        || !frame.despawned.is_empty()
+        || frame.roots.is_some()
     {
         world.resource_mut::<InputSceneRevision>().0 = frame.revision;
     }
@@ -263,8 +266,10 @@ pub fn apply_scene(world: &mut World, frame: &SceneFrame) -> Result<(), BevyErro
     // Instance entities are replaced on template edits; a stable surface leaf remains the
     // keyboard owner. Restore it in First, before PreUpdate dispatches the next input batch.
     if same_target && let Some(node) = surface_focus {
-        let replacement = world.query_filtered::<(Entity, &NodeId), (With<Surface>, With<Replicated>)>()
-            .iter(world).find_map(|(entity, id)| (*id == node).then_some(entity));
+        let replacement = world
+            .query_filtered::<(Entity, &NodeId), (With<Surface>, With<Replicated>)>()
+            .iter(world)
+            .find_map(|(entity, id)| (*id == node).then_some(entity));
         let mut focus = world.resource_mut::<InputFocus>();
         if let Some(entity) = replacement {
             focus.set(entity, FocusCause::Navigated);

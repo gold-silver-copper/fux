@@ -34,6 +34,21 @@ jobs:
       - run: cargo +${{ matrix.rust }} build --locked --workspace --bins
       - run: cargo +${{ matrix.rust }} test --workspace --locked -- --test-threads=1
       - run: cargo +${{ matrix.rust }} doc --workspace --no-deps --locked
-      - run: cargo +${{ matrix.rust }} package -p fux --allow-dirty --no-verify
+      - run: cargo +${{ matrix.rust }} package --workspace --locked --allow-dirty --no-verify
       - name: Dependency report (prompt section 2)
         run: cargo +${{ matrix.rust }} run --locked --manifest-path tools/xtask/Cargo.toml -- deps
+      - name: Tooling format and lint
+        run: |
+          cargo +${{ matrix.rust }} fmt --manifest-path tools/xtask/Cargo.toml --check
+          cargo +${{ matrix.rust }} clippy --locked --manifest-path tools/xtask/Cargo.toml --all-targets -- -D warnings
+      - name: Composed terminal and recovery scenarios
+        env:
+          FUX_SCENARIO_ARTIFACTS: ${{ runner.temp }}/fux-zor-scenarios
+        run: cargo +${{ matrix.rust }} run --locked --manifest-path tools/xtask/Cargo.toml -- scenarios
+      - name: Isolated source installation
+        run: |
+          cargo +${{ matrix.rust }} install --locked --path crates/fux --root "$RUNNER_TEMP/fux-alpha" --target-dir target --force
+          cargo +${{ matrix.rust }} install --locked --path crates/zor --root "$RUNNER_TEMP/fux-alpha" --target-dir target --force
+          "$RUNNER_TEMP/fux-alpha/bin/fux" --version
+          "$RUNNER_TEMP/fux-alpha/bin/zor" --version
+          cargo +${{ matrix.rust }} uninstall --root "$RUNNER_TEMP/fux-alpha" fux zor

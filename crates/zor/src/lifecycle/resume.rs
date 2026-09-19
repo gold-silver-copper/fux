@@ -72,10 +72,16 @@ const STORAGE_KEYS: &[&str] = &[
 /// XDG treats an absent/empty setting as its HOME-relative default. A stable launch retry uses
 /// its original snapshot for omitted keys; it must not acquire the restarted daemon's HOME.
 pub(super) fn capture_storage_env(world: &World, spec: &mut LaunchSpec) {
-    if !spec.integration.as_ref().is_some_and(|provider| provider.kind == ProviderKind::OpenCode) {
+    if !spec
+        .integration
+        .as_ref()
+        .is_some_and(|provider| provider.kind == ProviderKind::OpenCode)
+    {
         return;
     }
-    let retained = world.resource::<Ids>().operation(&spec.operation)
+    let retained = world
+        .resource::<Ids>()
+        .operation(&spec.operation)
         .and_then(|operation| world.get::<LaunchTemplate>(operation));
     if let Some(template) = retained {
         for key in STORAGE_KEYS {
@@ -91,8 +97,14 @@ pub(super) fn capture_storage_env(world: &World, spec: &mut LaunchSpec) {
         }
         return;
     }
-    let value = |key: &str| spec.env.iter().rev().find(|(name, _)| name == key)
-        .map(|(_, value)| value.clone()).or_else(|| std::env::var(key).ok());
+    let value = |key: &str| {
+        spec.env
+            .iter()
+            .rev()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var(key).ok())
+    };
     let Some(home) = value("HOME").filter(|home| Path::new(home).is_absolute()) else {
         // Launch remains supported; without proof of the namespace resume is unavailable.
         return;
@@ -105,7 +117,8 @@ pub(super) fn capture_storage_env(world: &World, spec: &mut LaunchSpec) {
         ("XDG_STATE_HOME", ".local/state"),
         ("XDG_CACHE_HOME", ".cache"),
     ] {
-        let directory = value(key).filter(|value| !value.is_empty())
+        let directory = value(key)
+            .filter(|value| !value.is_empty())
             .unwrap_or_else(|| Path::new(&home).join(suffix).display().to_string());
         effective.push((key, directory));
     }
@@ -137,7 +150,9 @@ fn plan(world: &World, task: Entity) -> Result<Plan<'_>, LifecycleError> {
     let (previous_attempt, attempt) = old;
     if world.get::<Ownership>(attempt) != Some(&Ownership::Managed)
         || world.get::<AttemptState>(attempt) != Some(&AttemptState::Finished)
-        || !world.get::<FinalEvidence>(attempt).is_some_and(|e| e.exit_code.is_some())
+        || world
+            .get::<FinalEvidence>(attempt)
+            .is_none_or(|e| e.exit_code.is_none())
         || world.get::<Uncertain>(attempt).is_some()
         || world.get::<Lost>(attempt).is_some()
     {
@@ -145,7 +160,10 @@ fn plan(world: &World, task: Entity) -> Result<Plan<'_>, LifecycleError> {
     }
     if world.get::<TaskChecks>(task).is_some_and(|checks| {
         checks.iter().any(|check| {
-            matches!(world.get::<CheckState>(check), Some(CheckState::Queued | CheckState::Running | CheckState::Uncertain))
+            matches!(
+                world.get::<CheckState>(check),
+                Some(CheckState::Queued | CheckState::Running | CheckState::Uncertain)
+            )
         })
     }) {
         return refuse("unresolved checks prevent resume");
@@ -156,49 +174,78 @@ fn plan(world: &World, task: Entity) -> Result<Plan<'_>, LifecycleError> {
             if world.get::<Operations>(entity).is_some_and(|operations| {
                 operations.iter().any(|operation| {
                     world.get::<MemberOf>(operation).is_some()
-                        || matches!(world.get::<OperationPhase>(operation), Some(OperationPhase::Prepared | OperationPhase::Submitting | OperationPhase::Uncertain))
+                        || matches!(
+                            world.get::<OperationPhase>(operation),
+                            Some(
+                                OperationPhase::Prepared
+                                    | OperationPhase::Submitting
+                                    | OperationPhase::Uncertain
+                            )
+                        )
                 })
             }) {
                 return refuse("group membership or unresolved operations prevent resume");
             }
             if world.get::<Prompts>(entity).is_some_and(|prompts| {
-                prompts.iter().any(|prompt| world.get::<Delivery>(prompt).is_some_and(|d| d.is_pending()))
+                prompts.iter().any(|prompt| {
+                    world
+                        .get::<Delivery>(prompt)
+                        .is_some_and(|d| d.is_pending())
+                })
             }) {
                 return refuse("unresolved prompt delivery prevents resume");
             }
         }
     }
-    let provider = world.get::<Provider>(attempt)
+    let provider = world
+        .get::<Provider>(attempt)
         .ok_or_else(|| LifecycleError::Refused("no retained native provider authority".into()))?;
     if provider.kind != ProviderKind::OpenCode {
-        return refuse("only OpenCode has a supported native session resume command; Codex starts a new thread and Claude is passive");
+        return refuse(
+            "only OpenCode has a supported native session resume command; Codex starts a new thread and Claude is passive",
+        );
     }
-    if world.get::<ProviderSession>(attempt).is_some_and(|s| !matches!(s.state, SessionState::Exited { .. })) {
+    if world
+        .get::<ProviderSession>(attempt)
+        .is_some_and(|s| !matches!(s.state, SessionState::Exited { .. }))
+    {
         return refuse("old provider sidecar absence is unproven");
     }
-    let lifetime = world.get::<ProducerLifetime>(attempt)
+    let lifetime = world
+        .get::<ProducerLifetime>(attempt)
         .ok_or_else(|| LifecycleError::Refused("provider exit authority is missing".into()))?;
     if !lifetime.producer.is_empty() {
         return refuse("old provider sidecar is not retired");
     }
-    let handle = world.get::<PaneHandle>(attempt)
+    let handle = world
+        .get::<PaneHandle>(attempt)
         .ok_or_else(|| LifecycleError::Refused("old pane identity is missing".into()))?;
     let mut session = None;
     if let Some(prompts) = world.get::<Prompts>(attempt) {
         for prompt in prompts.iter() {
-            let Some(binding) = world.get::<Binding>(prompt) else { continue };
+            let Some(binding) = world.get::<Binding>(prompt) else {
+                continue;
+            };
             let receipt_matches = world.get::<Receipt>(prompt).is_some_and(|receipt| {
-                receipt.instance == handle.instance && receipt.pane == handle.pane
+                receipt.instance == handle.instance
+                    && receipt.pane == handle.pane
                     && receipt.operation == binding.input_operation
             });
             let retired = lifetime.retired.iter().any(|(producer, start, end)| {
-                !producer.is_empty() && *producer == binding.producer
-                    && *start <= binding.bound_ms && binding.bound_ms <= *end
+                !producer.is_empty()
+                    && *producer == binding.producer
+                    && *start <= binding.bound_ms
+                    && binding.bound_ms <= *end
             });
-            if !receipt_matches || !retired || binding.session.is_empty()
-                || binding.session.len() > 256 || binding.session.chars().any(char::is_control)
+            if !receipt_matches
+                || !retired
+                || binding.session.is_empty()
+                || binding.session.len() > 256
+                || binding.session.chars().any(char::is_control)
             {
-                return refuse("native session binding does not match retained receipt and retired producer authority");
+                return refuse(
+                    "native session binding does not match retained receipt and retired producer authority",
+                );
             }
             if session.is_some_and(|old| old != binding.session.as_str()) {
                 return refuse("ambiguous native session identities in the old attempt");
@@ -206,20 +253,27 @@ fn plan(world: &World, task: Entity) -> Result<Plan<'_>, LifecycleError> {
             session = Some(binding.session.as_str());
         }
     }
-    let session = session.ok_or_else(|| LifecycleError::Refused("no receipt-correlated native session binding".into()))?;
+    let session = session.ok_or_else(|| {
+        LifecycleError::Refused("no receipt-correlated native session binding".into())
+    })?;
     let operation = super::launch_of(world, attempt)
         .ok_or_else(|| LifecycleError::Refused("managed launch authority is missing".into()))?;
-    let template = world.get::<LaunchTemplate>(operation)
+    let template = world
+        .get::<LaunchTemplate>(operation)
         .ok_or_else(|| LifecycleError::Refused("managed launch template is missing".into()))?;
-    if template.integration.as_deref() != Some("opencode") || provider.argv.is_empty()
-        || provider.cwd.as_deref() != Some(template.cwd.as_str()) || provider.env != template.env
+    if template.integration.as_deref() != Some("opencode")
+        || provider.argv.is_empty()
+        || provider.cwd.as_deref() != Some(template.cwd.as_str())
+        || provider.env != template.env
     {
         return refuse("provider and launch storage context disagree");
     }
     for key in STORAGE_KEYS {
         let mut values = template.env.iter().filter(|(name, _)| name == key);
         let Some((_, value)) = values.next() else {
-            return refuse("resume requires explicitly retained HOME and all XDG storage directories");
+            return refuse(
+                "resume requires explicitly retained HOME and all XDG storage directories",
+            );
         };
         if !Path::new(value).is_absolute() || value.contains('\0') || values.next().is_some() {
             return refuse("resume storage directories must be unique absolute paths");
@@ -229,12 +283,18 @@ fn plan(world: &World, task: Entity) -> Result<Plan<'_>, LifecycleError> {
     let Some(executable) = argv.first() else {
         return refuse("original provider executable is missing");
     };
-    if Path::new(executable).file_name().and_then(|name| name.to_str()) != Some("opencode") {
+    if Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some("opencode")
+    {
         return refuse("resume requires a direct opencode executable, not a command wrapper");
     }
     if let Some(previous) = world.get::<ResumeIntent>(operation) {
-        if argv.len() != 3 || argv.get(1).map(String::as_str) != Some("--session")
-            || argv.get(2) != Some(&previous.native_session) || session != previous.native_session
+        if argv.len() != 3
+            || argv.get(1).map(String::as_str) != Some("--session")
+            || argv.get(2) != Some(&previous.native_session)
+            || session != previous.native_session
         {
             return refuse("retained resumed command or native session changed");
         }
@@ -243,7 +303,9 @@ fn plan(world: &World, task: Entity) -> Result<Plan<'_>, LifecycleError> {
     }
     let cwd = match world.get::<Location>(task) {
         Some(Location::Cwd(path)) => Some(path.clone()),
-        Some(Location::Worktree(id)) => world.resource::<Ids>().worktree(id)
+        Some(Location::Worktree(id)) => world
+            .resource::<Ids>()
+            .worktree(id)
             .and_then(|entity| crate::worktrees::path_of(world, entity))
             .map(|path| path.display().to_string()),
         None => None,
@@ -251,7 +313,13 @@ fn plan(world: &World, task: Entity) -> Result<Plan<'_>, LifecycleError> {
     if cwd.as_deref() != Some(template.cwd.as_str()) {
         return refuse("task location no longer matches the native session launch");
     }
-    Ok(Plan { previous_attempt, session, executable, template, provider })
+    Ok(Plan {
+        previous_attempt,
+        session,
+        executable,
+        template,
+        provider,
+    })
 }
 
 /// Read-only eligibility, not permission to dispatch later without repeating these checks.
@@ -267,20 +335,28 @@ pub fn eligibility(world: &World, task: Entity) -> Result<Eligibility, Lifecycle
 /// Returns the original attempt on a stable retry, including after a lost reply or restart.
 /// Never calls launch's Prepared retry path: even an undispatched restored resume is reconciled,
 /// not authority to repeat external effects after its eligibility may have changed.
-pub fn retained(world: &World, task: Entity, spec: &ResumeSpec) -> Result<Option<Entity>, LifecycleError> {
+pub fn retained(
+    world: &World,
+    task: Entity,
+    spec: &ResumeSpec,
+) -> Result<Option<Entity>, LifecycleError> {
     let Some(operation) = world.resource::<Ids>().operation(&spec.operation) else {
         if world.resource::<Ids>().prompt(&spec.operation).is_some() {
-            return Err(LifecycleError::Conflict("resume operation ID belongs to a prompt".into()));
+            return Err(LifecycleError::Conflict(
+                "resume operation ID belongs to a prompt".into(),
+            ));
         }
         return Ok(None);
     };
     let intent = world.get::<ResumeIntent>(operation);
     let attempt = world.get::<OperationOf>(operation).map(|owner| owner.0);
     if world.get::<OperationKind>(operation) != Some(&OperationKind::Launch)
-        || !intent.is_some_and(|intent| intent.fux_instance == spec.fux_instance)
-        || !attempt.is_some_and(|attempt| super::task_of(world, attempt) == Some(task))
+        || intent.is_none_or(|intent| intent.fux_instance != spec.fux_instance)
+        || attempt.is_none_or(|attempt| super::task_of(world, attempt) != Some(task))
     {
-        return Err(LifecycleError::Conflict("resume operation was recorded with different intent".into()));
+        return Err(LifecycleError::Conflict(
+            "resume operation was recorded with different intent".into(),
+        ));
     }
     Ok(attempt)
 }
@@ -302,7 +378,11 @@ pub fn resume(world: &mut World, task: Entity, spec: ResumeSpec) -> Result<Entit
     };
     let launch = LaunchSpec {
         operation: spec.operation,
-        argv: vec![plan.executable.into(), "--session".into(), plan.session.into()],
+        argv: vec![
+            plan.executable.into(),
+            "--session".into(),
+            plan.session.into(),
+        ],
         env: plan.template.env.clone(),
         // A late cleanup of the old ephemeral workspace must never target the new process.
         workspace: if plan.template.ephemeral {
@@ -311,7 +391,10 @@ pub fn resume(world: &mut World, task: Entity, spec: ResumeSpec) -> Result<Entit
             plan.template.workspace.clone()
         },
         ephemeral: plan.template.ephemeral,
-        integration: Some(Integration { kind: plan.provider.kind, argv: plan.provider.argv.clone() }),
+        integration: Some(Integration {
+            kind: plan.provider.kind,
+            argv: plan.provider.argv.clone(),
+        }),
     };
     let attempt = super::launch(world, task, launch)?;
     // launch has only enqueued an Effect: PostUpdate journal sees both intents before Last

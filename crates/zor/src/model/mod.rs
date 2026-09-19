@@ -92,7 +92,6 @@ fn ingest_signals(mut inbound: MessageReader<Inbound>, mut next: ResMut<NextStat
     }
 }
 
-
 /// Bevy `Messages` are used only within one `update`: the runner writes the batch and this
 /// system clears it, so nothing is retained across steps.
 fn clear_inbound(mut inbound: ResMut<Messages<Inbound>>) {

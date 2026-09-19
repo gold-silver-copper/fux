@@ -8,7 +8,7 @@ description = "Agent and task policy layer over fux, as a Bevy App"
 
 [dependencies]
 # The runner loop, BRP client/descriptor/token and the signal forwarder are shared with fux.
-fux = { path = "../fux" }
+fux = { path = "../fux", version = "=1.0.0-alpha.1" }
 bevy_app.workspace = true
 bevy_ecs.workspace = true
 bevy_reflect.workspace = true

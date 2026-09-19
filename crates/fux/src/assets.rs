@@ -303,8 +303,13 @@ pub fn action_name(name: &str) -> Option<std::borrow::Cow<'static, str>> {
 /// The unambiguous `plugin:NAME/ACTION` configuration vocabulary.
 pub fn plugin_action(name: &str) -> Option<(&str, &str)> {
     let (plugin, action) = name.strip_prefix("plugin:")?.split_once('/')?;
-    let valid = |id: &str| !id.is_empty() && id.len() <= 64
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+    let valid = |id: &str| {
+        !id.is_empty()
+            && id.len() <= 64
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    };
     (valid(plugin) && valid(action)).then_some((plugin, action))
 }
 

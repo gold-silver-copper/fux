@@ -11,15 +11,15 @@
 
 pub mod check_methods;
 pub mod dashboard_methods;
-pub mod machine_methods;
-pub mod plugin_methods;
 pub mod events;
 pub mod group_methods;
+pub mod machine_methods;
 pub mod methods;
+pub mod plugin_methods;
 pub mod projection;
 pub mod provider_methods;
-pub mod task_methods;
 pub mod resume_methods;
+pub mod task_methods;
 pub mod watch;
 
 use std::path::PathBuf;
@@ -164,7 +164,6 @@ impl Plugin for RemoteHostPlugin {
             .add_systems(Last, watch::poll.in_set(RemoteHostSystems::Watch));
     }
 }
-
 
 /// Moves `bevy_remote`'s receiver into a forwarder task that wakes the runner per request.
 fn take_mailbox(world: &mut World, inbound: &Sender<Inbound>) {

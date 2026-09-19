@@ -1041,7 +1041,9 @@ fn workspace_new(mut req: Request, world: &mut World) -> BrpResult {
     let params: WorkspaceNewParams = req.parse()?;
     let template = if params.empty.unwrap_or(false) {
         if params.template.is_some() {
-            return Err(invalid("an empty workspace cannot carry a process template"));
+            return Err(invalid(
+                "an empty workspace cannot carry a process template",
+            ));
         }
         None
     } else {
@@ -1054,7 +1056,9 @@ fn workspace_new(mut req: Request, world: &mut World) -> BrpResult {
     let created = match template {
         Some(template) => new_root_with_pane(world, workspace, "main", template)
             .map(|(root, leaf)| (root, Some(leaf))),
-        None => ops::new_root(world, workspace, "main").map(|root| (root, None)).map_err(layout_error),
+        None => ops::new_root(world, workspace, "main")
+            .map(|root| (root, None))
+            .map_err(layout_error),
     };
     let (root, leaf) = match created {
         Ok(created) => created,
@@ -1076,8 +1080,12 @@ fn workspace_kill(mut req: Request, world: &mut World) -> BrpResult {
     let params: WorkspaceKillParams = req.parse()?;
     let workspace = req.workspace(world, &params.name)?;
     if params.empty_only == Some(true) {
-        let panes = world.get::<crate::model::WorkspacePanes>(workspace).is_some_and(|panes| !panes.is_empty());
-        let viewers = world.get::<ViewedBy>(workspace).is_some_and(|viewers| !viewers.is_empty());
+        let panes = world
+            .get::<crate::model::WorkspacePanes>(workspace)
+            .is_some_and(|panes| !panes.is_empty());
+        let viewers = world
+            .get::<ViewedBy>(workspace)
+            .is_some_and(|viewers| !viewers.is_empty());
         let mut surface = false;
         if let Some(roots) = world.get::<crate::model::Roots>(workspace) {
             for root in roots.iter() {
@@ -1879,7 +1887,12 @@ pub static TABLE: &[MethodSpec] = &[
         Capture
     ),
     spec!("fux/schema", brp_schema, NoParams, SchemaTable),
-    spec!("fux/events.poll", events_poll, watch::EventsWatchParams, watch::EventsPollResult),
+    spec!(
+        "fux/events.poll",
+        events_poll,
+        watch::EventsWatchParams,
+        watch::EventsPollResult
+    ),
     spec!(
         watch watch::EVENTS_WATCH_METHOD,
         open_events,

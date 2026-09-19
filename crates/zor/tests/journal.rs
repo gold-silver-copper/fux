@@ -12,8 +12,8 @@
 )]
 mod common;
 
-use std::os::unix::fs::PermissionsExt;
 use std::collections::BTreeMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use bevy_app::App;
@@ -21,13 +21,13 @@ use bevy_ecs::relationship::RelationshipTarget;
 use common::spawn_graph;
 use zor::config::Config;
 use zor::journal::{self, Journal};
-use zor::model::invariants::check_invariants;
 use zor::machines::{
     self, MachinesFile,
     catalog::{Catalog, MachineEntry},
     intents::{ActionIntent, IntentLog},
     supervision::{ActionKind, ActionPhase, ActionRecord, Freshness, RemoteView, Supervision},
 };
+use zor::model::invariants::check_invariants;
 use zor::model::*;
 
 fn app(state: &Path) -> App {
@@ -141,12 +141,14 @@ fn catalog_is_the_only_machine_authority_across_workflow_journal_restart() {
     let state = dir.path().join("state");
     let path = dir.path().join("private/machines.json");
     let mut catalog = Catalog::empty();
-    catalog.add(MachineEntry {
-        id: "m-one".into(),
-        name: "laptop".into(),
-        control: None,
-        attachments: BTreeMap::new(),
-    }).unwrap();
+    catalog
+        .add(MachineEntry {
+            id: "m-one".into(),
+            name: "laptop".into(),
+            control: None,
+            attachments: BTreeMap::new(),
+        })
+        .unwrap();
     catalog.save(&path).unwrap();
     let record = ActionRecord {
         id: 1,
@@ -166,34 +168,62 @@ fn catalog_is_the_only_machine_authority_across_workflow_journal_restart() {
     };
     {
         let mut app = app(&state);
-        app.insert_resource(MachinesFile { path: path.clone(), asset_root: None });
+        app.insert_resource(MachinesFile {
+            path: path.clone(),
+            asset_root: None,
+        });
         app.update();
         let machine = app.world().resource::<Ids>().machine("m-one").unwrap();
-        assert_eq!(machines::snapshot(app.world(), "laptop").unwrap().id, "m-one");
-        assert!(!journal_file(&state).exists(), "catalog activation is not a workflow commit");
-        app.world_mut().resource_mut::<IntentLog>().commit(intent.clone()).unwrap();
-        spawn_task(app.world_mut(), TaskSpec {
-            id: "local-task",
-            title: "unrelated workflow",
-            location: Location::Cwd("/tmp".into()),
-            created_ms: 0,
-        }).unwrap();
+        assert_eq!(
+            machines::snapshot(app.world(), "laptop").unwrap().id,
+            "m-one"
+        );
+        assert!(
+            !journal_file(&state).exists(),
+            "catalog activation is not a workflow commit"
+        );
+        app.world_mut()
+            .resource_mut::<IntentLog>()
+            .commit(intent.clone())
+            .unwrap();
+        spawn_task(
+            app.world_mut(),
+            TaskSpec {
+                id: "local-task",
+                title: "unrelated workflow",
+                location: Location::Cwd("/tmp".into()),
+                created_ms: 0,
+            },
+        )
+        .unwrap();
         app.update();
         let committed = std::fs::read(journal_file(&state)).unwrap();
 
         // Machine supervision and passive agent observations must neither dirty the
         // workflow journal nor become authority when it is restored.
-        app.world_mut().get_mut::<Supervision>(machine).unwrap().apply_poll(
-            Ok(RemoteView { instance: "zor-observed".into(), ..Default::default() }),
-            0,
-        );
+        app.world_mut()
+            .get_mut::<Supervision>(machine)
+            .unwrap()
+            .apply_poll(
+                Ok(RemoteView {
+                    instance: "zor-observed".into(),
+                    ..Default::default()
+                }),
+                0,
+            );
         spawn_observed_agent(
             app.world_mut(),
             common::handle("fux-observed", 9, Some(77)),
             Some(machine),
-        ).unwrap();
+        )
+        .unwrap();
         app.update();
-        assert!(machines::snapshot(app.world(), "m-one").unwrap().view.is_some());
+        assert!(
+            machines::snapshot(app.world(), "m-one")
+                .unwrap()
+                .view
+                .is_some()
+        );
         assert_eq!(std::fs::read(journal_file(&state)).unwrap(), committed);
         assert!(!app.world().resource::<Journal>().is_dirty());
 
@@ -207,12 +237,16 @@ fn catalog_is_the_only_machine_authority_across_workflow_journal_restart() {
     catalog.find_mut("m-one").unwrap().name = "renamed".into();
     catalog.save(&path).unwrap();
     let mut app = app(&state);
-    app.insert_resource(MachinesFile { path: path.clone(), asset_root: None });
+    app.insert_resource(MachinesFile {
+        path: path.clone(),
+        asset_root: None,
+    });
     app.update();
     let world = app.world_mut();
     assert_eq!(check_invariants(world), Ok(()));
     assert!(!world.resource::<Journal>().is_frozen());
-    let machines = world.query_filtered::<(bevy_ecs::entity::Entity, &MachineId), bevy_ecs::query::With<Machine>>()
+    let machines = world
+        .query_filtered::<(bevy_ecs::entity::Entity, &MachineId), bevy_ecs::query::With<Machine>>()
         .iter(world)
         .map(|(entity, id)| (entity, id.0.clone()))
         .collect::<Vec<_>>();
@@ -221,13 +255,24 @@ fn catalog_is_the_only_machine_authority_across_workflow_journal_restart() {
     let snapshot = machines::snapshot(world, "renamed").unwrap();
     assert_eq!(snapshot.id, "m-one");
     assert!(machines::snapshot(world, "laptop").is_err());
-    assert!(snapshot.view.is_none(), "runtime observations cannot survive restart");
+    assert!(
+        snapshot.view.is_none(),
+        "runtime observations cannot survive restart"
+    );
     assert_eq!(snapshot.freshness, Freshness::Offline);
     assert_eq!(snapshot.actions, vec![record]);
-    assert_eq!(world.resource::<IntentLog>().find("stop-once"), Some(&intent));
+    assert_eq!(
+        world.resource::<IntentLog>().find("stop-once"),
+        Some(&intent)
+    );
     assert_eq!(Catalog::load(&path).unwrap(), catalog);
     let task = world.resource::<Ids>().task("local-task").unwrap();
-    assert_eq!(world.get::<TaskState>(task), Some(&TaskState::Closed { outcome: TaskOutcome::Cancelled }));
+    assert_eq!(
+        world.get::<TaskState>(task),
+        Some(&TaskState::Closed {
+            outcome: TaskOutcome::Cancelled
+        })
+    );
     assert_eq!(world.get::<Title>(task).unwrap().0, "unrelated workflow");
 }
 

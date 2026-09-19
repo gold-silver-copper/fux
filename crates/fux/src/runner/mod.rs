@@ -87,9 +87,10 @@ pub trait Host {
     /// arrives, `Some(ZERO)` steps at once.
     fn deadline(&mut self, world: &mut World) -> Option<Duration>;
 
-    /// Routes one drained effect to its adapter. `Some(code)` is the application's exit
-    /// effect: the runner returns after routing the rest of this step's effects.
-    fn apply(&mut self, effect: Self::Effect) -> Option<u8>;
+    /// Routes one drained effect to its adapter. Immediate completions may be written only
+    /// to `Messages<Inbound>` for the next step; `Messages<Effect>` is scoped out while routing.
+    /// `Some(code)` exits after routing the rest of this step's effects.
+    fn apply(&mut self, world: &mut World, effect: Self::Effect) -> Option<u8>;
 
     /// Whether the next step must run without waiting (a pending state transition).
     fn pending(&self, world: &World) -> bool;
@@ -147,7 +148,7 @@ impl Host for FuxHost {
             .map(|at| Duration::from_millis(at.saturating_sub(now).max(1)))
     }
 
-    fn apply(&mut self, effect: Effect) -> Option<u8> {
+    fn apply(&mut self, _world: &mut World, effect: Effect) -> Option<u8> {
         match effect {
             Effect::Exit { code } => return Some(code),
             effect if PtyAdapter::handles(&effect) => {
@@ -217,23 +218,24 @@ pub fn run<H: Host>(
         }
 
         let mut exit: Option<u8> = None;
-        for effect in app
-            .world_mut()
-            .resource_mut::<Messages<H::Effect>>()
-            .drain()
-        {
-            if let Some(code) = host.apply(effect) {
-                exit = Some(code);
-            }
-        }
+        app.world_mut()
+            .resource_scope(|world, mut effects: Mut<Messages<H::Effect>>| {
+                for effect in effects.drain() {
+                    if let Some(code) = host.apply(world, effect) {
+                        exit = Some(code);
+                    }
+                }
+            });
         if let Some(code) = exit {
             return NonZero::new(code).map_or(AppExit::Success, AppExit::Error);
         }
         if let Some(exit) = app.should_exit() {
             return exit;
         }
-        immediate =
-            host.pending(app.world()) || !sources.inbound.is_empty() || !sources.control.is_empty();
+        immediate = host.pending(app.world())
+            || !app.world().resource::<Messages<H::Inbound>>().is_empty()
+            || !sources.inbound.is_empty()
+            || !sources.control.is_empty();
     }
 }
 

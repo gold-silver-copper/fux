@@ -259,8 +259,16 @@ impl Captures {
     pub fn next_deadline(&self, agents: impl Iterator<Item = Entity>, now: u64) -> Option<u64> {
         agents
             .filter(|agent| !self.inflight(*agent))
-            .map(|agent| self.last.get(&agent).map_or(now, |last| last.saturating_add(self.interval_ms)))
-            .chain(self.pending.values().map(|(_, at)| at.saturating_add(CAPTURE_TIMEOUT_MS + 1)))
+            .map(|agent| {
+                self.last
+                    .get(&agent)
+                    .map_or(now, |last| last.saturating_add(self.interval_ms))
+            })
+            .chain(
+                self.pending
+                    .values()
+                    .map(|(_, at)| at.saturating_add(CAPTURE_TIMEOUT_MS + 1)),
+            )
             .min()
     }
 }
@@ -552,7 +560,10 @@ fn collect_inbound(mut inbound: MessageReader<Inbound>, mut inbox: ResMut<Inbox>
 /// closes the channel of finished attempts (an empty write is the adapter's close request).
 fn spawn_sidecars(world: &mut World) {
     if world.resource::<crate::journal::Journal>().is_frozen()
-        || world.resource::<bevy_state::prelude::State<crate::model::ServerMode>>().get() == &crate::model::ServerMode::ShuttingDown
+        || world
+            .resource::<bevy_state::prelude::State<crate::model::ServerMode>>()
+            .get()
+            == &crate::model::ServerMode::ShuttingDown
     {
         return;
     }
@@ -727,26 +738,44 @@ fn apply_claim(world: &mut World, attempt: Entity, claim: Claim, now: u64) {
     match claim {
         Claim::Hello { producer, session } => {
             if let Some(producer) = producer {
-                let current = world.get::<ProviderSession>(attempt)
+                let current = world
+                    .get::<ProviderSession>(attempt)
                     .filter(|s| s.state == SessionState::Running)
                     .map(|s| s.producer.clone());
-                let Some(current) = current else { return; };
+                let Some(current) = current else {
+                    return;
+                };
                 if producer != current {
-                    if producer.is_empty() || producer.len() > 256 || producer.chars().any(char::is_control) {
-                        world.get_mut::<ProviderSession>(attempt).unwrap().refuse("invalid producer identity".into());
+                    if producer.is_empty()
+                        || producer.len() > 256
+                        || producer.chars().any(char::is_control)
+                    {
+                        if let Some(mut s) = world.get_mut::<ProviderSession>(attempt) {
+                            s.refuse("invalid producer identity".into());
+                        }
                         return;
                     }
-                    let Some(mut lifetime) = world.get_mut::<ProducerLifetime>(attempt) else { return; };
-                    if lifetime.producer != current || lifetime.retired.len() >= MAX_RETIRED {
-                        drop(lifetime);
-                        world.get_mut::<ProviderSession>(attempt).unwrap().refuse("producer authority cannot change".into());
+                    let changed = {
+                        let Some(mut lifetime) = world.get_mut::<ProducerLifetime>(attempt) else {
+                            return;
+                        };
+                        if lifetime.producer != current || lifetime.retired.len() >= MAX_RETIRED {
+                            false
+                        } else {
+                            let registered = lifetime.registered_ms;
+                            lifetime.retired.push((current, registered, now));
+                            lifetime.producer = producer.clone();
+                            lifetime.registered_ms = now;
+                            true
+                        }
+                    };
+                    let Some(mut s) = world.get_mut::<ProviderSession>(attempt) else {
+                        return;
+                    };
+                    if !changed {
+                        s.refuse("producer authority cannot change".into());
                         return;
                     }
-                    let registered = lifetime.registered_ms;
-                    lifetime.retired.push((current, registered, now));
-                    lifetime.producer = producer.clone();
-                    lifetime.registered_ms = now;
-                    let mut s = world.get_mut::<ProviderSession>(attempt).unwrap();
                     s.producer = producer;
                     s.registered_ms = now;
                 }

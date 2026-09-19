@@ -207,19 +207,22 @@ fn talks_to_a_real_fux_and_validates_pane_identity() {
         params: json!({}),
     };
     assert!(adapter.handles(&effect));
-    adapter.apply(effect).unwrap();
+    assert!(adapter.apply(effect).unwrap().is_none());
     let reply = next_matching(&rx, |m| matches!(m, Inbound::FuxReply { call: 7, .. }));
     let Inbound::FuxReply { result, .. } = reply else {
         panic!("matched message has another shape")
     };
     assert_eq!(result.unwrap()["name"], "zt");
     let mut bad = FuxAdapter::new(fux.brp.clone(), tx.clone());
-    bad.apply(Effect::FuxCall {
-        call: 8,
-        method: "fux/nope".into(),
-        params: json!({}),
-    })
-    .unwrap();
+    assert!(
+        bad.apply(Effect::FuxCall {
+            call: 8,
+            method: "fux/nope".into(),
+            params: json!({}),
+        })
+        .unwrap()
+        .is_none()
+    );
     let reply = next_matching(&rx, |m| matches!(m, Inbound::FuxReply { call: 8, .. }));
     let Inbound::FuxReply { result, .. } = reply else {
         panic!("matched message has another shape")

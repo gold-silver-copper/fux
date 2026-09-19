@@ -4,7 +4,8 @@
 //! of pane output. `SIGHUP` is ignored on the server; panes get theirs through
 //! `Effect::Terminate`.
 //!
-//! The only `unsafe` in the crate lives here: installing the handler.
+//! Native signal and child-status syscalls live here. `waitid(WNOWAIT)` is not exposed by
+//! nix on macOS; polling without reaping keeps a child's PID reserved during group cleanup.
 #![allow(unsafe_code)]
 
 use std::os::fd::{IntoRawFd, OwnedFd};
@@ -98,5 +99,31 @@ async fn forward<I>(reader: Async<OwnedFd>, control: Sender<I>, wrap: fn(Sig) ->
                 return;
             }
         }
+    }
+}
+
+/// Reports an owned child's exit without reaping it or releasing its PID.
+///
+/// The caller must serialize subsequent group signalling and reaping with every other
+/// holder of signal authority. `ECHILD` means that authority is gone, not permission to
+/// signal the numeric PID. Only pass a PID retained from an unreaped child handle.
+pub fn child_exited(pid: u32) -> std::io::Result<bool> {
+    // SAFETY: an all-zero siginfo_t is valid storage; POSIX requires si_pid/si_signo to
+    // remain zero when WNOHANG finds no waitable child. The pointer is valid for the call.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: waitid only writes the supplied siginfo_t. P_PID selects this child; WNOWAIT
+    // leaves it unreaped, and WEXITED excludes unrelated stop/continue notifications.
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(info.si_signo == libc::SIGCHLD)
     }
 }

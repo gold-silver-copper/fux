@@ -148,7 +148,10 @@ pub enum ManifestError {
     /// A semantic rule failed: `(what, why)`.
     Invalid(String, String),
     /// The plugin does not declare the current platform.
-    Platform { declared: Vec<String>, current: String },
+    Platform {
+        declared: Vec<String>,
+        current: String,
+    },
 }
 
 impl core::fmt::Display for ManifestError {
@@ -175,7 +178,8 @@ pub const fn current_platform() -> &'static str {
 impl Manifest {
     /// Parses and validates; platform filtering is separate ([`Self::for_platform`]).
     pub fn parse(text: &str) -> Result<Self, ManifestError> {
-        let manifest: Self = toml::from_str(text).map_err(|e| ManifestError::Parse(e.to_string()))?;
+        let manifest: Self =
+            toml::from_str(text).map_err(|e| ManifestError::Parse(e.to_string()))?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -193,7 +197,8 @@ impl Manifest {
         }
         use std::io::Read;
         let mut text = String::new();
-        std::fs::File::open(&file).and_then(|file| file.take(MAX_MANIFEST_BYTES + 1).read_to_string(&mut text))
+        std::fs::File::open(&file)
+            .and_then(|file| file.take(MAX_MANIFEST_BYTES + 1).read_to_string(&mut text))
             .map_err(|e| ManifestError::Io(format!("{}: {e}", file.display())))?;
         if text.len() as u64 > MAX_MANIFEST_BYTES {
             return Err(ManifestError::Io("manifest grew beyond byte bound".into()));
@@ -398,6 +403,8 @@ pub fn pattern_matches(pattern: &str, name: &str) -> bool {
             return false;
         }
     }
-    while p.get(pi) == Some(&b'*') { pi += 1; }
+    while p.get(pi) == Some(&b'*') {
+        pi += 1;
+    }
     pi == p.len()
 }

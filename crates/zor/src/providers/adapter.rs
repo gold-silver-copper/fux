@@ -42,7 +42,13 @@ impl Process {
         let Some(mut child) = self.child.take() else {
             return -1;
         };
-        // Only the PID returned by our own spawn is ever used as a process-group ID.
+        if fux::runner::signals::child_exited(child.id())
+            .is_err_and(|error| error.raw_os_error() == Some(nix::libc::ECHILD))
+        {
+            return -1;
+        }
+        // Taking the child under the process lock retires every other signal holder.
+        // The unreaped leader reserves its PID until group cleanup completes.
         if let Ok(pid) = i32::try_from(child.id()) {
             let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
         }
@@ -76,7 +82,10 @@ pub struct ProviderAdapter {
 
 impl ProviderAdapter {
     pub fn new(inbound: Sender<Inbound>) -> Self {
-        Self::with_executable(inbound, std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zor")))
+        Self::with_executable(
+            inbound,
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zor")),
+        )
     }
 
     pub fn with_executable(inbound: Sender<Inbound>, executable: PathBuf) -> Self {
@@ -103,11 +112,16 @@ impl Drop for ProviderAdapter {
 
 impl Adapter for ProviderAdapter {
     fn handles(&self, effect: &Effect) -> bool {
-        matches!(effect, Effect::SpawnProvider { .. } | Effect::WriteProvider { .. })
+        matches!(
+            effect,
+            Effect::SpawnProvider { .. } | Effect::WriteProvider { .. }
+        )
     }
 
     fn pending(&self) -> bool {
-        self.sidecars.values().any(|sidecar| !sidecar.finished.load(Ordering::SeqCst))
+        self.sidecars
+            .values()
+            .any(|sidecar| !sidecar.finished.load(Ordering::SeqCst))
     }
 
     fn shutdown(&mut self) {
@@ -117,9 +131,14 @@ impl Adapter for ProviderAdapter {
         }
     }
 
-    fn apply(&mut self, effect: Effect) -> Result<(), BevyError> {
+    fn apply(&mut self, effect: Effect) -> Result<Option<Inbound>, BevyError> {
         match effect {
-            Effect::SpawnProvider { attempt, argv, cwd, env } => {
+            Effect::SpawnProvider {
+                attempt,
+                argv,
+                cwd,
+                env,
+            } => {
                 if self.shutting_down || self.sidecars.contains_key(&attempt) {
                     return Err(BevyError::from(format!(
                         "provider adapter: {attempt} already has a sidecar or adapter is shutting down"
@@ -130,32 +149,59 @@ impl Adapter for ProviderAdapter {
                 let closing = Arc::new(AtomicBool::new(false));
                 let finished = Arc::new(AtomicBool::new(false));
                 let task = IoTaskPool::get().spawn(run(
-                    attempt, argv, cwd, env, rx, self.inbound.clone(),
-                    self.executable.clone(), process.clone(), closing.clone(), finished.clone(),
+                    attempt,
+                    argv,
+                    cwd,
+                    env,
+                    rx,
+                    self.inbound.clone(),
+                    self.executable.clone(),
+                    Arc::clone(&process),
+                    Arc::clone(&closing),
+                    Arc::clone(&finished),
                 ));
-                self.sidecars.insert(attempt, Sidecar { stdin, process, closing, finished, _task: task });
-                Ok(())
+                self.sidecars.insert(
+                    attempt,
+                    Sidecar {
+                        stdin,
+                        process,
+                        closing,
+                        finished,
+                        _task: task,
+                    },
+                );
+                Ok(None)
             }
             Effect::WriteProvider { attempt, bytes } => {
                 let Some(sidecar) = self.sidecars.get(&attempt) else {
-                    return Err(BevyError::from(format!("provider adapter: {attempt} has no sidecar")));
+                    return Err(BevyError::from(format!(
+                        "provider adapter: {attempt} has no sidecar"
+                    )));
                 };
                 if bytes.is_empty() {
                     sidecar.close();
-                    return Ok(());
+                    return Ok(None);
                 }
                 if bytes.len() > MAX_WRITE || sidecar.closing.load(Ordering::SeqCst) {
-                    return Err(BevyError::from("provider adapter: stdin closed or frame exceeds 1 MiB"));
+                    return Err(BevyError::from(
+                        "provider adapter: stdin closed or frame exceeds 1 MiB",
+                    ));
                 }
-                sidecar.stdin.try_send(bytes)
-                    .map_err(|e| BevyError::from(format!("provider adapter: stdin rejected delivery: {e}")))
+                sidecar.stdin.try_send(bytes).map(|()| None).map_err(|e| {
+                    BevyError::from(format!("provider adapter: stdin rejected delivery: {e}"))
+                })
             }
-            other => Err(BevyError::from(format!("provider adapter: unhandled {other:?}"))),
+            other => Err(BevyError::from(format!(
+                "provider adapter: unhandled {other:?}"
+            ))),
         }
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "one supervision task owns one provider attempt")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one supervision task owns one provider attempt"
+)]
 async fn run(
     attempt: Entity,
     argv: Vec<String>,
@@ -179,11 +225,14 @@ async fn run(
         // Reuse the plugin guardian: unlike an in-process task it survives host SIGKILL
         // long enough to kill this group. Provider stdio is inherited by its child.
         let mut command = Command::new(executable);
-        command.args(["plugin", "supervise"])
+        command
+            .args(["plugin", "supervise"])
             .envs(env)
             .env("ZOR_PLUGIN_ARGV", serde_json::to_string(&argv)?)
             .env("ZOR_HOST_PID", std::process::id().to_string())
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .process_group(0);
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
@@ -202,24 +251,36 @@ async fn run(
             let (exited, exit_rx) = async_channel::bounded::<()>(1);
             let writer_exit = exit_rx.clone();
             let writes = async {
-                future::race(async {
-                    if let Some(stdin) = stdin {
-                        write_loop(stdin, rx).await;
-                    }
-                    closing.store(true, Ordering::SeqCst);
-                }, async { let _ = writer_exit.recv().await; }).await;
+                future::race(
+                    async {
+                        if let Some(stdin) = stdin {
+                            write_loop(stdin, rx).await;
+                        }
+                        closing.store(true, Ordering::SeqCst);
+                    },
+                    async {
+                        let _ = writer_exit.recv().await;
+                    },
+                )
+                .await;
             };
             let reads = async {
                 // Started always precedes output, and output is drained before Exited.
-                let _ = inbound.send(Inbound::ProviderStarted { attempt, pid }).await;
-                future::race(async {
-                    if let Some(stdout) = stdout {
-                        read_loop(attempt, stdout, &inbound).await;
-                    }
-                }, async {
-                    let _ = exit_rx.recv().await;
-                    Timer::after(GRACE).await;
-                }).await;
+                let _ = inbound
+                    .send(Inbound::ProviderStarted { attempt, pid })
+                    .await;
+                future::race(
+                    async {
+                        if let Some(stdout) = stdout {
+                            read_loop(attempt, stdout, &inbound).await;
+                        }
+                    },
+                    async {
+                        let _ = exit_rx.recv().await;
+                        Timer::after(GRACE).await;
+                    },
+                )
+                .await;
             };
             let wait = async {
                 let code = wait(&process, &closing).await;
@@ -230,17 +291,24 @@ async fn run(
             code
         }
     };
-    let _ = inbound.send(Inbound::ProviderExited { attempt, code }).await;
+    let _ = inbound
+        .send(Inbound::ProviderExited { attempt, code })
+        .await;
     finished.store(true, Ordering::SeqCst);
 }
 
 /// Pipes as `File`s: `&File` implements `Read`/`Write` for safe async-io operations.
 async fn write_loop(stdin: std::process::ChildStdin, rx: Receiver<Vec<u8>>) {
-    let Ok(stdin) = Async::new(File::from(OwnedFd::from(stdin))) else { return; };
+    let Ok(stdin) = Async::new(File::from(OwnedFd::from(stdin))) else {
+        return;
+    };
     while let Ok(bytes) = rx.recv().await {
         let mut offset = 0;
         while offset < bytes.len() {
-            match stdin.write_with(|mut s| s.write(bytes.get(offset..).unwrap_or_default())).await {
+            match stdin
+                .write_with(|mut s| s.write(bytes.get(offset..).unwrap_or_default()))
+                .await
+            {
                 Ok(0) | Err(_) => return,
                 Ok(n) => offset += n,
             }
@@ -249,14 +317,20 @@ async fn write_loop(stdin: std::process::ChildStdin, rx: Receiver<Vec<u8>>) {
 }
 
 async fn read_loop(attempt: Entity, stdout: std::process::ChildStdout, inbound: &Sender<Inbound>) {
-    let Ok(stdout) = Async::new(File::from(OwnedFd::from(stdout))) else { return; };
+    let Ok(stdout) = Async::new(File::from(OwnedFd::from(stdout))) else {
+        return;
+    };
     let mut buf = vec![0u8; CHUNK];
     loop {
         match stdout.read_with(|mut s| s.read(&mut buf)).await {
             Ok(0) | Err(_) => return,
             Ok(n) => {
                 let bytes = buf.get(..n).unwrap_or_default().to_vec();
-                if inbound.send(Inbound::ProviderOutput { attempt, bytes }).await.is_err() {
+                if inbound
+                    .send(Inbound::ProviderOutput { attempt, bytes })
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -269,15 +343,18 @@ async fn wait(process: &Mutex<Process>, closing: &AtomicBool) -> i32 {
     loop {
         {
             let mut owned = process.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(child) = owned.child.as_mut() else { return -1; };
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    // The leader has exited, but descendants may still own stdout.
-                    owned.kill_and_reap();
-                    return exit_code(status);
+            let Some(child) = owned.child.as_ref() else {
+                return -1;
+            };
+            match fux::runner::signals::child_exited(child.id()) {
+                Ok(true) => return owned.kill_and_reap(),
+                Ok(false) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.raw_os_error() == Some(nix::libc::ECHILD) => {
+                    owned.child.take();
+                    return -1;
                 }
                 Err(_) => return owned.kill_and_reap(),
-                Ok(None) => {}
             }
             if closing.load(Ordering::SeqCst)
                 && closed_at.get_or_insert_with(Instant::now).elapsed() >= GRACE
@@ -291,5 +368,8 @@ async fn wait(process: &Mutex<Process>, closing: &AtomicBool) -> i32 {
 
 fn exit_code(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
-    status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(-1)
+    status
+        .code()
+        .or_else(|| status.signal().map(|s| 128 + s))
+        .unwrap_or(-1)
 }

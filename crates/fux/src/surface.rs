@@ -36,8 +36,8 @@ use crate::layout::instances;
 use crate::lifecycle::now_ms;
 use crate::model::invariants::root_of_template;
 use crate::model::{
-    Ids, LayoutGeneration, Limits, MAX_DEPTH, NodeId, Places, RootOf, Roots, Surface,
-    TemplateNode, TemplateRoot, ViewerId, Viewing,
+    Ids, LayoutGeneration, Limits, MAX_DEPTH, NodeId, Places, RootOf, Roots, Surface, TemplateNode,
+    TemplateRoot, ViewerId, Viewing,
 };
 
 // Provider pacing bounds. They are not configuration (`Limits` is the user's `[limits]` table
@@ -304,7 +304,16 @@ pub fn key_input(world: &mut World, viewer: Entity, node: NodeId, bytes: &[u8]) 
         .ok_or(SurfaceError::UnknownNode(node))?;
     let surface = surface_of(world, entity).ok_or(SurfaceError::NotASurface(entity))?;
     for chunk in bytes.chunks(MAX_INPUT_BYTES.max(1)) {
-        emit(world, viewer, surface, entity, SurfaceInputKind::Key, 0, 0, chunk)?;
+        emit(
+            world,
+            viewer,
+            surface,
+            entity,
+            SurfaceInputKind::Key,
+            0,
+            0,
+            chunk,
+        )?;
     }
     Ok(())
 }

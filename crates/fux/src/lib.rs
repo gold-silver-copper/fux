@@ -1,8 +1,8 @@
 //! fux: a persistent terminal multiplexer whose authoritative state is a `bevy_ecs` World in a
 //! `bevy_app::App`, whose layouts are `bevy_ui` scenes and whose control surface is the Bevy
 //! Remote Protocol. Design: `docs/prompts/ecs-native-rewrite-prompt.md`.
-// `deny`, not `forbid`: `runner::signals` installs the self-pipe signal handler and is the one
-// module allowed to opt in.
+// `deny`, not `forbid`: `runner::signals` contains the native signal/child-status syscall
+// boundary and is the one module allowed to opt in.
 #![deny(unsafe_code)]
 
 pub mod app;

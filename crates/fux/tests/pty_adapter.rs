@@ -9,6 +9,7 @@
     clippy::float_cmp,
     reason = "integration-test helpers; clippy.toml only relaxes #[test] bodies"
 )]
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use bevy_app::prelude::*;
@@ -19,6 +20,7 @@ use fux::model::{
     Clipboard, Effect, Inbound, ModelPlugin, OutputPacing, Pane, PaneSize, Process, Title,
 };
 use fux::pty::{PtyAdapter, TerminalPlugin};
+use fux::runner::signals::child_exited;
 use fux::terminal::Terminal;
 
 const DEADLINE: Duration = Duration::from_secs(10);
@@ -53,6 +55,49 @@ fn spawn(pane: Entity, script: &str, rows: u16, cols: u16) -> Effect {
         rows,
         cols,
     }
+}
+
+#[test]
+fn exit_poll_preserves_status_until_the_child_is_reaped() {
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "read -r gate; exit 7"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    // The open pipe gates exit without depending on how soon the shell is scheduled.
+    let running = child_exited(pid);
+    drop(child.stdin.take());
+
+    let started = Instant::now();
+    let exited = loop {
+        match child_exited(pid) {
+            Ok(false) if started.elapsed() < DEADLINE => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            status => break status,
+        }
+    };
+    let still_exited = child_exited(pid);
+    // Clean up before assertions, including a failed poll or deadline.
+    if !matches!(exited, Ok(true)) {
+        let _ = child.kill();
+    }
+    let status = child.wait();
+    let reaped = child_exited(pid);
+
+    assert!(!running.expect("poll while the child is gated"));
+    assert!(exited.expect("poll after opening the exit gate"));
+    assert!(still_exited.expect("a second poll must leave the child waitable"));
+    assert_eq!(status.unwrap().code(), Some(7));
+    assert_eq!(
+        reaped
+            .expect_err("a reaped child grants no signal authority")
+            .raw_os_error(),
+        Some(nix::errno::Errno::ECHILD as i32)
+    );
 }
 
 #[test]

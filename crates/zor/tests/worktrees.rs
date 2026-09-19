@@ -18,11 +18,141 @@ use std::path::{Path, PathBuf};
 
 use bevy_app::App;
 use bevy_ecs::prelude::*;
+use fux::runner::{Host, Params, Sources};
 use zor::config::Config;
 use zor::git;
 use zor::model::invariants::check_invariants;
 use zor::model::*;
+use zor::runner::{Adapter, ZorHost};
 use zor::worktrees::{self, WorktreeError, WorktreeRequest};
+
+fn committed_add(app: &mut App, repo: &Path) -> (Entity, Entity, Vec<Effect>) {
+    let task = new_task(app.world_mut(), "admission-task");
+    let worktree = worktrees::allocate(
+        app.world_mut(),
+        task,
+        request("admission-tree", repo, "agent/admission"),
+    )
+    .unwrap();
+    assert!(step(app).is_empty());
+    assert!(step(app).is_empty());
+    let effects = step(app);
+    assert_eq!(state_of(app, worktree), WorktreeState::Creating);
+    assert!(in_flight(app, worktree));
+    assert!(matches!(effects.as_slice(), [Effect::RunGit { .. }]));
+    (task, worktree, effects)
+}
+
+#[test]
+fn saturated_git_with_full_inbound_settles_committed_creation_without_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let mut app = app(&dir.path().join("state"));
+    let (task, worktree, effects) = committed_add(&mut app, &repo);
+    let path = worktrees::path_of(app.world(), worktree).unwrap();
+    let (sender, inbound) = async_channel::bounded(1);
+    sender.try_send(Inbound::Wake).unwrap();
+    let mut adapter = git::GitAdapter::new(sender);
+    // Even commands that finish cannot release admission until their completion is enqueued.
+    // Keeping the channel full makes all 64 slots remain occupied without timing a subprocess.
+    for op in 10_000..10_064 {
+        assert!(
+            adapter
+                .apply(Effect::RunGit {
+                    op,
+                    argv: vec!["--version".into()],
+                    cwd: repo.display().to_string(),
+                })
+                .unwrap()
+                .is_none()
+        );
+    }
+    let mut host = ZorHost::new(app.world_mut(), vec![Box::new(adapter)]);
+    for effect in effects {
+        assert_eq!(host.apply(app.world_mut(), effect), None);
+    }
+    assert_eq!(inbound.len(), 1, "rejection must not need a channel slot");
+    assert!(step(&mut app).is_empty());
+    assert_eq!(state_of(&app, worktree), WorktreeState::Uncertain);
+    assert!(
+        !in_flight(&app, worktree),
+        "admission rejection must end the flight"
+    );
+    assert!(!path.exists(), "rejected add must never run");
+    assert_eq!(registered_paths(&repo).len(), 1);
+    assert_eq!(
+        worktrees::allocate(
+            app.world_mut(),
+            task,
+            request("admission-tree", &repo, "agent/admission"),
+        )
+        .unwrap(),
+        worktree
+    );
+    assert!(
+        step(&mut app).is_empty(),
+        "retry must not replay rejected committed intent"
+    );
+    drop(inbound);
+    drop(host);
+}
+
+#[test]
+fn stopped_git_completion_wakes_runner_and_ends_worktree_flight() {
+    struct IdleHost {
+        inner: ZorHost,
+        worktree: Entity,
+    }
+    impl Host for IdleHost {
+        type Inbound = Inbound;
+        type Effect = Effect;
+
+        fn before_step(&mut self, world: &mut World) {
+            self.inner.before_step(world);
+        }
+        fn after_step(&mut self, world: &mut World, sources: &Sources<Inbound>) -> Option<u8> {
+            if world.get::<WorktreeState>(self.worktree) == Some(&WorktreeState::Uncertain) {
+                assert!(!worktrees::inspect(world, self.worktree).unwrap().in_flight);
+                check_invariants(world).unwrap();
+                return Some(0);
+            }
+            self.inner.after_step(world, sources)
+        }
+        fn deadline(&mut self, _world: &mut World) -> Option<std::time::Duration> {
+            panic!("an immediate GitDone must schedule the next step without waiting for I/O");
+        }
+        fn apply(&mut self, world: &mut World, effect: Effect) -> Option<u8> {
+            self.inner.apply(world, effect)
+        }
+        fn pending(&self, world: &World) -> bool {
+            self.inner.pending(world)
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repo(dir.path());
+    let mut app = app(&dir.path().join("state"));
+    let (_, worktree, effects) = committed_add(&mut app, &repo);
+    let path = worktrees::path_of(app.world(), worktree).unwrap();
+    // Return the already-journaled batch to the real runner, not a manual completion pump.
+    app.world_mut()
+        .resource_mut::<Messages<Effect>>()
+        .write_batch(effects);
+    let (sender, inbound) = async_channel::bounded(1);
+    let mut adapter = git::GitAdapter::new(sender);
+    adapter.shutdown();
+    let host = IdleHost {
+        inner: ZorHost::new(app.world_mut(), vec![Box::new(adapter)]),
+        worktree,
+    };
+    let (_control_sender, control) = async_channel::bounded(1);
+    assert_eq!(
+        fux::runner::run(app, Sources { control, inbound }, host, Params::default()),
+        bevy_app::AppExit::Success
+    );
+    assert!(!path.exists());
+    assert_eq!(registered_paths(&repo).len(), 1);
+}
 
 fn sh(argv: &[&str], cwd: &Path) -> String {
     let argv: Vec<String> = argv.iter().map(|s| (*s).to_owned()).collect();

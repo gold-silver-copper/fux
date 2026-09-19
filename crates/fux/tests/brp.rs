@@ -384,17 +384,41 @@ fn empty_workspace_cleanup_cannot_retire_a_live_process_workspace() {
     let server = Server::start();
     let before = server.call("fux/workspace.list", json!({})).unwrap();
     assert_eq!(
-        code(server.call("fux/workspace.kill", json!({"name":"default","empty_only":true}))),
+        code(server.call(
+            "fux/workspace.kill",
+            json!({"name":"default","empty_only":true})
+        )),
         codes::INVALID,
     );
-    assert_eq!(server.call("fux/workspace.list", json!({})).unwrap(), before);
-    server.call("fux/workspace.new", json!({"name":"owned-empty","empty":true})).unwrap();
-    server.call("fux/workspace.kill", json!({"name":"owned-empty","empty_only":true})).unwrap();
+    assert_eq!(
+        server.call("fux/workspace.list", json!({})).unwrap(),
+        before
+    );
+    server
+        .call(
+            "fux/workspace.new",
+            json!({"name":"owned-empty","empty":true}),
+        )
+        .unwrap();
+    server
+        .call(
+            "fux/workspace.kill",
+            json!({"name":"owned-empty","empty_only":true}),
+        )
+        .unwrap();
     let after = server.call("fux/workspace.list", json!({})).unwrap();
-    assert!(!after["workspaces"].as_array().unwrap().iter().any(|workspace| {
-        workspace["name"] == "owned-empty" && workspace["open"] == true
-    }));
-    assert!(after["workspaces"].as_array().unwrap().iter().any(|workspace| {
-        workspace["name"] == "default" && workspace["open"] == true
-    }));
+    assert!(
+        !after["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|workspace| { workspace["name"] == "owned-empty" && workspace["open"] == true })
+    );
+    assert!(
+        after["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|workspace| { workspace["name"] == "default" && workspace["open"] == true })
+    );
 }

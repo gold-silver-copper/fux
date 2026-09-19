@@ -313,7 +313,11 @@ fn handle(world: &mut World, viewer: Entity, request: ViewerRequest) -> Result<(
         ViewerRequest::Swap { direction } => {
             ops::swap(world, viewer, direction)?;
         }
-        ViewerRequest::SurfaceKey { revision, node, bytes } => {
+        ViewerRequest::SurfaceKey {
+            revision,
+            node,
+            bytes,
+        } => {
             if !crate::attach::projection::admits_input(world, viewer, revision) {
                 return Ok(());
             }

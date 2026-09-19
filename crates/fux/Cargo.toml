@@ -49,6 +49,7 @@ clap.workspace = true
 toml.workspace = true
 portable-pty.workspace = true
 filedescriptor.workspace = true
+parking_lot.workspace = true
 nix.workspace = true
 vt100.workspace = true
 termina.workspace = true

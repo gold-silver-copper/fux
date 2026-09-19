@@ -122,7 +122,9 @@ enum TaskCmd {
         #[arg(long)]
         fux_instance: String,
     },
-    ResumeStatus { task: String },
+    ResumeStatus {
+        task: String,
+    },
     Adopt {
         task: String,
         #[arg(long)]
@@ -179,23 +181,28 @@ fn dispatch(cli: Cli) -> Result<i32, BevyError> {
             }
             serve(&name)
         }
-        Cmd::Plugin { verb: operations::PluginCmd::Hook { name } } => {
+        Cmd::Plugin {
+            verb: operations::PluginCmd::Hook { name },
+        } => {
             crate::plugins::hooks::run(&name).map_err(BevyError::from)?;
             Ok(0)
         }
-        Cmd::Plugin { verb: operations::PluginCmd::Supervise } => {
-            crate::plugins::host::supervise().map_err(BevyError::from)
-        }
+        Cmd::Plugin {
+            verb: operations::PluginCmd::Supervise,
+        } => crate::plugins::host::supervise().map_err(BevyError::from),
         command => {
             let paths = Paths::discover()?;
             let local = operations::control_descriptor(&paths, &cli.server, None)?;
             if let (Some(machine), Cmd::Task { verb }) = (
-                cli.machine.as_deref().filter(|name| !name.eq_ignore_ascii_case("local")),
+                cli.machine
+                    .as_deref()
+                    .filter(|name| !name.eq_ignore_ascii_case("local")),
                 &command,
+            ) && matches!(
+                verb,
+                TaskCmd::Stop { .. } | TaskCmd::Cancel { .. } | TaskCmd::Resume { .. }
             ) {
-                if matches!(verb, TaskCmd::Stop { .. } | TaskCmd::Cancel { .. } | TaskCmd::Resume { .. }) {
-                    return operations::machine_task(&local, machine, verb);
-                }
+                return operations::machine_task(&local, machine, verb);
             }
             let selection = if matches!(&command, Cmd::Machine { .. } | Cmd::Dashboard(_)) {
                 None
@@ -211,8 +218,17 @@ fn dispatch(cli: Cli) -> Result<i32, BevyError> {
                 Cmd::Other(words) => other(&descriptor, words),
                 Cmd::Machine { verb } => operations::machine(&descriptor, verb),
                 Cmd::Plugin { verb } => operations::plugin(&descriptor, verb),
-                Cmd::Dashboard(args) => operations::dashboard(&paths, &descriptor, cli.machine.as_deref(), args),
-                Cmd::Attach { task } => operations::attach(&paths, &local, &descriptor, cli.machine.as_deref(), &task, None),
+                Cmd::Dashboard(args) => {
+                    operations::dashboard(&paths, &descriptor, cli.machine.as_deref(), args)
+                }
+                Cmd::Attach { task } => operations::attach(
+                    &paths,
+                    &local,
+                    &descriptor,
+                    cli.machine.as_deref(),
+                    &task,
+                    None,
+                ),
                 Cmd::Serve { .. } => Err("serve dispatch requires local execution".into()),
             }
         }
@@ -220,23 +236,29 @@ fn dispatch(cli: Cli) -> Result<i32, BevyError> {
 }
 
 fn status(descriptor: &client::Descriptor) -> Result<i32, BevyError> {
-    let server: crate::remote::methods::ServerInfo = serde_json::from_value(
-        client::call_with(descriptor, "zor/server.info", serde_json::json!({}))?,
-    )?;
+    let server: crate::remote::methods::ServerInfo = serde_json::from_value(client::call_with(
+        descriptor,
+        "zor/server.info",
+        serde_json::json!({}),
+    )?)?;
     if server.nonce != descriptor.instance {
         return Err("selected controller incarnation changed".into());
     }
-    let tasks: crate::remote::task_methods::TaskList = serde_json::from_value(
-        client::call_with(descriptor, "zor/task.list", serde_json::json!({}))?,
-    )?;
+    let tasks: crate::remote::task_methods::TaskList = serde_json::from_value(client::call_with(
+        descriptor,
+        "zor/task.list",
+        serde_json::json!({}),
+    )?)?;
     let agents: crate::remote::provider_methods::AgentList = serde_json::from_value(
         client::call_with(descriptor, "zor/agent.list", serde_json::json!({}))?,
     )?;
     // Reads do not require an incarnation nonce. Refuse a snapshot if the endpoint restarted
     // between projections instead of combining rows from different controller instances.
-    let current: crate::remote::methods::ServerInfo = serde_json::from_value(
-        client::call_with(descriptor, "zor/server.info", serde_json::json!({}))?,
-    )?;
+    let current: crate::remote::methods::ServerInfo = serde_json::from_value(client::call_with(
+        descriptor,
+        "zor/server.info",
+        serde_json::json!({}),
+    )?)?;
     if current.nonce != descriptor.instance {
         return Err("selected controller incarnation changed".into());
     }
@@ -291,11 +313,17 @@ fn task(descriptor: &client::Descriptor, verb: TaskCmd) -> Result<i32, BevyError
                 "workspace": workspace, "ephemeral": ephemeral,
             }),
         ),
-        TaskCmd::Resume { task, operation, fux_instance } => (
+        TaskCmd::Resume {
+            task,
+            operation,
+            fux_instance,
+        } => (
             "zor/task.resume",
             serde_json::json!({"task":task,"operation":operation,"fux_instance":fux_instance}),
         ),
-        TaskCmd::ResumeStatus { task } => ("zor/task.resume-status", serde_json::json!({"task":task})),
+        TaskCmd::ResumeStatus { task } => {
+            ("zor/task.resume-status", serde_json::json!({"task":task}))
+        }
         TaskCmd::Adopt {
             task,
             instance,
@@ -459,7 +487,6 @@ fn print_reply(reply: serde_json::Value) -> Result<i32, BevyError> {
     writeln!(out, "{}", serde_json::to_string_pretty(&reply)?)?;
     Ok(0)
 }
-
 
 fn serve(name: &str) -> Result<i32, BevyError> {
     let paths = Paths::discover()?;

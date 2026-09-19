@@ -94,7 +94,11 @@ impl Harness {
                 Effect::WriteProvider { attempt, bytes } if !self.spawn => {
                     self.writes.push((attempt, bytes));
                 }
-                other if self.adapter.handles(&other) => self.adapter.apply(other).unwrap(),
+                other if self.adapter.handles(&other) => {
+                    if let Some(inbound) = self.adapter.apply(other).unwrap() {
+                        self.app.world_mut().write_message(inbound);
+                    }
+                }
                 other => panic!("unexpected effect {other:?}"),
             }
         }

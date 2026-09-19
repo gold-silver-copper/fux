@@ -246,28 +246,46 @@ fn run_plugin_action(
     session: Res<super::replicate::Session>,
     mut notice: ResMut<PendingNotice>,
 ) {
-    let Some((name, id)) = crate::assets::plugin_action(&action) else { return; };
-    let Some(session) = session.0.as_ref() else { return; };
+    let Some((name, id)) = crate::assets::plugin_action(&action) else {
+        return;
+    };
+    let Some(session) = session.0.as_ref() else {
+        return;
+    };
     if brp.path().as_os_str().is_empty() {
         notice.0 = Some("plugin action requires a connected viewer".into());
         return;
     }
-    let path = std::env::var_os("ZOR_BRP").filter(|p| !p.is_empty())
-        .map(std::path::PathBuf::from)
-        .map(Ok)
-        .unwrap_or_else(|| crate::paths::Paths::discover().map(|paths| {
-            let runtime = paths.runtime_dir;
-            let name = runtime.file_name().unwrap().to_string_lossy().replacen("fux", "zor", 1);
-            runtime.with_file_name(name).join("default.brp.json")
-        }));
-    let result = path.map_err(|e| e.to_string()).and_then(|path| {
-        brp.call_at(path, super::BrpTag::PluginAction(action.clone()), "zor/plugin.run",
+    let path = std::env::var_os("ZOR_BRP")
+        .filter(|p| !p.is_empty())
+        .map_or_else(
+            || {
+                let runtime = crate::paths::Paths::discover()
+                    .map_err(|error| error.to_string())?
+                    .runtime_dir;
+                let name = runtime
+                    .file_name()
+                    .ok_or_else(|| "fux runtime directory has no basename".to_owned())?
+                    .to_string_lossy()
+                    .replacen("fux", "zor", 1);
+                Ok(runtime.with_file_name(name).join("default.brp.json"))
+            },
+            |path| Ok(std::path::PathBuf::from(path)),
+        );
+    let result = path.and_then(|path| {
+        brp.call_at(
+            path,
+            super::BrpTag::PluginAction(action.clone()),
+            "zor/plugin.run",
             serde_json::json!({
                 "name": name, "action": id, "workspace": session.workspace,
                 "expected_fux_instance": session.instance
-            }))
+            }),
+        )
     });
-    if let Err(error) = result { notice.0 = Some(format!("{action}: {error}")); }
+    if let Err(error) = result {
+        notice.0 = Some(format!("{action}: {error}"));
+    }
 }
 
 fn plugin_replies(mut replies: MessageReader<super::BrpReply>, mut notice: ResMut<PendingNotice>) {

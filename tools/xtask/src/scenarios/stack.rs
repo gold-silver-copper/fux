@@ -19,13 +19,26 @@ const START: Duration = Duration::from_secs(20);
 const CLI: Duration = Duration::from_secs(30);
 const OUTPUT_BOUND: usize = 4 * 1024 * 1024;
 
-/// A child that is killed (whole process group untouched: the product owns its panes) and
-/// reaped on drop.
+/// A server is terminated gracefully so its owned PTYs/process groups are cleaned up before
+/// its private runtime directory disappears; a bounded deadline still reaps a wedged server.
 pub struct Guard(pub Child);
 
 impl Drop for Guard {
     fn drop(&mut self) {
         if self.0.try_wait().ok().flatten().is_none() {
+            if let Ok(pid) = i32::try_from(self.0.id()) {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
+            }
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(5) {
+                if self.0.try_wait().ok().flatten().is_some() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
@@ -92,7 +105,15 @@ impl Stack {
     pub fn command(&self, binary: &Path) -> Command {
         let mut command = Command::new(binary);
         command.env_clear();
-        for name in ["PATH", "LANG", "LC_ALL", "SHELL", "USER", "LOGNAME", "RUST_BACKTRACE"] {
+        for name in [
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "SHELL",
+            "USER",
+            "LOGNAME",
+            "RUST_BACKTRACE",
+        ] {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
             }
@@ -171,28 +192,77 @@ impl Stack {
         Ok(pid)
     }
 
+    /// Signal only our child and observe its real exit; `Guard` still cleans up on timeout.
+    pub fn terminate(
+        &mut self,
+        prefix: &str,
+        deadline: Duration,
+    ) -> Result<(u32, std::process::ExitStatus, Duration)> {
+        let child = match prefix {
+            "fux" => &mut self.fux,
+            "zor" => &mut self.zor,
+            _ => return Err(err("unknown owned server")),
+        };
+        let guard = child
+            .as_mut()
+            .ok_or_else(|| err(format!("{prefix} not running")))?;
+        if let Some(status) = guard.0.try_wait()? {
+            return Err(err(format!("{prefix} exited before SIGTERM: {status}")));
+        }
+        let pid = guard.0.id();
+        let started = Instant::now();
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(pid)?),
+            nix::sys::signal::Signal::SIGTERM,
+        )?;
+        let status = until(deadline, &format!("{prefix} SIGTERM exit"), || {
+            guard.0.try_wait().map_err(Into::into)
+        })?;
+        let elapsed = started.elapsed();
+        child.take();
+        Ok((pid, status, elapsed))
+    }
+
     pub fn check_alive(&mut self) -> Result<()> {
         if let Some(fux) = &mut self.fux
             && fux.0.try_wait()?.is_some()
         {
-            return Err(format!("{}: owned fux exited: {}", self.label, self.log("fux-serve.log")).into());
+            return Err(format!(
+                "{}: owned fux exited: {}",
+                self.label,
+                self.log("fux-serve.log")
+            )
+            .into());
         }
         if let Some(zor) = &mut self.zor
             && zor.0.try_wait()?.is_some()
         {
-            return Err(format!("{}: owned zor exited: {}", self.label, self.log("zor-serve.log")).into());
+            return Err(format!(
+                "{}: owned zor exited: {}",
+                self.label,
+                self.log("zor-serve.log")
+            )
+            .into());
         }
         Ok(())
     }
 
     pub fn log(&self, name: &str) -> String {
-        let text = std::fs::read_to_string(self.path().join(name)).unwrap_or_default();
+        use std::io::{Seek, SeekFrom};
+        let Ok(mut file) = std::fs::File::open(self.path().join(name)) else {
+            return String::new();
+        };
+        let length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        let _ = file.seek(SeekFrom::Start(length.saturating_sub(64 * 1024)));
+        let mut bytes = Vec::new();
+        let _ = file.take(64 * 1024).read_to_end(&mut bytes);
+        let text = String::from_utf8_lossy(&bytes);
         let tail: Vec<&str> = text.lines().rev().take(12).collect();
         tail.into_iter().rev().collect::<Vec<_>>().join("\n")
     }
 
     /// Runs one CLI invocation to completion under the deadline.
-    fn invoke(&self, binary: &Path, args: &[&str]) -> Result<Output> {
+    pub(super) fn invoke(&self, binary: &Path, args: &[&str]) -> Result<Output> {
         let mut child = self
             .command(binary)
             .args(args)
@@ -212,7 +282,9 @@ impl Stack {
             if started.elapsed() > CLI {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("{} {args:?}: no exit within {CLI:?}", binary.display()).into());
+                return Err(
+                    format!("{} {args:?}: no exit within {CLI:?}", binary.display()).into(),
+                );
             }
             std::thread::sleep(Duration::from_millis(20));
         };
@@ -257,8 +329,13 @@ impl Stack {
 
     pub fn zor_json(&self, args: &[&str]) -> Result<Value> {
         let out = self.run(&self.bins.zor, args)?;
-        serde_json::from_slice(&out)
-            .map_err(|e| format!("zor {args:?}: not JSON ({e}): {}", String::from_utf8_lossy(&out)).into())
+        serde_json::from_slice(&out).map_err(|e| {
+            format!(
+                "zor {args:?}: not JSON ({e}): {}",
+                String::from_utf8_lossy(&out)
+            )
+            .into()
+        })
     }
 
     pub fn zor_run(&self, args: &[&str]) -> Result<Vec<u8>> {
@@ -271,6 +348,19 @@ impl Stack {
 
     pub fn zor_binary(&self) -> &Path {
         &self.bins.zor
+    }
+
+    pub fn fux_binary(&self) -> &Path {
+        &self.bins.fux
+    }
+}
+
+impl Drop for Stack {
+    fn drop(&mut self) {
+        // Field declaration order would remove the TempDir first. Controllers must stop
+        // before fux, and fux must get a chance to reap its PTY children before root removal.
+        drop(self.zor.take());
+        drop(self.fux.take());
     }
 }
 

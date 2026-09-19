@@ -13,8 +13,8 @@
 
 pub mod calls;
 pub mod recovery;
-pub mod waits;
 pub mod resume;
+pub mod waits;
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
@@ -601,10 +601,14 @@ fn submit_launch(world: &mut World, operation: Entity, attempt: Entity, template
         "env": template.env,
         "stream": template.stream,
     });
-    let (method, mut params) = if template.ephemeral {
+    let (method, params) = if template.ephemeral {
         (
             "fux/workspace.new",
-            serde_json::json!({ "name": template.workspace, "template": template_spec }),
+            serde_json::json!({
+                "name": template.workspace,
+                "template": template_spec,
+                "_expected_instance": world.resource::<Link>().instance,
+            }),
         )
     } else {
         (
@@ -613,10 +617,10 @@ fn submit_launch(world: &mut World, operation: Entity, attempt: Entity, template
                 "workspace": template.workspace,
                 "name": template.stream,
                 "template": template_spec,
+                "_expected_instance": world.resource::<Link>().instance,
             }),
         )
     };
-    params["_expected_instance"] = serde_json::json!(world.resource::<Link>().instance);
     world
         .entity_mut(operation)
         .insert(OperationPhase::Submitting);

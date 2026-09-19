@@ -107,9 +107,43 @@ impl Terminal {
         Ok(())
     }
 
+    /// Changes the real controlling terminal's size; the kernel notifies its foreground
+    /// process group with SIGWINCH, just as a terminal emulator would.
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        let size = nix::pty::Winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        #[cfg(target_os = "macos")]
+        let request = nix::libc::c_ulong::from(nix::libc::TIOCSWINSZ);
+        #[cfg(not(target_os = "macos"))]
+        let request = nix::libc::TIOCSWINSZ;
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&self.master);
+        if unsafe { nix::libc::ioctl(fd, request, &size) } == -1 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+
     /// Everything the child wrote so far (bounded).
     pub fn output(&self) -> Vec<u8> {
-        self.output.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Decodes rendered cells, rather than treating terminal escape sequences as visible text.
+    pub fn screen(&self, rows: u16, cols: u16) -> Vec<String> {
+        let mut parser = vt100::Parser::new(rows, cols, 0);
+        parser.process(&self.output());
+        parser
+            .screen()
+            .rows(0, cols)
+            .map(|row| row.trim_end().to_owned())
+            .collect()
     }
 
     pub fn running(&mut self) -> Result<bool> {
@@ -131,8 +165,8 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.kill_session();
-        }
+        // The CLI wrapper can exit before its viewer. Its process group remains ours and
+        // must be retired even when the leader has already been reaped.
+        let _ = self.kill_session();
     }
 }

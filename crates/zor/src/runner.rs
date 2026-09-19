@@ -14,7 +14,9 @@ use fux::runner::{Host, Params, Sources, wall_ms};
 
 pub use fux::runner::{CONTROL_QUEUE, StepCounter};
 
-use crate::model::{Clock, ClosedMs, Deadline, Delivery, Effect, Inbound, ServerMode, Signal, Task, WaitState};
+use crate::model::{
+    Clock, ClosedMs, Deadline, Delivery, Effect, Inbound, ServerMode, Signal, Task, WaitState,
+};
 
 /// Depth of the shared adapter channel.
 pub const INBOUND_QUEUE: usize = 8192;
@@ -22,11 +24,15 @@ pub const INBOUND_QUEUE: usize = 8192;
 /// One effect sink: an OS-facing adapter (subprocesses, git, the fux client).
 pub trait Adapter: Send {
     fn handles(&self, effect: &Effect) -> bool;
-    fn apply(&mut self, effect: Effect) -> Result<(), bevy_ecs::error::BevyError>;
+    /// Own accepted work until its completion is enqueued, or return an immediate completion
+    /// for the host to write to the next step's Inbound messages without channel backpressure.
+    fn apply(&mut self, effect: Effect) -> Result<Option<Inbound>, bevy_ecs::error::BevyError>;
     /// Request bounded termination of adapter-owned work; never kill fux-owned tasks.
     fn shutdown(&mut self) {}
     /// True until owned work is reaped and its completion has been enqueued.
-    fn pending(&self) -> bool { false }
+    fn pending(&self) -> bool {
+        false
+    }
 }
 
 pub struct ZorHost {
@@ -63,22 +69,25 @@ impl Host for ZorHost {
     fn after_step(&mut self, world: &mut World, sources: &Sources<Inbound>) -> Option<u8> {
         let journal = world.resource::<crate::journal::Journal>();
         let unsafe_effects = !world.resource::<Messages<Effect>>().is_empty();
-        if (!journal.is_frozen() && journal.is_dirty())
-            || (journal.is_frozen() && unsafe_effects)
-        {
+        if (!journal.is_frozen() && journal.is_dirty()) || (journal.is_frozen() && unsafe_effects) {
             warn!("journal did not authorize this effect batch; exiting without dispatch");
             return Some(1);
         }
-        if world.get_resource::<State<ServerMode>>()
+        if world
+            .get_resource::<State<ServerMode>>()
             .is_some_and(|state| *state.get() == ServerMode::ShuttingDown)
         {
             let Some(started) = self.shutdown_started else {
                 self.shutdown_started = Some(std::time::Instant::now());
-                for adapter in &mut self.adapters { adapter.shutdown(); }
+                for adapter in &mut self.adapters {
+                    adapter.shutdown();
+                }
                 return None;
             };
-            if !unsafe_effects && !self.adapters.iter().any(|adapter| adapter.pending())
-                && sources.inbound.is_empty() && sources.control.is_empty()
+            if !unsafe_effects
+                && !self.adapters.iter().any(|adapter| adapter.pending())
+                && sources.inbound.is_empty()
+                && sources.control.is_empty()
             {
                 return Some(0);
             }
@@ -90,7 +99,6 @@ impl Host for ZorHost {
         None
     }
 
-
     /// Bounded by the shutdown poll and the earliest stored prompt deadline (a deadline is
     /// intent, TASKS.md:177: the step only lets the lifecycle observe that it passed).
     fn deadline(&mut self, world: &mut World) -> Option<Duration> {
@@ -101,17 +109,36 @@ impl Host for ZorHost {
             return Some(self.tick);
         }
         let now = wall_ms();
-        let prompt = self.deadlines
+        let prompt = self
+            .deadlines
             .iter(world)
-            .filter(|(_, wait, delivery)| !wait.is_terminal() && matches!(delivery, Delivery::Submitting | Delivery::Delivered | Delivery::Uncertain))
+            .filter(|(_, wait, delivery)| {
+                !wait.is_terminal()
+                    && matches!(
+                        delivery,
+                        Delivery::Submitting | Delivery::Delivered | Delivery::Uncertain
+                    )
+            })
             .map(|(deadline, _, _)| deadline.0)
             .min();
-        let provider = world.get_resource::<crate::providers::Captures>()
+        let provider = world
+            .get_resource::<crate::providers::Captures>()
             .and_then(|captures| captures.next_deadline(self.observed.iter(world), now));
-        let archive = self.closed.iter(world).map(|closed| closed.0).min()
-            .and_then(|closed| world.resource::<crate::journal::Journal>().next_sweep_ms().map(|sweep| {
-                sweep.max(closed.saturating_add(world.resource::<crate::model::Limits>().archive_after_ms))
-            }));
+        let archive = self
+            .closed
+            .iter(world)
+            .map(|closed| closed.0)
+            .min()
+            .and_then(|closed| {
+                world
+                    .resource::<crate::journal::Journal>()
+                    .next_sweep_ms()
+                    .map(|sweep| {
+                        sweep.max(closed.saturating_add(
+                            world.resource::<crate::model::Limits>().archive_after_ms,
+                        ))
+                    })
+            });
         let absolute = [
             prompt,
             provider,
@@ -119,23 +146,33 @@ impl Host for ZorHost {
             crate::plugins::next_deadline(world),
             crate::machines::next_deadline(world),
             crate::dashboard::next_deadline(world),
-        ].into_iter().flatten().min()
-            .map(|at| Duration::from_millis(at.saturating_sub(now).max(1)));
-        absolute.into_iter()
-            .chain(self.heartbeats.iter(world).map(|heartbeat| heartbeat.0.remaining().max(Duration::from_millis(1))))
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .map(|at| Duration::from_millis(at.saturating_sub(now).max(1)));
+        absolute
+            .into_iter()
+            .chain(
+                self.heartbeats
+                    .iter(world)
+                    .map(|heartbeat| heartbeat.0.remaining().max(Duration::from_millis(1))),
+            )
             .min()
     }
 
-    fn apply(&mut self, effect: Effect) -> Option<u8> {
+    fn apply(&mut self, world: &mut World, effect: Effect) -> Option<u8> {
         if let Effect::Exit { code } = effect {
             return Some(code);
         }
         match self.adapters.iter_mut().find(|a| a.handles(&effect)) {
-            Some(adapter) => {
-                if let Err(error) = adapter.apply(effect) {
-                    warn!("adapter: {error}");
+            Some(adapter) => match adapter.apply(effect) {
+                Ok(Some(completion)) => {
+                    world.write_message(completion);
                 }
-            }
+                Ok(None) => {}
+                Err(error) => warn!("adapter: {error}"),
+            },
             None => warn!("unrouted effect {effect:?}"),
         }
         None

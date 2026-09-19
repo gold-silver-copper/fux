@@ -627,18 +627,37 @@ fn delayed_provider_updates_and_cleanup_cannot_replace_a_new_owner() {
     let mut provider = Provider::new(&app);
     provider.column(&["replacement row"]);
     let delta = provider.export_all();
-    let updated = call(&mut app, "fux/surface.update", json!({
-        "surface":surface, "expected_provider":"replacement",
-        "revision":1, "full":true, "delta":delta,
-    })).unwrap();
+    let updated = call(
+        &mut app,
+        "fux/surface.update",
+        json!({
+            "surface":surface, "expected_provider":"replacement",
+            "revision":1, "full":true, "delta":delta,
+        }),
+    )
+    .unwrap();
     assert_eq!(updated["revision"], 1);
-    assert!(call(&mut app, "fux/surface.update", json!({
-        "surface":surface, "expected_provider":"zor",
-        "revision":10, "full":true, "delta":delta,
-    })).is_err());
-    assert!(call(&mut app, "fux/surface.close", json!({
-        "surface":surface, "expected_provider":"zor",
-    })).is_err());
+    assert!(
+        call(
+            &mut app,
+            "fux/surface.update",
+            json!({
+                "surface":surface, "expected_provider":"zor",
+                "revision":10, "full":true, "delta":delta,
+            })
+        )
+        .is_err()
+    );
+    assert!(
+        call(
+            &mut app,
+            "fux/surface.close",
+            json!({
+                "surface":surface, "expected_provider":"zor",
+            })
+        )
+        .is_err()
+    );
     let state = app.world().get::<SurfaceState>(leaf).unwrap();
     assert_eq!(state.provider, "replacement");
     assert_eq!(state.revision, 1);
@@ -901,7 +920,11 @@ fn request(app: &mut App, viewer: Entity, request: ViewerRequest) {
 }
 
 fn mouse(app: &mut App, viewer: Entity, col: u16, row: u16, kind: PointerKind) {
-    let revision = app.world().get::<fux::model::ProjectionBaseline>(viewer).unwrap().scene_revision;
+    let revision = app
+        .world()
+        .get::<fux::model::ProjectionBaseline>(viewer)
+        .unwrap()
+        .scene_revision;
     request(
         app,
         viewer,
@@ -1001,8 +1024,14 @@ fn a_click_inside_a_surface_text_node_emits_one_press_with_the_ids() {
             node_id(world, pane_leaf),
         )
     };
-    let surface_stream = events_watch(&mut app, json!({ "workspace": "default", "cursor": 0, "surface": surface_id }));
-    let other_stream = events_watch(&mut app, json!({ "workspace": "default", "cursor": 0, "surface": pane_leaf_id }));
+    let surface_stream = events_watch(
+        &mut app,
+        json!({ "workspace": "default", "cursor": 0, "surface": surface_id }),
+    );
+    let other_stream = events_watch(
+        &mut app,
+        json!({ "workspace": "default", "cursor": 0, "surface": pane_leaf_id }),
+    );
     let plain_stream = events_watch(&mut app, json!({ "workspace": "default", "cursor": 0 }));
 
     // The "checks" row spans columns 40..80 of row 1; press and release inside it.
@@ -1059,7 +1088,10 @@ fn a_click_inside_a_surface_text_node_emits_one_press_with_the_ids() {
         "{plain:?}"
     );
     assert_eq!(
-        plain.iter().filter(|(name, _)| name == "SurfaceInput").count(),
+        plain
+            .iter()
+            .filter(|(name, _)| name == "SurfaceInput")
+            .count(),
         3
     );
     // Both streams are at the present now.
@@ -1092,7 +1124,11 @@ fn keys_on_a_focused_surface_leaf_arrive_as_key_events_with_bytes() {
         .entity(rows[0])
         .unwrap();
     let (surface_id, row_id) = (node_id(app.world(), leaf), node_id(app.world(), row));
-    let revision = app.world().get::<fux::model::ProjectionBaseline>(viewer).unwrap().scene_revision;
+    let revision = app
+        .world()
+        .get::<fux::model::ProjectionBaseline>(viewer)
+        .unwrap()
+        .scene_revision;
 
     request(
         &mut app,
@@ -1181,9 +1217,13 @@ fn keys_on_a_focused_surface_leaf_arrive_as_key_events_with_bytes() {
         Err(SurfaceError::NotASurface(pane_leaf))
     );
     let other_ws = ops::new_workspace(app.world_mut(), "other").unwrap();
-    let stranger =
-        ops::attach_viewer(app.world_mut(), other_ws, Viewport { rows: 24, cols: 80 }, None)
-            .unwrap();
+    let stranger = ops::attach_viewer(
+        app.world_mut(),
+        other_ws,
+        Viewport { rows: 24, cols: 80 },
+        None,
+    )
+    .unwrap();
     assert_eq!(
         surface::key_input(app.world_mut(), stranger, NodeId(surface_id), b"q"),
         Err(SurfaceError::NotViewing(stranger))

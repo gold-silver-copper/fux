@@ -149,7 +149,9 @@ lifecycle_event!(
 pub enum SurfaceInputKind {
     Press,
     Release,
-    Scroll { rows: i32 },
+    Scroll {
+        rows: i32,
+    },
     /// Keys typed while the viewer's focus was on the surface leaf; the event's `bytes` carry
     /// them.
     Key,
@@ -674,7 +676,9 @@ fn diagnostics(
     diagnostics.add_measurement(&PANES_LIVE, || f64::from(next.panes_live));
     diagnostics.add_measurement(&VIEWERS, || f64::from(next.viewers));
     diagnostics.add_measurement(&EVENTS_RETAINED, || f64::from(next.events_retained));
-    diagnostics.add_measurement(&SURFACE_INPUTS_DROPPED, || next.surface_inputs_dropped as f64);
+    diagnostics.add_measurement(&SURFACE_INPUTS_DROPPED, || {
+        next.surface_inputs_dropped as f64
+    });
 }
 
 // ---------------------------------------------------------------------------------------------

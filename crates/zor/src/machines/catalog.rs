@@ -58,7 +58,9 @@ impl core::fmt::Display for CatalogError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "machine catalog: {e}"),
-            Self::Insecure(what) => write!(f, "machine catalog: {what} is not private to this user"),
+            Self::Insecure(what) => {
+                write!(f, "machine catalog: {what} is not private to this user")
+            }
             Self::TooLarge(n) => write!(f, "machine catalog: {n} bytes exceeds {MAX_BYTES}"),
             Self::Json(e) => write!(f, "machine catalog: {e}"),
             Self::Invalid(why) => write!(f, "machine catalog: {why}"),
@@ -109,13 +111,20 @@ pub fn read_private(path: &Path) -> Result<Option<Vec<u8>>, CatalogError> {
     if meta.len() > MAX_BYTES {
         return Err(CatalogError::TooLarge(meta.len()));
     }
-    let file = OpenOptions::new().read(true).custom_flags(nix::libc::O_NOFOLLOW).open(path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(path)?;
     let opened = file.metadata()?;
-    if !opened.is_file() { return Err(CatalogError::Insecure(path.display().to_string())); }
+    if !opened.is_file() {
+        return Err(CatalogError::Insecure(path.display().to_string()));
+    }
     private(path, &opened)?;
     let mut bytes = Vec::new();
     file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_BYTES { return Err(CatalogError::TooLarge(bytes.len() as u64)); }
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(CatalogError::TooLarge(bytes.len() as u64));
+    }
     Ok(Some(bytes))
 }
 
@@ -188,17 +197,25 @@ impl Catalog {
             return invalid(format!("version {} is not {VERSION}", self.version));
         }
         if self.machines.len() > MAX_MACHINES {
-            return invalid(format!("{} machines exceed {MAX_MACHINES}", self.machines.len()));
+            return invalid(format!(
+                "{} machines exceed {MAX_MACHINES}",
+                self.machines.len()
+            ));
         }
         for (i, machine) in self.machines.iter().enumerate() {
-            if machine.id.eq_ignore_ascii_case("local") || machine.name.eq_ignore_ascii_case("local") {
+            if machine.id.eq_ignore_ascii_case("local")
+                || machine.name.eq_ignore_ascii_case("local")
+            {
                 return invalid("local is reserved for this controller".into());
             }
             if !valid_id(&machine.id) {
                 return invalid(format!("machine {i}: invalid id {:?}", machine.id));
             }
             if !valid_id(&machine.name) {
-                return invalid(format!("machine {:?}: invalid name {:?}", machine.id, machine.name));
+                return invalid(format!(
+                    "machine {:?}: invalid name {:?}",
+                    machine.id, machine.name
+                ));
             }
             if machine.attachments.len() > MAX_BINDINGS {
                 return invalid(format!(
@@ -228,10 +245,12 @@ impl Catalog {
                     ))
                 })?;
             }
-            if self.machines[..i]
-                .iter()
-                .any(|m| m.id == machine.id || m.name == machine.name || m.id == machine.name || m.name == machine.id)
-            {
+            if self.machines.iter().take(i).any(|m| {
+                m.id == machine.id
+                    || m.name == machine.name
+                    || m.id == machine.name
+                    || m.name == machine.id
+            }) {
                 return invalid(format!(
                     "machine {:?} ({:?}) duplicates an earlier id or name",
                     machine.id, machine.name
@@ -271,7 +290,9 @@ impl Catalog {
                 "{MAX_MACHINES} machines are the limit"
             )));
         }
-        if self.machines.iter().any(|m| m.name == entry.name || m.id == entry.id || m.name == entry.id || m.id == entry.name) {
+        if self.machines.iter().any(|m| {
+            m.name == entry.name || m.id == entry.id || m.name == entry.id || m.id == entry.name
+        }) {
             return Err(CatalogError::Invalid(format!(
                 "machine {:?} already exists",
                 entry.name

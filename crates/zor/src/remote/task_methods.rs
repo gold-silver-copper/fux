@@ -229,9 +229,13 @@ pub(super) fn validate_guard(
         return Ok(());
     };
     let current = lifecycle::attempt_of(world, task);
-    let attempt = current.and_then(|entity| world.get::<AttemptId>(entity)).map(|id| id.0);
+    let attempt = current
+        .and_then(|entity| world.get::<AttemptId>(entity))
+        .map(|id| id.0);
     if attempt != guard.attempt {
-        return Err(invalid("task attempt changed since the controller observation"));
+        return Err(invalid(
+            "task attempt changed since the controller observation",
+        ));
     }
     if let Some(expected) = &guard.pane {
         let handle = current.and_then(|entity| world.get::<PaneHandle>(entity));
@@ -241,7 +245,9 @@ pub(super) fn validate_guard(
                 && actual.pane == expected.pane
                 && actual.pid == expected.pid
         }) {
-            return Err(invalid("task pane identity changed since the controller observation"));
+            return Err(invalid(
+                "task pane identity changed since the controller observation",
+            ));
         }
     }
     Ok(())
@@ -625,8 +631,18 @@ pub const METHODS: &[MethodSpec] = &[
         PromptRecord
     ),
     spec!("zor/task.wait", brp_task_wait, PromptParams, PromptRecord),
-    spec!("zor/task.stop", brp_task_stop, TaskMutationParams, TaskInspect),
-    spec!("zor/task.cancel", brp_task_cancel, TaskMutationParams, TaskInspect),
+    spec!(
+        "zor/task.stop",
+        brp_task_stop,
+        TaskMutationParams,
+        TaskInspect
+    ),
+    spec!(
+        "zor/task.cancel",
+        brp_task_cancel,
+        TaskMutationParams,
+        TaskInspect
+    ),
     spec!(
         "zor/task.abandon",
         brp_task_abandon,

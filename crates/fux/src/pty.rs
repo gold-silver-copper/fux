@@ -13,8 +13,7 @@
 //! changed [`PaneSize`] resizes the emulator and the kernel PTY.
 
 use std::fs::File;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_io::{Async, Timer};
@@ -29,6 +28,7 @@ use bevy_tasks::{IoTaskPool, Task};
 use nix::sys::signal::Signal;
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::Pid;
+use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::events::{Bell, PaneOutput, PaneTitleChanged};
@@ -63,7 +63,6 @@ impl BufferPool {
         let mut buffer = self
             .0
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .pop()
             .unwrap_or_else(|| Vec::with_capacity(READ_CHUNK));
         buffer.resize(READ_CHUNK, 0);
@@ -75,7 +74,7 @@ impl BufferPool {
             return;
         }
         buffer.clear();
-        let mut pool = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut pool = self.0.lock();
         if pool.len() < MAX_POOLED_BUFFERS {
             pool.push(buffer);
         }
@@ -85,11 +84,17 @@ impl BufferPool {
 /// Signal-safe view of one pane's process shared with its termination and reaper tasks.
 struct ProcessState {
     pid: u32,
-    reaped: AtomicBool,
+    /// Held across signalling and each nonblocking wait, never across an async wait.
+    /// Once retired, the numeric PID/group ID is no longer ours to signal.
+    reaped: Mutex<bool>,
 }
 
 impl ProcessState {
     fn signal_group(&self, signal: Signal) -> Result<(), BevyError> {
+        let reaped = self.reaped.lock();
+        if *reaped {
+            return Ok(());
+        }
         let pid = i32::try_from(self.pid)?;
         nix::sys::signal::killpg(Pid::from_raw(pid), signal)?;
         Ok(())
@@ -190,11 +195,9 @@ impl PtyAdapter {
                 pool()?
                     .spawn(async move {
                         Timer::after(KILL_GRACE).await;
-                        // A reaped leader means the group id may already belong to someone
-                        // else; the remaining members (if any) were the leader's to hang up.
-                        if !process.reaped.load(Ordering::Acquire) {
-                            let _ = process.signal_group(Signal::SIGKILL);
-                        }
+                        // signal_group checks authority under the reaper's lock: a reaped
+                        // leader's group ID may already belong to someone else.
+                        let _ = process.signal_group(Signal::SIGKILL);
                     })
                     .detach();
                 Ok(())
@@ -206,9 +209,7 @@ impl PtyAdapter {
                 };
                 // Released before it exited: nothing will read the PTY again, so the group
                 // must not linger; the detached reaper still collects the status.
-                if !entry.process.reaped.load(Ordering::Acquire) {
-                    let _ = entry.process.signal_group(Signal::SIGKILL);
-                }
+                let _ = entry.process.signal_group(Signal::SIGKILL);
                 drop(entry);
                 Ok(())
             }
@@ -258,7 +259,7 @@ impl PtyAdapter {
         } = started;
         let process = Arc::new(ProcessState {
             pid,
-            reaped: AtomicBool::new(false),
+            reaped: Mutex::new(false),
         });
         let (eof_tx, eof_rx) = async_channel::bounded::<()>(1);
         let (input_tx, input_rx) = async_channel::bounded::<Vec<u8>>(INPUT_QUEUE_DEPTH);
@@ -462,7 +463,20 @@ async fn reap(
     };
     let mut interval = Duration::from_millis(5);
     let code = loop {
-        match waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)) {
+        let status = {
+            let mut reaped = process.reaped.lock();
+            let status = waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG));
+            if matches!(
+                status,
+                Ok(WaitStatus::Exited(..) | WaitStatus::Signaled(..)) | Err(_)
+            ) {
+                // Retire authority before a signal caller can acquire the lock after
+                // waitpid released the PID (or reported that ownership was lost).
+                *reaped = true;
+            }
+            status
+        };
+        match status {
             Ok(WaitStatus::StillAlive) => {
                 Timer::after(interval).await;
                 interval = (interval * 2).min(Duration::from_millis(250));
@@ -475,7 +489,6 @@ async fn reap(
             Err(_) => break UNKNOWN_EXIT_CODE,
         }
     };
-    process.reaped.store(true, Ordering::Release);
     if announced {
         let _ = inbound.send(Inbound::PaneExited { pane, code }).await;
     }

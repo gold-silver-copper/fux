@@ -51,9 +51,11 @@ pub struct BoundedHttpPlugin;
 
 impl bevy_app::Plugin for BoundedHttpPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        app.insert_resource(HostAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)))
-            .insert_resource(HostPort(0))
-            .add_systems(bevy_app::Startup, start);
+        app.insert_resource(HostAddress(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::LOCALHOST,
+        )))
+        .insert_resource(HostPort(0))
+        .add_systems(bevy_app::Startup, start);
     }
 }
 

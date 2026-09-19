@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -35,7 +35,10 @@ impl Descriptor {
     }
 
     pub fn parse(raw: Value) -> Result<Self> {
-        let field = |name: &str| raw.get(name).ok_or_else(|| format!("descriptor lacks `{name}`"));
+        let field = |name: &str| {
+            raw.get(name)
+                .ok_or_else(|| format!("descriptor lacks `{name}`"))
+        };
         let http = field("http")?;
         let text = |value: Option<&Value>, name: &str| {
             value
@@ -57,7 +60,8 @@ impl Descriptor {
 
     /// True while the server answers `<prefix>/server.info` with this descriptor's token.
     pub fn alive(&self, prefix: &str) -> bool {
-        self.call(&format!("{prefix}/server.info"), json!({})).is_ok()
+        self.call(&format!("{prefix}/server.info"), json!({}))
+            .is_ok()
     }
 
     /// `method` with `token` and `instance` injected, as the product CLIs do.
@@ -93,6 +97,7 @@ pub fn request(host: &str, port: u16, method: &str, params: Value) -> Result<Val
 }
 
 fn post(host: &str, port: u16, body: &[u8]) -> Result<Value> {
+    let started = Instant::now();
     let address = (host, port)
         .to_socket_addrs()?
         .next()
@@ -109,13 +114,28 @@ fn post(host: &str, port: u16, body: &[u8]) -> Result<Value> {
     stream.write_all(body)?;
     stream.flush()?;
     let mut raw = Vec::new();
-    stream.take(MAX_REPLY_BYTES).read_to_end(&mut raw)?;
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let remaining = TIMEOUT
+            .checked_sub(started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| err("BRP response deadline exceeded"))?;
+        stream.set_read_timeout(Some(remaining))?;
+        let n = stream.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        if raw.len() as u64 + n as u64 > MAX_REPLY_BYTES {
+            return Err(err("BRP response bound exceeded"));
+        }
+        raw.extend_from_slice(&buffer[..n]);
+    }
     parse_response(&raw)
 }
 
 /// `HTTP/1.1 <status> ...\r\n<headers>\r\n\r\n<body>`; the body is `Content-Length` bounded,
 /// chunked, or runs to EOF (`Connection: close`).
-fn parse_response(raw: &[u8]) -> Result<Value> {
+pub(super) fn parse_response(raw: &[u8]) -> Result<Value> {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -144,7 +164,8 @@ fn parse_response(raw: &[u8]) -> Result<Value> {
     } else {
         match length {
             Some(n) if n <= body.len() => body.get(..n).unwrap_or_default(),
-            _ => body,
+            Some(_) => return Err(err("truncated HTTP response body")),
+            None => body,
         }
         .to_vec()
     };

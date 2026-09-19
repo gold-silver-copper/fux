@@ -59,7 +59,10 @@ impl Harness {
         app.finish();
         app.cleanup();
         let adapters: Vec<Box<dyn Adapter>> = vec![
-            Box::new(CheckRunner::with_executable(sender.clone(), env!("CARGO_BIN_EXE_zor").into())),
+            Box::new(CheckRunner::with_executable(
+                sender.clone(),
+                env!("CARGO_BIN_EXE_zor").into(),
+            )),
             Box::new(GitAdapter::new(sender)),
         ];
         Self {
@@ -110,7 +113,9 @@ impl Harness {
                 .iter_mut()
                 .find(|a| a.handles(&effect))
                 .expect("every effect has an adapter");
-            adapter.apply(effect).unwrap();
+            if let Some(completion) = adapter.apply(effect).unwrap() {
+                self.app.world_mut().write_message(completion);
+            }
         }
         assert_eq!(check_invariants(self.app.world_mut()), Ok(()));
         routed

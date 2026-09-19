@@ -173,9 +173,12 @@ impl Request {
     pub fn mutation(&self, world: &World) -> Result<(), BrpError> {
         self.require(Capabilities::MUTATE)?;
         if world.resource::<crate::journal::Journal>().is_frozen() {
-            return Err(invalid("journal is frozen; mutations are disabled until recovery"));
+            return Err(invalid(
+                "journal is frozen; mutations are disabled until recovery",
+            ));
         }
-        if world.get_resource::<bevy_state::prelude::State<crate::model::ServerMode>>()
+        if world
+            .get_resource::<bevy_state::prelude::State<crate::model::ServerMode>>()
             .is_some_and(|state| *state.get() == crate::model::ServerMode::ShuttingDown)
         {
             return Err(invalid("server is shutting down; mutations are disabled"));

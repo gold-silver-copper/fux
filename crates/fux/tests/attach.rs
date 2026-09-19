@@ -23,7 +23,7 @@ use bevy_ecs::prelude::*;
 use bevy_ui::Node;
 use serde::Serialize;
 
-use fux::attach::{AttachAdapter, AttachEndpoint, AttachPlugin, AttachToken};
+use fux::attach::{AttachAdapter, AttachEndpoint, AttachPlugin, AttachToken, ProjectionPlugin};
 use fux::layout::{LayoutPlugin, ops};
 use fux::model::invariants::check_invariants;
 use fux::model::{
@@ -69,6 +69,7 @@ impl Server {
                 bevy_asset::AssetPlugin::default(),
                 ModelPlugin,
                 LayoutPlugin,
+                ProjectionPlugin,
                 AttachPlugin {
                     inbound: inbound_tx,
                 },

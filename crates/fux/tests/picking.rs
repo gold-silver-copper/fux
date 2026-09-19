@@ -128,7 +128,11 @@ fn mouse(
     button: PointerButton,
     modifiers: u8,
 ) {
-    let revision = app.world().get::<ProjectionBaseline>(viewer).unwrap().scene_revision;
+    let revision = app
+        .world()
+        .get::<ProjectionBaseline>(viewer)
+        .unwrap()
+        .scene_revision;
     app.world_mut().write_message(Inbound::ViewerRequest {
         viewer,
         request: ViewerRequest::Pointer(PointerEvent {

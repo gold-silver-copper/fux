@@ -5,7 +5,10 @@
 
 use std::io::{self, Write};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::thread::JoinHandle;
 
 use termina::escape::csi::{
@@ -82,7 +85,11 @@ impl TerminalIo {
     }
 
     /// Reads events until the terminal closes, pushing each as `Wake::Terminal`.
-    pub fn spawn_reader(&self, wake: Sender<Wake>, painted: Arc<AtomicU64>) -> io::Result<JoinHandle<()>> {
+    pub fn spawn_reader(
+        &self,
+        wake: Sender<Wake>,
+        painted: Arc<AtomicU64>,
+    ) -> io::Result<JoinHandle<()>> {
         let reader = self.term.event_reader();
         std::thread::Builder::new()
             .name("fux-terminal-reader".into())
