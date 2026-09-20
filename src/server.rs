@@ -220,27 +220,33 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
 #[derive(Resource)]
 pub struct Disconnected(pub async_channel::Receiver<Entity>);
 
-#[derive(Resource)]
-struct SceneIo {
-    sender: async_channel::Sender<SceneDone>,
-    receiver: async_channel::Receiver<SceneDone>,
-}
+/// A scene save or load in flight for the viewer that asked. Detaching the
+/// viewer drops the task with it; the file operation still completes.
+#[derive(Component)]
+struct PendingScene(bevy_tasks::Task<SceneDone>);
 struct SceneDone {
-    viewer: Entity,
     root: Entity,
     path: String,
     mapping: Vec<(Entity, Entity)>,
     result: Result<Option<String>, String>,
 }
-impl Default for SceneIo {
-    fn default() -> Self {
-        let (sender, receiver) = async_channel::bounded(16);
-        Self { sender, receiver }
-    }
+
+/// While a scene task runs, the runner polls on a deadline instead of parking:
+/// a task cannot wake the runner after its own result is stored.
+pub(crate) fn pending_scenes(world: &mut World) -> bool {
+    world
+        .query_filtered::<(), With<PendingScene>>()
+        .iter(world)
+        .next()
+        .is_some()
 }
 
-fn scene_completions(io: Res<SceneIo>, mut commands: Commands) {
-    while let Ok(done) = io.receiver.try_recv() {
+fn scene_completions(mut pending: Query<(Entity, &mut PendingScene)>, mut commands: Commands) {
+    for (viewer, mut task) in &mut pending {
+        let Some(done) = bevy_tasks::block_on(bevy_tasks::poll_once(&mut task.0)) else {
+            continue;
+        };
+        commands.entity(viewer).remove::<PendingScene>();
         commands.queue(move |world: &mut World| {
             let result = match done.result {
                 Ok(Some(text)) => {
@@ -254,7 +260,7 @@ fn scene_completions(io: Res<SceneIo>, mut commands: Commands) {
             };
             notify(
                 world,
-                done.viewer,
+                viewer,
                 match result {
                     Ok(text) => Notice::info(text),
                     Err(error) => Notice::error(error),
@@ -294,8 +300,7 @@ impl Plugin for ServerPlugin {
             .register_type::<Input>();
         presentation::register_types(app);
         crate::navigation::observe(app.world_mut());
-        app.init_resource::<SceneIo>()
-            .insert_non_send(Views::default())
+        app.insert_non_send(Views::default())
             .add_plugins(TerminalPlugin)
             .add_observer(input_event)
             .add_observer(route_control)
@@ -918,30 +923,28 @@ fn scene_io(
         None => assets::serialize_layout(world, root).map(Some),
     };
     let mapping = load.unwrap_or_default();
-    let sender = world.resource::<SceneIo>().sender.clone();
     let wake = world.resource::<Wake>().clone();
-    bevy_tasks::IoTaskPool::get()
-        .spawn(async move {
-            let result = serialized.and_then(|text| match text {
-                Some(text) => std::fs::write(&path, text)
-                    .map(|_| None)
-                    .map_err(|e| e.to_string()),
-                None => std::fs::read_to_string(&path)
-                    .map(Some)
-                    .map_err(|e| e.to_string()),
-            });
-            let _ = sender
-                .send(SceneDone {
-                    viewer: id,
-                    root,
-                    path,
-                    mapping,
-                    result,
-                })
-                .await;
-            wake.notify();
-        })
-        .detach();
+    let task = bevy_tasks::IoTaskPool::get().spawn(async move {
+        let result = serialized.and_then(|text| match text {
+            Some(text) => std::fs::write(&path, text)
+                .map(|_| None)
+                .map_err(|e| e.to_string()),
+            None => std::fs::read_to_string(&path)
+                .map(Some)
+                .map_err(|e| e.to_string()),
+        });
+        // Wakes the runner for the common case; `pending_scenes` covers the rest.
+        wake.notify();
+        SceneDone {
+            root,
+            path,
+            mapping,
+            result,
+        }
+    });
+    if let Ok(mut viewer) = world.get_entity_mut(id) {
+        viewer.insert(PendingScene(task));
+    }
 }
 
 type Collapsible = (With<Split>, Without<Tab>, Without<Workspace>);
