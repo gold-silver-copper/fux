@@ -18,29 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) type Views = EntityHashMap<View>;
-pub(crate) struct View {
-    pub(crate) presentation: Presentation,
-    last: String,
-    pub(crate) clipboard: Vec<String>,
-    next_paint: Instant,
-    paint_wake_pending: bool,
-}
-
-pub(crate) fn with_views<T>(
-    world: &mut World,
-    f: impl FnOnce(&mut World, &mut Views) -> Result<T, String>,
-) -> Result<T, String> {
-    // Views is an unreflected non-send resource installed by ServerPlugin; no
-    // remote request can remove it, but the boundary still reports rather than aborts.
-    let Some(mut views) = world.remove_non_send::<Views>() else {
-        return Err("presentation contexts are not installed".into());
-    };
-    let result = f(world, &mut views);
-    world.insert_non_send(views);
-    result
-}
-pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), String> {
+pub(crate) fn sync_view(world: &mut World, id: Entity) -> Result<(), String> {
     // Controls can arrive before the next Update; run the same native change-
     // tracking system at this synchronous input/presentation boundary too.
     world
@@ -48,36 +26,22 @@ pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Res
         .map_err(|e| e.to_string())?;
     let root = viewing(world, id).ok_or(DETACHED)?;
     let (revision, scene) = scene(world, root)?;
-    let registry = world.resource::<AppTypeRegistry>().clone();
-    let context = views.entry(id).or_insert_with(|| View {
-        presentation: Presentation::new(registry),
-        last: String::new(),
-        clipboard: Vec::new(),
-        next_paint: Instant::now(),
-        paint_wake_pending: false,
-    });
-    let state = |world: &World| (on_tab(world, id), focused(world, id));
-    context.presentation.sync(
-        &scene,
-        revision,
-        root,
-        world.get::<Viewer>(id).ok_or(DETACHED)?,
-        state(world),
-    )?;
-    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
-    let focus = focused(world, id);
-    if v.rows > 1
-        && v.cols > 0
-        && !context
-            .presentation
-            .rects()
-            .iter()
-            .any(|r| Some(r.leaf) == focus)
-    {
+    let v = world.get::<Viewer>(id).ok_or(DETACHED)?.clone();
+    if world.get::<Presentation>(id).is_none() {
+        let registry = world.resource::<AppTypeRegistry>().clone();
+        world.entity_mut(id).insert(Presentation::new(registry));
+    }
+    let state = (on_tab(world, id), focused(world, id));
+    let mut context = world
+        .get_mut::<Presentation>(id)
+        .ok_or("missing presentation")?;
+    context.sync(&scene, revision, root, &v, state)?;
+    if v.rows > 1 && v.cols > 0 && !context.rects().iter().any(|r| Some(r.leaf) == state.1) {
         // Zoom and hidden tabs can leave the focused pane unpainted; follow
         // the projection rather than paint input into an invisible pane.
+        let first = context.rects().first().map(|r| r.leaf);
         let mut entity = world.get_entity_mut(id).map_err(|_| DETACHED)?;
-        match context.presentation.rects().first().map(|r| r.leaf) {
+        match first {
             Some(leaf) => {
                 entity.insert(Focused(leaf));
             }
@@ -85,20 +49,21 @@ pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Res
                 entity.remove::<Focused>();
             }
         }
-        context.presentation.sync(
-            &scene,
-            revision,
-            root,
-            world.get::<Viewer>(id).ok_or(DETACHED)?,
-            state(world),
-        )?;
+        let state = (on_tab(world, id), focused(world, id));
+        world
+            .get_mut::<Presentation>(id)
+            .ok_or("missing presentation")?
+            .sync(&scene, revision, root, &v, state)?;
     }
     Ok(())
 }
-fn size_terminals(world: &mut World, views: &Views) {
+fn size_terminals(world: &mut World) {
     let mut sizes = EntityHashMap::<(u16, u16)>::default();
-    for context in views.values() {
-        for rect in context.presentation.rects() {
+    for context in world
+        .query_filtered::<&Presentation, With<Viewer>>()
+        .iter(world)
+    {
+        for rect in context.rects() {
             let rows = rect.height();
             let cols = rect.width();
             sizes
@@ -149,7 +114,7 @@ pub(crate) fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
         ))
         .id();
     crate::navigation::repair(world);
-    with_views(world, |world, views| sync_view(world, views, id)).map_err(BrpError::internal)?;
+    sync_view(world, id).map_err(BrpError::internal)?;
     Ok(json!({"viewer":id.to_bits()}))
 }
 fn request_viewer(params: Option<Value>) -> Result<Entity, BrpError> {
@@ -169,7 +134,7 @@ pub(crate) fn frame_watch(
 ) -> BrpResult<Option<Value>> {
     let id = request_viewer(params)?;
     let now = Instant::now();
-    let deferred = world.non_send_mut::<Views>().get_mut(&id).and_then(|view| {
+    let deferred = world.get_mut::<Presentation>(id).and_then(|mut view| {
         if now >= view.next_paint {
             view.paint_wake_pending = false;
             None
@@ -193,15 +158,13 @@ pub(crate) fn frame_watch(
         return Ok(None);
     }
     let has_effect = world
-        .non_send::<Views>()
-        .get(&id)
+        .get::<Presentation>(id)
         .is_some_and(|view| !view.clipboard.is_empty());
     let frame = make_frame(world, id).map_err(BrpError::internal)?;
     if frame.detach {
         return Ok(Some(json!(frame)));
     }
-    let mut views = world.non_send_mut::<Views>();
-    let Some(view) = views.get_mut(&id) else {
+    let Some(mut view) = world.get_mut::<Presentation>(id) else {
         return Ok(None);
     };
     if !has_effect && view.last == frame.paint {
@@ -218,50 +181,44 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
             detach: true,
         });
     }
-    with_views(world, |world, views| {
-        // Size negotiation must never count another viewer's stale, now-hidden
-        // tab projection merely because that viewer has not requested a frame.
-        let viewers: Vec<_> = world
-            .query_filtered::<Entity, With<Viewer>>()
-            .iter(world)
-            .collect();
-        for viewer in viewers {
-            sync_view(world, views, viewer)?;
-        }
-        size_terminals(world, views);
-        if let Some(selection) = world.get::<crate::selection::Selection>(id) {
-            let visible = views
-                .get(&id)
-                .and_then(|v| {
-                    v.presentation
-                        .rects()
-                        .iter()
-                        .find(|r| r.leaf == selection.leaf)
-                })
-                .map_or((0, 0), |r| (r.height(), r.width()));
-            crate::selection::refresh_visible(world, id, visible);
-        }
-        paint(world, views, id)
-    })
+    // Size negotiation must never count another viewer's stale, now-hidden
+    // tab projection merely because that viewer has not requested a frame.
+    let viewers: Vec<_> = world
+        .query_filtered::<Entity, With<Viewer>>()
+        .iter(world)
+        .collect();
+    for viewer in viewers {
+        sync_view(world, viewer)?;
+    }
+    size_terminals(world);
+    if let Some(selection) = world.get::<crate::selection::Selection>(id) {
+        let visible = rect(world, id, selection.leaf).map_or((0, 0), |r| (r.height(), r.width()));
+        crate::selection::refresh_visible(world, id, visible);
+    }
+    paint(world, id)
 }
 
-pub(crate) fn content_size(world: &World, viewer: Entity, leaf: Entity) -> Option<(u16, u16)> {
+pub(crate) fn rect(
+    world: &World,
+    viewer: Entity,
+    leaf: Entity,
+) -> Option<crate::protocol::PaneRect> {
     world
-        .get_non_send::<Views>()?
-        .get(&viewer)?
-        .presentation
+        .get::<Presentation>(viewer)?
         .rects()
         .iter()
         .find(|r| r.leaf == leaf)
-        .map(|r| (r.height(), r.width()))
+        .copied()
+}
+
+pub(crate) fn content_size(world: &World, viewer: Entity, leaf: Entity) -> Option<(u16, u16)> {
+    rect(world, viewer, leaf).map(|r| (r.height(), r.width()))
 }
 
 pub(crate) fn visible_leaf(world: &World, viewer: Entity, leaf: Entity) -> bool {
-    world.get_non_send::<Views>().is_none_or(|views| {
-        views
-            .get(&viewer)
-            .is_some_and(|view| view.presentation.rects().iter().any(|r| r.leaf == leaf))
-    })
+    world
+        .get::<Presentation>(viewer)
+        .is_none_or(|p| p.rects().iter().any(|r| r.leaf == leaf))
 }
 
 pub(crate) fn neighbor(
@@ -270,11 +227,7 @@ pub(crate) fn neighbor(
     leaf: Entity,
     direction: Direction,
 ) -> Option<Entity> {
-    world
-        .non_send::<Views>()
-        .get(&viewer)?
-        .presentation
-        .neighbor(leaf, direction)
+    world.get::<Presentation>(viewer)?.neighbor(leaf, direction)
 }
 
 pub(crate) fn directional_neighbor(
@@ -311,8 +264,9 @@ fn name(world: &World, entity: Entity) -> String {
 
 pub(crate) fn clipboard(world: &mut World, id: Entity, text: String) -> Result<(), String> {
     crate::selection::validate_clipboard(world.resource::<Settings>(), &text)?;
-    let mut views = world.non_send_mut::<Views>();
-    let view = views.get_mut(&id).ok_or("presentation not initialized")?;
+    let mut view = world
+        .get_mut::<Presentation>(id)
+        .ok_or("presentation not initialized")?;
     if view.clipboard.len() == 16 {
         return Err("clipboard delivery queue is full".into());
     }
@@ -332,12 +286,16 @@ fn process_status(world: &World, pane: Entity) -> String {
     }
 }
 
-fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, String> {
+fn paint(world: &mut World, id: Entity) -> Result<Frame, String> {
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
     let focus = focused(world, id);
     let scrollback = v.scrollback;
     let modal = crate::interaction::modal(world, id);
-    let view = views.get_mut(&id).ok_or("missing presentation")?;
+    let rects = world
+        .get::<Presentation>(id)
+        .ok_or("missing presentation")?
+        .rects()
+        .to_vec();
     let mut out = String::from("\x1b[?2026h\x1b[?7l\x1b[?25l\x1b[0m\x1b[H\x1b[2J");
     let focused = focus
         .and_then(|leaf| world.get::<PaneView>(leaf))
@@ -350,7 +308,7 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
             )
         });
     let mut cursor = None;
-    for rect in view.presentation.rects() {
+    for rect in &rects {
         let selected = focus == Some(rect.leaf);
         let status = process_status(world, rect.pane);
         let exited = !status.is_empty();
@@ -391,15 +349,14 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
         }
     }
     if let Some(selection) = world.get::<crate::selection::Selection>(id)
-        && let Some(rect) = view
-            .presentation
-            .rects()
-            .iter()
-            .find(|r| r.leaf == selection.leaf)
+        && let Some(rect) = rects.iter().find(|r| r.leaf == selection.leaf)
     {
         crate::selection::paint(&mut out, selection, rect);
     }
-    view.presentation.paint_separators(&mut out, focus);
+    world
+        .get::<Presentation>(id)
+        .ok_or("missing presentation")?
+        .paint_separators(&mut out, focus);
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
     let workspace = viewing(world, id).ok_or(DETACHED)?;
     let tabs: Vec<_> = crate::navigation::tabs(world, workspace)
@@ -413,7 +370,11 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
         (on_tab(world, id), &tabs),
         &focused,
     );
-    view.presentation.chrome(hits);
+    world
+        .get_mut::<Presentation>(id)
+        .ok_or("missing presentation")?
+        .chrome(hits);
+    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
     if let Some(overlay) = world.get::<crate::interaction::Overlay>(id) {
         chrome::surface(
             &mut out,
@@ -441,7 +402,12 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
     } else {
         None
     };
-    if world.resource::<Settings>().clipboard == crate::assets::ClipboardPolicy::Disabled {
+    let disabled =
+        world.resource::<Settings>().clipboard == crate::assets::ClipboardPolicy::Disabled;
+    let mut view = world
+        .get_mut::<Presentation>(id)
+        .ok_or("missing presentation")?;
+    if disabled {
         view.clipboard.clear();
     }
     for text in view.clipboard.drain(..) {

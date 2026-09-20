@@ -1,0 +1,171 @@
+use super::*;
+use crate::{model::Workspace, testing::*};
+
+#[test]
+fn extracted_world_matches_app_across_scene_resize_focus_and_removal() -> Outcome {
+    #[derive(Message)]
+    struct Probe;
+    fn component<T: Component + Send + Sync>() {}
+    component::<Presentation>();
+    let mut source = App::new();
+    source
+        .register_type::<Workspace>()
+        .register_type::<Tab>()
+        .register_type::<PaneView>();
+    register_types(&mut source);
+    let registry = source.world().resource::<AppTypeRegistry>().clone();
+    let (mut reference, window, camera, container) = Presentation::build(registry.clone());
+    let (mut extracted, other_window, other_camera, other_container) =
+        Presentation::build(registry);
+    assert_eq!(reference.sub_apps().iter().count(), 1);
+    assert_eq!(extracted.sub_apps().iter().count(), 1);
+    assert_eq!(
+        (window, camera, container),
+        (other_window, other_camera, other_container)
+    );
+    reference.add_message::<Probe>();
+    extracted.add_message::<Probe>();
+    let mut world = std::mem::take(extracted.world_mut());
+    assert!(world.storages().non_sends.is_empty());
+    drop(extracted);
+
+    let process = source.world_mut().spawn_empty().id();
+    let root = source.world_mut().spawn(Workspace).id();
+    let tab = source.world_mut().spawn((Tab, ChildOf(root))).id();
+    let leaf = source
+        .world_mut()
+        .spawn((PaneView { pane: process }, ChildOf(tab)))
+        .id();
+    let mut maps = [EntityHashMap::default(), EntityHashMap::default()];
+    for (destination, map) in [reference.world_mut(), &mut world]
+        .into_iter()
+        .zip(&mut maps)
+    {
+        map.insert(process, destination.spawn_empty().id());
+    }
+    let mut previous = Vec::new();
+    for (step, (cols, rows)) in [(80, 24), (120, 40), (120, 40), (120, 40)]
+        .into_iter()
+        .enumerate()
+    {
+        if step == 2 {
+            source.world_mut().get_mut::<Node>(leaf).need()?.width = Val::Px(31.0);
+            source.world_mut().get_mut::<Node>(leaf).need()?.flex_grow = 0.0;
+            source.world_mut().get_mut::<Node>(leaf).need()?.flex_basis = Val::Auto;
+        }
+        if step == 3 {
+            source.world_mut().despawn(leaf);
+        }
+        let scene = crate::assets::extract_layout(source.world(), root)?;
+        for (destination, map) in [reference.world_mut(), &mut world]
+            .into_iter()
+            .zip(&mut maps)
+        {
+            if let Some(local_root) = map.get(&root).copied() {
+                destination.despawn(local_root);
+            }
+            let local_process = *map.get(&process).need()?;
+            map.clear();
+            map.insert(process, local_process);
+            scene.write_to_world(destination, map)?;
+            destination
+                .entity_mut(*map.get(&root).need()?)
+                .insert(ChildOf(container));
+            destination
+                .get_mut::<Window>(window)
+                .need()?
+                .resolution
+                .set_physical_resolution(cols, rows);
+            destination
+                .get_mut::<Camera>(camera)
+                .need()?
+                .computed
+                .target_info = Some(RenderTargetInfo {
+                physical_size: UVec2::new(cols, rows),
+                scale_factor: 1.0,
+            });
+            if let Some(local) = map.get(&leaf).copied() {
+                destination.entity_mut(local).insert((
+                    Interaction::None,
+                    FocusPolicy::Block,
+                    TabIndex(0),
+                ));
+                destination
+                    .resource_mut::<InputFocus>()
+                    .set(local, FocusCause::Navigated);
+            } else {
+                destination.resource_mut::<InputFocus>().clear();
+            }
+        }
+        reference.update();
+        world.run_schedule(bevy_app::Main);
+        world.clear_trackers();
+        let geometry = |world: &World| -> Vec<Vec2> {
+            world
+                .resource::<UiStack>()
+                .uinodes
+                .iter()
+                .filter_map(|e| {
+                    world.get::<PaneView>(*e)?;
+                    Some(world.get::<ComputedNode>(*e)?.size())
+                })
+                .collect()
+        };
+        let actual = geometry(&world);
+        assert_eq!(actual, geometry(reference.world()));
+        if step < 3 {
+            let expected_width = if step == 2 { 31.0 } else { cols as f32 };
+            assert_eq!(actual, vec![Vec2::new(expected_width, rows as f32)]);
+            assert_ne!(actual, previous);
+            for destination in [reference.world_mut(), &mut world] {
+                destination
+                    .get_mut::<Window>(window)
+                    .need()?
+                    .set_cursor_position(Some(Vec2::new(1.5, 1.5)));
+                destination
+                    .resource_mut::<ButtonInput<MouseButton>>()
+                    .press(MouseButton::Left);
+                destination.run_system_cached(ui_focus_system)?;
+            }
+            let interactions = |world: &mut World| -> Vec<Interaction> {
+                world
+                    .query_filtered::<&Interaction, With<PaneView>>()
+                    .iter(world)
+                    .copied()
+                    .collect()
+            };
+            assert_eq!(interactions(&mut world), vec![Interaction::Pressed]);
+            assert_eq!(
+                interactions(reference.world_mut()),
+                vec![Interaction::Pressed]
+            );
+            assert!(world.resource::<InputFocus>().get().is_some());
+        } else {
+            assert!(actual.is_empty());
+            assert!(world.resource::<InputFocus>().get().is_none());
+        }
+        previous = actual;
+        assert!(world.storages().non_sends.is_empty());
+        assert_eq!(
+            world
+                .query_filtered::<Entity, Added<Node>>()
+                .iter(&world)
+                .count(),
+            0
+        );
+        reference.update();
+        world.run_schedule(bevy_app::Main);
+        world.clear_trackers();
+        assert_eq!(geometry(&world), geometry(reference.world()));
+    }
+    reference.world_mut().write_message(Probe);
+    world.write_message(Probe);
+    for _ in 0..2 {
+        reference.update();
+        world.run_schedule(bevy_app::Main);
+        world.clear_trackers();
+    }
+    assert!(world.resource::<Messages<Probe>>().is_empty());
+    assert!(reference.world().resource::<Messages<Probe>>().is_empty());
+    Ok(())
+}

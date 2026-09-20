@@ -2,10 +2,10 @@ use crate::{
     actions::Action,
     assets::{self, Settings},
     control::{Axis, Chooser, Command, Control, Order, Shutdown, Subject, UserInput},
-    frame::{self, Views, sync_view, with_views},
+    frame::{self, sync_view},
     interaction::Prefix,
     model::*,
-    presentation,
+    presentation::{self, Presentation},
     protocol::{Input, MouseAction, MouseButton, Token},
     terminal::{Terminal, TerminalPlugin},
 };
@@ -19,7 +19,7 @@ use std::sync::Arc;
 fn route_control(event: On<Control>, mut commands: Commands) {
     let (viewer, command) = (event.event_target(), event.command.clone());
     commands.queue(move |world: &mut World| {
-        if with_views(world, |world, views| sync_view(world, views, viewer)).is_err() {
+        if sync_view(world, viewer).is_err() {
             return;
         }
         if let Err(error) = execute(world, viewer, command) {
@@ -32,7 +32,7 @@ fn route_control(event: On<Control>, mut commands: Commands) {
 fn route_input(event: On<UserInput>, mut commands: Commands) {
     let event = event.event().clone();
     commands.queue(move |world: &mut World| {
-        if with_views(world, |world, views| sync_view(world, views, event.viewer)).is_err() {
+        if sync_view(world, event.viewer).is_err() {
             return;
         }
         if crate::paste::input(world, event.viewer, &event.input) {
@@ -53,11 +53,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
             && selection.dragging
         {
             let leaf = selection.leaf;
-            let rect = world
-                .non_send::<Views>()
-                .get(&event.viewer)
-                .and_then(|v| v.presentation.rects().iter().find(|r| r.leaf == leaf))
-                .copied();
+            let rect = frame::rect(world, event.viewer, leaf);
             if let Some(rect) = rect {
                 let point = rect.local(*x, *y);
                 let _ = crate::selection::mouse(world, event.viewer, leaf, *action, point);
@@ -95,9 +91,8 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         {
             let shift = &modifiers.shift;
             let hit = world
-                .non_send_mut::<Views>()
-                .get_mut(&event.viewer)
-                .and_then(|view| view.presentation.pointer(*x, *y, false));
+                .get_mut::<Presentation>(event.viewer)
+                .and_then(|mut view| view.pointer(*x, *y, false));
             if let Some(hit) = hit {
                 let command = if world.get::<Tab>(hit).is_some() {
                     Some(if *button == MouseButton::Right {
@@ -147,9 +142,8 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         {
             let shift = &modifiers.shift;
             let hit = world
-                .non_send_mut::<Views>()
-                .get_mut(&event.viewer)
-                .and_then(|view| view.presentation.pointer(*x, *y, false));
+                .get_mut::<Presentation>(event.viewer)
+                .and_then(|mut view| view.pointer(*x, *y, false));
             if let Some(hit) = hit
                 && let Some(pane) = world.get::<PaneView>(hit).map(|p| p.pane)
                 && (*shift
@@ -160,11 +154,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                         t.screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None
                     }))
             {
-                let rect = world
-                    .non_send::<Views>()
-                    .get(&event.viewer)
-                    .and_then(|v| v.presentation.rects().iter().find(|r| r.leaf == hit))
-                    .copied();
+                let rect = frame::rect(world, event.viewer, hit);
                 if let Some(rect) = rect {
                     if focused(world, event.viewer) != Some(hit)
                         && let Some(mut v) = world.get_mut::<Viewer>(event.viewer)
@@ -297,16 +287,13 @@ impl Plugin for ServerPlugin {
             .register_type::<crate::protocol::Token>();
         presentation::register_types(app);
         crate::navigation::observe(app.world_mut());
-        app.insert_non_send(Views::default())
-            .add_plugins(TerminalPlugin)
+        app.add_plugins(TerminalPlugin)
             .add_observer(route_control)
             .add_observer(route_input)
             .add_observer(crate::paste::overlay_opened)
-            .add_observer(
-                |removed: On<Remove, Viewer>, mut views: NonSendMut<Views>| {
-                    views.remove(&removed.entity);
-                },
-            )
+            .add_observer(|removed: On<Remove, Viewer>, mut commands: Commands| {
+                commands.entity(removed.entity).try_remove::<Presentation>();
+            })
             .add_observer(|_: On<Shutdown>, mut exits: MessageWriter<AppExit>| {
                 exits.write(AppExit::Success);
             })
@@ -705,8 +692,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 .and_then(|leaf| pane_of(world, leaf))
                 .ok_or("no pane")?;
             if world
-                .non_send::<Views>()
-                .get(&id)
+                .get::<Presentation>(id)
                 .ok_or("presentation not initialized")?
                 .clipboard
                 .len()
@@ -719,17 +705,14 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 .ok_or("terminal not found")?
                 .copy_text(scrollback);
             crate::selection::validate_clipboard(world.resource::<Settings>(), &text)?;
-            if let Some(view) = world.non_send_mut::<Views>().get_mut(&id) {
+            if let Some(mut view) = world.get_mut::<Presentation>(id) {
                 view.clipboard.push(text);
             }
             notify(world, id, Notice::info("visible pane copied via OSC52"));
         }
         Focus { pane } => {
             check(world, Subject::Pane(pane))?;
-            let shown = world
-                .non_send::<Views>()
-                .get(&id)
-                .is_some_and(|view| view.presentation.rects().iter().any(|r| r.leaf == pane));
+            let shown = frame::rect(world, id, pane).is_some();
             let in_tab = tab.is_some_and(|tab| nav::leaves(world, tab).contains(&pane));
             if !shown || !in_tab {
                 return Err("target is not a pane in this workspace".into());
@@ -741,14 +724,10 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             if one_pane() {
                 return Err("only one pane".into());
             }
-            let next = {
-                let mut views = world.non_send_mut::<Views>();
-                let presentation = &mut views
-                    .get_mut(&id)
-                    .ok_or("presentation not initialized")?
-                    .presentation;
-                presentation.focus_step(command == FocusPrevious)
-            };
+            let next = world
+                .get_mut::<Presentation>(id)
+                .ok_or("presentation not initialized")?
+                .focus_step(command == FocusPrevious);
             if let Some(next) = next {
                 focus_on(world, next)?;
             }
@@ -1011,14 +990,12 @@ fn terminal_input(world: &mut World, id: Entity, input: &Input) -> Result<(), St
             // Pick against the last painted native layout, not a second
             // rectangle hit-test implementation.
             let hit = {
-                let mut views = world.non_send_mut::<Views>();
-                let context = views.get_mut(&id).ok_or("presentation not initialized")?;
-                let hit = context
-                    .presentation
-                    .pointer(*x, *y, *action == MouseAction::Press);
+                let mut context = world
+                    .get_mut::<Presentation>(id)
+                    .ok_or("presentation not initialized")?;
+                let hit = context.pointer(*x, *y, *action == MouseAction::Press);
                 hit.map(|hit| {
                     context
-                        .presentation
                         .rects()
                         .iter()
                         .find(|r| r.leaf == hit)
@@ -1077,6 +1054,33 @@ mod tests {
     #[derive(Component, bevy_reflect::Reflect)]
     #[reflect(Component)]
     struct Extra(u32);
+
+    #[test]
+    fn removing_viewer_drops_presentation_without_despawning_entity() -> crate::testing::Outcome {
+        let mut app = App::new();
+        app.insert_resource(Wake(std::thread::current()));
+        app.add_plugins(ServerPlugin);
+        let registry = app.world().resource::<AppTypeRegistry>().clone();
+        let viewer = app
+            .world_mut()
+            .spawn((
+                Viewer {
+                    rows: 24,
+                    cols: 80,
+                    zoom: false,
+                    scrollback: 0,
+                    notice: None,
+                },
+                Presentation::new(registry),
+            ))
+            .id();
+        assert!(app.world().get::<Presentation>(viewer).is_some());
+        app.world_mut().entity_mut(viewer).remove::<Viewer>();
+        assert!(app.world().get_entity(viewer).is_ok());
+        assert!(app.world().get::<Presentation>(viewer).is_none());
+        app.world_mut().despawn(viewer);
+        Ok(())
+    }
 
     #[test]
     fn arbitrary_layout_changes_invalidate_only_the_owning_workspace() -> crate::testing::Outcome {

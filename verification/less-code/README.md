@@ -26,6 +26,7 @@ included. A revision argument reads sources directly from Git, not the worktree.
 | --- | ---: | ---: |
 | Base | 6882 | 0 |
 | Section 1 | 6846 | -36 |
+| Section 2 | 6799 | -83 |
 
 ## Section 1
 
@@ -42,3 +43,37 @@ Verification: new required-node/explicit-override/removal unit test; existing
 native-layout scene roundtrip, legacy normalization, split and multi-viewer
 integration tests. All four gates pass (36 unit tests, 35 integration tests).
 Gate log: `section1.log`.
+
+## Section 2
+
+`Presentation` is an unreflected viewer component owning the inert world and
+paint/clipboard bookkeeping. `sync_view` snapshots the small viewer input before
+borrowing it; painting copies rectangle values before mutating terminals. No
+world/component extraction helper or unsafe aliasing is needed. Viewer removal
+still has an observer, now removing the sibling component; despawn drops it.
+
+The retained spike builds two identical inert apps and compares native geometry
+through insertion, resizing (80x24 to 120x40), replacement (31-cell fixed width),
+removal, native pointer picking and focus updates. It asserts explicit expected
+`ComputedNode` sizes, changed results, tracker clearing, and message expiry.
+`Main` plus `clear_trackers` matches the reference app on each iteration. The
+spike also compiles `Presentation: Component + Send + Sync`, asserts there is
+only the main sub-app, and asserts empty non-send storage after setup/updates.
+
+Source audit: `App::update` delegates to `SubApps::update`; with no additional
+sub-apps this runs the main default schedule and clears trackers. Installed
+UI/text/image/asset/focus/visibility plugins install no non-send data. The
+`TaskPoolPlugin` main-thread-only tick remains in `Last` inside `Main`; all
+production presentation updates remain in exclusive world request/command paths
+on the runner thread, not worker query systems. No OS-window plugins are used.
+
+Rectangle lookup is shared, with `(height, width)` preserved for terminal sizing.
+Thin `content_size` and `neighbor` adapters remain for their different return
+contracts. `visible_leaf` is used only by focus-history navigation: bare test
+worlds without a presentation keep their permissive fallback; production command
+entry points always synchronize a presentation first (as before). There is no
+remote access to this unreflected component. Tests retain hidden-pane rejection.
+
+Verification: 38 unit and 35 integration tests, including viewer-component
+removal without entity despawn, hidden-tab size negotiation, repeated clipboard
+effects, tiny viewports and frame watches. Four gates pass; `section2.log`.
