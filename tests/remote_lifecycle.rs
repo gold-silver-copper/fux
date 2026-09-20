@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use std::{
     fs,
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -10,6 +10,12 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+static NEXT_PORT: AtomicU64 = AtomicU64::new(0);
+// A concurrent fork can temporarily inherit a reserved listener until exec.
+// Serialize reservation-to-ready with outer-PTY spawns, not the test scenarios.
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+mod design;
 
 struct Server {
     child: Child,
@@ -19,6 +25,7 @@ struct Server {
 
 impl Server {
     fn start() -> Self {
+        let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
         let directory = std::env::temp_dir().join(format!(
             "fux-test-{}-{}",
             std::process::id(),
@@ -28,7 +35,15 @@ impl Server {
         let directory = directory.canonicalize().unwrap();
         let config = directory.join("fux.json");
         fs::write(&config, r#"{"shell":["/bin/sh"],"history_lines":100}"#).unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // Distinct non-ephemeral ports avoid port-0 reservations being reused by
+        // parallel fixtures or outgoing HTTP sockets before the child binds.
+        let listener = (0..20_000)
+            .find_map(|_| {
+                let index =
+                    u64::from(std::process::id()) + NEXT_PORT.fetch_add(1, Ordering::Relaxed);
+                TcpListener::bind(("127.0.0.1", 10_000 + (index % 20_000) as u16)).ok()
+            })
+            .expect("no free test port");
         let address = listener.local_addr().unwrap();
         drop(listener);
         let child = Command::new(env!("CARGO_BIN_EXE_fux"))
@@ -50,7 +65,7 @@ impl Server {
             endpoint: format!("http://{address}"),
             directory,
         };
-        eventually(|| TcpStream::connect(address).is_ok());
+        eventually(|| server.request("rpc.discover", Value::Null).is_ok());
         server
     }
 
@@ -227,9 +242,9 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() {
     }
     server.control(viewer, "split_horizontal", "");
     let screen = server.screen(viewer);
-    let chrome = screen.lines().next().unwrap();
+    let chrome = screen.lines().last().unwrap();
     assert!(!chrome.contains("zoom"));
-    assert!(!chrome.contains("scroll:"));
+    assert!(!chrome.contains('↑'));
     let launches = server.query("fux::model::Launch");
     let second = launches
         .iter()
@@ -242,6 +257,17 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() {
             json!({"entity":entity,"components":{"bevy_ecs::name::Name":name}}),
         );
     }
+    // Distinct real terminal contents, not decorative pane-header labels.
+    for marker in ["BETA", "ALPHA"] {
+        server.input(
+            viewer,
+            json!({"kind":"paste","text":format!("printf '\\033[2J\\033[H{marker}\\n'")}),
+        );
+        server.enter(viewer);
+        eventually(|| server.screen(viewer).contains(marker));
+        server.control(viewer, "focus_next", "");
+        server.screen(viewer);
+    }
     let before = server.query("fux::model::ProcessState");
     let scene = server.directory.join("layout.scn.ron");
     server.control(viewer, "save_layout", "");
@@ -253,9 +279,9 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() {
     }}));
     eventually(|| server.screen(viewer).contains("loaded "));
     let screen = server.screen(viewer);
-    let border = screen.lines().nth(1).unwrap();
+    let content = screen.lines().next().unwrap();
     assert!(
-        border.find("beta").unwrap() < border.find("alpha").unwrap(),
+        content.find("BETA").unwrap() < content.find("ALPHA").unwrap(),
         "{screen}"
     );
     let after = server.query("fux::model::ProcessState");
@@ -276,12 +302,12 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() {
         "world.insert_components",
         json!({"entity":focus,"components":{"bevy_camera::visibility::Visibility":"Hidden"}}),
     );
-    eventually(|| !server.screen(viewer).contains("beta"));
+    eventually(|| !server.screen(viewer).contains("BETA"));
     server.rpc(
         "world.remove_components",
         json!({"entity":focus,"components":["bevy_camera::visibility::Visibility"]}),
     );
-    eventually(|| server.screen(viewer).contains("beta"));
+    eventually(|| server.screen(viewer).contains("BETA"));
     server.rpc(
         "world.trigger_event",
         json!({"event":"fux::control::Control","value":{
@@ -305,7 +331,7 @@ fn stock_viewer_removal_releases_its_native_size_constraint() {
         server.screen(viewer);
         server.input(viewer, json!({"kind":"paste","text":"stty size"}));
         server.enter(viewer);
-        eventually(|| server.screen(viewer).contains("9 38"));
+        eventually(|| server.screen(viewer).contains("11 40"));
         if despawn {
             server.rpc("world.despawn_entity", json!({"entity":small}));
         } else {
@@ -321,7 +347,7 @@ fn stock_viewer_removal_releases_its_native_size_constraint() {
         server.screen(viewer);
         server.input(viewer, json!({"kind":"paste","text":"clear; stty size"}));
         server.enter(viewer);
-        eventually(|| server.screen(viewer).contains("21 78"));
+        eventually(|| server.screen(viewer).contains("23 80"));
     }
 }
 
@@ -407,7 +433,10 @@ fn blocked_terminal_paint_does_not_block_stream_drain() {
     command.arg("attach");
     command.env("FUX_ENDPOINT", &server.endpoint);
     let mut terminal = SlowTerminal {
-        child: pair.slave.spawn_command(command).unwrap(),
+        child: {
+            let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
+            pair.slave.spawn_command(command).unwrap()
+        },
         master: Some(pair.master),
     };
     drop(pair.slave);

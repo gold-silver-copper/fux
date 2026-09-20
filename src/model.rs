@@ -79,6 +79,8 @@ pub struct Viewer {
     pub zoom: bool,
     pub scrollback: usize,
     pub notice: String,
+    pub notice_error: bool,
+    pub help_scroll: usize,
     pub prefix: bool,
     pub prompt: Option<String>,
     pub buffer: String,

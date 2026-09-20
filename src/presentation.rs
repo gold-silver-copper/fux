@@ -23,7 +23,12 @@ use bevy_ui::{FocusPolicy, UiPlugin, UiStack, prelude::*, ui_focus_system};
 use bevy_window::{PrimaryWindow, Window};
 use bevy_world_serialization::DynamicWorld;
 
-use crate::{model::PaneView, model::Viewer, protocol::PaneRect};
+use crate::{
+    chrome::at,
+    model::{PaneView, Split, Viewer},
+    protocol::PaneRect,
+};
+use std::collections::BTreeMap;
 
 /// Registers ordinary UI scene types, not a scene component allowlist. Additional
 /// registered components are instantiated unchanged by DynamicWorld.
@@ -65,6 +70,7 @@ pub struct Presentation {
     scene_key: Option<(u32, Entity, Option<Entity>)>,
     viewport: UVec2,
     rects: Vec<PaneRect>,
+    separators: BTreeMap<(u16, u16), u8>,
 }
 
 impl Presentation {
@@ -139,6 +145,7 @@ impl Presentation {
             scene_key: None,
             viewport: UVec2::ZERO,
             rects: Vec::new(),
+            separators: BTreeMap::new(),
         }
     }
 
@@ -291,6 +298,10 @@ impl Presentation {
 
     fn collect_rects(&mut self) {
         self.rects.clear();
+        self.separators.clear();
+        if self.viewport.min_element() == 0 {
+            return;
+        }
         let world = self.app.world();
         for local in &world.resource::<UiStack>().uinodes {
             let (Some(view), Some(node), Some(transform), Some(visible)) = (
@@ -321,11 +332,88 @@ impl Presentation {
                     leaf: *leaf,
                     pane: *pane,
                     x,
-                    y: y.saturating_add(1),
+                    y,
                     width: right - x,
                     height: bottom - y,
                 });
             }
+        }
+        // Only actual one-cell gaps between visible siblings of a Split are chrome.
+        // User-scene margins, padding, and arbitrary empty grid areas remain blank.
+        let bounds = |entity| {
+            let node = world.get::<ComputedNode>(entity)?;
+            let transform = world.get::<UiGlobalTransform>(entity)?;
+            if !world.get::<InheritedVisibility>(entity)?.get() || node.size().min_element() <= 0.0
+            {
+                return None;
+            }
+            let min = transform.translation - node.size() * 0.5;
+            let max = min + node.size();
+            Some((
+                min.x.round().clamp(0.0, self.viewport.x as f32) as u16,
+                min.y.round().clamp(0.0, self.viewport.y as f32) as u16,
+                max.x.round().clamp(0.0, self.viewport.x as f32) as u16,
+                max.y.round().clamp(0.0, self.viewport.y as f32) as u16,
+            ))
+        };
+        for entity in &world.resource::<UiStack>().uinodes {
+            let (Some(_), Some(node), Some(children)) = (
+                world.get::<Split>(*entity),
+                world.get::<Node>(*entity),
+                world.get::<Children>(*entity),
+            ) else {
+                continue;
+            };
+            if bounds(*entity).is_none() {
+                continue;
+            }
+            for a in children.iter().filter_map(&bounds) {
+                for b in children.iter().filter_map(&bounds) {
+                    if node.column_gap == Val::Px(1.0) && a.2.checked_add(1) == Some(b.0) {
+                        for y in a.1.max(b.1)..a.3.min(b.3) {
+                            self.separators.insert((a.2, y), 3);
+                        }
+                    }
+                    if node.row_gap == Val::Px(1.0) && a.3.checked_add(1) == Some(b.1) {
+                        for x in a.0.max(b.0)..a.2.min(b.2) {
+                            self.separators.insert((x, a.3), 12);
+                        }
+                    }
+                }
+            }
+        }
+        // Overlapping custom scenes may put a pane over a split gap.
+        self.separators.retain(|&(x, y), _| {
+            !self
+                .rects
+                .iter()
+                .any(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+        });
+    }
+
+    pub fn paint_separators(&self, out: &mut String, focus: Option<Entity>) {
+        let focused = self.rects.iter().find(|r| Some(r.leaf) == focus);
+        for (&(x, y), &axis) in &self.separators {
+            let has = |x, y| self.separators.contains_key(&(x, y));
+            let mask = axis
+                | if y > 0 && has(x, y - 1) { 1 } else { 0 }
+                | if has(x, y + 1) { 2 } else { 0 }
+                | if x > 0 && has(x - 1, y) { 4 } else { 0 }
+                | if has(x + 1, y) { 8 } else { 0 };
+            let glyph = match mask {
+                15 => "┼",
+                7 => "┤",
+                11 => "├",
+                13 => "┴",
+                14 => "┬",
+                12 => "─",
+                _ => "│",
+            };
+            let touches = focused.is_some_and(|r| {
+                x + 1 >= r.x && x <= r.x + r.width && y + 1 >= r.y && y <= r.y + r.height
+            });
+            let style = if touches { "\x1b[0;1m" } else { "\x1b[0;90m" };
+            at(out, x, y, format_args!("{style}{glyph}\x1b[0m"));
         }
     }
 
@@ -351,7 +439,8 @@ impl Presentation {
     pub fn pointer(&mut self, x: u16, y: u16, pressed: bool) -> Option<Entity> {
         let world = self.app.world_mut();
         world.get_mut::<Window>(self.window)?.set_cursor_position(
-            (y != 0).then_some(Vec2::new(f32::from(x) + 0.5, f32::from(y) - 0.5)),
+            (u32::from(x) < self.viewport.x && u32::from(y) < self.viewport.y)
+                .then_some(Vec2::new(f32::from(x) + 0.5, f32::from(y) + 0.5)),
         );
         {
             let mut buttons = world.resource_mut::<ButtonInput<MouseButton>>();

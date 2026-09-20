@@ -6,7 +6,8 @@ pub struct PaneRect {
     /// IDs in the authoritative server World, not the presentation World.
     pub leaf: Entity,
     pub pane: Entity,
-    /// Outer rectangle, including one cell of border on each side. Row zero is chrome.
+    /// Content rectangle in zero-based viewer cells; no border or title inset.
+    /// The final viewer row is chrome and never belongs to a pane.
     pub x: u16,
     pub y: u16,
     pub width: u16,

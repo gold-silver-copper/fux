@@ -1,4 +1,5 @@
 mod assets;
+mod chrome;
 mod control;
 mod model;
 mod presentation;

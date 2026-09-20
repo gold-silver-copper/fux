@@ -1,5 +1,6 @@
 use crate::{
     assets::{self, Settings},
+    chrome::{self, at, fit},
     control::{Control, Shutdown, UserInput},
     model::*,
     presentation::{self, Presentation},
@@ -13,7 +14,7 @@ use bevy_ecs::{
     world::EntityRefExcept,
 };
 use bevy_remote::{BrpError, BrpResult, RemotePlugin};
-use bevy_ui::{FlexDirection, Node, UiRect, Val};
+use bevy_ui::{FlexDirection, Node, Val};
 use bevy_world_serialization::DynamicWorld;
 use serde_json::{Value, json};
 use std::{
@@ -21,7 +22,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use unicode_width::UnicodeWidthChar;
 
 type Views = EntityHashMap<View>;
 struct View {
@@ -30,6 +30,7 @@ struct View {
     clipboard: Vec<String>,
     next_paint: Instant,
     paint_wake_pending: bool,
+    panel: Option<chrome::Bounds>,
 }
 #[derive(Resource)]
 pub struct Disconnected(pub async_channel::Receiver<Entity>);
@@ -66,7 +67,13 @@ fn scene_completions(io: Res<SceneIo>, mut commands: Commands) {
                 Ok(None) => Ok(format!("saved {}", done.path)),
                 Err(error) => Err(error),
             };
-            notice(world, done.viewer, &result.unwrap_or_else(|error| error));
+            let error = result.is_err();
+            notice(
+                world,
+                done.viewer,
+                &result.unwrap_or_else(|error| error),
+                error,
+            );
         });
     }
 }
@@ -148,9 +155,8 @@ fn leaf_node() -> Node {
     Node {
         flex_grow: 1.0,
         flex_basis: Val::Px(0.0),
-        min_width: Val::Px(3.0),
-        min_height: Val::Px(3.0),
-        border: UiRect::all(Val::Px(1.0)),
+        min_width: Val::ZERO,
+        min_height: Val::ZERO,
         ..Default::default()
     }
 }
@@ -319,6 +325,13 @@ fn with_views<T>(world: &mut World, f: impl FnOnce(&mut World, &mut Views) -> T)
 fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), String> {
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
     let root = v.workspace;
+    let scroll = v
+        .help_scroll
+        .min(chrome::help_limit(world.resource::<Settings>(), v.rows));
+    if scroll != v.help_scroll {
+        world.get_mut::<Viewer>(id).unwrap().help_scroll = scroll;
+    }
+    let v = world.get::<Viewer>(id).unwrap();
     if v.focus.is_none_or(|e| world.get::<PaneView>(e).is_none()) {
         let focus = first_leaf(world, root);
         world.get_mut::<Viewer>(id).unwrap().focus = focus;
@@ -331,6 +344,7 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), Str
         clipboard: Vec::new(),
         next_paint: Instant::now(),
         paint_wake_pending: false,
+        panel: None,
     });
     context
         .presentation
@@ -340,8 +354,8 @@ fn size_terminals(world: &mut World, views: &Views) {
     let mut sizes = EntityHashMap::<(u16, u16)>::default();
     for context in views.values() {
         for rect in context.presentation.rects() {
-            let rows = rect.height.saturating_sub(2).max(1);
-            let cols = rect.width.saturating_sub(2).max(1);
+            let rows = rect.height;
+            let cols = rect.width;
             sizes
                 .entry(rect.pane)
                 .and_modify(|s| {
@@ -370,12 +384,12 @@ fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
         .get("rows")
         .and_then(Value::as_u64)
         .unwrap_or(24)
-        .clamp(3, 4096) as u16;
+        .min(4096) as u16;
     let cols = params
         .get("cols")
         .and_then(Value::as_u64)
         .unwrap_or(80)
-        .clamp(3, 4096) as u16;
+        .min(4096) as u16;
     let focused = first_leaf(world, root);
     let id = world
         .spawn(Viewer {
@@ -386,6 +400,8 @@ fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
             zoom: false,
             scrollback: 0,
             notice: String::new(),
+            notice_error: false,
+            help_scroll: 0,
             prefix: false,
             prompt: None,
             buffer: String::new(),
@@ -450,19 +466,6 @@ fn frame_watch(In(params): In<Option<Value>>, world: &mut World) -> BrpResult<Op
     view.next_paint = Instant::now() + Duration::from_millis(16);
     Ok(Some(json!(frame)))
 }
-fn clipped(text: &str, cols: u16) -> String {
-    let mut width = 0;
-    text.chars()
-        .filter(|c| !c.is_control())
-        .take_while(|c| {
-            width += c.width().unwrap_or(0);
-            width <= usize::from(cols)
-        })
-        .collect()
-}
-fn at(out: &mut String, x: u16, y: u16, text: impl std::fmt::Display) {
-    let _ = write!(out, "\x1b[{};{}H{}", y + 1, x + 1, text);
-}
 fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
     if world.get::<Viewer>(id).is_none() {
         return Ok(Frame {
@@ -483,113 +486,79 @@ fn name(world: &World, entity: Entity) -> String {
         .map_or_else(|| entity.to_bits().to_string(), |n| n.as_str().to_owned())
 }
 
+fn process_status(world: &World, pane: Entity) -> String {
+    world
+        .get::<ProcessState>(pane)
+        .map_or_else(String::new, |s| {
+            s.exit
+                .map(|code| format!(" [exit:{code}]"))
+                .or_else(|| s.error.as_ref().map(|error| format!(" [{error}]")))
+                .unwrap_or_default()
+        })
+}
+
 fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, String> {
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
     let focus = v.focus;
     let scrollback = v.scrollback;
-    let settings = world.resource::<Settings>();
+    let modal = v.prefix || v.prompt.is_some();
     let view = views.get_mut(&id).ok_or("missing presentation")?;
     let mut out = String::from("\x1b[?2026h\x1b[?7l\x1b[?25l\x1b[0m\x1b[H\x1b[2J");
-    let chrome = if v.prompt.as_deref() == Some("help") {
-        let index = v.buffer.parse::<usize>().unwrap_or(0) % settings.bindings.len().max(1);
-        settings.bindings.get(index).map_or_else(
-            || "help: no bindings | Esc".into(),
-            |binding| {
-                format!(
-                    "help {}/{} | {} {}: {} | ←/→ Esc",
-                    index + 1,
-                    settings.bindings.len(),
-                    settings.prefix,
-                    binding.key,
-                    binding.action
-                )
-            },
-        )
-    } else if let Some(prompt) = &v.prompt {
-        format!("{prompt}: {}", v.buffer)
-    } else {
-        format!(
-            "fux [{}] {}{} | {} ? help | {}",
-            name(world, v.workspace),
-            if v.zoom { "zoom " } else { "" },
-            if v.scrollback > 0 {
-                format!("scroll:{}", v.scrollback)
-            } else {
-                String::new()
-            },
-            settings.prefix,
-            v.notice
-        )
-    };
-    at(
-        &mut out,
-        0,
-        0,
-        format_args!("\x1b[7m{}\x1b[0m", clipped(&chrome, v.cols)),
-    );
+    let focused = focus
+        .and_then(|leaf| world.get::<PaneView>(leaf))
+        .map_or_else(String::new, |view| {
+            format!(
+                "{}: {}{}",
+                view.pane.to_bits(),
+                name(world, view.pane),
+                process_status(world, view.pane)
+            )
+        });
     let mut cursor = None;
     for rect in view.presentation.rects() {
-        if rect.width < 3 || rect.height < 3 {
-            continue;
-        }
         let selected = focus == Some(rect.leaf);
-        let color = if selected { "\x1b[36m" } else { "\x1b[90m" };
-        let state = world.get::<ProcessState>(rect.pane);
-        let status = state
-            .and_then(|s| s.exit)
-            .map(|code| format!(" [exit:{code}]"))
-            .or_else(|| {
-                state
-                    .and_then(|s| s.error.as_ref())
-                    .map(|error| format!(" [{error}]"))
-            })
-            .unwrap_or_default();
-        let label = format!(
-            " {} {}{status} ",
-            if selected { "*" } else { "-" },
-            name(world, rect.pane)
-        );
-        let top = format!(
-            "{color}+{}+\x1b[0m",
-            "-".repeat(usize::from(rect.width - 2))
-        );
-        at(&mut out, rect.x, rect.y, &top);
-        at(
-            &mut out,
-            rect.x + 1,
-            rect.y,
-            format_args!("{color}{}\x1b[0m", clipped(&label, rect.width - 2)),
-        );
-        at(&mut out, rect.x, rect.y + rect.height - 1, &top);
-        for row in 1..rect.height - 1 {
-            for x in [rect.x, rect.x + rect.width - 1] {
-                at(&mut out, x, rect.y + row, format_args!("{color}|\x1b[0m"));
-            }
-        }
+        let status = process_status(world, rect.pane);
+        let exited = !status.is_empty();
         match world.get_mut::<Terminal>(rect.pane) {
             Some(mut terminal) => {
-                let (lines, screen) = terminal.snapshot(if selected { scrollback } else { 0 });
-                for (row, line) in lines.iter().take(usize::from(rect.height - 2)).enumerate() {
-                    at(&mut out, rect.x + 1, rect.y + 1 + row as u16, line);
+                let (lines, screen) =
+                    terminal.snapshot(if selected { scrollback } else { 0 }, rect.width);
+                for (row, line) in lines.iter().take(usize::from(rect.height)).enumerate() {
+                    // Snapshot rows already reset style at both ends.
+                    at(&mut out, rect.x, rect.y + row as u16, line);
                 }
                 let (row, col) = screen.cursor_position();
                 if selected
                     && !screen.hide_cursor()
                     && scrollback == 0
-                    && row < rect.height - 2
-                    && col < rect.width - 2
+                    && !exited
+                    && row < rect.height
+                    && col < rect.width
                 {
-                    cursor = Some((rect.x + 1 + col, rect.y + 1 + row));
+                    cursor = Some((rect.x + col, rect.y + row));
                 }
             }
             None => at(
                 &mut out,
-                rect.x + 1,
-                rect.y + 1,
-                clipped("terminal not found", rect.width - 2),
+                rect.x,
+                rect.y,
+                fit("terminal not found", rect.width, false),
             ),
         }
+        if !selected && exited {
+            let label = fit(&status, rect.width, false);
+            at(
+                &mut out,
+                rect.x + rect.width - chrome::width(&label),
+                rect.y + rect.height - 1,
+                format_args!("\x1b[0;2;7m{label}\x1b[0m"),
+            );
+        }
     }
+    view.presentation.paint_separators(&mut out, focus);
+    let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
+    chrome::bar(&mut out, v, &name(world, v.workspace), &focused);
+    view.panel = chrome::panel(&mut out, v, world.resource::<Settings>());
     for text in view.clipboard.drain(..) {
         let _ = write!(
             out,
@@ -597,7 +566,7 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
             base64::engine::general_purpose::STANDARD.encode(text)
         );
     }
-    if let Some((x, y)) = cursor {
+    if !modal && let Some((x, y)) = cursor {
         at(&mut out, x, y, "\x1b[?25h");
     }
     out.push_str("\x1b[0m\x1b[?2026l");
@@ -638,6 +607,8 @@ fn control_event(
         return;
     };
     v.notice.clear();
+    v.notice_error = false;
+    v.prefix = false;
     let leaf = v.focus.filter(|e| panes.contains(*e));
     let pane = leaf
         .and_then(|leaf| panes.get(leaf).ok())
@@ -672,6 +643,8 @@ fn control_event(
                     } else {
                         FlexDirection::Row
                     };
+                    node.column_gap = Val::Px(1.0);
+                    node.row_gap = Val::Px(1.0);
                     let container = commands.spawn((Split, node)).id();
                     let new = spawn_pane(&mut commands, &settings, container, argv, cwd)?;
                     commands.entity(container).insert_children(0, &[leaf]);
@@ -882,6 +855,7 @@ fn control_event(
             }
             "help" => {
                 v.prompt = Some("help".into());
+                v.help_scroll = 0;
                 v.buffer.clear();
             }
             other => return Err(format!("unknown action {other}")),
@@ -890,6 +864,7 @@ fn control_event(
     })();
     if let Err(error) = result {
         v.notice = error;
+        v.notice_error = true;
     }
     wake.notify();
 }
@@ -948,8 +923,8 @@ fn input_event(
     let result = (|| -> Result<(), String> {
         match &event.input {
             Input::Resize { rows, cols } => {
-                v.rows = (*rows).clamp(3, 4096);
-                v.cols = (*cols).clamp(3, 4096);
+                v.rows = (*rows).min(4096);
+                v.cols = (*cols).min(4096);
             }
             Input::Key {
                 key,
@@ -958,16 +933,16 @@ fn input_event(
                 shift,
             } => {
                 if v.prompt.as_deref() == Some("help") {
-                    let count = settings.bindings.len().max(1);
-                    let index = v.buffer.parse::<usize>().unwrap_or(0) % count;
                     match key.as_str() {
                         "escape" | "q" => {
                             v.prompt = None;
                             v.buffer.clear();
                         }
-                        "left" | "up" => v.buffer = ((index + count - 1) % count).to_string(),
-                        "right" | "down" | "tab" | "enter" | " " => {
-                            v.buffer = ((index + 1) % count).to_string()
+                        "up" | "pageup" => {
+                            chrome::scroll(&mut v, &settings, false, key == "pageup")
+                        }
+                        "down" | "pagedown" => {
+                            chrome::scroll(&mut v, &settings, true, key == "pagedown")
                         }
                         _ => {}
                     }
@@ -1006,8 +981,16 @@ fn input_event(
                     key
                 );
                 if v.prefix {
-                    v.prefix = false;
-                    if let Some(binding) = settings.bindings.iter().find(|b| b.key == token) {
+                    if key == "escape" {
+                        v.prefix = false;
+                        v.notice.clear();
+                        return Ok(());
+                    }
+                    // A doubled prefix is literal even if also listed as a binding.
+                    if token != settings.prefix
+                        && let Some(binding) = settings.bindings.iter().find(|b| b.key == token)
+                    {
+                        v.prefix = false;
                         commands.trigger(Control {
                             viewer: id,
                             action: binding.action.clone(),
@@ -1019,11 +1002,14 @@ fn input_event(
                     }
                     if token != settings.prefix {
                         v.notice = format!("unbound prefix key {token}");
+                        v.notice_error = false;
                         return Ok(());
                     }
+                    v.prefix = false;
                 } else if token == settings.prefix {
                     v.prefix = true;
-                    v.notice = "prefix: ? help".into();
+                    v.help_scroll = 0;
+                    v.notice.clear();
                     return Ok(());
                 }
                 let pane = panes
@@ -1037,6 +1023,9 @@ fn input_event(
                 v.notice.clear();
             }
             Input::Paste { text } => {
+                if v.prefix {
+                    return Ok(());
+                }
                 if let Some(prompt) = &v.prompt {
                     if prompt != "help" {
                         v.buffer.push_str(text);
@@ -1068,6 +1057,18 @@ fn input_event(
                 // Pick against the last painted native layout, not a second
                 // rectangle hit-test implementation.
                 let context = views.get_mut(&id).ok_or("presentation not initialized")?;
+                if v.prefix || v.prompt.is_some() {
+                    if (v.prefix || v.prompt.as_deref() == Some("help"))
+                        && context.panel.is_some_and(|panel| panel.contains(*x, *y))
+                    {
+                        match action.as_str() {
+                            "scrollup" => chrome::scroll(&mut v, &settings, false, false),
+                            "scrolldown" => chrome::scroll(&mut v, &settings, true, false),
+                            _ => {}
+                        }
+                    }
+                    return Ok(());
+                }
                 let hit = context.presentation.pointer(*x, *y, action == "press");
                 if let Some(hit) = hit {
                     if action == "press" {
@@ -1099,10 +1100,10 @@ fn input_event(
                                 mapping: Vec::new(),
                             });
                         }
-                    } else if *x > rect.x
-                        && *x < rect.x + rect.width - 1
-                        && *y > rect.y
-                        && *y < rect.y + rect.height - 1
+                    } else if *x >= rect.x
+                        && *x < rect.x + rect.width
+                        && *y >= rect.y
+                        && *y < rect.y + rect.height
                     {
                         let release = action == "release";
                         let motion = action == "move";
@@ -1132,8 +1133,12 @@ fn input_event(
                         if *ctrl {
                             code += 16;
                         }
-                        let col = x - rect.x;
-                        let row = y - rect.y;
+                        let col = x - rect.x + 1;
+                        let row = y - rect.y + 1;
+                        let (rows, cols) = screen.size();
+                        if row > rows || col > cols {
+                            return Ok(());
+                        }
                         if screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr {
                             terminal.input(
                                 format!(
@@ -1160,13 +1165,15 @@ fn input_event(
     })();
     if let Err(error) = result {
         v.notice = error;
+        v.notice_error = true;
     }
     wake.notify();
 }
 
-fn notice(world: &mut World, id: Entity, message: &str) {
+fn notice(world: &mut World, id: Entity, message: &str, error: bool) {
     if let Some(mut v) = world.get_mut::<Viewer>(id) {
         v.notice = message.to_owned();
+        v.notice_error = error;
     }
 }
 fn key_bytes(
