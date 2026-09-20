@@ -62,7 +62,7 @@ pub struct Presentation {
     container: Entity,
     source_to_local: EntityHashMap<Entity>,
     local_to_source: EntityHashMap<Entity>,
-    scene_key: Option<(u64, Entity, Option<Entity>)>,
+    scene_key: Option<(u32, Entity, Option<Entity>)>,
     viewport: UVec2,
     rects: Vec<PaneRect>,
 }
@@ -145,10 +145,10 @@ impl Presentation {
     pub fn sync(
         &mut self,
         scene: &DynamicWorld,
-        revision: u64,
+        revision: u32,
         root: Entity,
         viewer: &Viewer,
-    ) -> Result<Vec<PaneRect>, String> {
+    ) -> Result<(), String> {
         let zoom = viewer.focus.filter(|_| viewer.zoom);
         let key = (revision, root, zoom);
         let rebuild = self.scene_key != Some(key);
@@ -283,7 +283,11 @@ impl Presentation {
                 .run_system_cached(process_recorded_focus_changes)
                 .map_err(|e| e.to_string())?;
         }
-        Ok(self.rects.clone())
+        Ok(())
+    }
+
+    pub fn rects(&self) -> &[PaneRect] {
+        &self.rects
     }
 
     fn collect_rects(&mut self) {

@@ -288,6 +288,84 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() {
 }
 
 #[test]
+fn stock_viewer_removal_releases_its_native_size_constraint() {
+    let server = Server::start();
+    let viewer = server.attach();
+    for despawn in [false, true] {
+        let small = server.rpc("fux.attach", json!({"rows":12,"cols":40}))["viewer"]
+            .as_u64()
+            .unwrap();
+        server.screen(viewer);
+        server.input(viewer, json!({"kind":"paste","text":"stty size"}));
+        server.enter(viewer);
+        eventually(|| server.screen(viewer).contains("9 38"));
+        if despawn {
+            server.rpc("world.despawn_entity", json!({"entity":small}));
+        } else {
+            server.rpc(
+                "world.remove_components",
+                json!({"entity":small,"components":["fux::model::Viewer"]}),
+            );
+        }
+        server.screen(viewer);
+        server.input(viewer, json!({"kind":"paste","text":"clear; stty size"}));
+        server.enter(viewer);
+        eventually(|| server.screen(viewer).contains("21 78"));
+    }
+}
+
+#[test]
+fn repeated_copy_effects_are_not_replaceable_paints() {
+    use std::io::{BufRead, BufReader};
+    let server = Server::start();
+    let viewer = server.attach();
+    let endpoint = server.endpoint.clone();
+    let (sender, received) = std::sync::mpsc::channel();
+    let reader = thread::spawn(move || {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(5)))
+            .build()
+            .into();
+        let response = agent
+            .post(&endpoint)
+            .send_json(json!({
+                "jsonrpc":"2.0", "id":2, "method":"fux.frame+watch", "params":{"viewer":viewer}
+            }))
+            .unwrap();
+        for line in BufReader::new(response.into_body().into_reader()).lines() {
+            let line = line.unwrap();
+            if let Some(data) = line.strip_prefix("data:") {
+                let value: Value = serde_json::from_str(data).unwrap();
+                let paint = value["result"]["paint"].as_str().unwrap();
+                if sender.send(paint.matches("\x1b]52;").count()).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    assert_eq!(received.recv_timeout(Duration::from_secs(5)).unwrap(), 0);
+    // These are explicit equal copies, not four interchangeable paint snapshots.
+    for _ in 0..4 {
+        server.control(viewer, "copy", "");
+    }
+    let mut copies = 0;
+    while copies < 4 {
+        copies += received.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+    assert_eq!(copies, 4);
+    // Direct snapshots must not replay effects already delivered to the stream.
+    assert!(
+        !server.rpc("fux.frame", json!({"viewer":viewer}))["paint"]
+            .as_str()
+            .unwrap()
+            .contains("\x1b]52;")
+    );
+    drop(received);
+    server.control(viewer, "rename_workspace", "reader-finished");
+    reader.join().unwrap();
+}
+
+#[test]
 fn blocked_terminal_paint_does_not_block_stream_drain() {
     use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
     use std::io::Read;

@@ -1,5 +1,7 @@
 # Verification
 
+This document preserves the baseline observations. See [REFINEMENT.md](REFINEMENT.md) for the current refinement, final-build fingerprints, comparable measurements and capability audit.
+
 ## Exact build
 
 Observed 2026-09-19T23:04:25Z on Apple M2 Max / arm64, Darwin 27.0.0. Rust **1.98.1** (`48a229ceaefd4985c50990b14116b6d856af0985`, 2026-09-01); Bevy crates **0.19.1**, pinned by `Cargo.lock`. Canonical Bevy examples were consulted at `b56fc29d3016e641754765244b5ba3f9cc504671` in the separate Bevy checkout.

@@ -3,17 +3,16 @@ use crate::{
     control::{Control, Shutdown, UserInput},
     model::*,
     presentation::{self, Presentation},
-    protocol::{Frame, Input, PaneRect},
+    protocol::{Frame, Input},
     terminal::{TerminalPlugin, Terminals},
 };
 use base64::Engine;
 use bevy_app::{App, AppExit, Plugin, Startup, Update};
 use bevy_ecs::{
-    archetype::ArchetypeId,
-    entity::EntityHashMap,
     prelude::*,
     relationship::RelationshipTarget,
     system::{SystemChangeTick, SystemParam},
+    world::EntityRefExcept,
 };
 use bevy_remote::{BrpError, BrpResult, RemotePlugin};
 use bevy_ui::{FlexDirection, Node, UiRect, Val};
@@ -27,20 +26,14 @@ use std::{
 };
 use unicode_width::UnicodeWidthChar;
 
-#[derive(Resource, Default)]
-struct Layouts {
-    revision: u64,
-    scenes: HashMap<Entity, Arc<DynamicWorld>>,
-}
 #[derive(Default)]
 struct Views {
     contexts: HashMap<Entity, View>,
 }
 struct View {
     presentation: Presentation,
-    rects: Vec<PaneRect>,
     last: String,
-    clipboard: Option<String>,
+    clipboard: Vec<String>,
     next_paint: Instant,
     paint_wake_pending: bool,
 }
@@ -100,12 +93,16 @@ impl Plugin for ServerPlugin {
             .register_type::<Shutdown>()
             .register_type::<Input>();
         presentation::register_types(app);
-        app.init_resource::<Layouts>()
-            .init_resource::<SceneIo>()
+        app.init_resource::<SceneIo>()
             .insert_non_send(Views::default())
             .add_plugins(TerminalPlugin)
             .add_observer(control_event)
             .add_observer(input_event)
+            .add_observer(
+                |removed: On<Remove, Viewer>, mut views: NonSendMut<Views>| {
+                    views.contexts.remove(&removed.entity);
+                },
+            )
             .add_observer(|_: On<Shutdown>, mut exits: MessageWriter<AppExit>| {
                 exits.write(AppExit::Success);
             })
@@ -198,36 +195,19 @@ fn spawn_pane(
         .spawn((PaneView { pane }, leaf_node(), ChildOf(parent)))
         .id())
 }
-fn leaves(world: &World, root: Entity, out: &mut Vec<Entity>) {
-    if world.get::<PaneView>(root).is_some() {
-        out.push(root);
-    }
-    if let Some(children) = world.get::<Children>(root) {
-        for child in children.iter() {
-            leaves(world, child, out);
-        }
-    }
-}
 fn first_leaf(world: &World, root: Entity) -> Option<Entity> {
-    let mut all = Vec::new();
-    leaves(world, root, &mut all);
-    all.first().copied()
+    if world.get::<PaneView>(root).is_some() {
+        return Some(root);
+    }
+    world
+        .get::<Children>(root)?
+        .iter()
+        .find_map(|child| first_leaf(world, child))
 }
 fn name(world: &World, entity: Entity) -> String {
     world
         .get::<Name>(entity)
         .map_or_else(|| entity.to_bits().to_string(), |n| n.as_str().to_owned())
-}
-fn viewer(world: &World, id: Entity) -> Result<Viewer, String> {
-    world
-        .get::<Viewer>(id)
-        .cloned()
-        .ok_or_else(|| "viewer no longer attached".into())
-}
-fn changed(world: &mut World) {
-    let mut cache = world.resource_mut::<Layouts>();
-    cache.revision = cache.revision.wrapping_add(1);
-    cache.scenes.clear();
 }
 
 fn settle_remote_requests(receiver: Res<bevy_remote::BrpReceiver>, wake: Res<Wake>) {
@@ -238,41 +218,44 @@ fn settle_remote_requests(receiver: Res<bevy_remote::BrpReceiver>, wake: Res<Wak
     }
 }
 
-type LayoutEntities = (
-    Without<bevy_ecs::resource::IsResource>,
-    Or<(With<Node>, With<ChildOf>, With<Workspace>)>,
-);
-
 fn invalidate_layouts(
-    entities: Query<EntityRef, LayoutEntities>,
+    mut layouts: Query<(Entity, &mut LayoutCache), With<Workspace>>,
+    entities: Query<EntityRefExcept<LayoutCache>, Without<bevy_ecs::resource::IsResource>>,
+    children: Query<&Children>,
     ticks: SystemChangeTick,
-    mut archetypes: Local<EntityHashMap<ArchetypeId>>,
-    mut cache: ResMut<Layouts>,
 ) {
-    let mut dirty = false;
-    archetypes.retain(|entity, _| {
-        let retained = entities.contains(*entity);
-        dirty |= !retained;
-        retained
-    });
-    for entity in &entities {
-        let archetype = entity.archetype();
-        dirty |= archetypes.insert(entity.id(), archetype.id()) != Some(archetype.id());
-        dirty |= archetype.components().iter().any(|id| {
-            entity
-                .get_change_ticks_by_id(*id)
-                .is_some_and(|change| change.is_changed(ticks.last_run(), ticks.this_run()))
-        });
-    }
-    if dirty {
-        cache.revision = cache.revision.wrapping_add(1);
-        cache.scenes.clear();
+    for (root, mut cache) in &mut layouts {
+        if cache.scene.is_none() {
+            continue;
+        }
+        let mut count = 0;
+        // Unrestricted reflection requires checking every component, not just Node.
+        // Stop at the first change; uncached workspaces need no scan at all.
+        let dirty = std::iter::once(root)
+            .chain(children.iter_descendants(root))
+            .any(|id| {
+                let Ok(entity) = entities.get(id) else {
+                    return false;
+                };
+                count += 1;
+                let entity = entity.into_filtered();
+                let archetype = entity.archetype();
+                cache.members.get(&id) != Some(&archetype.id())
+                    || archetype.components().iter().any(|id| {
+                        entity.get_change_ticks_by_id(*id).is_some_and(|change| {
+                            change.is_changed(ticks.last_run(), ticks.this_run())
+                        })
+                    })
+            });
+        // Missing members cover removal/despawn/reparent out of the old root.
+        if dirty || count != cache.members.len() {
+            cache.scene = None;
+        }
     }
 }
-fn disconnected(mut commands: Commands, closed: Res<Disconnected>, mut views: NonSendMut<Views>) {
+fn disconnected(mut commands: Commands, closed: Res<Disconnected>) {
     while let Ok(entity) = closed.0.try_recv() {
         commands.entity(entity).try_despawn();
-        views.contexts.remove(&entity);
     }
 }
 fn reload_layouts(mut reloads: MessageReader<assets::LayoutReload>, mut commands: Commands) {
@@ -296,7 +279,6 @@ fn reload_layouts(mut reloads: MessageReader<assets::LayoutReload>, mut commands
                         if let Some(old) = old {
                             replace_workspace(world, old, root);
                         }
-                        changed(world);
                     }
                     Err(error) => bevy_log::error!("layout reload: {error}"),
                 }
@@ -316,15 +298,29 @@ fn replace_workspace(world: &mut World, old: Entity, new: Entity) {
     }
     let _ = world.despawn(old);
 }
-fn scene(world: &mut World, root: Entity) -> Result<(u64, Arc<DynamicWorld>), String> {
-    let cache = world.resource::<Layouts>();
-    if let Some(scene) = cache.scenes.get(&root) {
-        return Ok((cache.revision, Arc::clone(scene)));
+fn scene(world: &mut World, root: Entity) -> Result<(u32, Arc<DynamicWorld>), String> {
+    if world.get::<Workspace>(root).is_none() {
+        return Err("layout root is not a workspace".into());
+    }
+    let cache = world
+        .entity(root)
+        .get_ref::<LayoutCache>()
+        .ok_or("layout cache is missing")?;
+    if let Some(scene) = &cache.scene {
+        return Ok((cache.last_changed().get(), Arc::clone(scene)));
     }
     let scene = Arc::new(assets::extract_layout(world, root)?);
-    let mut cache = world.resource_mut::<Layouts>();
-    cache.scenes.insert(root, Arc::clone(&scene));
-    Ok((cache.revision, scene))
+    let members = scene
+        .entities
+        .iter()
+        .map(|entity| (entity.entity, world.entity(entity.entity).archetype().id()))
+        .collect();
+    let mut cache = world
+        .get_mut::<LayoutCache>(root)
+        .ok_or("layout cache is missing")?;
+    cache.scene = Some(Arc::clone(&scene));
+    cache.members = members;
+    Ok((cache.last_changed().get(), scene))
 }
 fn with_views<T>(world: &mut World, f: impl FnOnce(&mut World, &mut Views) -> T) -> T {
     let mut views = world
@@ -335,7 +331,10 @@ fn with_views<T>(world: &mut World, f: impl FnOnce(&mut World, &mut Views) -> T)
     result
 }
 fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<Viewer, String> {
-    let mut v = viewer(world, id)?;
+    let mut v = world
+        .get::<Viewer>(id)
+        .cloned()
+        .ok_or("viewer no longer attached")?;
     if v.focus.is_none_or(|e| world.get::<PaneView>(e).is_none()) {
         v.focus = first_leaf(world, v.workspace);
         world.entity_mut(id).insert(v.clone());
@@ -344,13 +343,12 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<Viewer,
     let registry = world.resource::<AppTypeRegistry>().clone();
     let context = views.contexts.entry(id).or_insert_with(|| View {
         presentation: Presentation::new(registry),
-        rects: Vec::new(),
         last: String::new(),
-        clipboard: None,
+        clipboard: Vec::new(),
         next_paint: Instant::now(),
         paint_wake_pending: false,
     });
-    context.rects = context
+    context
         .presentation
         .sync(&scene, revision, v.workspace, &v)?;
     Ok(v)
@@ -358,7 +356,7 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<Viewer,
 fn size_terminals(world: &mut World, views: &Views) {
     let mut sizes: HashMap<Entity, (u16, u16)> = HashMap::new();
     for context in views.contexts.values() {
-        for rect in &context.rects {
+        for rect in context.presentation.rects() {
             let rows = rect.height.saturating_sub(2).max(1);
             let cols = rect.width.saturating_sub(2).max(1);
             sizes
@@ -453,6 +451,11 @@ fn frame_watch(In(params): In<Option<Value>>, world: &mut World) -> BrpResult<Op
         }
         return Ok(None);
     }
+    let has_effect = world
+        .non_send::<Views>()
+        .contexts
+        .get(&id)
+        .is_some_and(|view| !view.clipboard.is_empty());
     let frame = make_frame(world, id).map_err(BrpError::internal)?;
     if frame.detach {
         return Ok(Some(json!(frame)));
@@ -461,7 +464,7 @@ fn frame_watch(In(params): In<Option<Value>>, world: &mut World) -> BrpResult<Op
     let Some(view) = views.contexts.get_mut(&id) else {
         return Ok(None);
     };
-    if view.last == frame.paint {
+    if !has_effect && view.last == frame.paint {
         return Ok(None);
     }
     view.last.clone_from(&frame.paint);
@@ -532,7 +535,7 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
             &format!("\x1b[7m{}\x1b[0m", clipped(&chrome, v.cols)),
         );
         let mut cursor = None;
-        for rect in &view.rects {
+        for rect in view.presentation.rects() {
             if rect.width < 3 || rect.height < 3 {
                 continue;
             }
@@ -578,25 +581,18 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
                 .resource_mut::<Terminals>()
                 .snapshot(rect.pane, if selected { v.scrollback } else { 0 })
             {
-                Ok(snapshot) => {
-                    for (row, line) in snapshot
-                        .lines
-                        .iter()
-                        .take(usize::from(rect.height - 2))
-                        .enumerate()
-                    {
+                Ok((lines, screen)) => {
+                    for (row, line) in lines.iter().take(usize::from(rect.height - 2)).enumerate() {
                         at(&mut out, rect.x + 1, rect.y + 1 + row as u16, line);
                     }
+                    let (row, col) = screen.cursor_position();
                     if selected
-                        && !snapshot.hide_cursor
+                        && !screen.hide_cursor()
                         && v.scrollback == 0
-                        && snapshot.cursor.0 < rect.height - 2
-                        && snapshot.cursor.1 < rect.width - 2
+                        && row < rect.height - 2
+                        && col < rect.width - 2
                     {
-                        cursor = Some((
-                            rect.x + 1 + snapshot.cursor.1,
-                            rect.y + 1 + snapshot.cursor.0,
-                        ));
+                        cursor = Some((rect.x + 1 + col, rect.y + 1 + row));
                     }
                 }
                 Err(error) => at(
@@ -607,7 +603,7 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
                 ),
             }
         }
-        if let Some(text) = view.clipboard.take() {
+        for text in view.clipboard.drain(..) {
             let _ = write!(
                 out,
                 "\x1b]52;c;{}\x07",
@@ -663,7 +659,6 @@ fn control_event(event: On<Control>, mut controls: Controls) {
     let id = event.viewer;
     if event.action == "detach" {
         commands.entity(id).try_despawn();
-        views.contexts.remove(&id);
         return;
     }
     let Ok(mut v) = viewers.get_mut(id) else {
@@ -758,12 +753,15 @@ fn control_event(event: On<Control>, mut controls: Controls) {
                 v.scrollback = v.scrollback.saturating_sub(usize::from(v.rows / 2).max(1))
             }
             "copy" => {
-                let text = terminals.copy_text(pane.ok_or("no focused process")?, v.scrollback)?;
-                views
+                let view = views
                     .contexts
                     .get_mut(&id)
-                    .ok_or("presentation not initialized")?
-                    .clipboard = Some(text);
+                    .ok_or("presentation not initialized")?;
+                if view.clipboard.len() == 16 {
+                    return Err("clipboard delivery queue is full".into());
+                }
+                view.clipboard
+                    .push(terminals.copy_text(pane.ok_or("no focused process")?, v.scrollback)?);
                 v.notice = "visible pane copied via OSC52".into();
             }
             "workspace_next" => {
@@ -1057,7 +1055,7 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                     .get(v.focus.ok_or("no focused pane")?)
                     .map_err(|e| e.to_string())?
                     .pane;
-                let application = terminals.modes(pane)?.application_cursor;
+                let application = terminals.screen(pane)?.application_cursor();
                 terminals.input(pane, &key_bytes(key, *ctrl, *alt, *shift, application)?)?;
                 v.scrollback = 0;
                 v.notice.clear();
@@ -1073,7 +1071,7 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                     .get(v.focus.ok_or("no focused pane")?)
                     .map_err(|e| e.to_string())?
                     .pane;
-                if terminals.modes(pane)?.bracketed_paste {
+                if terminals.screen(pane)?.bracketed_paste() {
                     terminals.input(pane, format!("\x1b[200~{text}\x1b[201~").as_bytes())?;
                 } else {
                     terminals.input(pane, text.as_bytes())?;
@@ -1103,12 +1101,15 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                         v.scrollback = 0;
                     }
                     let rect = context
-                        .rects
+                        .presentation
+                        .rects()
                         .iter()
                         .find(|r| r.leaf == hit)
                         .ok_or("picked pane has no rectangle")?;
-                    let snapshot = terminals.modes(rect.pane)?;
-                    if snapshot.mouse_mode == 0 || *shift {
+                    let screen = terminals.screen(rect.pane)?;
+                    let mode = screen.mouse_protocol_mode();
+                    use vt100::MouseProtocolMode as MouseMode;
+                    if mode == MouseMode::None || *shift {
                         if action == "scrollup" || action == "scrolldown" {
                             commands.trigger(Control {
                                 viewer: id,
@@ -1130,10 +1131,10 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                     {
                         let release = action == "release";
                         let motion = action == "move";
-                        if release && snapshot.mouse_mode < 2
+                        if release && mode == MouseMode::Press
                             || motion
-                                && (snapshot.mouse_mode < 3
-                                    || snapshot.mouse_mode == 3 && *button == 3)
+                                && (matches!(mode, MouseMode::Press | MouseMode::PressRelease)
+                                    || mode == MouseMode::ButtonMotion && *button == 3)
                         {
                             return Ok(());
                         }
@@ -1158,7 +1159,7 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                         }
                         let col = x - rect.x;
                         let row = y - rect.y;
-                        if snapshot.mouse_sgr {
+                        if screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr {
                             terminals.input(
                                 rect.pane,
                                 format!(
@@ -1283,7 +1284,94 @@ fn key_bytes(
 
 #[cfg(test)]
 mod tests {
-    use super::key_bytes;
+    use super::*;
+
+    #[derive(Component, bevy_reflect::Reflect)]
+    #[reflect(Component)]
+    struct Extra(u32);
+
+    #[test]
+    fn arbitrary_layout_changes_invalidate_only_the_owning_workspace() {
+        let mut app = App::new();
+        app.register_type::<Workspace>()
+            .register_type::<Name>()
+            .register_type::<Node>()
+            .register_type::<ChildOf>()
+            .register_type::<Children>()
+            .register_type::<Extra>()
+            .add_systems(Update, invalidate_layouts);
+        let left = app.world_mut().spawn(Workspace).id();
+        let right = app.world_mut().spawn(Workspace).id();
+        let nested = app.world_mut().spawn((Node::default(), ChildOf(left))).id();
+        let leaf = app
+            .world_mut()
+            .spawn((Name::new("before"), ChildOf(nested)))
+            .id();
+        app.update();
+        let untouched = scene(app.world_mut(), right).unwrap().1;
+        let initial = scene(app.world_mut(), left).unwrap().1;
+        app.update();
+        assert!(Arc::ptr_eq(
+            &initial,
+            &scene(app.world_mut(), left).unwrap().1
+        ));
+        // The descendant deliberately has no Node. Newly inserted, previously
+        // absent types and ordinary in-place writes must still reach the scene.
+        app.world_mut().entity_mut(leaf).insert(Extra(7));
+        app.update();
+        let inserted = scene(app.world_mut(), left).unwrap().1;
+        assert!(!Arc::ptr_eq(&initial, &inserted));
+        assert!(Arc::ptr_eq(
+            &untouched,
+            &scene(app.world_mut(), right).unwrap().1
+        ));
+        app.world_mut().get_mut::<Extra>(leaf).unwrap().0 = 9;
+        app.update();
+        let modified = scene(app.world_mut(), left).unwrap().1;
+        assert!(!Arc::ptr_eq(&inserted, &modified));
+        app.world_mut().entity_mut(leaf).remove::<Extra>();
+        app.update();
+        let removed = scene(app.world_mut(), left).unwrap().1;
+        assert!(!Arc::ptr_eq(&modified, &removed));
+        assert!(Arc::ptr_eq(
+            &untouched,
+            &scene(app.world_mut(), right).unwrap().1
+        ));
+        app.world_mut().entity_mut(nested).insert(ChildOf(right));
+        app.update();
+        let emptied = scene(app.world_mut(), left).unwrap().1;
+        let moved = scene(app.world_mut(), right).unwrap().1;
+        assert!(!Arc::ptr_eq(&removed, &emptied));
+        assert!(!Arc::ptr_eq(&untouched, &moved));
+        assert!(!emptied.entities.iter().any(|entity| entity.entity == leaf));
+        assert!(moved.entities.iter().any(|entity| entity.entity == leaf));
+        app.world_mut().despawn(nested);
+        app.update();
+        let despawned = scene(app.world_mut(), right).unwrap().1;
+        assert!(
+            !despawned
+                .entities
+                .iter()
+                .any(|entity| entity.entity == leaf)
+        );
+        assert!(Arc::ptr_eq(
+            &emptied,
+            &scene(app.world_mut(), left).unwrap().1
+        ));
+        app.world_mut().entity_mut(right).remove::<Workspace>();
+        assert!(scene(app.world_mut(), right).is_err());
+        app.world_mut().despawn(right);
+        let replacement = app.world_mut().spawn(Workspace).id();
+        app.update();
+        assert_eq!(
+            scene(app.world_mut(), replacement)
+                .unwrap()
+                .1
+                .entities
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn modified_keys_preserve_xterm_protocol_semantics() {

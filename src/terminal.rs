@@ -28,23 +28,13 @@ use nix::{
 use parking_lot::Mutex;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-use crate::{
-    model::{Launch, ProcessState, Wake},
-    protocol::TerminalSnapshot,
-};
+use crate::model::{Launch, ProcessState, Wake};
 
 const CHUNK: usize = 8192;
 const OUTPUT_SLOTS: usize = 16;
 const INPUT_SLOTS: usize = 16;
 const MAX_INPUT: usize = 65536;
 const UPDATE_BYTES: usize = 65536;
-
-pub struct TerminalModes {
-    pub application_cursor: bool,
-    pub bracketed_paste: bool,
-    pub mouse_mode: u8,
-    pub mouse_sgr: bool,
-}
 
 pub struct TerminalPlugin;
 
@@ -82,6 +72,7 @@ struct Terminal {
     exit: Option<i32>,
     error: Option<String>,
     revision: u64,
+    snapshot: Option<(u64, usize, Vec<String>)>,
 }
 
 struct Job {
@@ -115,25 +106,13 @@ impl Notify {
 }
 
 impl Terminals {
-    pub fn modes(&self, entity: Entity) -> Result<TerminalModes, String> {
-        let screen = self
+    pub fn screen(&self, entity: Entity) -> Result<&vt100::Screen, String> {
+        Ok(self
             .panes
             .get(&entity)
             .ok_or("terminal not found")?
             .parser
-            .screen();
-        Ok(TerminalModes {
-            application_cursor: screen.application_cursor(),
-            bracketed_paste: screen.bracketed_paste(),
-            mouse_mode: match screen.mouse_protocol_mode() {
-                vt100::MouseProtocolMode::None => 0,
-                vt100::MouseProtocolMode::Press => 1,
-                vt100::MouseProtocolMode::PressRelease => 2,
-                vt100::MouseProtocolMode::ButtonMotion => 3,
-                vt100::MouseProtocolMode::AnyMotion => 4,
-            },
-            mouse_sgr: screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr,
-        })
+            .screen())
     }
 
     /// Input is accepted atomically into a bounded queue, never partially queued.
@@ -165,46 +144,57 @@ impl Terminals {
         &mut self,
         entity: Entity,
         scrollback: usize,
-    ) -> Result<TerminalSnapshot, String> {
+    ) -> Result<(&[String], &vt100::Screen), String> {
         let terminal = self.panes.get_mut(&entity).ok_or("terminal not found")?;
-        let screen = terminal.parser.screen_mut();
-        screen.set_scrollback(scrollback);
-        let (rows, cols) = screen.size();
-        let mut lines = Vec::with_capacity(usize::from(rows));
-        // rows_formatted() carries wrapping state between rows and can emit CR/LF,
-        // cursor moves and erases. Emit cells + SGR only: every line is relocatable.
-        for row in 0..rows {
-            let mut line = String::with_capacity(usize::from(cols) + 16);
-            line.push_str("\x1b[0m");
-            let mut previous = None;
-            for col in 0..cols {
-                let Some(cell) = screen.cell(row, col) else {
-                    continue;
-                };
-                if cell.is_wide_continuation() {
-                    continue;
+        if terminal
+            .snapshot
+            .as_ref()
+            .is_none_or(|(revision, offset, _)| {
+                *revision != terminal.revision || *offset != scrollback
+            })
+        {
+            let screen = terminal.parser.screen_mut();
+            screen.set_scrollback(scrollback);
+            let (rows, cols) = screen.size();
+            let mut lines = Vec::with_capacity(usize::from(rows));
+            // rows_formatted() carries wrapping state between rows and can emit CR/LF,
+            // cursor moves and erases. Emit cells + SGR only: every line is relocatable.
+            for row in 0..rows {
+                let mut line = String::with_capacity(usize::from(cols) + 16);
+                line.push_str("\x1b[0m");
+                let mut previous = None;
+                for col in 0..cols {
+                    let Some(cell) = screen.cell(row, col) else {
+                        continue;
+                    };
+                    if cell.is_wide_continuation() {
+                        continue;
+                    }
+                    let style = Style::of(cell);
+                    if previous != Some(style) {
+                        style.write(&mut line);
+                        previous = Some(style);
+                    }
+                    if cell.has_contents() {
+                        line.push_str(cell.contents());
+                    } else {
+                        line.push(' ');
+                    }
                 }
-                let style = Style::of(cell);
-                if previous != Some(style) {
-                    style.write(&mut line);
-                    previous = Some(style);
-                }
-                if cell.has_contents() {
-                    line.push_str(cell.contents());
-                } else {
-                    line.push(' ');
-                }
+                line.push_str("\x1b[0m");
+                lines.push(line);
             }
-            line.push_str("\x1b[0m");
-            lines.push(line);
+            screen.set_scrollback(0);
+            terminal.snapshot = Some((terminal.revision, scrollback, lines));
         }
-        let snapshot = TerminalSnapshot {
-            lines,
-            cursor: screen.cursor_position(),
-            hide_cursor: screen.hide_cursor() || screen.scrollback() != 0,
-        };
-        screen.set_scrollback(0);
-        Ok(snapshot)
+        Ok((
+            &terminal
+                .snapshot
+                .as_ref()
+                .expect("snapshot prepared above")
+                .2,
+            terminal.parser.screen(),
+        ))
     }
 
     pub fn copy_text(&mut self, entity: Entity, scrollback: usize) -> Result<String, String> {
@@ -410,6 +400,7 @@ impl Terminal {
             reader_stop,
             notify,
             published_size: (rows, cols),
+            snapshot: None,
         })
     }
 

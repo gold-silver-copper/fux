@@ -1,13 +1,6 @@
 use bevy_ecs::prelude::*;
 use serde::{Deserialize, Serialize};
 
-pub struct TerminalSnapshot {
-    /// Each row contains SGR styling but no absolute cursor addressing.
-    pub lines: Vec<String>,
-    pub cursor: (u16, u16),
-    pub hide_cursor: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneRect {
     /// IDs in the authoritative server World, not the presentation World.

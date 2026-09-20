@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -19,15 +19,17 @@ use termina::{
 const RESET: &[u8] = b"\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
 
 pub fn rpc(endpoint: &str, method: &str, params: Option<Value>) -> Result<Value, String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(10)))
-        .build()
-        .into();
+    static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(10)))
+            .build()
+            .into()
+    });
     let mut request = json!({"jsonrpc":"2.0","id":1,"method":method});
     if let Some(params) = params {
         request["params"] = params;
     }
-    let response: Value = agent
+    let response: Value = AGENT
         .post(endpoint)
         .send_json(request)
         .map_err(|e| e.to_string())?
@@ -157,7 +159,7 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
                         serde_json::from_value(result(response)?).map_err(|e| e.to_string())?;
                     // Clipboard writes are one-shot effects, not replaceable
                     // paintings. Preserve them when coalescing output frames.
-                    if let Some(start) = frame.paint.find("\x1b]52;")
+                    while let Some(start) = frame.paint.find("\x1b]52;")
                         && let Some(end) =
                             frame.paint[start..].find('\x07').map(|end| start + end + 1)
                     {

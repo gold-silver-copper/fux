@@ -4,8 +4,16 @@ use bevy_ui::Node;
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-#[require(Node)]
+#[require(Node, LayoutCache)]
 pub struct Workspace;
+
+/// Derived scene data belongs to its workspace and dies with that entity.
+/// Not reflected: scene persistence never serializes caches.
+#[derive(Component, Default)]
+pub struct LayoutCache {
+    pub scene: Option<std::sync::Arc<bevy_world_serialization::DynamicWorld>>,
+    pub members: bevy_ecs::entity::EntityHashMap<bevy_ecs::archetype::ArchetypeId>,
+}
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
