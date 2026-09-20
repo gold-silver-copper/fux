@@ -7,7 +7,7 @@ use crate::{
     interaction::{Mode, Overlay},
     model::{Notice, Viewer},
 };
-use bevy_ecs::prelude::*;
+use bevy_ecs::{lifecycle::HookContext, prelude::*, world::DeferredWorld};
 
 #[derive(Component, Default)]
 pub struct Ownership {
@@ -17,13 +17,13 @@ pub struct Ownership {
 
 /// Every newly inserted overlay gets a fresh serial, whichever code path opened
 /// it, so a paste captured for an earlier overlay can never land in this one.
-pub(crate) fn overlay_opened(
-    opened: On<Insert, Overlay>,
-    mut owners: Query<(&mut Ownership, &mut Overlay)>,
-) {
-    if let Ok((mut ownership, mut overlay)) = owners.get_mut(opened.entity) {
+pub(crate) fn overlay_opened(mut world: DeferredWorld, context: HookContext) {
+    if let Some(mut ownership) = world.get_mut::<Ownership>(context.entity) {
         ownership.serial = ownership.serial.wrapping_add(1);
-        overlay.serial = ownership.serial;
+        let serial = ownership.serial;
+        if let Some(mut overlay) = world.get_mut::<Overlay>(context.entity) {
+            overlay.serial = serial;
+        }
     }
 }
 enum Owner {

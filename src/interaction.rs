@@ -62,6 +62,7 @@ pub(crate) fn close_prefix(world: &mut World, id: Entity) {
 }
 
 #[derive(Component, Clone)]
+#[component(on_insert = crate::paste::overlay_opened)]
 pub struct Overlay {
     pub serial: u64,
     pub target: Target,

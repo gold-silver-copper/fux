@@ -290,7 +290,6 @@ impl Plugin for ServerPlugin {
         app.add_plugins(TerminalPlugin)
             .add_observer(route_control)
             .add_observer(route_input)
-            .add_observer(crate::paste::overlay_opened)
             .add_observer(|removed: On<Remove, Viewer>, mut commands: Commands| {
                 commands.entity(removed.entity).try_remove::<Presentation>();
             })

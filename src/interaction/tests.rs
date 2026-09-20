@@ -3,7 +3,6 @@ use crate::testing::*;
 
 fn setup() -> (World, Entity, Target, Entity) {
     let mut world = World::new();
-    world.add_observer(crate::paste::overlay_opened);
     navigation::observe(&mut world);
     let workspace = world.spawn(Workspace).id();
     let tab = world.spawn((Tab, ChildOf(workspace))).id();

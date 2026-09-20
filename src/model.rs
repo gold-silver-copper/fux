@@ -96,6 +96,7 @@ pub struct WorkspaceOrder(pub i64);
 #[derive(Component, Reflect, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[reflect(Component, Serialize, Deserialize)]
 #[serde(transparent)]
+#[component(on_insert = crate::navigation::repair_later, on_remove = crate::navigation::repair_later)]
 #[relationship(relationship_target = Viewers)]
 pub struct Viewing(pub Entity);
 /// Unreflected on purpose: it lives on layout entities and must stay out of scenes.
@@ -107,6 +108,7 @@ pub struct Viewers(Vec<Entity>);
 #[derive(Component, Reflect, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[reflect(Component, Serialize, Deserialize)]
 #[serde(transparent)]
+#[component(on_insert = crate::navigation::remember_tab, on_remove = crate::navigation::repair_later)]
 #[relationship(relationship_target = TabViewers)]
 pub struct OnTab(pub Entity);
 #[derive(Component, Default)]
@@ -117,6 +119,7 @@ pub struct TabViewers(Vec<Entity>);
 #[derive(Component, Reflect, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[reflect(Component, Serialize, Deserialize)]
 #[serde(transparent)]
+#[component(on_insert = crate::navigation::remember_focus, on_remove = crate::navigation::repair_later)]
 #[relationship(relationship_target = FocusedBy)]
 pub struct Focused(pub Entity);
 #[derive(Component, Default)]
@@ -124,8 +127,8 @@ pub struct Focused(pub Entity);
 pub struct FocusedBy(Vec<Entity>);
 
 /// Viewer-local memory of where it was: the tab per workspace, the focused pane
-/// per tab and the previously focused pane per tab. Observers record entries
-/// as the relationships change and prune them as their entities die.
+/// per tab and the previously focused pane per tab. Hooks record relationship
+/// changes; server observers prune entries as their layout entities die.
 #[derive(Component, Default)]
 pub struct Memory {
     pub tabs: bevy_ecs::entity::EntityHashMap<Entity>,

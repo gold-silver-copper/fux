@@ -51,6 +51,38 @@ fn legacy_children_are_wrapped_without_process_ownership_or_node_changes() -> cr
 }
 
 #[test]
+fn relationship_hooks_repair_without_observer_registration() -> Outcome {
+    let mut world = World::new();
+    let root = world.spawn(Workspace).id();
+    let tab = world.spawn((Tab, ChildOf(root))).id();
+    let a = leaf(&mut world, tab);
+    let b = leaf(&mut world, tab);
+    let id = viewer(&mut world, root);
+    assert_eq!(on_tab(&world, id), Some(tab));
+    assert_eq!(focused(&world, id), Some(a));
+    world.entity_mut(id).insert(Focused(b));
+    assert_eq!(world.get::<Memory>(id).need()?.previous.get(&tab), Some(&a));
+    world.entity_mut(id).remove::<Focused>();
+    assert_eq!(focused(&world, id), Some(b));
+    world.entity_mut(id).insert(OnTab(a));
+    assert_eq!(on_tab(&world, id), Some(tab));
+    world.entity_mut(id).insert(Viewing(tab));
+    assert_eq!(viewing(&world, id), Some(root));
+    world.despawn(b);
+    assert_eq!(focused(&world, id), Some(a));
+    Ok(())
+}
+
+#[test]
+fn inert_scene_worlds_do_not_normalize_tab_removal() {
+    let mut world = World::new();
+    let root = world.spawn(Workspace).id();
+    let tab = world.spawn((Tab, ChildOf(root))).id();
+    world.despawn(tab);
+    assert!(tabs(&world, root).is_empty());
+}
+
+#[test]
 fn viewers_remember_independent_tabs_focus_and_last_focus() -> crate::testing::Outcome {
     let mut world = World::new();
     let root = world.spawn(Workspace).id();

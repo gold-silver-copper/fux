@@ -2,7 +2,7 @@
 #[cfg(test)]
 mod tests;
 use crate::model::*;
-use bevy_ecs::prelude::*;
+use bevy_ecs::{lifecycle::HookContext, prelude::*, world::DeferredWorld};
 use bevy_ui::Node;
 
 pub fn workspaces(world: &mut World) -> Vec<Entity> {
@@ -211,40 +211,41 @@ pub(crate) fn normalize_on_child_added(
 
 /// Insertion or removal of a viewer relationship, by any code path, repairs
 /// every viewer once the change has completed.
-pub(crate) fn repair_on_change<E: bevy_ecs::event::EntityEvent, C: Component>(
-    _: On<E, C>,
-    mut commands: Commands,
-) {
-    commands.queue(repair);
+pub(crate) fn repair_later(mut world: DeferredWorld, _: HookContext) {
+    world.commands().queue(repair);
 }
 
 /// A viewer that changes tab remembers it for the workspace it is looking at.
-pub(crate) fn remember_tab(
-    changed: On<Insert, OnTab>,
-    mut viewers: Query<(&Viewing, &OnTab, &mut Memory)>,
-) {
-    if let Ok((viewing, tab, mut memory)) = viewers.get_mut(changed.entity) {
-        memory.tabs.insert(viewing.0, tab.0);
+pub(crate) fn remember_tab(mut world: DeferredWorld, context: HookContext) {
+    if let (Some(viewing), Some(tab)) = (
+        viewing(&world, context.entity),
+        on_tab(&world, context.entity),
+    ) && let Some(mut memory) = world.get_mut::<Memory>(context.entity)
+    {
+        memory.tabs.insert(viewing, tab);
     }
+    repair_later(world, context);
 }
 
 /// A viewer that changes focus remembers it for its tab, and keeps the pane it
 /// left as the tab's previous focus for `focus_last`. Restoring a remembered
 /// focus after a tab switch is not a change and records nothing.
-pub(crate) fn remember_focus(
-    changed: On<Insert, Focused>,
-    mut viewers: Query<(&OnTab, &Focused, &mut Memory)>,
-    parents: Query<&ChildOf>,
-) {
-    if let Ok((tab, focus, mut memory)) = viewers.get_mut(changed.entity) {
-        let tab = tab.0;
-        if let Some(old) = memory.focus.insert(tab, focus.0)
-            && old != focus.0
-            && parents.iter_ancestors(old).any(|e| e == tab)
-        {
-            memory.previous.insert(tab, old);
-        }
+pub(crate) fn remember_focus(mut world: DeferredWorld, context: HookContext) {
+    if let (Some(tab), Some(focus)) = (
+        on_tab(&world, context.entity),
+        focused(&world, context.entity),
+    ) && let Some(mut memory) = world.get_mut::<Memory>(context.entity)
+        && let Some(old) = memory.focus.insert(tab, focus)
+        && old != focus
+        && std::iter::successors(world.get::<ChildOf>(old), |parent| {
+            world.get::<ChildOf>(parent.parent())
+        })
+        .any(|parent| parent.parent() == tab)
+        && let Some(mut memory) = world.get_mut::<Memory>(context.entity)
+    {
+        memory.previous.insert(tab, old);
     }
+    repair_later(world, context);
 }
 
 /// Memory entries die with the entities they name.
@@ -267,14 +268,6 @@ pub(crate) fn forget<C: Component>(removed: On<Remove, C>, mut viewers: Query<&m
 pub(crate) fn observe(world: &mut World) {
     world.add_observer(normalize_on_tab_removed);
     world.add_observer(normalize_on_child_added);
-    world.add_observer(repair_on_change::<Insert, Viewing>);
-    world.add_observer(repair_on_change::<Insert, OnTab>);
-    world.add_observer(repair_on_change::<Insert, Focused>);
-    world.add_observer(repair_on_change::<Remove, Viewing>);
-    world.add_observer(repair_on_change::<Remove, OnTab>);
-    world.add_observer(repair_on_change::<Remove, Focused>);
-    world.add_observer(remember_tab);
-    world.add_observer(remember_focus);
     world.add_observer(forget::<Workspace>);
     world.add_observer(forget::<Tab>);
     world.add_observer(forget::<PaneView>);

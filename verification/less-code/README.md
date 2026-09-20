@@ -27,6 +27,7 @@ included. A revision argument reads sources directly from Git, not the worktree.
 | Base | 6882 | 0 |
 | Section 1 | 6846 | -36 |
 | Section 2 | 6799 | -83 |
+| Section 3 | 6795 | -87 |
 
 ## Section 1
 
@@ -77,3 +78,28 @@ remote access to this unreflected component. Tests retain hidden-pane rejection.
 Verification: 38 unit and 35 integration tests, including viewer-component
 removal without entity despawn, hidden-tab size negotiation, repeated clipboard
 effects, tiny viewports and frame watches. Four gates pass; `section2.log`.
+
+## Section 3 (partial: server-scoped observers retained)
+
+`Viewing`, `OnTab`, `Focused` and `Overlay` carry hooks. Insert hooks both record
+memory and queue repair. Bevy 0.19.1's derive composes custom insert hooks before
+its relationship hook (`bevy_ecs_macro_logic/src/component.rs`); repair is deferred
+until relationship maintenance is complete. The existing ancestor walk for old
+focus is preserved, including non-pane descendants. Tests exercise replacement,
+removal, invalid relationship targets and despawn without registration/manual
+repair. Existing paste cancellation/reopening tests pass without registering an
+overlay observer. The hook safely does nothing when `Ownership` is absent.
+
+The two hierarchy normalization observers and three memory-pruning observers
+remain in `navigation::observe`. This is a deliberate scope boundary, not a
+forgotten conversion: `Tab`, `Workspace`, and `PaneView` are also inserted into
+inert scene/presentation worlds where server observers were never installed.
+A universal tab removal hook would create replacement tabs in those worlds;
+`inert_scene_worlds_do_not_normalize_tab_removal` retains the contrary baseline.
+Avoiding that needs a server marker/registration again. `DeferredWorld::query`
+also requires an existing `QueryState`; immediate all-viewer pruning cannot use
+an unrestricted fresh query. A cached query resource or deferred pruning would
+add machinery or change timing, so the existing scoped observers are smaller
+and preserve the boundary. The `ChildOf` observer remains explicitly registered.
+
+Verification: 40 unit and 35 integration tests; all four gates in `section3.log`.
