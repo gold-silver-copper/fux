@@ -11,7 +11,7 @@ use bevy_input_focus::{
     FocusCause, InputFocus, InputFocusPlugin, process_recorded_focus_changes,
     tab_navigation::{NavAction, TabGroup, TabIndex, TabNavigation},
 };
-use bevy_math::{UVec2, Vec2};
+use bevy_math::{URect, UVec2, Vec2};
 use bevy_mesh::{Mesh, skinning::SkinnedMeshInverseBindposes};
 use bevy_picking::{
     backend::PointerHits, events::PointerState, hover::HoverMap, pointer::PointerInput,
@@ -162,9 +162,10 @@ impl Presentation {
         revision: u32,
         root: Entity,
         viewer: &Viewer,
+        (tab, focus): (Option<Entity>, Option<Entity>),
     ) -> Result<(), String> {
-        let zoom = viewer.focus.filter(|_| viewer.zoom);
-        let key = (revision, root, zoom, viewer.tab);
+        let zoom = focus.filter(|_| viewer.zoom);
+        let key = (revision, root, zoom, tab);
         let rebuild = self.scene_key != Some(key);
         if rebuild {
             self.scene_key = None;
@@ -220,7 +221,7 @@ impl Presentation {
             let inactive: Vec<_> = world
                 .query_filtered::<Entity, With<Tab>>()
                 .iter(world)
-                .filter(|local| self.local_to_source.get(local).copied() != viewer.tab)
+                .filter(|local| self.local_to_source.get(local).copied() != tab)
                 .collect();
             for tab in inactive {
                 if let Some(mut node) = world.get_mut::<Node>(tab) {
@@ -290,8 +291,7 @@ impl Presentation {
                 scale_factor: 1.0,
             });
         }
-        let desired = viewer
-            .focus
+        let desired = focus
             .and_then(|source| self.source_to_local.get(&source).copied())
             .filter(|local| self.app.world().get::<PaneView>(*local).is_some());
         let world = self.app.world_mut();
@@ -351,7 +351,7 @@ impl Presentation {
         self.collect_rects();
     }
 
-    pub fn neighbor(&self, leaf: Entity, direction: &str) -> Option<Entity> {
+    pub fn neighbor(&self, leaf: Entity, direction: crate::protocol::Direction) -> Option<Entity> {
         crate::frame::directional_neighbor(&self.rects, leaf, direction)
     }
 
@@ -386,18 +386,18 @@ impl Presentation {
             };
             let min = transform.translation - node.size() * 0.5;
             let max = min + node.size();
-            let x = min.x.round().clamp(0.0, self.viewport.x as f32) as u16;
-            let y = min.y.round().clamp(0.0, self.viewport.y as f32) as u16;
-            let right = max.x.round().clamp(0.0, self.viewport.x as f32) as u16;
-            let bottom = max.y.round().clamp(0.0, self.viewport.y as f32) as u16;
-            if right > x && bottom > y {
+            let clamp = |v: Vec2| {
+                UVec2::new(
+                    v.x.round().clamp(0.0, self.viewport.x as f32) as u32,
+                    v.y.round().clamp(0.0, self.viewport.y as f32) as u32,
+                )
+            };
+            let rect = URect::from_corners(clamp(min), clamp(max));
+            if !rect.is_empty() {
                 self.rects.push(PaneRect {
                     leaf: *leaf,
                     pane: *pane,
-                    x,
-                    y,
-                    width: right - x,
-                    height: bottom - y,
+                    rect,
                 });
             }
         }
@@ -446,12 +446,8 @@ impl Presentation {
             }
         }
         // Overlapping custom scenes may put a pane over a split gap.
-        self.separators.retain(|&(x, y), _| {
-            !self
-                .rects
-                .iter()
-                .any(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
-        });
+        self.separators
+            .retain(|&(x, y), _| !self.rects.iter().any(|r| r.covers(x, y)));
         let hidden: Vec<_> = self
             .source_to_local
             .iter()
@@ -492,8 +488,11 @@ impl Presentation {
                 12 => "─",
                 _ => "│",
             };
+            // A separator touches the focused pane when it lies on its one-cell rim.
             let touches = focused.is_some_and(|r| {
-                x + 1 >= r.x && x <= r.x + r.width && y + 1 >= r.y && y <= r.y + r.height
+                r.rect
+                    .inflate(1)
+                    .contains(UVec2::new(u32::from(x), u32::from(y)))
             });
             let style = if touches { "\x1b[0;1m" } else { "\x1b[0;90m" };
             at(out, x, y, format_args!("{style}{glyph}\x1b[0m"));
@@ -506,10 +505,6 @@ impl Presentation {
             .resource::<InputFocus>()
             .get()
             .and_then(|local| self.local_to_source.get(&local).copied())
-    }
-
-    pub fn focus_next(&mut self) -> Option<Entity> {
-        self.focus_step(false)
     }
 
     pub fn focus_step(&mut self, previous: bool) -> Option<Entity> {

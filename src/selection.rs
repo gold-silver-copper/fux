@@ -4,7 +4,7 @@ mod tests;
 use crate::{
     assets::{ClipboardPolicy, Settings},
     model::*,
-    protocol::Input,
+    protocol::{Direction, Input, Key, MouseAction},
     terminal::Terminal,
 };
 use bevy_ecs::prelude::*;
@@ -128,7 +128,7 @@ pub fn validate_clipboard(settings: &Settings, text: &str) -> Result<(), String>
 pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> {
     let pane = world.get::<PaneView>(leaf).ok_or("pane removed")?.pane;
     let v = world.get::<Viewer>(id).ok_or("viewer removed")?;
-    let offset = if v.focus == Some(leaf) {
+    let offset = if focused(world, id) == Some(leaf) {
         v.scrollback
     } else {
         0
@@ -151,10 +151,13 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         mouse_origin: false,
     });
     crate::interaction::close_prefix(world, id);
+    world
+        .get_entity_mut(id)
+        .map_err(|_| "viewer removed")?
+        .insert(Focused(leaf));
     let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
-    v.focus = Some(leaf);
     v.scrollback = offset;
-    v.notice = "Copy: arrows/hjkl · Space select · y copy · g live · q exit".into();
+    v.notice = Notice::info("Copy: arrows/hjkl · Space select · y copy · g live · q exit");
     Ok(())
 }
 
@@ -176,7 +179,7 @@ pub fn refresh_visible(world: &mut World, id: Entity, visible: (u16, u16)) {
         return;
     };
     let leaf = selection.leaf;
-    if v.focus != Some(leaf) {
+    if focused(world, id) != Some(leaf) {
         world.entity_mut(id).remove::<Selection>();
         return;
     }
@@ -221,16 +224,15 @@ pub fn refresh_visible(world: &mut World, id: Entity, visible: (u16, u16)) {
             if let Some(mut v) = world.get_mut::<Viewer>(id) {
                 v.scrollback = actual;
                 if invalidated {
-                    v.notify(
+                    v.notice = Notice::error(
                         "selection cleared: rows changed, resized, scrolled or evicted",
-                        true,
                     );
                 }
             }
         }
         Err(error) => {
             world.entity_mut(id).remove::<Selection>();
-            notify(world, id, error, true);
+            notify(world, id, Notice::error(error));
         }
     }
 }
@@ -258,41 +260,41 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     match input {
         Input::Resize { .. } => return false,
         Input::Paste { .. } | Input::PasteBegin => return true,
-        Input::Mouse { action, .. } => match action.as_str() {
-            "scrollup" => scroll = Some(true),
-            "scrolldown" => scroll = Some(false),
+        Input::Mouse { action, .. } => match action {
+            MouseAction::ScrollUp => scroll = Some(true),
+            MouseAction::ScrollDown => scroll = Some(false),
             _ => return false,
         },
-        Input::Key { key, .. } => match key.as_str() {
-            "q" | "escape" => {
+        Input::Key { key, .. } => match key {
+            Key::Char('q') | Key::Escape => {
                 world.entity_mut(id).remove::<Selection>();
                 if let Some(mut v) = world.get_mut::<Viewer>(id) {
-                    v.notice.clear();
+                    v.notice = None;
                 }
                 return true;
             }
-            "g" => {
+            Key::Char('g') => {
                 if let Some(mut v) = world.get_mut::<Viewer>(id) {
                     v.scrollback = 0;
-                    v.notice.clear();
+                    v.notice = None;
                 }
                 world.entity_mut(id).remove::<Selection>();
                 return true;
             }
-            "c" => {
+            Key::Char('c') => {
                 if let Some(mut selection) = world.get_mut::<Selection>(id) {
                     selection.anchor = None;
                     selection.dragging = false;
                 }
                 return true;
             }
-            " " | "space" => {
+            Key::Char(' ') => {
                 if let Some(mut selection) = world.get_mut::<Selection>(id) {
                     selection.anchor = Some(cursor);
                 }
                 return true;
             }
-            "y" | "enter" => {
+            Key::Char('y') | Key::Enter => {
                 let text = selection
                     .anchor
                     .map(|anchor| selection.grid.text(anchor, cursor));
@@ -303,44 +305,46 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 if let Some(mut v) = world.get_mut::<Viewer>(id) {
                     match copied {
                         Some(Ok(())) => v.scrollback = 0,
-                        Some(Err(error)) => v.notify(error, true),
-                        None => v.notice = "Space starts a selection".into(),
+                        Some(Err(error)) => v.notice = Notice::error(error),
+                        None => v.notice = Notice::info("Space starts a selection"),
                     }
                 }
                 return true;
             }
-            "left" | "h" => position.1 = position.1.saturating_sub(1),
-            "right" | "l" => {
+            Key::Arrow(Direction::Left) | Key::Char('h') => {
+                position.1 = position.1.saturating_sub(1);
+            }
+            Key::Arrow(Direction::Right) | Key::Char('l') => {
                 let wide = selection
                     .grid
                     .cell(cursor)
                     .is_some_and(vt100::Cell::is_wide);
                 position.1 = (position.1 + if wide { 2 } else { 1 }).min(size.1.saturating_sub(1));
             }
-            "up" | "k" => {
+            Key::Arrow(Direction::Up) | Key::Char('k') => {
                 if position.0 > 0 {
                     position.0 -= 1;
                 } else {
                     scroll = Some(true);
                 }
             }
-            "down" | "j" => {
+            Key::Arrow(Direction::Down) | Key::Char('j') => {
                 if position.0 + 1 < size.0 {
                     position.0 += 1;
                 } else {
                     scroll = Some(false);
                 }
             }
-            "u" | "pageup" => {
+            Key::Char('u') | Key::PageUp => {
                 scroll = Some(true);
                 page = true;
             }
-            "d" | "pagedown" => {
+            Key::Char('d') | Key::PageDown => {
                 scroll = Some(false);
                 page = true;
             }
-            "home" => position.1 = 0,
-            "end" => position.1 = size.1.saturating_sub(1),
+            Key::Home => position.1 = 0,
+            Key::End => position.1 = size.1.saturating_sub(1),
             _ => {}
         },
     }
@@ -369,10 +373,10 @@ pub fn mouse(
     world: &mut World,
     id: Entity,
     leaf: Entity,
-    action: &str,
+    action: MouseAction,
     point: (u16, u16),
 ) -> Result<(), String> {
-    if action == "press" {
+    if action == MouseAction::Press {
         start(world, id, leaf)?;
     }
     let Some(mut selection) = world.get_mut::<Selection>(id) else {
@@ -383,27 +387,27 @@ pub fn mouse(
     }
     let point = selection.grid.point(point);
     match action {
-        "press" => {
+        MouseAction::Press => {
             selection.cursor = point;
             selection.anchor = Some(point);
             selection.dragging = true;
             selection.mouse_origin = true;
         }
-        "move" | "release" if selection.dragging => {
-            if action == "move" || selection.cursor != point {
+        MouseAction::Move | MouseAction::Release if selection.dragging => {
+            if action == MouseAction::Move || selection.cursor != point {
                 selection.mouse_origin = false;
             }
             selection.cursor = point;
-            if action == "release" {
+            if action == MouseAction::Release {
                 selection.dragging = false;
             }
         }
         _ => {}
     }
-    if action == "release" && selection.mouse_origin {
+    if action == MouseAction::Release && selection.mouse_origin {
         world.entity_mut(id).remove::<Selection>();
         if let Some(mut v) = world.get_mut::<Viewer>(id) {
-            v.notice.clear();
+            v.notice = None;
         }
     }
     Ok(())
@@ -416,21 +420,21 @@ pub fn paint(out: &mut String, selection: &Selection, rect: &crate::protocol::Pa
             (a, selection.cursor)
         });
     let (start, end) = if a <= b { (a, b) } else { (b, a) };
-    for y in start.0..=end.0.min(rect.height.saturating_sub(1)) {
-        for x in 0..rect.width.min(selection.grid.size.1) {
+    for y in start.0..=end.0.min(rect.height().saturating_sub(1)) {
+        for x in 0..rect.width().min(selection.grid.size.1) {
             if (y, x) < start || (y, x) > end {
                 continue;
             }
             let Some(cell) = selection.grid.cell((y, x)) else {
                 continue;
             };
-            if cell.is_wide_continuation() || cell.is_wide() && x + 1 >= rect.width {
+            if cell.is_wide_continuation() || cell.is_wide() && x + 1 >= rect.width() {
                 continue;
             }
             crate::chrome::at(
                 out,
-                rect.x + x,
-                rect.y + y,
+                rect.x() + x,
+                rect.y() + y,
                 format_args!(
                     "\x1b[0;7m{}\x1b[0m",
                     if cell.has_contents() {

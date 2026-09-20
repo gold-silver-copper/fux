@@ -7,7 +7,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     let b = s.attach()?;
     s.screen(a)?;
     let before = s.query("bevy_ui::ui_node::Node")?;
-    let focus = s.viewer(a)?.at("focus");
+    let focus = s.focused(a)?;
     fs::write(
         s.directory.join("fux.json"),
         serde_json::to_vec(&json!({
@@ -19,7 +19,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
             ]
         }))?,
     )?;
-    s.control(a, "help", "")?;
+    s.command(a, "help")?;
     eventually(|| {
         Ok(s.painted(a, 24, 80)?
             .contents()
@@ -40,7 +40,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     s.key(a, "down", false)?;
     assert_eq!(s.selected(a, 24, 80)?.as_deref(), Some("t  new tab"));
     assert!(!s.column_open(b, 24, 80)?);
-    assert_eq!(s.viewer(a)?.at("focus"), focus);
+    assert_eq!(s.focused(a)?, focus);
     assert_eq!(s.query("bevy_ui::ui_node::Node")?, before);
     let screen = s.painted(a, 24, 80)?;
     let selected_row = (0..23)
@@ -51,7 +51,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     s.enter(a)?;
     assert_eq!(s.query("fux::model::Tab")?.rows().count(), 2);
     assert!(!s.column_open(a, 24, 80)?);
-    assert_ne!(s.viewer(a)?.at("tab"), s.viewer(b)?.at("tab"));
+    assert_ne!(s.on_tab(a)?, s.on_tab(b)?);
     s.capture(a, 24, 80, "keybindings-new-tab")?;
     Ok(())
 }
@@ -76,7 +76,7 @@ fn a_navigation_key_prefix_still_forwards_its_literal_when_doubled() -> Outcome 
             "prefix":"up", "bindings":[{"key":"up","action":"terminate"}]
         }))?,
     )?;
-    s.control(v, "help", "")?;
+    s.command(v, "help")?;
     eventually(|| {
         Ok(s.painted(v, 24, 80)?
             .contents()
@@ -102,7 +102,7 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
             "bindings":[{"key":"[","action":"tab_previous"}]
         }))?,
     )?;
-    s.control(v, "help", "")?;
+    s.command(v, "help")?;
     eventually(|| Ok(!s.painted(v, 24, 80)?.contents().contains("split side")))?;
     let screen = s.painted(v, 24, 80)?;
     let y = (0..23)
@@ -114,12 +114,13 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
     assert!(
         s.viewer(v)?
             .at("notice")
+            .at("text")
             .as_str()
             .need()?
             .contains("only one tab")
     );
     assert_eq!(s.query("fux::model::Tab")?.rows().count(), 1);
-    s.control(v, "copy_mode", "")?;
+    s.command(v, "copy_mode")?;
     s.key(v, " ", false)?;
     assert!(s.painted(v, 24, 80)?.hide_cursor());
     s.key(v, "c", false)?;
@@ -127,6 +128,7 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
     assert!(
         s.viewer(v)?
             .at("notice")
+            .at("text")
             .as_str()
             .need()?
             .contains("Space starts")
@@ -135,13 +137,13 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
     s.key(v, " ", false)?;
     s.key(v, "escape", false)?;
     assert!(!s.painted(v, 24, 80)?.hide_cursor());
-    s.control(v, "copy_mode", "")?;
+    s.command(v, "copy_mode")?;
     s.key(v, "pageup", false)?;
     s.key(v, "g", false)?;
     assert_eq!(s.viewer(v)?.at("scrollback"), 0);
-    assert_eq!(s.viewer(v)?.at("notice"), "");
+    assert!(s.viewer(v)?.at("notice").is_null());
     assert!(!s.painted(v, 24, 80)?.hide_cursor());
-    s.control(v, "copy_mode", "")?;
+    s.command(v, "copy_mode")?;
     s.key(v, "q", false)?;
     assert!(!s.painted(v, 24, 80)?.hide_cursor());
     Ok(())

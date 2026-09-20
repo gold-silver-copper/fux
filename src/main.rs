@@ -188,7 +188,7 @@ fn run(mut app: App) -> AppExit {
         if let Some(exit) = app.should_exit() {
             break exit;
         }
-        if assets::pending(app.world()) {
+        if assets::pending(app.world()) || server::pending_scenes(app.world_mut()) {
             thread::park_timeout(Duration::from_millis(25));
         } else {
             thread::park();

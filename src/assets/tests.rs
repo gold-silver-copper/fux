@@ -48,7 +48,10 @@ fn native_tab_scene_round_trip_preserves_order_names_and_remapped_processes()
         "Launch",
         "ProcessState",
         "LayoutCache",
-        "Navigation",
+        "Memory",
+        "Viewers",
+        "TabViewers",
+        "FocusedBy",
         "Selection",
         "Ownership",
         "Overlay",
@@ -129,11 +132,11 @@ fn tabless_scene_migration_moves_the_layout_box_once_without_losing_panes()
 #[test]
 fn coherent_defaults_have_exact_unique_keys_and_action_pairs() -> crate::testing::Outcome {
     let settings = Settings::default();
-    assert_eq!(settings.prefix, "ctrl-b");
+    assert_eq!(settings.prefix.as_str(), "ctrl-b");
     let actual: std::collections::BTreeMap<_, _> = settings
         .bindings
         .iter()
-        .map(|b| (b.key.as_str(), b.action.as_str()))
+        .map(|b| (b.key.as_str(), b.action.to_string()))
         .collect();
     assert_eq!(actual.len(), settings.bindings.len());
     let expected = [
@@ -173,6 +176,7 @@ fn coherent_defaults_have_exact_unique_keys_and_action_pairs() -> crate::testing
         ("d", "detach"),
     ]
     .into_iter()
+    .map(|(key, action)| (key, action.to_owned()))
     .collect();
     assert_eq!(actual, expected);
     Ok(())
@@ -194,16 +198,14 @@ fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() -> crate::t
     world.despawn(nested);
     world.spawn((
         Viewer {
-            workspace: root,
-            tab: Some(tab),
-            focus: None,
             rows: 24,
             cols: 80,
             zoom: false,
             scrollback: 0,
-            notice: String::new(),
-            notice_error: false,
+            notice: None,
         },
+        Viewing(root),
+        OnTab(tab),
         ChildOf(root),
     ));
     assert!(

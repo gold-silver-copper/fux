@@ -5,7 +5,7 @@ use crate::protocol::Input;
 use crate::{
     actions::Target,
     interaction::{Mode, Overlay},
-    model::Viewer,
+    model::{Notice, Viewer},
 };
 use bevy_ecs::prelude::*;
 
@@ -34,9 +34,9 @@ enum Owner {
 
 pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     if matches!(input, Input::PasteBegin) {
-        let Some(v) = world.get::<Viewer>(id) else {
+        if world.get::<Viewer>(id).is_none() {
             return true;
-        };
+        }
         let owner = if let Some(overlay) = world.get::<Overlay>(id) {
             if matches!(overlay.mode, Mode::Text { .. }) {
                 Owner::Text(overlay.serial)
@@ -46,12 +46,15 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         } else if crate::interaction::modal(world, id) {
             Owner::Discard
         } else {
-            Owner::Pane(Target::viewer(v))
+            match Target::of(world, id) {
+                Some(target) => Owner::Pane(target),
+                None => Owner::Discard,
+            }
         };
         if let Some(mut ownership) = world.get_mut::<Ownership>(id) {
             ownership.pending = Some(owner);
         }
-        crate::model::notify(world, id, "pasting...", false);
+        crate::model::notify(world, id, Notice::info("pasting..."));
         return true;
     }
     let Input::Paste { text } = input else {
@@ -61,19 +64,16 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         .get_mut::<Ownership>(id)
         .and_then(|mut state| state.pending.take());
     if let Some(mut v) = world.get_mut::<Viewer>(id)
-        && v.notice == "pasting..."
+        && v.notice.as_ref().is_some_and(|n| n.text == "pasting...")
     {
-        v.notice.clear();
+        v.notice = None;
     }
     let valid = match owner {
         None => true,
         Some(Owner::Discard) => return true,
         Some(Owner::Text(serial)) => world.get::<Overlay>(id).is_some_and(|o| o.serial == serial),
         Some(Owner::Pane(target)) => {
-            world
-                .get::<Viewer>(id)
-                .is_some_and(|v| Target::viewer(v) == target)
-                && !crate::interaction::modal(world, id)
+            Target::of(world, id) == Some(target) && !crate::interaction::modal(world, id)
         }
     };
     if !valid || text.len() > LIMIT {
@@ -82,7 +82,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         } else {
             "paste owner changed; discarded"
         };
-        crate::model::notify(world, id, reason, true);
+        crate::model::notify(world, id, Notice::error(reason));
         return true;
     }
     false
@@ -154,6 +154,7 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Key;
     use crate::testing::*;
     #[test]
     fn every_fragment_boundary_preserves_paste_ownership_and_embedded_escape()
@@ -168,7 +169,7 @@ mod tests {
             decoder.timeout(|event| events.push(event));
             assert!(matches!(events.get(2), Some(Input::PasteBegin)));
             assert!(matches!(events.get(3), Some(Input::Paste { text }) if text == "one\x1btwo"));
-            assert!(matches!(events.get(4), Some(Input::Key { key, .. }) if key == "escape"));
+            assert!(matches!(events.get(4), Some(Input::Key { key, .. }) if *key == Key::Escape));
             assert_eq!(events.len(), 5);
         }
         Ok(())
@@ -183,7 +184,7 @@ mod tests {
         assert!(!decoder.deadline_needed());
         decoder.bytes(b"\x1b[201~z", |e| events.push(e));
         assert!(matches!(events.get(1), Some(Input::Paste { text }) if text.len() == LIMIT + 1));
-        assert!(matches!(events.get(2), Some(Input::Key { key, .. }) if key == "z"));
+        assert!(matches!(events.get(2), Some(Input::Key { key, .. }) if *key == Key::Char('z')));
         Ok(())
     }
 }

@@ -145,9 +145,55 @@ impl Server {
         Ok(rows)
     }
 
-    fn control(&self, viewer: u64, action: &str, value: &str) -> Result<(), String> {
-        self.rpc("world.trigger_event", json!({"event":"fux::control::Control","value":{"viewer":viewer,"action":action,"value":value}}))?;
+    /// Sends one `Command` as JSON; see `control.rs` for the shapes.
+    fn control(&self, viewer: u64, command: Value) -> Result<(), String> {
+        self.rpc(
+            "world.trigger_event",
+            json!({"event":"fux::control::Control","value":{"viewer":viewer,"command":command}}),
+        )?;
         Ok(())
+    }
+    /// A command that is only its kind.
+    fn command(&self, viewer: u64, kind: &str) -> Result<(), String> {
+        self.control(viewer, json!({"kind":kind}))
+    }
+    fn split(&self, viewer: u64, axis: &str, program: Option<&str>) -> Result<(), String> {
+        self.control(
+            viewer,
+            json!({"kind":"split","axis":axis,"program":program}),
+        )
+    }
+    fn focus(&self, viewer: u64, pane: u64) -> Result<(), String> {
+        self.control(viewer, json!({"kind":"focus","pane":pane}))
+    }
+    fn tab_new(&self, viewer: u64, name: Option<&str>) -> Result<(), String> {
+        self.control(viewer, json!({"kind":"tab_new","name":name}))
+    }
+    fn close(&self, viewer: u64, subject: Value) -> Result<(), String> {
+        self.control(viewer, json!({"kind":"close","subject":subject}))
+    }
+    /// One relationship component of a viewer, or null when it has none.
+    fn relation(&self, viewer: u64, component: &str) -> Result<Value, String> {
+        Ok(self
+            .query(component)?
+            .rows()
+            .find(|row| row.at("entity") == viewer)
+            .map_or(Value::Null, |row| row.at("components").at(component)))
+    }
+    fn viewing(&self, viewer: u64) -> Result<Value, String> {
+        self.relation(viewer, "fux::model::Viewing")
+    }
+    fn on_tab(&self, viewer: u64) -> Result<Value, String> {
+        self.relation(viewer, "fux::model::OnTab")
+    }
+    fn focused(&self, viewer: u64) -> Result<Value, String> {
+        self.relation(viewer, "fux::model::Focused")
+    }
+    /// The workspace this viewer is looking at.
+    fn workspace_of(&self, viewer: u64) -> Result<u64, String> {
+        self.viewing(viewer)?
+            .as_u64()
+            .ok_or_else(|| "viewer has no workspace".into())
     }
 
     fn input(&self, viewer: u64, input: Value) -> Result<(), String> {
@@ -204,11 +250,16 @@ impl Drop for Server {
 }
 
 /// Polls until the observation holds; an observation error or timeout is the failure.
+#[track_caller]
 fn eventually(mut observed: impl FnMut() -> Result<bool, Fail>) -> Result<(), Fail> {
+    let location = std::panic::Location::caller();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !observed()? {
         if Instant::now() >= deadline {
-            return Err("observable state did not settle within five seconds".into());
+            return Err(format!(
+                "observable state did not settle within five seconds at {location}"
+            )
+            .into());
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -242,9 +293,9 @@ fn stock_launch_removal_settles_without_another_request() -> Outcome {
         .need()?
         .at("components")
         .at("fux::model::ProcessState");
-    assert!(state.at("pid").is_null());
-    assert!(state.at("exit").is_number(), "{state}");
-    assert!(state.at("error").is_null(), "{state}");
+    assert!(state.at("status").at("pid").is_null());
+    assert_eq!(state.at("status").at("kind"), "exited", "{state}");
+    assert!(state.at("status").at("code").is_number(), "{state}");
     Ok(())
 }
 
@@ -257,6 +308,7 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
         .at(0)
         .at("components")
         .at("fux::model::ProcessState")
+        .at("status")
         .at("pid")
         .as_i64()
         .need()? as i32;
@@ -272,16 +324,16 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
         nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(background)))?.as_raw(),
         shell
     );
-    server.control(viewer, "terminate", "")?;
+    server.command(viewer, "terminate")?;
     eventually(|| Ok(!alive(shell) && !alive(background)))?;
     let state = &server
         .query("fux::model::ProcessState")?
         .at(0)
         .at("components")
         .at("fux::model::ProcessState");
-    assert!(state.at("pid").is_null());
-    assert!(state.at("exit").is_number(), "{state}");
-    assert!(state.at("error").is_null(), "{state}");
+    assert!(state.at("status").at("pid").is_null());
+    assert_eq!(state.at("status").at("kind"), "exited", "{state}");
+    assert!(state.at("status").at("code").is_number(), "{state}");
     Ok(())
 }
 
@@ -295,10 +347,9 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
         .at("entity")
         .as_u64()
         .need()?;
-    for action in ["zoom", "scroll_up"] {
-        server.control(viewer, action, "")?;
-    }
-    server.control(viewer, "split_horizontal", "")?;
+    server.command(viewer, "zoom")?;
+    server.control(viewer, json!({"kind":"scroll","order":"previous"}))?;
+    server.split(viewer, "horizontal", None)?;
     let screen = server.screen(viewer)?;
     let chrome = screen.lines().last().need()?;
     assert!(!chrome.contains("zoom"));
@@ -323,18 +374,20 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
         )?;
         server.enter(viewer)?;
         eventually(|| Ok(server.screen(viewer)?.contains(marker)))?;
-        server.control(viewer, "focus_next", "")?;
+        server.command(viewer, "focus_next")?;
         server.screen(viewer)?;
     }
     let before = server.query("fux::model::ProcessState")?;
     let scene = server.directory.join("layout.scn.ron");
-    server.control(viewer, "save_layout", "")?;
-    server.input(viewer, json!({"kind":"paste","text":scene}))?;
-    server.enter(viewer)?;
+    let workspace = server.workspace_of(viewer)?;
+    server.control(
+        viewer,
+        json!({"kind":"save_layout","workspace":workspace,"path":scene}),
+    )?;
     eventually(|| Ok(fs::metadata(&scene).is_ok_and(|metadata| metadata.len() > 0)))?;
-    server.rpc("world.trigger_event", json!({"event":"fux::control::Control","value":{
-        "viewer":viewer,"action":"load_layout","value":scene,"mapping":[[first,second],[second,first]]
-    }}))?;
+    server.control(viewer, json!({
+        "kind":"load_layout","workspace":workspace,"path":scene,"mapping":[[first,second],[second,first]]
+    }))?;
     eventually(|| Ok(server.screen(viewer)?.contains("loaded ")))?;
     let screen = server.screen(viewer)?;
     let content = screen.lines().next().need()?;
@@ -351,20 +404,15 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
         assert_eq!(
             old.at("components")
                 .at("fux::model::ProcessState")
+                .at("status")
                 .at("pid"),
             new.at("components")
                 .at("fux::model::ProcessState")
+                .at("status")
                 .at("pid")
         );
     }
-    let focus = server
-        .query("fux::model::Viewer")?
-        .at(0)
-        .at("components")
-        .at("fux::model::Viewer")
-        .at("focus")
-        .as_u64()
-        .need()?;
+    let focus = server.focused(viewer)?.as_u64().need()?;
     server.rpc(
         "world.insert_components",
         json!({"entity":focus,"components":{"bevy_camera::visibility::Visibility":"Hidden"}}),
@@ -375,11 +423,11 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
         json!({"entity":focus,"components":["bevy_camera::visibility::Visibility"]}),
     )?;
     eventually(|| Ok(server.screen(viewer)?.contains("BETA")))?;
-    server.rpc(
-        "world.trigger_event",
-        json!({"event":"fux::control::Control","value":{
-            "viewer":viewer,"action":"load_layout","value":scene,"mapping":[[first,first+1_000_000]]
-        }}),
+    // The first load replaced the workspace entity; a command names the live one.
+    let workspace = server.workspace_of(viewer)?;
+    server.control(
+        viewer,
+        json!({"kind":"load_layout","workspace":workspace,"path":scene,"mapping":[[first,first+1_000_000]]}),
     )?;
     eventually(|| Ok(server.screen(viewer)?.contains("missing live pane")))?;
     let remaining = server.query("fux::model::PaneView")?;
@@ -456,7 +504,7 @@ fn repeated_copy_effects_are_not_replaceable_paints() -> Outcome {
     assert_eq!(received.recv_timeout(Duration::from_secs(5))?, 0);
     // These are explicit equal copies, not four interchangeable paint snapshots.
     for _ in 0..4 {
-        server.control(viewer, "copy", "")?;
+        server.command(viewer, "copy")?;
     }
     let mut copies = 0;
     while copies < 4 {
@@ -473,7 +521,11 @@ fn repeated_copy_effects_are_not_replaceable_paints() -> Outcome {
             .contains("\x1b]52;")
     );
     drop(received);
-    server.control(viewer, "rename_workspace", "reader-finished")?;
+    let workspace = server.workspace_of(viewer)?;
+    server.control(
+        viewer,
+        json!({"kind":"rename","subject":{"workspace":workspace},"name":"reader-finished"}),
+    )?;
     reader.join().map_err(|_| "watch reader panicked")??;
     Ok(())
 }
@@ -544,7 +596,7 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
         .at(0)
         .at("entity")
         .clone();
-    server.control(viewer, "split_vertical", "exec /usr/bin/yes load")?;
+    server.split(viewer, "vertical", Some("exec /usr/bin/yes load"))?;
     // Deliberately stop reading the outer PTY. Paint will block, but HTTP must
     // continue draining/coalescing rather than fill Bevy's watch channel.
     thread::sleep(Duration::from_millis(500));
@@ -564,10 +616,11 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
     let pid = hot
         .at("components")
         .at("fux::model::ProcessState")
+        .at("status")
         .at("pid")
         .as_u64()
         .need()? as i32;
-    server.control(viewer, "terminate", "")?;
+    server.command(viewer, "terminate")?;
     eventually(|| Ok(!alive(pid)))?;
     let states = server.query("fux::model::ProcessState")?;
     let state = &states
@@ -576,8 +629,8 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
         .need()?
         .at("components")
         .at("fux::model::ProcessState");
-    assert!(state.at("pid").is_null(), "{state}");
-    assert!(state.at("exit").is_number(), "{state}");
-    assert!(state.at("error").is_null(), "{state}");
+    assert!(state.at("status").at("pid").is_null(), "{state}");
+    assert_eq!(state.at("status").at("kind"), "exited", "{state}");
+    assert!(state.at("status").at("code").is_number(), "{state}");
     Ok(())
 }

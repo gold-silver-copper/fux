@@ -24,7 +24,7 @@ impl Server {
         parser.process(frame.at("paint").as_str().need()?.as_bytes());
         Ok(parser.screen().clone())
     }
-    fn viewer(&self, viewer: u64) -> Result<Value, String> {
+    pub(crate) fn viewer(&self, viewer: u64) -> Result<Value, String> {
         Ok(self
             .query("fux::model::Viewer")?
             .rows()
@@ -64,7 +64,7 @@ impl Server {
         self.enter(viewer)
     }
     fn mouse(&self, viewer: u64, action: &str, x: u16, y: u16) -> Result<(), String> {
-        self.input(viewer, json!({"kind":"mouse","action":action,"button":0,"x":x,"y":y,"ctrl":false,"alt":false,"shift":false}))
+        self.input(viewer, json!({"kind":"mouse","action":action,"button":"left","x":x,"y":y,"ctrl":false,"alt":false,"shift":false}))
     }
     fn capture(&self, viewer: u64, rows: u16, cols: u16, name: &str) -> Result<(), Fail> {
         if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
@@ -155,8 +155,8 @@ fn native_splits_junctions_focus_zoom_and_no_margin_chrome() -> Outcome {
     let s = Server::start()?;
     let v = s.attach()?;
     s.resize(v, 15, 61)?;
-    s.control(v, "split_horizontal", "")?;
-    s.control(v, "split_vertical", "")?;
+    s.split(v, "horizontal", None)?;
+    s.split(v, "vertical", None)?;
     let screen = s.painted(v, 15, 61)?;
     // Native layout gives left width 30, right width 30 and one shared gap.
     assert_eq!(text(&screen, 0, 30), "│");
@@ -166,22 +166,22 @@ fn native_splits_junctions_focus_zoom_and_no_margin_chrome() -> Outcome {
     assert!(screen.cell(10, 30).need()?.bold());
     assert_eq!(screen.cell(0, 30).need()?.fgcolor(), Color::Idx(8));
     s.capture(v, 15, 61, "nested")?;
-    let before = s.viewer(v)?.at("focus");
+    let before = s.focused(v)?;
     s.mouse(v, "press", 0, 0)?;
-    assert_ne!(s.viewer(v)?.at("focus"), before);
+    assert_ne!(s.focused(v)?, before);
     let screen = s.painted(v, 15, 61)?;
     assert!(screen.cell(0, 30).need()?.bold());
     assert!(!screen.cell(7, 50).need()?.bold());
-    let selected = s.viewer(v)?.at("focus");
+    let selected = s.focused(v)?;
     s.mouse(v, "press", 30, 3)?; // separator cannot pick a pane
     s.mouse(v, "press", 0, 14)?; // bottom bar cannot pick a pane
-    assert_eq!(s.viewer(v)?.at("focus"), selected);
-    s.control(v, "zoom", "")?;
+    assert_eq!(s.focused(v)?, selected);
+    s.command(v, "zoom")?;
     let screen = s.painted(v, 15, 61)?;
     assert!(!screen.contents().contains('│') || row(&screen, 14).contains('│'));
     assert_eq!(text(&screen, 0, 30), " ");
     assert_eq!(text(&screen, 7, 31), " ");
-    s.control(v, "zoom", "")?;
+    s.command(v, "zoom")?;
     s.painted(v, 15, 61)?;
     // Preserve arbitrary native spacing instead of painting every empty cell.
     let nodes = s.query("bevy_ui::ui_node::Node")?;
@@ -232,7 +232,7 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     assert!(!closed.contents().contains("Commands"));
     assert!(!closed.contents().contains("NOT-PTY-INPUT"));
     // Modified arrow invokes resize; unmodified arrows belong to the list.
-    let focus = s.viewer(v)?.at("focus");
+    let focus = s.focused(v)?;
     let grow = || -> Result<f64, String> {
         s.query("bevy_ui::ui_node::Node")?
             .rows()
@@ -255,9 +255,9 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     // Help is the command column itself: the prefix key is the only way in.
     s.key(v, "b", true)?;
     s.painted(v, 12, 60)?;
-    s.mouse(v, "scrolldown", 59, 10)?;
+    s.mouse(v, "scroll_down", 59, 10)?;
     assert_eq!(s.selected(v, 12, 60)?.as_deref(), Some("v  split stacked"));
-    s.mouse(v, "scrollup", 59, 10)?;
+    s.mouse(v, "scroll_up", 59, 10)?;
     assert_eq!(
         s.selected(v, 12, 60)?.as_deref(),
         Some("h  split side by side")
@@ -269,9 +269,9 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     assert!(!paged.contains("split"), "{paged}");
     let screen = s.painted(v, 12, 60)?;
     assert!(screen.contents().contains("▲"));
-    let focus = s.viewer(v)?.at("focus");
+    let focus = s.focused(v)?;
     s.mouse(v, "press", 0, 0)?;
-    assert_eq!(s.viewer(v)?.at("focus"), focus);
+    assert_eq!(s.focused(v)?, focus);
     s.input(v, json!({"kind":"paste","text":"NOT-HELP-INPUT"}))?;
     assert!(!s.painted(v, 12, 60)?.contents().contains("NOT-HELP-INPUT"));
     for _ in 0..60 {
@@ -294,7 +294,8 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     s.capture(v, 7, 18, "narrow-help")?;
     s.key(v, "escape", false)?;
     s.resize(v, 12, 60)?;
-    s.control(v, "rename_pane", "")?;
+    s.key(v, "b", true)?;
+    s.key(v, "r", false)?;
     s.input(v, json!({"kind":"paste","text":"界é-long-name"}))?;
     s.key(v, "backspace", false)?;
     let screen = s.painted(v, 12, 60)?;
@@ -306,7 +307,8 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     s.capture(v, 12, 60, "prompt")?;
     s.key(v, "escape", false)?;
     assert!(!s.painted(v, 12, 60)?.contents().contains("rename pane"));
-    s.control(v, "rename_pane", "")?;
+    s.key(v, "b", true)?;
+    s.key(v, "r", false)?;
     s.input(v, json!({"kind":"paste","text":"renamed"}))?;
     s.enter(v)?;
     assert!(row(&s.painted(v, 12, 60)?, 11).contains("renamed"));

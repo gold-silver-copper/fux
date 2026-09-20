@@ -3,19 +3,26 @@
 mod tests;
 use crate::{
     actions::{self, Action, Target},
+    assets::BindingAction,
     chrome,
-    control::Control,
+    control::{Chooser, Command, Order, Subject},
     model::*,
     navigation,
-    protocol::Input,
+    protocol::{Direction, Input, Key, Modifiers, MouseAction},
 };
 use bevy_ecs::prelude::*;
 
 #[derive(Clone)]
 pub struct Entry {
     pub label: String,
-    pub action: Action,
-    pub destination: Option<Entity>,
+    pub run: Run,
+}
+/// A list row either names a bound action (menus, which may prompt again) or
+/// carries the exact command a chooser resolved (never prompts again).
+#[derive(Clone)]
+pub enum Run {
+    Action(Action),
+    Command(Command),
 }
 #[derive(Clone)]
 pub enum Mode {
@@ -25,7 +32,7 @@ pub enum Mode {
         selected: usize,
     },
     Confirm {
-        action: Action,
+        command: Command,
     },
     Text {
         action: Action,
@@ -81,314 +88,368 @@ fn open(world: &mut World, id: Entity, target: Target, mode: Mode) {
 }
 
 fn notify_error(world: &mut World, id: Entity, message: impl Into<String>) {
-    notify(world, id, message, true);
+    notify(world, id, Notice::error(message));
 }
 
-pub fn invoke(
-    world: &mut World,
-    id: Entity,
-    target: Target,
-    action: Action,
-    destination: Option<Entity>,
-    value: &str,
-    interactive: bool,
-) -> Result<bool, String> {
+/// Runs a bound action for a viewer: prompts and confirmations open an
+/// overlay whose completion produces the command; everything else is a
+/// command right away.
+pub fn bound(world: &mut World, id: Entity, target: Target, action: Action) -> Result<(), String> {
     use Action::*;
     if let Some(reason) = actions::unavailable(world, target, action) {
         return Err(reason.into());
     }
-    if !matches!(action, CopyMode | ScrollUp | ScrollDown) {
-        world.entity_mut(id).remove::<crate::selection::Selection>();
-    }
-    close_prefix(world, id);
-    notify(world, id, "", false);
-    if interactive && matches!(action, Close | TabClose | WorkspaceClose) {
-        open(world, id, target, Mode::Confirm { action });
-        return Ok(true);
-    }
-    if value.is_empty()
-        && matches!(
-            action,
-            RenamePane | RenameTab | RenameWorkspace | SaveLayout | LoadLayout
-        )
-    {
-        open(
-            world,
-            id,
-            target,
-            Mode::Text {
-                action,
-                buffer: String::new(),
-            },
-        );
-        return Ok(true);
-    }
     match action {
-        TabNew => {
-            world
-                .get_mut::<Viewer>(id)
-                .ok_or("viewer removed")?
-                .workspace = target.workspace;
-            navigation::control(world, id, action, None, value)?;
-        }
-        CopyMode => crate::selection::start(world, id, target.leaf.ok_or("no pane")?)?,
-        TabChoose | WorkspaceChoose | SwapChoose | MoveTab | MoveWorkspace
-            if destination.is_none() && value.is_empty() =>
-        {
-            let candidates = match action {
-                WorkspaceChoose | MoveWorkspace => roots(world),
-                SwapChoose => navigation::leaves(world, target.tab.ok_or("no tab")?)
-                    .into_iter()
-                    .filter(|e| Some(*e) != target.leaf)
-                    .collect(),
-                _ => navigation::tabs(world, target.workspace),
-            };
-            let execute = match action {
-                TabChoose => TabSelect,
-                WorkspaceChoose => WorkspaceSelect,
-                SwapChoose => Swap,
-                _ => action,
-            };
-            let entries = candidates
-                .into_iter()
-                .map(|entity| Entry {
-                    label: label(world, entity),
-                    action: execute,
-                    destination: Some(entity),
-                })
-                .collect();
-            open(
-                world,
-                id,
-                target,
-                Mode::List {
-                    title: action.label().into(),
-                    entries,
-                    selected: 0,
-                },
-            );
-        }
-        PaneMenu | TabMenu | WorkspaceMenu => {
-            let group = match action {
-                PaneMenu => "Panes",
-                TabMenu => "Tabs",
-                _ => "Workspaces",
-            };
-            let entries = actions::ALL
-                .iter()
-                .copied()
-                .filter(|a| {
-                    (a.group() == group
-                        || group == "Workspaces" && matches!(a, SaveLayout | LoadLayout))
-                        && !matches!(a, PaneMenu | TabMenu | WorkspaceMenu)
-                        && !matches!(
-                            a,
-                            TabNext | TabPrevious | TabChoose | WorkspaceNext | WorkspacePrevious
-                        )
-                })
-                .map(|a| Entry {
-                    label: a.label().into(),
-                    action: a,
-                    destination: None,
-                })
-                .collect();
-            open(
-                world,
-                id,
-                target,
-                Mode::List {
-                    title: format!(
-                        "{group}: {}",
-                        label(
-                            world,
-                            match action {
-                                PaneMenu => target.leaf.ok_or("no pane")?,
-                                TabMenu => target.tab.ok_or("no tab")?,
-                                _ => target.workspace,
-                            }
-                        )
-                    ),
-                    entries,
-                    selected: 0,
-                },
-            );
-        }
-        TabReorderPrevious | TabReorderNext | WorkspaceReorderPrevious | WorkspaceReorderNext => {
-            let workspace_action =
-                matches!(action, WorkspaceReorderPrevious | WorkspaceReorderNext);
-            let mut entities = if workspace_action {
-                roots(world)
-            } else {
-                navigation::tabs(world, target.workspace)
-            };
-            let entity = if workspace_action {
-                target.workspace
-            } else {
-                target.tab.ok_or("no tab")?
-            };
-            let index = entities
-                .iter()
-                .position(|e| *e == entity)
-                .ok_or("target removed")?;
-            let other = if matches!(action, TabReorderPrevious | WorkspaceReorderPrevious) {
-                index.saturating_sub(1)
-            } else {
-                (index + 1).min(entities.len() - 1)
-            };
-            entities.swap(index, other);
-            if workspace_action {
-                for (index, entity) in entities.into_iter().enumerate() {
-                    world
-                        .entity_mut(entity)
-                        .insert(WorkspaceOrder(index as i64));
-                }
-            } else {
-                world
-                    .entity_mut(target.workspace)
-                    .replace_children(&entities);
-            }
-        }
         Close | TabClose | WorkspaceClose => {
-            let entity = match action {
-                Close => target.leaf.ok_or("no pane")?,
-                TabClose => target.tab.ok_or("no tab")?,
-                _ => target.workspace,
-            };
-            // Removal observers repair viewer navigation as the hierarchy goes.
-            close(world, entity);
+            let command = action.command(target).ok_or("no pane")?;
+            settle(world, id);
+            open(world, id, target, Mode::Confirm { command });
+            Ok(())
         }
-        RenamePane | RenameTab | RenameWorkspace if !value.is_empty() => {
-            let entity = match action {
-                RenamePane => {
-                    world
-                        .get::<PaneView>(target.leaf.ok_or("no pane")?)
-                        .ok_or("pane removed")?
-                        .pane
-                }
-                RenameTab => target.tab.ok_or("no tab")?,
-                _ => target.workspace,
-            };
-            world.entity_mut(entity).insert(Name::new(value.to_owned()));
+        RenamePane | RenameTab | RenameWorkspace | SaveLayout | LoadLayout => {
+            settle(world, id);
+            open(
+                world,
+                id,
+                target,
+                Mode::Text {
+                    action,
+                    buffer: String::new(),
+                },
+            );
+            Ok(())
         }
-        SwapLeft | SwapRight | SwapUp | SwapDown | MoveLeft | MoveRight | MoveUp | MoveDown => {
-            let source = target.leaf.ok_or("no pane")?;
-            let direction = action.direction().ok_or("no direction")?;
-            let destination = crate::frame::neighbor(world, id, source, direction)
-                .ok_or("no pane in that direction")?;
-            if matches!(action, SwapLeft | SwapRight | SwapUp | SwapDown) {
-                swap(world, source, destination)?;
-            } else {
-                move_beside(world, source, destination, direction)?;
-            }
-            world.get_mut::<Viewer>(id).ok_or("viewer removed")?.zoom = false;
-        }
-        Swap => swap(
-            world,
-            target.leaf.ok_or("no pane")?,
-            destination.ok_or("swap destination required")?,
-        )?,
-        MoveTab | MoveWorkspace | MoveNewTab | MoveNewWorkspace => {
-            let leaf = target.leaf.ok_or("no pane")?;
-            let (workspace, tab) = match action {
-                MoveNewWorkspace => {
-                    let order = roots(world)
-                        .into_iter()
-                        .filter_map(|e| world.get::<WorkspaceOrder>(e).map(|o| o.0))
-                        .max()
-                        .unwrap_or(-1)
-                        .saturating_add(1);
-                    let root = world
-                        .spawn((
-                            Workspace,
-                            WorkspaceOrder(order),
-                            Name::new(
-                                if value.is_empty() { "workspace" } else { value }.to_owned(),
-                            ),
-                            navigation::tab_node(),
-                        ))
-                        .id();
-                    let tab = world
-                        .spawn((
-                            Tab,
-                            Name::new("main"),
-                            navigation::tab_node(),
-                            ChildOf(root),
-                        ))
-                        .id();
-                    (root, tab)
-                }
-                MoveNewTab => {
-                    let tab = world
-                        .spawn((
-                            Tab,
-                            Name::new(if value.is_empty() { "tab" } else { value }.to_owned()),
-                            navigation::tab_node(),
-                            ChildOf(target.workspace),
-                        ))
-                        .id();
-                    (target.workspace, tab)
-                }
-                MoveWorkspace => {
-                    let root = destination
-                        .or_else(|| {
-                            roots(world).into_iter().find(|e| {
-                                world.get::<Name>(*e).is_some_and(|n| n.as_str() == value)
-                            })
-                        })
-                        .filter(|e| world.get::<Workspace>(*e).is_some())
-                        .ok_or("destination workspace removed")?;
-                    navigation::normalize_workspace(world, root);
-                    // normalize_workspace spawns a tab when a workspace has none.
-                    #[expect(clippy::indexing_slicing, reason = "normalized workspace has a tab")]
-                    let tab = navigation::tabs(world, root)[0];
-                    (root, tab)
-                }
-                _ => {
-                    let tab = destination
-                        .filter(|e| world.get::<Tab>(*e).is_some())
-                        .ok_or("destination tab removed")?;
-                    let root = world
-                        .get::<ChildOf>(tab)
-                        .ok_or("tab has no workspace")?
-                        .parent();
-                    (root, tab)
-                }
-            };
-            if Some(tab) == target.tab {
-                return Ok(true);
-            }
-            if world
-                .get::<Children>(tab)
-                .is_some_and(|children| !children.is_empty())
-            {
-                // A tab may itself be a native split container. Preserve custom
-                // nonzero spacing, adding shared separators to default layouts.
-                world.entity_mut(tab).insert(Split);
-                if let Some(mut node) = world.get_mut::<bevy_ui::Node>(tab) {
-                    if node.column_gap == bevy_ui::Val::ZERO {
-                        node.column_gap = bevy_ui::Val::Px(1.0);
-                    }
-                    if node.row_gap == bevy_ui::Val::ZERO {
-                        node.row_gap = bevy_ui::Val::Px(1.0);
-                    }
-                }
-            }
-            world.entity_mut(leaf).insert(ChildOf(tab));
-            // Select the moved pane without overwriting other viewers' memory.
-            let mut memory = world.get_mut::<Navigation>(id).ok_or("viewer removed")?;
-            memory.tabs.insert(workspace, tab);
-            memory.focus.insert(tab, leaf);
-            let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
-            v.workspace = workspace;
-            v.tab = Some(tab);
-            v.focus = Some(leaf);
-            v.zoom = false;
-            v.scrollback = 0;
-            navigation::repair(world);
-        }
-        _ => return Ok(false),
+        _ => crate::server::execute(world, id, action.command(target).ok_or("no pane")?),
     }
-    Ok(true)
+}
+
+/// Every command starts from a quiet viewer: no selection, no column, no notice.
+pub(crate) fn settle(world: &mut World, id: Entity) {
+    if let Ok(mut entity) = world.get_entity_mut(id) {
+        entity.remove::<(crate::selection::Selection, Prefix)>();
+    }
+    notify(world, id, None);
+}
+
+/// Opens an interactive list whose rows are resolved commands.
+pub(crate) fn choose(
+    world: &mut World,
+    id: Entity,
+    target: Target,
+    chooser: Chooser,
+) -> Result<(), String> {
+    let (title, entries): (Action, Vec<Entry>) = match chooser {
+        Chooser::Tab => (
+            Action::TabChoose,
+            navigation::tabs(world, target.workspace)
+                .into_iter()
+                .map(|tab| entry(world, tab, Command::TabSelect { tab }))
+                .collect(),
+        ),
+        Chooser::Workspace => (
+            Action::WorkspaceChoose,
+            roots(world)
+                .into_iter()
+                .map(|workspace| entry(world, workspace, Command::WorkspaceSelect { workspace }))
+                .collect(),
+        ),
+        Chooser::SwapTarget => (
+            Action::SwapChoose,
+            navigation::leaves(world, target.tab.ok_or("no tab")?)
+                .into_iter()
+                .filter(|e| Some(*e) != target.leaf)
+                .map(|with| entry(world, with, Command::Swap { with }))
+                .collect(),
+        ),
+        Chooser::MoveToTab => (
+            Action::MoveTab,
+            navigation::tabs(world, target.workspace)
+                .into_iter()
+                .map(|tab| entry(world, tab, Command::MoveToTab { tab }))
+                .collect(),
+        ),
+        Chooser::MoveToWorkspace => (
+            Action::MoveWorkspace,
+            roots(world)
+                .into_iter()
+                .map(|workspace| entry(world, workspace, Command::MoveToWorkspace { workspace }))
+                .collect(),
+        ),
+    };
+    if let Some(reason) = actions::unavailable(world, target, title) {
+        return Err(reason.into());
+    }
+    settle(world, id);
+    open(
+        world,
+        id,
+        target,
+        Mode::List {
+            title: title.label().into(),
+            entries,
+            selected: 0,
+        },
+    );
+    Ok(())
+}
+fn entry(world: &World, entity: Entity, command: Command) -> Entry {
+    Entry {
+        label: label(world, entity),
+        run: Run::Command(command),
+    }
+}
+
+/// Opens the action menu for a pane, tab or workspace.
+pub(crate) fn menu(
+    world: &mut World,
+    id: Entity,
+    mut target: Target,
+    subject: Subject,
+) -> Result<(), String> {
+    use Action::*;
+    let (action, group, entity) = match subject {
+        Subject::Pane(pane) => {
+            target.leaf = Some(pane);
+            (PaneMenu, "Panes", pane)
+        }
+        Subject::Tab(tab) => {
+            target.tab = Some(tab);
+            target.leaf = None;
+            (TabMenu, "Tabs", tab)
+        }
+        Subject::Workspace(workspace) => {
+            target = Target {
+                workspace,
+                tab: None,
+                leaf: None,
+            };
+            (WorkspaceMenu, "Workspaces", workspace)
+        }
+    };
+    if let Some(reason) = actions::unavailable(world, target, action) {
+        return Err(reason.into());
+    }
+    let entries = actions::ALL
+        .iter()
+        .copied()
+        .filter(|a| {
+            (a.group() == group || group == "Workspaces" && matches!(a, SaveLayout | LoadLayout))
+                && !matches!(a, PaneMenu | TabMenu | WorkspaceMenu)
+                && !matches!(
+                    a,
+                    TabNext | TabPrevious | TabChoose | WorkspaceNext | WorkspacePrevious
+                )
+        })
+        .map(|a| Entry {
+            label: a.label().into(),
+            run: Run::Action(a),
+        })
+        .collect();
+    settle(world, id);
+    open(
+        world,
+        id,
+        target,
+        Mode::List {
+            title: format!("{group}: {}", label(world, entity)),
+            entries,
+            selected: 0,
+        },
+    );
+    Ok(())
+}
+
+/// Reorders a tab among its workspace's tabs or a workspace among all workspaces.
+pub(crate) fn reorder(world: &mut World, subject: Subject, order: Order) -> Result<(), String> {
+    let (mut entities, entity, workspace) = match subject {
+        Subject::Tab(tab) => {
+            let workspace = world
+                .get::<ChildOf>(tab)
+                .ok_or("tab has no workspace")?
+                .parent();
+            (navigation::tabs(world, workspace), tab, Some(workspace))
+        }
+        Subject::Workspace(workspace) => (roots(world), workspace, None),
+        Subject::Pane(_) => return Err("target has the wrong kind for this action".into()),
+    };
+    let index = entities
+        .iter()
+        .position(|e| *e == entity)
+        .ok_or("target removed")?;
+    let other = match order {
+        Order::Previous => index.saturating_sub(1),
+        Order::Next => (index + 1).min(entities.len() - 1),
+    };
+    entities.swap(index, other);
+    match workspace {
+        Some(workspace) => {
+            world.entity_mut(workspace).replace_children(&entities);
+        }
+        None => {
+            for (index, entity) in entities.into_iter().enumerate() {
+                world
+                    .entity_mut(entity)
+                    .insert(WorkspaceOrder(index as i64));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn rename(world: &mut World, subject: Subject, name: String) -> Result<(), String> {
+    let entity = match subject {
+        Subject::Pane(leaf) => world.get::<PaneView>(leaf).ok_or("pane removed")?.pane,
+        Subject::Tab(tab) => tab,
+        Subject::Workspace(workspace) => workspace,
+    };
+    world
+        .get_entity_mut(entity)
+        .map_err(|_| "target no longer exists")?
+        .insert(Name::new(name));
+    Ok(())
+}
+
+/// The kind a subject names must match the entity, whichever caller built it.
+pub(crate) fn check(world: &World, subject: Subject) -> Result<Entity, String> {
+    let (entity, ok) = match subject {
+        Subject::Pane(e) => (e, world.get::<PaneView>(e).is_some()),
+        Subject::Tab(e) => (e, world.get::<Tab>(e).is_some()),
+        Subject::Workspace(e) => (e, world.get::<Workspace>(e).is_some()),
+    };
+    if world.get_entity(entity).is_err() {
+        return Err("target no longer exists".into());
+    }
+    if !ok {
+        return Err("target has the wrong kind for this action".into());
+    }
+    Ok(entity)
+}
+
+/// Where a pane moves to. New containers are created on demand.
+pub(crate) enum MoveTo {
+    Tab(Entity),
+    NewTab(Option<String>),
+    Workspace(Entity),
+    NewWorkspace(Option<String>),
+}
+
+/// Moves the viewer's focused pane and follows it, without overwriting other
+/// viewers' memory.
+pub(crate) fn move_pane(
+    world: &mut World,
+    id: Entity,
+    target: Target,
+    to: MoveTo,
+) -> Result<(), String> {
+    let leaf = target.leaf.ok_or("no pane")?;
+    let (workspace, tab) = match to {
+        MoveTo::NewWorkspace(name) => {
+            let order = roots(world)
+                .into_iter()
+                .filter_map(|e| world.get::<WorkspaceOrder>(e).map(|o| o.0))
+                .max()
+                .unwrap_or(-1)
+                .saturating_add(1);
+            let root = world
+                .spawn((
+                    Workspace,
+                    WorkspaceOrder(order),
+                    Name::new(name.unwrap_or_else(|| "workspace".into())),
+                    navigation::tab_node(),
+                ))
+                .id();
+            let tab = world
+                .spawn((
+                    Tab,
+                    Name::new("main"),
+                    navigation::tab_node(),
+                    ChildOf(root),
+                ))
+                .id();
+            (root, tab)
+        }
+        MoveTo::NewTab(name) => {
+            let tab = world
+                .spawn((
+                    Tab,
+                    Name::new(name.unwrap_or_else(|| "tab".into())),
+                    navigation::tab_node(),
+                    ChildOf(target.workspace),
+                ))
+                .id();
+            (target.workspace, tab)
+        }
+        MoveTo::Workspace(root) => {
+            if world.get::<Workspace>(root).is_none() {
+                return Err("destination workspace removed".into());
+            }
+            navigation::normalize_workspace(world, root);
+            // normalize_workspace spawns a tab when a workspace has none.
+            #[expect(clippy::indexing_slicing, reason = "normalized workspace has a tab")]
+            let tab = navigation::tabs(world, root)[0];
+            (root, tab)
+        }
+        MoveTo::Tab(tab) => {
+            if world.get::<Tab>(tab).is_none() {
+                return Err("destination tab removed".into());
+            }
+            let root = world
+                .get::<ChildOf>(tab)
+                .ok_or("tab has no workspace")?
+                .parent();
+            (root, tab)
+        }
+    };
+    if Some(tab) == target.tab {
+        return Ok(());
+    }
+    if world
+        .get::<Children>(tab)
+        .is_some_and(|children| !children.is_empty())
+    {
+        // A tab may itself be a native split container. Preserve custom
+        // nonzero spacing, adding shared separators to default layouts.
+        world.entity_mut(tab).insert(Split);
+        if let Some(mut node) = world.get_mut::<bevy_ui::Node>(tab) {
+            if node.column_gap == bevy_ui::Val::ZERO {
+                node.column_gap = bevy_ui::Val::Px(1.0);
+            }
+            if node.row_gap == bevy_ui::Val::ZERO {
+                node.row_gap = bevy_ui::Val::Px(1.0);
+            }
+        }
+    }
+    world.entity_mut(leaf).insert(ChildOf(tab));
+    // Following the pane records this viewer's memory through the observers,
+    // without touching other viewers'.
+    world
+        .get_entity_mut(id)
+        .map_err(|_| "viewer removed")?
+        .insert((Viewing(workspace), OnTab(tab), Focused(leaf)));
+    let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
+    v.zoom = false;
+    v.scrollback = 0;
+    Ok(())
+}
+
+/// Swaps or moves the focused pane toward its nearest neighbour.
+pub(crate) fn beside(
+    world: &mut World,
+    id: Entity,
+    target: Target,
+    direction: Direction,
+    swap_panes: bool,
+) -> Result<(), String> {
+    let source = target.leaf.ok_or("no pane")?;
+    let destination =
+        crate::frame::neighbor(world, id, source, direction).ok_or("no pane in that direction")?;
+    if swap_panes {
+        swap(world, source, destination)?;
+    } else {
+        move_beside(world, source, destination, direction)?;
+    }
+    world.get_mut::<Viewer>(id).ok_or("viewer removed")?.zoom = false;
+    Ok(())
 }
 
 pub fn close(world: &mut World, entity: Entity) {
@@ -412,7 +473,7 @@ fn move_beside(
     world: &mut World,
     source: Entity,
     destination: Entity,
-    direction: &str,
+    direction: Direction,
 ) -> Result<(), String> {
     use bevy_ui::{FlexDirection, Val};
     let parent = world
@@ -427,7 +488,7 @@ fn move_beside(
     node.width = Val::Auto;
     node.height = Val::Auto;
     node.flex_basis = Val::ZERO;
-    node.flex_direction = if matches!(direction, "up" | "down") {
+    node.flex_direction = if matches!(direction, Direction::Up | Direction::Down) {
         FlexDirection::Column
     } else {
         FlexDirection::Row
@@ -435,7 +496,7 @@ fn move_beside(
     node.row_gap = Val::Px(1.0);
     node.column_gap = Val::Px(1.0);
     let split = world.spawn((Split, node)).id();
-    let children = if matches!(direction, "left" | "up") {
+    let children = if matches!(direction, Direction::Left | Direction::Up) {
         [source, destination]
     } else {
         [destination, source]
@@ -445,7 +506,7 @@ fn move_beside(
     Ok(())
 }
 
-fn swap(world: &mut World, source: Entity, destination: Entity) -> Result<(), String> {
+pub(crate) fn swap(world: &mut World, source: Entity, destination: Entity) -> Result<(), String> {
     if source == destination {
         return Ok(());
     }
@@ -488,7 +549,7 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
     let (rows, cols, mut scroll) = (v.rows, v.cols, prefix.scroll);
     let settings = world.resource::<crate::assets::Settings>();
     // The prefix itself retains literal forwarding, even for a navigation-key prefix.
-    if input.token().as_deref() == Some(settings.prefix.as_str()) {
+    if input.token().as_ref() == Some(&settings.prefix) {
         return false;
     }
     let step = |current, down, page| chrome::scroll(settings, rows, current, down, page);
@@ -498,25 +559,30 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
         Input::Resize { .. } => return false,
         Input::Key {
             key,
-            ctrl: false,
-            alt: false,
-            shift: false,
-        } => match key.as_str() {
-            "up" | "pageup" => scroll = step(scroll, false, key == "pageup"),
-            "down" | "pagedown" => scroll = step(scroll, true, key == "pagedown"),
-            "left" | "right" => {} // Vertical menus reserve all unmodified arrows.
-            "home" => scroll = 0,
-            "end" => scroll = chrome::help_limit(settings, rows),
-            "enter" => {
-                execute = chrome::selected_action(settings, rows, cols, scroll).map(str::to_owned);
+            modifiers:
+                Modifiers {
+                    ctrl: false,
+                    alt: false,
+                    shift: false,
+                },
+        } => match key {
+            Key::Arrow(Direction::Up) => scroll = step(scroll, false, false),
+            Key::PageUp => scroll = step(scroll, false, true),
+            Key::Arrow(Direction::Down) => scroll = step(scroll, true, false),
+            Key::PageDown => scroll = step(scroll, true, true),
+            Key::Arrow(_) => {} // Vertical menus reserve all unmodified arrows.
+            Key::Home => scroll = 0,
+            Key::End => scroll = chrome::help_limit(settings, rows),
+            Key::Enter => {
+                execute = chrome::selected_action(settings, rows, cols, scroll).cloned();
                 close = true;
             }
-            "escape" => close = true,
+            Key::Escape => close = true,
             _ => return false,
         },
-        Input::Mouse { action, .. } => match action.as_str() {
-            "scrollup" => scroll = step(scroll, false, false),
-            "scrolldown" => scroll = step(scroll, true, false),
+        Input::Mouse { action, .. } => match action {
+            MouseAction::ScrollUp => scroll = step(scroll, false, false),
+            MouseAction::ScrollDown => scroll = step(scroll, true, false),
             _ => {}
         },
         Input::Paste { .. } | Input::PasteBegin => return true,
@@ -528,14 +594,13 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
         prefix.scroll = scroll;
     }
     match execute {
-        Some(action) => {
-            let Some(v) = world.get::<Viewer>(id) else {
+        Some(binding) => {
+            let Some(target) = Target::of(world, id) else {
                 return true;
             };
-            let target = Target::viewer(v);
-            dispatch_named(world, id, target, &action, None, "", true);
+            dispatch_binding(world, id, target, &binding);
         }
-        None if close => notify(world, id, "", false),
+        None if close => notify(world, id, None),
         None => {}
     }
     true
@@ -555,34 +620,45 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         return false;
     }
     let mut next = overlay.clone();
-    let mut execute = None;
+    let mut execute: Option<Run> = None;
     let mut cancel = false;
     match (&mut next.mode, input) {
-        (_, Input::Key { key, .. }) if key == "escape" => cancel = true,
         (
-            Mode::Confirm { action },
+            _,
             Input::Key {
-                key,
-                ctrl: false,
-                alt: false,
-                ..
+                key: Key::Escape, ..
+            },
+        ) => cancel = true,
+        (
+            Mode::Confirm { command },
+            Input::Key {
+                key: Key::Char(c),
+                modifiers:
+                    Modifiers {
+                        ctrl: false,
+                        alt: false,
+                        ..
+                    },
             },
         ) => {
-            if key == "y" {
-                execute = Some((*action, None, String::new(), false));
-            } else if key == "n" {
+            if *c == 'y' {
+                execute = Some(Run::Command(command.clone()));
+            } else if *c == 'n' {
                 cancel = true;
             }
         }
-        (Mode::Text { action, buffer }, Input::Key { key, ctrl, alt, .. }) => {
-            if key == "enter" && !buffer.is_empty() {
-                execute = Some((*action, None, buffer.clone(), false));
-            } else if key == "backspace" {
-                buffer.pop();
-            } else if !ctrl && !alt && key.chars().count() == 1 {
-                buffer.push_str(key);
+        (Mode::Text { action, buffer }, Input::Key { key, modifiers }) => match key {
+            Key::Enter if !buffer.is_empty() => {
+                execute = action
+                    .with_text(overlay.target, buffer.clone())
+                    .map(Run::Command);
             }
-        }
+            Key::Backspace => {
+                buffer.pop();
+            }
+            Key::Char(c) if !modifiers.ctrl && !modifiers.alt => buffer.push(*c),
+            _ => {}
+        },
         (Mode::Text { buffer, .. }, Input::Paste { text }) => buffer.push_str(text),
         (
             Mode::List {
@@ -591,19 +667,24 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             Input::Key { key, .. },
         ) => {
             let page = list_capacity(world.get::<Viewer>(id).map_or(0, |v| v.rows));
-            match key.as_str() {
-                "up" | "k" => *selected = selected.saturating_sub(1),
-                "down" | "j" => *selected = (*selected + 1).min(entries.len().saturating_sub(1)),
-                "pageup" => *selected = selected.saturating_sub(page),
-                "pagedown" => *selected = (*selected + page).min(entries.len().saturating_sub(1)),
-                "home" => *selected = 0,
-                "end" => *selected = entries.len().saturating_sub(1),
-                "enter" => {
+            let last = entries.len().saturating_sub(1);
+            match key {
+                Key::Arrow(Direction::Up) | Key::Char('k') => {
+                    *selected = selected.saturating_sub(1);
+                }
+                Key::Arrow(Direction::Down) | Key::Char('j') => {
+                    *selected = (*selected + 1).min(last);
+                }
+                Key::PageUp => *selected = selected.saturating_sub(page),
+                Key::PageDown => *selected = (*selected + page).min(last),
+                Key::Home => *selected = 0,
+                Key::End => *selected = last,
+                Key::Enter => {
                     if let Some(entry) = entries.get(*selected) {
-                        execute = Some((entry.action, entry.destination, String::new(), true));
+                        execute = Some(entry.run.clone());
                     }
                 }
-                "q" => cancel = true,
+                Key::Char('q') => cancel = true,
                 _ => {}
             }
         }
@@ -612,14 +693,13 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 entries, selected, ..
             },
             Input::Mouse { action, .. },
-        ) => {
-            if action == "scrollup" {
-                *selected = selected.saturating_sub(1);
-            }
-            if action == "scrolldown" {
+        ) => match action {
+            MouseAction::ScrollUp => *selected = selected.saturating_sub(1),
+            MouseAction::ScrollDown => {
                 *selected = (*selected + 1).min(entries.len().saturating_sub(1));
             }
-        }
+            _ => {}
+        },
         _ => {}
     }
     if cancel || execute.is_some() {
@@ -627,72 +707,34 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     } else {
         world.entity_mut(id).insert(next);
     }
-    if let Some((action, destination, value, interactive)) = execute {
-        dispatch(
-            world,
-            id,
-            overlay.target,
-            action,
-            destination,
-            &value,
-            interactive,
-        );
+    if let Some(run) = execute {
+        let result = match run {
+            Run::Action(action) => bound(world, id, overlay.target, action),
+            Run::Command(command) => crate::server::execute(world, id, command),
+        };
+        if let Err(message) = result {
+            notify_error(world, id, message);
+        }
     }
     true
 }
 
-/// A configured binding names its action as text; unknown names report as before.
-pub fn dispatch_named(
-    world: &mut World,
-    id: Entity,
-    target: Target,
-    action: &str,
-    destination: Option<Entity>,
-    value: &str,
-    interactive: bool,
-) {
-    match action.parse() {
-        Ok(action) => dispatch(world, id, target, action, destination, value, interactive),
-        Err(message) => unknown(world, id, target, message),
-    }
-}
-
-/// The same visible outcome an unknown action string has always had: target
-/// validity is still checked, the selection is dropped, the prefix closes, and
-/// the bar shows the error.
-pub fn unknown(world: &mut World, id: Entity, target: Target, message: String) {
-    if !target.valid(world) {
-        return notify_error(world, id, actions::TARGET_GONE);
-    }
-    world
-        .entity_mut(id)
-        .remove::<(crate::selection::Selection, Prefix)>();
-    notify_error(world, id, message);
-}
-
-pub fn dispatch(
-    world: &mut World,
-    id: Entity,
-    target: Target,
-    action: Action,
-    destination: Option<Entity>,
-    value: &str,
-    interactive: bool,
-) {
-    match invoke(world, id, target, action, destination, value, interactive) {
-        Ok(true) => {}
-        Ok(false) => world.trigger(Control {
-            viewer: id,
-            action,
-            value: value.into(),
-            target: if matches!(action, Action::SaveLayout | Action::LoadLayout) {
-                Some(target.workspace)
+/// The one place a configured binding is dispatched. A custom name has always
+/// closed the prefix, dropped the selection and reported itself as unknown.
+pub fn dispatch_binding(world: &mut World, id: Entity, target: Target, binding: &BindingAction) {
+    let result = match binding {
+        BindingAction::Known(action) => bound(world, id, target, *action),
+        BindingAction::Custom(name) => {
+            if !target.valid(world) {
+                Err(actions::TARGET_GONE.into())
             } else {
-                destination.or(target.leaf)
-            },
-            mapping: Vec::new(),
-        }),
-        Err(message) => notify_error(world, id, message),
+                settle(world, id);
+                Err(format!("unknown action {name}"))
+            }
+        }
+    };
+    if let Err(message) = result {
+        notify_error(world, id, message);
     }
 }
 
@@ -707,29 +749,27 @@ fn list_capacity(rows: u16) -> usize {
 pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'static str)> {
     let mut lines = Vec::new();
     match &overlay.mode {
-        Mode::Confirm { action } => {
-            let entity = match action {
-                Action::Close => overlay.target.leaf,
-                Action::TabClose => overlay.target.tab,
-                _ => Some(overlay.target.workspace),
+        Mode::Confirm { command } => {
+            let (kind, entity) = match command {
+                Command::Close {
+                    subject: Subject::Pane(e),
+                } => ("pane", *e),
+                Command::Close {
+                    subject: Subject::Tab(e),
+                } => ("tab", *e),
+                Command::Close {
+                    subject: Subject::Workspace(e),
+                } => ("workspace", *e),
+                _ => ("target", Entity::PLACEHOLDER),
             };
+            let named = if world.get_entity(entity).is_ok() {
+                format!("{} #{}", label(world, entity), entity.to_bits())
+            } else {
+                "removed target".into()
+            };
+            lines.push((format!("Close {kind} {named}?"), "\x1b[1m"));
             lines.push((
-                format!(
-                    "Close {} {}?",
-                    match action {
-                        Action::Close => "pane",
-                        Action::TabClose => "tab",
-                        _ => "workspace",
-                    },
-                    entity.map_or_else(
-                        || "removed target".into(),
-                        |e| format!("{} #{}", label(world, e), e.to_bits())
-                    )
-                ),
-                "\x1b[1m",
-            ));
-            lines.push((
-                if *action == Action::Close {
+                if kind == "pane" {
                     "Remove pane; stop if last view"
                 } else {
                     "Remove all contained pane views"
@@ -758,7 +798,12 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
                 lines.push((format!("▲ {start} more"), "\x1b[2m"));
             }
             for (index, entry) in entries.iter().enumerate().skip(start).take(capacity) {
-                let disabled = actions::unavailable(world, overlay.target, entry.action).is_some();
+                let disabled = match &entry.run {
+                    Run::Action(action) => {
+                        actions::unavailable(world, overlay.target, *action).is_some()
+                    }
+                    Run::Command(_) => false,
+                };
                 lines.push((
                     format!(
                         "{} {}",

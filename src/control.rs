@@ -1,26 +1,22 @@
-use crate::{actions::Action, protocol::Input};
+use crate::protocol::{Direction, Input};
 use bevy_ecs::prelude::*;
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use serde::{Deserialize, Serialize};
 
 /// Trigger through stock world.trigger_event; errors are exposed in Viewer.notice.
-/// An action name that is not an `Action` is rejected when the request deserializes.
-#[derive(Event, Reflect, Clone, Serialize, Deserialize)]
+/// A `command` that is not a `Command` is rejected when the request deserializes.
+#[derive(EntityEvent, Reflect, Clone, Serialize, Deserialize)]
 #[reflect(Event, Serialize, Deserialize)]
 pub struct Control {
+    #[event_target]
     pub viewer: Entity,
-    pub action: Action,
-    #[serde(default)]
-    pub value: String,
-    #[serde(default)]
-    pub target: Option<Entity>,
-    #[serde(default)]
-    pub mapping: Vec<(Entity, Entity)>,
+    pub command: Command,
 }
 
-#[derive(Event, Reflect, Clone, Serialize, Deserialize)]
+#[derive(EntityEvent, Reflect, Clone, Serialize, Deserialize)]
 #[reflect(Event, Serialize, Deserialize)]
 pub struct UserInput {
+    #[event_target]
     pub viewer: Entity,
     pub input: Input,
 }
@@ -28,3 +24,149 @@ pub struct UserInput {
 #[derive(Event, Reflect, Clone, Serialize, Deserialize)]
 #[reflect(Event, Serialize, Deserialize)]
 pub struct Shutdown;
+
+/// One tagged command. Every field is what the command needs and nothing else,
+/// so a request cannot combine a subject, a value and a mapping that disagree.
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Command {
+    Split {
+        axis: Axis,
+        program: Option<String>,
+    },
+    Close {
+        subject: Subject,
+    },
+    Terminate,
+    Zoom,
+    Rename {
+        subject: Subject,
+        name: String,
+    },
+    Resize {
+        axis: Axis,
+        grow: bool,
+    },
+    Reorder {
+        order: Order,
+    },
+    Swap {
+        with: Entity,
+    },
+    SwapDirection {
+        direction: Direction,
+    },
+    MoveDirection {
+        direction: Direction,
+    },
+    MoveToTab {
+        tab: Entity,
+    },
+    MoveToNewTab {
+        name: Option<String>,
+    },
+    MoveToWorkspace {
+        workspace: Entity,
+    },
+    MoveToNewWorkspace {
+        name: Option<String>,
+    },
+    CopyMode,
+    /// `Previous` shows older output, `Next` newer.
+    Scroll {
+        order: Order,
+    },
+    Copy,
+    Focus {
+        pane: Entity,
+    },
+    FocusNext,
+    FocusPrevious,
+    FocusLast,
+    FocusDirection {
+        direction: Direction,
+    },
+    TabNew {
+        name: Option<String>,
+    },
+    TabSelect {
+        tab: Entity,
+    },
+    TabNext,
+    TabPrevious,
+    TabReorder {
+        order: Order,
+    },
+    TabClose {
+        tab: Entity,
+    },
+    WorkspaceNew {
+        name: Option<String>,
+    },
+    WorkspaceSelect {
+        workspace: Entity,
+    },
+    WorkspaceNext,
+    WorkspacePrevious,
+    WorkspaceReorder {
+        order: Order,
+    },
+    WorkspaceClose {
+        workspace: Entity,
+    },
+    SaveLayout {
+        workspace: Entity,
+        path: String,
+    },
+    LoadLayout {
+        workspace: Entity,
+        path: String,
+        mapping: Vec<(Entity, Entity)>,
+    },
+    Help,
+    Detach,
+    Menu {
+        subject: Subject,
+    },
+    Choose {
+        chooser: Chooser,
+    },
+}
+
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Subject {
+    Pane(Entity),
+    Tab(Entity),
+    Workspace(Entity),
+}
+
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Order {
+    Previous,
+    Next,
+}
+
+/// Interactive lists: the destination is chosen from what exists now.
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Chooser {
+    Tab,
+    Workspace,
+    SwapTarget,
+    MoveToTab,
+    MoveToWorkspace,
+}

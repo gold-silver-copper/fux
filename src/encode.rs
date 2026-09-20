@@ -1,49 +1,46 @@
 //! Byte encodings for keys and mouse events delivered to a PTY.
+use crate::protocol::{Direction, Key, Modifiers, MouseAction, MouseButton};
 use vt100::{MouseProtocolEncoding, MouseProtocolMode as MouseMode};
 
 /// xterm mouse bytes for a pane-relative one-based cell, or `None` when the
 /// application's protocol mode does not want this event.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each mouse event field is an independent input"
-)]
 pub(crate) fn mouse_bytes(
     screen: &vt100::Screen,
-    action: &str,
-    button: u8,
-    col: u16,
-    row: u16,
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
+    action: MouseAction,
+    button: MouseButton,
+    (col, row): (u16, u16),
+    modifiers: Modifiers,
 ) -> Option<Vec<u8>> {
     let mode = screen.mouse_protocol_mode();
-    let release = action == "release";
-    let motion = action == "move";
+    let release = action == MouseAction::Release;
+    let motion = action == MouseAction::Move;
     if release && mode == MouseMode::Press
         || motion
             && (matches!(mode, MouseMode::Press | MouseMode::PressRelease)
-                || mode == MouseMode::ButtonMotion && button == 3)
+                || mode == MouseMode::ButtonMotion && button == MouseButton::None)
     {
         return None;
     }
-    let mut code = if action == "scrollup" {
-        64
-    } else if action == "scrolldown" {
-        65
-    } else {
-        u16::from(button.min(3))
+    let mut code = match action {
+        MouseAction::ScrollUp => 64,
+        MouseAction::ScrollDown => 65,
+        _ => match button {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+            MouseButton::None => 3,
+        },
     };
     if motion {
         code += 32;
     }
-    if shift {
+    if modifiers.shift {
         code += 4;
     }
-    if alt {
+    if modifiers.alt {
         code += 8;
     }
-    if ctrl {
+    if modifiers.ctrl {
         code += 16;
     }
     let (rows, cols) = screen.size();
@@ -72,15 +69,12 @@ pub(crate) fn mouse_bytes(
     }
 }
 
-pub(crate) fn key_bytes(
-    key: &str,
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    application: bool,
-) -> Result<Vec<u8>, String> {
+/// xterm key bytes. Every `Key` has an encoding; function keys beyond F12
+/// cannot be constructed from input and encode as nothing.
+pub(crate) fn key_bytes(key: Key, modifiers: Modifiers, application: bool) -> Vec<u8> {
+    let Modifiers { ctrl, alt, shift } = modifiers;
     let modifier = 1 + usize::from(shift) + 2 * usize::from(alt) + 4 * usize::from(ctrl);
-    let csi = |code, final_byte| {
+    let csi = |code: u8, final_byte: char| {
         if modifier > 1 {
             format!("\x1b[{code};{modifier}{final_byte}")
         } else {
@@ -88,97 +82,98 @@ pub(crate) fn key_bytes(
         }
         .into_bytes()
     };
-    let function = key.strip_prefix('f').and_then(|n| n.parse::<usize>().ok());
+    // Cursor-style keys share one shape: `ESC [ final`, `ESC O final` in
+    // application mode or for F1..F4, and `ESC [ 1 ; mod final` when modified.
     let cursor = match key {
-        "up" => Some('A'),
-        "down" => Some('B'),
-        "right" => Some('C'),
-        "left" => Some('D'),
-        "home" => Some('H'),
-        "end" => Some('F'),
-        _ => function
-            .filter(|n| (1..=4).contains(n))
-            .map(|n| char::from(b'P' + n as u8 - 1)),
+        Key::Arrow(Direction::Up) => Some(('A', false)),
+        Key::Arrow(Direction::Down) => Some(('B', false)),
+        Key::Arrow(Direction::Right) => Some(('C', false)),
+        Key::Arrow(Direction::Left) => Some(('D', false)),
+        Key::Home => Some(('H', false)),
+        Key::End => Some(('F', false)),
+        Key::F(n @ 1..=4) => Some((char::from(b'P' + n - 1), true)),
+        _ => None,
     };
-    if let Some(final_byte) = cursor {
-        return Ok(if modifier > 1 {
+    if let Some((final_byte, function)) = cursor {
+        return if modifier > 1 {
             csi(1, final_byte)
         } else {
-            let prefix = if application || function.is_some() {
-                'O'
-            } else {
-                '['
-            };
+            let prefix = if application || function { 'O' } else { '[' };
             format!("\x1b{prefix}{final_byte}").into_bytes()
-        });
+        };
     }
     let mut bytes = match key {
-        "enter" => vec![13],
-        "tab" if shift => b"\x1b[Z".to_vec(),
-        "tab" => vec![9],
-        "escape" => vec![27],
-        "backspace" => vec![127],
-        "insert" | "delete" | "pageup" | "pagedown" => {
-            let code = match key {
-                "insert" => 2,
-                "delete" => 3,
-                "pageup" => 5,
-                _ => 6,
-            };
-            csi(code, '~')
-        }
-        _ if let Some(n) = function => {
+        Key::Enter => vec![13],
+        Key::Tab if shift => b"\x1b[Z".to_vec(),
+        Key::Tab => vec![9],
+        Key::Escape => vec![27],
+        Key::Backspace => vec![127],
+        Key::Insert => csi(2, '~'),
+        Key::Delete => csi(3, '~'),
+        Key::PageUp => csi(5, '~'),
+        Key::PageDown => csi(6, '~'),
+        Key::F(n) => {
             let codes = [15, 17, 18, 19, 20, 21, 23, 24];
-            let code = codes
-                .get(n.wrapping_sub(5))
-                .ok_or("unsupported function key")?;
-            csi(*code, '~')
-        }
-        _ if key.chars().count() == 1 => {
-            let c = key.chars().next().ok_or("empty key")?;
-            if ctrl && c.is_ascii() {
-                vec![(c.to_ascii_uppercase() as u8) & 0x1f]
-            } else {
-                key.as_bytes().to_vec()
+            match usize::from(n).checked_sub(5).and_then(|i| codes.get(i)) {
+                Some(code) => csi(*code, '~'),
+                None => Vec::new(),
             }
         }
-        _ => return Err(format!("unsupported key {key}")),
+        Key::Char(c) if ctrl && c.is_ascii() => vec![(c.to_ascii_uppercase() as u8) & 0x1f],
+        Key::Char(c) => c.to_string().into_bytes(),
+        // Handled by the cursor table above.
+        Key::Arrow(_) | Key::Home | Key::End => Vec::new(),
     };
     if alt && !bytes.starts_with(&[27]) {
         bytes.insert(0, 27);
     }
-    Ok(bytes)
+    bytes
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const ALL: Modifiers = Modifiers {
+        ctrl: true,
+        alt: true,
+        shift: true,
+    };
+
     #[test]
-    fn modified_keys_preserve_xterm_protocol_semantics() -> crate::testing::Outcome {
+    fn modified_keys_preserve_xterm_protocol_semantics() {
         for (key, plain, modified) in [
-            ("f1", "\x1bOP", "\x1b[1;8P"),
-            ("f4", "\x1bOS", "\x1b[1;8S"),
-            ("f5", "\x1b[15~", "\x1b[15;8~"),
-            ("insert", "\x1b[2~", "\x1b[2;8~"),
-            ("home", "\x1b[H", "\x1b[1;8H"),
+            (Key::F(1), "\x1bOP", "\x1b[1;8P"),
+            (Key::F(4), "\x1bOS", "\x1b[1;8S"),
+            (Key::F(5), "\x1b[15~", "\x1b[15;8~"),
+            (Key::Insert, "\x1b[2~", "\x1b[2;8~"),
+            (Key::Home, "\x1b[H", "\x1b[1;8H"),
         ] {
             assert_eq!(
-                key_bytes(key, false, false, false, false)?,
+                key_bytes(key, Modifiers::default(), false),
                 plain.as_bytes()
             );
-            assert_eq!(
-                key_bytes(key, true, true, true, false)?,
-                modified.as_bytes()
-            );
+            assert_eq!(key_bytes(key, ALL, false), modified.as_bytes());
         }
-        for key in ["f0", "f13", "f999", "fno", ""] {
-            assert!(key_bytes(key, false, false, false, false).is_err());
-        }
-        assert_eq!(key_bytes("left", false, false, false, true)?, b"\x1bOD");
-        assert_eq!(key_bytes("left", true, false, false, true)?, b"\x1b[1;5D");
-        assert_eq!(key_bytes("f1", true, false, true, false)?, b"\x1b[1;6P");
-        assert_eq!(key_bytes("f12", false, true, false, false)?, b"\x1b[24;3~");
-        Ok(())
+        let left = Key::Arrow(Direction::Left);
+        assert_eq!(key_bytes(left, Modifiers::default(), true), b"\x1bOD");
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(key_bytes(left, ctrl, true), b"\x1b[1;5D");
+        let ctrl_shift = Modifiers {
+            ctrl: true,
+            shift: true,
+            alt: false,
+        };
+        assert_eq!(key_bytes(Key::F(1), ctrl_shift, false), b"\x1b[1;6P");
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(key_bytes(Key::F(12), alt, false), b"\x1b[24;3~");
+        assert_eq!(key_bytes(Key::Char('c'), ctrl, false), vec![3]);
+        assert!(key_bytes(Key::F(13), Modifiers::default(), false).is_empty());
     }
 }

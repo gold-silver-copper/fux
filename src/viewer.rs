@@ -14,7 +14,7 @@ use std::{
 };
 use termina::{
     Event, PlatformTerminal, Terminal,
-    event::{KeyCode, KeyEventKind, Modifiers, MouseButton, MouseEventKind},
+    event::{KeyCode, KeyEventKind, MouseButton, MouseEventKind},
 };
 
 const RESET: &[u8] = b"\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
@@ -290,6 +290,12 @@ fn read_input(
 }
 
 pub(crate) fn convert(event: Event) -> Option<Input> {
+    use crate::protocol::{Direction, Key, Modifiers, MouseAction};
+    let modifiers = |m: termina::event::Modifiers, shifted: bool| Modifiers {
+        ctrl: m.contains(termina::event::Modifiers::CONTROL),
+        alt: m.contains(termina::event::Modifiers::ALT),
+        shift: m.contains(termina::event::Modifiers::SHIFT) || shifted,
+    };
     match event {
         Event::WindowResized(size) => Some(Input::Resize {
             rows: size.rows,
@@ -298,54 +304,50 @@ pub(crate) fn convert(event: Event) -> Option<Input> {
         Event::Paste(text) => Some(Input::Paste { text }),
         Event::Key(event) if event.kind != KeyEventKind::Release => {
             let key = match event.code {
-                KeyCode::Char(c) => c.to_string(),
-                KeyCode::Enter => "enter".into(),
-                KeyCode::Tab | KeyCode::BackTab => "tab".into(),
-                KeyCode::Escape => "escape".into(),
-                KeyCode::Backspace => "backspace".into(),
-                KeyCode::Left => "left".into(),
-                KeyCode::Right => "right".into(),
-                KeyCode::Up => "up".into(),
-                KeyCode::Down => "down".into(),
-                KeyCode::Home => "home".into(),
-                KeyCode::End => "end".into(),
-                KeyCode::PageUp => "pageup".into(),
-                KeyCode::PageDown => "pagedown".into(),
-                KeyCode::Insert => "insert".into(),
-                KeyCode::Delete => "delete".into(),
-                KeyCode::Function(n) => format!("f{n}"),
+                KeyCode::Char(c) => Key::Char(c),
+                KeyCode::Enter => Key::Enter,
+                KeyCode::Tab | KeyCode::BackTab => Key::Tab,
+                KeyCode::Escape => Key::Escape,
+                KeyCode::Backspace => Key::Backspace,
+                KeyCode::Left => Key::Arrow(Direction::Left),
+                KeyCode::Right => Key::Arrow(Direction::Right),
+                KeyCode::Up => Key::Arrow(Direction::Up),
+                KeyCode::Down => Key::Arrow(Direction::Down),
+                KeyCode::Home => Key::Home,
+                KeyCode::End => Key::End,
+                KeyCode::PageUp => Key::PageUp,
+                KeyCode::PageDown => Key::PageDown,
+                KeyCode::Insert => Key::Insert,
+                KeyCode::Delete => Key::Delete,
+                KeyCode::Function(n @ 1..=12) => Key::F(n),
                 _ => return None,
             };
             Some(Input::Key {
                 key,
-                ctrl: event.modifiers.contains(Modifiers::CONTROL),
-                alt: event.modifiers.contains(Modifiers::ALT),
-                shift: event.modifiers.contains(Modifiers::SHIFT) || event.code == KeyCode::BackTab,
+                modifiers: modifiers(event.modifiers, event.code == KeyCode::BackTab),
             })
         }
         Event::Mouse(event) => {
             let (action, button) = match event.kind {
-                MouseEventKind::Down(button) => ("press", Some(button)),
-                MouseEventKind::Up(button) => ("release", Some(button)),
-                MouseEventKind::Drag(button) => ("move", Some(button)),
-                MouseEventKind::Moved => ("move", None),
-                MouseEventKind::ScrollUp => ("scrollup", None),
-                MouseEventKind::ScrollDown => ("scrolldown", None),
+                MouseEventKind::Down(button) => (MouseAction::Press, Some(button)),
+                MouseEventKind::Up(button) => (MouseAction::Release, Some(button)),
+                MouseEventKind::Drag(button) => (MouseAction::Move, Some(button)),
+                MouseEventKind::Moved => (MouseAction::Move, None),
+                MouseEventKind::ScrollUp => (MouseAction::ScrollUp, None),
+                MouseEventKind::ScrollDown => (MouseAction::ScrollDown, None),
                 _ => return None,
             };
             Some(Input::Mouse {
-                action: action.into(),
+                action,
                 button: match button {
-                    Some(MouseButton::Left) => 0,
-                    Some(MouseButton::Middle) => 1,
-                    Some(MouseButton::Right) => 2,
-                    None => 3,
+                    Some(MouseButton::Left) => crate::protocol::MouseButton::Left,
+                    Some(MouseButton::Middle) => crate::protocol::MouseButton::Middle,
+                    Some(MouseButton::Right) => crate::protocol::MouseButton::Right,
+                    _ => crate::protocol::MouseButton::None,
                 },
                 x: event.column,
                 y: event.row,
-                ctrl: event.modifiers.contains(Modifiers::CONTROL),
-                alt: event.modifiers.contains(Modifiers::ALT),
-                shift: event.modifiers.contains(Modifiers::SHIFT),
+                modifiers: modifiers(event.modifiers, false),
             })
         }
         _ => None,

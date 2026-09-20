@@ -2,8 +2,7 @@
 #[cfg(test)]
 mod tests;
 use crate::{
-    actions::Action,
-    assets::{Binding, Settings},
+    assets::{Binding, BindingAction, Settings},
     model::Viewer,
 };
 use std::fmt::Write;
@@ -81,11 +80,7 @@ pub fn bar(out: &mut String, v: &Viewer, workspace: &str, focused: &str) {
         String::new()
     };
     let left = format!(" {workspace}{mode}{history}");
-    let right = if v.notice.is_empty() {
-        focused
-    } else {
-        &v.notice
-    };
+    let right = v.notice.as_ref().map_or(focused, |n| n.text.as_str());
     // Both identities get space before secondary details; tiny bars keep the workspace.
     let allowance = if right.is_empty() || v.cols < 12 {
         v.cols
@@ -96,15 +91,11 @@ pub fn bar(out: &mut String, v: &Viewer, workspace: &str, focused: &str) {
     at(out, 0, row, &left);
     let room = v.cols.saturating_sub(width(&left) + 3);
     if room > 0 && !right.is_empty() {
-        let right = fit(right, room, v.notice.is_empty());
+        let right = fit(right, room, v.notice.is_none());
         let x = v.cols.saturating_sub(width(&right) + 1);
         at(out, x.saturating_sub(2), row, "│ ");
-        if !v.notice.is_empty() {
-            out.push_str(if v.notice_error {
-                "\x1b[31m"
-            } else {
-                "\x1b[33m"
-            });
+        if let Some(notice) = &v.notice {
+            out.push_str(if notice.error { "\x1b[31m" } else { "\x1b[33m" });
         }
         out.push_str(&right);
     }
@@ -115,14 +106,17 @@ pub fn bar(out: &mut String, v: &Viewer, workspace: &str, focused: &str) {
 pub fn tab_bar(
     out: &mut String,
     v: &Viewer,
-    workspace: &str,
-    tabs: &[(bevy_ecs::entity::Entity, String)],
+    (workspace_id, workspace): (bevy_ecs::entity::Entity, &str),
+    (tab, tabs): (
+        Option<bevy_ecs::entity::Entity>,
+        &[(bevy_ecs::entity::Entity, String)],
+    ),
     focused: &str,
 ) -> Vec<(bevy_ecs::entity::Entity, Bounds)> {
     if v.rows == 0 || v.cols == 0 {
         return Vec::new();
     }
-    let allowance = if focused.is_empty() && v.notice.is_empty() || v.cols < 12 {
+    let allowance = if focused.is_empty() && v.notice.is_none() || v.cols < 12 {
         v.cols
     } else {
         v.cols / 2
@@ -143,22 +137,14 @@ pub fn tab_bar(
         }
     );
     let focused = status.as_str();
-    let right = if v.notice.is_empty() {
-        focused
-    } else {
-        &v.notice
-    };
+    let right = v.notice.as_ref().map_or(focused, |n| n.text.as_str());
     let room = v.cols.saturating_sub(allowance + 3);
     if room > 0 && !right.is_empty() {
-        let right = fit(right, room, v.notice.is_empty());
+        let right = fit(right, room, v.notice.is_none());
         let x = v.cols.saturating_sub(width(&right) + 1);
         at(out, x.saturating_sub(2), v.rows - 1, "│ ");
-        if !v.notice.is_empty() {
-            out.push_str(if v.notice_error {
-                "\x1b[31m"
-            } else {
-                "\x1b[33m"
-            });
+        if let Some(notice) = &v.notice {
+            out.push_str(if notice.error { "\x1b[31m" } else { "\x1b[33m" });
         }
         out.push_str(&right);
     }
@@ -176,7 +162,7 @@ pub fn tab_bar(
     );
     at(out, 0, v.rows - 1, &title);
     let mut hits = vec![(
-        v.workspace,
+        workspace_id,
         Bounds {
             x: 0,
             y: v.rows - 1,
@@ -187,7 +173,7 @@ pub fn tab_bar(
     let mut x = width(&title).saturating_add(u16::from(!title.is_empty()));
     let selected = tabs
         .iter()
-        .position(|(id, _)| Some(*id) == v.tab)
+        .position(|(id, _)| Some(*id) == tab)
         .unwrap_or(0);
     // Start far enough left to retain preceding tabs when they fit, but never
     // spend the selected tab's cell budget on an inactive label.
@@ -225,7 +211,7 @@ pub fn tab_bar(
             v.rows - 1,
             format_args!(
                 "{BAR}{}{label}{BAR}",
-                if Some(*id) == v.tab { "\x1b[7;1m" } else { "" }
+                if Some(*id) == tab { "\x1b[7;1m" } else { "" }
             ),
         );
         hits.push((
@@ -260,7 +246,12 @@ fn capacity(rows: u16) -> usize {
 pub fn help_limit(settings: &Settings, _rows: u16) -> usize {
     settings.bindings.len().saturating_sub(1)
 }
-pub fn selected_action(settings: &Settings, rows: u16, cols: u16, scroll: usize) -> Option<&str> {
+pub fn selected_action(
+    settings: &Settings,
+    rows: u16,
+    cols: u16,
+    scroll: usize,
+) -> Option<&BindingAction> {
     help_entries(settings, cols)
         .into_iter()
         .filter_map(|(_, action)| action)
@@ -286,35 +277,37 @@ pub fn panel(out: &mut String, v: &Viewer, settings: &Settings, scroll: usize) -
     panel_context(out, v, settings, scroll, |_| false)
 }
 
-fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
+fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&BindingAction>)> {
     let key_width = settings
         .bindings
         .iter()
-        .map(|b| width(&b.key))
+        .map(|b| width(b.key.as_str()))
         .max()
         .unwrap_or(0)
         .min((cols.saturating_sub(4) / 3).max(1));
     let mut lines = Vec::new();
-    let action = |binding: &Binding| binding.action.parse::<Action>().ok();
+    let group_of = |binding: &Binding| match &binding.action {
+        BindingAction::Known(action) => action.group(),
+        BindingAction::Custom(_) => "Other",
+    };
     for group in ["Panes", "Focus", "Tabs", "Workspaces", "Session", "Other"] {
         let bindings: Vec<_> = settings
             .bindings
             .iter()
-            .filter(|b| action(b).map_or("Other", Action::group) == group)
+            .filter(|b| group_of(b) == group)
             .collect();
         if bindings.is_empty() {
             continue;
         }
         lines.push((group.into(), None));
         for binding in bindings {
-            let key = fit(&binding.key, key_width, false);
+            let key = fit(binding.key.as_str(), key_width, false);
             let padding = " ".repeat(usize::from(key_width.saturating_sub(width(&key))));
-            let label = action(binding)
-                .map_or_else(|| binding.action.replace('_', " "), |a| a.label().into());
-            lines.push((
-                format!("{padding}{key}  {label}"),
-                Some(binding.action.as_str()),
-            ));
+            let label = match &binding.action {
+                BindingAction::Known(action) => action.label().to_owned(),
+                BindingAction::Custom(name) => name.replace('_', " "),
+            };
+            lines.push((format!("{padding}{key}  {label}"), Some(&binding.action)));
         }
     }
     lines
@@ -326,7 +319,7 @@ pub fn panel_context(
     v: &Viewer,
     settings: &Settings,
     scroll: usize,
-    disabled: impl Fn(&str) -> bool,
+    disabled: impl Fn(&BindingAction) -> bool,
 ) -> Option<Bounds> {
     let available = v.rows.saturating_sub(1);
     if available == 0 || v.cols == 0 {

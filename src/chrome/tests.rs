@@ -4,15 +4,11 @@ use bevy_ecs::prelude::Entity;
 
 fn viewer(rows: u16, cols: u16) -> Viewer {
     Viewer {
-        tab: None,
-        workspace: Entity::PLACEHOLDER,
-        focus: None,
         rows,
         cols,
         zoom: false,
         scrollback: 0,
-        notice: String::new(),
-        notice_error: false,
+        notice: None,
     }
 }
 
@@ -48,13 +44,12 @@ fn every_binding_is_reachable_at_every_short_height() -> crate::testing::Outcome
             parser.process(out.as_bytes());
             let contents = parser.screen().contents();
             for binding in &settings.bindings {
-                let label = binding
-                    .action
-                    .parse::<crate::actions::Action>()
-                    .ok()
-                    .map_or_else(|| binding.action.replace('_', " "), |a| a.label().into());
+                let label = match &binding.action {
+                    BindingAction::Known(action) => action.label().to_owned(),
+                    BindingAction::Custom(name) => name.replace('_', " "),
+                };
                 if contents.contains(&label) {
-                    seen.insert(binding.action.clone());
+                    seen.insert(binding.action.to_string());
                 }
             }
             assert_eq!(
@@ -73,11 +68,11 @@ fn tiny_unicode_command_selection_is_visible_even_when_disabled() -> crate::test
         bindings: vec![
             crate::assets::Binding {
                 key: "界".into(),
-                action: "custom_界é".into(),
+                action: BindingAction::Custom("custom_界é".into()),
             },
             crate::assets::Binding {
                 key: "x".into(),
-                action: "close".into(),
+                action: BindingAction::Known(crate::actions::Action::Close),
             },
         ],
         ..Default::default()
@@ -112,7 +107,7 @@ fn panel_is_content_sized_above_a_full_width_bar_and_resets_styles() -> crate::t
     let settings = Settings {
         bindings: vec![crate::assets::Binding {
             key: "k".into(),
-            action: "known_action".into(),
+            action: BindingAction::Custom("known_action".into()),
         }],
         ..Default::default()
     };
@@ -149,10 +144,16 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
         .collect();
     for cols in 0..100 {
         for rows in 0..3 {
-            let mut v = viewer(rows, cols);
-            v.tab = Some(tabs.get(9).need()?.0);
+            let v = viewer(rows, cols);
+            let tab = Some(tabs.get(9).need()?.0);
             let mut out = String::new();
-            let hits = tab_bar(&mut out, &v, "workspace", &tabs, "process");
+            let hits = tab_bar(
+                &mut out,
+                &v,
+                (Entity::PLACEHOLDER, "workspace"),
+                (tab, &tabs),
+                "process",
+            );
             if rows == 0 || cols == 0 {
                 assert!(out.is_empty());
                 assert!(hits.is_empty());
@@ -160,7 +161,7 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
             }
             assert!(
                 hits.iter()
-                    .any(|(id, bounds)| Some(*id) == v.tab && bounds.width > 0),
+                    .any(|(id, bounds)| Some(*id) == tab && bounds.width > 0),
                 "{rows}x{cols}"
             );
             for (_, bounds) in &hits {
@@ -169,7 +170,7 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
             }
             let mut parser = vt100::Parser::new(rows.max(2), cols.max(2), 0);
             parser.process(out.as_bytes());
-            let active = hits.iter().find(|(id, _)| Some(*id) == v.tab).need()?.1;
+            let active = hits.iter().find(|(id, _)| Some(*id) == tab).need()?.1;
             assert!(parser.screen().cell(rows - 1, active.x).need()?.inverse());
             for x in 0..cols {
                 // vt100 stores a wide glyph's attributes on its leading cell.

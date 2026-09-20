@@ -1,12 +1,12 @@
 //! Per-viewer presentation contexts, size negotiation and frame painting.
 use crate::{
     actions,
-    assets::Settings,
+    assets::{BindingAction, Settings},
     chrome::{self, at, fit},
     model::*,
     presentation::Presentation,
-    protocol::Frame,
-    server::{first_leaf, invalidate_layouts, scene},
+    protocol::{Direction, Frame},
+    server::{invalidate_layouts, scene},
     terminal::Terminal,
 };
 use base64::Engine;
@@ -41,18 +41,12 @@ pub(crate) fn with_views<T>(
     result
 }
 pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), String> {
-    crate::navigation::repair(world);
     // Controls can arrive before the next Update; run the same native change-
     // tracking system at this synchronous input/presentation boundary too.
     world
         .run_system_cached(invalidate_layouts)
         .map_err(|e| e.to_string())?;
-    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
-    let root = v.workspace;
-    if v.focus.is_none_or(|e| world.get::<PaneView>(e).is_none()) {
-        let focus = first_leaf(world, root);
-        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus = focus;
-    }
+    let root = viewing(world, id).ok_or(DETACHED)?;
     let (revision, scene) = scene(world, root)?;
     let registry = world.resource::<AppTypeRegistry>().clone();
     let context = views.entry(id).or_insert_with(|| View {
@@ -62,28 +56,41 @@ pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Res
         next_paint: Instant::now(),
         paint_wake_pending: false,
     });
+    let state = |world: &World| (on_tab(world, id), focused(world, id));
     context.presentation.sync(
         &scene,
         revision,
         root,
         world.get::<Viewer>(id).ok_or(DETACHED)?,
+        state(world),
     )?;
     let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
+    let focus = focused(world, id);
     if v.rows > 1
         && v.cols > 0
         && !context
             .presentation
             .rects()
             .iter()
-            .any(|r| Some(r.leaf) == v.focus)
+            .any(|r| Some(r.leaf) == focus)
     {
-        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus =
-            context.presentation.rects().first().map(|r| r.leaf);
+        // Zoom and hidden tabs can leave the focused pane unpainted; follow
+        // the projection rather than paint input into an invisible pane.
+        let mut entity = world.get_entity_mut(id).map_err(|_| DETACHED)?;
+        match context.presentation.rects().first().map(|r| r.leaf) {
+            Some(leaf) => {
+                entity.insert(Focused(leaf));
+            }
+            None => {
+                entity.remove::<Focused>();
+            }
+        }
         context.presentation.sync(
             &scene,
             revision,
             root,
             world.get::<Viewer>(id).ok_or(DETACHED)?,
+            state(world),
         )?;
     }
     Ok(())
@@ -92,8 +99,8 @@ fn size_terminals(world: &mut World, views: &Views) {
     let mut sizes = EntityHashMap::<(u16, u16)>::default();
     for context in views.values() {
         for rect in context.presentation.rects() {
-            let rows = rect.height;
-            let cols = rect.width;
+            let rows = rect.height();
+            let cols = rect.width();
             sizes
                 .entry(rect.pane)
                 .and_modify(|s| {
@@ -129,20 +136,19 @@ pub(crate) fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
         .and_then(Value::as_u64)
         .unwrap_or(80)
         .min(4096) as u16;
-    let focused = first_leaf(world, root);
     let id = world
-        .spawn(Viewer {
-            workspace: root,
-            tab: None,
-            focus: focused,
-            rows,
-            cols,
-            zoom: false,
-            scrollback: 0,
-            notice: String::new(),
-            notice_error: false,
-        })
+        .spawn((
+            Viewer {
+                rows,
+                cols,
+                zoom: false,
+                scrollback: 0,
+                notice: None,
+            },
+            Viewing(root),
+        ))
         .id();
+    crate::navigation::repair(world);
     with_views(world, |world, views| sync_view(world, views, id)).map_err(BrpError::internal)?;
     Ok(json!({"viewer":id.to_bits()}))
 }
@@ -232,7 +238,7 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
                         .iter()
                         .find(|r| r.leaf == selection.leaf)
                 })
-                .map_or((0, 0), |r| (r.height, r.width));
+                .map_or((0, 0), |r| (r.height(), r.width()));
             crate::selection::refresh_visible(world, id, visible);
         }
         paint(world, views, id)
@@ -247,7 +253,7 @@ pub(crate) fn content_size(world: &World, viewer: Entity, leaf: Entity) -> Optio
         .rects()
         .iter()
         .find(|r| r.leaf == leaf)
-        .map(|r| (r.height, r.width))
+        .map(|r| (r.height(), r.width()))
 }
 
 pub(crate) fn visible_leaf(world: &World, viewer: Entity, leaf: Entity) -> bool {
@@ -262,7 +268,7 @@ pub(crate) fn neighbor(
     world: &World,
     viewer: Entity,
     leaf: Entity,
-    direction: &str,
+    direction: Direction,
 ) -> Option<Entity> {
     world
         .non_send::<Views>()
@@ -274,21 +280,22 @@ pub(crate) fn neighbor(
 pub(crate) fn directional_neighbor(
     rects: &[crate::protocol::PaneRect],
     leaf: Entity,
-    direction: &str,
+    direction: Direction,
 ) -> Option<Entity> {
     let here = rects.iter().find(|r| r.leaf == leaf)?;
-    let cx = i32::from(here.x) * 2 + i32::from(here.width);
-    let cy = i32::from(here.y) * 2 + i32::from(here.height);
+    // Doubled centres (min + max) keep odd sizes exact; `center()` would truncate.
+    let centre = |r: &crate::protocol::PaneRect| (r.rect.min + r.rect.max).as_ivec2();
+    let here = centre(here);
     rects
         .iter()
         .filter_map(|r| {
-            let dx = i32::from(r.x) * 2 + i32::from(r.width) - cx;
-            let dy = i32::from(r.y) * 2 + i32::from(r.height) - cy;
+            let delta = centre(r) - here;
+            let (dx, dy) = (delta.x, delta.y);
             let (forward, cross) = match direction {
-                "left" => (-dx, dy.abs()),
-                "right" => (dx, dy.abs()),
-                "up" => (-dy, dx.abs()),
-                _ => (dy, dx.abs()),
+                Direction::Left => (-dx, dy.abs()),
+                Direction::Right => (dx, dy.abs()),
+                Direction::Up => (-dy, dx.abs()),
+                Direction::Down => (dy, dx.abs()),
             };
             (forward > 0).then_some(((cross, forward, r.leaf.to_bits()), r.leaf))
         })
@@ -310,24 +317,24 @@ pub(crate) fn clipboard(world: &mut World, id: Entity, text: String) -> Result<(
         return Err("clipboard delivery queue is full".into());
     }
     view.clipboard.push(text);
-    notify(world, id, "selection copied via OSC52", false);
+    notify(world, id, Notice::info("selection copied via OSC52"));
     Ok(())
 }
 
 fn process_status(world: &World, pane: Entity) -> String {
-    world
-        .get::<ProcessState>(pane)
-        .map_or_else(String::new, |s| {
-            s.exit
-                .map(|code| format!(" [exit:{code}]"))
-                .or_else(|| s.error.as_ref().map(|error| format!(" [{error}]")))
-                .unwrap_or_default()
-        })
+    match world.get::<ProcessState>(pane).map(|s| &s.status) {
+        Some(Status::Exited { code }) => format!(" [exit:{code}]"),
+        Some(Status::Failed { error })
+        | Some(Status::Running {
+            error: Some(error), ..
+        }) => format!(" [{error}]"),
+        _ => String::new(),
+    }
 }
 
 fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, String> {
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
-    let focus = v.focus;
+    let focus = focused(world, id);
     let scrollback = v.scrollback;
     let modal = crate::interaction::modal(world, id);
     let view = views.get_mut(&id).ok_or("missing presentation")?;
@@ -350,35 +357,35 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
         match world.get_mut::<Terminal>(rect.pane) {
             Some(mut terminal) => {
                 let (lines, screen) =
-                    terminal.snapshot(if selected { scrollback } else { 0 }, rect.width);
-                for (row, line) in lines.iter().take(usize::from(rect.height)).enumerate() {
+                    terminal.snapshot(if selected { scrollback } else { 0 }, rect.width());
+                for (row, line) in lines.iter().take(usize::from(rect.height())).enumerate() {
                     // Snapshot rows already reset style at both ends.
-                    at(&mut out, rect.x, rect.y + row as u16, line);
+                    at(&mut out, rect.x(), rect.y() + row as u16, line);
                 }
                 let (row, col) = screen.cursor_position();
                 if selected
                     && !screen.hide_cursor()
                     && scrollback == 0
                     && !exited
-                    && row < rect.height
-                    && col < rect.width
+                    && row < rect.height()
+                    && col < rect.width()
                 {
-                    cursor = Some((rect.x + col, rect.y + row));
+                    cursor = Some((rect.x() + col, rect.y() + row));
                 }
             }
             None => at(
                 &mut out,
-                rect.x,
-                rect.y,
-                fit("terminal not found", rect.width, false),
+                rect.x(),
+                rect.y(),
+                fit("terminal not found", rect.width(), false),
             ),
         }
         if !selected && exited {
-            let label = fit(&status, rect.width, false);
+            let label = fit(&status, rect.width(), false);
             at(
                 &mut out,
-                rect.x + rect.width - chrome::width(&label),
-                rect.y + rect.height - 1,
+                rect.x() + rect.width() - chrome::width(&label),
+                rect.y() + rect.height() - 1,
                 format_args!("\x1b[0;2;7m{label}\x1b[0m"),
             );
         }
@@ -394,11 +401,18 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
     }
     view.presentation.paint_separators(&mut out, focus);
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
-    let tabs: Vec<_> = crate::navigation::tabs(world, v.workspace)
+    let workspace = viewing(world, id).ok_or(DETACHED)?;
+    let tabs: Vec<_> = crate::navigation::tabs(world, workspace)
         .into_iter()
         .map(|tab| (tab, name(world, tab)))
         .collect();
-    let hits = chrome::tab_bar(&mut out, v, &name(world, v.workspace), &tabs, &focused);
+    let hits = chrome::tab_bar(
+        &mut out,
+        v,
+        (workspace, &name(world, workspace)),
+        (on_tab(world, id), &tabs),
+        &focused,
+    );
     view.presentation.chrome(hits);
     if let Some(overlay) = world.get::<crate::interaction::Overlay>(id) {
         chrome::surface(
@@ -412,12 +426,16 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
             v,
             world.resource::<Settings>(),
             prefix.scroll,
-            |action| {
-                let target = actions::Target::viewer(v);
-                action.parse().map_or_else(
-                    |_| !target.valid(world),
-                    |action| actions::unavailable(world, target, action).is_some(),
-                )
+            |binding| {
+                let Some(target) = actions::Target::of(world, id) else {
+                    return true;
+                };
+                match binding {
+                    BindingAction::Known(action) => {
+                        actions::unavailable(world, target, *action).is_some()
+                    }
+                    BindingAction::Custom(_) => !target.valid(world),
+                }
             },
         )
     } else {
