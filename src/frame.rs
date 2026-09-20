@@ -5,7 +5,7 @@ use crate::{
     chrome::{self, at, fit},
     model::*,
     presentation::Presentation,
-    protocol::Frame,
+    protocol::{Direction, Frame},
     server::{first_leaf, invalidate_layouts, scene},
     terminal::Terminal,
 };
@@ -262,7 +262,7 @@ pub(crate) fn neighbor(
     world: &World,
     viewer: Entity,
     leaf: Entity,
-    direction: &str,
+    direction: Direction,
 ) -> Option<Entity> {
     world
         .non_send::<Views>()
@@ -274,7 +274,7 @@ pub(crate) fn neighbor(
 pub(crate) fn directional_neighbor(
     rects: &[crate::protocol::PaneRect],
     leaf: Entity,
-    direction: &str,
+    direction: Direction,
 ) -> Option<Entity> {
     let here = rects.iter().find(|r| r.leaf == leaf)?;
     let cx = i32::from(here.x) * 2 + i32::from(here.width);
@@ -285,10 +285,10 @@ pub(crate) fn directional_neighbor(
             let dx = i32::from(r.x) * 2 + i32::from(r.width) - cx;
             let dy = i32::from(r.y) * 2 + i32::from(r.height) - cy;
             let (forward, cross) = match direction {
-                "left" => (-dx, dy.abs()),
-                "right" => (dx, dy.abs()),
-                "up" => (-dy, dx.abs()),
-                _ => (dy, dx.abs()),
+                Direction::Left => (-dx, dy.abs()),
+                Direction::Right => (dx, dy.abs()),
+                Direction::Up => (-dy, dx.abs()),
+                Direction::Down => (dy, dx.abs()),
             };
             (forward > 0).then_some(((cross, forward, r.leaf.to_bits()), r.leaf))
         })

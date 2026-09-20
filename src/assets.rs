@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests;
-use crate::model::{Launch, PaneView, ProcessState, Wake, Workspace};
+use crate::{
+    model::{Launch, PaneView, ProcessState, Wake, Workspace},
+    protocol::Token,
+};
 use bevy_app::{App, PostUpdate};
 use bevy_asset::{
     Asset, AssetApp, AssetEvent, AssetEventSystems, AssetLoadFailedEvent, AssetLoader,
@@ -29,7 +32,7 @@ use std::{
 #[derive(Clone, Reflect, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
-    pub key: String,
+    pub key: Token,
     pub action: String,
 }
 
@@ -45,7 +48,7 @@ pub enum ClipboardPolicy {
 #[reflect(Resource, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
-    pub prefix: String,
+    pub prefix: Token,
     pub bindings: Vec<Binding>,
     pub shell: Vec<String>,
     pub history_lines: usize,
@@ -94,12 +97,12 @@ impl Default for Settings {
         ]
         .into_iter()
         .map(|(key, action)| Binding {
-            key: key.into(),
+            key: Token::from(key),
             action: action.into(),
         })
         .collect();
         Self {
-            prefix: "ctrl-b".into(),
+            prefix: Token::from("ctrl-b"),
             bindings,
             shell: vec![
                 std::env::var("SHELL")

@@ -129,7 +129,7 @@ fn tabless_scene_migration_moves_the_layout_box_once_without_losing_panes()
 #[test]
 fn coherent_defaults_have_exact_unique_keys_and_action_pairs() -> crate::testing::Outcome {
     let settings = Settings::default();
-    assert_eq!(settings.prefix, "ctrl-b");
+    assert_eq!(settings.prefix.as_str(), "ctrl-b");
     let actual: std::collections::BTreeMap<_, _> = settings
         .bindings
         .iter()

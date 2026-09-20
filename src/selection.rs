@@ -4,7 +4,7 @@ mod tests;
 use crate::{
     assets::{ClipboardPolicy, Settings},
     model::*,
-    protocol::Input,
+    protocol::{Direction, Input, Key, MouseAction},
     terminal::Terminal,
 };
 use bevy_ecs::prelude::*;
@@ -258,20 +258,20 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     match input {
         Input::Resize { .. } => return false,
         Input::Paste { .. } | Input::PasteBegin => return true,
-        Input::Mouse { action, .. } => match action.as_str() {
-            "scrollup" => scroll = Some(true),
-            "scrolldown" => scroll = Some(false),
+        Input::Mouse { action, .. } => match action {
+            MouseAction::ScrollUp => scroll = Some(true),
+            MouseAction::ScrollDown => scroll = Some(false),
             _ => return false,
         },
-        Input::Key { key, .. } => match key.as_str() {
-            "q" | "escape" => {
+        Input::Key { key, .. } => match key {
+            Key::Char('q') | Key::Escape => {
                 world.entity_mut(id).remove::<Selection>();
                 if let Some(mut v) = world.get_mut::<Viewer>(id) {
                     v.notice.clear();
                 }
                 return true;
             }
-            "g" => {
+            Key::Char('g') => {
                 if let Some(mut v) = world.get_mut::<Viewer>(id) {
                     v.scrollback = 0;
                     v.notice.clear();
@@ -279,20 +279,20 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 world.entity_mut(id).remove::<Selection>();
                 return true;
             }
-            "c" => {
+            Key::Char('c') => {
                 if let Some(mut selection) = world.get_mut::<Selection>(id) {
                     selection.anchor = None;
                     selection.dragging = false;
                 }
                 return true;
             }
-            " " | "space" => {
+            Key::Char(' ') => {
                 if let Some(mut selection) = world.get_mut::<Selection>(id) {
                     selection.anchor = Some(cursor);
                 }
                 return true;
             }
-            "y" | "enter" => {
+            Key::Char('y') | Key::Enter => {
                 let text = selection
                     .anchor
                     .map(|anchor| selection.grid.text(anchor, cursor));
@@ -309,38 +309,40 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 }
                 return true;
             }
-            "left" | "h" => position.1 = position.1.saturating_sub(1),
-            "right" | "l" => {
+            Key::Arrow(Direction::Left) | Key::Char('h') => {
+                position.1 = position.1.saturating_sub(1);
+            }
+            Key::Arrow(Direction::Right) | Key::Char('l') => {
                 let wide = selection
                     .grid
                     .cell(cursor)
                     .is_some_and(vt100::Cell::is_wide);
                 position.1 = (position.1 + if wide { 2 } else { 1 }).min(size.1.saturating_sub(1));
             }
-            "up" | "k" => {
+            Key::Arrow(Direction::Up) | Key::Char('k') => {
                 if position.0 > 0 {
                     position.0 -= 1;
                 } else {
                     scroll = Some(true);
                 }
             }
-            "down" | "j" => {
+            Key::Arrow(Direction::Down) | Key::Char('j') => {
                 if position.0 + 1 < size.0 {
                     position.0 += 1;
                 } else {
                     scroll = Some(false);
                 }
             }
-            "u" | "pageup" => {
+            Key::Char('u') | Key::PageUp => {
                 scroll = Some(true);
                 page = true;
             }
-            "d" | "pagedown" => {
+            Key::Char('d') | Key::PageDown => {
                 scroll = Some(false);
                 page = true;
             }
-            "home" => position.1 = 0,
-            "end" => position.1 = size.1.saturating_sub(1),
+            Key::Home => position.1 = 0,
+            Key::End => position.1 = size.1.saturating_sub(1),
             _ => {}
         },
     }
@@ -369,10 +371,10 @@ pub fn mouse(
     world: &mut World,
     id: Entity,
     leaf: Entity,
-    action: &str,
+    action: MouseAction,
     point: (u16, u16),
 ) -> Result<(), String> {
-    if action == "press" {
+    if action == MouseAction::Press {
         start(world, id, leaf)?;
     }
     let Some(mut selection) = world.get_mut::<Selection>(id) else {
@@ -383,24 +385,24 @@ pub fn mouse(
     }
     let point = selection.grid.point(point);
     match action {
-        "press" => {
+        MouseAction::Press => {
             selection.cursor = point;
             selection.anchor = Some(point);
             selection.dragging = true;
             selection.mouse_origin = true;
         }
-        "move" | "release" if selection.dragging => {
-            if action == "move" || selection.cursor != point {
+        MouseAction::Move | MouseAction::Release if selection.dragging => {
+            if action == MouseAction::Move || selection.cursor != point {
                 selection.mouse_origin = false;
             }
             selection.cursor = point;
-            if action == "release" {
+            if action == MouseAction::Release {
                 selection.dragging = false;
             }
         }
         _ => {}
     }
-    if action == "release" && selection.mouse_origin {
+    if action == MouseAction::Release && selection.mouse_origin {
         world.entity_mut(id).remove::<Selection>();
         if let Some(mut v) = world.get_mut::<Viewer>(id) {
             v.notice.clear();

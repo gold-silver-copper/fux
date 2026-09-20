@@ -6,7 +6,7 @@ use crate::{
     interaction::Prefix,
     model::*,
     presentation,
-    protocol::Input,
+    protocol::{Input, Key, MouseAction, MouseButton, Token},
     terminal::{Terminal, TerminalPlugin},
 };
 use bevy_app::{App, AppExit, Plugin, Startup, Update};
@@ -128,7 +128,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
             return;
         }
         if let Input::Mouse { action, x, y, .. } = &event.input
-            && matches!(action.as_str(), "move" | "release")
+            && matches!(action, MouseAction::Move | MouseAction::Release)
             && let Some(selection) = world.get::<crate::selection::Selection>(event.viewer)
             && selection.dragging
         {
@@ -143,7 +143,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                     y.saturating_sub(rect.y).min(rect.height.saturating_sub(1)),
                     x.saturating_sub(rect.x).min(rect.width.saturating_sub(1)),
                 );
-                let _ = crate::selection::mouse(world, event.viewer, leaf, action, point);
+                let _ = crate::selection::mouse(world, event.viewer, leaf, *action, point);
             }
             return;
         }
@@ -176,15 +176,14 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         };
         if world.get::<Prefix>(event.viewer).is_none()
             && let Input::Mouse {
-                action,
+                action: MouseAction::Press,
                 button,
                 x,
                 y,
-                shift,
-                ..
+                modifiers,
             } = &event.input
-            && action == "press"
         {
+            let shift = &modifiers.shift;
             let mut target = crate::actions::Target::viewer(v);
             let hit = world
                 .non_send_mut::<Views>()
@@ -194,7 +193,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                 let action = if world.get::<Tab>(hit).is_some() {
                     target.tab = Some(hit);
                     target.leaf = None;
-                    Some(if *button == 2 {
+                    Some(if *button == MouseButton::Right {
                         Action::TabMenu
                     } else {
                         Action::TabSelect
@@ -204,7 +203,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                     target.tab = None;
                     target.leaf = None;
                     Some(Action::WorkspaceMenu)
-                } else if *button == 2
+                } else if *button == MouseButton::Right
                     && world.get::<PaneView>(hit).is_some_and(|p| {
                         *shift
                             || world
@@ -236,17 +235,15 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
             }
         }
         if let Input::Mouse {
-            action,
-            button,
+            action: MouseAction::Press,
+            button: MouseButton::Left,
             x,
             y,
-            shift,
-            ..
+            modifiers,
         } = &event.input
-            && action == "press"
-            && *button == 0
             && world.get::<Prefix>(event.viewer).is_none()
         {
+            let shift = &modifiers.shift;
             let hit = world
                 .non_send_mut::<Views>()
                 .get_mut(&event.viewer)
@@ -277,7 +274,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                         world,
                         event.viewer,
                         hit,
-                        action,
+                        MouseAction::Press,
                         (y.saturating_sub(rect.y), x.saturating_sub(rect.x)),
                     ) {
                         notify(world, event.viewer, error, true);
@@ -961,15 +958,10 @@ fn input_event(
                 v.rows = (*rows).min(4096);
                 v.cols = (*cols).min(4096);
             }
-            Input::Key {
-                key,
-                ctrl,
-                alt,
-                shift,
-            } => {
-                let token = event.input.token().unwrap_or_default();
+            Input::Key { key, modifiers } => {
+                let token = event.input.token().unwrap_or_else(|| Token::from(""));
                 if prefix {
-                    if key == "escape" {
+                    if *key == Key::Escape {
                         commands.entity(id).remove::<Prefix>();
                         v.notice.clear();
                         return Ok(());
@@ -1004,13 +996,7 @@ fn input_event(
                     .pane;
                 let terminal = terminals.get(pane).map_err(|_| "terminal not found")?;
                 let application = terminal.screen().application_cursor();
-                terminal.input(&crate::encode::key_bytes(
-                    key,
-                    *ctrl,
-                    *alt,
-                    *shift,
-                    application,
-                )?)?;
+                terminal.input(&crate::encode::key_bytes(*key, *modifiers, application))?;
                 v.scrollback = 0;
                 v.notice.clear();
             }
@@ -1036,9 +1022,7 @@ fn input_event(
                 button,
                 x,
                 y,
-                ctrl,
-                alt,
-                shift,
+                modifiers,
             } => {
                 // Pick against the last painted native layout, not a second
                 // rectangle hit-test implementation.
@@ -1046,9 +1030,11 @@ fn input_event(
                 if prefix {
                     return Ok(());
                 }
-                let hit = context.presentation.pointer(*x, *y, action == "press");
+                let hit = context
+                    .presentation
+                    .pointer(*x, *y, *action == MouseAction::Press);
                 if let Some(hit) = hit {
-                    if action == "press" {
+                    if *action == MouseAction::Press {
                         v.focus = Some(hit);
                         v.scrollback = 0;
                     }
@@ -1062,15 +1048,15 @@ fn input_event(
                     let screen = terminal.screen();
                     let mode = screen.mouse_protocol_mode();
                     use vt100::MouseProtocolMode as MouseMode;
-                    if mode == MouseMode::None || *shift {
-                        if action == "scrollup" || action == "scrolldown" {
+                    if mode == MouseMode::None || modifiers.shift {
+                        if matches!(action, MouseAction::ScrollUp | MouseAction::ScrollDown) {
                             if v.focus != Some(hit) {
                                 v.focus = Some(hit);
                                 v.scrollback = 0;
                             }
                             commands.trigger(Control {
                                 viewer: id,
-                                action: if action == "scrollup" {
+                                action: if *action == MouseAction::ScrollUp {
                                     Action::ScrollUp
                                 } else {
                                     Action::ScrollDown
@@ -1086,13 +1072,10 @@ fn input_event(
                         && *y < rect.y + rect.height
                         && let Some(bytes) = crate::encode::mouse_bytes(
                             screen,
-                            action,
+                            *action,
                             *button,
-                            x - rect.x + 1,
-                            y - rect.y + 1,
-                            *ctrl,
-                            *alt,
-                            *shift,
+                            (x - rect.x + 1, y - rect.y + 1),
+                            *modifiers,
                         )
                     {
                         terminal.input(&bytes)?;

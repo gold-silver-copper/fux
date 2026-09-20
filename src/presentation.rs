@@ -351,7 +351,7 @@ impl Presentation {
         self.collect_rects();
     }
 
-    pub fn neighbor(&self, leaf: Entity, direction: &str) -> Option<Entity> {
+    pub fn neighbor(&self, leaf: Entity, direction: crate::protocol::Direction) -> Option<Entity> {
         crate::frame::directional_neighbor(&self.rects, leaf, direction)
     }
 

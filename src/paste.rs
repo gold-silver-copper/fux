@@ -154,6 +154,7 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Key;
     use crate::testing::*;
     #[test]
     fn every_fragment_boundary_preserves_paste_ownership_and_embedded_escape()
@@ -168,7 +169,7 @@ mod tests {
             decoder.timeout(|event| events.push(event));
             assert!(matches!(events.get(2), Some(Input::PasteBegin)));
             assert!(matches!(events.get(3), Some(Input::Paste { text }) if text == "one\x1btwo"));
-            assert!(matches!(events.get(4), Some(Input::Key { key, .. }) if key == "escape"));
+            assert!(matches!(events.get(4), Some(Input::Key { key, .. }) if *key == Key::Escape));
             assert_eq!(events.len(), 5);
         }
         Ok(())
@@ -183,7 +184,7 @@ mod tests {
         assert!(!decoder.deadline_needed());
         decoder.bytes(b"\x1b[201~z", |e| events.push(e));
         assert!(matches!(events.get(1), Some(Input::Paste { text }) if text.len() == LIMIT + 1));
-        assert!(matches!(events.get(2), Some(Input::Key { key, .. }) if key == "z"));
+        assert!(matches!(events.get(2), Some(Input::Key { key, .. }) if *key == Key::Char('z')));
         Ok(())
     }
 }

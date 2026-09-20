@@ -2,7 +2,7 @@ use super::*;
 use base64::Engine;
 
 fn mouse(s: &Server, viewer: u64, action: &str, x: u16, y: u16, shift: bool) -> Result<(), String> {
-    s.input(viewer, json!({"kind":"mouse","action":action,"button":0,"x":x,"y":y,"ctrl":false,"alt":false,"shift":shift}))
+    s.input(viewer, json!({"kind":"mouse","action":action,"button":"left","x":x,"y":y,"ctrl":false,"alt":false,"shift":shift}))
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn shift_drag_and_keyboard_copy_mode_do_not_leak_application_mouse_bytes() -> Ou
     assert_eq!(copied(&s, v)?, "REA");
     s.control(v, "copy_mode", "")?;
     mouse(&s, v, "move", 3, 0, false)?;
-    mouse(&s, v, "scrollup", 0, 0, false)?;
+    mouse(&s, v, "scroll_up", 0, 0, false)?;
     s.key(v, "q", false)?;
     mouse(&s, v, "press", 4, 0, false)?;
     eventually(|| Ok(fs::read(&input).is_ok_and(|bytes| bytes == b"\x1b[<0;5;1M")))?;

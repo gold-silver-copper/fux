@@ -38,10 +38,9 @@ fn setup() -> (World, Entity, Target, Entity) {
 }
 fn key(key: &str) -> Input {
     Input::Key {
-        key: key.into(),
-        ctrl: false,
-        alt: false,
-        shift: false,
+        // A misspelled test key becomes F12, which no test binds or expects.
+        key: key.parse().unwrap_or(Key::F(12)),
+        modifiers: Modifiers::default(),
     }
 }
 
@@ -224,7 +223,7 @@ fn rearrangement_keeps_entity_identity_and_native_child_order() -> crate::testin
         navigation::leaves(&world, target.tab.need()?),
         vec![other, source]
     );
-    move_beside(&mut world, source, other, "up")?;
+    move_beside(&mut world, source, other, Direction::Up)?;
     let split = world.get::<ChildOf>(source).need()?.parent();
     assert!(world.get::<Split>(split).is_some());
     assert_eq!(

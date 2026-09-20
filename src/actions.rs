@@ -1,5 +1,5 @@
 //! One source of identity, labels, groups, and availability for every action.
-use crate::{model::*, navigation};
+use crate::{model::*, navigation, protocol::Direction};
 use bevy_ecs::prelude::*;
 use bevy_reflect::Reflect;
 use serde::{Deserialize, Serialize};
@@ -149,14 +149,14 @@ impl Action {
         matches!(self.group(), "Panes" | "Focus")
             && !matches!(self, Self::SplitHorizontal | Self::SplitVertical)
     }
-    /// The direction word of a directional focus, swap or move action.
-    pub fn direction(self) -> Option<&'static str> {
+    /// The direction of a directional focus, swap or move action.
+    pub fn direction(self) -> Option<Direction> {
         use Action::*;
         match self {
-            FocusLeft | SwapLeft | MoveLeft => Some("left"),
-            FocusRight | SwapRight | MoveRight => Some("right"),
-            FocusUp | SwapUp | MoveUp => Some("up"),
-            FocusDown | SwapDown | MoveDown => Some("down"),
+            FocusLeft | SwapLeft | MoveLeft => Some(Direction::Left),
+            FocusRight | SwapRight | MoveRight => Some(Direction::Right),
+            FocusUp | SwapUp | MoveUp => Some(Direction::Up),
+            FocusDown | SwapDown | MoveDown => Some(Direction::Down),
             _ => None,
         }
     }
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(Action::SaveLayout.target_kind(), TargetKind::Workspace);
         assert_eq!(Action::Swap.target_kind(), TargetKind::Pane);
         assert_eq!(Action::Help.target_kind(), TargetKind::Any);
-        assert_eq!(Action::MoveDown.direction(), Some("down"));
+        assert_eq!(Action::MoveDown.direction(), Some(Direction::Down));
         Ok(())
     }
 }

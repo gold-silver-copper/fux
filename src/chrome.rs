@@ -290,7 +290,7 @@ fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
     let key_width = settings
         .bindings
         .iter()
-        .map(|b| width(&b.key))
+        .map(|b| width(b.key.as_str()))
         .max()
         .unwrap_or(0)
         .min((cols.saturating_sub(4) / 3).max(1));
@@ -307,7 +307,7 @@ fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
         }
         lines.push((group.into(), None));
         for binding in bindings {
-            let key = fit(&binding.key, key_width, false);
+            let key = fit(binding.key.as_str(), key_width, false);
             let padding = " ".repeat(usize::from(key_width.saturating_sub(width(&key))));
             let label = action(binding)
                 .map_or_else(|| binding.action.replace('_', " "), |a| a.label().into());

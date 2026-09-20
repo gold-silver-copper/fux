@@ -344,7 +344,7 @@ fn context_menu_captures_unfocused_pane_and_grouped_help_marks_unavailable() -> 
     s.control(v, "split_horizontal", "")?;
     s.screen(v)?;
     let focused = s.viewer(v)?.at("focus");
-    s.input(v, json!({"kind":"mouse","action":"press","button":2,"x":0,"y":0,"ctrl":false,"alt":false,"shift":true}))?;
+    s.input(v, json!({"kind":"mouse","action":"press","button":"right","x":0,"y":0,"ctrl":false,"alt":false,"shift":true}))?;
     assert_eq!(s.viewer(v)?.at("focus"), focused);
     assert!(s.painted(v, 24, 80)?.contents().contains("Panes:"));
     s.capture(v, 24, 80, "interaction-menu")?;

@@ -7,7 +7,7 @@ use crate::{
     control::Control,
     model::*,
     navigation,
-    protocol::Input,
+    protocol::{Direction, Input, Key, Modifiers, MouseAction},
 };
 use bevy_ecs::prelude::*;
 
@@ -412,7 +412,7 @@ fn move_beside(
     world: &mut World,
     source: Entity,
     destination: Entity,
-    direction: &str,
+    direction: Direction,
 ) -> Result<(), String> {
     use bevy_ui::{FlexDirection, Val};
     let parent = world
@@ -427,7 +427,7 @@ fn move_beside(
     node.width = Val::Auto;
     node.height = Val::Auto;
     node.flex_basis = Val::ZERO;
-    node.flex_direction = if matches!(direction, "up" | "down") {
+    node.flex_direction = if matches!(direction, Direction::Up | Direction::Down) {
         FlexDirection::Column
     } else {
         FlexDirection::Row
@@ -435,7 +435,7 @@ fn move_beside(
     node.row_gap = Val::Px(1.0);
     node.column_gap = Val::Px(1.0);
     let split = world.spawn((Split, node)).id();
-    let children = if matches!(direction, "left" | "up") {
+    let children = if matches!(direction, Direction::Left | Direction::Up) {
         [source, destination]
     } else {
         [destination, source]
@@ -488,7 +488,7 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
     let (rows, cols, mut scroll) = (v.rows, v.cols, prefix.scroll);
     let settings = world.resource::<crate::assets::Settings>();
     // The prefix itself retains literal forwarding, even for a navigation-key prefix.
-    if input.token().as_deref() == Some(settings.prefix.as_str()) {
+    if input.token().as_ref() == Some(&settings.prefix) {
         return false;
     }
     let step = |current, down, page| chrome::scroll(settings, rows, current, down, page);
@@ -498,25 +498,30 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
         Input::Resize { .. } => return false,
         Input::Key {
             key,
-            ctrl: false,
-            alt: false,
-            shift: false,
-        } => match key.as_str() {
-            "up" | "pageup" => scroll = step(scroll, false, key == "pageup"),
-            "down" | "pagedown" => scroll = step(scroll, true, key == "pagedown"),
-            "left" | "right" => {} // Vertical menus reserve all unmodified arrows.
-            "home" => scroll = 0,
-            "end" => scroll = chrome::help_limit(settings, rows),
-            "enter" => {
+            modifiers:
+                Modifiers {
+                    ctrl: false,
+                    alt: false,
+                    shift: false,
+                },
+        } => match key {
+            Key::Arrow(Direction::Up) => scroll = step(scroll, false, false),
+            Key::PageUp => scroll = step(scroll, false, true),
+            Key::Arrow(Direction::Down) => scroll = step(scroll, true, false),
+            Key::PageDown => scroll = step(scroll, true, true),
+            Key::Arrow(_) => {} // Vertical menus reserve all unmodified arrows.
+            Key::Home => scroll = 0,
+            Key::End => scroll = chrome::help_limit(settings, rows),
+            Key::Enter => {
                 execute = chrome::selected_action(settings, rows, cols, scroll).map(str::to_owned);
                 close = true;
             }
-            "escape" => close = true,
+            Key::Escape => close = true,
             _ => return false,
         },
-        Input::Mouse { action, .. } => match action.as_str() {
-            "scrollup" => scroll = step(scroll, false, false),
-            "scrolldown" => scroll = step(scroll, true, false),
+        Input::Mouse { action, .. } => match action {
+            MouseAction::ScrollUp => scroll = step(scroll, false, false),
+            MouseAction::ScrollDown => scroll = step(scroll, true, false),
             _ => {}
         },
         Input::Paste { .. } | Input::PasteBegin => return true,
@@ -558,31 +563,40 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     let mut execute = None;
     let mut cancel = false;
     match (&mut next.mode, input) {
-        (_, Input::Key { key, .. }) if key == "escape" => cancel = true,
+        (
+            _,
+            Input::Key {
+                key: Key::Escape, ..
+            },
+        ) => cancel = true,
         (
             Mode::Confirm { action },
             Input::Key {
-                key,
-                ctrl: false,
-                alt: false,
-                ..
+                key: Key::Char(c),
+                modifiers:
+                    Modifiers {
+                        ctrl: false,
+                        alt: false,
+                        ..
+                    },
             },
         ) => {
-            if key == "y" {
+            if *c == 'y' {
                 execute = Some((*action, None, String::new(), false));
-            } else if key == "n" {
+            } else if *c == 'n' {
                 cancel = true;
             }
         }
-        (Mode::Text { action, buffer }, Input::Key { key, ctrl, alt, .. }) => {
-            if key == "enter" && !buffer.is_empty() {
+        (Mode::Text { action, buffer }, Input::Key { key, modifiers }) => match key {
+            Key::Enter if !buffer.is_empty() => {
                 execute = Some((*action, None, buffer.clone(), false));
-            } else if key == "backspace" {
-                buffer.pop();
-            } else if !ctrl && !alt && key.chars().count() == 1 {
-                buffer.push_str(key);
             }
-        }
+            Key::Backspace => {
+                buffer.pop();
+            }
+            Key::Char(c) if !modifiers.ctrl && !modifiers.alt => buffer.push(*c),
+            _ => {}
+        },
         (Mode::Text { buffer, .. }, Input::Paste { text }) => buffer.push_str(text),
         (
             Mode::List {
@@ -591,19 +605,24 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             Input::Key { key, .. },
         ) => {
             let page = list_capacity(world.get::<Viewer>(id).map_or(0, |v| v.rows));
-            match key.as_str() {
-                "up" | "k" => *selected = selected.saturating_sub(1),
-                "down" | "j" => *selected = (*selected + 1).min(entries.len().saturating_sub(1)),
-                "pageup" => *selected = selected.saturating_sub(page),
-                "pagedown" => *selected = (*selected + page).min(entries.len().saturating_sub(1)),
-                "home" => *selected = 0,
-                "end" => *selected = entries.len().saturating_sub(1),
-                "enter" => {
+            let last = entries.len().saturating_sub(1);
+            match key {
+                Key::Arrow(Direction::Up) | Key::Char('k') => {
+                    *selected = selected.saturating_sub(1);
+                }
+                Key::Arrow(Direction::Down) | Key::Char('j') => {
+                    *selected = (*selected + 1).min(last);
+                }
+                Key::PageUp => *selected = selected.saturating_sub(page),
+                Key::PageDown => *selected = (*selected + page).min(last),
+                Key::Home => *selected = 0,
+                Key::End => *selected = last,
+                Key::Enter => {
                     if let Some(entry) = entries.get(*selected) {
                         execute = Some((entry.action, entry.destination, String::new(), true));
                     }
                 }
-                "q" => cancel = true,
+                Key::Char('q') => cancel = true,
                 _ => {}
             }
         }
@@ -612,14 +631,13 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 entries, selected, ..
             },
             Input::Mouse { action, .. },
-        ) => {
-            if action == "scrollup" {
-                *selected = selected.saturating_sub(1);
-            }
-            if action == "scrolldown" {
+        ) => match action {
+            MouseAction::ScrollUp => *selected = selected.saturating_sub(1),
+            MouseAction::ScrollDown => {
                 *selected = (*selected + 1).min(entries.len().saturating_sub(1));
             }
-        }
+            _ => {}
+        },
         _ => {}
     }
     if cancel || execute.is_some() {

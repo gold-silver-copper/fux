@@ -64,7 +64,7 @@ impl Server {
         self.enter(viewer)
     }
     fn mouse(&self, viewer: u64, action: &str, x: u16, y: u16) -> Result<(), String> {
-        self.input(viewer, json!({"kind":"mouse","action":action,"button":0,"x":x,"y":y,"ctrl":false,"alt":false,"shift":false}))
+        self.input(viewer, json!({"kind":"mouse","action":action,"button":"left","x":x,"y":y,"ctrl":false,"alt":false,"shift":false}))
     }
     fn capture(&self, viewer: u64, rows: u16, cols: u16, name: &str) -> Result<(), Fail> {
         if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
@@ -255,9 +255,9 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     // Help is the command column itself: the prefix key is the only way in.
     s.key(v, "b", true)?;
     s.painted(v, 12, 60)?;
-    s.mouse(v, "scrolldown", 59, 10)?;
+    s.mouse(v, "scroll_down", 59, 10)?;
     assert_eq!(s.selected(v, 12, 60)?.as_deref(), Some("v  split stacked"));
-    s.mouse(v, "scrollup", 59, 10)?;
+    s.mouse(v, "scroll_up", 59, 10)?;
     assert_eq!(
         s.selected(v, 12, 60)?.as_deref(),
         Some("h  split side by side")
