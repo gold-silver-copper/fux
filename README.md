@@ -6,7 +6,7 @@ A small, trusted terminal multiplexer built on Bevy 0.19.1. One server owns real
 
 ## Build and run
 
-Rust 1.98.1 is pinned in `rust-toolchain.toml`; exact Bevy versions and `Cargo.lock` pin the dependency graph.
+Rust 1.98.1 is pinned in `rust-toolchain.toml` and `Cargo.toml` declares a minimum supported version of 1.95; exact Bevy versions and `Cargo.lock` pin the dependency graph.
 
 ```sh
 cargo build --release --locked
@@ -156,7 +156,7 @@ The runner parks without an idle tick; PTY data/exit, requests, disconnections, 
 
 ## Scope and verification
 
-Tested on macOS arm64; see [verification/keybinding-consistency.md](verification/keybinding-consistency.md) for the current binding/menu verification, [verification/interaction-restoration.md](verification/interaction-restoration.md) for this interaction pass and intentional differences from original main, [verification/design-restoration.md](verification/design-restoration.md) for the current visual/input verification and captured renders, [REFINEMENT.md](REFINEMENT.md) for historical comparable measurements and the capability audit, and [VERIFICATION.md](VERIFICATION.md) for preserved baseline evidence. Linux and other Unix systems are unvalidated; this is not a Windows/mobile implementation.
+Tested on macOS arm64; see [verification/keybinding-consistency.md](verification/keybinding-consistency.md) for the current binding/menu verification, [verification/interaction-restoration.md](verification/interaction-restoration.md) for this interaction pass and intentional differences from original main, [verification/design-restoration.md](verification/design-restoration.md) for the current visual/input verification and captured renders, [verification/REFINEMENT.md](verification/REFINEMENT.md) for historical comparable measurements and the capability audit, and [verification/VERIFICATION.md](verification/VERIFICATION.md) for preserved baseline evidence. Linux and other Unix systems are unvalidated; this is not a Windows/mobile implementation.
 
 Owned direct children and their original process groups are cleaned up and reaped. Ordinary interactive-shell job groups receive the shell's hangup propagation. Deliberately detached/disowned descendants, or descendants in other groups that ignore hangup, are not a process-containment guarantee; fux does not enumerate and signal potentially recycled descendant PIDs. macOS zombie-only group `EPERM` is distinguished by native membership inspection, not ignored for live groups.
 
