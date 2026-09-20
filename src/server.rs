@@ -15,10 +15,9 @@ use bevy_ui::{FlexDirection, Node, Val};
 use bevy_world_serialization::DynamicWorld;
 use std::sync::Arc;
 
-/// A control whose action name already parsed; the original event is retained
-/// for its value, target and mapping.
+/// A control that the interaction layer declined, for the scheduled observer.
 #[derive(Event)]
-struct RoutedControl(Control, Action);
+struct RoutedControl(Control);
 impl std::ops::Deref for RoutedControl {
     type Target = Control;
     fn deref(&self) -> &Control {
@@ -44,12 +43,7 @@ fn route_control(event: On<Control>, mut commands: Commands) {
             return;
         };
         let mut target = crate::actions::Target::viewer(v);
-        let action = match event.action.parse::<Action>() {
-            Ok(action) => action,
-            Err(message) => {
-                return crate::interaction::unknown(world, event.viewer, target, message);
-            }
-        };
+        let action = event.action;
         if let Some(entity) = event.target {
             if world.get_entity(entity).is_err() {
                 notify(world, event.viewer, "target no longer exists", true);
@@ -108,7 +102,7 @@ fn route_control(event: On<Control>, mut commands: Commands) {
             false,
         ) {
             Ok(true) => {}
-            Ok(false) => world.trigger(RoutedControl(event, action)),
+            Ok(false) => world.trigger(RoutedControl(event)),
             Err(error) => notify(world, event.viewer, error, true),
         }
     });
@@ -368,6 +362,7 @@ impl Plugin for ServerPlugin {
             .register_type::<PaneViews>()
             .register_type::<Viewer>()
             .register_type::<Name>()
+            .register_type::<Action>()
             .register_type::<Control>()
             .register_type::<UserInput>()
             .register_type::<Shutdown>()
@@ -627,7 +622,7 @@ fn control_event(
     wake: Res<Wake>,
 ) {
     let id = event.viewer;
-    let action = event.1;
+    let action = event.action;
     use Action::*;
     if crate::navigation::handles(action) {
         let target = event.target;
@@ -980,12 +975,12 @@ fn input_event(
                         && let Some(binding) = settings.bindings.iter().find(|b| b.key == token)
                     {
                         v.prefix = false;
-                        commands.trigger(Control {
-                            viewer: id,
-                            action: binding.action.clone(),
-                            value: String::new(),
-                            target: None,
-                            mapping: Vec::new(),
+                        let action = binding.action.clone();
+                        let target = crate::actions::Target::viewer(&v);
+                        commands.queue(move |world: &mut World| {
+                            crate::interaction::dispatch_named(
+                                world, id, target, &action, None, "", true,
+                            );
                         });
                         return Ok(());
                     }
@@ -1076,8 +1071,7 @@ fn input_event(
                                     Action::ScrollUp
                                 } else {
                                     Action::ScrollDown
-                                }
-                                .to_string(),
+                                },
                                 value: String::new(),
                                 target: None,
                                 mapping: Vec::new(),

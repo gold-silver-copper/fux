@@ -670,7 +670,7 @@ pub fn dispatch(
         Ok(true) => {}
         Ok(false) => world.trigger(Control {
             viewer: id,
-            action: action.to_string(),
+            action,
             value: value.into(),
             target: if matches!(action, Action::SaveLayout | Action::LoadLayout) {
                 Some(target.workspace)

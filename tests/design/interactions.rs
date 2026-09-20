@@ -393,3 +393,20 @@ fn remote_viewer_removal_during_an_overlay_never_panics_the_server() -> Outcome 
     assert!(s.painted(fresh, 24, 80)?.contents().contains("Panes:"));
     Ok(())
 }
+
+#[test]
+fn unknown_control_action_names_are_rejected_at_the_api_boundary() -> Outcome {
+    let s = Server::start()?;
+    let v = s.attach()?;
+    s.screen(v)?;
+    let rejected = s.request(
+        "world.trigger_event",
+        json!({"event":"fux::control::Control","value":{"viewer":v,"action":"custom_界é"}}),
+    );
+    assert!(rejected.is_err());
+    assert!(s.viewer(v)?.at("notice").as_str().need()?.is_empty());
+    assert!(s.request("rpc.discover", Value::Null).is_ok());
+    s.control(v, "split_horizontal", "")?;
+    assert_eq!(s.query("fux::model::PaneView")?.rows().count(), 2);
+    Ok(())
+}

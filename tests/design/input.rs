@@ -218,9 +218,10 @@ fn viewers_keep_independent_focus_zoom_history_and_exit_status() -> Outcome {
             .cell(23, x)
             .is_some_and(|c| c.fgcolor() == Color::Idx(3))
     }));
-    s.control(b, "not_an_action", "")?;
+    // An unknown action name no longer reaches the viewer: the request itself fails.
+    assert!(s.control(b, "not_an_action", "").is_err());
     let screen = s.painted(b, 24, 80)?;
-    assert!((0..80).any(|x| {
+    assert!(!(0..80).any(|x| {
         screen
             .cell(23, x)
             .is_some_and(|c| c.fgcolor() == Color::Idx(1))
