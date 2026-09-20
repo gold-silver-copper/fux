@@ -1,7 +1,11 @@
 //! Cell-sized terminal chrome. Native Bevy UI remains the pane geometry authority.
 #[cfg(test)]
 mod tests;
-use crate::{assets::Settings, model::Viewer};
+use crate::{
+    actions::Action,
+    assets::{Binding, Settings},
+    model::Viewer,
+};
 use std::fmt::Write;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -192,8 +196,8 @@ pub fn tab_bar(
         .get(selected)
         .map_or(0, |(_, name)| width(name).saturating_add(2));
     let mut needed = selected_width.min(allowance.saturating_sub(x));
-    while start > 0 {
-        let previous = width(&tabs[start - 1].1).saturating_add(2);
+    while let Some((_, name)) = start.checked_sub(1).and_then(|i| tabs.get(i)) {
+        let previous = width(name).saturating_add(2);
         if needed.saturating_add(previous) > allowance.saturating_sub(x) {
             break;
         }
@@ -251,36 +255,35 @@ fn capacity(rows: u16) -> usize {
     let available = rows.saturating_sub(1);
     usize::from(available.saturating_sub(u16::from(available >= 3)))
 }
-/// `help_scroll` is the selected actionable row, never a heading or indicator.
+/// A command-list scroll offset is the selected actionable row, never a heading
+/// or indicator.
 pub fn help_limit(settings: &Settings, _rows: u16) -> usize {
     settings.bindings.len().saturating_sub(1)
 }
-pub fn selected_action<'a>(v: &Viewer, settings: &'a Settings) -> Option<&'a str> {
-    help_entries(settings, v.cols)
+pub fn selected_action(settings: &Settings, rows: u16, cols: u16, scroll: usize) -> Option<&str> {
+    help_entries(settings, cols)
         .into_iter()
         .filter_map(|(_, action)| action)
-        .nth(v.help_scroll.min(help_limit(settings, v.rows)))
+        .nth(scroll.min(help_limit(settings, rows)))
 }
-pub fn scroll(v: &mut Viewer, settings: &Settings, down: bool, page: bool) {
+pub fn scroll(settings: &Settings, rows: u16, current: usize, down: bool, page: bool) -> usize {
     let step = if page {
-        let cap = capacity(v.rows);
+        let cap = capacity(rows);
         if cap >= 3 { cap - 2 } else { cap.max(1) }
     } else {
         1
     };
-    let current = v.help_scroll.min(help_limit(settings, v.rows));
-    v.help_scroll = if down {
-        current
-            .saturating_add(step)
-            .min(help_limit(settings, v.rows))
+    let current = current.min(help_limit(settings, rows));
+    if down {
+        current.saturating_add(step).min(help_limit(settings, rows))
     } else {
         current.saturating_sub(step)
-    };
+    }
 }
 
 #[cfg(test)]
 pub fn panel(out: &mut String, v: &Viewer, settings: &Settings) -> Option<Bounds> {
-    panel_context(out, v, settings, |_| false)
+    panel_context(out, v, settings, v.help_scroll, |_| false)
 }
 
 fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
@@ -292,11 +295,12 @@ fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
         .unwrap_or(0)
         .min((cols.saturating_sub(4) / 3).max(1));
     let mut lines = Vec::new();
+    let action = |binding: &Binding| binding.action.parse::<Action>().ok();
     for group in ["Panes", "Focus", "Tabs", "Workspaces", "Session", "Other"] {
         let bindings: Vec<_> = settings
             .bindings
             .iter()
-            .filter(|b| crate::actions::metadata(&b.action).map_or("Other", |a| a.group) == group)
+            .filter(|b| action(b).map_or("Other", Action::group) == group)
             .collect();
         if bindings.is_empty() {
             continue;
@@ -305,8 +309,8 @@ fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
         for binding in bindings {
             let key = fit(&binding.key, key_width, false);
             let padding = " ".repeat(usize::from(key_width.saturating_sub(width(&key))));
-            let label = crate::actions::metadata(&binding.action)
-                .map_or_else(|| binding.action.replace('_', " "), |a| a.label.into());
+            let label = action(binding)
+                .map_or_else(|| binding.action.replace('_', " "), |a| a.label().into());
             lines.push((
                 format!("{padding}{key}  {label}"),
                 Some(binding.action.as_str()),
@@ -316,18 +320,20 @@ fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
     lines
 }
 
+/// The command column for the prefix key or explicit help, selecting `scroll`.
 pub fn panel_context(
     out: &mut String,
     v: &Viewer,
     settings: &Settings,
+    scroll: usize,
     disabled: impl Fn(&str) -> bool,
 ) -> Option<Bounds> {
     let available = v.rows.saturating_sub(1);
-    if available == 0 || v.cols == 0 || (!v.prefix && v.prompt.is_none()) {
+    if available == 0 || v.cols == 0 {
         return None;
     }
     let mut lines = Vec::new();
-    if v.prefix || v.prompt.as_deref() == Some("help") {
+    {
         if available >= 3 {
             lines.push(("Commands".to_owned(), "\x1b[1m"));
         }
@@ -337,7 +343,7 @@ pub fn panel_context(
             .iter()
             .enumerate()
             .filter(|(_, (_, action))| action.is_some())
-            .nth(v.help_scroll.min(help_limit(settings, v.rows)))
+            .nth(scroll.min(help_limit(settings, v.rows)))
             .map(|(i, _)| i);
         let selected_row = selected.unwrap_or(0);
         let mut start = 0;
@@ -373,22 +379,6 @@ pub fn panel_context(
                 format!("▼ {} more", entries.len() - start - body),
                 "\x1b[2m",
             ));
-        }
-    } else if let Some(prompt) = &v.prompt {
-        if available >= 3 {
-            lines.push((prompt.replace('_', " "), "\x1b[1m"));
-        }
-        // Keep the editable tail/caret visible rather than the beginning of a long path.
-        lines.push((
-            fit(
-                &format!("{}▏", v.buffer),
-                v.cols.saturating_sub(2).max(1),
-                true,
-            ),
-            "\x1b[7m",
-        ));
-        if available >= 2 {
-            lines.push(("Enter accept · Esc cancel".into(), "\x1b[2m"));
         }
     }
     surface(out, v, &lines)

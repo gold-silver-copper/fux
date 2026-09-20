@@ -6,7 +6,7 @@ A small, trusted terminal multiplexer built on Bevy 0.19.1. One server owns real
 
 ## Build and run
 
-Rust 1.98.1 is pinned in `rust-toolchain.toml`; exact Bevy versions and `Cargo.lock` pin the dependency graph.
+Rust 1.98.1 is pinned in `rust-toolchain.toml` and `Cargo.toml` declares a minimum supported version of 1.95; exact Bevy versions and `Cargo.lock` pin the dependency graph.
 
 ```sh
 cargo build --release --locked
@@ -34,7 +34,6 @@ Press **Ctrl-B** to open the command column, then a configured shortcut or navig
 | `t` / `T` | New tab / tab chooser |
 | `w` / `W` | New workspace / workspace chooser |
 | `p` / `s` / `S` | Pane / current tab / current workspace actions |
-| `?` | Commands/help |
 | `h` / `v` | Split side-by-side / stacked; also open a pane in an empty tab |
 | `z` | Viewer-local zoom |
 | `r` | Rename pane |
@@ -46,7 +45,7 @@ Press **Ctrl-B** to open the command column, then a configured shortcut or navig
 | `y` | Copy visible text using OSC 52 |
 | `d` | Detach, preserving processes |
 
-In the prefix column, explicit help, choosers and action menus: **Up/Down** select an action and scroll it into view, **PageUp/PageDown** move a page, **Home/End** select first/last, **Enter** executes, and **Esc** cancels. Wheel scrolling moves the selection; headings and overflow indicators are skipped. Selection is reversed, unavailable actions remain dimmed, and invoking one explains why without acting. Left/Right are reserved no-ops in these vertical lists. Explicit help and context menus do not dispatch prefix shortcuts behind themselves; chooser/context lists additionally accept `j/k` and `q`, and help accepts `q`.
+In the prefix column, choosers and action menus: **Up/Down** select an action and scroll it into view, **PageUp/PageDown** move a page, **Home/End** select first/last, **Enter** executes, and **Esc** cancels. Wheel scrolling moves the selection; headings and overflow indicators are skipped. Selection is reversed, unavailable actions remain dimmed, and invoking one explains why without acting. Left/Right are reserved no-ops in these vertical lists. Context menus do not dispatch prefix shortcuts behind themselves; chooser/context lists additionally accept `j/k` and `q`. The prefix column is the only help surface; the `help` action opens it.
 
 Unmodified navigation keys, Enter and Esc belong to the menu **before configured bindings**. Custom arrow bindings remain listed and can be selected with Enter, but cannot resize panes while navigating. Nonreserved shortcuts (including modified arrows) still execute directly from the prefix column. The configured prefix itself retains doubled-prefix literal forwarding. Text prompts retain editing semantics; confirmations retain their explicit confirmation keys; pasted text never becomes menu commands.
 
@@ -99,7 +98,6 @@ The selected JSON file is a native Bevy asset, watched in its parent directory. 
   "history_lines": 10000,
   "clipboard": "write-only",
   "bindings": [
-    {"key": "?", "action": "help"},
     {"key": "h", "action": "split_horizontal"},
     {"key": "d", "action": "detach"}
   ]
@@ -138,7 +136,7 @@ fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":
 fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"action":"detach"}}'
 ```
 
-The uppercase IDs above are placeholders to substitute, not literal JSON values. `UserInput` also accepts `paste_begin` followed by `paste {text}` (ownership-preserving fragmented paste), atomic `paste {text}`, `resize {rows,cols}` and `mouse {action,button,x,y,ctrl,alt,shift}` with a `kind` discriminator; mouse coordinates are zero-based viewer cells. Control/file-operation errors appear in the actual reflected `Viewer.notice`; asynchronous scene completion changes that notice.
+The uppercase IDs above are placeholders to substitute, not literal JSON values. `UserInput` also accepts `paste_begin` followed by `paste {text}` (ownership-preserving fragmented paste), atomic `paste {text}`, `resize {rows,cols}` and `mouse {action,button,x,y,ctrl,alt,shift}` with a `kind` discriminator; mouse coordinates are zero-based viewer cells. Control/file-operation errors appear in the actual reflected `Viewer.notice`; asynchronous scene completion changes that notice. `Viewer` has no `prompt` or `buffer` fields: text prompts are overlay state, and `help_scroll` is the prefix column selection.
 
 For exact argv/cwd, stock-spawn a `fux::model::Launch` component, then a `PaneView` referring to its returned entity, and reparent that view under a tab using `world.reparent_entities`. `Launch` is a creation recipe (`argv`, `cwd`, `history_lines`), not an automatic restart controller. Its required `ProcessState` reports the native PID, dimensions, exit and errors; reflected dimension edits resize the real PTY. Despawning the process or removing `Launch` terminates it. All registered operational and UI components remain available to stock inspection/mutation; resource/schedule/event/schema methods are not filtered.
 
@@ -156,7 +154,7 @@ The runner parks without an idle tick; PTY data/exit, requests, disconnections, 
 
 ## Scope and verification
 
-Tested on macOS arm64; see [verification/keybinding-consistency.md](verification/keybinding-consistency.md) for the current binding/menu verification, [verification/interaction-restoration.md](verification/interaction-restoration.md) for this interaction pass and intentional differences from original main, [verification/design-restoration.md](verification/design-restoration.md) for the current visual/input verification and captured renders, [REFINEMENT.md](REFINEMENT.md) for historical comparable measurements and the capability audit, and [VERIFICATION.md](VERIFICATION.md) for preserved baseline evidence. Linux and other Unix systems are unvalidated; this is not a Windows/mobile implementation.
+Tested on macOS arm64; see [verification/keybinding-consistency.md](verification/keybinding-consistency.md) for the current binding/menu verification, [verification/interaction-restoration.md](verification/interaction-restoration.md) for this interaction pass and intentional differences from original main, [verification/design-restoration.md](verification/design-restoration.md) for the current visual/input verification and captured renders, [verification/REFINEMENT.md](verification/REFINEMENT.md) for historical comparable measurements and the capability audit, and [verification/VERIFICATION.md](verification/VERIFICATION.md) for preserved baseline evidence. Linux and other Unix systems are unvalidated; this is not a Windows/mobile implementation.
 
 Owned direct children and their original process groups are cleaned up and reaped. Ordinary interactive-shell job groups receive the shell's hangup propagation. Deliberately detached/disowned descendants, or descendants in other groups that ignore hangup, are not a process-containment guarantee; fux does not enumerate and signal potentially recycled descendant PIDs. macOS zombie-only group `EPERM` is distinguished by native membership inspection, not ignored for live groups.
 

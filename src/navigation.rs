@@ -1,7 +1,7 @@
 //! Native hierarchy normalization and viewer-local navigation memory.
 #[cfg(test)]
 mod tests;
-use crate::model::*;
+use crate::{actions::Action, model::*};
 use bevy_ecs::prelude::*;
 use bevy_ui::{Node, Val};
 
@@ -93,48 +93,50 @@ pub fn normalize_workspace(world: &mut World, root: Entity) {
     }
 }
 
-pub fn handles(action: &str) -> bool {
+/// Exactly the actions `control` implements.
+pub fn handles(action: Action) -> bool {
+    use Action::*;
     matches!(
         action,
-        "tab_new"
-            | "tab_next"
-            | "tab_previous"
-            | "tab_select"
-            | "workspace_select"
-            | "workspace_previous"
-            | "workspace_next"
-            | "focus_last"
+        TabNew
+            | TabNext
+            | TabPrevious
+            | TabSelect
+            | WorkspaceSelect
+            | WorkspacePrevious
+            | WorkspaceNext
+            | FocusLast
     )
 }
+
+const DETACHED: &str = "viewer no longer attached";
 
 pub fn control(
     world: &mut World,
     id: Entity,
-    action: &str,
+    action: Action,
     target: Option<Entity>,
     value: &str,
 ) -> Result<(), String> {
+    use Action::*;
     repair(world);
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
     let root = v.workspace;
     let tab = v.tab.ok_or("no active tab")?;
-    let all = if action.starts_with("workspace_") {
+    let workspace_action = matches!(action, WorkspaceSelect | WorkspacePrevious | WorkspaceNext);
+    let all = if workspace_action {
         workspaces(world)
     } else {
         tabs(world, root)
     };
-    let current = if action.starts_with("workspace_") {
-        root
-    } else {
-        tab
-    };
+    let current = if workspace_action { root } else { tab };
     let index = all
         .iter()
         .position(|e| *e == current)
         .ok_or("target disappeared")?;
-    world.get_mut::<Viewer>(id).unwrap().prefix = false;
+    world.get_mut::<Viewer>(id).ok_or(DETACHED)?.prefix = false;
     match action {
-        "tab_new" => {
+        TabNew => {
             let title = if value.is_empty() {
                 format!("tab-{}", all.len() + 1)
             } else {
@@ -147,36 +149,37 @@ pub fn control(
             let leaf =
                 crate::server::spawn_pane(&mut world.commands(), &settings, tab, None, None)?;
             world.flush();
-            let mut v = world.get_mut::<Viewer>(id).unwrap();
+            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
             v.tab = Some(tab);
             v.focus = Some(leaf);
             v.zoom = false;
         }
-        "focus_last" => {
+        FocusLast => {
             let previous = world
                 .get::<Navigation>(id)
-                .unwrap()
-                .previous
-                .get(&tab)
-                .copied();
+                .and_then(|memory| memory.previous.get(&tab).copied());
             if let Some(previous) = previous.filter(|e| {
-                leaves(world, tab).contains(e) && crate::server::visible_leaf(world, id, *e)
+                leaves(world, tab).contains(e) && crate::frame::visible_leaf(world, id, *e)
             }) {
-                world.get_mut::<Viewer>(id).unwrap().focus = Some(previous);
+                world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus = Some(previous);
             }
         }
         _ => {
-            let selected = if action.ends_with("select") {
+            let selected = if matches!(action, TabSelect | WorkspaceSelect) {
                 target
                     .filter(|e| all.contains(e))
                     .ok_or("selection target no longer exists")?
-            } else if action.ends_with("previous") {
-                all[(index + all.len() - 1) % all.len()]
             } else {
-                all[(index + 1) % all.len()]
+                // `index` was found in `all`, so it is nonempty.
+                let next = if matches!(action, TabPrevious | WorkspacePrevious) {
+                    (index + all.len() - 1) % all.len()
+                } else {
+                    (index + 1) % all.len()
+                };
+                all.get(next).copied().ok_or("target disappeared")?
             };
-            let mut v = world.get_mut::<Viewer>(id).unwrap();
-            if action.starts_with("workspace_") {
+            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
+            if workspace_action {
                 v.workspace = selected;
             } else {
                 v.tab = Some(selected);
@@ -199,7 +202,9 @@ pub fn repair(world: &mut World) {
         .iter(world)
         .collect();
     for id in viewers {
-        let v = world.get::<Viewer>(id).unwrap();
+        let Some(v) = world.get::<Viewer>(id) else {
+            continue;
+        };
         let workspace = if roots.contains(&v.workspace) {
             v.workspace
         } else if let Some(&root) = roots.first() {
@@ -209,16 +214,22 @@ pub fn repair(world: &mut World) {
             continue;
         };
         let available = tabs(world, workspace);
-        let memory = world.get::<Navigation>(id).unwrap();
+        let Some(memory) = world.get::<Navigation>(id) else {
+            continue;
+        };
         let changed_workspace = memory.observed.is_some_and(|old| old.0 != workspace);
         let requested = if changed_workspace {
             memory.tabs.get(&workspace).copied()
         } else {
             v.tab
         };
-        let tab = requested
+        // normalize_workspace above guarantees every workspace has a tab.
+        let Some(tab) = requested
             .filter(|t| available.contains(t))
-            .unwrap_or(available[0]);
+            .or_else(|| available.first().copied())
+        else {
+            continue;
+        };
         let visible = leaves(world, tab);
         let changed_tab = memory.observed.is_some_and(|old| old.1 != tab);
         let requested = if changed_tab {
@@ -252,7 +263,9 @@ pub fn repair(world: &mut World) {
             })
             .map(|(tab, _)| *tab)
             .collect();
-        let mut memory = world.get_mut::<Navigation>(id).unwrap();
+        let Some(mut memory) = world.get_mut::<Navigation>(id) else {
+            continue;
+        };
         for workspace in stale_tabs {
             memory.tabs.remove(&workspace);
         }
@@ -274,7 +287,9 @@ pub fn repair(world: &mut World) {
             memory.focus.insert(tab, focus);
         }
         memory.observed = Some((workspace, tab, focus));
-        let mut v = world.get_mut::<Viewer>(id).unwrap();
+        let Some(mut v) = world.get_mut::<Viewer>(id) else {
+            continue;
+        };
         if v.workspace != workspace || v.tab != Some(tab) || v.focus != focus {
             v.workspace = workspace;
             v.tab = Some(tab);

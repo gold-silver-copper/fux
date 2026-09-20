@@ -1,6 +1,6 @@
 [package]
 name = "fux"
-version = "0.1.0"
+version = "0.12.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -48,3 +48,12 @@ debug = 0
 strip = true
 lto = "thin"
 codegen-units = 1
+
+[lints.clippy]
+unwrap_used = "forbid"
+expect_used = "forbid"
+panic = "forbid"
+unreachable = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
+indexing_slicing = "warn"

@@ -172,10 +172,11 @@ impl Terminal {
             screen.set_scrollback(0);
             self.snapshot = Some((self.revision, scrollback, visible_cols, lines));
         }
-        (
-            &self.snapshot.as_ref().expect("snapshot prepared above").3,
-            self.parser.screen(),
-        )
+        let lines = self
+            .snapshot
+            .as_ref()
+            .map_or(&[][..], |(_, _, _, lines)| lines.as_slice());
+        (lines, self.parser.screen())
     }
 
     pub fn revision(&self) -> u64 {
@@ -215,7 +216,7 @@ impl Terminal {
         let write_fd = Async::new(File::from(dup(fd).map_err(|e| e.to_string())?))
             .map_err(|e| e.to_string())?;
         let mut command = CommandBuilder::new(program);
-        command.args(&launch.argv[1..]);
+        command.args(launch.argv.get(1..).unwrap_or_default());
         if !launch.cwd.is_empty() {
             command.cwd(&launch.cwd);
         }
@@ -330,7 +331,7 @@ impl Terminal {
                             writer_notify.send();
                             return;
                         }
-                        Ok(n) => remaining = &remaining[n..],
+                        Ok(n) => remaining = remaining.get(n..).unwrap_or_default(),
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                         Err(e) => {
                             let _ = output_tx
@@ -730,9 +731,11 @@ impl Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::*;
 
     #[test]
-    fn recipe_replacement_reinsertion_and_despawn_preserve_process_ownership() {
+    fn recipe_replacement_reinsertion_and_despawn_preserve_process_ownership()
+    -> crate::testing::Outcome {
         let mut app = App::new();
         app.insert_resource(Wake(thread::current()))
             .add_plugins((bevy_app::TaskPoolPlugin::default(), TerminalPlugin));
@@ -746,26 +749,26 @@ mod tests {
         let pid = |app: &App| {
             app.world()
                 .get::<ProcessState>(entity)
-                .unwrap()
-                .pid
-                .unwrap()
+                .and_then(|state| state.pid)
+                .need()
         };
         let reaped =
             |pid| nix::sys::signal::kill(Pid::from_raw(pid as i32), None) == Err(Errno::ESRCH);
-        let first = pid(&app);
+        let first = pid(&app)?;
         app.world_mut().entity_mut(entity).insert(recipe());
         app.update();
-        assert_eq!(pid(&app), first);
+        assert_eq!(pid(&app)?, first);
         app.world_mut()
             .entity_mut(entity)
             .remove::<Launch>()
             .insert(recipe());
         app.update();
-        let second = pid(&app);
+        let second = pid(&app)?;
         assert_ne!(first, second);
         assert!(reaped(first));
         app.world_mut().despawn(entity);
         app.update();
         assert!(reaped(second));
+        Ok(())
     }
 }

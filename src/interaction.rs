@@ -2,7 +2,8 @@
 #[cfg(test)]
 mod tests;
 use crate::{
-    actions::{self, Target},
+    actions::{self, Action, Target},
+    chrome,
     control::Control,
     model::*,
     navigation,
@@ -13,7 +14,7 @@ use bevy_ecs::prelude::*;
 #[derive(Clone)]
 pub struct Entry {
     pub label: String,
-    pub action: String,
+    pub action: Action,
     pub destination: Option<Entity>,
 }
 #[derive(Clone)]
@@ -24,10 +25,10 @@ pub enum Mode {
         selected: usize,
     },
     Confirm {
-        action: String,
+        action: Action,
     },
     Text {
-        action: String,
+        action: Action,
         buffer: String,
     },
 }
@@ -46,18 +47,20 @@ fn label(world: &World, entity: Entity) -> String {
 }
 use crate::navigation::workspaces as roots;
 fn open(world: &mut World, id: Entity, target: Target, mode: Mode) {
-    let mut ownership = world.get_mut::<crate::paste::Ownership>(id).unwrap();
+    let Some(mut ownership) = world.get_mut::<crate::paste::Ownership>(id) else {
+        return;
+    };
     ownership.serial = ownership.serial.wrapping_add(1);
     let serial = ownership.serial;
+    let Some(mut v) = world.get_mut::<Viewer>(id) else {
+        return;
+    };
+    v.prefix = false;
     world.entity_mut(id).insert(Overlay {
         serial,
         target,
         mode,
     });
-    let mut v = world.get_mut::<Viewer>(id).unwrap();
-    v.prefix = false;
-    v.prompt = None;
-    v.buffer.clear();
 }
 fn error(world: &mut World, id: Entity, message: impl Into<String>) {
     if let Some(mut v) = world.get_mut::<Viewer>(id) {
@@ -70,15 +73,16 @@ pub fn invoke(
     world: &mut World,
     id: Entity,
     target: Target,
-    action: &str,
+    action: Action,
     destination: Option<Entity>,
     value: &str,
     interactive: bool,
 ) -> Result<bool, String> {
-    if let Some(reason) = actions::unavailable(world, target, action) {
+    use Action::*;
+    if let Some(reason) = actions::unavailable(world, target, Some(action)) {
         return Err(reason.into());
     }
-    if !matches!(action, "copy_mode" | "scroll_up" | "scroll_down") {
+    if !matches!(action, CopyMode | ScrollUp | ScrollDown) {
         world.entity_mut(id).remove::<crate::selection::Selection>();
     }
     if let Some(mut v) = world.get_mut::<Viewer>(id) {
@@ -86,21 +90,14 @@ pub fn invoke(
         v.notice.clear();
         v.notice_error = false;
     }
-    if interactive && matches!(action, "close" | "tab_close" | "workspace_close") {
-        open(
-            world,
-            id,
-            target,
-            Mode::Confirm {
-                action: action.into(),
-            },
-        );
+    if interactive && matches!(action, Close | TabClose | WorkspaceClose) {
+        open(world, id, target, Mode::Confirm { action });
         return Ok(true);
     }
     if value.is_empty()
         && matches!(
             action,
-            "rename_pane" | "rename_tab" | "rename_workspace" | "save_layout" | "load_layout"
+            RenamePane | RenameTab | RenameWorkspace | SaveLayout | LoadLayout
         )
     {
         open(
@@ -108,40 +105,43 @@ pub fn invoke(
             id,
             target,
             Mode::Text {
-                action: action.into(),
+                action,
                 buffer: String::new(),
             },
         );
         return Ok(true);
     }
     match action {
-        "tab_new" => {
-            world.get_mut::<Viewer>(id).unwrap().workspace = target.workspace;
+        TabNew => {
+            world
+                .get_mut::<Viewer>(id)
+                .ok_or("viewer removed")?
+                .workspace = target.workspace;
             navigation::control(world, id, action, None, value)?;
         }
-        "copy_mode" => crate::selection::start(world, id, target.leaf.ok_or("no pane")?)?,
-        "tab_choose" | "workspace_choose" | "swap_choose" | "move_tab" | "move_workspace"
+        CopyMode => crate::selection::start(world, id, target.leaf.ok_or("no pane")?)?,
+        TabChoose | WorkspaceChoose | SwapChoose | MoveTab | MoveWorkspace
             if destination.is_none() && value.is_empty() =>
         {
             let candidates = match action {
-                "workspace_choose" | "move_workspace" => roots(world),
-                "swap_choose" => navigation::leaves(world, target.tab.ok_or("no tab")?)
+                WorkspaceChoose | MoveWorkspace => roots(world),
+                SwapChoose => navigation::leaves(world, target.tab.ok_or("no tab")?)
                     .into_iter()
                     .filter(|e| Some(*e) != target.leaf)
                     .collect(),
                 _ => navigation::tabs(world, target.workspace),
             };
             let execute = match action {
-                "tab_choose" => "tab_select",
-                "workspace_choose" => "workspace_select",
-                "swap_choose" => "swap",
+                TabChoose => TabSelect,
+                WorkspaceChoose => WorkspaceSelect,
+                SwapChoose => Swap,
                 _ => action,
             };
             let entries = candidates
                 .into_iter()
                 .map(|entity| Entry {
                     label: label(world, entity),
-                    action: execute.into(),
+                    action: execute,
                     destination: Some(entity),
                 })
                 .collect();
@@ -150,36 +150,33 @@ pub fn invoke(
                 id,
                 target,
                 Mode::List {
-                    title: actions::metadata(action).unwrap().label.into(),
+                    title: action.label().into(),
                     entries,
                     selected: 0,
                 },
             );
         }
-        "pane_menu" | "tab_menu" | "workspace_menu" => {
+        PaneMenu | TabMenu | WorkspaceMenu => {
             let group = match action {
-                "pane_menu" => "Panes",
-                "tab_menu" => "Tabs",
+                PaneMenu => "Panes",
+                TabMenu => "Tabs",
                 _ => "Workspaces",
             };
             let entries = actions::ALL
                 .iter()
+                .copied()
                 .filter(|a| {
-                    (a.group == group
-                        || group == "Workspaces" && matches!(a.id, "save_layout" | "load_layout"))
-                        && !a.id.ends_with("_menu")
+                    (a.group() == group
+                        || group == "Workspaces" && matches!(a, SaveLayout | LoadLayout))
+                        && !matches!(a, PaneMenu | TabMenu | WorkspaceMenu)
                         && !matches!(
-                            a.id,
-                            "tab_next"
-                                | "tab_previous"
-                                | "tab_choose"
-                                | "workspace_next"
-                                | "workspace_previous"
+                            a,
+                            TabNext | TabPrevious | TabChoose | WorkspaceNext | WorkspacePrevious
                         )
                 })
                 .map(|a| Entry {
-                    label: a.label.into(),
-                    action: a.id.into(),
+                    label: a.label().into(),
+                    action: a,
                     destination: None,
                 })
                 .collect();
@@ -193,8 +190,8 @@ pub fn invoke(
                         label(
                             world,
                             match action {
-                                "pane_menu" => target.leaf.ok_or("no pane")?,
-                                "tab_menu" => target.tab.ok_or("no tab")?,
+                                PaneMenu => target.leaf.ok_or("no pane")?,
+                                TabMenu => target.tab.ok_or("no tab")?,
                                 _ => target.workspace,
                             }
                         )
@@ -204,11 +201,9 @@ pub fn invoke(
                 },
             );
         }
-        "tab_reorder_previous"
-        | "tab_reorder_next"
-        | "workspace_reorder_previous"
-        | "workspace_reorder_next" => {
-            let workspace_action = action.starts_with("workspace_");
+        TabReorderPrevious | TabReorderNext | WorkspaceReorderPrevious | WorkspaceReorderNext => {
+            let workspace_action =
+                matches!(action, WorkspaceReorderPrevious | WorkspaceReorderNext);
             let mut entities = if workspace_action {
                 roots(world)
             } else {
@@ -223,7 +218,7 @@ pub fn invoke(
                 .iter()
                 .position(|e| *e == entity)
                 .ok_or("target removed")?;
-            let other = if action.ends_with("previous") {
+            let other = if matches!(action, TabReorderPrevious | WorkspaceReorderPrevious) {
                 index.saturating_sub(1)
             } else {
                 (index + 1).min(entities.len() - 1)
@@ -241,50 +236,49 @@ pub fn invoke(
                     .replace_children(&entities);
             }
         }
-        "close" | "tab_close" | "workspace_close" => {
+        Close | TabClose | WorkspaceClose => {
             let entity = match action {
-                "close" => target.leaf.ok_or("no pane")?,
-                "tab_close" => target.tab.ok_or("no tab")?,
+                Close => target.leaf.ok_or("no pane")?,
+                TabClose => target.tab.ok_or("no tab")?,
                 _ => target.workspace,
             };
             close(world, entity);
             navigation::repair(world);
         }
-        "rename_pane" | "rename_tab" | "rename_workspace" if !value.is_empty() => {
+        RenamePane | RenameTab | RenameWorkspace if !value.is_empty() => {
             let entity = match action {
-                "rename_pane" => {
+                RenamePane => {
                     world
                         .get::<PaneView>(target.leaf.ok_or("no pane")?)
                         .ok_or("pane removed")?
                         .pane
                 }
-                "rename_tab" => target.tab.ok_or("no tab")?,
+                RenameTab => target.tab.ok_or("no tab")?,
                 _ => target.workspace,
             };
             world.entity_mut(entity).insert(Name::new(value.to_owned()));
         }
-        "swap_left" | "swap_right" | "swap_up" | "swap_down" | "move_left" | "move_right"
-        | "move_up" | "move_down" => {
+        SwapLeft | SwapRight | SwapUp | SwapDown | MoveLeft | MoveRight | MoveUp | MoveDown => {
             let source = target.leaf.ok_or("no pane")?;
-            let direction = action.rsplit('_').next().unwrap();
-            let destination = crate::server::neighbor(world, id, source, direction)
+            let direction = action.direction().ok_or("no direction")?;
+            let destination = crate::frame::neighbor(world, id, source, direction)
                 .ok_or("no pane in that direction")?;
-            if action.starts_with("swap_") {
+            if matches!(action, SwapLeft | SwapRight | SwapUp | SwapDown) {
                 swap(world, source, destination)?;
             } else {
                 move_beside(world, source, destination, direction)?;
             }
-            world.get_mut::<Viewer>(id).unwrap().zoom = false;
+            world.get_mut::<Viewer>(id).ok_or("viewer removed")?.zoom = false;
         }
-        "swap" => swap(
+        Swap => swap(
             world,
             target.leaf.ok_or("no pane")?,
             destination.ok_or("swap destination required")?,
         )?,
-        "move_tab" | "move_workspace" | "move_new_tab" | "move_new_workspace" => {
+        MoveTab | MoveWorkspace | MoveNewTab | MoveNewWorkspace => {
             let leaf = target.leaf.ok_or("no pane")?;
             let (workspace, tab) = match action {
-                "move_new_workspace" => {
+                MoveNewWorkspace => {
                     let order = roots(world)
                         .into_iter()
                         .filter_map(|e| world.get::<WorkspaceOrder>(e).map(|o| o.0))
@@ -311,7 +305,7 @@ pub fn invoke(
                         .id();
                     (root, tab)
                 }
-                "move_new_tab" => {
+                MoveNewTab => {
                     let tab = world
                         .spawn((
                             Tab,
@@ -322,7 +316,7 @@ pub fn invoke(
                         .id();
                     (target.workspace, tab)
                 }
-                "move_workspace" => {
+                MoveWorkspace => {
                     let root = destination
                         .or_else(|| {
                             roots(world).into_iter().find(|e| {
@@ -332,7 +326,10 @@ pub fn invoke(
                         .filter(|e| world.get::<Workspace>(*e).is_some())
                         .ok_or("destination workspace removed")?;
                     navigation::normalize_workspace(world, root);
-                    (root, navigation::tabs(world, root)[0])
+                    // normalize_workspace spawns a tab when a workspace has none.
+                    #[expect(clippy::indexing_slicing, reason = "normalized workspace has a tab")]
+                    let tab = navigation::tabs(world, root)[0];
+                    (root, tab)
                 }
                 _ => {
                     let tab = destination
@@ -366,10 +363,10 @@ pub fn invoke(
             }
             world.entity_mut(leaf).insert(ChildOf(tab));
             // Select the moved pane without overwriting other viewers' memory.
-            let mut memory = world.get_mut::<Navigation>(id).unwrap();
+            let mut memory = world.get_mut::<Navigation>(id).ok_or("viewer removed")?;
             memory.tabs.insert(workspace, tab);
             memory.focus.insert(tab, leaf);
-            let mut v = world.get_mut::<Viewer>(id).unwrap();
+            let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
             v.workspace = workspace;
             v.tab = Some(tab);
             v.focus = Some(leaf);
@@ -412,10 +409,8 @@ fn move_beside(
         .parent();
     let index = world
         .get::<Children>(parent)
-        .unwrap()
-        .iter()
-        .position(|e| e == destination)
-        .unwrap();
+        .and_then(|children| children.iter().position(|e| e == destination))
+        .ok_or("destination removed")?;
     let mut node = navigation::tab_node();
     node.width = Val::Auto;
     node.height = Val::Auto;
@@ -455,18 +450,17 @@ fn swap(world: &mut World, source: Entity, destination: Entity) -> Result<(), St
         .parent();
     let ai = world
         .get::<Children>(a)
-        .unwrap()
-        .iter()
-        .position(|e| e == source)
-        .unwrap();
+        .and_then(|children| children.iter().position(|e| e == source))
+        .ok_or("source has no parent")?;
     let bi = world
         .get::<Children>(b)
-        .unwrap()
-        .iter()
-        .position(|e| e == destination)
-        .unwrap();
+        .and_then(|children| children.iter().position(|e| e == destination))
+        .ok_or("destination has no parent")?;
     if a == b {
-        world.get_mut::<Children>(a).unwrap().swap(ai, bi);
+        world
+            .get_mut::<Children>(a)
+            .ok_or("source has no parent")?
+            .swap(ai, bi);
     } else {
         world.entity_mut(a).insert_children(ai, &[destination]);
         world.entity_mut(b).insert_children(bi, &[source]);
@@ -474,41 +468,22 @@ fn swap(world: &mut World, source: Entity, destination: Entity) -> Result<(), St
     Ok(())
 }
 
-/// Command/help navigation owns reserved keys before configured prefix bindings.
+/// Command column navigation owns reserved keys before configured prefix bindings.
 pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
     let Some(v) = world.get::<Viewer>(id) else {
         return false;
     };
-    let help = v.prompt.as_deref() == Some("help");
-    if !help && (!v.prefix || v.prompt.is_some()) {
+    if !v.prefix {
         return false;
     }
     let mut v = v.clone();
     let settings = world.resource::<crate::assets::Settings>();
     // The prefix itself retains literal forwarding, even for a navigation-key prefix.
-    if v.prefix
-        && let Input::Key {
-            key,
-            ctrl,
-            alt,
-            shift,
-        } = input
-    {
-        let token = format!(
-            "{}{}{}{}",
-            if *ctrl { "ctrl-" } else { "" },
-            if *alt { "alt-" } else { "" },
-            if *shift && key.chars().count() != 1 {
-                "shift-"
-            } else {
-                ""
-            },
-            key
-        );
-        if token == settings.prefix {
-            return false;
-        }
+    if input.token().as_deref() == Some(settings.prefix.as_str()) {
+        return false;
     }
+    let scroll =
+        |v: &Viewer, down, page| chrome::scroll(settings, v.rows, v.help_scroll, down, page);
     let mut execute = None;
     match input {
         Input::Resize { .. } => return false,
@@ -518,38 +493,39 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
             alt: false,
             shift: false,
         } => match key.as_str() {
-            "up" | "pageup" => crate::chrome::scroll(&mut v, settings, false, key == "pageup"),
-            "down" | "pagedown" => crate::chrome::scroll(&mut v, settings, true, key == "pagedown"),
+            "up" | "pageup" => v.help_scroll = scroll(&v, false, key == "pageup"),
+            "down" | "pagedown" => v.help_scroll = scroll(&v, true, key == "pagedown"),
             "left" | "right" => {} // Vertical menus reserve all unmodified arrows.
             "home" => v.help_scroll = 0,
-            "end" => v.help_scroll = crate::chrome::help_limit(settings, v.rows),
-            "enter" => execute = crate::chrome::selected_action(&v, settings).map(str::to_owned),
+            "end" => v.help_scroll = chrome::help_limit(settings, v.rows),
+            "enter" => {
+                execute = chrome::selected_action(settings, v.rows, v.cols, v.help_scroll)
+                    .map(str::to_owned)
+            }
             "escape" => {
                 v.prefix = false;
-                v.prompt = None;
                 v.notice.clear();
             }
-            "q" if help => {
-                v.prompt = None;
-            }
-            _ => return help,
+            _ => return false,
         },
         Input::Mouse { action, .. } => match action.as_str() {
-            "scrollup" => crate::chrome::scroll(&mut v, settings, false, false),
-            "scrolldown" => crate::chrome::scroll(&mut v, settings, true, false),
+            "scrollup" => v.help_scroll = scroll(&v, false, false),
+            "scrolldown" => v.help_scroll = scroll(&v, true, false),
             _ => {}
         },
         Input::Paste { .. } | Input::PasteBegin => return true,
-        _ => return help,
+        _ => return false,
     }
     let target = Target::viewer(&v);
     if execute.is_some() {
         v.prefix = false;
-        v.prompt = None;
     }
-    *world.get_mut::<Viewer>(id).unwrap() = v;
+    let Some(mut current) = world.get_mut::<Viewer>(id) else {
+        return true;
+    };
+    *current = v;
     if let Some(action) = execute {
-        dispatch(world, id, target, &action, None, "", true);
+        dispatch_named(world, id, target, &action, None, "", true);
     }
     true
 }
@@ -582,14 +558,14 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             },
         ) => {
             if key == "y" {
-                execute = Some((action.clone(), None, String::new(), false));
+                execute = Some((*action, None, String::new(), false));
             } else if key == "n" {
                 cancel = true;
             }
         }
         (Mode::Text { action, buffer }, Input::Key { key, ctrl, alt, .. }) => {
             if key == "enter" && !buffer.is_empty() {
-                execute = Some((action.clone(), None, buffer.clone(), false));
+                execute = Some((*action, None, buffer.clone(), false));
             } else if key == "backspace" {
                 buffer.pop();
             } else if !ctrl && !alt && key.chars().count() == 1 {
@@ -603,7 +579,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             },
             Input::Key { key, .. },
         ) => {
-            let page = list_capacity(world.get::<Viewer>(id).unwrap().rows);
+            let page = list_capacity(world.get::<Viewer>(id).map_or(0, |v| v.rows));
             match key.as_str() {
                 "up" | "k" => *selected = selected.saturating_sub(1),
                 "down" | "j" => *selected = (*selected + 1).min(entries.len().saturating_sub(1)),
@@ -613,8 +589,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 "end" => *selected = entries.len().saturating_sub(1),
                 "enter" => {
                     if let Some(entry) = entries.get(*selected) {
-                        execute =
-                            Some((entry.action.clone(), entry.destination, String::new(), true));
+                        execute = Some((entry.action, entry.destination, String::new(), true));
                     }
                 }
                 "q" => cancel = true,
@@ -646,7 +621,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             world,
             id,
             overlay.target,
-            &action,
+            action,
             destination,
             &value,
             interactive,
@@ -655,7 +630,8 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     true
 }
 
-pub fn dispatch(
+/// A configured binding names its action as text; unknown names report as before.
+pub fn dispatch_named(
     world: &mut World,
     id: Entity,
     target: Target,
@@ -664,13 +640,42 @@ pub fn dispatch(
     value: &str,
     interactive: bool,
 ) {
+    match action.parse() {
+        Ok(action) => dispatch(world, id, target, action, destination, value, interactive),
+        Err(message) => unknown(world, id, target, message),
+    }
+}
+
+/// The same visible outcome an unknown action string has always had: target
+/// validity is still checked, the selection is dropped, the prefix closes, and
+/// the bar shows the error.
+pub fn unknown(world: &mut World, id: Entity, target: Target, message: String) {
+    if let Some(reason) = actions::unavailable(world, target, None) {
+        return error(world, id, reason);
+    }
+    world.entity_mut(id).remove::<crate::selection::Selection>();
+    if let Some(mut v) = world.get_mut::<Viewer>(id) {
+        v.prefix = false;
+    }
+    error(world, id, message);
+}
+
+pub fn dispatch(
+    world: &mut World,
+    id: Entity,
+    target: Target,
+    action: Action,
+    destination: Option<Entity>,
+    value: &str,
+    interactive: bool,
+) {
     match invoke(world, id, target, action, destination, value, interactive) {
         Ok(true) => {}
         Ok(false) => world.trigger(Control {
             viewer: id,
-            action: action.into(),
+            action: action.to_string(),
             value: value.into(),
-            target: if matches!(action, "save_layout" | "load_layout") {
+            target: if matches!(action, Action::SaveLayout | Action::LoadLayout) {
                 Some(target.workspace)
             } else {
                 destination.or(target.leaf)
@@ -693,17 +698,17 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
     let mut lines = Vec::new();
     match &overlay.mode {
         Mode::Confirm { action } => {
-            let entity = match action.as_str() {
-                "close" => overlay.target.leaf,
-                "tab_close" => overlay.target.tab,
+            let entity = match action {
+                Action::Close => overlay.target.leaf,
+                Action::TabClose => overlay.target.tab,
                 _ => Some(overlay.target.workspace),
             };
             lines.push((
                 format!(
                     "Close {} {}?",
-                    match action.as_str() {
-                        "close" => "pane",
-                        "tab_close" => "tab",
+                    match action {
+                        Action::Close => "pane",
+                        Action::TabClose => "tab",
                         _ => "workspace",
                     },
                     entity.map_or_else(
@@ -714,7 +719,7 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
                 "\x1b[1m",
             ));
             lines.push((
-                if action == "close" {
+                if *action == Action::Close {
                     "Remove pane; stop if last view"
                 } else {
                     "Remove all contained pane views"
@@ -725,12 +730,7 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
             lines.push(("y confirm · n/Esc cancel".into(), ""));
         }
         Mode::Text { action, buffer } => {
-            lines.push((
-                actions::metadata(action)
-                    .map_or(action.as_str(), |a| a.label)
-                    .into(),
-                "\x1b[1m",
-            ));
+            lines.push((action.label().into(), "\x1b[1m"));
             lines.push((format!("{buffer}▏"), "\x1b[7m"));
             lines.push(("Enter accept · Esc cancel".into(), "\x1b[2m"));
         }
@@ -748,7 +748,8 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
                 lines.push((format!("▲ {start} more"), "\x1b[2m"));
             }
             for (index, entry) in entries.iter().enumerate().skip(start).take(capacity) {
-                let disabled = actions::unavailable(world, overlay.target, &entry.action).is_some();
+                let disabled =
+                    actions::unavailable(world, overlay.target, Some(entry.action)).is_some();
                 lines.push((
                     format!(
                         "{} {}",

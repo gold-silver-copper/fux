@@ -31,18 +31,18 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             } else {
                 Owner::Discard
             }
-        } else if v.prefix
-            || v.prompt.is_some()
-            || world.get::<crate::selection::Selection>(id).is_some()
-        {
+        } else if v.prefix || world.get::<crate::selection::Selection>(id).is_some() {
             Owner::Discard
         } else {
             Owner::Pane(Target::viewer(v))
         };
-        world.get_mut::<Ownership>(id).unwrap().pending = Some(owner);
-        let mut v = world.get_mut::<Viewer>(id).unwrap();
-        v.notice = "pasting...".into();
-        v.notice_error = false;
+        if let Some(mut ownership) = world.get_mut::<Ownership>(id) {
+            ownership.pending = Some(owner);
+        }
+        if let Some(mut v) = world.get_mut::<Viewer>(id) {
+            v.notice = "pasting...".into();
+            v.notice_error = false;
+        }
         return true;
     }
     let Input::Paste { text } = input else {
@@ -63,7 +63,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         Some(Owner::Pane(target)) => {
             world
                 .get::<Viewer>(id)
-                .is_some_and(|v| Target::viewer(v) == target && !v.prefix && v.prompt.is_none())
+                .is_some_and(|v| Target::viewer(v) == target && !v.prefix)
                 && world.get::<Overlay>(id).is_none()
                 && world.get::<crate::selection::Selection>(id).is_none()
         }
@@ -149,8 +149,10 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::*;
     #[test]
-    fn every_fragment_boundary_preserves_paste_ownership_and_embedded_escape() {
+    fn every_fragment_boundary_preserves_paste_ownership_and_embedded_escape()
+    -> crate::testing::Outcome {
         let bytes = b"\x02r\x1b[200~one\x1btwo\x1b[201~\x1b";
         for chunk in 1..=bytes.len() {
             let mut decoder = Decoder::default();
@@ -159,22 +161,24 @@ mod tests {
                 decoder.bytes(bytes, |event| events.push(event));
             }
             decoder.timeout(|event| events.push(event));
-            assert!(matches!(events[2], Input::PasteBegin));
-            assert!(matches!(&events[3], Input::Paste { text } if text == "one\x1btwo"));
-            assert!(matches!(&events[4], Input::Key { key, .. } if key == "escape"));
+            assert!(matches!(events.get(2), Some(Input::PasteBegin)));
+            assert!(matches!(events.get(3), Some(Input::Paste { text }) if text == "one\x1btwo"));
+            assert!(matches!(events.get(4), Some(Input::Key { key, .. }) if key == "escape"));
             assert_eq!(events.len(), 5);
         }
+        Ok(())
     }
     #[test]
-    fn oversized_paste_is_bounded_and_drains_before_following_keys() {
+    fn oversized_paste_is_bounded_and_drains_before_following_keys() -> crate::testing::Outcome {
         let mut decoder = Decoder::default();
         let mut events = Vec::new();
         decoder.bytes(START, |e| events.push(e));
         decoder.bytes(&vec![b'a'; LIMIT * 4], |e| events.push(e));
-        assert!(decoder.paste.as_ref().unwrap().len() <= LIMIT + 1);
+        assert!(decoder.paste.as_ref().need()?.len() <= LIMIT + 1);
         assert!(!decoder.deadline_needed());
         decoder.bytes(b"\x1b[201~z", |e| events.push(e));
-        assert!(matches!(&events[1], Input::Paste { text } if text.len() == LIMIT + 1));
-        assert!(matches!(&events[2], Input::Key { key, .. } if key == "z"));
+        assert!(matches!(events.get(1), Some(Input::Paste { text }) if text.len() == LIMIT + 1));
+        assert!(matches!(events.get(2), Some(Input::Key { key, .. }) if key == "z"));
+        Ok(())
     }
 }

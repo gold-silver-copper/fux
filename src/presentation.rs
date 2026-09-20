@@ -304,7 +304,10 @@ impl Presentation {
             }
         }
         if rebuild || resized {
-            world.get_mut::<Node>(self.container).unwrap().height = Val::Px(viewport.y as f32);
+            world
+                .get_mut::<Node>(self.container)
+                .ok_or("presentation container is missing")?
+                .height = Val::Px(viewport.y as f32);
             self.app.update();
             self.collect_rects();
         } else if focus_changed {
@@ -349,7 +352,7 @@ impl Presentation {
     }
 
     pub fn neighbor(&self, leaf: Entity, direction: &str) -> Option<Entity> {
-        crate::server::directional_neighbor(&self.rects, leaf, direction)
+        crate::frame::directional_neighbor(&self.rects, leaf, direction)
     }
 
     pub fn rects(&self) -> &[PaneRect] {

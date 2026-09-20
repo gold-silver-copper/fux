@@ -27,8 +27,10 @@ pub fn rpc(endpoint: &str, method: &str, params: Option<Value>) -> Result<Value,
             .into()
     });
     let mut request = json!({"jsonrpc":"2.0","id":1,"method":method});
-    if let Some(params) = params {
-        request["params"] = params;
+    if let Some(params) = params
+        && let Some(object) = request.as_object_mut()
+    {
+        object.insert("params".into(), params);
     }
     let response: Value = AGENT
         .post(endpoint)
@@ -278,7 +280,7 @@ fn read_input(
                 let _ = sender.send(Incoming::Stop);
                 break;
             }
-            decoder.bytes(&bytes[..n], &mut emit);
+            decoder.bytes(bytes.get(..n).unwrap_or_default(), &mut emit);
         }
         if closed {
             break;

@@ -26,20 +26,18 @@ impl Grid {
             return Err("copy viewport exceeds 262144 cells".into());
         }
         screen.set_scrollback(offset);
-        let grid = Self {
+        // Every in-range cell exists; the emulator does not expose a cell-less row.
+        let cells: Option<Vec<Vec<vt100::Cell>>> = (0..rows)
+            .map(|y| (0..cols).map(|x| screen.cell(y, x).cloned()).collect())
+            .collect();
+        let grid = cells.map(|cells| Self {
             offset: screen.scrollback(),
             size: (rows, cols),
-            cells: (0..rows)
-                .map(|y| {
-                    (0..cols)
-                        .map(|x| screen.cell(y, x).unwrap().clone())
-                        .collect()
-                })
-                .collect(),
+            cells,
             wrapped: (0..rows).map(|y| screen.row_wrapped(y)).collect(),
-        };
+        });
         screen.set_scrollback(0);
-        Ok(grid)
+        grid.ok_or_else(|| "copy viewport has no cells".into())
     }
     fn clip(mut self, visible: (u16, u16)) -> Result<Self, String> {
         let size = (self.size.0.min(visible.0), self.size.1.min(visible.1));
@@ -58,10 +56,16 @@ impl Grid {
         Ok(self)
     }
 
+    fn cell(&self, (y, x): (u16, u16)) -> Option<&vt100::Cell> {
+        self.cells.get(usize::from(y))?.get(usize::from(x))
+    }
     fn point(&self, (y, x): (u16, u16)) -> (u16, u16) {
-        let y = y.min(self.size.0 - 1);
-        let mut x = x.min(self.size.1 - 1);
-        if self.cells[usize::from(y)][usize::from(x)].is_wide_continuation() {
+        let y = y.min(self.size.0.saturating_sub(1));
+        let mut x = x.min(self.size.1.saturating_sub(1));
+        if self
+            .cell((y, x))
+            .is_some_and(vt100::Cell::is_wide_continuation)
+        {
             x = x.saturating_sub(1);
         }
         (y, x)
@@ -75,7 +79,9 @@ impl Grid {
             let right = if y == end.0 { end.1 } else { self.size.1 - 1 };
             let mut line = String::new();
             for x in left..=right {
-                let cell = &self.cells[usize::from(y)][usize::from(x)];
+                let Some(cell) = self.cell((y, x)) else {
+                    continue;
+                };
                 if cell.is_wide_continuation() || cell.is_wide() && x + 1 >= self.size.1 {
                     continue;
                 }
@@ -85,7 +91,7 @@ impl Grid {
                     line.push(' ');
                 }
             }
-            if y < end.0 && self.wrapped[usize::from(y)] {
+            if y < end.0 && self.wrapped.get(usize::from(y)).copied().unwrap_or(false) {
                 text.push_str(&line);
             } else {
                 text.push_str(line.trim_end_matches(' '));
@@ -128,7 +134,7 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         0
     };
     let visible =
-        crate::server::content_size(world, id, leaf).ok_or("no visible content to select")?;
+        crate::frame::content_size(world, id, leaf).ok_or("no visible content to select")?;
     let mut terminal = world
         .get_mut::<Terminal>(pane)
         .ok_or("terminal not found")?;
@@ -144,11 +150,10 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         dragging: false,
         mouse_origin: false,
     });
-    let mut v = world.get_mut::<Viewer>(id).unwrap();
+    let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
     v.focus = Some(leaf);
     v.scrollback = offset;
     v.prefix = false;
-    v.prompt = None;
     v.notice = "Copy: arrows/hjkl · Space select · y copy · g live · q exit".into();
     Ok(())
 }
@@ -158,7 +163,7 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
 pub fn refresh(world: &mut World, id: Entity) {
     let visible = world
         .get::<Selection>(id)
-        .and_then(|s| crate::server::content_size(world, id, s.leaf))
+        .and_then(|s| crate::frame::content_size(world, id, s.leaf))
         .unwrap_or((0, 0));
     refresh_visible(world, id, visible);
 }
@@ -201,7 +206,9 @@ pub fn refresh_visible(world: &mut World, id: Entity, visible: (u16, u16)) {
     };
     match result {
         Ok((revision, grid)) => {
-            let mut selection = world.get_mut::<Selection>(id).unwrap();
+            let Some(mut selection) = world.get_mut::<Selection>(id) else {
+                return;
+            };
             let invalidated = selection.anchor.is_some() && grid != selection.grid;
             if invalidated {
                 selection.anchor = None;
@@ -211,11 +218,13 @@ pub fn refresh_visible(world: &mut World, id: Entity, visible: (u16, u16)) {
             let actual = grid.offset;
             selection.grid = grid;
             selection.revision = revision;
-            let mut v = world.get_mut::<Viewer>(id).unwrap();
-            v.scrollback = actual;
-            if invalidated {
-                v.notice = "selection cleared: rows changed, resized, scrolled or evicted".into();
-                v.notice_error = true;
+            if let Some(mut v) = world.get_mut::<Viewer>(id) {
+                v.scrollback = actual;
+                if invalidated {
+                    v.notice =
+                        "selection cleared: rows changed, resized, scrolled or evicted".into();
+                    v.notice_error = true;
+                }
             }
         }
         Err(error) => {
@@ -259,51 +268,59 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         Input::Key { key, .. } => match key.as_str() {
             "q" | "escape" => {
                 world.entity_mut(id).remove::<Selection>();
-                world.get_mut::<Viewer>(id).unwrap().notice.clear();
+                if let Some(mut v) = world.get_mut::<Viewer>(id) {
+                    v.notice.clear();
+                }
                 return true;
             }
             "g" => {
-                let mut v = world.get_mut::<Viewer>(id).unwrap();
-                v.scrollback = 0;
-                v.notice.clear();
+                if let Some(mut v) = world.get_mut::<Viewer>(id) {
+                    v.scrollback = 0;
+                    v.notice.clear();
+                }
                 world.entity_mut(id).remove::<Selection>();
                 return true;
             }
             "c" => {
-                let mut selection = world.get_mut::<Selection>(id).unwrap();
-                selection.anchor = None;
-                selection.dragging = false;
+                if let Some(mut selection) = world.get_mut::<Selection>(id) {
+                    selection.anchor = None;
+                    selection.dragging = false;
+                }
                 return true;
             }
             " " | "space" => {
-                world.get_mut::<Selection>(id).unwrap().anchor = Some(cursor);
+                if let Some(mut selection) = world.get_mut::<Selection>(id) {
+                    selection.anchor = Some(cursor);
+                }
                 return true;
             }
             "y" | "enter" => {
                 let text = selection
                     .anchor
                     .map(|anchor| selection.grid.text(anchor, cursor));
-                if let Some(text) = text {
-                    match crate::server::clipboard(world, id, text) {
-                        Ok(()) => {
-                            world.entity_mut(id).remove::<Selection>();
-                            world.get_mut::<Viewer>(id).unwrap().scrollback = 0;
-                        }
-                        Err(error) => {
-                            let mut v = world.get_mut::<Viewer>(id).unwrap();
+                let copied = text.map(|text| crate::frame::clipboard(world, id, text));
+                if matches!(copied, Some(Ok(()))) {
+                    world.entity_mut(id).remove::<Selection>();
+                }
+                if let Some(mut v) = world.get_mut::<Viewer>(id) {
+                    match copied {
+                        Some(Ok(())) => v.scrollback = 0,
+                        Some(Err(error)) => {
                             v.notice = error;
                             v.notice_error = true;
                         }
+                        None => v.notice = "Space starts a selection".into(),
                     }
-                } else {
-                    world.get_mut::<Viewer>(id).unwrap().notice = "Space starts a selection".into();
                 }
                 return true;
             }
             "left" | "h" => position.1 = position.1.saturating_sub(1),
             "right" | "l" => {
-                let cell = &selection.grid.cells[usize::from(cursor.0)][usize::from(cursor.1)];
-                position.1 = (position.1 + if cell.is_wide() { 2 } else { 1 }).min(size.1 - 1);
+                let wide = selection
+                    .grid
+                    .cell(cursor)
+                    .is_some_and(vt100::Cell::is_wide);
+                position.1 = (position.1 + if wide { 2 } else { 1 }).min(size.1.saturating_sub(1));
             }
             "up" | "k" => {
                 if position.0 > 0 {
@@ -328,14 +345,16 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 page = true;
             }
             "home" => position.1 = 0,
-            "end" => position.1 = size.1 - 1,
+            "end" => position.1 = size.1.saturating_sub(1),
             _ => {}
         },
     }
-    let mut selection = world.get_mut::<Selection>(id).unwrap();
-    selection.cursor = selection.grid.point(position);
-    if let Some(older) = scroll {
-        let mut v = world.get_mut::<Viewer>(id).unwrap();
+    if let Some(mut selection) = world.get_mut::<Selection>(id) {
+        selection.cursor = selection.grid.point(position);
+    }
+    if let Some(older) = scroll
+        && let Some(mut v) = world.get_mut::<Viewer>(id)
+    {
         let step = if page {
             usize::from(size.0).saturating_sub(1).max(1)
         } else {
@@ -388,7 +407,9 @@ pub fn mouse(
     }
     if action == "release" && selection.mouse_origin {
         world.entity_mut(id).remove::<Selection>();
-        world.get_mut::<Viewer>(id).unwrap().notice.clear();
+        if let Some(mut v) = world.get_mut::<Viewer>(id) {
+            v.notice.clear();
+        }
     }
     Ok(())
 }
@@ -405,7 +426,9 @@ pub fn paint(out: &mut String, selection: &Selection, rect: &crate::protocol::Pa
             if (y, x) < start || (y, x) > end {
                 continue;
             }
-            let cell = &selection.grid.cells[usize::from(y)][usize::from(x)];
+            let Some(cell) = selection.grid.cell((y, x)) else {
+                continue;
+            };
             if cell.is_wide_continuation() || cell.is_wide() && x + 1 >= rect.width {
                 continue;
             }
