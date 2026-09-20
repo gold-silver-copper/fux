@@ -60,14 +60,14 @@ fn viewers_remember_independent_tabs_focus_and_last_focus() -> crate::testing::O
     repair(&mut world);
     world.get_mut::<Viewer>(left).need()?.focus = Some(b);
     repair(&mut world);
-    control(&mut world, left, Action::TabNext, None, "")?;
+    select(&mut world, left, Scope::Tab, Pick::Next)?;
     assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(c));
     assert_eq!(world.get::<Viewer>(right).need()?.focus, Some(a));
-    control(&mut world, left, Action::TabPrevious, None, "")?;
+    select(&mut world, left, Scope::Tab, Pick::Previous)?;
     assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(b));
-    control(&mut world, left, Action::FocusLast, None, "")?;
+    focus_last(&mut world, left)?;
     assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(a));
-    control(&mut world, left, Action::FocusLast, None, "")?;
+    focus_last(&mut world, left)?;
     assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(b));
     world.despawn(b);
     repair(&mut world);

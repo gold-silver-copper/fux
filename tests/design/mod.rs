@@ -24,7 +24,7 @@ impl Server {
         parser.process(frame.at("paint").as_str().need()?.as_bytes());
         Ok(parser.screen().clone())
     }
-    fn viewer(&self, viewer: u64) -> Result<Value, String> {
+    pub(crate) fn viewer(&self, viewer: u64) -> Result<Value, String> {
         Ok(self
             .query("fux::model::Viewer")?
             .rows()
@@ -155,8 +155,8 @@ fn native_splits_junctions_focus_zoom_and_no_margin_chrome() -> Outcome {
     let s = Server::start()?;
     let v = s.attach()?;
     s.resize(v, 15, 61)?;
-    s.control(v, "split_horizontal", "")?;
-    s.control(v, "split_vertical", "")?;
+    s.split(v, "horizontal", None)?;
+    s.split(v, "vertical", None)?;
     let screen = s.painted(v, 15, 61)?;
     // Native layout gives left width 30, right width 30 and one shared gap.
     assert_eq!(text(&screen, 0, 30), "│");
@@ -176,12 +176,12 @@ fn native_splits_junctions_focus_zoom_and_no_margin_chrome() -> Outcome {
     s.mouse(v, "press", 30, 3)?; // separator cannot pick a pane
     s.mouse(v, "press", 0, 14)?; // bottom bar cannot pick a pane
     assert_eq!(s.viewer(v)?.at("focus"), selected);
-    s.control(v, "zoom", "")?;
+    s.command(v, "zoom")?;
     let screen = s.painted(v, 15, 61)?;
     assert!(!screen.contents().contains('│') || row(&screen, 14).contains('│'));
     assert_eq!(text(&screen, 0, 30), " ");
     assert_eq!(text(&screen, 7, 31), " ");
-    s.control(v, "zoom", "")?;
+    s.command(v, "zoom")?;
     s.painted(v, 15, 61)?;
     // Preserve arbitrary native spacing instead of painting every empty cell.
     let nodes = s.query("bevy_ui::ui_node::Node")?;
@@ -294,7 +294,8 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     s.capture(v, 7, 18, "narrow-help")?;
     s.key(v, "escape", false)?;
     s.resize(v, 12, 60)?;
-    s.control(v, "rename_pane", "")?;
+    s.key(v, "b", true)?;
+    s.key(v, "r", false)?;
     s.input(v, json!({"kind":"paste","text":"界é-long-name"}))?;
     s.key(v, "backspace", false)?;
     let screen = s.painted(v, 12, 60)?;
@@ -306,7 +307,8 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     s.capture(v, 12, 60, "prompt")?;
     s.key(v, "escape", false)?;
     assert!(!s.painted(v, 12, 60)?.contents().contains("rename pane"));
-    s.control(v, "rename_pane", "")?;
+    s.key(v, "b", true)?;
+    s.key(v, "r", false)?;
     s.input(v, json!({"kind":"paste","text":"renamed"}))?;
     s.enter(v)?;
     assert!(row(&s.painted(v, 12, 60)?, 11).contains("renamed"));

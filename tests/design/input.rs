@@ -94,7 +94,7 @@ fn mouse_edges_literal_prefix_and_modal_input_are_byte_exact() -> Outcome {
     s.key(v, "escape", false)?;
     s.key(v, "b", true)?;
     s.key(v, "b", true)?;
-    s.control(v, "help", "")?;
+    s.command(v, "help")?;
     s.painted(v, 6, 12)?;
     s.mouse(v, "press", 0, 0)?;
     s.input(v, json!({"kind":"paste","text":"forbidden"}))?;
@@ -117,7 +117,7 @@ fn mouse_edges_literal_prefix_and_modal_input_are_byte_exact() -> Outcome {
     let screen = s.painted(v, 6, 12)?;
     assert!(!screen.cell(0, 11).need()?.has_contents());
     assert!(!screen.cell(4, 0).need()?.has_contents());
-    s.control(small, "detach", "")?;
+    s.command(small, "detach")?;
     Ok(())
 }
 
@@ -126,7 +126,7 @@ fn settings_hot_reload_short_empty_and_unicode_help() -> Outcome {
     let s = Server::start()?;
     let v = s.attach()?;
     s.resize(v, 8, 32)?;
-    s.control(v, "help", "")?;
+    s.command(v, "help")?;
     for _ in 0..30 {
         s.key(v, "down", false)?;
     }
@@ -171,7 +171,7 @@ fn settings_hot_reload_short_empty_and_unicode_help() -> Outcome {
             .cell(7, x)
             .is_some_and(|c| c.fgcolor() == Color::Idx(1))
     }));
-    s.control(v, "help", "")?;
+    s.command(v, "help")?;
     fs::write(s.directory.join("fux.json"), r#"{"bindings":[]}"#)?;
     eventually(|| Ok(s.painted(v, 8, 32)?.contents().contains("No bindings")))?;
     s.key(v, "down", false)?;
@@ -193,21 +193,21 @@ fn settings_hot_reload_short_empty_and_unicode_help() -> Outcome {
 fn viewers_keep_independent_focus_zoom_history_and_exit_status() -> Outcome {
     let s = Server::start()?;
     let a = s.attach()?;
-    s.control(a, "split_horizontal", "")?;
+    s.split(a, "horizontal", None)?;
     let b = s.attach()?;
     s.painted(a, 24, 80)?;
     s.painted(b, 24, 80)?;
     let b_focus = s.viewer(b)?.at("focus");
     assert_ne!(s.viewer(a)?.at("focus"), b_focus);
-    s.control(a, "zoom", "")?;
-    s.control(a, "scroll_up", "")?;
+    s.command(a, "zoom")?;
+    s.control(a, json!({"kind":"scroll","order":"previous"}))?;
     s.painted(a, 24, 80)?;
     let b_screen = s.painted(b, 24, 80)?;
     assert_eq!(s.viewer(b)?.at("focus"), b_focus);
     assert_eq!(s.viewer(b)?.at("zoom"), false);
     assert_eq!(s.viewer(b)?.at("scrollback"), 0);
     assert!(b_screen.contents().contains('│'));
-    s.control(a, "scroll_down", "")?;
+    s.control(a, json!({"kind":"scroll","order":"next"}))?;
     s.run(a, "exit 7")?;
     eventually(|| Ok(row(&s.painted(a, 24, 80)?, 23).contains("exit:7")))?;
     assert!(s.painted(a, 24, 80)?.hide_cursor());
@@ -216,7 +216,7 @@ fn viewers_keep_independent_focus_zoom_history_and_exit_status() -> Outcome {
     let marker = (0..80).find(|&x| text(&screen, 22, x) == "[").need()?;
     assert!(screen.cell(22, marker).need()?.dim());
     assert!(screen.cell(22, marker).need()?.inverse());
-    s.control(b, "copy", "")?;
+    s.command(b, "copy")?;
     let screen = s.painted(b, 24, 80)?;
     assert!((0..80).any(|x| {
         screen
@@ -224,7 +224,7 @@ fn viewers_keep_independent_focus_zoom_history_and_exit_status() -> Outcome {
             .is_some_and(|c| c.fgcolor() == Color::Idx(3))
     }));
     // An unknown action name no longer reaches the viewer: the request itself fails.
-    assert!(s.control(b, "not_an_action", "").is_err());
+    assert!(s.control(b, json!({"kind":"not_an_action"})).is_err());
     let screen = s.painted(b, 24, 80)?;
     assert!(!(0..80).any(|x| {
         screen

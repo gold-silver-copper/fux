@@ -508,10 +508,6 @@ impl Presentation {
             .and_then(|local| self.local_to_source.get(&local).copied())
     }
 
-    pub fn focus_next(&mut self) -> Option<Entity> {
-        self.focus_step(false)
-    }
-
     pub fn focus_step(&mut self, previous: bool) -> Option<Entity> {
         self.app
             .world_mut()

@@ -19,7 +19,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
             ]
         }))?,
     )?;
-    s.control(a, "help", "")?;
+    s.command(a, "help")?;
     eventually(|| {
         Ok(s.painted(a, 24, 80)?
             .contents()
@@ -76,7 +76,7 @@ fn a_navigation_key_prefix_still_forwards_its_literal_when_doubled() -> Outcome 
             "prefix":"up", "bindings":[{"key":"up","action":"terminate"}]
         }))?,
     )?;
-    s.control(v, "help", "")?;
+    s.command(v, "help")?;
     eventually(|| {
         Ok(s.painted(v, 24, 80)?
             .contents()
@@ -102,7 +102,7 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
             "bindings":[{"key":"[","action":"tab_previous"}]
         }))?,
     )?;
-    s.control(v, "help", "")?;
+    s.command(v, "help")?;
     eventually(|| Ok(!s.painted(v, 24, 80)?.contents().contains("split side")))?;
     let screen = s.painted(v, 24, 80)?;
     let y = (0..23)
@@ -120,7 +120,7 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
             .contains("only one tab")
     );
     assert_eq!(s.query("fux::model::Tab")?.rows().count(), 1);
-    s.control(v, "copy_mode", "")?;
+    s.command(v, "copy_mode")?;
     s.key(v, " ", false)?;
     assert!(s.painted(v, 24, 80)?.hide_cursor());
     s.key(v, "c", false)?;
@@ -137,13 +137,13 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
     s.key(v, " ", false)?;
     s.key(v, "escape", false)?;
     assert!(!s.painted(v, 24, 80)?.hide_cursor());
-    s.control(v, "copy_mode", "")?;
+    s.command(v, "copy_mode")?;
     s.key(v, "pageup", false)?;
     s.key(v, "g", false)?;
     assert_eq!(s.viewer(v)?.at("scrollback"), 0);
     assert!(s.viewer(v)?.at("notice").is_null());
     assert!(!s.painted(v, 24, 80)?.hide_cursor());
-    s.control(v, "copy_mode", "")?;
+    s.command(v, "copy_mode")?;
     s.key(v, "q", false)?;
     assert!(!s.painted(v, 24, 80)?.hide_cursor());
     Ok(())

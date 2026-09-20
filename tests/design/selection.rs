@@ -24,7 +24,7 @@ fn shift_drag_and_keyboard_copy_mode_do_not_leak_application_mouse_bytes() -> Ou
     mouse(&s, v, "release", 2, 0, true)?;
     s.key(v, "y", false)?;
     assert_eq!(copied(&s, v)?, "REA");
-    s.control(v, "copy_mode", "")?;
+    s.command(v, "copy_mode")?;
     mouse(&s, v, "move", 3, 0, false)?;
     mouse(&s, v, "scroll_up", 0, 0, false)?;
     s.key(v, "q", false)?;
@@ -43,7 +43,7 @@ fn evicted_history_selection_is_cleared_without_moving_another_viewer() -> Outco
     let signal = s.directory.join("evict");
     s.run(a, &format!("exec /bin/sh -c 'i=0; while test $i -lt 120; do printf \"OLD-%s\\n\" $i; i=$((i+1)); done; while test ! -f {}; do sleep 0.02; done; i=0; while test $i -lt 200; do printf \"NEW-%s\\n\" $i; i=$((i+1)); done; exec sleep 60'", signal.display()))?;
     eventually(|| Ok(s.screen(a)?.contains("OLD-119")))?;
-    s.control(a, "copy_mode", "")?;
+    s.command(a, "copy_mode")?;
     for _ in 0..8 {
         s.key(a, "pageup", false)?;
     }
@@ -106,7 +106,7 @@ fn keyboard_and_drag_selection_copy_unicode_without_touching_other_viewers() -> 
         "exec /bin/sh -c 'printf \"\\033[2J\\033[HA界éZ\"; exec sleep 60'",
     )?;
     eventually(|| Ok(s.screen(a)?.starts_with("A界éZ")))?;
-    s.control(a, "copy_mode", "")?;
+    s.command(a, "copy_mode")?;
     s.key(a, "right", false)?;
     s.key(a, " ", false)?;
     s.key(a, "right", false)?;
@@ -116,7 +116,7 @@ fn keyboard_and_drag_selection_copy_unicode_without_touching_other_viewers() -> 
     assert!(screen.hide_cursor());
     s.capture(a, 24, 80, "interaction-selection")?;
     assert!(!s.painted(b, 24, 80)?.cell(0, 1).need()?.inverse());
-    s.control(b, "copy_mode", "")?;
+    s.command(b, "copy_mode")?;
     s.key(b, " ", false)?;
     s.key(a, "y", false)?;
     assert_eq!(copied(&s, a)?, "界é");
@@ -141,7 +141,7 @@ fn selection_invalidates_visibly_on_output_and_resize_and_paste_is_modal() -> Ou
     let signal = s.directory.join("change");
     s.run(v, &format!("exec /bin/sh -c 'printf \"\\033[2J\\033[HBEFORE\"; while test ! -f {}; do sleep 0.02; done; printf \"\\033[HAFTER!\"; exec sleep 60'", signal.display()))?;
     eventually(|| Ok(s.screen(v)?.starts_with("BEFORE")))?;
-    s.control(v, "copy_mode", "")?;
+    s.command(v, "copy_mode")?;
     s.key(v, " ", false)?;
     s.key(v, "right", false)?;
     s.input(v, json!({"kind":"paste","text":"NOT-PTY-INPUT"}))?;
@@ -175,7 +175,7 @@ fn clipboard_disabled_reports_failure_without_emitting_an_effect() -> Outcome {
     s.screen(v)?;
     fs::write(s.directory.join("fux.json"), r#"{"clipboard":"disabled"}"#)?;
     eventually(|| {
-        s.control(v, "copy", "")?;
+        s.command(v, "copy")?;
         Ok(s.viewer(v)?
             .at("notice")
             .at("text")
@@ -186,7 +186,7 @@ fn clipboard_disabled_reports_failure_without_emitting_an_effect() -> Outcome {
     let frame = s.rpc("fux.frame", json!({"viewer":v}))?;
     // Any effects requested before hot reload settled are drained first.
     assert!(frame.at("paint").as_str().need()?.contains("clipboard"));
-    s.control(v, "copy", "")?;
+    s.command(v, "copy")?;
     assert!(
         !s.rpc("fux.frame", json!({"viewer":v}))?
             .at("paint")

@@ -1,5 +1,10 @@
 //! One source of identity, labels, groups, and availability for every action.
-use crate::{model::*, navigation, protocol::Direction};
+use crate::{
+    control::{Axis, Chooser, Command, Order, Subject},
+    model::*,
+    navigation,
+    protocol::Direction,
+};
 use bevy_ecs::prelude::*;
 use bevy_reflect::Reflect;
 use serde::{Deserialize, Serialize};
@@ -30,49 +35,33 @@ impl Target {
     }
 }
 
-/// The entity kind an explicit `Control.target` may name for an action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TargetKind {
-    Any,
-    Pane,
-    Tab,
-    Workspace,
-}
-
 macro_rules! actions {
     (
         $($group:literal: [$($variant:ident $id:literal => $label:literal),* $(,)?]),* $(,)?
-        ; api: [$($api:ident $api_id:literal => $api_label:literal),* $(,)?]
     ) => {
         /// The wire form is the snake_case identifier, unchanged from the string API.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
         #[serde(rename_all = "snake_case")]
         pub enum Action {
             $($($variant,)*)*
-            $($api,)*
         }
-        /// Bindable actions in help/menu order. API-only actions are excluded.
+        /// Bindable actions in help/menu order.
         pub const ALL: &[Action] = &[$($(Action::$variant,)*)*];
-        /// Actions the API dispatches but no binding lists.
-        const API_ONLY: &[Action] = &[$(Action::$api,)*];
         impl Action {
-            /// The identifier used in configuration and over the wire.
+            /// The identifier used in configuration.
             pub const fn id(self) -> &'static str {
                 match self {
                     $($(Self::$variant => $id,)*)*
-                    $(Self::$api => $api_id,)*
                 }
             }
             pub fn group(self) -> &'static str {
                 match self {
                     $($(Self::$variant => $group,)*)*
-                    $(Self::$api => "Other",)*
                 }
             }
             pub fn label(self) -> &'static str {
                 match self {
                     $($(Self::$variant => $label,)*)*
-                    $(Self::$api => $api_label,)*
                 }
             }
         }
@@ -104,14 +93,12 @@ actions! {
         RenameWorkspace "rename_workspace" => "rename workspace", WorkspaceClose "workspace_close" => "close workspace", WorkspaceMenu "workspace_menu" => "workspace actions",
         WorkspaceReorderPrevious "workspace_reorder_previous" => "reorder workspace previous", WorkspaceReorderNext "workspace_reorder_next" => "reorder workspace next"],
     "Session": [SaveLayout "save_layout" => "save layout", LoadLayout "load_layout" => "load layout", Help "help" => "command help", Detach "detach" => "detach"]
-    ; api: [Focus "focus" => "focus", TabSelect "tab_select" => "tab select", WorkspaceSelect "workspace_select" => "workspace select", Swap "swap" => "swap"]
 }
 
 impl std::str::FromStr for Action {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, String> {
         ALL.iter()
-            .chain(API_ONLY)
             .copied()
             .find(|action| action.id() == s)
             .ok_or_else(|| format!("unknown action {s}"))
@@ -124,30 +111,128 @@ impl std::fmt::Display for Action {
 }
 
 impl Action {
-    pub fn target_kind(self) -> TargetKind {
-        use Action::*;
-        match self {
-            TabClose | RenameTab | TabMenu | TabSelect | TabReorderPrevious | TabReorderNext
-            | MoveTab => TargetKind::Tab,
-            WorkspaceClose
-            | RenameWorkspace
-            | WorkspaceMenu
-            | WorkspaceSelect
-            | WorkspaceReorderPrevious
-            | WorkspaceReorderNext
-            | MoveWorkspace
-            | SaveLayout
-            | LoadLayout => TargetKind::Workspace,
-            Close | RenamePane | Terminate | Focus | Zoom | Copy | CopyMode | Swap => {
-                TargetKind::Pane
-            }
-            _ => TargetKind::Any,
-        }
-    }
     /// Pane and focus actions act on a pane, except splits, which can seed an empty tab.
     pub fn needs_pane(self) -> bool {
         matches!(self.group(), "Panes" | "Focus")
             && !matches!(self, Self::SplitHorizontal | Self::SplitVertical)
+    }
+    /// The command a bound action means for this viewer state, or `None` for
+    /// actions that first need a prompt or a confirmation.
+    pub fn command(self, target: Target) -> Option<Command> {
+        use Action::*;
+        let pane = target.leaf.map(Subject::Pane);
+        let tab = target.tab.map(Subject::Tab);
+        let workspace = Subject::Workspace(target.workspace);
+        Some(match self {
+            SplitHorizontal => Command::Split {
+                axis: Axis::Horizontal,
+                program: None,
+            },
+            SplitVertical => Command::Split {
+                axis: Axis::Vertical,
+                program: None,
+            },
+            PaneMenu => Command::Menu { subject: pane? },
+            TabMenu => Command::Menu { subject: tab? },
+            WorkspaceMenu => Command::Menu { subject: workspace },
+            Close => Command::Close { subject: pane? },
+            TabClose => Command::Close { subject: tab? },
+            WorkspaceClose => Command::Close { subject: workspace },
+            Terminate => Command::Terminate,
+            Zoom => Command::Zoom,
+            GrowWidth | ShrinkWidth => Command::Resize {
+                axis: Axis::Horizontal,
+                grow: self == GrowWidth,
+            },
+            GrowHeight | ShrinkHeight => Command::Resize {
+                axis: Axis::Vertical,
+                grow: self == GrowHeight,
+            },
+            ReorderPrev => Command::Reorder {
+                order: Order::Previous,
+            },
+            ReorderNext => Command::Reorder { order: Order::Next },
+            SwapChoose => Command::Choose {
+                chooser: Chooser::SwapTarget,
+            },
+            SwapLeft | SwapRight | SwapUp | SwapDown => Command::SwapDirection {
+                direction: self.direction()?,
+            },
+            MoveLeft | MoveRight | MoveUp | MoveDown => Command::MoveDirection {
+                direction: self.direction()?,
+            },
+            MoveTab => Command::Choose {
+                chooser: Chooser::MoveToTab,
+            },
+            MoveNewTab => Command::MoveToNewTab { name: None },
+            MoveWorkspace => Command::Choose {
+                chooser: Chooser::MoveToWorkspace,
+            },
+            MoveNewWorkspace => Command::MoveToNewWorkspace { name: None },
+            CopyMode => Command::CopyMode,
+            ScrollUp => Command::Scroll {
+                order: Order::Previous,
+            },
+            ScrollDown => Command::Scroll { order: Order::Next },
+            Copy => Command::Copy,
+            FocusNext => Command::FocusNext,
+            FocusPrevious => Command::FocusPrevious,
+            FocusLast => Command::FocusLast,
+            FocusLeft | FocusRight | FocusUp | FocusDown => Command::FocusDirection {
+                direction: self.direction()?,
+            },
+            TabNew => Command::TabNew { name: None },
+            TabNext => Command::TabNext,
+            TabPrevious => Command::TabPrevious,
+            TabChoose => Command::Choose {
+                chooser: Chooser::Tab,
+            },
+            TabReorderPrevious => Command::TabReorder {
+                order: Order::Previous,
+            },
+            TabReorderNext => Command::TabReorder { order: Order::Next },
+            WorkspaceNew => Command::WorkspaceNew { name: None },
+            WorkspaceNext => Command::WorkspaceNext,
+            WorkspacePrevious => Command::WorkspacePrevious,
+            WorkspaceChoose => Command::Choose {
+                chooser: Chooser::Workspace,
+            },
+            WorkspaceReorderPrevious => Command::WorkspaceReorder {
+                order: Order::Previous,
+            },
+            WorkspaceReorderNext => Command::WorkspaceReorder { order: Order::Next },
+            Help => Command::Help,
+            Detach => Command::Detach,
+            RenamePane | RenameTab | RenameWorkspace | SaveLayout | LoadLayout => return None,
+        })
+    }
+    /// The command a text prompt for this action produces once `value` is typed.
+    pub fn with_text(self, target: Target, value: String) -> Option<Command> {
+        use Action::*;
+        Some(match self {
+            RenamePane => Command::Rename {
+                subject: Subject::Pane(target.leaf?),
+                name: value,
+            },
+            RenameTab => Command::Rename {
+                subject: Subject::Tab(target.tab?),
+                name: value,
+            },
+            RenameWorkspace => Command::Rename {
+                subject: Subject::Workspace(target.workspace),
+                name: value,
+            },
+            SaveLayout => Command::SaveLayout {
+                workspace: target.workspace,
+                path: value,
+            },
+            LoadLayout => Command::LoadLayout {
+                workspace: target.workspace,
+                path: value,
+                mapping: Vec::new(),
+            },
+            _ => return None,
+        })
     }
     /// The direction of a directional focus, swap or move action.
     pub fn direction(self) -> Option<Direction> {
@@ -229,28 +314,22 @@ mod tests {
 
     #[test]
     fn wire_names_round_trip_and_unknown_names_are_rejected() -> crate::testing::Outcome {
-        for action in ALL.iter().chain(API_ONLY).copied() {
+        for action in ALL.iter().copied() {
             let id = action.to_string();
             assert_eq!(id.parse::<Action>()?, action);
             assert!(id.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
             // The literal in the table and the serde name must never drift.
             assert_eq!(serde_json::to_value(action)?, serde_json::Value::String(id));
         }
-        assert_eq!(API_ONLY.len(), 4);
+        assert_eq!(ALL.len(), 59);
         assert_eq!(Action::SplitHorizontal.to_string(), "split_horizontal");
         assert_eq!(Action::ReorderPrev.to_string(), "reorder_prev");
         assert_eq!(
             "nope".parse::<Action>().err().need()?,
             "unknown action nope"
         );
-        assert_eq!(Action::Focus.group(), "Other");
-        assert_eq!(Action::TabSelect.label(), "tab select");
         assert!(Action::FocusLeft.needs_pane());
         assert!(!Action::SplitVertical.needs_pane());
-        assert_eq!(Action::MoveTab.target_kind(), TargetKind::Tab);
-        assert_eq!(Action::SaveLayout.target_kind(), TargetKind::Workspace);
-        assert_eq!(Action::Swap.target_kind(), TargetKind::Pane);
-        assert_eq!(Action::Help.target_kind(), TargetKind::Any);
         assert_eq!(Action::MoveDown.direction(), Some(Direction::Down));
         Ok(())
     }

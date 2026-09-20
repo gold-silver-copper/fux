@@ -1,7 +1,7 @@
 //! Native hierarchy normalization and viewer-local navigation memory.
 #[cfg(test)]
 mod tests;
-use crate::{actions::Action, model::*};
+use crate::model::*;
 use bevy_ecs::prelude::*;
 use bevy_ui::{Node, Val};
 
@@ -94,98 +94,90 @@ pub fn normalize_workspace(world: &mut World, root: Entity) {
 }
 
 /// Exactly the actions `control` implements.
-pub fn handles(action: Action) -> bool {
-    use Action::*;
-    matches!(
-        action,
-        TabNew
-            | TabNext
-            | TabPrevious
-            | TabSelect
-            | WorkspaceSelect
-            | WorkspacePrevious
-            | WorkspaceNext
-            | FocusLast
-    )
+pub enum Scope {
+    Tab,
+    Workspace,
+}
+pub enum Pick {
+    Entity(Entity),
+    Next,
+    Previous,
 }
 
-pub fn control(
-    world: &mut World,
-    id: Entity,
-    action: Action,
-    target: Option<Entity>,
-    value: &str,
-) -> Result<(), String> {
-    use Action::*;
+/// Opens a new tab with a fresh pane in the viewer's workspace and selects it.
+pub fn tab_new(world: &mut World, id: Entity, name: Option<String>) -> Result<(), String> {
     repair(world);
-    let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
+    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
+    let root = v.workspace;
+    let title = name.unwrap_or_else(|| format!("tab-{}", tabs(world, root).len() + 1));
+    let tab = world
+        .spawn((Tab, Name::new(title), tab_node(), ChildOf(root)))
+        .id();
+    let settings = world.resource::<crate::assets::Settings>().clone();
+    let leaf = crate::server::spawn_pane(&mut world.commands(), &settings, tab, None, None)?;
+    world.flush();
+    let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
+    v.tab = Some(tab);
+    v.focus = Some(leaf);
+    v.zoom = false;
+    repair(world);
+    Ok(())
+}
+
+/// Returns focus to the pane this viewer focused before the current one.
+pub fn focus_last(world: &mut World, id: Entity) -> Result<(), String> {
+    repair(world);
+    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
+    let tab = v.tab.ok_or("no active tab")?;
+    let previous = world
+        .get::<Navigation>(id)
+        .and_then(|memory| memory.previous.get(&tab).copied());
+    if let Some(previous) = previous
+        .filter(|e| leaves(world, tab).contains(e) && crate::frame::visible_leaf(world, id, *e))
+    {
+        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus = Some(previous);
+    }
+    repair(world);
+    Ok(())
+}
+
+/// Selects a tab or workspace for this viewer, by identity or by cycling.
+pub fn select(world: &mut World, id: Entity, scope: Scope, pick: Pick) -> Result<(), String> {
+    repair(world);
+    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
     let root = v.workspace;
     let tab = v.tab.ok_or("no active tab")?;
-    let workspace_action = matches!(action, WorkspaceSelect | WorkspacePrevious | WorkspaceNext);
-    let all = if workspace_action {
-        workspaces(world)
-    } else {
-        tabs(world, root)
+    let (all, current) = match scope {
+        Scope::Workspace => (workspaces(world), root),
+        Scope::Tab => (tabs(world, root), tab),
     };
-    let current = if workspace_action { root } else { tab };
     let index = all
         .iter()
         .position(|e| *e == current)
         .ok_or("target disappeared")?;
-    crate::interaction::close_prefix(world, id);
-    match action {
-        TabNew => {
-            let title = if value.is_empty() {
-                format!("tab-{}", all.len() + 1)
-            } else {
-                value.into()
-            };
-            let tab = world
-                .spawn((Tab, Name::new(title), tab_node(), ChildOf(root)))
-                .id();
-            let settings = world.resource::<crate::assets::Settings>().clone();
-            let leaf =
-                crate::server::spawn_pane(&mut world.commands(), &settings, tab, None, None)?;
-            world.flush();
-            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-            v.tab = Some(tab);
-            v.focus = Some(leaf);
-            v.zoom = false;
-        }
-        FocusLast => {
-            let previous = world
-                .get::<Navigation>(id)
-                .and_then(|memory| memory.previous.get(&tab).copied());
-            if let Some(previous) = previous.filter(|e| {
-                leaves(world, tab).contains(e) && crate::frame::visible_leaf(world, id, *e)
-            }) {
-                world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus = Some(previous);
-            }
-        }
-        _ => {
-            let selected = if matches!(action, TabSelect | WorkspaceSelect) {
-                target
-                    .filter(|e| all.contains(e))
-                    .ok_or("selection target no longer exists")?
-            } else {
-                // `index` was found in `all`, so it is nonempty.
-                let next = if matches!(action, TabPrevious | WorkspacePrevious) {
-                    (index + all.len() - 1) % all.len()
-                } else {
-                    (index + 1) % all.len()
-                };
-                all.get(next).copied().ok_or("target disappeared")?
-            };
-            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-            if workspace_action {
-                v.workspace = selected;
-            } else {
-                v.tab = Some(selected);
-            }
-            v.zoom = false;
-            v.scrollback = 0;
-        }
+    let selected = match pick {
+        Pick::Entity(entity) => all
+            .iter()
+            .copied()
+            .find(|e| *e == entity)
+            .ok_or("selection target no longer exists")?,
+        // `index` was found in `all`, so it is nonempty.
+        Pick::Previous => all
+            .get((index + all.len() - 1) % all.len())
+            .copied()
+            .ok_or("target disappeared")?,
+        Pick::Next => all
+            .get((index + 1) % all.len())
+            .copied()
+            .ok_or("target disappeared")?,
+    };
+    let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
+    match scope {
+        Scope::Workspace => v.workspace = selected,
+        Scope::Tab => v.tab = Some(selected),
     }
+    v.zoom = false;
+    v.scrollback = 0;
     repair(world);
     Ok(())
 }
