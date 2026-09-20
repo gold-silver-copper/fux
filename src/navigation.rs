@@ -1,7 +1,7 @@
 //! Native hierarchy normalization and viewer-local navigation memory.
 #[cfg(test)]
 mod tests;
-use crate::model::*;
+use crate::{actions::Action, model::*};
 use bevy_ecs::prelude::*;
 use bevy_ui::{Node, Val};
 
@@ -93,17 +93,19 @@ pub fn normalize_workspace(world: &mut World, root: Entity) {
     }
 }
 
-pub fn handles(action: &str) -> bool {
+/// Exactly the actions `control` implements.
+pub fn handles(action: Action) -> bool {
+    use Action::*;
     matches!(
         action,
-        "tab_new"
-            | "tab_next"
-            | "tab_previous"
-            | "tab_select"
-            | "workspace_select"
-            | "workspace_previous"
-            | "workspace_next"
-            | "focus_last"
+        TabNew
+            | TabNext
+            | TabPrevious
+            | TabSelect
+            | WorkspaceSelect
+            | WorkspacePrevious
+            | WorkspaceNext
+            | FocusLast
     )
 }
 
@@ -112,31 +114,29 @@ const DETACHED: &str = "viewer no longer attached";
 pub fn control(
     world: &mut World,
     id: Entity,
-    action: &str,
+    action: Action,
     target: Option<Entity>,
     value: &str,
 ) -> Result<(), String> {
+    use Action::*;
     repair(world);
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
     let root = v.workspace;
     let tab = v.tab.ok_or("no active tab")?;
-    let all = if action.starts_with("workspace_") {
+    let workspace_action = matches!(action, WorkspaceSelect | WorkspacePrevious | WorkspaceNext);
+    let all = if workspace_action {
         workspaces(world)
     } else {
         tabs(world, root)
     };
-    let current = if action.starts_with("workspace_") {
-        root
-    } else {
-        tab
-    };
+    let current = if workspace_action { root } else { tab };
     let index = all
         .iter()
         .position(|e| *e == current)
         .ok_or("target disappeared")?;
     world.get_mut::<Viewer>(id).ok_or(DETACHED)?.prefix = false;
     match action {
-        "tab_new" => {
+        TabNew => {
             let title = if value.is_empty() {
                 format!("tab-{}", all.len() + 1)
             } else {
@@ -154,7 +154,7 @@ pub fn control(
             v.focus = Some(leaf);
             v.zoom = false;
         }
-        "focus_last" => {
+        FocusLast => {
             let previous = world
                 .get::<Navigation>(id)
                 .and_then(|memory| memory.previous.get(&tab).copied());
@@ -165,13 +165,13 @@ pub fn control(
             }
         }
         _ => {
-            let selected = if action.ends_with("select") {
+            let selected = if matches!(action, TabSelect | WorkspaceSelect) {
                 target
                     .filter(|e| all.contains(e))
                     .ok_or("selection target no longer exists")?
             } else {
                 // `index` was found in `all`, so it is nonempty.
-                let next = if action.ends_with("previous") {
+                let next = if matches!(action, TabPrevious | WorkspacePrevious) {
                     (index + all.len() - 1) % all.len()
                 } else {
                     (index + 1) % all.len()
@@ -179,7 +179,7 @@ pub fn control(
                 all.get(next).copied().ok_or("target disappeared")?
             };
             let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-            if action.starts_with("workspace_") {
+            if workspace_action {
                 v.workspace = selected;
             } else {
                 v.tab = Some(selected);

@@ -1,4 +1,5 @@
 use crate::{
+    actions::{Action, TargetKind},
     assets::{self, Settings},
     chrome::{self, at, fit},
     control::{Control, Shutdown, UserInput},
@@ -22,8 +23,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A control whose action name already parsed; the original event is retained
+/// for its value, target and mapping.
 #[derive(Event)]
-struct RoutedControl(Control);
+struct RoutedControl(Control, Action);
 impl std::ops::Deref for RoutedControl {
     type Target = Control;
     fn deref(&self) -> &Control {
@@ -49,31 +52,22 @@ fn route_control(event: On<Control>, mut commands: Commands) {
             return;
         };
         let mut target = crate::actions::Target::viewer(v);
+        let action = match event.action.parse::<Action>() {
+            Ok(action) => action,
+            Err(message) => {
+                return crate::interaction::unknown(world, event.viewer, target, message);
+            }
+        };
         if let Some(entity) = event.target {
             if world.get_entity(entity).is_err() {
                 notice(world, event.viewer, "target no longer exists", true);
                 return;
             }
-            let valid_kind = match event.action.as_str() {
-                "tab_close"
-                | "rename_tab"
-                | "tab_menu"
-                | "tab_select"
-                | "tab_reorder_previous"
-                | "tab_reorder_next"
-                | "move_tab" => world.get::<Tab>(entity).is_some(),
-                "workspace_close"
-                | "rename_workspace"
-                | "workspace_menu"
-                | "workspace_select"
-                | "workspace_reorder_previous"
-                | "workspace_reorder_next"
-                | "move_workspace"
-                | "save_layout"
-                | "load_layout" => world.get::<Workspace>(entity).is_some(),
-                "close" | "rename_pane" | "terminate" | "focus" | "zoom" | "copy" | "copy_mode"
-                | "swap" => world.get::<PaneView>(entity).is_some(),
-                _ => true,
+            let valid_kind = match action.target_kind() {
+                TargetKind::Tab => world.get::<Tab>(entity).is_some(),
+                TargetKind::Workspace => world.get::<Workspace>(entity).is_some(),
+                TargetKind::Pane => world.get::<PaneView>(entity).is_some(),
+                TargetKind::Any => true,
             };
             if !valid_kind {
                 notice(
@@ -84,19 +78,14 @@ fn route_control(event: On<Control>, mut commands: Commands) {
                 );
                 return;
             }
-            if world.get::<PaneView>(entity).is_some()
-                && !matches!(event.action.as_str(), "swap" | "focus")
-            {
+            use Action::*;
+            if world.get::<PaneView>(entity).is_some() && !matches!(action, Swap | Focus) {
                 target.leaf = Some(entity);
             }
             if world.get::<Tab>(entity).is_some()
                 && matches!(
-                    event.action.as_str(),
-                    "tab_close"
-                        | "rename_tab"
-                        | "tab_menu"
-                        | "tab_reorder_previous"
-                        | "tab_reorder_next"
+                    action,
+                    TabClose | RenameTab | TabMenu | TabReorderPrevious | TabReorderNext
                 )
             {
                 target.tab = Some(entity);
@@ -104,12 +93,12 @@ fn route_control(event: On<Control>, mut commands: Commands) {
             }
             if world.get::<Workspace>(entity).is_some()
                 && matches!(
-                    event.action.as_str(),
-                    "workspace_close"
-                        | "rename_workspace"
-                        | "workspace_menu"
-                        | "workspace_reorder_previous"
-                        | "workspace_reorder_next"
+                    action,
+                    WorkspaceClose
+                        | RenameWorkspace
+                        | WorkspaceMenu
+                        | WorkspaceReorderPrevious
+                        | WorkspaceReorderNext
                 )
             {
                 target.workspace = entity;
@@ -121,13 +110,13 @@ fn route_control(event: On<Control>, mut commands: Commands) {
             world,
             event.viewer,
             target,
-            &event.action,
+            action,
             event.target,
             &event.value,
             false,
         ) {
             Ok(true) => {}
-            Ok(false) => world.trigger(RoutedControl(event)),
+            Ok(false) => world.trigger(RoutedControl(event, action)),
             Err(error) => notice(world, event.viewer, &error, true),
         }
     });
@@ -174,33 +163,25 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         let Some(v) = world.get::<Viewer>(event.viewer) else {
             return;
         };
-        if let Input::Key {
-            key,
-            ctrl,
-            alt,
-            shift,
-        } = &event.input
+        if let Some(token) = event.input.token()
             && v.prefix
             && v.prompt.is_none()
         {
-            let token = format!(
-                "{}{}{}{}",
-                if *ctrl { "ctrl-" } else { "" },
-                if *alt { "alt-" } else { "" },
-                if *shift && key.chars().count() != 1 {
-                    "shift-"
-                } else {
-                    ""
-                },
-                key
-            );
             let settings = world.resource::<Settings>();
             if token != settings.prefix
                 && let Some(binding) = settings.bindings.iter().find(|b| b.key == token)
             {
                 let action = binding.action.clone();
                 let target = crate::actions::Target::viewer(v);
-                crate::interaction::dispatch(world, event.viewer, target, &action, None, "", true);
+                crate::interaction::dispatch_named(
+                    world,
+                    event.viewer,
+                    target,
+                    &action,
+                    None,
+                    "",
+                    true,
+                );
                 return;
             }
         }
@@ -229,15 +210,15 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                     target.tab = Some(hit);
                     target.leaf = None;
                     Some(if *button == 2 {
-                        "tab_menu"
+                        Action::TabMenu
                     } else {
-                        "tab_select"
+                        Action::TabSelect
                     })
                 } else if world.get::<Workspace>(hit).is_some() {
                     target.workspace = hit;
                     target.tab = None;
                     target.leaf = None;
-                    Some("workspace_menu")
+                    Some(Action::WorkspaceMenu)
                 } else if *button == 2
                     && world.get::<PaneView>(hit).is_some_and(|p| {
                         *shift
@@ -250,12 +231,12 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                     })
                 {
                     target.leaf = Some(hit);
-                    Some("pane_menu")
+                    Some(Action::PaneMenu)
                 } else {
                     None
                 };
                 if let Some(action) = action {
-                    let destination = (action == "tab_select").then_some(hit);
+                    let destination = (action == Action::TabSelect).then_some(hit);
                     crate::interaction::dispatch(
                         world,
                         event.viewer,
@@ -1042,7 +1023,12 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
         )
     } else {
         chrome::panel_context(&mut out, v, world.resource::<Settings>(), |action| {
-            crate::actions::unavailable(world, crate::actions::Target::viewer(v), action).is_some()
+            crate::actions::unavailable(
+                world,
+                crate::actions::Target::viewer(v),
+                action.parse().ok(),
+            )
+            .is_some()
         })
     };
     if world.resource::<Settings>().clipboard == crate::assets::ClipboardPolicy::Disabled {
@@ -1086,12 +1072,13 @@ fn control_event(
     wake: Res<Wake>,
 ) {
     let id = event.viewer;
-    if crate::navigation::handles(&event.action) {
-        let action = event.action.clone();
+    let action = event.1;
+    use Action::*;
+    if crate::navigation::handles(action) {
         let target = event.target;
         let value = event.value.clone();
         commands.queue(move |world: &mut World| {
-            let result = crate::navigation::control(world, id, &action, target, &value);
+            let result = crate::navigation::control(world, id, action, target, &value);
             if let Err(error) = result {
                 notice(world, id, &error, true);
             }
@@ -1099,7 +1086,7 @@ fn control_event(
         wake.notify();
         return;
     }
-    if event.action == "detach" {
+    if action == Detach {
         commands.entity(id).try_despawn();
         return;
     }
@@ -1123,8 +1110,8 @@ fn control_event(
             .find(|entity| panes.contains(*entity))
     };
     let result = (|| -> Result<(), String> {
-        match event.action.as_str() {
-            "split_horizontal" | "split_vertical" => {
+        match action {
+            SplitHorizontal | SplitVertical => {
                 let leaf = leaf.or_else(|| first(v.tab.unwrap_or(v.workspace)));
                 let cwd = leaf
                     .and_then(|leaf| panes.get(leaf).ok())
@@ -1142,7 +1129,7 @@ fn control_event(
                     let mut node = root_node();
                     node.width = Val::Auto;
                     node.height = Val::Auto;
-                    node.flex_direction = if event.action == "split_vertical" {
+                    node.flex_direction = if action == SplitVertical {
                         FlexDirection::Column
                     } else {
                         FlexDirection::Row
@@ -1167,11 +1154,11 @@ fn control_event(
                 v.zoom = false;
                 v.scrollback = 0;
             }
-            "terminate" => terminals
+            Terminate => terminals
                 .get_mut(pane.ok_or("no focused process")?)
                 .map_err(|_| "terminal not found")?
                 .stop()?,
-            "focus_previous" => {
+            FocusPrevious => {
                 v.focus = views
                     .get_mut(&id)
                     .ok_or("presentation not initialized")?
@@ -1179,21 +1166,21 @@ fn control_event(
                     .focus_step(true);
                 v.scrollback = 0;
             }
-            "focus_left" | "focus_right" | "focus_up" | "focus_down" => {
+            FocusLeft | FocusRight | FocusUp | FocusDown => {
                 let presentation = &views
                     .get(&id)
                     .ok_or("presentation not initialized")?
                     .presentation;
                 let next = presentation.neighbor(
                     v.focus.ok_or("no visible focus")?,
-                    event.action.rsplit('_').next().unwrap_or_default(),
+                    action.direction().ok_or("no direction")?,
                 );
                 if let Some(next) = next {
                     v.focus = Some(next);
                     v.scrollback = 0;
                 }
             }
-            "focus_next" => {
+            FocusNext => {
                 v.focus = views
                     .get_mut(&id)
                     .ok_or("presentation not initialized")?
@@ -1201,7 +1188,7 @@ fn control_event(
                     .focus_next();
                 v.scrollback = 0;
             }
-            "focus" => {
+            Focus => {
                 let target = event.target.ok_or("focus target required")?;
                 if !panes.contains(target)
                     || !parents.iter_ancestors(target).any(|e| Some(e) == v.tab)
@@ -1214,18 +1201,16 @@ fn control_event(
                 v.focus = Some(target);
                 v.scrollback = 0;
             }
-            "zoom" => {
+            Zoom => {
                 let target = leaf.ok_or("no pane")?;
                 v.zoom = v.focus != Some(target) || !v.zoom;
                 v.focus = Some(target);
             }
-            "scroll_up" => {
-                v.scrollback = v.scrollback.saturating_add(usize::from(v.rows / 2).max(1))
-            }
-            "scroll_down" => {
+            ScrollUp => v.scrollback = v.scrollback.saturating_add(usize::from(v.rows / 2).max(1)),
+            ScrollDown => {
                 v.scrollback = v.scrollback.saturating_sub(usize::from(v.rows / 2).max(1))
             }
-            "copy" => {
+            Copy => {
                 crate::selection::validate_clipboard(&settings, "")?;
                 let view = views.get_mut(&id).ok_or("presentation not initialized")?;
                 if view.clipboard.len() == 16 {
@@ -1239,7 +1224,7 @@ fn control_event(
                 view.clipboard.push(text);
                 v.notice = "visible pane copied via OSC52".into();
             }
-            "workspace_new" => {
+            WorkspaceNew => {
                 let title = if event.value.is_empty() {
                     format!("workspace-{}", roots.iter().count() + 1)
                 } else {
@@ -1262,8 +1247,8 @@ fn control_event(
                 )?);
                 v.zoom = false;
             }
-            "grow_width" | "grow_height" | "shrink_width" | "shrink_height" => {
-                let width = event.action.ends_with("width");
+            GrowWidth | GrowHeight | ShrinkWidth | ShrinkHeight => {
+                let width = matches!(action, GrowWidth | ShrinkWidth);
                 let mut child = leaf.ok_or("no focused pane")?;
                 while let Ok(parent) = parents.get(child) {
                     let parent = parent.parent();
@@ -1272,7 +1257,7 @@ fn control_event(
                     {
                         let mut node = nodes.get_mut(child).map_err(|e| e.to_string())?;
                         node.flex_grow = (node.flex_grow
-                            + if event.action.starts_with("grow") {
+                            + if matches!(action, GrowWidth | GrowHeight) {
                                 0.25
                             } else {
                                 -0.25
@@ -1283,7 +1268,7 @@ fn control_event(
                     child = parent;
                 }
             }
-            "reorder_prev" | "reorder_next" => {
+            ReorderPrev | ReorderNext => {
                 let leaf = leaf.ok_or("no focused pane")?;
                 let parent = parents.get(leaf).map_err(|e| e.to_string())?.parent();
                 let siblings = children.get(parent).map_err(|e| e.to_string())?;
@@ -1291,7 +1276,7 @@ fn control_event(
                     .iter()
                     .position(|e| e == leaf)
                     .ok_or("missing child")?;
-                let other = if event.action == "reorder_prev" {
+                let other = if action == ReorderPrev {
                     index.saturating_sub(1)
                 } else {
                     (index + 1).min(siblings.len() - 1)
@@ -1301,13 +1286,13 @@ fn control_event(
                     .entry::<Children>()
                     .and_modify(move |mut children| children.swap(index, other));
             }
-            "save_layout" | "load_layout" => {
+            SaveLayout | LoadLayout => {
                 let root = event
                     .target
                     .filter(|e| roots.contains(*e))
                     .unwrap_or(v.workspace);
                 let path = event.value.clone();
-                let save = event.action == "save_layout";
+                let save = action == SaveLayout;
                 let mapping = event.mapping.clone();
                 v.notice = if save {
                     "saving layout..."
@@ -1349,7 +1334,7 @@ fn control_event(
                         .detach();
                 });
             }
-            "help" => {
+            Help => {
                 v.prompt = Some("help".into());
                 v.help_scroll = 0;
                 v.buffer.clear();
@@ -1451,17 +1436,7 @@ fn input_event(
                     }
                     return Ok(());
                 }
-                let token = format!(
-                    "{}{}{}{}",
-                    if *ctrl { "ctrl-" } else { "" },
-                    if *alt { "alt-" } else { "" },
-                    if *shift && key.chars().count() != 1 {
-                        "shift-"
-                    } else {
-                        ""
-                    },
-                    key
-                );
+                let token = event.input.token().unwrap_or_default();
                 if v.prefix {
                     if key == "escape" {
                         v.prefix = false;
@@ -1567,11 +1542,11 @@ fn input_event(
                             commands.trigger(Control {
                                 viewer: id,
                                 action: if action == "scrollup" {
-                                    "scroll_up"
+                                    Action::ScrollUp
                                 } else {
-                                    "scroll_down"
+                                    Action::ScrollDown
                                 }
-                                .into(),
+                                .to_string(),
                                 value: String::new(),
                                 target: None,
                                 mapping: Vec::new(),

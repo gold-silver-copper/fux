@@ -84,13 +84,22 @@ fn menus_keep_unbound_actions_and_share_navigation_including_layout_prompts() {
             ],
         ),
     ] {
-        invoke(&mut world, id, target, menu, None, "", true).unwrap();
+        invoke(
+            &mut world,
+            id,
+            target,
+            menu.parse().unwrap(),
+            None,
+            "",
+            true,
+        )
+        .unwrap();
         let Mode::List { entries, .. } = &world.get::<Overlay>(id).unwrap().mode else {
             panic!()
         };
         for action in required {
             assert!(
-                entries.iter().any(|e| e.action == action),
+                entries.iter().any(|e| e.action.to_string() == action),
                 "{menu} lacks {action}"
             );
         }
@@ -122,7 +131,16 @@ fn menus_keep_unbound_actions_and_share_navigation_including_layout_prompts() {
         assert!(world.get::<Overlay>(id).is_none());
     }
     for action in ["save_layout", "load_layout"] {
-        invoke(&mut world, id, target, "workspace_menu", None, "", true).unwrap();
+        invoke(
+            &mut world,
+            id,
+            target,
+            "workspace_menu".parse().unwrap(),
+            None,
+            "",
+            true,
+        )
+        .unwrap();
         let mut overlay = world.get_mut::<Overlay>(id).unwrap();
         let Mode::List {
             entries, selected, ..
@@ -130,10 +148,13 @@ fn menus_keep_unbound_actions_and_share_navigation_including_layout_prompts() {
         else {
             panic!()
         };
-        *selected = entries.iter().position(|e| e.action == action).unwrap();
+        *selected = entries
+            .iter()
+            .position(|e| e.action.to_string() == action)
+            .unwrap();
         input(&mut world, id, &key("enter"));
         assert!(
-            matches!(&world.get::<Overlay>(id).unwrap().mode, Mode::Text { action: a, .. } if a == action)
+            matches!(&world.get::<Overlay>(id).unwrap().mode, Mode::Text { action: a, .. } if a.to_string() == action)
         );
         input(&mut world, id, &key("escape"));
     }
@@ -143,7 +164,16 @@ fn menus_keep_unbound_actions_and_share_navigation_including_layout_prompts() {
 fn confirmation_captures_target_and_preserves_a_shared_process() {
     let (mut world, id, target, other) = setup();
     let process = world.get::<PaneView>(other).unwrap().pane;
-    invoke(&mut world, id, target, "close", None, "", true).unwrap();
+    invoke(
+        &mut world,
+        id,
+        target,
+        "close".parse().unwrap(),
+        None,
+        "",
+        true,
+    )
+    .unwrap();
     world.get_mut::<Viewer>(id).unwrap().focus = Some(other);
     assert!(input(&mut world, id, &Input::Paste { text: "y".into() }));
     assert!(world.get_entity(target.leaf.unwrap()).is_ok());
@@ -158,7 +188,16 @@ fn confirmation_captures_target_and_preserves_a_shared_process() {
 #[test]
 fn removed_confirmation_target_cancels_without_retargeting() {
     let (mut world, id, target, other) = setup();
-    invoke(&mut world, id, target, "close", None, "", true).unwrap();
+    invoke(
+        &mut world,
+        id,
+        target,
+        "close".parse().unwrap(),
+        None,
+        "",
+        true,
+    )
+    .unwrap();
     world.despawn(target.leaf.unwrap());
     world.get_mut::<Viewer>(id).unwrap().focus = Some(other);
     assert!(input(&mut world, id, &key("y")));
@@ -176,17 +215,44 @@ fn removed_confirmation_target_cancels_without_retargeting() {
 #[test]
 fn tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers() {
     let (mut world, id, target, _) = setup();
-    invoke(&mut world, id, target, "tab_close", None, "", false).unwrap();
+    invoke(
+        &mut world,
+        id,
+        target,
+        "tab_close".parse().unwrap(),
+        None,
+        "",
+        false,
+    )
+    .unwrap();
     let v = world.get::<Viewer>(id).unwrap();
     assert_ne!(v.tab, target.tab);
     assert!(v.focus.is_none());
     assert!(v.tab.is_some());
     let target = Target::viewer(v);
     let replacement = world.spawn(Workspace).id();
-    invoke(&mut world, id, target, "workspace_close", None, "", false).unwrap();
+    invoke(
+        &mut world,
+        id,
+        target,
+        "workspace_close".parse().unwrap(),
+        None,
+        "",
+        false,
+    )
+    .unwrap();
     assert_eq!(world.get::<Viewer>(id).unwrap().workspace, replacement);
     let target = Target::viewer(world.get::<Viewer>(id).unwrap());
-    invoke(&mut world, id, target, "workspace_close", None, "", false).unwrap();
+    invoke(
+        &mut world,
+        id,
+        target,
+        "workspace_close".parse().unwrap(),
+        None,
+        "",
+        false,
+    )
+    .unwrap();
     assert!(world.get_entity(id).is_err());
 }
 
@@ -214,7 +280,7 @@ fn rearrangement_keeps_entity_identity_and_native_child_order() {
         &mut world,
         id,
         target,
-        "move_new_workspace",
+        "move_new_workspace".parse().unwrap(),
         None,
         "destination",
         false,
@@ -229,7 +295,16 @@ fn rearrangement_keeps_entity_identity_and_native_child_order() {
 #[test]
 fn rename_prompt_keeps_its_original_target_and_escape_cancels() {
     let (mut world, id, target, other) = setup();
-    invoke(&mut world, id, target, "rename_tab", None, "", true).unwrap();
+    invoke(
+        &mut world,
+        id,
+        target,
+        "rename_tab".parse().unwrap(),
+        None,
+        "",
+        true,
+    )
+    .unwrap();
     world.get_mut::<Viewer>(id).unwrap().focus = Some(other);
     input(
         &mut world,
@@ -243,7 +318,16 @@ fn rename_prompt_keeps_its_original_target_and_escape_cancels() {
         world.get::<Name>(target.tab.unwrap()).unwrap().as_str(),
         "界 tab"
     );
-    invoke(&mut world, id, target, "close", None, "", true).unwrap();
+    invoke(
+        &mut world,
+        id,
+        target,
+        "close".parse().unwrap(),
+        None,
+        "",
+        true,
+    )
+    .unwrap();
     input(&mut world, id, &key("escape"));
     assert!(world.get::<Overlay>(id).is_none());
     assert!(world.get_entity(target.leaf.unwrap()).is_ok());
@@ -253,13 +337,31 @@ fn rename_prompt_keeps_its_original_target_and_escape_cancels() {
 fn each_close_scope_requires_confirmation_and_cancel_keeps_its_hierarchy() {
     for action in ["close", "tab_close", "workspace_close"] {
         let (mut world, id, target, _) = setup();
-        invoke(&mut world, id, target, action, None, "", true).unwrap();
+        invoke(
+            &mut world,
+            id,
+            target,
+            action.parse().unwrap(),
+            None,
+            "",
+            true,
+        )
+        .unwrap();
         assert!(world.get::<Overlay>(id).is_some());
         input(&mut world, id, &Input::Paste { text: "y".into() });
         assert!(world.get_entity(target.leaf.unwrap()).is_ok());
         input(&mut world, id, &key("n"));
         assert!(world.get_entity(target.leaf.unwrap()).is_ok());
-        invoke(&mut world, id, target, action, None, "", true).unwrap();
+        invoke(
+            &mut world,
+            id,
+            target,
+            action.parse().unwrap(),
+            None,
+            "",
+            true,
+        )
+        .unwrap();
         input(&mut world, id, &key("y"));
         assert!(world.get_entity(target.leaf.unwrap()).is_err());
         assert_eq!(
@@ -281,7 +383,7 @@ fn stale_chooser_destination_never_changes_the_source_or_an_unrelated_target() {
             selected: 0,
             entries: vec![Entry {
                 label: "removed".into(),
-                action: "move_tab".into(),
+                action: Action::MoveTab,
                 destination: Some(destination),
             }],
         },
@@ -304,7 +406,7 @@ fn every_chooser_entry_remains_visible_on_tiny_terminals() {
             let entries = (0..10)
                 .map(|i| Entry {
                     label: format!("entry-{i}"),
-                    action: "tab_select".into(),
+                    action: Action::TabSelect,
                     destination: target.tab,
                 })
                 .collect();
@@ -334,10 +436,28 @@ fn every_chooser_entry_remains_visible_on_tiny_terminals() {
 #[test]
 fn pasted_text_cannot_cross_a_cancelled_or_reopened_prompt() {
     let (mut world, id, target, _) = setup();
-    invoke(&mut world, id, target, "rename_tab", None, "", true).unwrap();
+    invoke(
+        &mut world,
+        id,
+        target,
+        "rename_tab".parse().unwrap(),
+        None,
+        "",
+        true,
+    )
+    .unwrap();
     assert!(crate::paste::input(&mut world, id, &Input::PasteBegin));
     input(&mut world, id, &key("escape"));
-    invoke(&mut world, id, target, "rename_tab", None, "", true).unwrap();
+    invoke(
+        &mut world,
+        id,
+        target,
+        "rename_tab".parse().unwrap(),
+        None,
+        "",
+        true,
+    )
+    .unwrap();
     assert!(crate::paste::input(
         &mut world,
         id,

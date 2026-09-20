@@ -1,7 +1,11 @@
 //! Cell-sized terminal chrome. Native Bevy UI remains the pane geometry authority.
 #[cfg(test)]
 mod tests;
-use crate::{assets::Settings, model::Viewer};
+use crate::{
+    actions::Action,
+    assets::{Binding, Settings},
+    model::Viewer,
+};
 use std::fmt::Write;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -292,11 +296,12 @@ fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
         .unwrap_or(0)
         .min((cols.saturating_sub(4) / 3).max(1));
     let mut lines = Vec::new();
+    let action = |binding: &Binding| binding.action.parse::<Action>().ok();
     for group in ["Panes", "Focus", "Tabs", "Workspaces", "Session", "Other"] {
         let bindings: Vec<_> = settings
             .bindings
             .iter()
-            .filter(|b| crate::actions::metadata(&b.action).map_or("Other", |a| a.group) == group)
+            .filter(|b| action(b).map_or("Other", Action::group) == group)
             .collect();
         if bindings.is_empty() {
             continue;
@@ -305,8 +310,8 @@ fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
         for binding in bindings {
             let key = fit(&binding.key, key_width, false);
             let padding = " ".repeat(usize::from(key_width.saturating_sub(width(&key))));
-            let label = crate::actions::metadata(&binding.action)
-                .map_or_else(|| binding.action.replace('_', " "), |a| a.label.into());
+            let label = action(binding)
+                .map_or_else(|| binding.action.replace('_', " "), |a| a.label().into());
             lines.push((
                 format!("{padding}{key}  {label}"),
                 Some(binding.action.as_str()),

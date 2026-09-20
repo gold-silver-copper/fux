@@ -51,8 +51,11 @@ fn every_binding_is_reachable_at_every_short_height() {
             parser.process(out.as_bytes());
             let contents = parser.screen().contents();
             for binding in &settings.bindings {
-                let label = crate::actions::metadata(&binding.action)
-                    .map_or_else(|| binding.action.replace('_', " "), |a| a.label.into());
+                let label = binding
+                    .action
+                    .parse::<crate::actions::Action>()
+                    .ok()
+                    .map_or_else(|| binding.action.replace('_', " "), |a| a.label().into());
                 if contents.contains(&label) {
                     seen.insert(binding.action.clone());
                 }

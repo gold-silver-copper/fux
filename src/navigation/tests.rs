@@ -62,14 +62,14 @@ fn viewers_remember_independent_tabs_focus_and_last_focus() {
     repair(&mut world);
     world.get_mut::<Viewer>(left).unwrap().focus = Some(b);
     repair(&mut world);
-    control(&mut world, left, "tab_next", None, "").unwrap();
+    control(&mut world, left, Action::TabNext, None, "").unwrap();
     assert_eq!(world.get::<Viewer>(left).unwrap().focus, Some(c));
     assert_eq!(world.get::<Viewer>(right).unwrap().focus, Some(a));
-    control(&mut world, left, "tab_previous", None, "").unwrap();
+    control(&mut world, left, Action::TabPrevious, None, "").unwrap();
     assert_eq!(world.get::<Viewer>(left).unwrap().focus, Some(b));
-    control(&mut world, left, "focus_last", None, "").unwrap();
+    control(&mut world, left, Action::FocusLast, None, "").unwrap();
     assert_eq!(world.get::<Viewer>(left).unwrap().focus, Some(a));
-    control(&mut world, left, "focus_last", None, "").unwrap();
+    control(&mut world, left, Action::FocusLast, None, "").unwrap();
     assert_eq!(world.get::<Viewer>(left).unwrap().focus, Some(b));
     world.despawn(b);
     repair(&mut world);
