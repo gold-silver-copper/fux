@@ -132,7 +132,7 @@ pub fn control(
         .iter()
         .position(|e| *e == current)
         .ok_or("target disappeared")?;
-    world.get_mut::<Viewer>(id).ok_or(DETACHED)?.prefix = false;
+    crate::interaction::close_prefix(world, id);
     match action {
         TabNew => {
             let title = if value.is_empty() {

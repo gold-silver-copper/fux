@@ -102,8 +102,6 @@ pub struct Viewer {
     pub scrollback: usize,
     pub notice: String,
     pub notice_error: bool,
-    pub help_scroll: usize,
-    pub prefix: bool,
 }
 
 pub const DETACHED: &str = "viewer no longer attached";

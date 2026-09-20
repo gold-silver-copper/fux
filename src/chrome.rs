@@ -282,8 +282,8 @@ pub fn scroll(settings: &Settings, rows: u16, current: usize, down: bool, page: 
 }
 
 #[cfg(test)]
-pub fn panel(out: &mut String, v: &Viewer, settings: &Settings) -> Option<Bounds> {
-    panel_context(out, v, settings, v.help_scroll, |_| false)
+pub fn panel(out: &mut String, v: &Viewer, settings: &Settings, scroll: usize) -> Option<Bounds> {
+    panel_context(out, v, settings, scroll, |_| false)
 }
 
 fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {

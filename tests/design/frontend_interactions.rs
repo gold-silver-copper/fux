@@ -123,7 +123,7 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
     let nodes = || s.query("bevy_ui::ui_node::Node");
     let before = nodes()?;
     f.send(b"\x02\x1b[B")?;
-    eventually(|| Ok(s.viewer(v)?.at("help_scroll") == 1))?;
+    eventually(|| Ok(s.selected(v, 18, 70)?.as_deref() == Some("v  split stacked")))?;
     assert_eq!(nodes()?, before);
     assert_eq!(s.viewer(v)?.at("focus"), right);
     let selected = f.wait(|screen| {
@@ -134,7 +134,7 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
             })
     })?;
     f.send(b"\x1b")?;
-    eventually(|| Ok(s.viewer(v)?.at("prefix") == false))?;
+    eventually(|| Ok(!s.column_open(v, 18, 70)?))?;
     f.send(b"\x02\x1b[1;5C")?;
     eventually(|| Ok(nodes()? != before))?; // Ctrl+Right resize
     f.send(b"\x02\x1b[1;3D")?;

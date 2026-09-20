@@ -28,12 +28,18 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     s.key(a, "escape", false)?;
     s.key(a, "a", true)?;
     s.key(a, "down", false)?;
-    assert_eq!(s.viewer(a)?.at("help_scroll"), 1);
+    assert_eq!(
+        s.selected(a, 24, 80)?.as_deref(),
+        Some("right  shrink width")
+    );
     s.key(a, "right", false)?;
-    assert_eq!(s.viewer(a)?.at("help_scroll"), 1);
+    assert_eq!(
+        s.selected(a, 24, 80)?.as_deref(),
+        Some("right  shrink width")
+    );
     s.key(a, "down", false)?;
-    assert_eq!(s.viewer(a)?.at("help_scroll"), 2);
-    assert_eq!(s.viewer(b)?.at("help_scroll"), 0);
+    assert_eq!(s.selected(a, 24, 80)?.as_deref(), Some("t  new tab"));
+    assert!(!s.column_open(b, 24, 80)?);
     assert_eq!(s.viewer(a)?.at("focus"), focus);
     assert_eq!(s.query("bevy_ui::ui_node::Node")?, before);
     let screen = s.painted(a, 24, 80)?;
@@ -44,7 +50,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     s.capture(a, 24, 80, "keybindings-selected")?;
     s.enter(a)?;
     assert_eq!(s.query("fux::model::Tab")?.rows().count(), 2);
-    assert_eq!(s.viewer(a)?.at("prefix"), false);
+    assert!(!s.column_open(a, 24, 80)?);
     assert_ne!(s.viewer(a)?.at("tab"), s.viewer(b)?.at("tab"));
     s.capture(a, 24, 80, "keybindings-new-tab")?;
     Ok(())
@@ -78,9 +84,9 @@ fn a_navigation_key_prefix_still_forwards_its_literal_when_doubled() -> Outcome 
     })?;
     s.key(v, "escape", false)?;
     s.key(v, "up", false)?;
-    assert_eq!(s.viewer(v)?.at("prefix"), true);
+    assert!(s.column_open(v, 24, 80)?);
     s.key(v, "up", false)?;
-    assert_eq!(s.viewer(v)?.at("prefix"), false);
+    assert!(!s.column_open(v, 24, 80)?);
     eventually(|| Ok(fs::read(&input).is_ok_and(|b| b == b"\x1b[A")))?;
     Ok(())
 }

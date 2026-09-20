@@ -3,6 +3,7 @@ use crate::{
     assets::{self, Settings},
     control::{Control, Shutdown, UserInput},
     frame::{self, Views, sync_view, with_views},
+    interaction::Prefix,
     model::*,
     presentation,
     protocol::Input,
@@ -150,7 +151,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
             return;
         };
         if let Some(token) = event.input.token()
-            && v.prefix
+            && world.get::<Prefix>(event.viewer).is_some()
         {
             let settings = world.resource::<Settings>();
             if token != settings.prefix
@@ -173,7 +174,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         let Some(v) = world.get::<Viewer>(event.viewer) else {
             return;
         };
-        if !v.prefix
+        if world.get::<Prefix>(event.viewer).is_none()
             && let Input::Mouse {
                 action,
                 button,
@@ -244,7 +245,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         } = &event.input
             && action == "press"
             && *button == 0
-            && world.get::<Viewer>(event.viewer).is_some_and(|v| !v.prefix)
+            && world.get::<Prefix>(event.viewer).is_none()
         {
             let hit = world
                 .non_send_mut::<Views>()
@@ -644,7 +645,7 @@ fn control_event(
         return;
     };
     v.notify("", false);
-    v.prefix = false;
+    commands.entity(id).remove::<Prefix>();
     let leaf = event
         .target
         .filter(|e| panes.contains(*e))
@@ -885,8 +886,7 @@ fn control_event(
             }
             // Help is the prefix command column itself; there is no second surface.
             Help => {
-                v.prefix = true;
-                v.help_scroll = 0;
+                commands.entity(id).insert(Prefix::default());
             }
             other => return Err(format!("unknown action {other}")),
         }
@@ -939,7 +939,7 @@ fn collapse_layout(
 fn input_event(
     event: On<RoutedInput>,
     mut commands: Commands,
-    mut viewers: Query<&mut Viewer>,
+    mut viewers: Query<(&mut Viewer, Has<Prefix>)>,
     panes: Query<&PaneView>,
     settings: Res<Settings>,
     terminals: Query<&Terminal>,
@@ -947,7 +947,7 @@ fn input_event(
     wake: Res<Wake>,
 ) {
     let id = event.viewer;
-    let Ok(mut v) = viewers.get_mut(id) else {
+    let Ok((mut v, prefix)) = viewers.get_mut(id) else {
         return;
     };
     let result = (|| -> Result<(), String> {
@@ -964,9 +964,9 @@ fn input_event(
                 shift,
             } => {
                 let token = event.input.token().unwrap_or_default();
-                if v.prefix {
+                if prefix {
                     if key == "escape" {
-                        v.prefix = false;
+                        commands.entity(id).remove::<Prefix>();
                         v.notice.clear();
                         return Ok(());
                     }
@@ -974,7 +974,7 @@ fn input_event(
                     if token != settings.prefix
                         && let Some(binding) = settings.bindings.iter().find(|b| b.key == token)
                     {
-                        v.prefix = false;
+                        commands.entity(id).remove::<Prefix>();
                         let action = binding.action.clone();
                         let target = crate::actions::Target::viewer(&v);
                         commands.queue(move |world: &mut World| {
@@ -988,10 +988,9 @@ fn input_event(
                         v.notify(format!("unbound prefix key {token}"), false);
                         return Ok(());
                     }
-                    v.prefix = false;
+                    commands.entity(id).remove::<Prefix>();
                 } else if token == settings.prefix {
-                    v.prefix = true;
-                    v.help_scroll = 0;
+                    commands.entity(id).insert(Prefix::default());
                     v.notice.clear();
                     return Ok(());
                 }
@@ -1012,7 +1011,7 @@ fn input_event(
                 v.notice.clear();
             }
             Input::Paste { text } => {
-                if v.prefix {
+                if prefix {
                     return Ok(());
                 }
                 let pane = panes
@@ -1040,7 +1039,7 @@ fn input_event(
                 // Pick against the last painted native layout, not a second
                 // rectangle hit-test implementation.
                 let context = views.get_mut(&id).ok_or("presentation not initialized")?;
-                if v.prefix {
+                if prefix {
                     return Ok(());
                 }
                 let hit = context.presentation.pointer(*x, *y, action == "press");

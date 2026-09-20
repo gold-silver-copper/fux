@@ -203,8 +203,6 @@ fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() -> crate::t
             scrollback: 0,
             notice: String::new(),
             notice_error: false,
-            help_scroll: 0,
-            prefix: false,
         },
         ChildOf(root),
     ));

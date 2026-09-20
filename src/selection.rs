@@ -150,10 +150,10 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         dragging: false,
         mouse_origin: false,
     });
+    crate::interaction::close_prefix(world, id);
     let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
     v.focus = Some(leaf);
     v.scrollback = offset;
-    v.prefix = false;
     v.notice = "Copy: arrows/hjkl · Space select · y copy · g live · q exit".into();
     Ok(())
 }
