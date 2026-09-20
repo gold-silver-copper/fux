@@ -11,7 +11,7 @@ use bevy_input_focus::{
     FocusCause, InputFocus, InputFocusPlugin, process_recorded_focus_changes,
     tab_navigation::{NavAction, TabGroup, TabIndex, TabNavigation},
 };
-use bevy_math::{UVec2, Vec2};
+use bevy_math::{URect, UVec2, Vec2};
 use bevy_mesh::{Mesh, skinning::SkinnedMeshInverseBindposes};
 use bevy_picking::{
     backend::PointerHits, events::PointerState, hover::HoverMap, pointer::PointerInput,
@@ -386,18 +386,18 @@ impl Presentation {
             };
             let min = transform.translation - node.size() * 0.5;
             let max = min + node.size();
-            let x = min.x.round().clamp(0.0, self.viewport.x as f32) as u16;
-            let y = min.y.round().clamp(0.0, self.viewport.y as f32) as u16;
-            let right = max.x.round().clamp(0.0, self.viewport.x as f32) as u16;
-            let bottom = max.y.round().clamp(0.0, self.viewport.y as f32) as u16;
-            if right > x && bottom > y {
+            let clamp = |v: Vec2| {
+                UVec2::new(
+                    v.x.round().clamp(0.0, self.viewport.x as f32) as u32,
+                    v.y.round().clamp(0.0, self.viewport.y as f32) as u32,
+                )
+            };
+            let rect = URect::from_corners(clamp(min), clamp(max));
+            if !rect.is_empty() {
                 self.rects.push(PaneRect {
                     leaf: *leaf,
                     pane: *pane,
-                    x,
-                    y,
-                    width: right - x,
-                    height: bottom - y,
+                    rect,
                 });
             }
         }
@@ -446,12 +446,8 @@ impl Presentation {
             }
         }
         // Overlapping custom scenes may put a pane over a split gap.
-        self.separators.retain(|&(x, y), _| {
-            !self
-                .rects
-                .iter()
-                .any(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
-        });
+        self.separators
+            .retain(|&(x, y), _| !self.rects.iter().any(|r| r.covers(x, y)));
         let hidden: Vec<_> = self
             .source_to_local
             .iter()
@@ -492,8 +488,11 @@ impl Presentation {
                 12 => "─",
                 _ => "│",
             };
+            // A separator touches the focused pane when it lies on its one-cell rim.
             let touches = focused.is_some_and(|r| {
-                x + 1 >= r.x && x <= r.x + r.width && y + 1 >= r.y && y <= r.y + r.height
+                r.rect
+                    .inflate(1)
+                    .contains(UVec2::new(u32::from(x), u32::from(y)))
             });
             let style = if touches { "\x1b[0;1m" } else { "\x1b[0;90m" };
             at(out, x, y, format_args!("{style}{glyph}\x1b[0m"));

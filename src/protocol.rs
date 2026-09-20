@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::*;
+use bevy_math::{URect, UVec2};
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -8,12 +9,38 @@ pub struct PaneRect {
     /// IDs in the authoritative server World, not the presentation World.
     pub leaf: Entity,
     pub pane: Entity,
-    /// Content rectangle in zero-based viewer cells; no border or title inset.
-    /// The final viewer row is chrome and never belongs to a pane.
-    pub x: u16,
-    pub y: u16,
-    pub width: u16,
-    pub height: u16,
+    /// Content cells, half-open: `min` is the first cell, `max` one past the
+    /// last. No border or title inset; the final viewer row is chrome.
+    pub rect: URect,
+}
+
+impl PaneRect {
+    pub fn x(&self) -> u16 {
+        self.rect.min.x as u16
+    }
+    pub fn y(&self) -> u16 {
+        self.rect.min.y as u16
+    }
+    pub fn width(&self) -> u16 {
+        self.rect.width() as u16
+    }
+    pub fn height(&self) -> u16 {
+        self.rect.height() as u16
+    }
+    /// Half-open containment; `URect::contains` includes the far edge.
+    pub fn covers(&self, x: u16, y: u16) -> bool {
+        let point = UVec2::new(u32::from(x), u32::from(y));
+        point.cmpge(self.rect.min).all() && point.cmplt(self.rect.max).all()
+    }
+    /// The cell inside this pane, zero-based `(row, column)`, clamped to it.
+    pub fn local(&self, x: u16, y: u16) -> (u16, u16) {
+        (
+            y.saturating_sub(self.y())
+                .min(self.height().saturating_sub(1)),
+            x.saturating_sub(self.x())
+                .min(self.width().saturating_sub(1)),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]

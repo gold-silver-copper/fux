@@ -99,8 +99,8 @@ fn size_terminals(world: &mut World, views: &Views) {
     let mut sizes = EntityHashMap::<(u16, u16)>::default();
     for context in views.values() {
         for rect in context.presentation.rects() {
-            let rows = rect.height;
-            let cols = rect.width;
+            let rows = rect.height();
+            let cols = rect.width();
             sizes
                 .entry(rect.pane)
                 .and_modify(|s| {
@@ -238,7 +238,7 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
                         .iter()
                         .find(|r| r.leaf == selection.leaf)
                 })
-                .map_or((0, 0), |r| (r.height, r.width));
+                .map_or((0, 0), |r| (r.height(), r.width()));
             crate::selection::refresh_visible(world, id, visible);
         }
         paint(world, views, id)
@@ -253,7 +253,7 @@ pub(crate) fn content_size(world: &World, viewer: Entity, leaf: Entity) -> Optio
         .rects()
         .iter()
         .find(|r| r.leaf == leaf)
-        .map(|r| (r.height, r.width))
+        .map(|r| (r.height(), r.width()))
 }
 
 pub(crate) fn visible_leaf(world: &World, viewer: Entity, leaf: Entity) -> bool {
@@ -283,13 +283,14 @@ pub(crate) fn directional_neighbor(
     direction: Direction,
 ) -> Option<Entity> {
     let here = rects.iter().find(|r| r.leaf == leaf)?;
-    let cx = i32::from(here.x) * 2 + i32::from(here.width);
-    let cy = i32::from(here.y) * 2 + i32::from(here.height);
+    // Doubled centres (min + max) keep odd sizes exact; `center()` would truncate.
+    let centre = |r: &crate::protocol::PaneRect| (r.rect.min + r.rect.max).as_ivec2();
+    let here = centre(here);
     rects
         .iter()
         .filter_map(|r| {
-            let dx = i32::from(r.x) * 2 + i32::from(r.width) - cx;
-            let dy = i32::from(r.y) * 2 + i32::from(r.height) - cy;
+            let delta = centre(r) - here;
+            let (dx, dy) = (delta.x, delta.y);
             let (forward, cross) = match direction {
                 Direction::Left => (-dx, dy.abs()),
                 Direction::Right => (dx, dy.abs()),
@@ -356,35 +357,35 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
         match world.get_mut::<Terminal>(rect.pane) {
             Some(mut terminal) => {
                 let (lines, screen) =
-                    terminal.snapshot(if selected { scrollback } else { 0 }, rect.width);
-                for (row, line) in lines.iter().take(usize::from(rect.height)).enumerate() {
+                    terminal.snapshot(if selected { scrollback } else { 0 }, rect.width());
+                for (row, line) in lines.iter().take(usize::from(rect.height())).enumerate() {
                     // Snapshot rows already reset style at both ends.
-                    at(&mut out, rect.x, rect.y + row as u16, line);
+                    at(&mut out, rect.x(), rect.y() + row as u16, line);
                 }
                 let (row, col) = screen.cursor_position();
                 if selected
                     && !screen.hide_cursor()
                     && scrollback == 0
                     && !exited
-                    && row < rect.height
-                    && col < rect.width
+                    && row < rect.height()
+                    && col < rect.width()
                 {
-                    cursor = Some((rect.x + col, rect.y + row));
+                    cursor = Some((rect.x() + col, rect.y() + row));
                 }
             }
             None => at(
                 &mut out,
-                rect.x,
-                rect.y,
-                fit("terminal not found", rect.width, false),
+                rect.x(),
+                rect.y(),
+                fit("terminal not found", rect.width(), false),
             ),
         }
         if !selected && exited {
-            let label = fit(&status, rect.width, false);
+            let label = fit(&status, rect.width(), false);
             at(
                 &mut out,
-                rect.x + rect.width - chrome::width(&label),
-                rect.y + rect.height - 1,
+                rect.x() + rect.width() - chrome::width(&label),
+                rect.y() + rect.height() - 1,
                 format_args!("\x1b[0;2;7m{label}\x1b[0m"),
             );
         }

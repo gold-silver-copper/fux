@@ -68,10 +68,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                 .and_then(|v| v.presentation.rects().iter().find(|r| r.leaf == leaf))
                 .copied();
             if let Some(rect) = rect {
-                let point = (
-                    y.saturating_sub(rect.y).min(rect.height.saturating_sub(1)),
-                    x.saturating_sub(rect.x).min(rect.width.saturating_sub(1)),
-                );
+                let point = rect.local(*x, *y);
                 let _ = crate::selection::mouse(world, event.viewer, leaf, *action, point);
             }
             return;
@@ -191,7 +188,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                         event.viewer,
                         hit,
                         MouseAction::Press,
-                        (y.saturating_sub(rect.y), x.saturating_sub(rect.x)),
+                        rect.local(*x, *y),
                     ) {
                         notify(world, event.viewer, Notice::error(error));
                     }
@@ -1097,15 +1094,12 @@ fn input_event(
                                 },
                             });
                         }
-                    } else if *x >= rect.x
-                        && *x < rect.x + rect.width
-                        && *y >= rect.y
-                        && *y < rect.y + rect.height
+                    } else if rect.covers(*x, *y)
                         && let Some(bytes) = crate::encode::mouse_bytes(
                             screen,
                             *action,
                             *button,
-                            (x - rect.x + 1, y - rect.y + 1),
+                            (x - rect.x() + 1, y - rect.y() + 1),
                             *modifiers,
                         )
                     {

@@ -420,21 +420,21 @@ pub fn paint(out: &mut String, selection: &Selection, rect: &crate::protocol::Pa
             (a, selection.cursor)
         });
     let (start, end) = if a <= b { (a, b) } else { (b, a) };
-    for y in start.0..=end.0.min(rect.height.saturating_sub(1)) {
-        for x in 0..rect.width.min(selection.grid.size.1) {
+    for y in start.0..=end.0.min(rect.height().saturating_sub(1)) {
+        for x in 0..rect.width().min(selection.grid.size.1) {
             if (y, x) < start || (y, x) > end {
                 continue;
             }
             let Some(cell) = selection.grid.cell((y, x)) else {
                 continue;
             };
-            if cell.is_wide_continuation() || cell.is_wide() && x + 1 >= rect.width {
+            if cell.is_wide_continuation() || cell.is_wide() && x + 1 >= rect.width() {
                 continue;
             }
             crate::chrome::at(
                 out,
-                rect.x + x,
-                rect.y + y,
+                rect.x() + x,
+                rect.y() + y,
                 format_args!(
                     "\x1b[0;7m{}\x1b[0m",
                     if cell.has_contents() {
