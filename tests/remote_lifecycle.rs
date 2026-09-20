@@ -222,7 +222,14 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() {
     let first = server.query("fux::model::Launch")[0]["entity"]
         .as_u64()
         .unwrap();
+    for action in ["zoom", "scroll_up"] {
+        server.control(viewer, action, "");
+    }
     server.control(viewer, "split_horizontal", "");
+    let screen = server.screen(viewer);
+    let chrome = screen.lines().next().unwrap();
+    assert!(!chrome.contains("zoom"));
+    assert!(!chrome.contains("scroll:"));
     let launches = server.query("fux::model::Launch");
     let second = launches
         .iter()

@@ -657,37 +657,29 @@ fn control_event(
                     .map(|launch| launch.cwd.clone());
                 let argv = (!event.value.is_empty())
                     .then(|| vec!["/bin/sh".into(), "-lc".into(), event.value.clone()]);
-                if leaf.is_none() {
-                    v.focus = Some(spawn_pane(
-                        &mut commands,
-                        &settings,
-                        v.workspace,
-                        argv,
-                        cwd,
-                    )?);
-                    v.zoom = false;
-                    v.scrollback = 0;
-                    return Ok(());
-                }
-                let leaf = leaf.ok_or("missing layout leaf")?;
-                let parent = parents.get(leaf).map_err(|e| e.to_string())?.parent();
-                let siblings = children.get(parent).map_err(|e| e.to_string())?;
-                let index = siblings
-                    .iter()
-                    .position(|e| e == leaf)
-                    .ok_or("missing child")?;
-                let mut node = root_node();
-                node.width = Val::Auto;
-                node.height = Val::Auto;
-                node.flex_direction = if event.action == "split_vertical" {
-                    FlexDirection::Column
+                let new = if let Some(leaf) = leaf {
+                    let parent = parents.get(leaf).map_err(|e| e.to_string())?.parent();
+                    let siblings = children.get(parent).map_err(|e| e.to_string())?;
+                    let index = siblings
+                        .iter()
+                        .position(|e| e == leaf)
+                        .ok_or("missing child")?;
+                    let mut node = root_node();
+                    node.width = Val::Auto;
+                    node.height = Val::Auto;
+                    node.flex_direction = if event.action == "split_vertical" {
+                        FlexDirection::Column
+                    } else {
+                        FlexDirection::Row
+                    };
+                    let container = commands.spawn((Split, node)).id();
+                    let new = spawn_pane(&mut commands, &settings, container, argv, cwd)?;
+                    commands.entity(container).insert_children(0, &[leaf]);
+                    commands.entity(parent).insert_children(index, &[container]);
+                    new
                 } else {
-                    FlexDirection::Row
+                    spawn_pane(&mut commands, &settings, v.workspace, argv, cwd)?
                 };
-                let container = commands.spawn((Split, node)).id();
-                let new = spawn_pane(&mut commands, &settings, container, argv, cwd)?;
-                commands.entity(container).insert_children(0, &[leaf]);
-                commands.entity(parent).insert_children(index, &[container]);
                 v.focus = Some(new);
                 v.zoom = false;
                 v.scrollback = 0;
