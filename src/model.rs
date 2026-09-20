@@ -104,8 +104,6 @@ pub struct Viewer {
     pub notice_error: bool,
     pub help_scroll: usize,
     pub prefix: bool,
-    pub prompt: Option<String>,
-    pub buffer: String,
 }
 
 #[derive(Resource, Clone)]

@@ -3,6 +3,7 @@
 mod tests;
 use crate::{
     actions::{self, Action, Target},
+    chrome,
     control::Control,
     model::*,
     navigation,
@@ -55,8 +56,6 @@ fn open(world: &mut World, id: Entity, target: Target, mode: Mode) {
         return;
     };
     v.prefix = false;
-    v.prompt = None;
-    v.buffer.clear();
     world.entity_mut(id).insert(Overlay {
         serial,
         target,
@@ -262,7 +261,7 @@ pub fn invoke(
         SwapLeft | SwapRight | SwapUp | SwapDown | MoveLeft | MoveRight | MoveUp | MoveDown => {
             let source = target.leaf.ok_or("no pane")?;
             let direction = action.direction().ok_or("no direction")?;
-            let destination = crate::server::neighbor(world, id, source, direction)
+            let destination = crate::frame::neighbor(world, id, source, direction)
                 .ok_or("no pane in that direction")?;
             if matches!(action, SwapLeft | SwapRight | SwapUp | SwapDown) {
                 swap(world, source, destination)?;
@@ -469,21 +468,22 @@ fn swap(world: &mut World, source: Entity, destination: Entity) -> Result<(), St
     Ok(())
 }
 
-/// Command/help navigation owns reserved keys before configured prefix bindings.
+/// Command column navigation owns reserved keys before configured prefix bindings.
 pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
     let Some(v) = world.get::<Viewer>(id) else {
         return false;
     };
-    let help = v.prompt.as_deref() == Some("help");
-    if !help && (!v.prefix || v.prompt.is_some()) {
+    if !v.prefix {
         return false;
     }
     let mut v = v.clone();
     let settings = world.resource::<crate::assets::Settings>();
     // The prefix itself retains literal forwarding, even for a navigation-key prefix.
-    if v.prefix && input.token().as_deref() == Some(settings.prefix.as_str()) {
+    if input.token().as_deref() == Some(settings.prefix.as_str()) {
         return false;
     }
+    let scroll =
+        |v: &Viewer, down, page| chrome::scroll(settings, v.rows, v.help_scroll, down, page);
     let mut execute = None;
     match input {
         Input::Resize { .. } => return false,
@@ -493,34 +493,32 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
             alt: false,
             shift: false,
         } => match key.as_str() {
-            "up" | "pageup" => crate::chrome::scroll(&mut v, settings, false, key == "pageup"),
-            "down" | "pagedown" => crate::chrome::scroll(&mut v, settings, true, key == "pagedown"),
+            "up" | "pageup" => v.help_scroll = scroll(&v, false, key == "pageup"),
+            "down" | "pagedown" => v.help_scroll = scroll(&v, true, key == "pagedown"),
             "left" | "right" => {} // Vertical menus reserve all unmodified arrows.
             "home" => v.help_scroll = 0,
-            "end" => v.help_scroll = crate::chrome::help_limit(settings, v.rows),
-            "enter" => execute = crate::chrome::selected_action(&v, settings).map(str::to_owned),
+            "end" => v.help_scroll = chrome::help_limit(settings, v.rows),
+            "enter" => {
+                execute = chrome::selected_action(settings, v.rows, v.cols, v.help_scroll)
+                    .map(str::to_owned)
+            }
             "escape" => {
                 v.prefix = false;
-                v.prompt = None;
                 v.notice.clear();
             }
-            "q" if help => {
-                v.prompt = None;
-            }
-            _ => return help,
+            _ => return false,
         },
         Input::Mouse { action, .. } => match action.as_str() {
-            "scrollup" => crate::chrome::scroll(&mut v, settings, false, false),
-            "scrolldown" => crate::chrome::scroll(&mut v, settings, true, false),
+            "scrollup" => v.help_scroll = scroll(&v, false, false),
+            "scrolldown" => v.help_scroll = scroll(&v, true, false),
             _ => {}
         },
         Input::Paste { .. } | Input::PasteBegin => return true,
-        _ => return help,
+        _ => return false,
     }
     let target = Target::viewer(&v);
     if execute.is_some() {
         v.prefix = false;
-        v.prompt = None;
     }
     let Some(mut current) = world.get_mut::<Viewer>(id) else {
         return true;

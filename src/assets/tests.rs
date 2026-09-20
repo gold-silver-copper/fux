@@ -136,7 +136,6 @@ fn coherent_defaults_have_exact_unique_keys_and_action_pairs() {
         ("p", "pane_menu"),
         ("s", "tab_menu"),
         ("S", "workspace_menu"),
-        ("?", "help"),
         ("h", "split_horizontal"),
         ("v", "split_vertical"),
         ("z", "zoom"),
@@ -186,8 +185,6 @@ fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() {
             notice_error: false,
             help_scroll: 0,
             prefix: false,
-            prompt: None,
-            buffer: String::new(),
         },
         ChildOf(root),
     ));

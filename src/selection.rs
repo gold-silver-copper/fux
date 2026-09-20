@@ -134,7 +134,7 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         0
     };
     let visible =
-        crate::server::content_size(world, id, leaf).ok_or("no visible content to select")?;
+        crate::frame::content_size(world, id, leaf).ok_or("no visible content to select")?;
     let mut terminal = world
         .get_mut::<Terminal>(pane)
         .ok_or("terminal not found")?;
@@ -154,7 +154,6 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
     v.focus = Some(leaf);
     v.scrollback = offset;
     v.prefix = false;
-    v.prompt = None;
     v.notice = "Copy: arrows/hjkl · Space select · y copy · g live · q exit".into();
     Ok(())
 }
@@ -164,7 +163,7 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
 pub fn refresh(world: &mut World, id: Entity) {
     let visible = world
         .get::<Selection>(id)
-        .and_then(|s| crate::server::content_size(world, id, s.leaf))
+        .and_then(|s| crate::frame::content_size(world, id, s.leaf))
         .unwrap_or((0, 0));
     refresh_visible(world, id, visible);
 }
@@ -299,7 +298,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 let text = selection
                     .anchor
                     .map(|anchor| selection.grid.text(anchor, cursor));
-                let copied = text.map(|text| crate::server::clipboard(world, id, text));
+                let copied = text.map(|text| crate::frame::clipboard(world, id, text));
                 if matches!(copied, Some(Ok(()))) {
                     world.entity_mut(id).remove::<Selection>();
                 }

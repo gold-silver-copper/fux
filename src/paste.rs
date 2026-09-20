@@ -31,10 +31,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             } else {
                 Owner::Discard
             }
-        } else if v.prefix
-            || v.prompt.is_some()
-            || world.get::<crate::selection::Selection>(id).is_some()
-        {
+        } else if v.prefix || world.get::<crate::selection::Selection>(id).is_some() {
             Owner::Discard
         } else {
             Owner::Pane(Target::viewer(v))
@@ -66,7 +63,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         Some(Owner::Pane(target)) => {
             world
                 .get::<Viewer>(id)
-                .is_some_and(|v| Target::viewer(v) == target && !v.prefix && v.prompt.is_none())
+                .is_some_and(|v| Target::viewer(v) == target && !v.prefix)
                 && world.get::<Overlay>(id).is_none()
                 && world.get::<crate::selection::Selection>(id).is_none()
         }

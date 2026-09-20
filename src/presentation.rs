@@ -352,7 +352,7 @@ impl Presentation {
     }
 
     pub fn neighbor(&self, leaf: Entity, direction: &str) -> Option<Entity> {
-        crate::server::directional_neighbor(&self.rects, leaf, direction)
+        crate::frame::directional_neighbor(&self.rects, leaf, direction)
     }
 
     pub fn rects(&self) -> &[PaneRect] {

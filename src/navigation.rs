@@ -159,7 +159,7 @@ pub fn control(
                 .get::<Navigation>(id)
                 .and_then(|memory| memory.previous.get(&tab).copied());
             if let Some(previous) = previous.filter(|e| {
-                leaves(world, tab).contains(e) && crate::server::visible_leaf(world, id, *e)
+                leaves(world, tab).contains(e) && crate::frame::visible_leaf(world, id, *e)
             }) {
                 world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus = Some(previous);
             }

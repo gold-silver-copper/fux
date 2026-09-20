@@ -80,7 +80,6 @@ impl Default for Settings {
             ("s", "tab_menu"),
             ("S", "workspace_menu"),
             ("d", "detach"),
-            ("?", "help"),
             ("t", "tab_new"),
             ("]", "tab_next"),
             ("c", "copy_mode"),

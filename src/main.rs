@@ -11,6 +11,8 @@ mod actions;
 mod assets;
 mod chrome;
 mod control;
+mod encode;
+mod frame;
 mod interaction;
 mod model;
 mod navigation;
@@ -118,7 +120,7 @@ fn execute() -> Result<(), String> {
         }
         "help" | "--help" | "-h" => {
             println!(
-                "fux server [--address IP] [--port PORT] [--config FILE]\nfux attach [WORKSPACE]\nfux rpc METHOD [JSON]\nfux stop\n\nFUX_ENDPOINT selects the client endpoint (default http://127.0.0.1:15702).\nAttached controls: ctrl-b then ? for help; ctrl-b d detaches."
+                "fux server [--address IP] [--port PORT] [--config FILE]\nfux attach [WORKSPACE]\nfux rpc METHOD [JSON]\nfux stop\n\nFUX_ENDPOINT selects the client endpoint (default http://127.0.0.1:15702).\nAttached controls: ctrl-b opens the command column; ctrl-b d detaches."
             );
             Ok(())
         }

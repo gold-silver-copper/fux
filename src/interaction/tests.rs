@@ -20,8 +20,6 @@ fn setup() -> (World, Entity, Target, Entity) {
             notice_error: false,
             help_scroll: 0,
             prefix: false,
-            prompt: None,
-            buffer: String::new(),
         })
         .id();
     (

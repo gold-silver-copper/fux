@@ -14,8 +14,6 @@ fn viewer(rows: u16, cols: u16) -> Viewer {
         notice_error: false,
         help_scroll: 0,
         prefix: false,
-        prompt: Some("help".into()),
-        buffer: String::new(),
     }
 }
 
@@ -90,7 +88,7 @@ fn tiny_unicode_command_selection_is_visible_even_when_disabled() {
                 let mut v = viewer(rows, cols);
                 v.help_scroll = selected;
                 let mut out = String::new();
-                let bounds = panel_context(&mut out, &v, &settings, |_| true);
+                let bounds = panel_context(&mut out, &v, &settings, v.help_scroll, |_| true);
                 if rows < 2 || cols == 0 {
                     assert!(bounds.is_none());
                     assert!(out.is_empty());

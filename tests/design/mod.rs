@@ -211,8 +211,8 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() {
     assert!(grow() > before);
     assert_eq!(s.viewer(v)["prefix"], false);
     assert_eq!(s.viewer(v)["help_scroll"], 1);
+    // Help is the command column itself: the prefix key is the only way in.
     s.key(v, "b", true);
-    s.key(v, "?", false);
     s.painted(v, 12, 60);
     s.mouse(v, "scrolldown", 59, 10);
     assert_eq!(s.viewer(v)["help_scroll"], 1);
@@ -228,11 +228,11 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() {
     s.mouse(v, "press", 0, 0);
     assert_eq!(s.viewer(v)["focus"], focus);
     s.input(v, json!({"kind":"paste","text":"NOT-HELP-INPUT"}));
-    assert_eq!(s.viewer(v)["buffer"], "");
+    assert!(!s.painted(v, 12, 60).contents().contains("NOT-HELP-INPUT"));
     for _ in 0..60 {
         s.key(v, "down", false);
     }
-    assert!(s.painted(v, 12, 60).contents().contains("?  command help"));
+    assert!(s.painted(v, 12, 60).contents().contains("d  detach"));
     s.resize(v, 60, 60);
     assert!(
         s.painted(v, 60, 60)
