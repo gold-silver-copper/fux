@@ -133,7 +133,7 @@ fn coherent_defaults_have_exact_unique_keys_and_action_pairs() -> crate::testing
     let actual: std::collections::BTreeMap<_, _> = settings
         .bindings
         .iter()
-        .map(|b| (b.key.as_str(), b.action.as_str()))
+        .map(|b| (b.key.as_str(), b.action.to_string()))
         .collect();
     assert_eq!(actual.len(), settings.bindings.len());
     let expected = [
@@ -173,6 +173,7 @@ fn coherent_defaults_have_exact_unique_keys_and_action_pairs() -> crate::testing
         ("d", "detach"),
     ]
     .into_iter()
+    .map(|(key, action)| (key, action.to_owned()))
     .collect();
     assert_eq!(actual, expected);
     Ok(())
@@ -201,8 +202,7 @@ fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() -> crate::t
             cols: 80,
             zoom: false,
             scrollback: 0,
-            notice: String::new(),
-            notice_error: false,
+            notice: None,
         },
         ChildOf(root),
     ));

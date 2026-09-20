@@ -1,6 +1,7 @@
 use bevy_ecs::{entity::MapEntities, prelude::*, reflect::ReflectMapEntities};
-use bevy_reflect::{Reflect, std_traits::ReflectDefault};
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize, std_traits::ReflectDefault};
 use bevy_ui::Node;
+use serde::{Deserialize, Serialize};
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
@@ -49,12 +50,30 @@ pub struct Launch {
     pub history_lines: usize,
 }
 
+/// One process lifecycle. A running process may carry its last I/O error
+/// without leaving `Running`; only spawn and termination failures are `Failed`.
+#[derive(Reflect, Clone, PartialEq, Default, Debug, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Status {
+    #[default]
+    Starting,
+    Running {
+        pid: u32,
+        error: Option<String>,
+    },
+    Exited {
+        code: i32,
+    },
+    Failed {
+        error: String,
+    },
+}
+
 #[derive(Component, Reflect, Clone, PartialEq)]
 #[reflect(Component, Default)]
 pub struct ProcessState {
-    pub pid: Option<u32>,
-    pub exit: Option<i32>,
-    pub error: Option<String>,
+    pub status: Status,
     pub rows: u16,
     pub cols: u16,
     pub revision: u64,
@@ -63,9 +82,7 @@ pub struct ProcessState {
 impl Default for ProcessState {
     fn default() -> Self {
         Self {
-            pid: None,
-            exit: None,
-            error: None,
+            status: Status::Starting,
             rows: 24,
             cols: 80,
             revision: 0,
@@ -100,24 +117,38 @@ pub struct Viewer {
     pub cols: u16,
     pub zoom: bool,
     pub scrollback: usize,
-    pub notice: String,
-    pub notice_error: bool,
+    pub notice: Option<Notice>,
+}
+
+/// The bar's right zone shows the latest notice until further input clears it.
+#[derive(Reflect, Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+pub struct Notice {
+    pub text: String,
+    pub error: bool,
+}
+impl Notice {
+    pub fn info(text: impl Into<String>) -> Option<Self> {
+        Some(Self {
+            text: text.into(),
+            error: false,
+        })
+    }
+    pub fn error(text: impl Into<String>) -> Option<Self> {
+        Some(Self {
+            text: text.into(),
+            error: true,
+        })
+    }
 }
 
 pub const DETACHED: &str = "viewer no longer attached";
 
-impl Viewer {
-    /// The bar's right zone shows the latest notice until further input clears it.
-    pub fn notify(&mut self, message: impl Into<String>, error: bool) {
-        self.notice = message.into();
-        self.notice_error = error;
-    }
-}
-
 /// Notify a viewer that may already be gone; a missing viewer has nobody to tell.
-pub(crate) fn notify(world: &mut World, id: Entity, message: impl Into<String>, error: bool) {
+/// `None` clears the bar.
+pub(crate) fn notify(world: &mut World, id: Entity, notice: Option<Notice>) {
     if let Some(mut v) = world.get_mut::<Viewer>(id) {
-        v.notify(message, error);
+        v.notice = notice;
     }
 }
 

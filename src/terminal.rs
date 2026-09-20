@@ -27,7 +27,7 @@ use nix::{
 use parking_lot::Mutex;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
-use crate::model::{Launch, ProcessState, Wake};
+use crate::model::{Launch, ProcessState, Status, Wake};
 
 const CHUNK: usize = 8192;
 const OUTPUT_SLOTS: usize = 16;
@@ -59,18 +59,29 @@ impl Plugin for TerminalPlugin {
 #[derive(Component)]
 pub struct Terminal {
     parser: vt100::Parser<Replies>,
-    job: Option<Job>,
-    input: Sender<Vec<u8>>,
-    output: Receiver<Output>,
+    runtime: Runtime,
+    /// The reader outlives the process: it drains output queued in the PTY
+    /// after the group is killed, then ends at EOF.
     reader: Option<Task<()>>,
-    writer: Option<Task<()>>,
-    reader_stop: Sender<()>,
+    output: Receiver<Output>,
     notify: Notify,
     published_size: (u16, u16),
-    exit: Option<i32>,
-    error: Option<String>,
+    status: Status,
     revision: u64,
     snapshot: Option<(u64, usize, u16, Vec<String>)>,
+}
+
+/// Everything that exists only while the child runs. Input after exit is a
+/// type error here, not a runtime check spread over optional fields.
+enum Runtime {
+    Live(Live),
+    Stopped,
+}
+struct Live {
+    job: Job,
+    input: Sender<Vec<u8>>,
+    writer: Task<()>,
+    reader_stop: Sender<()>,
 }
 
 struct Job {
@@ -115,12 +126,13 @@ impl Terminal {
                 "input exceeds {MAX_INPUT} bytes; send smaller chunks"
             ));
         }
-        if self.job.is_none() {
-            return Err("process has exited".into());
+        match &self.runtime {
+            Runtime::Live(live) => live
+                .input
+                .try_send(bytes.to_vec())
+                .map_err(|e| e.to_string()),
+            Runtime::Stopped => Err("process has exited".into()),
         }
-        self.input
-            .try_send(bytes.to_vec())
-            .map_err(|e| e.to_string())
     }
 
     /// The temporary history offset is always reset before accepting more output.
@@ -355,15 +367,16 @@ impl Terminal {
                     error: None,
                 },
             ),
-            job: Some(job),
-            input,
-            output,
+            status: Status::Running { pid, error: None },
+            runtime: Runtime::Live(Live {
+                job,
+                input,
+                writer,
+                reader_stop,
+            }),
             reader: Some(reader),
-            writer: Some(writer),
-            exit: None,
-            error: None,
+            output,
             revision: 1,
-            reader_stop,
             notify,
             published_size: (rows, cols),
             snapshot: None,
@@ -380,8 +393,9 @@ impl Terminal {
         if self.parser.screen().size() == (rows, cols) {
             return Ok(());
         }
-        if let Some(job) = &self.job {
-            job.master
+        if let Runtime::Live(live) = &self.runtime {
+            live.job
+                .master
                 .lock()
                 .as_ref()
                 .ok_or("PTY is closed")?
@@ -396,26 +410,57 @@ impl Terminal {
 
     /// Terminates the owned process group, reaps its leader, and retains the screen.
     pub fn stop(&mut self) -> Result<(), String> {
-        self.input.close();
-        self.reader.take();
-        self.writer.take();
-        let result = if let Some(mut job) = self.job.take() {
-            match job.finish() {
-                Ok(code) => {
-                    self.exit = Some(code);
-                    Ok(())
-                }
-                Err(error) => {
-                    self.error = Some(error.clone());
-                    Err(error)
-                }
-            }
-        } else {
-            Ok(())
+        let Runtime::Live(live) = std::mem::replace(&mut self.runtime, Runtime::Stopped) else {
+            return Ok(());
         };
+        // Cancel our own reader first: nothing should still hold the descriptor
+        // while the group is killed.
+        self.reader.take();
+        let result = self.finish(live, None);
         self.revision = self.revision.wrapping_add(1);
         self.notify.send();
         result
+    }
+
+    /// Records a running process's I/O error without ending the process.
+    fn fault(&mut self, error: String) {
+        match &mut self.status {
+            Status::Running { error: slot, .. } => *slot = Some(error),
+            Status::Starting => self.status = Status::Failed { error },
+            Status::Exited { .. } | Status::Failed { .. } => {}
+        }
+    }
+
+    /// Leaves `Live`: closes input, drops the writer, reaps the group and
+    /// publishes the final status. `observed` is the waiter's verdict when the
+    /// child ended on its own; an explicit stop has none.
+    fn finish(&mut self, live: Live, observed: Option<Result<i32, String>>) -> Result<(), String> {
+        let Live {
+            mut job,
+            input,
+            writer,
+            reader_stop,
+        } = live;
+        input.close();
+        drop(writer);
+        let result = match observed {
+            Some(observed) => job.finish().and(observed),
+            None => job.finish(),
+        };
+        // Let a natural exit's reader drain what the PTY still holds.
+        let _ = reader_stop.try_send(());
+        match result {
+            Ok(code) => {
+                self.status = Status::Exited { code };
+                Ok(())
+            }
+            Err(error) => {
+                self.status = Status::Failed {
+                    error: error.clone(),
+                };
+                Err(error)
+            }
+        }
     }
 }
 
@@ -555,9 +600,7 @@ fn remove_terminals(
             commands.entity(entity).remove::<Terminal>();
             let _ = terminal.stop();
             if let Some(mut state) = state {
-                state.pid = None;
-                state.exit = terminal.exit;
-                state.error = terminal.error.take();
+                state.status = terminal.status.clone();
                 state.revision = terminal.revision;
             }
         }
@@ -575,9 +618,7 @@ fn spawn_terminals(
                 commands.entity(entity).insert(terminal);
             }
             Err(error) => {
-                state.pid = None;
-                state.exit = None;
-                state.error = Some(error);
+                state.status = Status::Failed { error };
                 state.revision = state.revision.wrapping_add(1);
             }
         }
@@ -597,7 +638,7 @@ fn update_terminals(
             && terminal.published_size != (state.rows, state.cols)
             && let Err(error) = terminal.resize(state.rows, state.cols)
         {
-            terminal.error = Some(error);
+            terminal.fault(error);
         }
         let mut consumed = 0;
         while consumed < UPDATE_BYTES {
@@ -609,7 +650,7 @@ fn update_terminals(
                     consumed += bytes.len();
                     terminal.parser.process(&bytes);
                 }
-                Output::Error(error) => terminal.error = Some(error),
+                Output::Error(error) => terminal.fault(error),
                 Output::Eof => {
                     terminal.reader.take();
                 }
@@ -618,22 +659,16 @@ fn update_terminals(
         }
         remaining_output |= !terminal.output.is_empty();
         if let Some(error) = terminal.parser.callbacks_mut().error.take() {
-            terminal.error = Some(error);
+            terminal.fault(error);
         }
-        let exited = terminal
-            .job
-            .as_ref()
-            .and_then(|job| job.exited.lock().take());
-        if let Some(observed) = exited {
-            terminal.input.close();
-            terminal.writer.take();
-            if let Some(mut job) = terminal.job.take() {
-                match job.finish().and(observed) {
-                    Ok(code) => terminal.exit = Some(code),
-                    Err(error) => terminal.error = Some(error),
-                }
-            }
-            let _ = terminal.reader_stop.try_send(());
+        let exited = match &terminal.runtime {
+            Runtime::Live(live) => live.job.exited.lock().take(),
+            Runtime::Stopped => None,
+        };
+        if let Some(observed) = exited
+            && let Runtime::Live(live) = std::mem::replace(&mut terminal.runtime, Runtime::Stopped)
+        {
+            let _ = terminal.finish(live, Some(observed));
             terminal.revision = terminal.revision.wrapping_add(1);
         }
         let (rows, cols) = terminal.parser.screen().size();
@@ -642,9 +677,7 @@ fn update_terminals(
         state.set_if_neq(ProcessState {
             rows,
             cols,
-            pid: terminal.job.as_ref().map(|job| job.pid),
-            exit: terminal.exit,
-            error: terminal.error.clone(),
+            status: terminal.status.clone(),
             revision: terminal.revision,
         });
     }
@@ -749,7 +782,10 @@ mod tests {
         let pid = |app: &App| {
             app.world()
                 .get::<ProcessState>(entity)
-                .and_then(|state| state.pid)
+                .and_then(|state| match state.status {
+                    Status::Running { pid, .. } => Some(pid),
+                    _ => None,
+                })
                 .need()
         };
         let reaped =

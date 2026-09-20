@@ -55,6 +55,7 @@ fn evicted_history_selection_is_cleared_without_moving_another_viewer() -> Outco
     eventually(|| {
         if s.viewer(a)?
             .at("notice")
+            .at("text")
             .as_str()
             .is_some_and(|n| n.contains("selection cleared"))
         {
@@ -177,6 +178,7 @@ fn clipboard_disabled_reports_failure_without_emitting_an_effect() -> Outcome {
         s.control(v, "copy", "")?;
         Ok(s.viewer(v)?
             .at("notice")
+            .at("text")
             .as_str()
             .need()?
             .contains("clipboard disabled"))

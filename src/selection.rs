@@ -154,7 +154,7 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
     let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
     v.focus = Some(leaf);
     v.scrollback = offset;
-    v.notice = "Copy: arrows/hjkl · Space select · y copy · g live · q exit".into();
+    v.notice = Notice::info("Copy: arrows/hjkl · Space select · y copy · g live · q exit");
     Ok(())
 }
 
@@ -221,16 +221,15 @@ pub fn refresh_visible(world: &mut World, id: Entity, visible: (u16, u16)) {
             if let Some(mut v) = world.get_mut::<Viewer>(id) {
                 v.scrollback = actual;
                 if invalidated {
-                    v.notify(
+                    v.notice = Notice::error(
                         "selection cleared: rows changed, resized, scrolled or evicted",
-                        true,
                     );
                 }
             }
         }
         Err(error) => {
             world.entity_mut(id).remove::<Selection>();
-            notify(world, id, error, true);
+            notify(world, id, Notice::error(error));
         }
     }
 }
@@ -267,14 +266,14 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             Key::Char('q') | Key::Escape => {
                 world.entity_mut(id).remove::<Selection>();
                 if let Some(mut v) = world.get_mut::<Viewer>(id) {
-                    v.notice.clear();
+                    v.notice = None;
                 }
                 return true;
             }
             Key::Char('g') => {
                 if let Some(mut v) = world.get_mut::<Viewer>(id) {
                     v.scrollback = 0;
-                    v.notice.clear();
+                    v.notice = None;
                 }
                 world.entity_mut(id).remove::<Selection>();
                 return true;
@@ -303,8 +302,8 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 if let Some(mut v) = world.get_mut::<Viewer>(id) {
                     match copied {
                         Some(Ok(())) => v.scrollback = 0,
-                        Some(Err(error)) => v.notify(error, true),
-                        None => v.notice = "Space starts a selection".into(),
+                        Some(Err(error)) => v.notice = Notice::error(error),
+                        None => v.notice = Notice::info("Space starts a selection"),
                     }
                 }
                 return true;
@@ -405,7 +404,7 @@ pub fn mouse(
     if action == MouseAction::Release && selection.mouse_origin {
         world.entity_mut(id).remove::<Selection>();
         if let Some(mut v) = world.get_mut::<Viewer>(id) {
-            v.notice.clear();
+            v.notice = None;
         }
     }
     Ok(())

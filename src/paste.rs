@@ -5,7 +5,7 @@ use crate::protocol::Input;
 use crate::{
     actions::Target,
     interaction::{Mode, Overlay},
-    model::Viewer,
+    model::{Notice, Viewer},
 };
 use bevy_ecs::prelude::*;
 
@@ -51,7 +51,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         if let Some(mut ownership) = world.get_mut::<Ownership>(id) {
             ownership.pending = Some(owner);
         }
-        crate::model::notify(world, id, "pasting...", false);
+        crate::model::notify(world, id, Notice::info("pasting..."));
         return true;
     }
     let Input::Paste { text } = input else {
@@ -61,9 +61,9 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         .get_mut::<Ownership>(id)
         .and_then(|mut state| state.pending.take());
     if let Some(mut v) = world.get_mut::<Viewer>(id)
-        && v.notice == "pasting..."
+        && v.notice.as_ref().is_some_and(|n| n.text == "pasting...")
     {
-        v.notice.clear();
+        v.notice = None;
     }
     let valid = match owner {
         None => true,
@@ -82,7 +82,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         } else {
             "paste owner changed; discarded"
         };
-        crate::model::notify(world, id, reason, true);
+        crate::model::notify(world, id, Notice::error(reason));
         return true;
     }
     false

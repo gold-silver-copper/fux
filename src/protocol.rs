@@ -1,5 +1,5 @@
 use bevy_ecs::prelude::*;
-use bevy_reflect::Reflect;
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -17,6 +17,7 @@ pub struct PaneRect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Left,
@@ -28,6 +29,7 @@ pub enum Direction {
 /// A key as the outer terminal names it. The wire form is the configuration
 /// spelling: one character for `Char`, `enter`, `up`, `f5` and so on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum Key {
     Char(char),
@@ -113,6 +115,7 @@ impl TryFrom<String> for Key {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 pub struct Modifiers {
     pub ctrl: bool,
     pub alt: bool,
@@ -120,6 +123,7 @@ pub struct Modifiers {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseAction {
     Press,
@@ -130,6 +134,7 @@ pub enum MouseAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseButton {
     Left,
@@ -139,6 +144,7 @@ pub enum MouseButton {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Input {
     Key {
@@ -168,6 +174,7 @@ pub enum Input {
 /// A binding as written in configuration: `ctrl-alt-shift-key`. Shift is only
 /// spelled out for named keys; a shifted character is itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Token(String);
 

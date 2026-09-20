@@ -171,9 +171,11 @@ fn nested_swap_and_existing_tab_workspace_moves_keep_process_identity_and_histor
             retained
                 .at("components")
                 .at("fux::model::ProcessState")
+                .at("status")
                 .at("pid"),
             old.at("components")
                 .at("fux::model::ProcessState")
+                .at("status")
                 .at("pid")
         );
     }
@@ -228,10 +230,12 @@ fn tabs_bar_native_click_chooser_and_independent_focus_survive_switches() -> Out
             retained
                 .at("components")
                 .at("fux::model::ProcessState")
+                .at("status")
                 .at("pid"),
             process
                 .at("components")
                 .at("fux::model::ProcessState")
+                .at("status")
                 .at("pid")
         );
     }
@@ -258,6 +262,7 @@ fn interactive_close_is_modal_captured_and_automation_is_explicit() -> Outcome {
     assert!(
         s.viewer(v)?
             .at("notice")
+            .at("text")
             .as_str()
             .need()?
             .contains("wrong kind")
@@ -404,7 +409,7 @@ fn unknown_control_action_names_are_rejected_at_the_api_boundary() -> Outcome {
         json!({"event":"fux::control::Control","value":{"viewer":v,"action":"custom_界é"}}),
     );
     assert!(rejected.is_err());
-    assert!(s.viewer(v)?.at("notice").as_str().need()?.is_empty());
+    assert!(s.viewer(v)?.at("notice").is_null());
     assert!(s.request("rpc.discover", Value::Null).is_ok());
     s.control(v, "split_horizontal", "")?;
     assert_eq!(s.query("fux::model::PaneView")?.rows().count(), 2);

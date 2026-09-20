@@ -242,9 +242,9 @@ fn stock_launch_removal_settles_without_another_request() -> Outcome {
         .need()?
         .at("components")
         .at("fux::model::ProcessState");
-    assert!(state.at("pid").is_null());
-    assert!(state.at("exit").is_number(), "{state}");
-    assert!(state.at("error").is_null(), "{state}");
+    assert!(state.at("status").at("pid").is_null());
+    assert_eq!(state.at("status").at("kind"), "exited", "{state}");
+    assert!(state.at("status").at("code").is_number(), "{state}");
     Ok(())
 }
 
@@ -257,6 +257,7 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
         .at(0)
         .at("components")
         .at("fux::model::ProcessState")
+        .at("status")
         .at("pid")
         .as_i64()
         .need()? as i32;
@@ -279,9 +280,9 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
         .at(0)
         .at("components")
         .at("fux::model::ProcessState");
-    assert!(state.at("pid").is_null());
-    assert!(state.at("exit").is_number(), "{state}");
-    assert!(state.at("error").is_null(), "{state}");
+    assert!(state.at("status").at("pid").is_null());
+    assert_eq!(state.at("status").at("kind"), "exited", "{state}");
+    assert!(state.at("status").at("code").is_number(), "{state}");
     Ok(())
 }
 
@@ -351,9 +352,11 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
         assert_eq!(
             old.at("components")
                 .at("fux::model::ProcessState")
+                .at("status")
                 .at("pid"),
             new.at("components")
                 .at("fux::model::ProcessState")
+                .at("status")
                 .at("pid")
         );
     }
@@ -564,6 +567,7 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
     let pid = hot
         .at("components")
         .at("fux::model::ProcessState")
+        .at("status")
         .at("pid")
         .as_u64()
         .need()? as i32;
@@ -576,8 +580,8 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
         .need()?
         .at("components")
         .at("fux::model::ProcessState");
-    assert!(state.at("pid").is_null(), "{state}");
-    assert!(state.at("exit").is_number(), "{state}");
-    assert!(state.at("error").is_null(), "{state}");
+    assert!(state.at("status").at("pid").is_null(), "{state}");
+    assert_eq!(state.at("status").at("kind"), "exited", "{state}");
+    assert!(state.at("status").at("code").is_number(), "{state}");
     Ok(())
 }

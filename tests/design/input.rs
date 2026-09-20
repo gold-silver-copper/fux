@@ -160,6 +160,7 @@ fn settings_hot_reload_short_empty_and_unicode_help() -> Outcome {
     assert!(
         s.viewer(v)?
             .at("notice")
+            .at("text")
             .as_str()
             .need()?
             .contains("unknown action")

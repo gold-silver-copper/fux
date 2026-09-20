@@ -11,8 +11,7 @@ fn viewer(rows: u16, cols: u16) -> Viewer {
         cols,
         zoom: false,
         scrollback: 0,
-        notice: String::new(),
-        notice_error: false,
+        notice: None,
     }
 }
 
@@ -48,13 +47,12 @@ fn every_binding_is_reachable_at_every_short_height() -> crate::testing::Outcome
             parser.process(out.as_bytes());
             let contents = parser.screen().contents();
             for binding in &settings.bindings {
-                let label = binding
-                    .action
-                    .parse::<crate::actions::Action>()
-                    .ok()
-                    .map_or_else(|| binding.action.replace('_', " "), |a| a.label().into());
+                let label = match &binding.action {
+                    BindingAction::Known(action) => action.label().to_owned(),
+                    BindingAction::Custom(name) => name.replace('_', " "),
+                };
                 if contents.contains(&label) {
-                    seen.insert(binding.action.clone());
+                    seen.insert(binding.action.to_string());
                 }
             }
             assert_eq!(
@@ -73,11 +71,11 @@ fn tiny_unicode_command_selection_is_visible_even_when_disabled() -> crate::test
         bindings: vec![
             crate::assets::Binding {
                 key: "界".into(),
-                action: "custom_界é".into(),
+                action: BindingAction::Custom("custom_界é".into()),
             },
             crate::assets::Binding {
                 key: "x".into(),
-                action: "close".into(),
+                action: BindingAction::Known(crate::actions::Action::Close),
             },
         ],
         ..Default::default()
@@ -112,7 +110,7 @@ fn panel_is_content_sized_above_a_full_width_bar_and_resets_styles() -> crate::t
     let settings = Settings {
         bindings: vec![crate::assets::Binding {
             key: "k".into(),
-            action: "known_action".into(),
+            action: BindingAction::Custom("known_action".into()),
         }],
         ..Default::default()
     };

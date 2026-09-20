@@ -114,6 +114,7 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
     assert!(
         s.viewer(v)?
             .at("notice")
+            .at("text")
             .as_str()
             .need()?
             .contains("only one tab")
@@ -127,6 +128,7 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
     assert!(
         s.viewer(v)?
             .at("notice")
+            .at("text")
             .as_str()
             .need()?
             .contains("Space starts")
@@ -139,7 +141,7 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
     s.key(v, "pageup", false)?;
     s.key(v, "g", false)?;
     assert_eq!(s.viewer(v)?.at("scrollback"), 0);
-    assert_eq!(s.viewer(v)?.at("notice"), "");
+    assert!(s.viewer(v)?.at("notice").is_null());
     assert!(!s.painted(v, 24, 80)?.hide_cursor());
     s.control(v, "copy_mode", "")?;
     s.key(v, "q", false)?;

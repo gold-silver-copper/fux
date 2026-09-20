@@ -6,7 +6,7 @@ use crate::{
     interaction::Prefix,
     model::*,
     presentation,
-    protocol::{Input, Key, MouseAction, MouseButton, Token},
+    protocol::{Input, MouseAction, MouseButton, Token},
     terminal::{Terminal, TerminalPlugin},
 };
 use bevy_app::{App, AppExit, Plugin, Startup, Update};
@@ -47,7 +47,11 @@ fn route_control(event: On<Control>, mut commands: Commands) {
         let action = event.action;
         if let Some(entity) = event.target {
             if world.get_entity(entity).is_err() {
-                notify(world, event.viewer, "target no longer exists", true);
+                notify(
+                    world,
+                    event.viewer,
+                    Notice::error("target no longer exists"),
+                );
                 return;
             }
             let valid_kind = match action.target_kind() {
@@ -60,8 +64,7 @@ fn route_control(event: On<Control>, mut commands: Commands) {
                 notify(
                     world,
                     event.viewer,
-                    "target has the wrong kind for this action",
-                    true,
+                    Notice::error("target has the wrong kind for this action"),
                 );
                 return;
             }
@@ -104,7 +107,7 @@ fn route_control(event: On<Control>, mut commands: Commands) {
         ) {
             Ok(true) => {}
             Ok(false) => world.trigger(RoutedControl(event)),
-            Err(error) => notify(world, event.viewer, error, true),
+            Err(error) => notify(world, event.viewer, Notice::error(error)),
         }
     });
 }
@@ -157,17 +160,9 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
             if token != settings.prefix
                 && let Some(binding) = settings.bindings.iter().find(|b| b.key == token)
             {
-                let action = binding.action.clone();
+                let binding = binding.action.clone();
                 let target = crate::actions::Target::viewer(v);
-                crate::interaction::dispatch_named(
-                    world,
-                    event.viewer,
-                    target,
-                    &action,
-                    None,
-                    "",
-                    true,
-                );
+                crate::interaction::dispatch_binding(world, event.viewer, target, &binding);
                 return;
             }
         }
@@ -277,7 +272,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                         MouseAction::Press,
                         (y.saturating_sub(rect.y), x.saturating_sub(rect.x)),
                     ) {
-                        notify(world, event.viewer, error, true);
+                        notify(world, event.viewer, Notice::error(error));
                     }
                     return;
                 }
@@ -336,12 +331,13 @@ fn scene_completions(io: Res<SceneIo>, mut commands: Commands) {
                 Ok(None) => Ok(format!("saved {}", done.path)),
                 Err(error) => Err(error),
             };
-            let error = result.is_err();
             notify(
                 world,
                 done.viewer,
-                result.unwrap_or_else(|error| error),
-                error,
+                match result {
+                    Ok(text) => Notice::info(text),
+                    Err(error) => Notice::error(error),
+                },
             );
         });
     }
@@ -356,6 +352,8 @@ impl Plugin for ServerPlugin {
             .register_type::<WorkspaceOrder>()
             .register_type::<Launch>()
             .register_type::<ProcessState>()
+            .register_type::<Status>()
+            .register_type::<Notice>()
             .register_type::<PaneView>()
             .register_type::<PaneViews>()
             .register_type::<Viewer>()
@@ -632,7 +630,7 @@ fn control_event(
         commands.queue(move |world: &mut World| {
             let result = crate::navigation::control(world, id, action, target, &value);
             if let Err(error) = result {
-                notify(world, id, error, true);
+                notify(world, id, Notice::error(error));
             }
         });
         wake.notify();
@@ -645,7 +643,7 @@ fn control_event(
     let Ok(mut v) = viewers.get_mut(id) else {
         return;
     };
-    v.notify("", false);
+    v.notice = None;
     commands.entity(id).remove::<Prefix>();
     let leaf = event
         .target
@@ -773,7 +771,7 @@ fn control_event(
                     .copy_text(if leaf == v.focus { v.scrollback } else { 0 });
                 crate::selection::validate_clipboard(&settings, &text)?;
                 view.clipboard.push(text);
-                v.notice = "visible pane copied via OSC52".into();
+                v.notice = Notice::info("visible pane copied via OSC52");
             }
             WorkspaceNew => {
                 let title = if event.value.is_empty() {
@@ -845,12 +843,11 @@ fn control_event(
                 let path = event.value.clone();
                 let save = action == SaveLayout;
                 let mapping = event.mapping.clone();
-                v.notice = if save {
+                v.notice = Notice::info(if save {
                     "saving layout..."
                 } else {
                     "loading layout..."
-                }
-                .into();
+                });
                 // Only native scene serialization needs this World boundary.
                 // File I/O runs on the task pool and returns through ECS.
                 commands.queue(move |world: &mut World| {
@@ -894,7 +891,7 @@ fn control_event(
         Ok(())
     })();
     if let Err(error) = result {
-        v.notify(error, true);
+        v.notice = Notice::error(error);
     }
     wake.notify();
 }
@@ -960,34 +957,17 @@ fn input_event(
             }
             Input::Key { key, modifiers } => {
                 let token = event.input.token().unwrap_or_else(|| Token::from(""));
+                // Reserved keys and bound shortcuts were consumed upstream; what
+                // reaches here in the column is an unbound key or the literal prefix.
                 if prefix {
-                    if *key == Key::Escape {
-                        commands.entity(id).remove::<Prefix>();
-                        v.notice.clear();
-                        return Ok(());
-                    }
-                    // A doubled prefix is literal even if also listed as a binding.
-                    if token != settings.prefix
-                        && let Some(binding) = settings.bindings.iter().find(|b| b.key == token)
-                    {
-                        commands.entity(id).remove::<Prefix>();
-                        let action = binding.action.clone();
-                        let target = crate::actions::Target::viewer(&v);
-                        commands.queue(move |world: &mut World| {
-                            crate::interaction::dispatch_named(
-                                world, id, target, &action, None, "", true,
-                            );
-                        });
-                        return Ok(());
-                    }
                     if token != settings.prefix {
-                        v.notify(format!("unbound prefix key {token}"), false);
+                        v.notice = Notice::info(format!("unbound prefix key {token}"));
                         return Ok(());
                     }
                     commands.entity(id).remove::<Prefix>();
                 } else if token == settings.prefix {
                     commands.entity(id).insert(Prefix::default());
-                    v.notice.clear();
+                    v.notice = None;
                     return Ok(());
                 }
                 let pane = panes
@@ -998,7 +978,7 @@ fn input_event(
                 let application = terminal.screen().application_cursor();
                 terminal.input(&crate::encode::key_bytes(*key, *modifiers, application))?;
                 v.scrollback = 0;
-                v.notice.clear();
+                v.notice = None;
             }
             Input::Paste { text } => {
                 if prefix {
@@ -1015,7 +995,7 @@ fn input_event(
                     terminal.input(text.as_bytes())?;
                 }
                 v.scrollback = 0;
-                v.notice.clear();
+                v.notice = None;
             }
             Input::Mouse {
                 action,
@@ -1086,7 +1066,7 @@ fn input_event(
         Ok(())
     })();
     if let Err(error) = result {
-        v.notify(error, true);
+        v.notice = Notice::error(error);
     }
     wake.notify();
 }

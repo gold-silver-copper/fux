@@ -1,7 +1,7 @@
 //! Per-viewer presentation contexts, size negotiation and frame painting.
 use crate::{
     actions,
-    assets::Settings,
+    assets::{BindingAction, Settings},
     chrome::{self, at, fit},
     model::*,
     presentation::Presentation,
@@ -139,8 +139,7 @@ pub(crate) fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
             cols,
             zoom: false,
             scrollback: 0,
-            notice: String::new(),
-            notice_error: false,
+            notice: None,
         })
         .id();
     with_views(world, |world, views| sync_view(world, views, id)).map_err(BrpError::internal)?;
@@ -310,19 +309,19 @@ pub(crate) fn clipboard(world: &mut World, id: Entity, text: String) -> Result<(
         return Err("clipboard delivery queue is full".into());
     }
     view.clipboard.push(text);
-    notify(world, id, "selection copied via OSC52", false);
+    notify(world, id, Notice::info("selection copied via OSC52"));
     Ok(())
 }
 
 fn process_status(world: &World, pane: Entity) -> String {
-    world
-        .get::<ProcessState>(pane)
-        .map_or_else(String::new, |s| {
-            s.exit
-                .map(|code| format!(" [exit:{code}]"))
-                .or_else(|| s.error.as_ref().map(|error| format!(" [{error}]")))
-                .unwrap_or_default()
-        })
+    match world.get::<ProcessState>(pane).map(|s| &s.status) {
+        Some(Status::Exited { code }) => format!(" [exit:{code}]"),
+        Some(Status::Failed { error })
+        | Some(Status::Running {
+            error: Some(error), ..
+        }) => format!(" [{error}]"),
+        _ => String::new(),
+    }
 }
 
 fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, String> {
@@ -412,12 +411,14 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
             v,
             world.resource::<Settings>(),
             prefix.scroll,
-            |action| {
+            |binding| {
                 let target = actions::Target::viewer(v);
-                action.parse().map_or_else(
-                    |_| !target.valid(world),
-                    |action| actions::unavailable(world, target, action).is_some(),
-                )
+                match binding {
+                    BindingAction::Known(action) => {
+                        actions::unavailable(world, target, *action).is_some()
+                    }
+                    BindingAction::Custom(_) => !target.valid(world),
+                }
             },
         )
     } else {

@@ -21,8 +21,7 @@ fn setup() -> (World, Entity, Target, Entity) {
             cols: 80,
             zoom: false,
             scrollback: 0,
-            notice: String::new(),
-            notice_error: false,
+            notice: None,
         })
         .id();
     (
@@ -175,7 +174,14 @@ fn removed_confirmation_target_cancels_without_retargeting() -> crate::testing::
     assert!(input(&mut world, id, &key("y")));
     assert!(world.get_entity(other).is_ok());
     assert!(world.get::<Overlay>(id).is_none());
-    assert!(world.get::<Viewer>(id).need()?.notice.contains("cancelled"));
+    assert!(
+        world
+            .get::<Viewer>(id)
+            .need()?
+            .notice
+            .as_ref()
+            .is_some_and(|n| n.text.contains("cancelled"))
+    );
     Ok(())
 }
 
@@ -321,7 +327,14 @@ fn stale_chooser_destination_never_changes_the_source_or_an_unrelated_target()
         world.get::<ChildOf>(target.leaf.need()?).need()?.parent(),
         target.tab.need()?
     );
-    assert!(world.get::<Viewer>(id).need()?.notice.contains("removed"));
+    assert!(
+        world
+            .get::<Viewer>(id)
+            .need()?
+            .notice
+            .as_ref()
+            .is_some_and(|n| n.text.contains("removed"))
+    );
     Ok(())
 }
 

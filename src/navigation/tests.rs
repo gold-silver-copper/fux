@@ -11,8 +11,7 @@ fn viewer(world: &mut World, workspace: Entity) -> Entity {
             cols: 80,
             zoom: false,
             scrollback: 0,
-            notice: String::new(),
-            notice_error: false,
+            notice: None,
         })
         .id()
 }

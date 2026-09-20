@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests;
 use crate::{
+    actions::Action,
     model::{Launch, PaneView, ProcessState, Wake, Workspace},
     protocol::Token,
 };
@@ -15,7 +16,10 @@ use bevy_ecs::{
     prelude::*,
     reflect::ReflectComponent,
 };
-use bevy_reflect::{FromReflect, Reflect, TypePath, std_traits::ReflectDefault};
+use bevy_reflect::{
+    FromReflect, Reflect, ReflectDeserialize, ReflectSerialize, TypePath,
+    std_traits::ReflectDefault,
+};
 use bevy_tasks::IoTaskPool;
 use bevy_world_serialization::{
     DynamicWorld, DynamicWorldBuilder, WorldSerializationPlugin, serde::WorldDeserializer,
@@ -30,10 +34,29 @@ use std::{
 };
 
 #[derive(Clone, Reflect, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
     pub key: Token,
-    pub action: String,
+    pub action: BindingAction,
+}
+
+/// A binding names a known action, or a custom name that only ever reports
+/// itself as unknown: it stays visible in help under "Other".
+#[derive(Clone, PartialEq, Eq, Reflect, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BindingAction {
+    Known(Action),
+    Custom(String),
+}
+impl std::fmt::Display for BindingAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Known(action) => f.write_str(action.id()),
+            Self::Custom(name) => f.write_str(name),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Reflect, Serialize, Deserialize)]
@@ -60,45 +83,45 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         let bindings = [
-            ("h", "split_horizontal"),
-            ("v", "split_vertical"),
-            ("x", "close"),
-            ("tab", "focus_next"),
-            ("shift-tab", "focus_previous"),
-            ("backspace", "focus_last"),
-            ("z", "zoom"),
-            ("}", "workspace_next"),
-            ("{", "workspace_previous"),
-            ("w", "workspace_new"),
-            ("r", "rename_pane"),
-            ("ctrl-left", "shrink_width"),
-            ("ctrl-right", "grow_width"),
-            ("ctrl-up", "grow_height"),
-            ("ctrl-down", "shrink_height"),
-            ("shift-left", "move_left"),
-            ("shift-right", "move_right"),
-            ("shift-up", "move_up"),
-            ("shift-down", "move_down"),
-            ("y", "copy"),
-            ("s", "tab_menu"),
-            ("S", "workspace_menu"),
-            ("d", "detach"),
-            ("t", "tab_new"),
-            ("]", "tab_next"),
-            ("c", "copy_mode"),
-            ("[", "tab_previous"),
-            ("T", "tab_choose"),
-            ("W", "workspace_choose"),
-            ("alt-left", "focus_left"),
-            ("alt-right", "focus_right"),
-            ("alt-up", "focus_up"),
-            ("alt-down", "focus_down"),
-            ("p", "pane_menu"),
+            ("h", Action::SplitHorizontal),
+            ("v", Action::SplitVertical),
+            ("x", Action::Close),
+            ("tab", Action::FocusNext),
+            ("shift-tab", Action::FocusPrevious),
+            ("backspace", Action::FocusLast),
+            ("z", Action::Zoom),
+            ("}", Action::WorkspaceNext),
+            ("{", Action::WorkspacePrevious),
+            ("w", Action::WorkspaceNew),
+            ("r", Action::RenamePane),
+            ("ctrl-left", Action::ShrinkWidth),
+            ("ctrl-right", Action::GrowWidth),
+            ("ctrl-up", Action::GrowHeight),
+            ("ctrl-down", Action::ShrinkHeight),
+            ("shift-left", Action::MoveLeft),
+            ("shift-right", Action::MoveRight),
+            ("shift-up", Action::MoveUp),
+            ("shift-down", Action::MoveDown),
+            ("y", Action::Copy),
+            ("s", Action::TabMenu),
+            ("S", Action::WorkspaceMenu),
+            ("d", Action::Detach),
+            ("t", Action::TabNew),
+            ("]", Action::TabNext),
+            ("c", Action::CopyMode),
+            ("[", Action::TabPrevious),
+            ("T", Action::TabChoose),
+            ("W", Action::WorkspaceChoose),
+            ("alt-left", Action::FocusLeft),
+            ("alt-right", Action::FocusRight),
+            ("alt-up", Action::FocusUp),
+            ("alt-down", Action::FocusDown),
+            ("p", Action::PaneMenu),
         ]
         .into_iter()
         .map(|(key, action)| Binding {
             key: Token::from(key),
-            action: action.into(),
+            action: BindingAction::Known(action),
         })
         .collect();
         Self {
@@ -136,10 +159,10 @@ impl AssetLoader for SettingsLoader {
         let settings: Settings = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
         if settings.prefix.is_empty()
             || settings.shell.first().is_none_or(String::is_empty)
-            || settings
-                .bindings
-                .iter()
-                .any(|b| b.key.is_empty() || b.action.is_empty())
+            || settings.bindings.iter().any(|b| {
+                b.key.is_empty()
+                    || matches!(&b.action, BindingAction::Custom(name) if name.is_empty())
+            })
         {
             return Err(std::io::Error::other(
                 "prefix, shell executable, binding keys and actions must not be empty",
@@ -265,6 +288,7 @@ pub fn install(app: &mut App, path: &Path) -> Result<(), String> {
         .init_resource::<Settings>()
         .register_type::<Settings>()
         .register_type::<Binding>()
+        .register_type::<BindingAction>()
         .register_type::<LayoutReload>()
         .register_type::<Workspace>()
         .register_type::<crate::model::Tab>()

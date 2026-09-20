@@ -3,6 +3,7 @@
 mod tests;
 use crate::{
     actions::{self, Action, Target},
+    assets::BindingAction,
     chrome,
     control::Control,
     model::*,
@@ -81,7 +82,7 @@ fn open(world: &mut World, id: Entity, target: Target, mode: Mode) {
 }
 
 fn notify_error(world: &mut World, id: Entity, message: impl Into<String>) {
-    notify(world, id, message, true);
+    notify(world, id, Notice::error(message));
 }
 
 pub fn invoke(
@@ -101,7 +102,7 @@ pub fn invoke(
         world.entity_mut(id).remove::<crate::selection::Selection>();
     }
     close_prefix(world, id);
-    notify(world, id, "", false);
+    notify(world, id, None);
     if interactive && matches!(action, Close | TabClose | WorkspaceClose) {
         open(world, id, target, Mode::Confirm { action });
         return Ok(true);
@@ -513,7 +514,7 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
             Key::Home => scroll = 0,
             Key::End => scroll = chrome::help_limit(settings, rows),
             Key::Enter => {
-                execute = chrome::selected_action(settings, rows, cols, scroll).map(str::to_owned);
+                execute = chrome::selected_action(settings, rows, cols, scroll).cloned();
                 close = true;
             }
             Key::Escape => close = true,
@@ -533,14 +534,14 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
         prefix.scroll = scroll;
     }
     match execute {
-        Some(action) => {
+        Some(binding) => {
             let Some(v) = world.get::<Viewer>(id) else {
                 return true;
             };
             let target = Target::viewer(v);
-            dispatch_named(world, id, target, &action, None, "", true);
+            dispatch_binding(world, id, target, &binding);
         }
-        None if close => notify(world, id, "", false),
+        None if close => notify(world, id, None),
         None => {}
     }
     true
@@ -659,33 +660,21 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     true
 }
 
-/// A configured binding names its action as text; unknown names report as before.
-pub fn dispatch_named(
-    world: &mut World,
-    id: Entity,
-    target: Target,
-    action: &str,
-    destination: Option<Entity>,
-    value: &str,
-    interactive: bool,
-) {
-    match action.parse() {
-        Ok(action) => dispatch(world, id, target, action, destination, value, interactive),
-        Err(message) => unknown(world, id, target, message),
+/// The one place a configured binding is dispatched. A custom name has always
+/// closed the prefix, dropped the selection and reported itself as unknown.
+pub fn dispatch_binding(world: &mut World, id: Entity, target: Target, binding: &BindingAction) {
+    match binding {
+        BindingAction::Known(action) => dispatch(world, id, target, *action, None, "", true),
+        BindingAction::Custom(name) => {
+            if !target.valid(world) {
+                return notify_error(world, id, actions::TARGET_GONE);
+            }
+            world
+                .entity_mut(id)
+                .remove::<(crate::selection::Selection, Prefix)>();
+            notify_error(world, id, format!("unknown action {name}"));
+        }
     }
-}
-
-/// The same visible outcome an unknown action string has always had: target
-/// validity is still checked, the selection is dropped, the prefix closes, and
-/// the bar shows the error.
-pub fn unknown(world: &mut World, id: Entity, target: Target, message: String) {
-    if !target.valid(world) {
-        return notify_error(world, id, actions::TARGET_GONE);
-    }
-    world
-        .entity_mut(id)
-        .remove::<(crate::selection::Selection, Prefix)>();
-    notify_error(world, id, message);
 }
 
 pub fn dispatch(
