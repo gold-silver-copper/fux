@@ -304,7 +304,10 @@ impl Presentation {
             }
         }
         if rebuild || resized {
-            world.get_mut::<Node>(self.container).unwrap().height = Val::Px(viewport.y as f32);
+            world
+                .get_mut::<Node>(self.container)
+                .ok_or("presentation container is missing")?
+                .height = Val::Px(viewport.y as f32);
             self.app.update();
             self.collect_rects();
         } else if focus_changed {

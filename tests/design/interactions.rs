@@ -329,3 +329,40 @@ fn context_menu_captures_unfocused_pane_and_grouped_help_marks_unavailable() {
     s.control(v, "tab_choose", "");
     s.capture(v, 24, 80, "interaction-chooser");
 }
+
+#[test]
+fn remote_viewer_removal_during_an_overlay_never_panics_the_server() {
+    let s = Server::start();
+    let v = s.attach();
+    s.screen(v);
+    s.key(v, "b", true);
+    s.key(v, "p", false);
+    assert!(s.painted(v, 24, 80).contents().contains("Panes:"));
+    s.rpc("world.despawn_entity", json!({"entity":v}));
+    for key in ["down", "enter", "escape", "b"] {
+        s.key(v, key, key == "b");
+    }
+    s.input(v, json!({"kind":"paste_begin"}));
+    s.input(v, json!({"kind":"paste","text":"late"}));
+    s.mouse(v, "press", 3, 3);
+    for action in [
+        "pane_menu",
+        "split_horizontal",
+        "focus_next",
+        "tab_new",
+        "copy_mode",
+    ] {
+        s.control(v, action, "");
+    }
+    assert!(s.request("rpc.discover", Value::Null).is_ok());
+    assert!(
+        s.request("fux.frame", json!({"viewer":v})).unwrap()["detach"]
+            .as_bool()
+            .unwrap()
+    );
+    let fresh = s.attach();
+    assert!(s.screen(fresh).contains("main"));
+    s.key(fresh, "b", true);
+    s.key(fresh, "p", false);
+    assert!(s.painted(fresh, 24, 80).contents().contains("Panes:"));
+}

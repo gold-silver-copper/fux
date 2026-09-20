@@ -39,10 +39,13 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         } else {
             Owner::Pane(Target::viewer(v))
         };
-        world.get_mut::<Ownership>(id).unwrap().pending = Some(owner);
-        let mut v = world.get_mut::<Viewer>(id).unwrap();
-        v.notice = "pasting...".into();
-        v.notice_error = false;
+        if let Some(mut ownership) = world.get_mut::<Ownership>(id) {
+            ownership.pending = Some(owner);
+        }
+        if let Some(mut v) = world.get_mut::<Viewer>(id) {
+            v.notice = "pasting...".into();
+            v.notice_error = false;
+        }
         return true;
     }
     let Input::Paste { text } = input else {

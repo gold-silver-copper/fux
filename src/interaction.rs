@@ -46,18 +46,22 @@ fn label(world: &World, entity: Entity) -> String {
 }
 use crate::navigation::workspaces as roots;
 fn open(world: &mut World, id: Entity, target: Target, mode: Mode) {
-    let mut ownership = world.get_mut::<crate::paste::Ownership>(id).unwrap();
+    let Some(mut ownership) = world.get_mut::<crate::paste::Ownership>(id) else {
+        return;
+    };
     ownership.serial = ownership.serial.wrapping_add(1);
     let serial = ownership.serial;
+    let Some(mut v) = world.get_mut::<Viewer>(id) else {
+        return;
+    };
+    v.prefix = false;
+    v.prompt = None;
+    v.buffer.clear();
     world.entity_mut(id).insert(Overlay {
         serial,
         target,
         mode,
     });
-    let mut v = world.get_mut::<Viewer>(id).unwrap();
-    v.prefix = false;
-    v.prompt = None;
-    v.buffer.clear();
 }
 fn error(world: &mut World, id: Entity, message: impl Into<String>) {
     if let Some(mut v) = world.get_mut::<Viewer>(id) {
@@ -116,7 +120,10 @@ pub fn invoke(
     }
     match action {
         "tab_new" => {
-            world.get_mut::<Viewer>(id).unwrap().workspace = target.workspace;
+            world
+                .get_mut::<Viewer>(id)
+                .ok_or("viewer removed")?
+                .workspace = target.workspace;
             navigation::control(world, id, action, None, value)?;
         }
         "copy_mode" => crate::selection::start(world, id, target.leaf.ok_or("no pane")?)?,
@@ -150,7 +157,7 @@ pub fn invoke(
                 id,
                 target,
                 Mode::List {
-                    title: actions::metadata(action).unwrap().label.into(),
+                    title: actions::metadata(action).map_or(action, |a| a.label).into(),
                     entries,
                     selected: 0,
                 },
@@ -266,7 +273,7 @@ pub fn invoke(
         "swap_left" | "swap_right" | "swap_up" | "swap_down" | "move_left" | "move_right"
         | "move_up" | "move_down" => {
             let source = target.leaf.ok_or("no pane")?;
-            let direction = action.rsplit('_').next().unwrap();
+            let direction = action.rsplit('_').next().unwrap_or_default();
             let destination = crate::server::neighbor(world, id, source, direction)
                 .ok_or("no pane in that direction")?;
             if action.starts_with("swap_") {
@@ -274,7 +281,7 @@ pub fn invoke(
             } else {
                 move_beside(world, source, destination, direction)?;
             }
-            world.get_mut::<Viewer>(id).unwrap().zoom = false;
+            world.get_mut::<Viewer>(id).ok_or("viewer removed")?.zoom = false;
         }
         "swap" => swap(
             world,
@@ -332,7 +339,10 @@ pub fn invoke(
                         .filter(|e| world.get::<Workspace>(*e).is_some())
                         .ok_or("destination workspace removed")?;
                     navigation::normalize_workspace(world, root);
-                    (root, navigation::tabs(world, root)[0])
+                    // normalize_workspace spawns a tab when a workspace has none.
+                    #[expect(clippy::indexing_slicing, reason = "normalized workspace has a tab")]
+                    let tab = navigation::tabs(world, root)[0];
+                    (root, tab)
                 }
                 _ => {
                     let tab = destination
@@ -366,10 +376,10 @@ pub fn invoke(
             }
             world.entity_mut(leaf).insert(ChildOf(tab));
             // Select the moved pane without overwriting other viewers' memory.
-            let mut memory = world.get_mut::<Navigation>(id).unwrap();
+            let mut memory = world.get_mut::<Navigation>(id).ok_or("viewer removed")?;
             memory.tabs.insert(workspace, tab);
             memory.focus.insert(tab, leaf);
-            let mut v = world.get_mut::<Viewer>(id).unwrap();
+            let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
             v.workspace = workspace;
             v.tab = Some(tab);
             v.focus = Some(leaf);
@@ -412,10 +422,8 @@ fn move_beside(
         .parent();
     let index = world
         .get::<Children>(parent)
-        .unwrap()
-        .iter()
-        .position(|e| e == destination)
-        .unwrap();
+        .and_then(|children| children.iter().position(|e| e == destination))
+        .ok_or("destination removed")?;
     let mut node = navigation::tab_node();
     node.width = Val::Auto;
     node.height = Val::Auto;
@@ -455,18 +463,17 @@ fn swap(world: &mut World, source: Entity, destination: Entity) -> Result<(), St
         .parent();
     let ai = world
         .get::<Children>(a)
-        .unwrap()
-        .iter()
-        .position(|e| e == source)
-        .unwrap();
+        .and_then(|children| children.iter().position(|e| e == source))
+        .ok_or("source has no parent")?;
     let bi = world
         .get::<Children>(b)
-        .unwrap()
-        .iter()
-        .position(|e| e == destination)
-        .unwrap();
+        .and_then(|children| children.iter().position(|e| e == destination))
+        .ok_or("destination has no parent")?;
     if a == b {
-        world.get_mut::<Children>(a).unwrap().swap(ai, bi);
+        world
+            .get_mut::<Children>(a)
+            .ok_or("source has no parent")?
+            .swap(ai, bi);
     } else {
         world.entity_mut(a).insert_children(ai, &[destination]);
         world.entity_mut(b).insert_children(bi, &[source]);
@@ -547,7 +554,10 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
         v.prefix = false;
         v.prompt = None;
     }
-    *world.get_mut::<Viewer>(id).unwrap() = v;
+    let Some(mut current) = world.get_mut::<Viewer>(id) else {
+        return true;
+    };
+    *current = v;
     if let Some(action) = execute {
         dispatch(world, id, target, &action, None, "", true);
     }
@@ -603,7 +613,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             },
             Input::Key { key, .. },
         ) => {
-            let page = list_capacity(world.get::<Viewer>(id).unwrap().rows);
+            let page = list_capacity(world.get::<Viewer>(id).map_or(0, |v| v.rows));
             match key.as_str() {
                 "up" | "k" => *selected = selected.saturating_sub(1),
                 "down" | "j" => *selected = (*selected + 1).min(entries.len().saturating_sub(1)),

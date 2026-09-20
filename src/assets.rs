@@ -594,7 +594,9 @@ pub fn apply_layout(
         }
         return Err(error.to_string());
     }
-    let root = entity_map[&root];
+    let root = *entity_map
+        .get(&root)
+        .ok_or("workspace root was not instantiated")?;
     crate::navigation::normalize_workspace(world, root);
     Ok(root)
 }

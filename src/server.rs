@@ -511,9 +511,10 @@ pub(crate) fn spawn_pane(
     if launch.argv.is_empty() {
         return Err("shell command is empty".into());
     }
-    let name = launch.argv[0]
-        .rsplit('/')
-        .next()
+    let name = launch
+        .argv
+        .first()
+        .and_then(|program| program.rsplit('/').next())
         .unwrap_or("shell")
         .to_owned();
     let pane = commands.spawn((launch, Name::new(name))).id();
@@ -645,6 +646,12 @@ fn scene(world: &mut World, root: Entity) -> Result<(u32, Arc<DynamicWorld>), St
     Ok((cache.last_changed().get(), scene))
 }
 fn with_views<T>(world: &mut World, f: impl FnOnce(&mut World, &mut Views) -> T) -> T {
+    // Views is an unreflected non-send resource installed by ServerPlugin; no
+    // remote request can remove it.
+    #[expect(
+        clippy::expect_used,
+        reason = "installed once, never remotely removable"
+    )]
     let mut views = world
         .remove_non_send::<Views>()
         .expect("presentation contexts installed");
@@ -652,6 +659,7 @@ fn with_views<T>(world: &mut World, f: impl FnOnce(&mut World, &mut Views) -> T)
     world.insert_non_send(views);
     result
 }
+const DETACHED: &str = "viewer no longer attached";
 fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), String> {
     crate::navigation::repair(world);
     // Controls can arrive before the next Update; run the same native change-
@@ -659,18 +667,18 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), Str
     world
         .run_system_cached(invalidate_layouts)
         .map_err(|e| e.to_string())?;
-    let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
+    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
     let root = v.workspace;
     let scroll = v
         .help_scroll
         .min(chrome::help_limit(world.resource::<Settings>(), v.rows));
     if scroll != v.help_scroll {
-        world.get_mut::<Viewer>(id).unwrap().help_scroll = scroll;
+        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.help_scroll = scroll;
     }
-    let v = world.get::<Viewer>(id).unwrap();
+    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
     if v.focus.is_none_or(|e| world.get::<PaneView>(e).is_none()) {
         let focus = first_leaf(world, root);
-        world.get_mut::<Viewer>(id).unwrap().focus = focus;
+        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus = focus;
     }
     let (revision, scene) = scene(world, root)?;
     let registry = world.resource::<AppTypeRegistry>().clone();
@@ -681,10 +689,13 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), Str
         next_paint: Instant::now(),
         paint_wake_pending: false,
     });
-    context
-        .presentation
-        .sync(&scene, revision, root, world.get::<Viewer>(id).unwrap())?;
-    let v = world.get::<Viewer>(id).unwrap();
+    context.presentation.sync(
+        &scene,
+        revision,
+        root,
+        world.get::<Viewer>(id).ok_or(DETACHED)?,
+    )?;
+    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
     if v.rows > 1
         && v.cols > 0
         && !context
@@ -693,11 +704,14 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), Str
             .iter()
             .any(|r| Some(r.leaf) == v.focus)
     {
-        world.get_mut::<Viewer>(id).unwrap().focus =
+        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus =
             context.presentation.rects().first().map(|r| r.leaf);
-        context
-            .presentation
-            .sync(&scene, revision, root, world.get::<Viewer>(id).unwrap())?;
+        context.presentation.sync(
+            &scene,
+            revision,
+            root,
+            world.get::<Viewer>(id).ok_or(DETACHED)?,
+        )?;
     }
     Ok(())
 }
@@ -1172,7 +1186,7 @@ fn control_event(
                     .presentation;
                 let next = presentation.neighbor(
                     v.focus.ok_or("no visible focus")?,
-                    event.action.rsplit('_').next().unwrap(),
+                    event.action.rsplit('_').next().unwrap_or_default(),
                 );
                 if let Some(next) = next {
                     v.focus = Some(next);

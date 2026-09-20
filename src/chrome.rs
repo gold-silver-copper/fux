@@ -192,8 +192,8 @@ pub fn tab_bar(
         .get(selected)
         .map_or(0, |(_, name)| width(name).saturating_add(2));
     let mut needed = selected_width.min(allowance.saturating_sub(x));
-    while start > 0 {
-        let previous = width(&tabs[start - 1].1).saturating_add(2);
+    while let Some((_, name)) = start.checked_sub(1).and_then(|i| tabs.get(i)) {
+        let previous = width(name).saturating_add(2);
         if needed.saturating_add(previous) > allowance.saturating_sub(x) {
             break;
         }

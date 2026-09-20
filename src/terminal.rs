@@ -172,10 +172,11 @@ impl Terminal {
             screen.set_scrollback(0);
             self.snapshot = Some((self.revision, scrollback, visible_cols, lines));
         }
-        (
-            &self.snapshot.as_ref().expect("snapshot prepared above").3,
-            self.parser.screen(),
-        )
+        let lines = self
+            .snapshot
+            .as_ref()
+            .map_or(&[][..], |(_, _, _, lines)| lines.as_slice());
+        (lines, self.parser.screen())
     }
 
     pub fn revision(&self) -> u64 {
@@ -215,7 +216,7 @@ impl Terminal {
         let write_fd = Async::new(File::from(dup(fd).map_err(|e| e.to_string())?))
             .map_err(|e| e.to_string())?;
         let mut command = CommandBuilder::new(program);
-        command.args(&launch.argv[1..]);
+        command.args(launch.argv.get(1..).unwrap_or_default());
         if !launch.cwd.is_empty() {
             command.cwd(&launch.cwd);
         }
@@ -330,7 +331,7 @@ impl Terminal {
                             writer_notify.send();
                             return;
                         }
-                        Ok(n) => remaining = &remaining[n..],
+                        Ok(n) => remaining = remaining.get(n..).unwrap_or_default(),
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                         Err(e) => {
                             let _ = output_tx
