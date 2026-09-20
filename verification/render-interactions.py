@@ -12,7 +12,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 root = Path(sys.argv[1])
-names = ["interaction-tabs", "interaction-workspaces", "interaction-menu",
+names = sys.argv[2:] or ["interaction-tabs", "interaction-workspaces", "interaction-menu",
          "interaction-confirm", "interaction-selection", "help", "narrow-help", "tiny"]
 captures = [(name, json.loads((root / f"{name}.json").read_text())) for name in names]
 font_path = "/System/Library/Fonts/Menlo.ttc"

@@ -45,6 +45,101 @@ fn key(key: &str) -> Input {
 }
 
 #[test]
+fn menus_keep_unbound_actions_and_share_navigation_including_layout_prompts() {
+    let (mut world, id, target, _) = setup();
+    for (menu, required) in [
+        (
+            "pane_menu",
+            vec![
+                "terminate",
+                "reorder_prev",
+                "reorder_next",
+                "move_workspace",
+                "scroll_up",
+                "scroll_down",
+                "swap_choose",
+                "move_tab",
+                "move_new_tab",
+                "move_new_workspace",
+            ],
+        ),
+        (
+            "tab_menu",
+            vec![
+                "rename_tab",
+                "tab_close",
+                "tab_reorder_previous",
+                "tab_reorder_next",
+            ],
+        ),
+        (
+            "workspace_menu",
+            vec![
+                "rename_workspace",
+                "workspace_close",
+                "workspace_reorder_previous",
+                "workspace_reorder_next",
+                "save_layout",
+                "load_layout",
+            ],
+        ),
+    ] {
+        invoke(&mut world, id, target, menu, None, "", true).unwrap();
+        let Mode::List { entries, .. } = &world.get::<Overlay>(id).unwrap().mode else {
+            panic!()
+        };
+        for action in required {
+            assert!(
+                entries.iter().any(|e| e.action == action),
+                "{menu} lacks {action}"
+            );
+        }
+        let count = entries.len();
+        for rows in 0..8 {
+            world.get_mut::<Viewer>(id).unwrap().rows = rows;
+            input(&mut world, id, &key("home"));
+            input(&mut world, id, &key("pagedown"));
+            let Mode::List { selected, .. } = &world.get::<Overlay>(id).unwrap().mode else {
+                panic!()
+            };
+            assert_eq!(*selected, list_capacity(rows).min(count - 1));
+            input(&mut world, id, &key("end"));
+            let rendered = lines(&world, world.get::<Overlay>(id).unwrap(), rows);
+            if rows >= 2 {
+                assert!(
+                    rendered
+                        .iter()
+                        .any(|(text, style)| text.starts_with('›') && style.contains('7'))
+                );
+            }
+            input(&mut world, id, &key("pageup"));
+            let Mode::List { selected, .. } = &world.get::<Overlay>(id).unwrap().mode else {
+                panic!()
+            };
+            assert_eq!(*selected, (count - 1).saturating_sub(list_capacity(rows)));
+        }
+        input(&mut world, id, &key("escape"));
+        assert!(world.get::<Overlay>(id).is_none());
+    }
+    for action in ["save_layout", "load_layout"] {
+        invoke(&mut world, id, target, "workspace_menu", None, "", true).unwrap();
+        let mut overlay = world.get_mut::<Overlay>(id).unwrap();
+        let Mode::List {
+            entries, selected, ..
+        } = &mut overlay.mode
+        else {
+            panic!()
+        };
+        *selected = entries.iter().position(|e| e.action == action).unwrap();
+        input(&mut world, id, &key("enter"));
+        assert!(
+            matches!(&world.get::<Overlay>(id).unwrap().mode, Mode::Text { action: a, .. } if a == action)
+        );
+        input(&mut world, id, &key("escape"));
+    }
+}
+
+#[test]
 fn confirmation_captures_target_and_preserves_a_shared_process() {
     let (mut world, id, target, other) = setup();
     let process = world.get::<PaneView>(other).unwrap().pane;

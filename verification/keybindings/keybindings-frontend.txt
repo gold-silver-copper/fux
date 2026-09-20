@@ -1,0 +1,18 @@
+LEFT                               │R Commands
+                                   │  Panes
+                                   │            h  split side by side
+                                   │            v  split stacked
+                                   │            x  close pane
+                                   │            z  zoom or restore
+                                   │            r  rename pane
+                                   │    ctrl-left  shrink width
+                                   │   ctrl-right  grow width
+                                   │      ctrl-up  grow height
+                                   │    ctrl-down  shrink height
+                                   │   shift-left  move left
+                                   │  shift-right  move right
+                                   │     shift-up  move up
+                                   │   shift-down  move down
+                                   │            y  copy visible text
+                                   │  ▼ 25 more
+ main  main                                          │ 4294967200: sh
