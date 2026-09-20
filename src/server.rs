@@ -4,15 +4,12 @@ use crate::{
     model::*,
     presentation::{self, Presentation},
     protocol::{Frame, Input},
-    terminal::{TerminalPlugin, Terminals},
+    terminal::{Terminal, TerminalPlugin},
 };
 use base64::Engine;
 use bevy_app::{App, AppExit, Plugin, Startup, Update};
 use bevy_ecs::{
-    entity::EntityHashMap,
-    prelude::*,
-    relationship::RelationshipTarget,
-    system::{SystemChangeTick, SystemParam},
+    entity::EntityHashMap, prelude::*, relationship::RelationshipTarget, system::SystemChangeTick,
     world::EntityRefExcept,
 };
 use bevy_remote::{BrpError, BrpResult, RemotePlugin};
@@ -366,9 +363,10 @@ fn size_terminals(world: &mut World, views: &Views) {
                 .or_insert((rows, cols));
         }
     }
-    let mut terminals = world.resource_mut::<Terminals>();
     for (pane, (rows, cols)) in sizes {
-        let _ = terminals.resize(pane, rows, cols);
+        if let Some(mut terminal) = world.get_mut::<Terminal>(pane) {
+            let _ = terminal.resize(rows, cols);
+        }
     }
 }
 fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
@@ -571,9 +569,11 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
                     at(&mut out, x, rect.y + row, format_args!("{color}|\x1b[0m"));
                 }
             }
-            match world
-                .resource_mut::<Terminals>()
-                .snapshot(rect.pane, if selected { v.scrollback } else { 0 })
+            let mut terminal = world.get_mut::<Terminal>(rect.pane);
+            match terminal
+                .as_mut()
+                .ok_or_else(|| "terminal not found".to_owned())
+                .map(|terminal| terminal.snapshot(if selected { v.scrollback } else { 0 }))
             {
                 Ok((lines, screen)) => {
                     for (row, line) in lines.iter().take(usize::from(rect.height - 2)).enumerate() {
@@ -615,41 +615,28 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
     })
 }
 
-#[derive(SystemParam)]
-struct Controls<'w, 's> {
-    commands: Commands<'w, 's>,
-    viewers: Query<'w, 's, &'static mut Viewer>,
-    panes: Query<'w, 's, &'static PaneView>,
-    inverse: Query<'w, 's, &'static PaneViews>,
-    parents: Query<'w, 's, &'static ChildOf>,
-    children: Query<'w, 's, &'static Children>,
-    roots: Query<'w, 's, Entity, With<Workspace>>,
-    names: Query<'w, 's, &'static Name>,
-    nodes: Query<'w, 's, &'static mut Node>,
-    launches: Query<'w, 's, &'static Launch>,
-    settings: Res<'w, Settings>,
-    terminals: ResMut<'w, Terminals>,
-    views: NonSendMut<'w, Views>,
-    wake: Res<'w, Wake>,
-}
-
-fn control_event(event: On<Control>, mut controls: Controls) {
-    let Controls {
-        commands,
-        viewers,
-        panes,
-        inverse,
-        parents,
-        children,
-        roots,
-        names,
-        nodes,
-        launches,
-        settings,
-        terminals,
-        views,
-        wake,
-    } = &mut controls;
+// Direct system parameters make ECS access explicit without a borrowing wrapper.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Bevy injects each declared ECS access"
+)]
+fn control_event(
+    event: On<Control>,
+    mut commands: Commands,
+    mut viewers: Query<&mut Viewer>,
+    panes: Query<&PaneView>,
+    inverse: Query<&PaneViews>,
+    parents: Query<&ChildOf>,
+    children: Query<&Children>,
+    roots: Query<Entity, With<Workspace>>,
+    names: Query<&Name>,
+    mut nodes: Query<&mut Node>,
+    launches: Query<&Launch>,
+    settings: Res<Settings>,
+    mut terminals: Query<&mut Terminal>,
+    mut views: NonSendMut<Views>,
+    wake: Res<Wake>,
+) {
     let id = event.viewer;
     if event.action == "detach" {
         commands.entity(id).try_despawn();
@@ -679,7 +666,13 @@ fn control_event(event: On<Control>, mut controls: Controls) {
                 let argv = (!event.value.is_empty())
                     .then(|| vec!["/bin/sh".into(), "-lc".into(), event.value.clone()]);
                 if leaf.is_none() {
-                    v.focus = Some(spawn_pane(commands, settings, v.workspace, argv, cwd)?);
+                    v.focus = Some(spawn_pane(
+                        &mut commands,
+                        &settings,
+                        v.workspace,
+                        argv,
+                        cwd,
+                    )?);
                     v.zoom = false;
                     v.scrollback = 0;
                     return Ok(());
@@ -700,7 +693,7 @@ fn control_event(event: On<Control>, mut controls: Controls) {
                     FlexDirection::Row
                 };
                 let container = commands.spawn((Split, node)).id();
-                let new = spawn_pane(commands, settings, container, argv, cwd)?;
+                let new = spawn_pane(&mut commands, &settings, container, argv, cwd)?;
                 commands.entity(container).insert_children(0, &[leaf]);
                 commands.entity(parent).insert_children(index, &[container]);
                 v.focus = Some(new);
@@ -719,7 +712,10 @@ fn control_event(event: On<Control>, mut controls: Controls) {
                     .find(|e| *e != leaf && panes.contains(*e));
                 v.zoom = false;
             }
-            "terminate" => terminals.terminate(pane.ok_or("no focused process")?)?,
+            "terminate" => terminals
+                .get_mut(pane.ok_or("no focused process")?)
+                .map_err(|_| "terminal not found")?
+                .stop()?,
             "focus_next" => {
                 v.focus = views
                     .contexts
@@ -754,8 +750,12 @@ fn control_event(event: On<Control>, mut controls: Controls) {
                 if view.clipboard.len() == 16 {
                     return Err("clipboard delivery queue is full".into());
                 }
-                view.clipboard
-                    .push(terminals.copy_text(pane.ok_or("no focused process")?, v.scrollback)?);
+                view.clipboard.push(
+                    terminals
+                        .get_mut(pane.ok_or("no focused process")?)
+                        .map_err(|_| "terminal not found")?
+                        .copy_text(v.scrollback),
+                );
                 v.notice = "visible pane copied via OSC52".into();
             }
             "workspace_next" => {
@@ -774,8 +774,14 @@ fn control_event(event: On<Control>, mut controls: Controls) {
                 } else {
                     event.value.clone()
                 };
-                v.workspace = workspace(commands, &title);
-                v.focus = Some(spawn_pane(commands, settings, v.workspace, None, None)?);
+                v.workspace = workspace(&mut commands, &title);
+                v.focus = Some(spawn_pane(
+                    &mut commands,
+                    &settings,
+                    v.workspace,
+                    None,
+                    None,
+                )?);
                 v.zoom = false;
             }
             "rename_pane" | "rename_workspace" | "save_layout" | "load_layout"
@@ -941,25 +947,20 @@ fn collapse_layout(
     }
 }
 
-#[derive(SystemParam)]
-struct Inputs<'w, 's> {
-    viewers: Query<'w, 's, &'static mut Viewer>,
-    panes: Query<'w, 's, &'static PaneView>,
-    settings: Res<'w, Settings>,
-    terminals: Res<'w, Terminals>,
-    views: NonSendMut<'w, Views>,
-    wake: Res<'w, Wake>,
-}
-
-fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs) {
-    let Inputs {
-        viewers,
-        panes,
-        settings,
-        terminals,
-        views,
-        wake,
-    } = &mut inputs;
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Bevy injects each declared ECS access"
+)]
+fn input_event(
+    event: On<UserInput>,
+    mut commands: Commands,
+    mut viewers: Query<&mut Viewer>,
+    panes: Query<&PaneView>,
+    settings: Res<Settings>,
+    terminals: Query<&Terminal>,
+    mut views: NonSendMut<Views>,
+    wake: Res<Wake>,
+) {
     let id = event.viewer;
     let Ok(mut v) = viewers.get_mut(id) else {
         return;
@@ -1049,8 +1050,9 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                     .get(v.focus.ok_or("no focused pane")?)
                     .map_err(|e| e.to_string())?
                     .pane;
-                let application = terminals.screen(pane)?.application_cursor();
-                terminals.input(pane, &key_bytes(key, *ctrl, *alt, *shift, application)?)?;
+                let terminal = terminals.get(pane).map_err(|_| "terminal not found")?;
+                let application = terminal.screen().application_cursor();
+                terminal.input(&key_bytes(key, *ctrl, *alt, *shift, application)?)?;
                 v.scrollback = 0;
                 v.notice.clear();
             }
@@ -1065,10 +1067,11 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                     .get(v.focus.ok_or("no focused pane")?)
                     .map_err(|e| e.to_string())?
                     .pane;
-                if terminals.screen(pane)?.bracketed_paste() {
-                    terminals.input(pane, format!("\x1b[200~{text}\x1b[201~").as_bytes())?;
+                let terminal = terminals.get(pane).map_err(|_| "terminal not found")?;
+                if terminal.screen().bracketed_paste() {
+                    terminal.input(format!("\x1b[200~{text}\x1b[201~").as_bytes())?;
                 } else {
-                    terminals.input(pane, text.as_bytes())?;
+                    terminal.input(text.as_bytes())?;
                 }
                 v.scrollback = 0;
                 v.notice.clear();
@@ -1100,7 +1103,8 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                         .iter()
                         .find(|r| r.leaf == hit)
                         .ok_or("picked pane has no rectangle")?;
-                    let screen = terminals.screen(rect.pane)?;
+                    let terminal = terminals.get(rect.pane).map_err(|_| "terminal not found")?;
+                    let screen = terminal.screen();
                     let mode = screen.mouse_protocol_mode();
                     use vt100::MouseProtocolMode as MouseMode;
                     if mode == MouseMode::None || *shift {
@@ -1154,8 +1158,7 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                         let col = x - rect.x;
                         let row = y - rect.y;
                         if screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr {
-                            terminals.input(
-                                rect.pane,
+                            terminal.input(
                                 format!(
                                     "\x1b[<{code};{col};{row}{}",
                                     if release { 'm' } else { 'M' }
@@ -1163,17 +1166,14 @@ fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs)
                                 .as_bytes(),
                             )?;
                         } else if col <= 223 && row <= 223 {
-                            terminals.input(
-                                rect.pane,
-                                &[
-                                    27,
-                                    b'[',
-                                    b'M',
-                                    (if release { 3 } else { code }) as u8 + 32,
-                                    col as u8 + 32,
-                                    row as u8 + 32,
-                                ],
-                            )?;
+                            terminal.input(&[
+                                27,
+                                b'[',
+                                b'M',
+                                (if release { 3 } else { code }) as u8 + 32,
+                                col as u8 + 32,
+                                row as u8 + 32,
+                            ])?;
                         }
                     }
                 }
