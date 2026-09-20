@@ -336,7 +336,7 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), Str
         .presentation
         .sync(&scene, revision, root, world.get::<Viewer>(id).unwrap())
 }
-fn size_terminals(views: &Views, terminals: &mut Query<&mut Terminal>) {
+fn size_terminals(world: &mut World, views: &Views) {
     let mut sizes = EntityHashMap::<(u16, u16)>::default();
     for context in views.values() {
         for rect in context.presentation.rects() {
@@ -352,7 +352,7 @@ fn size_terminals(views: &Views, terminals: &mut Query<&mut Terminal>) {
         }
     }
     for (pane, (rows, cols)) in sizes {
-        if let Ok(mut terminal) = terminals.get_mut(pane) {
+        if let Some(mut terminal) = world.get_mut::<Terminal>(pane) {
             let _ = terminal.resize(rows, cols);
         }
     }
@@ -470,28 +470,24 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
             detach: true,
         });
     }
-    with_views(world, |world, views| sync_view(world, views, id))?;
-    world
-        .run_system_cached_with(paint, id)
-        .map_err(|e| e.to_string())?
+    with_views(world, |world, views| {
+        sync_view(world, views, id)?;
+        size_terminals(world, views);
+        paint(world, views, id)
+    })
 }
 
-fn paint(
-    In(id): In<Entity>,
-    viewers: Query<&Viewer>,
-    names: Query<&Name>,
-    states: Query<&ProcessState>,
-    mut terminals: Query<&mut Terminal>,
-    settings: Res<Settings>,
-    mut views: NonSendMut<Views>,
-) -> Result<Frame, String> {
-    let v = viewers.get(id).map_err(|e| e.to_string())?;
-    let name = |entity: Entity| {
-        names
-            .get(entity)
-            .map_or_else(|_| entity.to_bits().to_string(), |n| n.as_str().to_owned())
-    };
-    size_terminals(&views, &mut terminals);
+fn name(world: &World, entity: Entity) -> String {
+    world
+        .get::<Name>(entity)
+        .map_or_else(|| entity.to_bits().to_string(), |n| n.as_str().to_owned())
+}
+
+fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, String> {
+    let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
+    let focus = v.focus;
+    let scrollback = v.scrollback;
+    let settings = world.resource::<Settings>();
     let view = views.get_mut(&id).ok_or("missing presentation")?;
     let mut out = String::from("\x1b[?2026h\x1b[?7l\x1b[?25l\x1b[0m\x1b[H\x1b[2J");
     let chrome = if v.prompt.as_deref() == Some("help") {
@@ -514,7 +510,7 @@ fn paint(
     } else {
         format!(
             "fux [{}] {}{} | {} ? help | {}",
-            name(v.workspace),
+            name(world, v.workspace),
             if v.zoom { "zoom " } else { "" },
             if v.scrollback > 0 {
                 format!("scroll:{}", v.scrollback)
@@ -536,9 +532,9 @@ fn paint(
         if rect.width < 3 || rect.height < 3 {
             continue;
         }
-        let selected = v.focus == Some(rect.leaf);
+        let selected = focus == Some(rect.leaf);
         let color = if selected { "\x1b[36m" } else { "\x1b[90m" };
-        let state = states.get(rect.pane).ok();
+        let state = world.get::<ProcessState>(rect.pane);
         let status = state
             .and_then(|s| s.exit)
             .map(|code| format!(" [exit:{code}]"))
@@ -551,7 +547,7 @@ fn paint(
         let label = format!(
             " {} {}{status} ",
             if selected { "*" } else { "-" },
-            name(rect.pane)
+            name(world, rect.pane)
         );
         let top = format!(
             "{color}+{}+\x1b[0m",
@@ -570,23 +566,23 @@ fn paint(
                 at(&mut out, x, rect.y + row, format_args!("{color}|\x1b[0m"));
             }
         }
-        match terminals.get_mut(rect.pane) {
-            Ok(mut terminal) => {
-                let (lines, screen) = terminal.snapshot(if selected { v.scrollback } else { 0 });
+        match world.get_mut::<Terminal>(rect.pane) {
+            Some(mut terminal) => {
+                let (lines, screen) = terminal.snapshot(if selected { scrollback } else { 0 });
                 for (row, line) in lines.iter().take(usize::from(rect.height - 2)).enumerate() {
                     at(&mut out, rect.x + 1, rect.y + 1 + row as u16, line);
                 }
                 let (row, col) = screen.cursor_position();
                 if selected
                     && !screen.hide_cursor()
-                    && v.scrollback == 0
+                    && scrollback == 0
                     && row < rect.height - 2
                     && col < rect.width - 2
                 {
                     cursor = Some((rect.x + 1 + col, rect.y + 1 + row));
                 }
             }
-            Err(_) => at(
+            None => at(
                 &mut out,
                 rect.x + 1,
                 rect.y + 1,
