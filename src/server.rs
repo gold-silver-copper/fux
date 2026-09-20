@@ -16,15 +16,6 @@ use bevy_ui::{FlexDirection, Node, Val};
 use bevy_world_serialization::DynamicWorld;
 use std::sync::Arc;
 
-#[derive(Event)]
-struct RoutedInput(UserInput);
-impl std::ops::Deref for RoutedInput {
-    type Target = UserInput;
-    fn deref(&self) -> &UserInput {
-        &self.0
-    }
-}
-
 fn route_control(event: On<Control>, mut commands: Commands) {
     let (viewer, command) = (event.event_target(), event.command.clone());
     commands.queue(move |world: &mut World| {
@@ -210,7 +201,10 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         {
             return;
         }
-        world.trigger(RoutedInput(event));
+        if let Err(error) = terminal_input(world, event.viewer, &event.input) {
+            notify(world, event.viewer, Notice::error(error));
+        }
+        world.resource::<Wake>().notify();
     });
 }
 
@@ -299,7 +293,6 @@ impl Plugin for ServerPlugin {
         crate::navigation::observe(app.world_mut());
         app.insert_non_send(Views::default())
             .add_plugins(TerminalPlugin)
-            .add_observer(input_event)
             .add_observer(route_control)
             .add_observer(route_input)
             .add_observer(crate::paste::overlay_opened)
@@ -978,142 +971,137 @@ fn collapse_layout(
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Bevy injects each declared ECS access"
-)]
-fn input_event(
-    event: On<RoutedInput>,
-    mut commands: Commands,
-    mut viewers: Query<(&mut Viewer, Has<Prefix>, Option<&Focused>)>,
-    panes: Query<&PaneView>,
-    settings: Res<Settings>,
-    terminals: Query<&Terminal>,
-    mut views: NonSendMut<Views>,
-    wake: Res<Wake>,
-) {
-    let id = event.viewer;
-    let Ok((mut v, prefix, focus)) = viewers.get_mut(id) else {
-        return;
+/// Ordinary input for the focused pane: keys and pastes become PTY bytes,
+/// mouse events are picked against the painted layout, and the prefix key
+/// opens or literally forwards itself.
+fn terminal_input(world: &mut World, id: Entity, input: &Input) -> Result<(), String> {
+    let prefix = world.get::<Prefix>(id).is_some();
+    let focus = focused(world, id);
+    let pane_of = |world: &World| {
+        focus
+            .and_then(|leaf| world.get::<PaneView>(leaf))
+            .map(|view| view.pane)
+            .ok_or("no focused pane")
     };
-    let focus = focus.map(|f| f.0);
-    let result = (|| -> Result<(), String> {
-        match &event.input {
-            Input::PasteBegin => {}
-            Input::Resize { rows, cols } => {
-                v.rows = (*rows).min(4096);
-                v.cols = (*cols).min(4096);
-            }
-            Input::Key { key, modifiers } => {
-                let token = event.input.token().unwrap_or_else(|| Token::from(""));
-                // Reserved keys and bound shortcuts were consumed upstream; what
-                // reaches here in the column is an unbound key or the literal prefix.
-                if prefix {
-                    if token != settings.prefix {
-                        v.notice = Notice::info(format!("unbound prefix key {token}"));
-                        return Ok(());
-                    }
-                    commands.entity(id).remove::<Prefix>();
-                } else if token == settings.prefix {
-                    commands.entity(id).insert(Prefix::default());
-                    v.notice = None;
+    match input {
+        Input::PasteBegin => {}
+        Input::Resize { rows, cols } => {
+            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
+            v.rows = (*rows).min(4096);
+            v.cols = (*cols).min(4096);
+        }
+        Input::Key { key, modifiers } => {
+            let token = input.token().unwrap_or_else(|| Token::from(""));
+            let settings = world.resource::<Settings>();
+            // Reserved keys and bound shortcuts were consumed upstream; what
+            // reaches here in the column is an unbound key or the literal prefix.
+            if prefix {
+                if token != settings.prefix {
+                    notify(
+                        world,
+                        id,
+                        Notice::info(format!("unbound prefix key {token}")),
+                    );
                     return Ok(());
                 }
-                let pane = panes
-                    .get(focus.ok_or("no focused pane")?)
-                    .map_err(|e| e.to_string())?
-                    .pane;
-                let terminal = terminals.get(pane).map_err(|_| "terminal not found")?;
-                let application = terminal.screen().application_cursor();
-                terminal.input(&crate::encode::key_bytes(*key, *modifiers, application))?;
-                v.scrollback = 0;
-                v.notice = None;
+                crate::interaction::close_prefix(world, id);
+            } else if token == settings.prefix {
+                world.entity_mut(id).insert(Prefix::default());
+                notify(world, id, None);
+                return Ok(());
             }
-            Input::Paste { text } => {
-                if prefix {
-                    return Ok(());
-                }
-                let pane = panes
-                    .get(focus.ok_or("no focused pane")?)
-                    .map_err(|e| e.to_string())?
-                    .pane;
-                let terminal = terminals.get(pane).map_err(|_| "terminal not found")?;
-                if terminal.screen().bracketed_paste() {
-                    terminal.input(format!("\x1b[200~{text}\x1b[201~").as_bytes())?;
-                } else {
-                    terminal.input(text.as_bytes())?;
-                }
-                v.scrollback = 0;
-                v.notice = None;
+            let pane = pane_of(world)?;
+            let terminal = world.get::<Terminal>(pane).ok_or("terminal not found")?;
+            let application = terminal.screen().application_cursor();
+            terminal.input(&crate::encode::key_bytes(*key, *modifiers, application))?;
+            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
+            v.scrollback = 0;
+            v.notice = None;
+        }
+        Input::Paste { text } => {
+            if prefix {
+                return Ok(());
             }
-            Input::Mouse {
-                action,
-                button,
-                x,
-                y,
-                modifiers,
-            } => {
-                // Pick against the last painted native layout, not a second
-                // rectangle hit-test implementation.
+            let pane = pane_of(world)?;
+            let terminal = world.get::<Terminal>(pane).ok_or("terminal not found")?;
+            if terminal.screen().bracketed_paste() {
+                terminal.input(format!("\x1b[200~{text}\x1b[201~").as_bytes())?;
+            } else {
+                terminal.input(text.as_bytes())?;
+            }
+            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
+            v.scrollback = 0;
+            v.notice = None;
+        }
+        Input::Mouse {
+            action,
+            button,
+            x,
+            y,
+            modifiers,
+        } => {
+            if prefix {
+                return Ok(());
+            }
+            // Pick against the last painted native layout, not a second
+            // rectangle hit-test implementation.
+            let hit = {
+                let mut views = world.non_send_mut::<Views>();
                 let context = views.get_mut(&id).ok_or("presentation not initialized")?;
-                if prefix {
-                    return Ok(());
-                }
                 let hit = context
                     .presentation
                     .pointer(*x, *y, *action == MouseAction::Press);
-                if let Some(hit) = hit {
-                    if *action == MouseAction::Press {
-                        commands.entity(id).insert(Focused(hit));
-                        v.scrollback = 0;
-                    }
-                    let rect = context
+                hit.map(|hit| {
+                    context
                         .presentation
                         .rects()
                         .iter()
                         .find(|r| r.leaf == hit)
-                        .ok_or("picked pane has no rectangle")?;
-                    let terminal = terminals.get(rect.pane).map_err(|_| "terminal not found")?;
-                    let screen = terminal.screen();
-                    let mode = screen.mouse_protocol_mode();
-                    use vt100::MouseProtocolMode as MouseMode;
-                    if mode == MouseMode::None || modifiers.shift {
-                        if matches!(action, MouseAction::ScrollUp | MouseAction::ScrollDown) {
-                            if focus != Some(hit) {
-                                commands.entity(id).insert(Focused(hit));
-                                v.scrollback = 0;
-                            }
-                            commands.trigger(Control {
-                                viewer: id,
-                                command: Command::Scroll {
-                                    order: if *action == MouseAction::ScrollUp {
-                                        Order::Previous
-                                    } else {
-                                        Order::Next
-                                    },
-                                },
-                            });
-                        }
-                    } else if rect.covers(*x, *y)
-                        && let Some(bytes) = crate::encode::mouse_bytes(
-                            screen,
-                            *action,
-                            *button,
-                            (x - rect.x() + 1, y - rect.y() + 1),
-                            *modifiers,
-                        )
-                    {
-                        terminal.input(&bytes)?;
+                        .copied()
+                        .ok_or("picked pane has no rectangle")
+                })
+            };
+            let Some(rect) = hit.transpose()? else {
+                return Ok(());
+            };
+            let hit = rect.leaf;
+            if *action == MouseAction::Press {
+                world.entity_mut(id).insert(Focused(hit));
+                world.get_mut::<Viewer>(id).ok_or(DETACHED)?.scrollback = 0;
+            }
+            let terminal = world
+                .get::<Terminal>(rect.pane)
+                .ok_or("terminal not found")?;
+            let screen = terminal.screen();
+            let mode = screen.mouse_protocol_mode();
+            use vt100::MouseProtocolMode as MouseMode;
+            if mode == MouseMode::None || modifiers.shift {
+                if matches!(action, MouseAction::ScrollUp | MouseAction::ScrollDown) {
+                    let order = if *action == MouseAction::ScrollUp {
+                        Order::Previous
+                    } else {
+                        Order::Next
+                    };
+                    if focus != Some(hit) {
+                        world.entity_mut(id).insert(Focused(hit));
+                        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.scrollback = 0;
                     }
+                    execute(world, id, Command::Scroll { order })?;
                 }
+            } else if rect.covers(*x, *y)
+                && let Some(bytes) = crate::encode::mouse_bytes(
+                    screen,
+                    *action,
+                    *button,
+                    (x - rect.x() + 1, y - rect.y() + 1),
+                    *modifiers,
+                )
+            {
+                terminal.input(&bytes)?;
             }
         }
-        Ok(())
-    })();
-    if let Err(error) = result {
-        v.notice = Notice::error(error);
     }
-    wake.notify();
+    Ok(())
 }
 
 #[cfg(test)]

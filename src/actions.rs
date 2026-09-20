@@ -96,15 +96,6 @@ actions! {
     "Session": [SaveLayout "save_layout" => "save layout", LoadLayout "load_layout" => "load layout", Help "help" => "command help", Detach "detach" => "detach"]
 }
 
-impl std::str::FromStr for Action {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, String> {
-        ALL.iter()
-            .copied()
-            .find(|action| action.id() == s)
-            .ok_or_else(|| format!("unknown action {s}"))
-    }
-}
 impl std::fmt::Display for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.id())
@@ -311,23 +302,22 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::*;
 
     #[test]
     fn wire_names_round_trip_and_unknown_names_are_rejected() -> crate::testing::Outcome {
         for action in ALL.iter().copied() {
             let id = action.to_string();
-            assert_eq!(id.parse::<Action>()?, action);
             assert!(id.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
             // The literal in the table and the serde name must never drift.
-            assert_eq!(serde_json::to_value(action)?, serde_json::Value::String(id));
+            let wire = serde_json::Value::String(id);
+            assert_eq!(serde_json::to_value(action)?, wire);
+            assert_eq!(serde_json::from_value::<Action>(wire)?, action);
         }
         assert_eq!(ALL.len(), 59);
         assert_eq!(Action::SplitHorizontal.to_string(), "split_horizontal");
         assert_eq!(Action::ReorderPrev.to_string(), "reorder_prev");
-        assert_eq!(
-            "nope".parse::<Action>().err().need()?,
-            "unknown action nope"
+        assert!(
+            serde_json::from_value::<Action>(serde_json::Value::String("nope".into())).is_err()
         );
         assert!(Action::FocusLeft.needs_pane());
         assert!(!Action::SplitVertical.needs_pane());
