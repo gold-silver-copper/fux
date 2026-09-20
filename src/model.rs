@@ -118,9 +118,10 @@ impl Wake {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::*;
 
     #[test]
-    fn layout_relationships_do_not_own_shared_processes() {
+    fn layout_relationships_do_not_own_shared_processes() -> crate::testing::Outcome {
         let mut world = World::new();
         let process = world
             .spawn(Launch {
@@ -139,9 +140,10 @@ mod tests {
             .id();
         world.despawn(left);
         assert!(world.get_entity(removed).is_err());
-        assert_eq!(world.get::<PaneView>(retained).unwrap().pane, process);
+        assert_eq!(world.get::<PaneView>(retained).need()?.pane, process);
         assert!(world.get::<Launch>(process).is_some());
         world.despawn(right);
         assert!(world.get::<Launch>(process).is_some());
+        Ok(())
     }
 }

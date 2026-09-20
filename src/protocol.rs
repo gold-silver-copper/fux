@@ -82,6 +82,7 @@ pub struct Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::*;
 
     fn key(key: &str, ctrl: bool, alt: bool, shift: bool) -> Input {
         Input::Key {
@@ -93,17 +94,18 @@ mod tests {
     }
 
     #[test]
-    fn binding_tokens_match_configuration_spelling() {
-        assert_eq!(key("b", false, false, false).token().unwrap(), "b");
-        assert_eq!(key("b", true, false, false).token().unwrap(), "ctrl-b");
-        assert_eq!(key("left", false, true, false).token().unwrap(), "alt-left");
-        assert_eq!(key("tab", false, false, true).token().unwrap(), "shift-tab");
-        assert_eq!(key("T", false, false, true).token().unwrap(), "T");
+    fn binding_tokens_match_configuration_spelling() -> crate::testing::Outcome {
+        assert_eq!(key("b", false, false, false).token().need()?, "b");
+        assert_eq!(key("b", true, false, false).token().need()?, "ctrl-b");
+        assert_eq!(key("left", false, true, false).token().need()?, "alt-left");
+        assert_eq!(key("tab", false, false, true).token().need()?, "shift-tab");
+        assert_eq!(key("T", false, false, true).token().need()?, "T");
         assert_eq!(
-            key("up", true, true, true).token().unwrap(),
+            key("up", true, true, true).token().need()?,
             "ctrl-alt-shift-up"
         );
         assert!(Input::PasteBegin.token().is_none());
         assert!(Input::Resize { rows: 1, cols: 1 }.token().is_none());
+        Ok(())
     }
 }

@@ -216,9 +216,10 @@ pub fn unavailable(world: &World, target: Target, action: Option<Action>) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::*;
 
     #[test]
-    fn wire_names_round_trip_and_unknown_names_are_rejected() {
+    fn wire_names_round_trip_and_unknown_names_are_rejected() -> crate::testing::Outcome {
         for action in ALL.iter().copied().chain([
             Action::Focus,
             Action::TabSelect,
@@ -226,12 +227,15 @@ mod tests {
             Action::Swap,
         ]) {
             let id = action.to_string();
-            assert_eq!(id.parse::<Action>().unwrap(), action);
+            assert_eq!(id.parse::<Action>().need()?, action);
             assert!(id.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
         }
         assert_eq!(Action::SplitHorizontal.to_string(), "split_horizontal");
         assert_eq!(Action::ReorderPrev.to_string(), "reorder_prev");
-        assert_eq!("nope".parse::<Action>().unwrap_err(), "unknown action nope");
+        assert_eq!(
+            "nope".parse::<Action>().err().need()?,
+            "unknown action nope"
+        );
         assert_eq!(Action::Focus.group(), "Other");
         assert_eq!(Action::TabSelect.label(), "tab select");
         assert!(Action::FocusLeft.needs_pane());
@@ -241,5 +245,6 @@ mod tests {
         assert_eq!(Action::Swap.target_kind(), TargetKind::Pane);
         assert_eq!(Action::Help.target_kind(), TargetKind::Any);
         assert_eq!(Action::MoveDown.direction(), Some("down"));
+        Ok(())
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::*;
 use crate::{model::*, navigation};
 use bevy_ui::{Display, Node, RepeatedGridTrack, UiRect, Val};
 
@@ -28,7 +29,8 @@ fn process(world: &mut World) -> Entity {
 }
 
 #[test]
-fn native_tab_scene_round_trip_preserves_order_names_and_remapped_processes() {
+fn native_tab_scene_round_trip_preserves_order_names_and_remapped_processes()
+-> crate::testing::Outcome {
     let mut app = app();
     let world = app.world_mut();
     let one = process(world);
@@ -41,7 +43,7 @@ fn native_tab_scene_round_trip_preserves_order_names_and_remapped_processes() {
     world.spawn((PaneView { pane: one }, ChildOf(a)));
     world.spawn((PaneView { pane: two }, ChildOf(b)));
     world.entity_mut(root).replace_children(&[b, a]);
-    let text = serialize_layout(world, root).unwrap();
+    let text = serialize_layout(world, root).need()?;
     for absent in [
         "Launch",
         "ProcessState",
@@ -53,32 +55,48 @@ fn native_tab_scene_round_trip_preserves_order_names_and_remapped_processes() {
     ] {
         assert!(!text.contains(absent), "{absent}: {text}");
     }
-    let scene = extract_layout(world, root).unwrap();
-    let loaded = apply_layout(world, &scene, &[(one, two), (two, one)]).unwrap();
-    assert_eq!(world.get::<WorkspaceOrder>(loaded).unwrap().0, 7);
+    let scene = extract_layout(world, root).need()?;
+    let loaded = apply_layout(world, &scene, &[(one, two), (two, one)]).need()?;
+    assert_eq!(world.get::<WorkspaceOrder>(loaded).need()?.0, 7);
     let tabs = navigation::tabs(world, loaded);
     assert_eq!(tabs.len(), 2);
-    assert_eq!(world.get::<Name>(tabs[0]).unwrap().as_str(), "second");
-    assert_eq!(world.get::<Name>(tabs[1]).unwrap().as_str(), "first");
+    assert_eq!(
+        world.get::<Name>(*tabs.first().need()?).need()?.as_str(),
+        "second"
+    );
+    assert_eq!(
+        world.get::<Name>(*tabs.get(1).need()?).need()?.as_str(),
+        "first"
+    );
     assert_eq!(
         world
-            .get::<PaneView>(navigation::leaves(world, tabs[0])[0])
-            .unwrap()
+            .get::<PaneView>(
+                *navigation::leaves(world, *tabs.first().need()?)
+                    .first()
+                    .need()?
+            )
+            .need()?
             .pane,
         one
     );
     assert_eq!(
         world
-            .get::<PaneView>(navigation::leaves(world, tabs[1])[0])
-            .unwrap()
+            .get::<PaneView>(
+                *navigation::leaves(world, *tabs.get(1).need()?)
+                    .first()
+                    .need()?
+            )
+            .need()?
             .pane,
         two
     );
     assert_eq!(world.query::<&Launch>().iter(world).count(), 2);
+    Ok(())
 }
 
 #[test]
-fn tabless_scene_migration_moves_the_layout_box_once_without_losing_panes() {
+fn tabless_scene_migration_moves_the_layout_box_once_without_losing_panes()
+-> crate::testing::Outcome {
     let mut app = app();
     let world = app.world_mut();
     let pane = process(world);
@@ -93,22 +111,23 @@ fn tabless_scene_migration_moves_the_layout_box_once_without_losing_panes() {
     let root = world.spawn((Workspace, node.clone())).id();
     world.spawn((PaneView { pane }, ChildOf(root)));
     world.spawn((PaneView { pane }, ChildOf(root)));
-    let scene = extract_layout(world, root).unwrap();
-    let loaded = apply_layout(world, &scene, &[]).unwrap();
+    let scene = extract_layout(world, root).need()?;
+    let loaded = apply_layout(world, &scene, &[]).need()?;
     let tabs = navigation::tabs(world, loaded);
     assert_eq!(tabs.len(), 1);
-    assert_eq!(world.get::<Node>(tabs[0]).unwrap(), &node);
-    assert_eq!(world.get::<Node>(loaded).unwrap(), &navigation::tab_node());
+    assert_eq!(world.get::<Node>(*tabs.first().need()?).need()?, &node);
+    assert_eq!(world.get::<Node>(loaded).need()?, &navigation::tab_node());
     assert_eq!(navigation::leaves(world, loaded).len(), 2);
     assert_eq!(world.query::<&Launch>().iter(world).count(), 1);
-    let resaved = extract_layout(world, loaded).unwrap();
-    let reloaded = apply_layout(world, &resaved, &[]).unwrap();
+    let resaved = extract_layout(world, loaded).need()?;
+    let reloaded = apply_layout(world, &resaved, &[]).need()?;
     assert_eq!(navigation::tabs(world, reloaded).len(), 1);
     assert_eq!(navigation::leaves(world, reloaded).len(), 2);
+    Ok(())
 }
 
 #[test]
-fn coherent_defaults_have_exact_unique_keys_and_action_pairs() {
+fn coherent_defaults_have_exact_unique_keys_and_action_pairs() -> crate::testing::Outcome {
     let settings = Settings::default();
     assert_eq!(settings.prefix, "ctrl-b");
     let actual: std::collections::BTreeMap<_, _> = settings
@@ -156,10 +175,11 @@ fn coherent_defaults_have_exact_unique_keys_and_action_pairs() {
     .into_iter()
     .collect();
     assert_eq!(actual, expected);
+    Ok(())
 }
 
 #[test]
-fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() {
+fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() -> crate::testing::Outcome {
     let mut app = app();
     let world = app.world_mut();
     let root = world.spawn(Workspace).id();
@@ -168,7 +188,7 @@ fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() {
     assert!(
         extract_layout(world, root)
             .err()
-            .unwrap()
+            .need()?
             .contains("direct workspace")
     );
     world.despawn(nested);
@@ -191,7 +211,8 @@ fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() {
     assert!(
         extract_layout(world, root)
             .err()
-            .unwrap()
+            .need()?
             .contains("viewers")
     );
+    Ok(())
 }

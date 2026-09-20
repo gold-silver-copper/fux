@@ -27,16 +27,15 @@ pub(crate) struct View {
     paint_wake_pending: bool,
 }
 
-pub(crate) fn with_views<T>(world: &mut World, f: impl FnOnce(&mut World, &mut Views) -> T) -> T {
+pub(crate) fn with_views<T>(
+    world: &mut World,
+    f: impl FnOnce(&mut World, &mut Views) -> Result<T, String>,
+) -> Result<T, String> {
     // Views is an unreflected non-send resource installed by ServerPlugin; no
-    // remote request can remove it.
-    #[expect(
-        clippy::expect_used,
-        reason = "installed once, never remotely removable"
-    )]
-    let mut views = world
-        .remove_non_send::<Views>()
-        .expect("presentation contexts installed");
+    // remote request can remove it, but the boundary still reports rather than aborts.
+    let Some(mut views) = world.remove_non_send::<Views>() else {
+        return Err("presentation contexts are not installed".into());
+    };
     let result = f(world, &mut views);
     world.insert_non_send(views);
     result

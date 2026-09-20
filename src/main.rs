@@ -1,12 +1,3 @@
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::indexing_slicing
-    )
-)]
 mod actions;
 mod assets;
 mod chrome;
@@ -22,6 +13,8 @@ mod protocol;
 mod selection;
 mod server;
 mod terminal;
+#[cfg(test)]
+mod testing;
 mod viewer;
 
 use bevy_app::{App, AppExit, TaskPoolPlugin};

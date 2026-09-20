@@ -1125,13 +1125,14 @@ fn notice(world: &mut World, id: Entity, message: &str, error: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::*;
 
     #[derive(Component, bevy_reflect::Reflect)]
     #[reflect(Component)]
     struct Extra(u32);
 
     #[test]
-    fn arbitrary_layout_changes_invalidate_only_the_owning_workspace() {
+    fn arbitrary_layout_changes_invalidate_only_the_owning_workspace() -> crate::testing::Outcome {
         let mut app = App::new();
         app.register_type::<Workspace>()
             .register_type::<Name>()
@@ -1148,12 +1149,12 @@ mod tests {
             .spawn((Name::new("before"), ChildOf(nested)))
             .id();
         app.update();
-        let untouched = scene(app.world_mut(), right).unwrap().1;
-        let initial = scene(app.world_mut(), left).unwrap().1;
+        let untouched = scene(app.world_mut(), right).need()?.1;
+        let initial = scene(app.world_mut(), left).need()?.1;
         app.update();
         assert!(Arc::ptr_eq(
             &initial,
-            &scene(app.world_mut(), left).unwrap().1
+            &scene(app.world_mut(), left).need()?.1
         ));
         // The descendant deliberately has no Node. Newly inserted, previously
         // absent types and ordinary in-place writes must still reach the scene.
@@ -1161,36 +1162,36 @@ mod tests {
         // A synchronous control can observe this mutation before another Update.
         app.world_mut()
             .run_system_cached(invalidate_layouts)
-            .unwrap();
-        let inserted = scene(app.world_mut(), left).unwrap().1;
+            .need()?;
+        let inserted = scene(app.world_mut(), left).need()?.1;
         assert!(!Arc::ptr_eq(&initial, &inserted));
         assert!(Arc::ptr_eq(
             &untouched,
-            &scene(app.world_mut(), right).unwrap().1
+            &scene(app.world_mut(), right).need()?.1
         ));
-        app.world_mut().get_mut::<Extra>(leaf).unwrap().0 = 9;
+        app.world_mut().get_mut::<Extra>(leaf).need()?.0 = 9;
         app.update();
-        let modified = scene(app.world_mut(), left).unwrap().1;
+        let modified = scene(app.world_mut(), left).need()?.1;
         assert!(!Arc::ptr_eq(&inserted, &modified));
         app.world_mut().entity_mut(leaf).remove::<Extra>();
         app.update();
-        let removed = scene(app.world_mut(), left).unwrap().1;
+        let removed = scene(app.world_mut(), left).need()?.1;
         assert!(!Arc::ptr_eq(&modified, &removed));
         assert!(Arc::ptr_eq(
             &untouched,
-            &scene(app.world_mut(), right).unwrap().1
+            &scene(app.world_mut(), right).need()?.1
         ));
         app.world_mut().entity_mut(nested).insert(ChildOf(right));
         app.update();
-        let emptied = scene(app.world_mut(), left).unwrap().1;
-        let moved = scene(app.world_mut(), right).unwrap().1;
+        let emptied = scene(app.world_mut(), left).need()?.1;
+        let moved = scene(app.world_mut(), right).need()?.1;
         assert!(!Arc::ptr_eq(&removed, &emptied));
         assert!(!Arc::ptr_eq(&untouched, &moved));
         assert!(!emptied.entities.iter().any(|entity| entity.entity == leaf));
         assert!(moved.entities.iter().any(|entity| entity.entity == leaf));
         app.world_mut().despawn(nested);
         app.update();
-        let despawned = scene(app.world_mut(), right).unwrap().1;
+        let despawned = scene(app.world_mut(), right).need()?.1;
         assert!(
             !despawned
                 .entities
@@ -1199,7 +1200,7 @@ mod tests {
         );
         assert!(Arc::ptr_eq(
             &emptied,
-            &scene(app.world_mut(), left).unwrap().1
+            &scene(app.world_mut(), left).need()?.1
         ));
         app.world_mut().entity_mut(right).remove::<Workspace>();
         assert!(scene(app.world_mut(), right).is_err());
@@ -1207,12 +1208,9 @@ mod tests {
         let replacement = app.world_mut().spawn(Workspace).id();
         app.update();
         assert_eq!(
-            scene(app.world_mut(), replacement)
-                .unwrap()
-                .1
-                .entities
-                .len(),
+            scene(app.world_mut(), replacement).need()?.1.entities.len(),
             1
         );
+        Ok(())
     }
 }

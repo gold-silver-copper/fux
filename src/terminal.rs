@@ -731,9 +731,11 @@ impl Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::*;
 
     #[test]
-    fn recipe_replacement_reinsertion_and_despawn_preserve_process_ownership() {
+    fn recipe_replacement_reinsertion_and_despawn_preserve_process_ownership()
+    -> crate::testing::Outcome {
         let mut app = App::new();
         app.insert_resource(Wake(thread::current()))
             .add_plugins((bevy_app::TaskPoolPlugin::default(), TerminalPlugin));
@@ -747,26 +749,26 @@ mod tests {
         let pid = |app: &App| {
             app.world()
                 .get::<ProcessState>(entity)
-                .unwrap()
-                .pid
-                .unwrap()
+                .and_then(|state| state.pid)
+                .need()
         };
         let reaped =
             |pid| nix::sys::signal::kill(Pid::from_raw(pid as i32), None) == Err(Errno::ESRCH);
-        let first = pid(&app);
+        let first = pid(&app)?;
         app.world_mut().entity_mut(entity).insert(recipe());
         app.update();
-        assert_eq!(pid(&app), first);
+        assert_eq!(pid(&app)?, first);
         app.world_mut()
             .entity_mut(entity)
             .remove::<Launch>()
             .insert(recipe());
         app.update();
-        let second = pid(&app);
+        let second = pid(&app)?;
         assert_ne!(first, second);
         assert!(reaped(first));
         app.world_mut().despawn(entity);
         app.update();
         assert!(reaped(second));
+        Ok(())
     }
 }
