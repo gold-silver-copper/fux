@@ -14,6 +14,18 @@ pub struct Ownership {
     pub serial: u64,
     pending: Option<Owner>,
 }
+
+/// Every newly inserted overlay gets a fresh serial, whichever code path opened
+/// it, so a paste captured for an earlier overlay can never land in this one.
+pub(crate) fn overlay_opened(
+    opened: On<Insert, Overlay>,
+    mut owners: Query<(&mut Ownership, &mut Overlay)>,
+) {
+    if let Ok((mut ownership, mut overlay)) = owners.get_mut(opened.entity) {
+        ownership.serial = ownership.serial.wrapping_add(1);
+        overlay.serial = ownership.serial;
+    }
+}
 enum Owner {
     Text(u64),
     Pane(Target),

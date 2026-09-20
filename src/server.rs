@@ -376,6 +376,10 @@ impl Plugin for ServerPlugin {
             .add_observer(input_event)
             .add_observer(route_control)
             .add_observer(route_input)
+            .add_observer(crate::paste::overlay_opened)
+            .add_observer(crate::navigation::repair_on_remove::<Tab>)
+            .add_observer(crate::navigation::repair_on_remove::<PaneView>)
+            .add_observer(crate::navigation::repair_on_remove::<Workspace>)
             .add_observer(
                 |removed: On<Remove, Viewer>, mut views: NonSendMut<Views>| {
                     views.remove(&removed.entity);

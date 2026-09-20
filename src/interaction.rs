@@ -69,16 +69,12 @@ fn label(world: &World, entity: Entity) -> String {
 }
 use crate::navigation::workspaces as roots;
 fn open(world: &mut World, id: Entity, target: Target, mode: Mode) {
-    let Some(mut ownership) = world.get_mut::<crate::paste::Ownership>(id) else {
-        return;
-    };
-    ownership.serial = ownership.serial.wrapping_add(1);
-    let serial = ownership.serial;
     if world.get::<Viewer>(id).is_none() {
         return;
     }
+    // `paste::overlay_opened` assigns the serial on insertion.
     world.entity_mut(id).remove::<Prefix>().insert(Overlay {
-        serial,
+        serial: 0,
         target,
         mode,
     });
@@ -258,8 +254,8 @@ pub fn invoke(
                 TabClose => target.tab.ok_or("no tab")?,
                 _ => target.workspace,
             };
+            // Removal observers repair viewer navigation as the hierarchy goes.
             close(world, entity);
-            navigation::repair(world);
         }
         RenamePane | RenameTab | RenameWorkspace if !value.is_empty() => {
             let entity = match action {

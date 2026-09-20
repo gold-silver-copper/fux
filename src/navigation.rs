@@ -190,6 +190,13 @@ pub fn control(
     Ok(())
 }
 
+/// Hierarchy removals repair every viewer as they happen, from any code path.
+/// Removal observers see the entity still present, so the repair is queued and
+/// runs once the removal has completed.
+pub(crate) fn repair_on_remove<C: Component>(_: On<Remove, C>, mut commands: Commands) {
+    commands.queue(repair);
+}
+
 pub fn repair(world: &mut World) {
     let roots = workspaces(world);
     for &root in &roots {
