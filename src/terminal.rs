@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     fmt::Write as _,
     fs::File,
     io::{self, Read, Write},
@@ -14,7 +13,7 @@ use std::{
 use async_channel::{Receiver, Sender};
 use async_io::Async;
 use bevy_app::{App, Plugin, Update};
-use bevy_ecs::prelude::*;
+use bevy_ecs::{entity::EntityHashMap, prelude::*};
 use bevy_tasks::{
     IoTaskPool, Task,
     futures_lite::future::{race, yield_now},
@@ -55,7 +54,7 @@ impl Plugin for TerminalPlugin {
 
 #[derive(Resource, Default)]
 pub struct Terminals {
-    panes: HashMap<Entity, Terminal>,
+    panes: EntityHashMap<Terminal>,
     pending: Arc<AtomicBool>,
 }
 
@@ -220,12 +219,6 @@ impl Terminals {
 
     pub fn shutdown(&mut self) {
         self.panes.clear();
-    }
-}
-
-impl Drop for Terminals {
-    fn drop(&mut self) {
-        self.shutdown();
     }
 }
 
@@ -681,22 +674,14 @@ fn update_terminals(
         let pid = terminal.job.as_ref().map(|job| job.pid);
         terminal.published_size = (rows, cols);
         let Some(state) = &mut state else { continue };
-        if (
-            state.rows,
-            state.cols,
-            state.pid,
-            state.exit,
-            state.revision,
-        ) != (rows, cols, pid, terminal.exit, terminal.revision)
-            || state.error != terminal.error
-        {
-            state.rows = rows;
-            state.cols = cols;
-            state.pid = pid;
-            state.exit = terminal.exit;
-            state.error.clone_from(&terminal.error);
-            state.revision = terminal.revision;
-        }
+        state.set_if_neq(ProcessState {
+            rows,
+            cols,
+            pid,
+            exit: terminal.exit,
+            error: terminal.error.clone(),
+            revision: terminal.revision,
+        });
     }
     if remaining_output {
         wake.notify();

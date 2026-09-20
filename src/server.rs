@@ -9,6 +9,7 @@ use crate::{
 use base64::Engine;
 use bevy_app::{App, AppExit, Plugin, Startup, Update};
 use bevy_ecs::{
+    entity::EntityHashMap,
     prelude::*,
     relationship::RelationshipTarget,
     system::{SystemChangeTick, SystemParam},
@@ -19,7 +20,6 @@ use bevy_ui::{FlexDirection, Node, UiRect, Val};
 use bevy_world_serialization::DynamicWorld;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
     fmt::Write,
     sync::Arc,
     time::{Duration, Instant},
@@ -28,7 +28,7 @@ use unicode_width::UnicodeWidthChar;
 
 #[derive(Default)]
 struct Views {
-    contexts: HashMap<Entity, View>,
+    contexts: EntityHashMap<View>,
 }
 struct View {
     presentation: Presentation,
@@ -262,28 +262,26 @@ fn reload_layouts(mut reloads: MessageReader<assets::LayoutReload>, mut commands
     for reload in reloads.read() {
         let handle = reload.handle.clone();
         commands.queue(move |world: &mut World| {
-            let mut collection = world
-                .remove_resource::<bevy_asset::Assets<DynamicWorld>>()
-                .expect("scene assets installed");
-            if let Some(scene) = collection.get_mut(&handle) {
-                match assets::apply_layout(world, &scene, &[]) {
-                    Ok(root) => {
-                        let scene_name = world.get::<Name>(root).cloned();
-                        let old = world
-                            .query_filtered::<(Entity, &Name), With<Workspace>>()
-                            .iter(world)
-                            .find(|(entity, name)| {
-                                *entity != root && scene_name.as_ref() == Some(*name)
-                            })
-                            .map(|(entity, _)| entity);
-                        if let Some(old) = old {
-                            replace_workspace(world, old, root);
+            world.resource_scope(|world, collection: Mut<bevy_asset::Assets<DynamicWorld>>| {
+                if let Some(scene) = collection.get(&handle) {
+                    match assets::apply_layout(world, scene, &[]) {
+                        Ok(root) => {
+                            let scene_name = world.get::<Name>(root).cloned();
+                            let old = world
+                                .query_filtered::<(Entity, &Name), With<Workspace>>()
+                                .iter(world)
+                                .find(|(entity, name)| {
+                                    *entity != root && scene_name.as_ref() == Some(*name)
+                                })
+                                .map(|(entity, _)| entity);
+                            if let Some(old) = old {
+                                replace_workspace(world, old, root);
+                            }
                         }
+                        Err(error) => bevy_log::error!("layout reload: {error}"),
                     }
-                    Err(error) => bevy_log::error!("layout reload: {error}"),
                 }
-            }
-            world.insert_resource(collection);
+            });
         });
     }
 }
@@ -354,7 +352,7 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<Viewer,
     Ok(v)
 }
 fn size_terminals(world: &mut World, views: &Views) {
-    let mut sizes: HashMap<Entity, (u16, u16)> = HashMap::new();
+    let mut sizes = EntityHashMap::<(u16, u16)>::default();
     for context in views.contexts.values() {
         for rect in context.presentation.rects() {
             let rows = rect.height.saturating_sub(2).max(1);
@@ -481,7 +479,7 @@ fn clipped(text: &str, cols: u16) -> String {
         })
         .collect()
 }
-fn at(out: &mut String, x: u16, y: u16, text: &str) {
+fn at(out: &mut String, x: u16, y: u16, text: impl std::fmt::Display) {
     let _ = write!(out, "\x1b[{};{}H{}", y + 1, x + 1, text);
 }
 fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
@@ -532,7 +530,7 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
             &mut out,
             0,
             0,
-            &format!("\x1b[7m{}\x1b[0m", clipped(&chrome, v.cols)),
+            format_args!("\x1b[7m{}\x1b[0m", clipped(&chrome, v.cols)),
         );
         let mut cursor = None;
         for rect in view.presentation.rects() {
@@ -565,17 +563,13 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
                 &mut out,
                 rect.x + 1,
                 rect.y,
-                &format!("{color}{}\x1b[0m", clipped(&label, rect.width - 2)),
+                format_args!("{color}{}\x1b[0m", clipped(&label, rect.width - 2)),
             );
             at(&mut out, rect.x, rect.y + rect.height - 1, &top);
             for row in 1..rect.height - 1 {
-                at(&mut out, rect.x, rect.y + row, &format!("{color}|\x1b[0m"));
-                at(
-                    &mut out,
-                    rect.x + rect.width - 1,
-                    rect.y + row,
-                    &format!("{color}|\x1b[0m"),
-                );
+                for x in [rect.x, rect.x + rect.width - 1] {
+                    at(&mut out, x, rect.y + row, format_args!("{color}|\x1b[0m"));
+                }
             }
             match world
                 .resource_mut::<Terminals>()
@@ -599,7 +593,7 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
                     &mut out,
                     rect.x + 1,
                     rect.y + 1,
-                    &clipped(&error, rect.width - 2),
+                    clipped(&error, rect.width - 2),
                 ),
             }
         }
@@ -1206,6 +1200,15 @@ fn key_bytes(
     application: bool,
 ) -> Result<Vec<u8>, String> {
     let modifier = 1 + usize::from(shift) + 2 * usize::from(alt) + 4 * usize::from(ctrl);
+    let csi = |code, final_byte| {
+        if modifier > 1 {
+            format!("\x1b[{code};{modifier}{final_byte}")
+        } else {
+            format!("\x1b[{code}{final_byte}")
+        }
+        .into_bytes()
+    };
+    let function = key.strip_prefix('f').and_then(|n| n.parse::<usize>().ok());
     let cursor = match key {
         "up" => Some('A'),
         "down" => Some('B'),
@@ -1213,15 +1216,21 @@ fn key_bytes(
         "left" => Some('D'),
         "home" => Some('H'),
         "end" => Some('F'),
-        _ => None,
+        _ => function
+            .filter(|n| (1..=4).contains(n))
+            .map(|n| char::from(b'P' + n as u8 - 1)),
     };
     if let Some(final_byte) = cursor {
         return Ok(if modifier > 1 {
-            format!("\x1b[1;{modifier}{final_byte}")
+            csi(1, final_byte)
         } else {
-            format!("\x1b{}{final_byte}", if application { 'O' } else { '[' })
-        }
-        .into_bytes());
+            let prefix = if application || function.is_some() {
+                'O'
+            } else {
+                '['
+            };
+            format!("\x1b{prefix}{final_byte}").into_bytes()
+        });
     }
     let mut bytes = match key {
         "enter" => vec![13],
@@ -1236,35 +1245,14 @@ fn key_bytes(
                 "pageup" => 5,
                 _ => 6,
             };
-            if modifier > 1 {
-                format!("\x1b[{code};{modifier}~")
-            } else {
-                format!("\x1b[{code}~")
-            }
-            .into_bytes()
+            csi(code, '~')
         }
-        _ if key.starts_with('f') && key[1..].parse::<usize>().is_ok() => {
-            let n = key[1..].parse::<usize>().map_err(|e| e.to_string())?;
-            if (1..=4).contains(&n) {
-                let final_byte = char::from(b'P' + n as u8 - 1);
-                if modifier > 1 {
-                    format!("\x1b[1;{modifier}{final_byte}")
-                } else {
-                    format!("\x1bO{final_byte}")
-                }
-                .into_bytes()
-            } else {
-                let codes = [15, 17, 18, 19, 20, 21, 23, 24];
-                let code = codes
-                    .get(n.wrapping_sub(5))
-                    .ok_or("unsupported function key")?;
-                if modifier > 1 {
-                    format!("\x1b[{code};{modifier}~")
-                } else {
-                    format!("\x1b[{code}~")
-                }
-                .into_bytes()
-            }
+        _ if let Some(n) = function => {
+            let codes = [15, 17, 18, 19, 20, 21, 23, 24];
+            let code = codes
+                .get(n.wrapping_sub(5))
+                .ok_or("unsupported function key")?;
+            csi(*code, '~')
         }
         _ if key.chars().count() == 1 => {
             let c = key.chars().next().ok_or("empty key")?;
@@ -1375,6 +1363,25 @@ mod tests {
 
     #[test]
     fn modified_keys_preserve_xterm_protocol_semantics() {
+        for (key, plain, modified) in [
+            ("f1", "\x1bOP", "\x1b[1;8P"),
+            ("f4", "\x1bOS", "\x1b[1;8S"),
+            ("f5", "\x1b[15~", "\x1b[15;8~"),
+            ("insert", "\x1b[2~", "\x1b[2;8~"),
+            ("home", "\x1b[H", "\x1b[1;8H"),
+        ] {
+            assert_eq!(
+                key_bytes(key, false, false, false, false).unwrap(),
+                plain.as_bytes()
+            );
+            assert_eq!(
+                key_bytes(key, true, true, true, false).unwrap(),
+                modified.as_bytes()
+            );
+        }
+        for key in ["f0", "f13", "f999", "fno", ""] {
+            assert!(key_bytes(key, false, false, false, false).is_err());
+        }
         assert_eq!(
             key_bytes("left", false, false, false, true).unwrap(),
             b"\x1bOD"
