@@ -257,21 +257,16 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             _ => return false,
         },
         Input::Key { key, .. } => match key.as_str() {
-            "q" => {
+            "q" | "escape" => {
                 world.entity_mut(id).remove::<Selection>();
+                world.get_mut::<Viewer>(id).unwrap().notice.clear();
                 return true;
             }
             "g" => {
-                world.get_mut::<Viewer>(id).unwrap().scrollback = 0;
+                let mut v = world.get_mut::<Viewer>(id).unwrap();
+                v.scrollback = 0;
+                v.notice.clear();
                 world.entity_mut(id).remove::<Selection>();
-                return true;
-            }
-            "escape" => {
-                if selection.anchor.is_some() {
-                    world.get_mut::<Selection>(id).unwrap().anchor = None;
-                } else {
-                    world.entity_mut(id).remove::<Selection>();
-                }
                 return true;
             }
             "c" => {

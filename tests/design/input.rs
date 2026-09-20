@@ -115,7 +115,7 @@ fn settings_hot_reload_short_empty_and_unicode_help() {
         "prefix":"ctrl-a", "bindings":[{"key":"界","action":"custom_界é"},{"key":"d","action":"detach"}]
     })).unwrap()).unwrap();
     eventually(|| s.painted(v, 8, 32).contents().contains("custom 界é"));
-    assert_eq!(s.viewer(v)["help_scroll"], 0);
+    assert_eq!(s.viewer(v)["help_scroll"], 1); // clamp selected action, not viewport offset
     let screen = s.painted(v, 8, 32);
     assert!(!screen.contents().contains("more"));
     assert!(row(&screen, 6).contains("custom 界é"));

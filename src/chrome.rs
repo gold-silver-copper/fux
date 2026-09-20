@@ -246,29 +246,25 @@ pub struct Bounds {
     pub width: u16,
     pub height: u16,
 }
-impl Bounds {
-    pub fn contains(self, x: u16, y: u16) -> bool {
-        x >= self.x && y >= self.y && x - self.x < self.width && y - self.y < self.height
-    }
-}
-
 // A heading is expendable on tiny screens; at least one command remains reachable.
 fn capacity(rows: u16) -> usize {
     let available = rows.saturating_sub(1);
     usize::from(available.saturating_sub(u16::from(available >= 3)))
 }
-pub fn help_limit(settings: &Settings, rows: u16) -> usize {
-    let cap = capacity(rows).max(1);
-    let count = help_entries(settings, 4096).len();
-    if count <= cap {
-        0
-    } else {
-        count.saturating_sub(if cap >= 3 { cap - 1 } else { cap })
-    }
+/// `help_scroll` is the selected actionable row, never a heading or indicator.
+pub fn help_limit(settings: &Settings, _rows: u16) -> usize {
+    settings.bindings.len().saturating_sub(1)
+}
+pub fn selected_action<'a>(v: &Viewer, settings: &'a Settings) -> Option<&'a str> {
+    help_entries(settings, v.cols)
+        .into_iter()
+        .filter_map(|(_, action)| action)
+        .nth(v.help_scroll.min(help_limit(settings, v.rows)))
 }
 pub fn scroll(v: &mut Viewer, settings: &Settings, down: bool, page: bool) {
     let step = if page {
-        capacity(v.rows).saturating_sub(2).max(1)
+        let cap = capacity(v.rows);
+        if cap >= 3 { cap - 2 } else { cap.max(1) }
     } else {
         1
     };
@@ -337,18 +333,33 @@ pub fn panel_context(
         }
         let entries = help_entries(settings, v.cols);
         let cap = capacity(v.rows);
-        let start = v.help_scroll.min(help_limit(settings, v.rows));
-        let above = cap >= 3 && start > 0;
-        let below = cap >= 3 && entries.len().saturating_sub(start) > cap - usize::from(above);
-        let body = cap.saturating_sub(usize::from(above) + usize::from(below));
+        let selected = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, action))| action.is_some())
+            .nth(v.help_scroll.min(help_limit(settings, v.rows)))
+            .map(|(i, _)| i);
+        let selected_row = selected.unwrap_or(0);
+        let mut start = 0;
+        let (above, below, body) = loop {
+            let above = cap >= 3 && start > 0;
+            let below = cap >= 3 && entries.len().saturating_sub(start) > cap - usize::from(above);
+            let body = cap.saturating_sub(usize::from(above) + usize::from(below));
+            if selected_row < start + body || body == 0 {
+                break (above, below, body);
+            }
+            start += 1;
+        };
         if above {
             lines.push((format!("▲ {start} more"), "\x1b[2m"));
         }
-        for (text, action) in entries.iter().skip(start).take(body) {
+        for (index, (text, action)) in entries.iter().enumerate().skip(start).take(body) {
             lines.push((
                 text.clone(),
                 match action {
                     None => "\x1b[1m",
+                    Some(action) if disabled(action) && Some(index) == selected => "\x1b[2;7m",
+                    Some(_) if Some(index) == selected => "\x1b[7m",
                     Some(action) if disabled(action) => "\x1b[2m",
                     _ => "",
                 },

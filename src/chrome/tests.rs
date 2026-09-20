@@ -67,6 +67,44 @@ fn every_binding_is_reachable_at_every_short_height() {
 }
 
 #[test]
+fn tiny_unicode_command_selection_is_visible_even_when_disabled() {
+    let settings = Settings {
+        bindings: vec![
+            crate::assets::Binding {
+                key: "界".into(),
+                action: "custom_界é".into(),
+            },
+            crate::assets::Binding {
+                key: "x".into(),
+                action: "close".into(),
+            },
+        ],
+        ..Default::default()
+    };
+    for rows in 0..=4 {
+        for cols in 0..=2 {
+            for selected in 0..2 {
+                let mut v = viewer(rows, cols);
+                v.help_scroll = selected;
+                let mut out = String::new();
+                let bounds = panel_context(&mut out, &v, &settings, |_| true);
+                if rows < 2 || cols == 0 {
+                    assert!(bounds.is_none());
+                    assert!(out.is_empty());
+                    continue;
+                }
+                let mut parser = vt100::Parser::new(rows.max(2), cols.max(2), 0);
+                parser.process(out.as_bytes());
+                assert!((0..rows - 1).any(|y| (0..cols).any(|x| {
+                    let c = parser.screen().cell(y, x).unwrap();
+                    c.inverse() && c.dim() && !c.bold()
+                })));
+            }
+        }
+    }
+}
+
+#[test]
 fn panel_is_content_sized_above_a_full_width_bar_and_resets_styles() {
     let settings = Settings {
         bindings: vec![crate::assets::Binding {

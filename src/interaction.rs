@@ -165,7 +165,8 @@ pub fn invoke(
             let entries = actions::ALL
                 .iter()
                 .filter(|a| {
-                    a.group == group
+                    (a.group == group
+                        || group == "Workspaces" && matches!(a.id, "save_layout" | "load_layout"))
                         && !a.id.ends_with("_menu")
                         && !matches!(
                             a.id,
@@ -473,6 +474,86 @@ fn swap(world: &mut World, source: Entity, destination: Entity) -> Result<(), St
     Ok(())
 }
 
+/// Command/help navigation owns reserved keys before configured prefix bindings.
+pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
+    let Some(v) = world.get::<Viewer>(id) else {
+        return false;
+    };
+    let help = v.prompt.as_deref() == Some("help");
+    if !help && (!v.prefix || v.prompt.is_some()) {
+        return false;
+    }
+    let mut v = v.clone();
+    let settings = world.resource::<crate::assets::Settings>();
+    // The prefix itself retains literal forwarding, even for a navigation-key prefix.
+    if v.prefix
+        && let Input::Key {
+            key,
+            ctrl,
+            alt,
+            shift,
+        } = input
+    {
+        let token = format!(
+            "{}{}{}{}",
+            if *ctrl { "ctrl-" } else { "" },
+            if *alt { "alt-" } else { "" },
+            if *shift && key.chars().count() != 1 {
+                "shift-"
+            } else {
+                ""
+            },
+            key
+        );
+        if token == settings.prefix {
+            return false;
+        }
+    }
+    let mut execute = None;
+    match input {
+        Input::Resize { .. } => return false,
+        Input::Key {
+            key,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        } => match key.as_str() {
+            "up" | "pageup" => crate::chrome::scroll(&mut v, settings, false, key == "pageup"),
+            "down" | "pagedown" => crate::chrome::scroll(&mut v, settings, true, key == "pagedown"),
+            "left" | "right" => {} // Vertical menus reserve all unmodified arrows.
+            "home" => v.help_scroll = 0,
+            "end" => v.help_scroll = crate::chrome::help_limit(settings, v.rows),
+            "enter" => execute = crate::chrome::selected_action(&v, settings).map(str::to_owned),
+            "escape" => {
+                v.prefix = false;
+                v.prompt = None;
+                v.notice.clear();
+            }
+            "q" if help => {
+                v.prompt = None;
+            }
+            _ => return help,
+        },
+        Input::Mouse { action, .. } => match action.as_str() {
+            "scrollup" => crate::chrome::scroll(&mut v, settings, false, false),
+            "scrolldown" => crate::chrome::scroll(&mut v, settings, true, false),
+            _ => {}
+        },
+        Input::Paste { .. } | Input::PasteBegin => return true,
+        _ => return help,
+    }
+    let target = Target::viewer(&v);
+    if execute.is_some() {
+        v.prefix = false;
+        v.prompt = None;
+    }
+    *world.get_mut::<Viewer>(id).unwrap() = v;
+    if let Some(action) = execute {
+        dispatch(world, id, target, &action, None, "", true);
+    }
+    true
+}
+
 /// Consume overlay input before the ordinary terminal/prefix observer.
 pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     let Some(overlay) = world.get::<Overlay>(id).cloned() else {
@@ -522,12 +603,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             },
             Input::Key { key, .. },
         ) => {
-            let page = world
-                .get::<Viewer>(id)
-                .unwrap()
-                .rows
-                .saturating_sub(4)
-                .max(1) as usize;
+            let page = list_capacity(world.get::<Viewer>(id).unwrap().rows);
             match key.as_str() {
                 "up" | "k" => *selected = selected.saturating_sub(1),
                 "down" | "j" => *selected = (*selected + 1).min(entries.len().saturating_sub(1)),
@@ -605,6 +681,14 @@ pub fn dispatch(
     }
 }
 
+fn list_capacity(rows: u16) -> usize {
+    if rows >= 5 {
+        usize::from(rows - 4)
+    } else {
+        usize::from(rows.saturating_sub(2).max(1))
+    }
+}
+
 pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'static str)> {
     let mut lines = Vec::new();
     match &overlay.mode {
@@ -658,11 +742,7 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
             if rows >= 4 {
                 lines.push((title.clone(), "\x1b[1m"));
             }
-            let capacity = if rows >= 5 {
-                rows - 4
-            } else {
-                rows.saturating_sub(2).max(1)
-            } as usize;
+            let capacity = list_capacity(rows);
             let start = selected.saturating_sub(capacity - 1);
             if start > 0 && rows >= 5 {
                 lines.push((format!("▲ {start} more"), "\x1b[2m"));
@@ -675,7 +755,9 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
                         if index == *selected { "›" } else { " " },
                         entry.label
                     ),
-                    if disabled {
+                    if disabled && index == *selected {
+                        "\x1b[2;7m"
+                    } else if disabled {
                         "\x1b[2m"
                     } else if index == *selected {
                         "\x1b[7m"

@@ -148,6 +148,9 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         if crate::selection::input(world, event.viewer, &event.input) {
             return;
         }
+        if crate::interaction::command_input(world, event.viewer, &event.input) {
+            return;
+        }
         if let Input::Mouse { action, x, y, .. } = &event.input
             && matches!(action.as_str(), "move" | "release")
             && let Some(selection) = world.get::<crate::selection::Selection>(event.viewer)
@@ -344,7 +347,6 @@ struct View {
     clipboard: Vec<String>,
     next_paint: Instant,
     paint_wake_pending: bool,
-    panel: Option<chrome::Bounds>,
 }
 #[derive(Resource)]
 pub struct Disconnected(pub async_channel::Receiver<Entity>);
@@ -678,7 +680,6 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), Str
         clipboard: Vec::new(),
         next_paint: Instant::now(),
         paint_wake_pending: false,
-        panel: None,
     });
     context
         .presentation
@@ -1019,7 +1020,7 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
         .collect();
     let hits = chrome::tab_bar(&mut out, v, &name(world, v.workspace), &tabs, &focused);
     view.presentation.chrome(hits);
-    view.panel = if let Some(overlay) = world.get::<crate::interaction::Overlay>(id) {
+    if let Some(overlay) = world.get::<crate::interaction::Overlay>(id) {
         chrome::surface(
             &mut out,
             v,
@@ -1415,22 +1416,6 @@ fn input_event(
                 alt,
                 shift,
             } => {
-                if v.prompt.as_deref() == Some("help") {
-                    match key.as_str() {
-                        "escape" | "q" => {
-                            v.prompt = None;
-                            v.buffer.clear();
-                        }
-                        "up" | "pageup" => {
-                            chrome::scroll(&mut v, &settings, false, key == "pageup")
-                        }
-                        "down" | "pagedown" => {
-                            chrome::scroll(&mut v, &settings, true, key == "pagedown")
-                        }
-                        _ => {}
-                    }
-                    return Ok(());
-                }
                 if v.prompt.is_some() {
                     if key == "escape" {
                         v.prompt = None;
@@ -1541,15 +1526,6 @@ fn input_event(
                 // rectangle hit-test implementation.
                 let context = views.get_mut(&id).ok_or("presentation not initialized")?;
                 if v.prefix || v.prompt.is_some() {
-                    if (v.prefix || v.prompt.as_deref() == Some("help"))
-                        && context.panel.is_some_and(|panel| panel.contains(*x, *y))
-                    {
-                        match action.as_str() {
-                            "scrollup" => chrome::scroll(&mut v, &settings, false, false),
-                            "scrolldown" => chrome::scroll(&mut v, &settings, true, false),
-                            _ => {}
-                        }
-                    }
                     return Ok(());
                 }
                 let hit = context.presentation.pointer(*x, *y, action == "press");

@@ -5,6 +5,7 @@ mod frontend;
 mod frontend_interactions;
 mod input;
 mod interactions;
+mod keybindings;
 mod selection;
 
 impl Server {
@@ -191,7 +192,7 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() {
     assert_eq!(closed.hide_cursor(), live.hide_cursor());
     assert!(!closed.contents().contains("Commands"));
     assert!(!closed.contents().contains("NOT-PTY-INPUT"));
-    // Prefix arrow still invokes the real resize binding, not list navigation.
+    // Modified arrow invokes resize; unmodified arrows belong to the list.
     let focus = s.viewer(v)["focus"].clone();
     let grow = || {
         s.query("bevy_ui::ui_node::Node")
@@ -203,10 +204,13 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() {
     };
     let before = grow();
     s.key(v, "b", true);
-    s.key(v, "right", false);
+    s.key(v, "down", false);
+    assert_eq!(grow(), before);
+    assert_eq!(s.viewer(v)["help_scroll"], 1);
+    s.key(v, "right", true);
     assert!(grow() > before);
     assert_eq!(s.viewer(v)["prefix"], false);
-    assert_eq!(s.viewer(v)["help_scroll"], 0);
+    assert_eq!(s.viewer(v)["help_scroll"], 1);
     s.key(v, "b", true);
     s.key(v, "?", false);
     s.painted(v, 12, 60);
@@ -235,6 +239,7 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() {
             .contents()
             .contains("split side by side")
     );
+    s.key(v, "home", false);
     assert_eq!(s.viewer(v)["help_scroll"], 0);
     s.capture(v, 60, 60, "help");
     s.resize(v, 7, 18);

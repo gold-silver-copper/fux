@@ -1,0 +1,60 @@
+$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                         Commands
+                         Panes
+                                   h  split side by side
+                                   v  split stacked
+                                   x  close pane
+                                   z  zoom or restore
+                                   r  rename pane
+                           ctrl-left  shrink width
+                          ctrl-right  grow width
+                             ctrl-up  grow height
+                           ctrl-down  shrink height
+                          shift-left  move left
+                         shift-right  move right
+                            shift-up  move up
+                          shift-down  move down
+                                   y  copy visible text
+                                   c  history and selection
+                                   p  pane actions
+                         Focus
+                                 tab  next pane
+                           shift-tab  previous pane
+                           backspace  last pane
+                            alt-left  focus left
+                           alt-right  focus right
+                              alt-up  focus up
+                            alt-down  focus down
+                         Tabs
+                                   s  tab actions
+                                   t  new tab
+                                   ]  next tab
+                                   [  previous tab
+                                   T  choose tab
+                         Workspaces
+                                   }  next workspace
+                                   {  previous workspace
+                                   w  new workspace
+                                   S  workspace actions
+                                   W  choose workspace
+                         Session
+                                   d  detach
+                                   ?  command help
+ main  main                                │ 4294967207: sh

@@ -86,6 +86,101 @@ impl Drop for Frontend {
 }
 
 #[test]
+fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() {
+    let s = Server::start();
+    let mut f = Frontend::start(&s);
+    f.wait(|screen| row(screen, 17).starts_with(" main"));
+    let v = s.query("fux::model::Viewer")[0]["entity"].as_u64().unwrap();
+    let left = s.viewer(v)["focus"].clone();
+    let left_input = s.directory.join("keys-left");
+    s.run(
+        v,
+        &format!(
+            r"stty raw -echo; printf '\033[2J\033[HLEFT'; cat > '{}'",
+            left_input.display()
+        ),
+    );
+    f.wait(|screen| screen.contents().starts_with("LEFT"));
+    f.send(b"\x02h");
+    eventually(|| s.viewer(v)["focus"] != left);
+    let right = s.viewer(v)["focus"].clone();
+    let right_input = s.directory.join("keys-right");
+    s.run(
+        v,
+        &format!(
+            r"stty raw -echo; printf '\033[2J\033[HRIGHT'; cat > '{}'",
+            right_input.display()
+        ),
+    );
+    f.wait(|screen| screen.contents().contains("RIGHT"));
+    let nodes = || s.query("bevy_ui::ui_node::Node");
+    let before = nodes();
+    f.send(b"\x02\x1b[B");
+    eventually(|| s.viewer(v)["help_scroll"] == 1);
+    assert_eq!(nodes(), before);
+    assert_eq!(s.viewer(v)["focus"], right);
+    let selected = f.wait(|screen| {
+        screen.contents().contains("Commands")
+            && (0..17).any(|y| {
+                row(screen, y).contains("split stacked")
+                    && (0..70).any(|x| screen.cell(y, x).unwrap().inverse())
+            })
+    });
+    f.send(b"\x1b");
+    eventually(|| s.viewer(v)["prefix"] == false);
+    f.send(b"\x02\x1b[1;5C");
+    eventually(|| nodes() != before); // Ctrl+Right resize
+    f.send(b"\x02\x1b[1;3D");
+    eventually(|| s.viewer(v)["focus"] == left); // Alt+Left
+    f.send(b"\x02\t");
+    eventually(|| s.viewer(v)["focus"] == right);
+    f.send(b"\x02\x1b[Z");
+    eventually(|| s.viewer(v)["focus"] == left); // Shift+Tab
+    f.send(b"\x02\x7f");
+    eventually(|| s.viewer(v)["focus"] == right); // Backspace
+    let tree = s.query("bevy_ecs::hierarchy::ChildOf");
+    f.send(b"\x02\x1b[1;2D");
+    eventually(|| s.query("bevy_ecs::hierarchy::ChildOf") != tree); // Shift+Left move
+    assert_eq!(s.viewer(v)["focus"], right);
+    let original_tab = s.viewer(v)["tab"].clone();
+    let original_workspace = s.viewer(v)["workspace"].clone();
+    f.send(b"\x02t");
+    eventually(|| s.viewer(v)["tab"] != original_tab);
+    let new_tab = s.viewer(v)["tab"].clone();
+    f.send(b"\x02[");
+    eventually(|| s.viewer(v)["tab"] == original_tab);
+    f.send(b"\x02]");
+    eventually(|| s.viewer(v)["tab"] == new_tab);
+    f.send(b"\x02w");
+    eventually(|| s.viewer(v)["workspace"] != original_workspace);
+    let new_workspace = s.viewer(v)["workspace"].clone();
+    f.send(b"\x02{");
+    eventually(|| s.viewer(v)["workspace"] == original_workspace);
+    f.send(b"\x02}");
+    eventually(|| s.viewer(v)["workspace"] == new_workspace);
+    f.send(b"\x02{\x02[");
+    eventually(|| s.viewer(v)["tab"] == original_tab);
+    assert!(fs::read(&left_input).unwrap().is_empty());
+    assert!(fs::read(&right_input).unwrap().is_empty());
+    f.send(b"OK");
+    eventually(|| fs::read(&right_input).is_ok_and(|b| b == b"OK"));
+    f.send(b"\x02d");
+    let bytes = f.finish();
+    if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
+        fs::write(
+            PathBuf::from(&directory).join("keybindings-frontend.ansi"),
+            bytes,
+        )
+        .unwrap();
+        fs::write(
+            PathBuf::from(directory).join("keybindings-frontend.txt"),
+            plain(&selected),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn attached_tabs_confirmations_copy_and_cancelled_fragmented_paste_are_isolated() {
     let s = Server::start();
     let mut f = Frontend::start(&s);
@@ -113,7 +208,7 @@ fn attached_tabs_confirmations_copy_and_cancelled_fragmented_paste_are_isolated(
     assert!(confirm.hide_cursor());
     f.send(b"n");
     f.wait(|screen| !screen.contents().contains("y confirm"));
-    f.send(b"\x02[");
+    f.send(b"\x02c");
     f.wait(|screen| row(screen, 17).contains("Copy:"));
     f.send(b" \x1b[Cy"); // select RE, copy, return to live
     f.wait(|screen| row(screen, 17).contains("copied via OSC52"));

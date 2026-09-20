@@ -1,0 +1,24 @@
+$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                            Commands
+                                                            Panes
+                                                             down  grow width
+                                                            right  shrink width
+                                                            Tabs
+                                                                t  new tab
+                                                                [  previous tab
+ main  main                                                    │ 4294967207: sh

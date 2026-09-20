@@ -108,6 +108,58 @@ fn tabless_scene_migration_moves_the_layout_box_once_without_losing_panes() {
 }
 
 #[test]
+fn coherent_defaults_have_exact_unique_keys_and_action_pairs() {
+    let settings = Settings::default();
+    assert_eq!(settings.prefix, "ctrl-b");
+    let actual: std::collections::BTreeMap<_, _> = settings
+        .bindings
+        .iter()
+        .map(|b| (b.key.as_str(), b.action.as_str()))
+        .collect();
+    assert_eq!(actual.len(), settings.bindings.len());
+    let expected = [
+        ("[", "tab_previous"),
+        ("]", "tab_next"),
+        ("{", "workspace_previous"),
+        ("}", "workspace_next"),
+        ("tab", "focus_next"),
+        ("shift-tab", "focus_previous"),
+        ("backspace", "focus_last"),
+        ("alt-left", "focus_left"),
+        ("alt-right", "focus_right"),
+        ("alt-up", "focus_up"),
+        ("alt-down", "focus_down"),
+        ("t", "tab_new"),
+        ("T", "tab_choose"),
+        ("w", "workspace_new"),
+        ("W", "workspace_choose"),
+        ("p", "pane_menu"),
+        ("s", "tab_menu"),
+        ("S", "workspace_menu"),
+        ("?", "help"),
+        ("h", "split_horizontal"),
+        ("v", "split_vertical"),
+        ("z", "zoom"),
+        ("r", "rename_pane"),
+        ("x", "close"),
+        ("ctrl-left", "shrink_width"),
+        ("ctrl-right", "grow_width"),
+        ("ctrl-up", "grow_height"),
+        ("ctrl-down", "shrink_height"),
+        ("shift-left", "move_left"),
+        ("shift-right", "move_right"),
+        ("shift-up", "move_up"),
+        ("shift-down", "move_down"),
+        ("c", "copy_mode"),
+        ("y", "copy"),
+        ("d", "detach"),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() {
     let mut app = app();
     let world = app.world_mut();

@@ -1,0 +1,24 @@
+$                                       │$
+                                        │                  Panes: sh
+                                        │                  › split side by side
+                                        │                    split stacked
+                                        │                    rename pane
+                                        │                    close pane
+                                        │                    terminate process
+                                        │                    zoom or restore
+                                        │                    grow width
+                                        │                    shrink width
+                                        │                    grow height
+                                        │                    shrink height
+                                        │                    reorder previous
+                                        │                    reorder next
+                                        │                    swap with pane
+                                        │                    swap left
+                                        │                    swap right
+                                        │                    swap up
+                                        │                    swap down
+                                        │                    move left
+                                        │                    move right
+                                        │                    move up
+                                        │                  ▼ 9 more
+ main  main                                                    │ 4294967200: sh
