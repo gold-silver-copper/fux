@@ -13,7 +13,7 @@ use std::{
 use async_channel::{Receiver, Sender};
 use async_io::Async;
 use bevy_app::{App, Plugin, Update};
-use bevy_ecs::{entity::EntityHashMap, prelude::*};
+use bevy_ecs::prelude::*;
 use bevy_tasks::{
     IoTaskPool, Task,
     futures_lite::future::{race, yield_now},
@@ -43,7 +43,11 @@ pub struct TerminalSystems;
 
 impl Plugin for TerminalPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Terminals>().add_systems(
+        app.insert_resource(Notify {
+            wake: app.world().resource::<Wake>().clone(),
+            pending: Arc::default(),
+        })
+        .add_systems(
             Update,
             (remove_terminals, spawn_terminals, update_terminals)
                 .chain()
@@ -52,13 +56,8 @@ impl Plugin for TerminalPlugin {
     }
 }
 
-#[derive(Resource, Default)]
-pub struct Terminals {
-    panes: EntityHashMap<Terminal>,
-    pending: Arc<AtomicBool>,
-}
-
-struct Terminal {
+#[derive(Component)]
+pub struct Terminal {
     parser: vt100::Parser<Replies>,
     job: Option<Job>,
     input: Sender<Vec<u8>>,
@@ -90,7 +89,7 @@ enum Output {
     Eof,
 }
 
-#[derive(Clone)]
+#[derive(Resource, Clone)]
 struct Notify {
     wake: Wake,
     pending: Arc<AtomicBool>,
@@ -104,55 +103,34 @@ impl Notify {
     }
 }
 
-impl Terminals {
-    pub fn screen(&self, entity: Entity) -> Result<&vt100::Screen, String> {
-        Ok(self
-            .panes
-            .get(&entity)
-            .ok_or("terminal not found")?
-            .parser
-            .screen())
+impl Terminal {
+    pub fn screen(&self) -> &vt100::Screen {
+        self.parser.screen()
     }
 
     /// Input is accepted atomically into a bounded queue, never partially queued.
-    pub fn input(&self, entity: Entity, bytes: &[u8]) -> Result<(), String> {
+    pub fn input(&self, bytes: &[u8]) -> Result<(), String> {
         if bytes.len() > MAX_INPUT {
             return Err(format!(
                 "input exceeds {MAX_INPUT} bytes; send smaller chunks"
             ));
         }
-        let terminal = self.panes.get(&entity).ok_or("terminal not found")?;
-        if terminal.job.is_none() {
+        if self.job.is_none() {
             return Err("process has exited".into());
         }
-        terminal
-            .input
+        self.input
             .try_send(bytes.to_vec())
             .map_err(|e| e.to_string())
     }
 
-    pub fn resize(&mut self, entity: Entity, rows: u16, cols: u16) -> Result<(), String> {
-        self.panes
-            .get_mut(&entity)
-            .ok_or("terminal not found")?
-            .resize(rows, cols)
-    }
-
     /// The temporary history offset is always reset before accepting more output.
-    pub fn snapshot(
-        &mut self,
-        entity: Entity,
-        scrollback: usize,
-    ) -> Result<(&[String], &vt100::Screen), String> {
-        let terminal = self.panes.get_mut(&entity).ok_or("terminal not found")?;
-        if terminal
+    pub fn snapshot(&mut self, scrollback: usize) -> (&[String], &vt100::Screen) {
+        if self
             .snapshot
             .as_ref()
-            .is_none_or(|(revision, offset, _)| {
-                *revision != terminal.revision || *offset != scrollback
-            })
+            .is_none_or(|(revision, offset, _)| *revision != self.revision || *offset != scrollback)
         {
-            let screen = terminal.parser.screen_mut();
+            let screen = self.parser.screen_mut();
             screen.set_scrollback(scrollback);
             let (rows, cols) = screen.size();
             let mut lines = Vec::with_capacity(usize::from(rows));
@@ -184,45 +162,22 @@ impl Terminals {
                 lines.push(line);
             }
             screen.set_scrollback(0);
-            terminal.snapshot = Some((terminal.revision, scrollback, lines));
+            self.snapshot = Some((self.revision, scrollback, lines));
         }
-        Ok((
-            &terminal
-                .snapshot
-                .as_ref()
-                .expect("snapshot prepared above")
-                .2,
-            terminal.parser.screen(),
-        ))
+        (
+            &self.snapshot.as_ref().expect("snapshot prepared above").2,
+            self.parser.screen(),
+        )
     }
 
-    pub fn copy_text(&mut self, entity: Entity, scrollback: usize) -> Result<String, String> {
-        let screen = self
-            .panes
-            .get_mut(&entity)
-            .ok_or("terminal not found")?
-            .parser
-            .screen_mut();
+    pub fn copy_text(&mut self, scrollback: usize) -> String {
+        let screen = self.parser.screen_mut();
         screen.set_scrollback(scrollback);
         let text = screen.contents();
         screen.set_scrollback(0);
-        Ok(text)
+        text
     }
 
-    /// Terminates the owned process group, reaps its leader, and retains the screen.
-    pub fn terminate(&mut self, entity: Entity) -> Result<(), String> {
-        self.panes
-            .get_mut(&entity)
-            .ok_or("terminal not found")?
-            .stop()
-    }
-
-    pub fn shutdown(&mut self) {
-        self.panes.clear();
-    }
-}
-
-impl Terminal {
     fn spawn(launch: &Launch, rows: u16, cols: u16, notify: Notify) -> Result<Self, String> {
         if rows == 0 || cols == 0 {
             return Err("terminal dimensions must be nonzero".into());
@@ -397,7 +352,7 @@ impl Terminal {
         })
     }
 
-    fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         if rows == 0 || cols == 0 {
             return Err("terminal dimensions must be nonzero".into());
         }
@@ -418,7 +373,8 @@ impl Terminal {
         Ok(())
     }
 
-    fn stop(&mut self) -> Result<(), String> {
+    /// Terminates the owned process group, reaps its leader, and retains the screen.
+    pub fn stop(&mut self) -> Result<(), String> {
         self.input.close();
         self.reader.take();
         self.writer.take();
@@ -570,13 +526,14 @@ fn size(rows: u16, cols: u16) -> PtySize {
 
 fn remove_terminals(
     mut removed: RemovedComponents<Launch>,
-    mut terminals: ResMut<Terminals>,
-    mut states: Query<&mut ProcessState>,
+    mut commands: Commands,
+    mut terminals: Query<(&mut Terminal, Option<&mut ProcessState>)>,
 ) {
     for entity in removed.read() {
-        if let Some(mut terminal) = terminals.panes.remove(&entity) {
+        if let Ok((mut terminal, state)) = terminals.get_mut(entity) {
+            commands.entity(entity).remove::<Terminal>();
             let _ = terminal.stop();
-            if let Ok(mut state) = states.get_mut(entity) {
+            if let Some(mut state) = state {
                 state.pid = None;
                 state.exit = terminal.exit;
                 state.error = terminal.error.take();
@@ -587,22 +544,14 @@ fn remove_terminals(
 }
 
 fn spawn_terminals(
-    mut terminals: ResMut<Terminals>,
-    wake: Res<Wake>,
+    mut commands: Commands,
+    notify: Res<Notify>,
     mut launches: Query<(Entity, &Launch, &mut ProcessState), Added<Launch>>,
 ) {
     for (entity, launch, mut state) in &mut launches {
-        let notify = Notify {
-            wake: wake.clone(),
-            pending: terminals.pending.clone(),
-        };
-        match Terminal::spawn(launch, state.rows, state.cols, notify) {
+        match Terminal::spawn(launch, state.rows, state.cols, notify.clone()) {
             Ok(terminal) => {
-                state.pid = terminal.job.as_ref().map(|job| job.pid);
-                state.exit = None;
-                state.error = None;
-                state.revision = terminal.revision;
-                terminals.panes.insert(entity, terminal);
+                commands.entity(entity).insert(terminal);
             }
             Err(error) => {
                 state.pid = None;
@@ -615,16 +564,12 @@ fn spawn_terminals(
 }
 
 fn update_terminals(
-    mut terminals: ResMut<Terminals>,
-    wake: Res<Wake>,
-    mut states: Query<(Entity, Option<&mut ProcessState>), With<Launch>>,
+    notify: Res<Notify>,
+    mut states: Query<(&mut Terminal, Option<&mut ProcessState>), With<Launch>>,
 ) {
-    terminals.pending.store(false, Ordering::Release);
+    notify.pending.store(false, Ordering::Release);
     let mut remaining_output = false;
-    for (entity, mut state) in &mut states {
-        let Some(terminal) = terminals.panes.get_mut(&entity) else {
-            continue;
-        };
+    for (mut terminal, mut state) in &mut states {
         // Direct reflected ProcessState dimension edits resize the actual PTY.
         if let Some(state) = &state
             && state.is_changed()
@@ -671,20 +616,19 @@ fn update_terminals(
             terminal.revision = terminal.revision.wrapping_add(1);
         }
         let (rows, cols) = terminal.parser.screen().size();
-        let pid = terminal.job.as_ref().map(|job| job.pid);
         terminal.published_size = (rows, cols);
         let Some(state) = &mut state else { continue };
         state.set_if_neq(ProcessState {
             rows,
             cols,
-            pid,
+            pid: terminal.job.as_ref().map(|job| job.pid),
             exit: terminal.exit,
             error: terminal.error.clone(),
             revision: terminal.revision,
         });
     }
     if remaining_output {
-        wake.notify();
+        notify.wake.notify();
     }
 }
 
@@ -760,5 +704,48 @@ impl Style {
             }
         }
         output.push('m');
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recipe_replacement_reinsertion_and_despawn_preserve_process_ownership() {
+        let mut app = App::new();
+        app.insert_resource(Wake(thread::current()))
+            .add_plugins((bevy_app::TaskPoolPlugin::default(), TerminalPlugin));
+        let recipe = || Launch {
+            argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+            cwd: String::new(),
+            history_lines: 20,
+        };
+        let entity = app.world_mut().spawn(recipe()).id();
+        app.update();
+        let pid = |app: &App| {
+            app.world()
+                .get::<ProcessState>(entity)
+                .unwrap()
+                .pid
+                .unwrap()
+        };
+        let reaped =
+            |pid| nix::sys::signal::kill(Pid::from_raw(pid as i32), None) == Err(Errno::ESRCH);
+        let first = pid(&app);
+        app.world_mut().entity_mut(entity).insert(recipe());
+        app.update();
+        assert_eq!(pid(&app), first);
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<Launch>()
+            .insert(recipe());
+        app.update();
+        let second = pid(&app);
+        assert_ne!(first, second);
+        assert!(reaped(first));
+        app.world_mut().despawn(entity);
+        app.update();
+        assert!(reaped(second));
     }
 }

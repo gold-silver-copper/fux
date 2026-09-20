@@ -185,9 +185,12 @@ fn run(mut app: App) -> AppExit {
         }
         app.update();
     };
-    app.world_mut()
-        .resource_mut::<terminal::Terminals>()
-        .shutdown();
+    let world = app.world_mut();
+    let mut terminals = world.query_filtered::<Entity, With<terminal::Terminal>>();
+    let entities: Vec<_> = terminals.iter(world).collect();
+    for entity in entities {
+        world.entity_mut(entity).remove::<terminal::Terminal>();
+    }
     drop(bridge);
     signal_handle.close();
     let _ = signal_thread.join();
