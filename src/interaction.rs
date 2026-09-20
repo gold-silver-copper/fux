@@ -77,7 +77,7 @@ pub fn invoke(
     interactive: bool,
 ) -> Result<bool, String> {
     use Action::*;
-    if let Some(reason) = actions::unavailable(world, target, Some(action)) {
+    if let Some(reason) = actions::unavailable(world, target, action) {
         return Err(reason.into());
     }
     if !matches!(action, CopyMode | ScrollUp | ScrollDown) {
@@ -647,8 +647,8 @@ pub fn dispatch_named(
 /// validity is still checked, the selection is dropped, the prefix closes, and
 /// the bar shows the error.
 pub fn unknown(world: &mut World, id: Entity, target: Target, message: String) {
-    if let Some(reason) = actions::unavailable(world, target, None) {
-        return notify_error(world, id, reason);
+    if !target.valid(world) {
+        return notify_error(world, id, actions::TARGET_GONE);
     }
     world.entity_mut(id).remove::<crate::selection::Selection>();
     if let Some(mut v) = world.get_mut::<Viewer>(id) {
@@ -745,8 +745,7 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
                 lines.push((format!("▲ {start} more"), "\x1b[2m"));
             }
             for (index, entry) in entries.iter().enumerate().skip(start).take(capacity) {
-                let disabled =
-                    actions::unavailable(world, overlay.target, Some(entry.action)).is_some();
+                let disabled = actions::unavailable(world, overlay.target, entry.action).is_some();
                 lines.push((
                     format!(
                         "{} {}",

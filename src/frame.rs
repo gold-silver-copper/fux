@@ -424,8 +424,11 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
             world.resource::<Settings>(),
             v.help_scroll,
             |action| {
-                actions::unavailable(world, actions::Target::viewer(v), action.parse().ok())
-                    .is_some()
+                let target = actions::Target::viewer(v);
+                action.parse().map_or_else(
+                    |_| !target.valid(world),
+                    |action| actions::unavailable(world, target, action).is_some(),
+                )
             },
         )
     } else {
