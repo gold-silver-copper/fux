@@ -288,7 +288,13 @@ impl Plugin for ServerPlugin {
             .register_type::<Control>()
             .register_type::<UserInput>()
             .register_type::<Shutdown>()
-            .register_type::<Input>();
+            .register_type::<Input>()
+            .register_type::<crate::protocol::Key>()
+            .register_type::<crate::protocol::Modifiers>()
+            .register_type::<crate::protocol::MouseAction>()
+            .register_type::<crate::protocol::MouseButton>()
+            .register_type::<crate::protocol::Direction>()
+            .register_type::<crate::protocol::Token>();
         presentation::register_types(app);
         crate::navigation::observe(app.world_mut());
         app.insert_non_send(Views::default())
