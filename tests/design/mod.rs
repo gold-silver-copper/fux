@@ -166,16 +166,16 @@ fn native_splits_junctions_focus_zoom_and_no_margin_chrome() -> Outcome {
     assert!(screen.cell(10, 30).need()?.bold());
     assert_eq!(screen.cell(0, 30).need()?.fgcolor(), Color::Idx(8));
     s.capture(v, 15, 61, "nested")?;
-    let before = s.viewer(v)?.at("focus");
+    let before = s.focused(v)?;
     s.mouse(v, "press", 0, 0)?;
-    assert_ne!(s.viewer(v)?.at("focus"), before);
+    assert_ne!(s.focused(v)?, before);
     let screen = s.painted(v, 15, 61)?;
     assert!(screen.cell(0, 30).need()?.bold());
     assert!(!screen.cell(7, 50).need()?.bold());
-    let selected = s.viewer(v)?.at("focus");
+    let selected = s.focused(v)?;
     s.mouse(v, "press", 30, 3)?; // separator cannot pick a pane
     s.mouse(v, "press", 0, 14)?; // bottom bar cannot pick a pane
-    assert_eq!(s.viewer(v)?.at("focus"), selected);
+    assert_eq!(s.focused(v)?, selected);
     s.command(v, "zoom")?;
     let screen = s.painted(v, 15, 61)?;
     assert!(!screen.contents().contains('│') || row(&screen, 14).contains('│'));
@@ -232,7 +232,7 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     assert!(!closed.contents().contains("Commands"));
     assert!(!closed.contents().contains("NOT-PTY-INPUT"));
     // Modified arrow invokes resize; unmodified arrows belong to the list.
-    let focus = s.viewer(v)?.at("focus");
+    let focus = s.focused(v)?;
     let grow = || -> Result<f64, String> {
         s.query("bevy_ui::ui_node::Node")?
             .rows()
@@ -269,9 +269,9 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     assert!(!paged.contains("split"), "{paged}");
     let screen = s.painted(v, 12, 60)?;
     assert!(screen.contents().contains("▲"));
-    let focus = s.viewer(v)?.at("focus");
+    let focus = s.focused(v)?;
     s.mouse(v, "press", 0, 0)?;
-    assert_eq!(s.viewer(v)?.at("focus"), focus);
+    assert_eq!(s.focused(v)?, focus);
     s.input(v, json!({"kind":"paste","text":"NOT-HELP-INPUT"}))?;
     assert!(!s.painted(v, 12, 60)?.contents().contains("NOT-HELP-INPUT"));
     for _ in 0..60 {

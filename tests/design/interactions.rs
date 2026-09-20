@@ -39,24 +39,24 @@ fn workspace_order_chooser_memory_and_scene_replacement_are_consistent() -> Outc
     let b = s.attach()?;
     s.screen(a)?;
     s.screen(b)?;
-    let initial = s.viewer(a)?.at("workspace").as_u64().need()?;
+    let initial = s.viewing(a)?.as_u64().need()?;
     s.tab_new(a, Some("remembered"))?;
-    let tab = s.viewer(a)?.at("tab");
-    let focus = s.viewer(a)?.at("focus");
+    let tab = s.on_tab(a)?;
+    let focus = s.focused(a)?;
     s.control(a, json!({"kind":"workspace_new","name":"second"}))?;
-    let second = s.viewer(a)?.at("workspace").as_u64().need()?;
+    let second = s.viewing(a)?.as_u64().need()?;
     s.control(a, json!({"kind":"workspace_new","name":"third"}))?;
-    let third = s.viewer(a)?.at("workspace").as_u64().need()?;
+    let third = s.viewing(a)?.as_u64().need()?;
     s.control(a, json!({"kind":"workspace_reorder","order":"previous"}))?;
     s.control(a, json!({"kind":"workspace_select","workspace":initial}))?;
-    assert_eq!(s.viewer(a)?.at("tab"), tab);
-    assert_eq!(s.viewer(a)?.at("focus"), focus);
+    assert_eq!(s.on_tab(a)?, tab);
+    assert_eq!(s.focused(a)?, focus);
     s.command(a, "workspace_next")?;
-    assert_eq!(s.viewer(a)?.at("workspace"), third);
+    assert_eq!(s.viewing(a)?, third);
     s.command(a, "workspace_next")?;
-    assert_eq!(s.viewer(a)?.at("workspace"), second);
+    assert_eq!(s.viewing(a)?, second);
     s.command(a, "workspace_previous")?;
-    assert_eq!(s.viewer(a)?.at("workspace"), third);
+    assert_eq!(s.viewing(a)?, third);
     s.control(a, json!({"kind":"workspace_select","workspace":initial}))?;
     s.control(a, json!({"kind":"choose","chooser":"workspace"}))?;
     s.capture(a, 24, 80, "interaction-workspaces")?;
@@ -72,11 +72,11 @@ fn workspace_order_chooser_memory_and_scene_replacement_are_consistent() -> Outc
         a,
         json!({"kind":"load_layout","workspace":workspace,"path":path,"mapping":[]}),
     )?;
-    eventually(|| Ok(s.viewer(a)?.at("workspace") != initial))?;
-    let replacement = s.viewer(a)?.at("workspace");
-    assert_eq!(s.viewer(b)?.at("workspace"), replacement);
-    assert!(s.viewer(a)?.at("focus").as_u64().is_some());
-    assert!(s.viewer(b)?.at("focus").as_u64().is_some());
+    eventually(|| Ok(s.viewing(a)? != initial))?;
+    let replacement = s.viewing(a)?;
+    assert_eq!(s.viewing(b)?, replacement);
+    assert!(s.focused(a)?.as_u64().is_some());
+    assert!(s.focused(b)?.as_u64().is_some());
     let text = fs::read_to_string(path)?;
     assert!(text.contains("remembered"));
     assert!(!text.contains("Navigation"));
@@ -88,7 +88,7 @@ fn hidden_native_nodes_cannot_receive_focus_or_child_input() -> Outcome {
     let s = Server::start()?;
     let v = s.attach()?;
     s.screen(v)?;
-    let left = s.viewer(v)?.at("focus").as_u64().need()?;
+    let left = s.focused(v)?.as_u64().need()?;
     let left_file = s.directory.join("visible-input");
     s.run(
         v,
@@ -100,7 +100,7 @@ fn hidden_native_nodes_cannot_receive_focus_or_child_input() -> Outcome {
     eventually(|| Ok(s.screen(v)?.starts_with("LEFT")))?;
     s.split(v, "horizontal", None)?;
     s.screen(v)?;
-    let hidden = s.viewer(v)?.at("focus").as_u64().need()?;
+    let hidden = s.focused(v)?.as_u64().need()?;
     let hidden_file = s.directory.join("hidden-input");
     s.run(
         v,
@@ -116,11 +116,11 @@ fn hidden_native_nodes_cannot_receive_focus_or_child_input() -> Outcome {
     )?;
     s.key(v, "K", false)?;
     eventually(|| Ok(fs::read(&left_file).is_ok_and(|b| b == b"K")))?;
-    assert_eq!(s.viewer(v)?.at("focus"), left);
+    assert_eq!(s.focused(v)?, left);
     s.focus(v, hidden)?;
-    assert_eq!(s.viewer(v)?.at("focus"), left);
+    assert_eq!(s.focused(v)?, left);
     s.command(v, "focus_last")?;
-    assert_eq!(s.viewer(v)?.at("focus"), left);
+    assert_eq!(s.focused(v)?, left);
     assert!(fs::read(&hidden_file)?.is_empty());
     s.rpc(
         "world.remove_components",
@@ -137,26 +137,26 @@ fn nested_swap_and_existing_tab_workspace_moves_keep_process_identity_and_histor
     let s = Server::start()?;
     let v = s.attach()?;
     s.screen(v)?;
-    let a = s.viewer(v)?.at("focus").as_u64().need()?;
+    let a = s.focused(v)?.as_u64().need()?;
     s.run(v, "printf 'RETAINED-HISTORY\\n'")?;
     eventually(|| Ok(s.screen(v)?.contains("RETAINED-HISTORY")))?;
     s.split(v, "horizontal", None)?;
     s.screen(v)?;
     s.split(v, "vertical", None)?;
     s.screen(v)?;
-    let c = s.viewer(v)?.at("focus").as_u64().need()?;
+    let c = s.focused(v)?.as_u64().need()?;
     let before = s.query("fux::model::ProcessState")?;
     s.control(v, json!({"kind":"swap","with":a}))?;
     s.screen(v)?;
-    assert_eq!(s.viewer(v)?.at("focus"), c);
+    assert_eq!(s.focused(v)?, c);
     s.tab_new(v, Some("destination"))?;
-    let tab = s.viewer(v)?.at("tab").as_u64().need()?;
+    let tab = s.on_tab(v)?.as_u64().need()?;
     s.command(v, "tab_previous")?;
     s.focus(v, a)?;
     s.control(v, json!({"kind":"move_to_tab","tab":tab}))?;
     s.screen(v)?;
-    assert_eq!(s.viewer(v)?.at("tab"), tab);
-    assert_eq!(s.viewer(v)?.at("focus"), a);
+    assert_eq!(s.on_tab(v)?, tab);
+    assert_eq!(s.focused(v)?, a);
     let screen = s.painted(v, 24, 80)?;
     assert!(screen.contents().contains('│'));
     assert!(screen.contents().contains("RETAINED-HISTORY"));
@@ -164,13 +164,13 @@ fn nested_swap_and_existing_tab_workspace_moves_keep_process_identity_and_histor
         v,
         json!({"kind":"workspace_new","name":"destination-workspace"}),
     )?;
-    let root = s.viewer(v)?.at("workspace").as_u64().need()?;
+    let root = s.viewing(v)?.as_u64().need()?;
     s.command(v, "workspace_previous")?;
-    assert_eq!(s.viewer(v)?.at("focus"), a);
+    assert_eq!(s.focused(v)?, a);
     s.control(v, json!({"kind":"move_to_workspace","workspace":root}))?;
     s.screen(v)?;
-    assert_eq!(s.viewer(v)?.at("workspace"), root);
-    assert_eq!(s.viewer(v)?.at("focus"), a);
+    assert_eq!(s.viewing(v)?, root);
+    assert_eq!(s.focused(v)?, a);
     let after = s.query("fux::model::ProcessState")?;
     for old in before.rows() {
         let retained = after
@@ -200,31 +200,31 @@ fn tabs_bar_native_click_chooser_and_independent_focus_survive_switches() -> Out
     let b = s.attach()?;
     s.screen(a)?;
     s.screen(b)?;
-    let first = s.viewer(a)?.at("tab").as_u64().need()?;
-    let focus = s.viewer(a)?.at("focus");
+    let first = s.on_tab(a)?.as_u64().need()?;
+    let focus = s.focused(a)?;
     let original = s.query("fux::model::ProcessState")?;
     s.tab_new(a, Some("logs"))?;
-    let second = s.viewer(a)?.at("tab").as_u64().need()?;
+    let second = s.on_tab(a)?.as_u64().need()?;
     assert_ne!(first, second);
-    assert_eq!(s.viewer(b)?.at("tab"), first);
+    assert_eq!(s.on_tab(b)?, first);
     let screen = s.painted(a, 24, 80)?;
     assert!(row(&screen, 23).contains("logs"));
     let log_x = (0..80).find(|x| text(&screen, 23, *x) == "l").need()?;
     assert!(screen.cell(23, log_x).need()?.inverse());
     s.command(a, "tab_previous")?;
-    assert_eq!(s.viewer(a)?.at("focus"), focus);
+    assert_eq!(s.focused(a)?, focus);
     let screen = s.painted(a, 24, 80)?;
     let log_x = (0..40).find(|x| text(&screen, 23, *x) == "l").need()?;
     s.mouse(a, "press", log_x, 23)?;
-    assert_eq!(s.viewer(a)?.at("tab"), second);
-    assert_eq!(s.viewer(b)?.at("focus"), focus);
+    assert_eq!(s.on_tab(a)?, second);
+    assert_eq!(s.focused(b)?, focus);
     s.control(a, json!({"kind":"choose","chooser":"tab"}))?;
     let screen = s.painted(a, 24, 80)?;
     assert!(screen.contents().contains("choose tab"));
     assert!(screen.hide_cursor());
     s.key(a, "enter", false)?;
-    assert_eq!(s.viewer(a)?.at("tab"), first);
-    assert_eq!(s.viewer(a)?.at("focus"), focus);
+    assert_eq!(s.on_tab(a)?, first);
+    assert_eq!(s.focused(a)?, focus);
     let current = s.query("fux::model::ProcessState")?;
     for process in original.rows() {
         let retained = current
@@ -255,7 +255,7 @@ fn interactive_close_is_modal_captured_and_automation_is_explicit() -> Outcome {
     s.screen(v)?;
     s.split(v, "horizontal", None)?;
     s.screen(v)?;
-    let close = s.viewer(v)?.at("focus").as_u64().need()?;
+    let close = s.focused(v)?.as_u64().need()?;
     let other = s
         .query("fux::model::PaneView")?
         .rows()
@@ -272,7 +272,7 @@ fn interactive_close_is_modal_captured_and_automation_is_explicit() -> Outcome {
             .need()?
             .contains("wrong kind")
     );
-    let tab = s.viewer(v)?.at("tab").as_u64().need()?;
+    let tab = s.on_tab(v)?.as_u64().need()?;
     s.close(v, json!({"pane":tab}))?;
     assert_eq!(s.query("fux::model::PaneView")?.rows().count(), 2);
     s.key(v, "b", true)?;
@@ -290,8 +290,8 @@ fn interactive_close_is_modal_captured_and_automation_is_explicit() -> Outcome {
             .rows()
             .all(|p| p.at("entity") != close)
     );
-    assert_eq!(s.viewer(v)?.at("focus"), other);
-    s.close(v, json!({"pane":s.viewer(v)?.at("focus")}))?;
+    assert_eq!(s.focused(v)?, other);
+    s.close(v, json!({"pane":s.focused(v)?}))?;
     assert!(s.query("fux::model::PaneView")?.rows().next().is_none());
     assert!(s.query("fux::model::Launch")?.rows().next().is_none());
     s.split(v, "horizontal", None)?;
@@ -304,34 +304,34 @@ fn directional_previous_last_focus_and_rearrangement_preserve_processes() -> Out
     let s = Server::start()?;
     let v = s.attach()?;
     s.screen(v)?;
-    let left = s.viewer(v)?.at("focus").as_u64().need()?;
+    let left = s.focused(v)?.as_u64().need()?;
     s.split(v, "horizontal", None)?;
     s.screen(v)?;
-    let right = s.viewer(v)?.at("focus").as_u64().need()?;
+    let right = s.focused(v)?.as_u64().need()?;
     s.control(v, json!({"kind":"focus_direction","direction":"left"}))?;
-    assert_eq!(s.viewer(v)?.at("focus"), left);
+    assert_eq!(s.focused(v)?, left);
     s.command(v, "focus_last")?;
-    assert_eq!(s.viewer(v)?.at("focus"), right);
+    assert_eq!(s.focused(v)?, right);
     s.screen(v)?;
     s.command(v, "focus_previous")?;
-    assert_eq!(s.viewer(v)?.at("focus"), left);
+    assert_eq!(s.focused(v)?, left);
     s.control(v, json!({"kind":"focus_direction","direction":"right"}))?;
-    assert_eq!(s.viewer(v)?.at("focus"), right);
+    assert_eq!(s.focused(v)?, right);
     s.control(v, json!({"kind":"swap_direction","direction":"left"}))?;
     s.screen(v)?;
     s.control(v, json!({"kind":"focus_direction","direction":"right"}))?;
-    assert_eq!(s.viewer(v)?.at("focus"), left);
+    assert_eq!(s.focused(v)?, left);
     let before = s.query("fux::model::Launch")?;
     s.command(v, "zoom")?;
     assert_eq!(s.viewer(v)?.at("zoom"), true);
     s.control(v, json!({"kind":"move_to_new_tab","name":"moved"}))?;
     assert_eq!(s.viewer(v)?.at("zoom"), false);
-    assert_eq!(s.viewer(v)?.at("focus"), left);
+    assert_eq!(s.focused(v)?, left);
     assert_eq!(s.query("fux::model::Launch")?, before);
     s.command(v, "zoom")?;
     s.command(v, "tab_previous")?;
     assert_eq!(s.viewer(v)?.at("zoom"), false);
-    assert_eq!(s.viewer(v)?.at("focus"), right);
+    assert_eq!(s.focused(v)?, right);
     Ok(())
 }
 
@@ -353,13 +353,13 @@ fn context_menu_captures_unfocused_pane_and_grouped_help_marks_unavailable() -> 
     s.key(v, "escape", false)?;
     s.split(v, "horizontal", None)?;
     s.screen(v)?;
-    let focused = s.viewer(v)?.at("focus");
+    let focused = s.focused(v)?;
     s.input(v, json!({"kind":"mouse","action":"press","button":"right","x":0,"y":0,"ctrl":false,"alt":false,"shift":true}))?;
-    assert_eq!(s.viewer(v)?.at("focus"), focused);
+    assert_eq!(s.focused(v)?, focused);
     assert!(s.painted(v, 24, 80)?.contents().contains("Panes:"));
     s.capture(v, 24, 80, "interaction-menu")?;
     s.key(v, "escape", false)?;
-    assert_eq!(s.viewer(v)?.at("focus"), focused);
+    assert_eq!(s.focused(v)?, focused);
     s.control(v, json!({"kind":"choose","chooser":"tab"}))?;
     s.capture(v, 24, 80, "interaction-chooser")?;
     Ok(())

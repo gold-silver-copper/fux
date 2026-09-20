@@ -420,17 +420,15 @@ pub(crate) fn move_pane(
         }
     }
     world.entity_mut(leaf).insert(ChildOf(tab));
-    // Select the moved pane without overwriting other viewers' memory.
-    let mut memory = world.get_mut::<Navigation>(id).ok_or("viewer removed")?;
-    memory.tabs.insert(workspace, tab);
-    memory.focus.insert(tab, leaf);
+    // Following the pane records this viewer's memory through the observers,
+    // without touching other viewers'.
+    world
+        .get_entity_mut(id)
+        .map_err(|_| "viewer removed")?
+        .insert((Viewing(workspace), OnTab(tab), Focused(leaf)));
     let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
-    v.workspace = workspace;
-    v.tab = Some(tab);
-    v.focus = Some(leaf);
     v.zoom = false;
     v.scrollback = 0;
-    navigation::repair(world);
     Ok(())
 }
 
@@ -597,10 +595,9 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
     }
     match execute {
         Some(binding) => {
-            let Some(v) = world.get::<Viewer>(id) else {
+            let Some(target) = Target::of(world, id) else {
                 return true;
             };
-            let target = Target::viewer(v);
             dispatch_binding(world, id, target, &binding);
         }
         None if close => notify(world, id, None),

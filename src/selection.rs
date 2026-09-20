@@ -128,7 +128,7 @@ pub fn validate_clipboard(settings: &Settings, text: &str) -> Result<(), String>
 pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> {
     let pane = world.get::<PaneView>(leaf).ok_or("pane removed")?.pane;
     let v = world.get::<Viewer>(id).ok_or("viewer removed")?;
-    let offset = if v.focus == Some(leaf) {
+    let offset = if focused(world, id) == Some(leaf) {
         v.scrollback
     } else {
         0
@@ -151,8 +151,11 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         mouse_origin: false,
     });
     crate::interaction::close_prefix(world, id);
+    world
+        .get_entity_mut(id)
+        .map_err(|_| "viewer removed")?
+        .insert(Focused(leaf));
     let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
-    v.focus = Some(leaf);
     v.scrollback = offset;
     v.notice = Notice::info("Copy: arrows/hjkl · Space select · y copy · g live · q exit");
     Ok(())
@@ -176,7 +179,7 @@ pub fn refresh_visible(world: &mut World, id: Entity, visible: (u16, u16)) {
         return;
     };
     let leaf = selection.leaf;
-    if v.focus != Some(leaf) {
+    if focused(world, id) != Some(leaf) {
         world.entity_mut(id).remove::<Selection>();
         return;
     }

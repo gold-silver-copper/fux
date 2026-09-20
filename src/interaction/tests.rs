@@ -4,25 +4,25 @@ use crate::testing::*;
 fn setup() -> (World, Entity, Target, Entity) {
     let mut world = World::new();
     world.add_observer(crate::paste::overlay_opened);
-    world.add_observer(navigation::repair_on_remove::<Tab>);
-    world.add_observer(navigation::repair_on_remove::<PaneView>);
-    world.add_observer(navigation::repair_on_remove::<Workspace>);
+    navigation::observe(&mut world);
     let workspace = world.spawn(Workspace).id();
     let tab = world.spawn((Tab, ChildOf(workspace))).id();
     let pane = world.spawn_empty().id();
     let leaf = world.spawn((PaneView { pane }, ChildOf(tab))).id();
     let other = world.spawn((PaneView { pane }, ChildOf(tab))).id();
     let id = world
-        .spawn(Viewer {
-            workspace,
-            tab: Some(tab),
-            focus: Some(leaf),
-            rows: 24,
-            cols: 80,
-            zoom: false,
-            scrollback: 0,
-            notice: None,
-        })
+        .spawn((
+            Viewer {
+                rows: 24,
+                cols: 80,
+                zoom: false,
+                scrollback: 0,
+                notice: None,
+            },
+            Viewing(workspace),
+            OnTab(tab),
+            Focused(leaf),
+        ))
         .id();
     (
         world,
@@ -150,7 +150,7 @@ fn confirmation_captures_target_and_preserves_a_shared_process() -> crate::testi
     let (mut world, id, target, other) = setup();
     let process = world.get::<PaneView>(other).need()?.pane;
     bound(&mut world, id, target, Action::Close)?;
-    world.get_mut::<Viewer>(id).need()?.focus = Some(other);
+    world.entity_mut(id).insert(Focused(other));
     assert!(input(&mut world, id, &Input::Paste { text: "y".into() }));
     assert!(world.get_entity(target.leaf.need()?).is_ok());
     assert!(input(&mut world, id, &key("y")));
@@ -167,7 +167,7 @@ fn removed_confirmation_target_cancels_without_retargeting() -> crate::testing::
     let (mut world, id, target, other) = setup();
     bound(&mut world, id, target, Action::Close)?;
     world.despawn(target.leaf.need()?);
-    world.get_mut::<Viewer>(id).need()?.focus = Some(other);
+    world.entity_mut(id).insert(Focused(other));
     assert!(input(&mut world, id, &key("y")));
     assert!(world.get_entity(other).is_ok());
     assert!(world.get::<Overlay>(id).is_none());
@@ -193,11 +193,10 @@ fn tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers()
             subject: Subject::Tab(target.tab.need()?),
         },
     )?;
-    let v = world.get::<Viewer>(id).need()?;
-    assert_ne!(v.tab, target.tab);
-    assert!(v.focus.is_none());
-    assert!(v.tab.is_some());
-    let target = Target::viewer(v);
+    assert_ne!(on_tab(&world, id), target.tab);
+    assert!(focused(&world, id).is_none());
+    assert!(on_tab(&world, id).is_some());
+    let target = Target::of(&world, id).need()?;
     let replacement = world.spawn(Workspace).id();
     crate::server::execute(
         &mut world,
@@ -206,8 +205,8 @@ fn tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers()
             subject: Subject::Workspace(target.workspace),
         },
     )?;
-    assert_eq!(world.get::<Viewer>(id).need()?.workspace, replacement);
-    let target = Target::viewer(world.get::<Viewer>(id).need()?);
+    assert_eq!(viewing(&world, id), Some(replacement));
+    let target = Target::of(&world, id).need()?;
     crate::server::execute(
         &mut world,
         id,
@@ -246,9 +245,8 @@ fn rearrangement_keeps_entity_identity_and_native_child_order() -> crate::testin
             name: Some("destination".into()),
         },
     )?;
-    let v = world.get::<Viewer>(id).need()?;
-    assert_ne!(v.workspace, target.workspace);
-    assert_eq!(v.focus, Some(source));
+    assert_ne!(viewing(&world, id), Some(target.workspace));
+    assert_eq!(focused(&world, id), Some(source));
     assert!(world.get::<PaneView>(other).is_some());
     Ok(())
 }
@@ -257,7 +255,7 @@ fn rearrangement_keeps_entity_identity_and_native_child_order() -> crate::testin
 fn rename_prompt_keeps_its_original_target_and_escape_cancels() -> crate::testing::Outcome {
     let (mut world, id, target, other) = setup();
     bound(&mut world, id, target, Action::RenameTab)?;
-    world.get_mut::<Viewer>(id).need()?.focus = Some(other);
+    world.entity_mut(id).insert(Focused(other));
     input(
         &mut world,
         id,

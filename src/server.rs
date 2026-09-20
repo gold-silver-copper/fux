@@ -76,9 +76,9 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
             }
             return;
         }
-        let Some(v) = world.get::<Viewer>(event.viewer) else {
+        if world.get::<Viewer>(event.viewer).is_none() {
             return;
-        };
+        }
         if let Some(token) = event.input.token()
             && world.get::<Prefix>(event.viewer).is_some()
         {
@@ -87,8 +87,9 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                 && let Some(binding) = settings.bindings.iter().find(|b| b.key == token)
             {
                 let binding = binding.action.clone();
-                let target = crate::actions::Target::viewer(v);
-                crate::interaction::dispatch_binding(world, event.viewer, target, &binding);
+                if let Some(target) = crate::actions::Target::of(world, event.viewer) {
+                    crate::interaction::dispatch_binding(world, event.viewer, target, &binding);
+                }
                 return;
             }
         }
@@ -177,11 +178,13 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                     .and_then(|v| v.presentation.rects().iter().find(|r| r.leaf == hit))
                     .copied();
                 if let Some(rect) = rect {
-                    if let Some(mut v) = world.get_mut::<Viewer>(event.viewer) {
-                        if v.focus != Some(hit) {
-                            v.scrollback = 0;
-                        }
-                        v.focus = Some(hit);
+                    if focused(world, event.viewer) != Some(hit)
+                        && let Some(mut v) = world.get_mut::<Viewer>(event.viewer)
+                    {
+                        v.scrollback = 0;
+                    }
+                    if let Ok(mut viewer) = world.get_entity_mut(event.viewer) {
+                        viewer.insert(Focused(hit));
                     }
                     if let Err(error) = crate::selection::mouse(
                         world,
@@ -275,6 +278,9 @@ impl Plugin for ServerPlugin {
             .register_type::<PaneView>()
             .register_type::<PaneViews>()
             .register_type::<Viewer>()
+            .register_type::<Viewing>()
+            .register_type::<OnTab>()
+            .register_type::<Focused>()
             .register_type::<Name>()
             .register_type::<Action>()
             .register_type::<Command>()
@@ -287,6 +293,7 @@ impl Plugin for ServerPlugin {
             .register_type::<Shutdown>()
             .register_type::<Input>();
         presentation::register_types(app);
+        crate::navigation::observe(app.world_mut());
         app.init_resource::<SceneIo>()
             .insert_non_send(Views::default())
             .add_plugins(TerminalPlugin)
@@ -294,9 +301,6 @@ impl Plugin for ServerPlugin {
             .add_observer(route_control)
             .add_observer(route_input)
             .add_observer(crate::paste::overlay_opened)
-            .add_observer(crate::navigation::repair_on_remove::<Tab>)
-            .add_observer(crate::navigation::repair_on_remove::<PaneView>)
-            .add_observer(crate::navigation::repair_on_remove::<Workspace>)
             .add_observer(
                 |removed: On<Remove, Viewer>, mut views: NonSendMut<Views>| {
                     views.remove(&removed.entity);
@@ -313,7 +317,6 @@ impl Plugin for ServerPlugin {
                     reload_layouts,
                     scene_completions,
                     collapse_layout,
-                    crate::navigation::repair,
                     invalidate_layouts,
                 )
                     .chain(),
@@ -334,7 +337,15 @@ pub fn remote() -> RemotePlugin {
 
 fn initialize(mut commands: Commands, settings: Res<Settings>) {
     let root = workspace(&mut commands, "main");
-    if let Err(error) = spawn_pane(&mut commands, &settings, root, None, None) {
+    let tab = commands
+        .spawn((
+            Tab,
+            Name::new("main"),
+            crate::navigation::tab_node(),
+            ChildOf(root),
+        ))
+        .id();
+    if let Err(error) = spawn_pane(&mut commands, &settings, tab, None, None) {
         bevy_log::error!("initial terminal: {error}");
     }
 }
@@ -417,12 +428,26 @@ fn settle_remote_requests(receiver: Res<bevy_remote::BrpReceiver>, wake: Res<Wak
     }
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "the exception list is the point of this query"
+)]
 pub(crate) fn invalidate_layouts(
     mut layouts: Query<(Entity, &mut LayoutCache), With<Workspace>>,
-    entities: Query<EntityRefExcept<LayoutCache>, Without<bevy_ecs::resource::IsResource>>,
+    // Every layout entity without the cache itself and without viewer bookkeeping.
+    entities: Query<
+        EntityRefExcept<(LayoutCache, Viewers, TabViewers, FocusedBy)>,
+        Without<bevy_ecs::resource::IsResource>,
+    >,
     children: Query<&Children>,
     ticks: SystemChangeTick,
+    components: &bevy_ecs::component::Components,
 ) {
+    let ignored = [
+        components.component_id::<Viewers>(),
+        components.component_id::<TabViewers>(),
+        components.component_id::<FocusedBy>(),
+    ];
     for (root, mut cache) in &mut layouts {
         if cache.scene.is_none() {
             continue;
@@ -439,8 +464,15 @@ pub(crate) fn invalidate_layouts(
                 count += 1;
                 let entity = entity.into_filtered();
                 let archetype = entity.archetype();
-                cache.members.get(&id) != Some(&archetype.id())
-                    || archetype.components().iter().any(|id| {
+                let mut shape: Vec<_> = archetype
+                    .components()
+                    .iter()
+                    .copied()
+                    .filter(|id| !ignored.contains(&Some(*id)))
+                    .collect();
+                shape.sort();
+                cache.members.get(&id).is_none_or(|known| **known != *shape)
+                    || shape.iter().any(|id| {
                         entity.get_change_ticks_by_id(*id).is_some_and(|change| {
                             change.is_changed(cache.built_at, ticks.this_run())
                         })
@@ -486,10 +518,17 @@ fn reload_layouts(mut reloads: MessageReader<assets::LayoutReload>, mut commands
 }
 fn replace_workspace(world: &mut World, old: Entity, new: Entity) {
     let first = first_leaf(world, new);
-    for mut v in world.query::<&mut Viewer>().iter_mut(world) {
-        if v.workspace == old {
-            v.workspace = new;
-            v.focus = first;
+    let viewers: Vec<Entity> = world
+        .get::<Viewers>(old)
+        .map(|viewers| viewers.iter().collect())
+        .unwrap_or_default();
+    for id in viewers {
+        let mut viewer = world.entity_mut(id);
+        viewer.remove::<(OnTab, Focused)>().insert(Viewing(new));
+        if let Some(first) = first {
+            viewer.insert(Focused(first));
+        }
+        if let Some(mut v) = world.get_mut::<Viewer>(id) {
             v.zoom = false;
         }
     }
@@ -513,7 +552,7 @@ pub(crate) fn scene(world: &mut World, root: Entity) -> Result<(u32, Arc<Dynamic
     let members = scene
         .entities
         .iter()
-        .map(|entity| (entity.entity, world.entity(entity.entity).archetype().id()))
+        .map(|entity| (entity.entity, shape(world, entity.entity)))
         .collect();
     let mut cache = world
         .get_mut::<LayoutCache>(root)
@@ -537,10 +576,20 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
     interaction::close_prefix(world, id);
     notify(world, id, None);
     let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
-    let target = crate::actions::Target::viewer(v);
-    let (workspace, tab, focus, rows, scrollback) =
-        (v.workspace, v.tab, v.focus, v.rows, v.scrollback);
-    let focus = focus.filter(|leaf| world.get::<PaneView>(*leaf).is_some());
+    let (rows, scrollback) = (v.rows, v.scrollback);
+    let target = crate::actions::Target::of(world, id).ok_or(DETACHED)?;
+    let (workspace, tab) = (target.workspace, target.tab);
+    let focus = target
+        .leaf
+        .filter(|leaf| world.get::<PaneView>(*leaf).is_some());
+    let focus_on = |world: &mut World, leaf: Entity| -> Result<(), String> {
+        world
+            .get_entity_mut(id)
+            .map_err(|_| DETACHED)?
+            .insert(Focused(leaf));
+        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.scrollback = 0;
+        Ok(())
+    };
     let pane_of = |world: &World, leaf: Entity| world.get::<PaneView>(leaf).map(|p| p.pane);
     let one_tab = || nav::tabs(world, workspace).len() < 2;
     let one_pane = || tab.is_none_or(|tab| nav::leaves(world, tab).len() < 2);
@@ -589,10 +638,8 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                     new
                 }
             };
-            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-            v.focus = Some(new);
-            v.zoom = false;
-            v.scrollback = 0;
+            focus_on(world, new)?;
+            world.get_mut::<Viewer>(id).ok_or(DETACHED)?.zoom = false;
         }
         Close { subject } => {
             let entity = check(world, subject)?;
@@ -725,9 +772,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             if !shown || !in_tab {
                 return Err("target is not a pane in this workspace".into());
             }
-            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-            v.focus = Some(pane);
-            v.scrollback = 0;
+            focus_on(world, pane)?;
         }
         FocusNext | FocusPrevious => {
             focus.ok_or("no pane")?;
@@ -742,9 +787,9 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                     .presentation;
                 presentation.focus_step(command == FocusPrevious)
             };
-            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-            v.focus = next;
-            v.scrollback = 0;
+            if let Some(next) = next {
+                focus_on(world, next)?;
+            }
         }
         FocusLast => {
             focus.ok_or("no pane")?;
@@ -756,9 +801,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
         FocusDirection { direction } => {
             let leaf = focus.ok_or("no pane")?;
             if let Some(next) = crate::frame::neighbor(world, id, leaf, direction) {
-                let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-                v.focus = Some(next);
-                v.scrollback = 0;
+                focus_on(world, next)?;
             }
         }
         TabNew { name } => {
@@ -804,12 +847,17 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 .saturating_add(1);
             let root = self::workspace(&mut world.commands(), &title);
             world.commands().entity(root).insert(WorkspaceOrder(order));
-            let leaf = spawn_pane(&mut world.commands(), &settings, root, None, None)?;
+            let tab = world
+                .spawn((Tab, Name::new("main"), nav::tab_node(), ChildOf(root)))
+                .id();
+            let leaf = spawn_pane(&mut world.commands(), &settings, tab, None, None)?;
             world.flush();
-            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-            v.workspace = root;
-            v.focus = Some(leaf);
-            v.zoom = false;
+            world.get_entity_mut(id).map_err(|_| DETACHED)?.insert((
+                Viewing(root),
+                OnTab(tab),
+                Focused(leaf),
+            ));
+            world.get_mut::<Viewer>(id).ok_or(DETACHED)?.zoom = false;
         }
         WorkspaceSelect { workspace } => {
             nav::select(world, id, Scope::Workspace, Pick::Entity(workspace))?;
@@ -937,7 +985,7 @@ fn collapse_layout(
 fn input_event(
     event: On<RoutedInput>,
     mut commands: Commands,
-    mut viewers: Query<(&mut Viewer, Has<Prefix>)>,
+    mut viewers: Query<(&mut Viewer, Has<Prefix>, Option<&Focused>)>,
     panes: Query<&PaneView>,
     settings: Res<Settings>,
     terminals: Query<&Terminal>,
@@ -945,9 +993,10 @@ fn input_event(
     wake: Res<Wake>,
 ) {
     let id = event.viewer;
-    let Ok((mut v, prefix)) = viewers.get_mut(id) else {
+    let Ok((mut v, prefix, focus)) = viewers.get_mut(id) else {
         return;
     };
+    let focus = focus.map(|f| f.0);
     let result = (|| -> Result<(), String> {
         match &event.input {
             Input::PasteBegin => {}
@@ -971,7 +1020,7 @@ fn input_event(
                     return Ok(());
                 }
                 let pane = panes
-                    .get(v.focus.ok_or("no focused pane")?)
+                    .get(focus.ok_or("no focused pane")?)
                     .map_err(|e| e.to_string())?
                     .pane;
                 let terminal = terminals.get(pane).map_err(|_| "terminal not found")?;
@@ -985,7 +1034,7 @@ fn input_event(
                     return Ok(());
                 }
                 let pane = panes
-                    .get(v.focus.ok_or("no focused pane")?)
+                    .get(focus.ok_or("no focused pane")?)
                     .map_err(|e| e.to_string())?
                     .pane;
                 let terminal = terminals.get(pane).map_err(|_| "terminal not found")?;
@@ -1015,7 +1064,7 @@ fn input_event(
                     .pointer(*x, *y, *action == MouseAction::Press);
                 if let Some(hit) = hit {
                     if *action == MouseAction::Press {
-                        v.focus = Some(hit);
+                        commands.entity(id).insert(Focused(hit));
                         v.scrollback = 0;
                     }
                     let rect = context
@@ -1030,8 +1079,8 @@ fn input_event(
                     use vt100::MouseProtocolMode as MouseMode;
                     if mode == MouseMode::None || modifiers.shift {
                         if matches!(action, MouseAction::ScrollUp | MouseAction::ScrollDown) {
-                            if v.focus != Some(hit) {
-                                v.focus = Some(hit);
+                            if focus != Some(hit) {
+                                commands.entity(id).insert(Focused(hit));
                                 v.scrollback = 0;
                             }
                             commands.trigger(Control {

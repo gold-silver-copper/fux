@@ -34,9 +34,9 @@ enum Owner {
 
 pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     if matches!(input, Input::PasteBegin) {
-        let Some(v) = world.get::<Viewer>(id) else {
+        if world.get::<Viewer>(id).is_none() {
             return true;
-        };
+        }
         let owner = if let Some(overlay) = world.get::<Overlay>(id) {
             if matches!(overlay.mode, Mode::Text { .. }) {
                 Owner::Text(overlay.serial)
@@ -46,7 +46,10 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         } else if crate::interaction::modal(world, id) {
             Owner::Discard
         } else {
-            Owner::Pane(Target::viewer(v))
+            match Target::of(world, id) {
+                Some(target) => Owner::Pane(target),
+                None => Owner::Discard,
+            }
         };
         if let Some(mut ownership) = world.get_mut::<Ownership>(id) {
             ownership.pending = Some(owner);
@@ -70,10 +73,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         Some(Owner::Discard) => return true,
         Some(Owner::Text(serial)) => world.get::<Overlay>(id).is_some_and(|o| o.serial == serial),
         Some(Owner::Pane(target)) => {
-            world
-                .get::<Viewer>(id)
-                .is_some_and(|v| Target::viewer(v) == target)
-                && !crate::interaction::modal(world, id)
+            Target::of(world, id) == Some(target) && !crate::interaction::modal(world, id)
         }
     };
     if !valid || text.len() > LIMIT {

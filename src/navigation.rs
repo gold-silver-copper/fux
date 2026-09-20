@@ -93,7 +93,6 @@ pub fn normalize_workspace(world: &mut World, root: Entity) {
     }
 }
 
-/// Exactly the actions `control` implements.
 pub enum Scope {
     Tab,
     Workspace,
@@ -106,9 +105,7 @@ pub enum Pick {
 
 /// Opens a new tab with a fresh pane in the viewer's workspace and selects it.
 pub fn tab_new(world: &mut World, id: Entity, name: Option<String>) -> Result<(), String> {
-    repair(world);
-    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
-    let root = v.workspace;
+    let root = viewing(world, id).ok_or(DETACHED)?;
     let title = name.unwrap_or_else(|| format!("tab-{}", tabs(world, root).len() + 1));
     let tab = world
         .spawn((Tab, Name::new(title), tab_node(), ChildOf(root)))
@@ -116,37 +113,36 @@ pub fn tab_new(world: &mut World, id: Entity, name: Option<String>) -> Result<()
     let settings = world.resource::<crate::assets::Settings>().clone();
     let leaf = crate::server::spawn_pane(&mut world.commands(), &settings, tab, None, None)?;
     world.flush();
-    let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-    v.tab = Some(tab);
-    v.focus = Some(leaf);
-    v.zoom = false;
-    repair(world);
+    world
+        .get_entity_mut(id)
+        .map_err(|_| DETACHED)?
+        .insert((OnTab(tab), Focused(leaf)));
+    world.get_mut::<Viewer>(id).ok_or(DETACHED)?.zoom = false;
     Ok(())
 }
 
 /// Returns focus to the pane this viewer focused before the current one.
 pub fn focus_last(world: &mut World, id: Entity) -> Result<(), String> {
-    repair(world);
-    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
-    let tab = v.tab.ok_or("no active tab")?;
+    let tab = on_tab(world, id).ok_or("no active tab")?;
     let previous = world
-        .get::<Navigation>(id)
+        .get::<Memory>(id)
         .and_then(|memory| memory.previous.get(&tab).copied());
     if let Some(previous) = previous
         .filter(|e| leaves(world, tab).contains(e) && crate::frame::visible_leaf(world, id, *e))
     {
-        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus = Some(previous);
+        world
+            .get_entity_mut(id)
+            .map_err(|_| DETACHED)?
+            .insert(Focused(previous));
     }
-    repair(world);
     Ok(())
 }
 
-/// Selects a tab or workspace for this viewer, by identity or by cycling.
+/// Selects a tab or workspace for this viewer, by identity or by cycling. The
+/// dependent relationships are dropped; `repair` restores them from memory.
 pub fn select(world: &mut World, id: Entity, scope: Scope, pick: Pick) -> Result<(), String> {
-    repair(world);
-    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
-    let root = v.workspace;
-    let tab = v.tab.ok_or("no active tab")?;
+    let root = viewing(world, id).ok_or(DETACHED)?;
+    let tab = on_tab(world, id).ok_or("no active tab")?;
     let (all, current) = match scope {
         Scope::Workspace => (workspaces(world), root),
         Scope::Tab => (tabs(world, root), tab),
@@ -171,128 +167,200 @@ pub fn select(world: &mut World, id: Entity, scope: Scope, pick: Pick) -> Result
             .copied()
             .ok_or("target disappeared")?,
     };
-    let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
+    let mut entity = world.get_entity_mut(id).map_err(|_| DETACHED)?;
     match scope {
-        Scope::Workspace => v.workspace = selected,
-        Scope::Tab => v.tab = Some(selected),
+        Scope::Workspace => {
+            entity
+                .remove::<(OnTab, Focused)>()
+                .insert(Viewing(selected));
+        }
+        Scope::Tab => {
+            entity.remove::<Focused>().insert(OnTab(selected));
+        }
     }
+    let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
     v.zoom = false;
     v.scrollback = 0;
-    repair(world);
     Ok(())
 }
 
-/// Hierarchy removals repair every viewer as they happen, from any code path.
-/// Removal observers see the entity still present, so the repair is queued and
-/// runs once the removal has completed.
-pub(crate) fn repair_on_remove<C: Component>(_: On<Remove, C>, mut commands: Commands) {
+/// Every workspace keeps at least one tab, whichever code path emptied it.
+pub(crate) fn normalize_on_tab_removed(
+    removed: On<Remove, Tab>,
+    parents: Query<&ChildOf>,
+    mut commands: Commands,
+) {
+    if let Ok(parent) = parents.get(removed.entity) {
+        let workspace = parent.parent();
+        commands.queue(move |world: &mut World| {
+            if world.get::<Workspace>(workspace).is_some() {
+                normalize_workspace(world, workspace);
+            }
+        });
+    }
+}
+
+/// A child placed directly under a workspace by any caller is wrapped into a tab.
+pub(crate) fn normalize_on_child_added(
+    added: On<Insert, ChildOf>,
+    parents: Query<&ChildOf>,
+    workspaces: Query<(), With<Workspace>>,
+    tabs: Query<(), With<Tab>>,
+    mut commands: Commands,
+) {
+    let entity = added.entity;
+    if let Ok(parent) = parents.get(entity)
+        && workspaces.contains(parent.parent())
+        && !tabs.contains(entity)
+    {
+        let workspace = parent.parent();
+        commands.queue(move |world: &mut World| {
+            if world.get::<Workspace>(workspace).is_some() {
+                normalize_workspace(world, workspace);
+            }
+        });
+    }
+}
+
+/// Insertion or removal of a viewer relationship, by any code path, repairs
+/// every viewer once the change has completed.
+pub(crate) fn repair_on_change<E: bevy_ecs::event::EntityEvent, C: Component>(
+    _: On<E, C>,
+    mut commands: Commands,
+) {
     commands.queue(repair);
 }
 
+/// A viewer that changes tab remembers it for the workspace it is looking at.
+pub(crate) fn remember_tab(
+    changed: On<Insert, OnTab>,
+    mut viewers: Query<(&Viewing, &OnTab, &mut Memory)>,
+) {
+    if let Ok((viewing, tab, mut memory)) = viewers.get_mut(changed.entity) {
+        memory.tabs.insert(viewing.0, tab.0);
+    }
+}
+
+/// A viewer that changes focus remembers it for its tab, and keeps the pane it
+/// left as the tab's previous focus for `focus_last`. Restoring a remembered
+/// focus after a tab switch is not a change and records nothing.
+pub(crate) fn remember_focus(
+    changed: On<Insert, Focused>,
+    mut viewers: Query<(&OnTab, &Focused, &mut Memory)>,
+    parents: Query<&ChildOf>,
+) {
+    if let Ok((tab, focus, mut memory)) = viewers.get_mut(changed.entity) {
+        let tab = tab.0;
+        if let Some(old) = memory.focus.insert(tab, focus.0)
+            && old != focus.0
+            && parents.iter_ancestors(old).any(|e| e == tab)
+        {
+            memory.previous.insert(tab, old);
+        }
+    }
+}
+
+/// Memory entries die with the entities they name.
+pub(crate) fn forget<C: Component>(removed: On<Remove, C>, mut viewers: Query<&mut Memory>) {
+    let gone = removed.entity;
+    for mut memory in &mut viewers {
+        memory
+            .tabs
+            .retain(|key, value| *key != gone && *value != gone);
+        memory
+            .focus
+            .retain(|key, value| *key != gone && *value != gone);
+        memory
+            .previous
+            .retain(|key, value| *key != gone && *value != gone);
+    }
+}
+
+/// Registers the observers that keep viewer relationships and memory valid.
+pub(crate) fn observe(world: &mut World) {
+    world.add_observer(normalize_on_tab_removed);
+    world.add_observer(normalize_on_child_added);
+    world.add_observer(repair_on_change::<Insert, Viewing>);
+    world.add_observer(repair_on_change::<Insert, OnTab>);
+    world.add_observer(repair_on_change::<Insert, Focused>);
+    world.add_observer(repair_on_change::<Remove, Viewing>);
+    world.add_observer(repair_on_change::<Remove, OnTab>);
+    world.add_observer(repair_on_change::<Remove, Focused>);
+    world.add_observer(remember_tab);
+    world.add_observer(remember_focus);
+    world.add_observer(forget::<Workspace>);
+    world.add_observer(forget::<Tab>);
+    world.add_observer(forget::<PaneView>);
+}
+
+/// Gives every viewer a workspace, a tab in it and a pane in that, filling
+/// what is missing from memory or the first available. Consistent viewers are
+/// left untouched, so the insertions here cannot trigger another repair.
 pub fn repair(world: &mut World) {
     let roots = workspaces(world);
-    for &root in &roots {
-        normalize_workspace(world, root);
-    }
     let viewers: Vec<_> = world
         .query_filtered::<Entity, With<Viewer>>()
         .iter(world)
         .collect();
     for id in viewers {
-        let Some(v) = world.get::<Viewer>(id) else {
-            continue;
+        let workspace = match viewing(world, id).filter(|w| roots.contains(w)) {
+            Some(workspace) => workspace,
+            None => {
+                let Some(&root) = roots.first() else {
+                    world.despawn(id);
+                    continue;
+                };
+                world.entity_mut(id).insert(Viewing(root));
+                root
+            }
         };
-        let workspace = if roots.contains(&v.workspace) {
-            v.workspace
-        } else if let Some(&root) = roots.first() {
-            root
-        } else {
-            world.despawn(id);
-            continue;
-        };
-        let available = tabs(world, workspace);
-        let Some(memory) = world.get::<Navigation>(id) else {
-            continue;
-        };
-        let changed_workspace = memory.observed.is_some_and(|old| old.0 != workspace);
-        let requested = if changed_workspace {
-            memory.tabs.get(&workspace).copied()
-        } else {
-            v.tab
-        };
-        // normalize_workspace above guarantees every workspace has a tab.
-        let Some(tab) = requested
-            .filter(|t| available.contains(t))
-            .or_else(|| available.first().copied())
-        else {
-            continue;
+        let mut available = tabs(world, workspace);
+        if available.is_empty() {
+            // The tab removal that emptied this workspace has queued its
+            // replacement; do not wait for it when a viewer needs a tab now.
+            normalize_workspace(world, workspace);
+            available = tabs(world, workspace);
+        }
+        let remembered =
+            |world: &World,
+             key: Entity,
+             which: fn(&Memory) -> &bevy_ecs::entity::EntityHashMap<Entity>| {
+                world
+                    .get::<Memory>(id)
+                    .and_then(|m| which(m).get(&key).copied())
+            };
+        let tab = match on_tab(world, id).filter(|t| available.contains(t)) {
+            Some(tab) => tab,
+            None => {
+                // normalize_workspace guarantees every workspace has a tab.
+                let Some(tab) = remembered(world, workspace, |m| &m.tabs)
+                    .filter(|t| available.contains(t))
+                    .or_else(|| available.first().copied())
+                else {
+                    continue;
+                };
+                world.entity_mut(id).insert(OnTab(tab));
+                tab
+            }
         };
         let visible = leaves(world, tab);
-        let changed_tab = memory.observed.is_some_and(|old| old.1 != tab);
-        let requested = if changed_tab {
-            memory.focus.get(&tab).copied()
-        } else {
-            v.focus
-        };
-        let focus = requested
-            .filter(|e| visible.contains(e))
-            .or_else(|| visible.first().copied());
-        let observed = memory.observed;
-        let stale_tabs: Vec<_> = memory
-            .tabs
-            .iter()
-            .filter(|(workspace, tab)| !tabs(world, **workspace).contains(tab))
-            .map(|(workspace, _)| *workspace)
-            .collect();
-        let stale_focus: Vec<_> = memory
-            .focus
-            .iter()
-            .filter(|(tab, leaf)| {
-                world.get::<Tab>(**tab).is_none() || !leaves(world, **tab).contains(leaf)
-            })
-            .map(|(tab, _)| *tab)
-            .collect();
-        let stale_previous: Vec<_> = memory
-            .previous
-            .iter()
-            .filter(|(tab, leaf)| {
-                world.get::<Tab>(**tab).is_none() || !leaves(world, **tab).contains(leaf)
-            })
-            .map(|(tab, _)| *tab)
-            .collect();
-        let Some(mut memory) = world.get_mut::<Navigation>(id) else {
-            continue;
-        };
-        for workspace in stale_tabs {
-            memory.tabs.remove(&workspace);
-        }
-        for tab in stale_focus {
-            memory.focus.remove(&tab);
-        }
-        for tab in stale_previous {
-            memory.previous.remove(&tab);
-        }
-        if let Some((_, old_tab, Some(old_focus))) = observed
-            && old_tab == tab
-            && Some(old_focus) != focus
-            && visible.contains(&old_focus)
-        {
-            memory.previous.insert(tab, old_focus);
-        }
-        memory.tabs.insert(workspace, tab);
-        if let Some(focus) = focus {
-            memory.focus.insert(tab, focus);
-        }
-        memory.observed = Some((workspace, tab, focus));
-        let Some(mut v) = world.get_mut::<Viewer>(id) else {
-            continue;
-        };
-        if v.workspace != workspace || v.tab != Some(tab) || v.focus != focus {
-            v.workspace = workspace;
-            v.tab = Some(tab);
-            v.focus = focus;
-            v.scrollback = 0;
-            v.zoom = false;
+        if focused(world, id).is_none_or(|f| !visible.contains(&f)) {
+            let focus = remembered(world, tab, |m| &m.focus)
+                .filter(|e| visible.contains(e))
+                .or_else(|| visible.first().copied());
+            let mut entity = world.entity_mut(id);
+            match focus {
+                Some(focus) => {
+                    entity.insert(Focused(focus));
+                }
+                None => {
+                    entity.remove::<Focused>();
+                }
+            }
+            if let Some(mut v) = world.get_mut::<Viewer>(id) {
+                v.scrollback = 0;
+                v.zoom = false;
+            }
         }
     }
 }

@@ -98,7 +98,7 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
         .at("entity")
         .as_u64()
         .need()?;
-    let left = s.viewer(v)?.at("focus");
+    let left = s.focused(v)?;
     let left_input = s.directory.join("keys-left");
     s.run(
         v,
@@ -109,8 +109,8 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
     )?;
     f.wait(|screen| screen.contents().starts_with("LEFT"))?;
     f.send(b"\x02h")?;
-    eventually(|| Ok(s.viewer(v)?.at("focus") != left))?;
-    let right = s.viewer(v)?.at("focus");
+    eventually(|| Ok(s.focused(v)? != left))?;
+    let right = s.focused(v)?;
     let right_input = s.directory.join("keys-right");
     s.run(
         v,
@@ -125,7 +125,7 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
     f.send(b"\x02\x1b[B")?;
     eventually(|| Ok(s.selected(v, 18, 70)?.as_deref() == Some("v  split stacked")))?;
     assert_eq!(nodes()?, before);
-    assert_eq!(s.viewer(v)?.at("focus"), right);
+    assert_eq!(s.focused(v)?, right);
     let selected = f.wait(|screen| {
         screen.contents().contains("Commands")
             && (0..17).any(|y| {
@@ -138,35 +138,35 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
     f.send(b"\x02\x1b[1;5C")?;
     eventually(|| Ok(nodes()? != before))?; // Ctrl+Right resize
     f.send(b"\x02\x1b[1;3D")?;
-    eventually(|| Ok(s.viewer(v)?.at("focus") == left))?; // Alt+Left
+    eventually(|| Ok(s.focused(v)? == left))?; // Alt+Left
     f.send(b"\x02\t")?;
-    eventually(|| Ok(s.viewer(v)?.at("focus") == right))?;
+    eventually(|| Ok(s.focused(v)? == right))?;
     f.send(b"\x02\x1b[Z")?;
-    eventually(|| Ok(s.viewer(v)?.at("focus") == left))?; // Shift+Tab
+    eventually(|| Ok(s.focused(v)? == left))?; // Shift+Tab
     f.send(b"\x02\x7f")?;
-    eventually(|| Ok(s.viewer(v)?.at("focus") == right))?; // Backspace
+    eventually(|| Ok(s.focused(v)? == right))?; // Backspace
     let tree = s.query("bevy_ecs::hierarchy::ChildOf")?;
     f.send(b"\x02\x1b[1;2D")?;
     eventually(|| Ok(s.query("bevy_ecs::hierarchy::ChildOf")? != tree))?; // Shift+Left move
-    assert_eq!(s.viewer(v)?.at("focus"), right);
-    let original_tab = s.viewer(v)?.at("tab");
-    let original_workspace = s.viewer(v)?.at("workspace");
+    assert_eq!(s.focused(v)?, right);
+    let original_tab = s.on_tab(v)?;
+    let original_workspace = s.viewing(v)?;
     f.send(b"\x02t")?;
-    eventually(|| Ok(s.viewer(v)?.at("tab") != original_tab))?;
-    let new_tab = s.viewer(v)?.at("tab");
+    eventually(|| Ok(s.on_tab(v)? != original_tab))?;
+    let new_tab = s.on_tab(v)?;
     f.send(b"\x02[")?;
-    eventually(|| Ok(s.viewer(v)?.at("tab") == original_tab))?;
+    eventually(|| Ok(s.on_tab(v)? == original_tab))?;
     f.send(b"\x02]")?;
-    eventually(|| Ok(s.viewer(v)?.at("tab") == new_tab))?;
+    eventually(|| Ok(s.on_tab(v)? == new_tab))?;
     f.send(b"\x02w")?;
-    eventually(|| Ok(s.viewer(v)?.at("workspace") != original_workspace))?;
-    let new_workspace = s.viewer(v)?.at("workspace");
+    eventually(|| Ok(s.viewing(v)? != original_workspace))?;
+    let new_workspace = s.viewing(v)?;
     f.send(b"\x02{")?;
-    eventually(|| Ok(s.viewer(v)?.at("workspace") == original_workspace))?;
+    eventually(|| Ok(s.viewing(v)? == original_workspace))?;
     f.send(b"\x02}")?;
-    eventually(|| Ok(s.viewer(v)?.at("workspace") == new_workspace))?;
+    eventually(|| Ok(s.viewing(v)? == new_workspace))?;
     f.send(b"\x02{\x02[")?;
-    eventually(|| Ok(s.viewer(v)?.at("tab") == original_tab))?;
+    eventually(|| Ok(s.on_tab(v)? == original_tab))?;
     assert!(fs::read(&left_input)?.is_empty());
     assert!(fs::read(&right_input)?.is_empty());
     f.send(b"OK")?;

@@ -48,7 +48,10 @@ fn native_tab_scene_round_trip_preserves_order_names_and_remapped_processes()
         "Launch",
         "ProcessState",
         "LayoutCache",
-        "Navigation",
+        "Memory",
+        "Viewers",
+        "TabViewers",
+        "FocusedBy",
         "Selection",
         "Ownership",
         "Overlay",
@@ -195,15 +198,14 @@ fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() -> crate::t
     world.despawn(nested);
     world.spawn((
         Viewer {
-            workspace: root,
-            tab: Some(tab),
-            focus: None,
             rows: 24,
             cols: 80,
             zoom: false,
             scrollback: 0,
             notice: None,
         },
+        Viewing(root),
+        OnTab(tab),
         ChildOf(root),
     ));
     assert!(

@@ -7,7 +7,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     let b = s.attach()?;
     s.screen(a)?;
     let before = s.query("bevy_ui::ui_node::Node")?;
-    let focus = s.viewer(a)?.at("focus");
+    let focus = s.focused(a)?;
     fs::write(
         s.directory.join("fux.json"),
         serde_json::to_vec(&json!({
@@ -40,7 +40,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     s.key(a, "down", false)?;
     assert_eq!(s.selected(a, 24, 80)?.as_deref(), Some("t  new tab"));
     assert!(!s.column_open(b, 24, 80)?);
-    assert_eq!(s.viewer(a)?.at("focus"), focus);
+    assert_eq!(s.focused(a)?, focus);
     assert_eq!(s.query("bevy_ui::ui_node::Node")?, before);
     let screen = s.painted(a, 24, 80)?;
     let selected_row = (0..23)
@@ -51,7 +51,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     s.enter(a)?;
     assert_eq!(s.query("fux::model::Tab")?.rows().count(), 2);
     assert!(!s.column_open(a, 24, 80)?);
-    assert_ne!(s.viewer(a)?.at("tab"), s.viewer(b)?.at("tab"));
+    assert_ne!(s.on_tab(a)?, s.on_tab(b)?);
     s.capture(a, 24, 80, "keybindings-new-tab")?;
     Ok(())
 }

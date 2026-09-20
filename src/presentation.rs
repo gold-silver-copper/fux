@@ -162,9 +162,10 @@ impl Presentation {
         revision: u32,
         root: Entity,
         viewer: &Viewer,
+        (tab, focus): (Option<Entity>, Option<Entity>),
     ) -> Result<(), String> {
-        let zoom = viewer.focus.filter(|_| viewer.zoom);
-        let key = (revision, root, zoom, viewer.tab);
+        let zoom = focus.filter(|_| viewer.zoom);
+        let key = (revision, root, zoom, tab);
         let rebuild = self.scene_key != Some(key);
         if rebuild {
             self.scene_key = None;
@@ -220,7 +221,7 @@ impl Presentation {
             let inactive: Vec<_> = world
                 .query_filtered::<Entity, With<Tab>>()
                 .iter(world)
-                .filter(|local| self.local_to_source.get(local).copied() != viewer.tab)
+                .filter(|local| self.local_to_source.get(local).copied() != tab)
                 .collect();
             for tab in inactive {
                 if let Some(mut node) = world.get_mut::<Node>(tab) {
@@ -290,8 +291,7 @@ impl Presentation {
                 scale_factor: 1.0,
             });
         }
-        let desired = viewer
-            .focus
+        let desired = focus
             .and_then(|source| self.source_to_local.get(&source).copied())
             .filter(|local| self.app.world().get::<PaneView>(*local).is_some());
         let world = self.app.world_mut();

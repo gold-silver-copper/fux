@@ -4,9 +4,6 @@ use bevy_ecs::prelude::Entity;
 
 fn viewer(rows: u16, cols: u16) -> Viewer {
     Viewer {
-        tab: None,
-        workspace: Entity::PLACEHOLDER,
-        focus: None,
         rows,
         cols,
         zoom: false,
@@ -147,10 +144,16 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
         .collect();
     for cols in 0..100 {
         for rows in 0..3 {
-            let mut v = viewer(rows, cols);
-            v.tab = Some(tabs.get(9).need()?.0);
+            let v = viewer(rows, cols);
+            let tab = Some(tabs.get(9).need()?.0);
             let mut out = String::new();
-            let hits = tab_bar(&mut out, &v, "workspace", &tabs, "process");
+            let hits = tab_bar(
+                &mut out,
+                &v,
+                (Entity::PLACEHOLDER, "workspace"),
+                (tab, &tabs),
+                "process",
+            );
             if rows == 0 || cols == 0 {
                 assert!(out.is_empty());
                 assert!(hits.is_empty());
@@ -158,7 +161,7 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
             }
             assert!(
                 hits.iter()
-                    .any(|(id, bounds)| Some(*id) == v.tab && bounds.width > 0),
+                    .any(|(id, bounds)| Some(*id) == tab && bounds.width > 0),
                 "{rows}x{cols}"
             );
             for (_, bounds) in &hits {
@@ -167,7 +170,7 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
             }
             let mut parser = vt100::Parser::new(rows.max(2), cols.max(2), 0);
             parser.process(out.as_bytes());
-            let active = hits.iter().find(|(id, _)| Some(*id) == v.tab).need()?.1;
+            let active = hits.iter().find(|(id, _)| Some(*id) == tab).need()?.1;
             assert!(parser.screen().cell(rows - 1, active.x).need()?.inverse());
             for x in 0..cols {
                 // vt100 stores a wide glyph's attributes on its leading cell.

@@ -3,17 +3,20 @@ use crate::testing::*;
 
 fn viewer(world: &mut World, workspace: Entity) -> Entity {
     world
-        .spawn(Viewer {
-            workspace,
-            tab: None,
-            focus: None,
-            rows: 24,
-            cols: 80,
-            zoom: false,
-            scrollback: 0,
-            notice: None,
-        })
+        .spawn((
+            Viewer {
+                rows: 24,
+                cols: 80,
+                zoom: false,
+                scrollback: 0,
+                notice: None,
+            },
+            Viewing(workspace),
+        ))
         .id()
+}
+fn focus_of(world: &World, viewer: Entity) -> Option<Entity> {
+    focused(world, viewer)
 }
 fn leaf(world: &mut World, parent: Entity) -> Entity {
     let pane = world.spawn_empty().id();
@@ -55,26 +58,26 @@ fn viewers_remember_independent_tabs_focus_and_last_focus() -> crate::testing::O
     let a = leaf(&mut world, first);
     let b = leaf(&mut world, first);
     let c = leaf(&mut world, second);
+    observe(&mut world);
     let left = viewer(&mut world, root);
     let right = viewer(&mut world, root);
     repair(&mut world);
-    world.get_mut::<Viewer>(left).need()?.focus = Some(b);
-    repair(&mut world);
+    world.entity_mut(left).insert(Focused(b));
     select(&mut world, left, Scope::Tab, Pick::Next)?;
-    assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(c));
-    assert_eq!(world.get::<Viewer>(right).need()?.focus, Some(a));
+    assert_eq!(focus_of(&world, left), Some(c));
+    assert_eq!(focus_of(&world, right), Some(a));
     select(&mut world, left, Scope::Tab, Pick::Previous)?;
-    assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(b));
+    assert_eq!(focus_of(&world, left), Some(b));
     focus_last(&mut world, left)?;
-    assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(a));
+    assert_eq!(focus_of(&world, left), Some(a));
     focus_last(&mut world, left)?;
-    assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(b));
+    assert_eq!(focus_of(&world, left), Some(b));
     world.despawn(b);
     repair(&mut world);
-    assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(a));
+    assert_eq!(focus_of(&world, left), Some(a));
     world.despawn(first);
     repair(&mut world);
-    assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(c));
-    assert_eq!(world.get::<Viewer>(right).need()?.focus, Some(c));
+    assert_eq!(focus_of(&world, left), Some(c));
+    assert_eq!(focus_of(&world, right), Some(c));
     Ok(())
 }

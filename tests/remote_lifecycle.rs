@@ -172,10 +172,26 @@ impl Server {
     fn close(&self, viewer: u64, subject: Value) -> Result<(), String> {
         self.control(viewer, json!({"kind":"close","subject":subject}))
     }
+    /// One relationship component of a viewer, or null when it has none.
+    fn relation(&self, viewer: u64, component: &str) -> Result<Value, String> {
+        Ok(self
+            .query(component)?
+            .rows()
+            .find(|row| row.at("entity") == viewer)
+            .map_or(Value::Null, |row| row.at("components").at(component)))
+    }
+    fn viewing(&self, viewer: u64) -> Result<Value, String> {
+        self.relation(viewer, "fux::model::Viewing")
+    }
+    fn on_tab(&self, viewer: u64) -> Result<Value, String> {
+        self.relation(viewer, "fux::model::OnTab")
+    }
+    fn focused(&self, viewer: u64) -> Result<Value, String> {
+        self.relation(viewer, "fux::model::Focused")
+    }
     /// The workspace this viewer is looking at.
     fn workspace_of(&self, viewer: u64) -> Result<u64, String> {
-        self.viewer(viewer)?
-            .at("workspace")
+        self.viewing(viewer)?
             .as_u64()
             .ok_or_else(|| "viewer has no workspace".into())
     }
@@ -396,14 +412,7 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
                 .at("pid")
         );
     }
-    let focus = server
-        .query("fux::model::Viewer")?
-        .at(0)
-        .at("components")
-        .at("fux::model::Viewer")
-        .at("focus")
-        .as_u64()
-        .need()?;
+    let focus = server.focused(viewer)?.as_u64().need()?;
     server.rpc(
         "world.insert_components",
         json!({"entity":focus,"components":{"bevy_camera::visibility::Visibility":"Hidden"}}),

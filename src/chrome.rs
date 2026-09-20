@@ -106,8 +106,11 @@ pub fn bar(out: &mut String, v: &Viewer, workspace: &str, focused: &str) {
 pub fn tab_bar(
     out: &mut String,
     v: &Viewer,
-    workspace: &str,
-    tabs: &[(bevy_ecs::entity::Entity, String)],
+    (workspace_id, workspace): (bevy_ecs::entity::Entity, &str),
+    (tab, tabs): (
+        Option<bevy_ecs::entity::Entity>,
+        &[(bevy_ecs::entity::Entity, String)],
+    ),
     focused: &str,
 ) -> Vec<(bevy_ecs::entity::Entity, Bounds)> {
     if v.rows == 0 || v.cols == 0 {
@@ -159,7 +162,7 @@ pub fn tab_bar(
     );
     at(out, 0, v.rows - 1, &title);
     let mut hits = vec![(
-        v.workspace,
+        workspace_id,
         Bounds {
             x: 0,
             y: v.rows - 1,
@@ -170,7 +173,7 @@ pub fn tab_bar(
     let mut x = width(&title).saturating_add(u16::from(!title.is_empty()));
     let selected = tabs
         .iter()
-        .position(|(id, _)| Some(*id) == v.tab)
+        .position(|(id, _)| Some(*id) == tab)
         .unwrap_or(0);
     // Start far enough left to retain preceding tabs when they fit, but never
     // spend the selected tab's cell budget on an inactive label.
@@ -208,7 +211,7 @@ pub fn tab_bar(
             v.rows - 1,
             format_args!(
                 "{BAR}{}{label}{BAR}",
-                if Some(*id) == v.tab { "\x1b[7;1m" } else { "" }
+                if Some(*id) == tab { "\x1b[7;1m" } else { "" }
             ),
         );
         hits.push((

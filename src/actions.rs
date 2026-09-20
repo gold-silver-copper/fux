@@ -16,12 +16,13 @@ pub struct Target {
     pub leaf: Option<Entity>,
 }
 impl Target {
-    pub fn viewer(v: &Viewer) -> Self {
-        Self {
-            workspace: v.workspace,
-            tab: v.tab,
-            leaf: v.focus,
-        }
+    /// The viewer's current relationships; a detached viewer has no target.
+    pub fn of(world: &World, id: Entity) -> Option<Self> {
+        Some(Self {
+            workspace: viewing(world, id)?,
+            tab: on_tab(world, id),
+            leaf: focused(world, id),
+        })
     }
     pub fn valid(self, world: &World) -> bool {
         world.get::<Workspace>(self.workspace).is_some()

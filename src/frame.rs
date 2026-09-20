@@ -6,7 +6,7 @@ use crate::{
     model::*,
     presentation::Presentation,
     protocol::{Direction, Frame},
-    server::{first_leaf, invalidate_layouts, scene},
+    server::{invalidate_layouts, scene},
     terminal::Terminal,
 };
 use base64::Engine;
@@ -41,18 +41,12 @@ pub(crate) fn with_views<T>(
     result
 }
 pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), String> {
-    crate::navigation::repair(world);
     // Controls can arrive before the next Update; run the same native change-
     // tracking system at this synchronous input/presentation boundary too.
     world
         .run_system_cached(invalidate_layouts)
         .map_err(|e| e.to_string())?;
-    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
-    let root = v.workspace;
-    if v.focus.is_none_or(|e| world.get::<PaneView>(e).is_none()) {
-        let focus = first_leaf(world, root);
-        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus = focus;
-    }
+    let root = viewing(world, id).ok_or(DETACHED)?;
     let (revision, scene) = scene(world, root)?;
     let registry = world.resource::<AppTypeRegistry>().clone();
     let context = views.entry(id).or_insert_with(|| View {
@@ -62,28 +56,41 @@ pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Res
         next_paint: Instant::now(),
         paint_wake_pending: false,
     });
+    let state = |world: &World| (on_tab(world, id), focused(world, id));
     context.presentation.sync(
         &scene,
         revision,
         root,
         world.get::<Viewer>(id).ok_or(DETACHED)?,
+        state(world),
     )?;
     let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
+    let focus = focused(world, id);
     if v.rows > 1
         && v.cols > 0
         && !context
             .presentation
             .rects()
             .iter()
-            .any(|r| Some(r.leaf) == v.focus)
+            .any(|r| Some(r.leaf) == focus)
     {
-        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus =
-            context.presentation.rects().first().map(|r| r.leaf);
+        // Zoom and hidden tabs can leave the focused pane unpainted; follow
+        // the projection rather than paint input into an invisible pane.
+        let mut entity = world.get_entity_mut(id).map_err(|_| DETACHED)?;
+        match context.presentation.rects().first().map(|r| r.leaf) {
+            Some(leaf) => {
+                entity.insert(Focused(leaf));
+            }
+            None => {
+                entity.remove::<Focused>();
+            }
+        }
         context.presentation.sync(
             &scene,
             revision,
             root,
             world.get::<Viewer>(id).ok_or(DETACHED)?,
+            state(world),
         )?;
     }
     Ok(())
@@ -129,19 +136,19 @@ pub(crate) fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
         .and_then(Value::as_u64)
         .unwrap_or(80)
         .min(4096) as u16;
-    let focused = first_leaf(world, root);
     let id = world
-        .spawn(Viewer {
-            workspace: root,
-            tab: None,
-            focus: focused,
-            rows,
-            cols,
-            zoom: false,
-            scrollback: 0,
-            notice: None,
-        })
+        .spawn((
+            Viewer {
+                rows,
+                cols,
+                zoom: false,
+                scrollback: 0,
+                notice: None,
+            },
+            Viewing(root),
+        ))
         .id();
+    crate::navigation::repair(world);
     with_views(world, |world, views| sync_view(world, views, id)).map_err(BrpError::internal)?;
     Ok(json!({"viewer":id.to_bits()}))
 }
@@ -326,7 +333,7 @@ fn process_status(world: &World, pane: Entity) -> String {
 
 fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, String> {
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
-    let focus = v.focus;
+    let focus = focused(world, id);
     let scrollback = v.scrollback;
     let modal = crate::interaction::modal(world, id);
     let view = views.get_mut(&id).ok_or("missing presentation")?;
@@ -393,11 +400,18 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
     }
     view.presentation.paint_separators(&mut out, focus);
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
-    let tabs: Vec<_> = crate::navigation::tabs(world, v.workspace)
+    let workspace = viewing(world, id).ok_or(DETACHED)?;
+    let tabs: Vec<_> = crate::navigation::tabs(world, workspace)
         .into_iter()
         .map(|tab| (tab, name(world, tab)))
         .collect();
-    let hits = chrome::tab_bar(&mut out, v, &name(world, v.workspace), &tabs, &focused);
+    let hits = chrome::tab_bar(
+        &mut out,
+        v,
+        (workspace, &name(world, workspace)),
+        (on_tab(world, id), &tabs),
+        &focused,
+    );
     view.presentation.chrome(hits);
     if let Some(overlay) = world.get::<crate::interaction::Overlay>(id) {
         chrome::surface(
@@ -412,7 +426,9 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
             world.resource::<Settings>(),
             prefix.scroll,
             |binding| {
-                let target = actions::Target::viewer(v);
+                let Some(target) = actions::Target::of(world, id) else {
+                    return true;
+                };
                 match binding {
                     BindingAction::Known(action) => {
                         actions::unavailable(world, target, *action).is_some()

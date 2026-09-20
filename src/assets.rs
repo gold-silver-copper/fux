@@ -434,7 +434,11 @@ pub fn extract_layout(world: &World, root: Entity) -> Result<DynamicWorld, Strin
         if !selected.insert(entity) {
             return Err("layout hierarchy contains a cycle".into());
         }
-        if world.get::<crate::model::Viewer>(entity).is_some() {
+        if world.get::<crate::model::Viewer>(entity).is_some()
+            || world.get::<crate::model::Viewing>(entity).is_some()
+            || world.get::<crate::model::OnTab>(entity).is_some()
+            || world.get::<crate::model::Focused>(entity).is_some()
+        {
             return Err("viewers cannot belong to layout scenes".into());
         }
         if world.get::<crate::model::Tab>(entity).is_some()
@@ -550,7 +554,11 @@ pub fn apply_layout(
                 return Err(format!("{} is not a reflected component", info.type_path()));
             }
         }
-        if component::<crate::model::Viewer>(entity)?.is_some() {
+        if component::<crate::model::Viewer>(entity)?.is_some()
+            || component::<crate::model::Viewing>(entity)?.is_some()
+            || component::<crate::model::OnTab>(entity)?.is_some()
+            || component::<crate::model::Focused>(entity)?.is_some()
+        {
             return Err("viewers cannot belong to layout scenes".into());
         }
         if component::<Launch>(entity)?.is_some() || component::<ProcessState>(entity)?.is_some() {

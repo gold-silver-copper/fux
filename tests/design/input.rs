@@ -197,13 +197,13 @@ fn viewers_keep_independent_focus_zoom_history_and_exit_status() -> Outcome {
     let b = s.attach()?;
     s.painted(a, 24, 80)?;
     s.painted(b, 24, 80)?;
-    let b_focus = s.viewer(b)?.at("focus");
-    assert_ne!(s.viewer(a)?.at("focus"), b_focus);
+    let b_focus = s.focused(b)?;
+    assert_ne!(s.focused(a)?, b_focus);
     s.command(a, "zoom")?;
     s.control(a, json!({"kind":"scroll","order":"previous"}))?;
     s.painted(a, 24, 80)?;
     let b_screen = s.painted(b, 24, 80)?;
-    assert_eq!(s.viewer(b)?.at("focus"), b_focus);
+    assert_eq!(s.focused(b)?, b_focus);
     assert_eq!(s.viewer(b)?.at("zoom"), false);
     assert_eq!(s.viewer(b)?.at("scrollback"), 0);
     assert!(b_screen.contents().contains('│'));
