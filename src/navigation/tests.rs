@@ -1,5 +1,6 @@
 use super::*;
 use crate::testing::*;
+use bevy_ui::Val;
 
 fn viewer(world: &mut World, workspace: Entity) -> Entity {
     world

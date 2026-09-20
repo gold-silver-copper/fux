@@ -12,7 +12,7 @@ use crate::{
 use bevy_app::{App, AppExit, Plugin, Startup, Update};
 use bevy_ecs::{prelude::*, system::SystemChangeTick, world::EntityRefExcept};
 use bevy_remote::RemotePlugin;
-use bevy_ui::{FlexDirection, Node, Val};
+use bevy_ui::{FlexDirection, Node};
 use bevy_world_serialization::DynamicWorld;
 use std::sync::Arc;
 
@@ -338,47 +338,15 @@ pub fn remote() -> RemotePlugin {
 
 fn initialize(mut commands: Commands, settings: Res<Settings>) {
     let root = workspace(&mut commands, "main");
-    let tab = commands
-        .spawn((
-            Tab,
-            Name::new("main"),
-            crate::navigation::tab_node(),
-            ChildOf(root),
-        ))
-        .id();
+    let tab = commands.spawn((Tab, Name::new("main"), ChildOf(root))).id();
     if let Err(error) = spawn_pane(&mut commands, &settings, tab, None, None) {
         bevy_log::error!("initial terminal: {error}");
     }
 }
 
-fn root_node() -> Node {
-    Node {
-        width: Val::Percent(100.0),
-        height: Val::Percent(100.0),
-        flex_grow: 1.0,
-        flex_basis: Val::Px(0.0),
-        min_width: Val::Px(0.0),
-        min_height: Val::Px(0.0),
-        ..Default::default()
-    }
-}
-fn leaf_node() -> Node {
-    Node {
-        flex_grow: 1.0,
-        flex_basis: Val::Px(0.0),
-        min_width: Val::ZERO,
-        min_height: Val::ZERO,
-        ..Default::default()
-    }
-}
 pub(crate) fn workspace(commands: &mut Commands, name: &str) -> Entity {
     commands
-        .spawn((
-            Workspace,
-            WorkspaceOrder(0),
-            Name::new(name.to_owned()),
-            root_node(),
-        ))
+        .spawn((Workspace, WorkspaceOrder(0), Name::new(name.to_owned())))
         .id()
 }
 pub(crate) fn spawn_pane(
@@ -408,9 +376,7 @@ pub(crate) fn spawn_pane(
         .unwrap_or("shell")
         .to_owned();
     let pane = commands.spawn((launch, Name::new(name))).id();
-    Ok(commands
-        .spawn((PaneView { pane }, leaf_node(), ChildOf(parent)))
-        .id())
+    Ok(commands.spawn((PaneView { pane }, ChildOf(parent))).id())
 }
 pub(crate) fn first_leaf(world: &World, root: Entity) -> Option<Entity> {
     if world.get::<PaneView>(root).is_some() {
@@ -614,16 +580,11 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                         .get::<Children>(parent)
                         .and_then(|siblings| siblings.iter().position(|e| e == leaf))
                         .ok_or("missing child")?;
-                    let mut node = root_node();
-                    node.width = Val::Auto;
-                    node.height = Val::Auto;
-                    node.flex_direction = match axis {
-                        Axis::Vertical => FlexDirection::Column,
-                        Axis::Horizontal => FlexDirection::Row,
-                    };
-                    node.column_gap = Val::Px(1.0);
-                    node.row_gap = Val::Px(1.0);
-                    let container = world.spawn((Split, node)).id();
+                    let mut container = world.spawn(Split);
+                    if axis == Axis::Vertical {
+                        container.insert(split_node(FlexDirection::Column));
+                    }
+                    let container = container.id();
                     let new = spawn_pane(&mut world.commands(), &settings, container, argv, cwd)?;
                     world.flush();
                     world.entity_mut(container).insert_children(0, &[leaf]);
@@ -848,9 +809,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 .saturating_add(1);
             let root = self::workspace(&mut world.commands(), &title);
             world.commands().entity(root).insert(WorkspaceOrder(order));
-            let tab = world
-                .spawn((Tab, Name::new("main"), nav::tab_node(), ChildOf(root)))
-                .id();
+            let tab = world.spawn((Tab, Name::new("main"), ChildOf(root))).id();
             let leaf = spawn_pane(&mut world.commands(), &settings, tab, None, None)?;
             world.flush();
             world.get_entity_mut(id).map_err(|_| DETACHED)?.insert((

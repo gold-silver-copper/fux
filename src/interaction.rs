@@ -355,17 +355,10 @@ pub(crate) fn move_pane(
                     Workspace,
                     WorkspaceOrder(order),
                     Name::new(name.unwrap_or_else(|| "workspace".into())),
-                    navigation::tab_node(),
+                    tab_node(),
                 ))
                 .id();
-            let tab = world
-                .spawn((
-                    Tab,
-                    Name::new("main"),
-                    navigation::tab_node(),
-                    ChildOf(root),
-                ))
-                .id();
+            let tab = world.spawn((Tab, Name::new("main"), ChildOf(root))).id();
             (root, tab)
         }
         MoveTo::NewTab(name) => {
@@ -373,7 +366,6 @@ pub(crate) fn move_pane(
                 .spawn((
                     Tab,
                     Name::new(name.unwrap_or_else(|| "tab".into())),
-                    navigation::tab_node(),
                     ChildOf(target.workspace),
                 ))
                 .id();
@@ -475,7 +467,7 @@ fn move_beside(
     destination: Entity,
     direction: Direction,
 ) -> Result<(), String> {
-    use bevy_ui::{FlexDirection, Val};
+    use bevy_ui::FlexDirection;
     let parent = world
         .get::<ChildOf>(destination)
         .ok_or("destination removed")?
@@ -484,18 +476,11 @@ fn move_beside(
         .get::<Children>(parent)
         .and_then(|children| children.iter().position(|e| e == destination))
         .ok_or("destination removed")?;
-    let mut node = navigation::tab_node();
-    node.width = Val::Auto;
-    node.height = Val::Auto;
-    node.flex_basis = Val::ZERO;
-    node.flex_direction = if matches!(direction, Direction::Up | Direction::Down) {
-        FlexDirection::Column
-    } else {
-        FlexDirection::Row
-    };
-    node.row_gap = Val::Px(1.0);
-    node.column_gap = Val::Px(1.0);
-    let split = world.spawn((Split, node)).id();
+    let mut split = world.spawn(Split);
+    if matches!(direction, Direction::Up | Direction::Down) {
+        split.insert(split_node(FlexDirection::Column));
+    }
+    let split = split.id();
     let children = if matches!(direction, Direction::Left | Direction::Up) {
         [source, destination]
     } else {

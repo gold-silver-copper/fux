@@ -3,18 +3,7 @@
 mod tests;
 use crate::model::*;
 use bevy_ecs::prelude::*;
-use bevy_ui::{Node, Val};
-
-pub fn tab_node() -> Node {
-    Node {
-        width: Val::Percent(100.0),
-        height: Val::Percent(100.0),
-        flex_grow: 1.0,
-        min_width: Val::ZERO,
-        min_height: Val::ZERO,
-        ..Default::default()
-    }
-}
+use bevy_ui::Node;
 
 pub fn workspaces(world: &mut World) -> Vec<Entity> {
     let mut roots: Vec<_> = world
@@ -107,9 +96,7 @@ pub enum Pick {
 pub fn tab_new(world: &mut World, id: Entity, name: Option<String>) -> Result<(), String> {
     let root = viewing(world, id).ok_or(DETACHED)?;
     let title = name.unwrap_or_else(|| format!("tab-{}", tabs(world, root).len() + 1));
-    let tab = world
-        .spawn((Tab, Name::new(title), tab_node(), ChildOf(root)))
-        .id();
+    let tab = world.spawn((Tab, Name::new(title), ChildOf(root))).id();
     let settings = world.resource::<crate::assets::Settings>().clone();
     let leaf = crate::server::spawn_pane(&mut world.commands(), &settings, tab, None, None)?;
     world.flush();
