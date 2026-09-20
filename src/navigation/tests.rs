@@ -13,8 +13,6 @@ fn viewer(world: &mut World, workspace: Entity) -> Entity {
             scrollback: 0,
             notice: String::new(),
             notice_error: false,
-            help_scroll: 0,
-            prefix: false,
         })
         .id()
 }
@@ -63,14 +61,14 @@ fn viewers_remember_independent_tabs_focus_and_last_focus() -> crate::testing::O
     repair(&mut world);
     world.get_mut::<Viewer>(left).need()?.focus = Some(b);
     repair(&mut world);
-    control(&mut world, left, Action::TabNext, None, "").need()?;
+    control(&mut world, left, Action::TabNext, None, "")?;
     assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(c));
     assert_eq!(world.get::<Viewer>(right).need()?.focus, Some(a));
-    control(&mut world, left, Action::TabPrevious, None, "").need()?;
+    control(&mut world, left, Action::TabPrevious, None, "")?;
     assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(b));
-    control(&mut world, left, Action::FocusLast, None, "").need()?;
+    control(&mut world, left, Action::FocusLast, None, "")?;
     assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(a));
-    control(&mut world, left, Action::FocusLast, None, "").need()?;
+    control(&mut world, left, Action::FocusLast, None, "")?;
     assert_eq!(world.get::<Viewer>(left).need()?.focus, Some(b));
     world.despawn(b);
     repair(&mut world);

@@ -102,8 +102,23 @@ pub struct Viewer {
     pub scrollback: usize,
     pub notice: String,
     pub notice_error: bool,
-    pub help_scroll: usize,
-    pub prefix: bool,
+}
+
+pub const DETACHED: &str = "viewer no longer attached";
+
+impl Viewer {
+    /// The bar's right zone shows the latest notice until further input clears it.
+    pub fn notify(&mut self, message: impl Into<String>, error: bool) {
+        self.notice = message.into();
+        self.notice_error = error;
+    }
+}
+
+/// Notify a viewer that may already be gone; a missing viewer has nobody to tell.
+pub(crate) fn notify(world: &mut World, id: Entity, message: impl Into<String>, error: bool) {
+    if let Some(mut v) = world.get_mut::<Viewer>(id) {
+        v.notify(message, error);
+    }
 }
 
 #[derive(Resource, Clone)]

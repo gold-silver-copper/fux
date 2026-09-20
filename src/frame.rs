@@ -40,7 +40,6 @@ pub(crate) fn with_views<T>(
     world.insert_non_send(views);
     result
 }
-const DETACHED: &str = "viewer no longer attached";
 pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), String> {
     crate::navigation::repair(world);
     // Controls can arrive before the next Update; run the same native change-
@@ -50,13 +49,6 @@ pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Res
         .map_err(|e| e.to_string())?;
     let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
     let root = v.workspace;
-    let scroll = v
-        .help_scroll
-        .min(chrome::help_limit(world.resource::<Settings>(), v.rows));
-    if scroll != v.help_scroll {
-        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.help_scroll = scroll;
-    }
-    let v = world.get::<Viewer>(id).ok_or(DETACHED)?;
     if v.focus.is_none_or(|e| world.get::<PaneView>(e).is_none()) {
         let focus = first_leaf(world, root);
         world.get_mut::<Viewer>(id).ok_or(DETACHED)?.focus = focus;
@@ -149,8 +141,6 @@ pub(crate) fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
             scrollback: 0,
             notice: String::new(),
             notice_error: false,
-            help_scroll: 0,
-            prefix: false,
         })
         .id();
     with_views(world, |world, views| sync_view(world, views, id)).map_err(BrpError::internal)?;
@@ -320,10 +310,7 @@ pub(crate) fn clipboard(world: &mut World, id: Entity, text: String) -> Result<(
         return Err("clipboard delivery queue is full".into());
     }
     view.clipboard.push(text);
-    if let Some(mut v) = world.get_mut::<Viewer>(id) {
-        v.notice = "selection copied via OSC52".into();
-        v.notice_error = false;
-    }
+    notify(world, id, "selection copied via OSC52", false);
     Ok(())
 }
 
@@ -342,9 +329,7 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
     let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
     let focus = v.focus;
     let scrollback = v.scrollback;
-    let modal = v.prefix
-        || world.get::<crate::interaction::Overlay>(id).is_some()
-        || world.get::<crate::selection::Selection>(id).is_some();
+    let modal = crate::interaction::modal(world, id);
     let view = views.get_mut(&id).ok_or("missing presentation")?;
     let mut out = String::from("\x1b[?2026h\x1b[?7l\x1b[?25l\x1b[0m\x1b[H\x1b[2J");
     let focused = focus
@@ -421,15 +406,18 @@ fn paint(world: &mut World, views: &mut Views, id: Entity) -> Result<Frame, Stri
             v,
             &crate::interaction::lines(world, overlay, v.rows),
         )
-    } else if v.prefix {
+    } else if let Some(prefix) = world.get::<crate::interaction::Prefix>(id) {
         chrome::panel_context(
             &mut out,
             v,
             world.resource::<Settings>(),
-            v.help_scroll,
+            prefix.scroll,
             |action| {
-                actions::unavailable(world, actions::Target::viewer(v), action.parse().ok())
-                    .is_some()
+                let target = actions::Target::viewer(v);
+                action.parse().map_or_else(
+                    |_| !target.valid(world),
+                    |action| actions::unavailable(world, target, action).is_some(),
+                )
             },
         )
     } else {

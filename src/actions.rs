@@ -41,8 +41,8 @@ pub enum TargetKind {
 
 macro_rules! actions {
     (
-        $($group:literal: [$($variant:ident => $label:literal),* $(,)?]),* $(,)?
-        ; api: [$($api:ident => $api_label:literal),* $(,)?]
+        $($group:literal: [$($variant:ident $id:literal => $label:literal),* $(,)?]),* $(,)?
+        ; api: [$($api:ident $api_id:literal => $api_label:literal),* $(,)?]
     ) => {
         /// The wire form is the snake_case identifier, unchanged from the string API.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
@@ -53,7 +53,16 @@ macro_rules! actions {
         }
         /// Bindable actions in help/menu order. API-only actions are excluded.
         pub const ALL: &[Action] = &[$($(Action::$variant,)*)*];
+        /// Actions the API dispatches but no binding lists.
+        const API_ONLY: &[Action] = &[$(Action::$api,)*];
         impl Action {
+            /// The identifier used in configuration and over the wire.
+            pub const fn id(self) -> &'static str {
+                match self {
+                    $($(Self::$variant => $id,)*)*
+                    $(Self::$api => $api_id,)*
+                }
+            }
             pub fn group(self) -> &'static str {
                 match self {
                     $($(Self::$variant => $group,)*)*
@@ -71,46 +80,46 @@ macro_rules! actions {
 }
 actions! {
     "Panes": [
-        SplitHorizontal => "split side by side", SplitVertical => "split stacked",
-        PaneMenu => "pane actions", RenamePane => "rename pane", Close => "close pane",
-        Terminate => "terminate process", Zoom => "zoom or restore",
-        GrowWidth => "grow width", ShrinkWidth => "shrink width",
-        GrowHeight => "grow height", ShrinkHeight => "shrink height",
-        ReorderPrev => "reorder previous", ReorderNext => "reorder next",
-        SwapChoose => "swap with pane", SwapLeft => "swap left", SwapRight => "swap right",
-        SwapUp => "swap up", SwapDown => "swap down",
-        MoveLeft => "move left", MoveRight => "move right", MoveUp => "move up", MoveDown => "move down",
-        MoveTab => "move to tab", MoveNewTab => "move to new tab",
-        MoveWorkspace => "move to workspace", MoveNewWorkspace => "move to new workspace",
-        CopyMode => "history and selection", ScrollUp => "scroll older output",
-        ScrollDown => "scroll newer output", Copy => "copy visible text"
+        SplitHorizontal "split_horizontal" => "split side by side", SplitVertical "split_vertical" => "split stacked",
+        PaneMenu "pane_menu" => "pane actions", RenamePane "rename_pane" => "rename pane", Close "close" => "close pane",
+        Terminate "terminate" => "terminate process", Zoom "zoom" => "zoom or restore",
+        GrowWidth "grow_width" => "grow width", ShrinkWidth "shrink_width" => "shrink width",
+        GrowHeight "grow_height" => "grow height", ShrinkHeight "shrink_height" => "shrink height",
+        ReorderPrev "reorder_prev" => "reorder previous", ReorderNext "reorder_next" => "reorder next",
+        SwapChoose "swap_choose" => "swap with pane", SwapLeft "swap_left" => "swap left", SwapRight "swap_right" => "swap right",
+        SwapUp "swap_up" => "swap up", SwapDown "swap_down" => "swap down",
+        MoveLeft "move_left" => "move left", MoveRight "move_right" => "move right", MoveUp "move_up" => "move up", MoveDown "move_down" => "move down",
+        MoveTab "move_tab" => "move to tab", MoveNewTab "move_new_tab" => "move to new tab",
+        MoveWorkspace "move_workspace" => "move to workspace", MoveNewWorkspace "move_new_workspace" => "move to new workspace",
+        CopyMode "copy_mode" => "history and selection", ScrollUp "scroll_up" => "scroll older output",
+        ScrollDown "scroll_down" => "scroll newer output", Copy "copy" => "copy visible text"
     ],
-    "Focus": [FocusNext => "next pane", FocusPrevious => "previous pane", FocusLast => "last pane",
-        FocusLeft => "focus left", FocusRight => "focus right", FocusUp => "focus up", FocusDown => "focus down"],
-    "Tabs": [TabNew => "new tab", TabNext => "next tab", TabPrevious => "previous tab",
-        TabChoose => "choose tab", RenameTab => "rename tab", TabClose => "close tab",
-        TabMenu => "tab actions", TabReorderPrevious => "reorder tab previous", TabReorderNext => "reorder tab next"],
-    "Workspaces": [WorkspaceNew => "new workspace", WorkspaceNext => "next workspace",
-        WorkspacePrevious => "previous workspace", WorkspaceChoose => "choose workspace",
-        RenameWorkspace => "rename workspace", WorkspaceClose => "close workspace", WorkspaceMenu => "workspace actions",
-        WorkspaceReorderPrevious => "reorder workspace previous", WorkspaceReorderNext => "reorder workspace next"],
-    "Session": [SaveLayout => "save layout", LoadLayout => "load layout", Help => "command help", Detach => "detach"]
-    ; api: [Focus => "focus", TabSelect => "tab select", WorkspaceSelect => "workspace select", Swap => "swap"]
+    "Focus": [FocusNext "focus_next" => "next pane", FocusPrevious "focus_previous" => "previous pane", FocusLast "focus_last" => "last pane",
+        FocusLeft "focus_left" => "focus left", FocusRight "focus_right" => "focus right", FocusUp "focus_up" => "focus up", FocusDown "focus_down" => "focus down"],
+    "Tabs": [TabNew "tab_new" => "new tab", TabNext "tab_next" => "next tab", TabPrevious "tab_previous" => "previous tab",
+        TabChoose "tab_choose" => "choose tab", RenameTab "rename_tab" => "rename tab", TabClose "tab_close" => "close tab",
+        TabMenu "tab_menu" => "tab actions", TabReorderPrevious "tab_reorder_previous" => "reorder tab previous", TabReorderNext "tab_reorder_next" => "reorder tab next"],
+    "Workspaces": [WorkspaceNew "workspace_new" => "new workspace", WorkspaceNext "workspace_next" => "next workspace",
+        WorkspacePrevious "workspace_previous" => "previous workspace", WorkspaceChoose "workspace_choose" => "choose workspace",
+        RenameWorkspace "rename_workspace" => "rename workspace", WorkspaceClose "workspace_close" => "close workspace", WorkspaceMenu "workspace_menu" => "workspace actions",
+        WorkspaceReorderPrevious "workspace_reorder_previous" => "reorder workspace previous", WorkspaceReorderNext "workspace_reorder_next" => "reorder workspace next"],
+    "Session": [SaveLayout "save_layout" => "save layout", LoadLayout "load_layout" => "load layout", Help "help" => "command help", Detach "detach" => "detach"]
+    ; api: [Focus "focus" => "focus", TabSelect "tab_select" => "tab select", WorkspaceSelect "workspace_select" => "workspace select", Swap "swap" => "swap"]
 }
 
 impl std::str::FromStr for Action {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, String> {
-        serde_json::from_value(serde_json::Value::String(s.to_owned()))
-            .map_err(|_| format!("unknown action {s}"))
+        ALL.iter()
+            .chain(API_ONLY)
+            .copied()
+            .find(|action| action.id() == s)
+            .ok_or_else(|| format!("unknown action {s}"))
     }
 }
 impl std::fmt::Display for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match serde_json::to_value(self) {
-            Ok(serde_json::Value::String(id)) => f.write_str(&id),
-            _ => write!(f, "{self:?}"),
-        }
+        f.write_str(self.id())
     }
 }
 
@@ -153,13 +162,13 @@ impl Action {
     }
 }
 
-/// `None` is an unrecognized custom action: only its target validity is checked.
-pub fn unavailable(world: &World, target: Target, action: Option<Action>) -> Option<&'static str> {
+pub const TARGET_GONE: &str = "target no longer exists here";
+
+pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'static str> {
     use Action::*;
     if !target.valid(world) {
-        return Some("target no longer exists here");
+        return Some(TARGET_GONE);
     }
-    let action = action?;
     if action == Copy
         && world
             .get_resource::<crate::assets::Settings>()
@@ -220,16 +229,14 @@ mod tests {
 
     #[test]
     fn wire_names_round_trip_and_unknown_names_are_rejected() -> crate::testing::Outcome {
-        for action in ALL.iter().copied().chain([
-            Action::Focus,
-            Action::TabSelect,
-            Action::WorkspaceSelect,
-            Action::Swap,
-        ]) {
+        for action in ALL.iter().chain(API_ONLY).copied() {
             let id = action.to_string();
-            assert_eq!(id.parse::<Action>().need()?, action);
+            assert_eq!(id.parse::<Action>()?, action);
             assert!(id.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+            // The literal in the table and the serde name must never drift.
+            assert_eq!(serde_json::to_value(action)?, serde_json::Value::String(id));
         }
+        assert_eq!(API_ONLY.len(), 4);
         assert_eq!(Action::SplitHorizontal.to_string(), "split_horizontal");
         assert_eq!(Action::ReorderPrev.to_string(), "reorder_prev");
         assert_eq!(

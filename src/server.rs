@@ -3,6 +3,7 @@ use crate::{
     assets::{self, Settings},
     control::{Control, Shutdown, UserInput},
     frame::{self, Views, sync_view, with_views},
+    interaction::Prefix,
     model::*,
     presentation,
     protocol::Input,
@@ -15,10 +16,9 @@ use bevy_ui::{FlexDirection, Node, Val};
 use bevy_world_serialization::DynamicWorld;
 use std::sync::Arc;
 
-/// A control whose action name already parsed; the original event is retained
-/// for its value, target and mapping.
+/// A control that the interaction layer declined, for the scheduled observer.
 #[derive(Event)]
-struct RoutedControl(Control, Action);
+struct RoutedControl(Control);
 impl std::ops::Deref for RoutedControl {
     type Target = Control;
     fn deref(&self) -> &Control {
@@ -44,15 +44,10 @@ fn route_control(event: On<Control>, mut commands: Commands) {
             return;
         };
         let mut target = crate::actions::Target::viewer(v);
-        let action = match event.action.parse::<Action>() {
-            Ok(action) => action,
-            Err(message) => {
-                return crate::interaction::unknown(world, event.viewer, target, message);
-            }
-        };
+        let action = event.action;
         if let Some(entity) = event.target {
             if world.get_entity(entity).is_err() {
-                notice(world, event.viewer, "target no longer exists", true);
+                notify(world, event.viewer, "target no longer exists", true);
                 return;
             }
             let valid_kind = match action.target_kind() {
@@ -62,7 +57,7 @@ fn route_control(event: On<Control>, mut commands: Commands) {
                 TargetKind::Any => true,
             };
             if !valid_kind {
-                notice(
+                notify(
                     world,
                     event.viewer,
                     "target has the wrong kind for this action",
@@ -108,8 +103,8 @@ fn route_control(event: On<Control>, mut commands: Commands) {
             false,
         ) {
             Ok(true) => {}
-            Ok(false) => world.trigger(RoutedControl(event, action)),
-            Err(error) => notice(world, event.viewer, &error, true),
+            Ok(false) => world.trigger(RoutedControl(event)),
+            Err(error) => notify(world, event.viewer, error, true),
         }
     });
 }
@@ -156,7 +151,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
             return;
         };
         if let Some(token) = event.input.token()
-            && v.prefix
+            && world.get::<Prefix>(event.viewer).is_some()
         {
             let settings = world.resource::<Settings>();
             if token != settings.prefix
@@ -179,7 +174,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         let Some(v) = world.get::<Viewer>(event.viewer) else {
             return;
         };
-        if !v.prefix
+        if world.get::<Prefix>(event.viewer).is_none()
             && let Input::Mouse {
                 action,
                 button,
@@ -250,7 +245,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
         } = &event.input
             && action == "press"
             && *button == 0
-            && world.get::<Viewer>(event.viewer).is_some_and(|v| !v.prefix)
+            && world.get::<Prefix>(event.viewer).is_none()
         {
             let hit = world
                 .non_send_mut::<Views>()
@@ -285,7 +280,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                         action,
                         (y.saturating_sub(rect.y), x.saturating_sub(rect.x)),
                     ) {
-                        notice(world, event.viewer, &error, true);
+                        notify(world, event.viewer, error, true);
                     }
                     return;
                 }
@@ -345,10 +340,10 @@ fn scene_completions(io: Res<SceneIo>, mut commands: Commands) {
                 Err(error) => Err(error),
             };
             let error = result.is_err();
-            notice(
+            notify(
                 world,
                 done.viewer,
-                &result.unwrap_or_else(|error| error),
+                result.unwrap_or_else(|error| error),
                 error,
             );
         });
@@ -368,6 +363,7 @@ impl Plugin for ServerPlugin {
             .register_type::<PaneViews>()
             .register_type::<Viewer>()
             .register_type::<Name>()
+            .register_type::<Action>()
             .register_type::<Control>()
             .register_type::<UserInput>()
             .register_type::<Shutdown>()
@@ -380,6 +376,10 @@ impl Plugin for ServerPlugin {
             .add_observer(input_event)
             .add_observer(route_control)
             .add_observer(route_input)
+            .add_observer(crate::paste::overlay_opened)
+            .add_observer(crate::navigation::repair_on_remove::<Tab>)
+            .add_observer(crate::navigation::repair_on_remove::<PaneView>)
+            .add_observer(crate::navigation::repair_on_remove::<Workspace>)
             .add_observer(
                 |removed: On<Remove, Viewer>, mut views: NonSendMut<Views>| {
                     views.remove(&removed.entity);
@@ -627,7 +627,7 @@ fn control_event(
     wake: Res<Wake>,
 ) {
     let id = event.viewer;
-    let action = event.1;
+    let action = event.action;
     use Action::*;
     if crate::navigation::handles(action) {
         let target = event.target;
@@ -635,7 +635,7 @@ fn control_event(
         commands.queue(move |world: &mut World| {
             let result = crate::navigation::control(world, id, action, target, &value);
             if let Err(error) = result {
-                notice(world, id, &error, true);
+                notify(world, id, error, true);
             }
         });
         wake.notify();
@@ -648,9 +648,8 @@ fn control_event(
     let Ok(mut v) = viewers.get_mut(id) else {
         return;
     };
-    v.notice.clear();
-    v.notice_error = false;
-    v.prefix = false;
+    v.notify("", false);
+    commands.entity(id).remove::<Prefix>();
     let leaf = event
         .target
         .filter(|e| panes.contains(*e))
@@ -891,16 +890,14 @@ fn control_event(
             }
             // Help is the prefix command column itself; there is no second surface.
             Help => {
-                v.prefix = true;
-                v.help_scroll = 0;
+                commands.entity(id).insert(Prefix::default());
             }
             other => return Err(format!("unknown action {other}")),
         }
         Ok(())
     })();
     if let Err(error) = result {
-        v.notice = error;
-        v.notice_error = true;
+        v.notify(error, true);
     }
     wake.notify();
 }
@@ -946,7 +943,7 @@ fn collapse_layout(
 fn input_event(
     event: On<RoutedInput>,
     mut commands: Commands,
-    mut viewers: Query<&mut Viewer>,
+    mut viewers: Query<(&mut Viewer, Has<Prefix>)>,
     panes: Query<&PaneView>,
     settings: Res<Settings>,
     terminals: Query<&Terminal>,
@@ -954,7 +951,7 @@ fn input_event(
     wake: Res<Wake>,
 ) {
     let id = event.viewer;
-    let Ok(mut v) = viewers.get_mut(id) else {
+    let Ok((mut v, prefix)) = viewers.get_mut(id) else {
         return;
     };
     let result = (|| -> Result<(), String> {
@@ -971,9 +968,9 @@ fn input_event(
                 shift,
             } => {
                 let token = event.input.token().unwrap_or_default();
-                if v.prefix {
+                if prefix {
                     if key == "escape" {
-                        v.prefix = false;
+                        commands.entity(id).remove::<Prefix>();
                         v.notice.clear();
                         return Ok(());
                     }
@@ -981,25 +978,23 @@ fn input_event(
                     if token != settings.prefix
                         && let Some(binding) = settings.bindings.iter().find(|b| b.key == token)
                     {
-                        v.prefix = false;
-                        commands.trigger(Control {
-                            viewer: id,
-                            action: binding.action.clone(),
-                            value: String::new(),
-                            target: None,
-                            mapping: Vec::new(),
+                        commands.entity(id).remove::<Prefix>();
+                        let action = binding.action.clone();
+                        let target = crate::actions::Target::viewer(&v);
+                        commands.queue(move |world: &mut World| {
+                            crate::interaction::dispatch_named(
+                                world, id, target, &action, None, "", true,
+                            );
                         });
                         return Ok(());
                     }
                     if token != settings.prefix {
-                        v.notice = format!("unbound prefix key {token}");
-                        v.notice_error = false;
+                        v.notify(format!("unbound prefix key {token}"), false);
                         return Ok(());
                     }
-                    v.prefix = false;
+                    commands.entity(id).remove::<Prefix>();
                 } else if token == settings.prefix {
-                    v.prefix = true;
-                    v.help_scroll = 0;
+                    commands.entity(id).insert(Prefix::default());
                     v.notice.clear();
                     return Ok(());
                 }
@@ -1020,7 +1015,7 @@ fn input_event(
                 v.notice.clear();
             }
             Input::Paste { text } => {
-                if v.prefix {
+                if prefix {
                     return Ok(());
                 }
                 let pane = panes
@@ -1048,7 +1043,7 @@ fn input_event(
                 // Pick against the last painted native layout, not a second
                 // rectangle hit-test implementation.
                 let context = views.get_mut(&id).ok_or("presentation not initialized")?;
-                if v.prefix {
+                if prefix {
                     return Ok(());
                 }
                 let hit = context.presentation.pointer(*x, *y, action == "press");
@@ -1079,8 +1074,7 @@ fn input_event(
                                     Action::ScrollUp
                                 } else {
                                     Action::ScrollDown
-                                }
-                                .to_string(),
+                                },
                                 value: String::new(),
                                 target: None,
                                 mapping: Vec::new(),
@@ -1109,17 +1103,9 @@ fn input_event(
         Ok(())
     })();
     if let Err(error) = result {
-        v.notice = error;
-        v.notice_error = true;
+        v.notify(error, true);
     }
     wake.notify();
-}
-
-fn notice(world: &mut World, id: Entity, message: &str, error: bool) {
-    if let Some(mut v) = world.get_mut::<Viewer>(id) {
-        v.notice = message.to_owned();
-        v.notice_error = error;
-    }
 }
 
 #[cfg(test)]
@@ -1149,68 +1135,51 @@ mod tests {
             .spawn((Name::new("before"), ChildOf(nested)))
             .id();
         app.update();
-        let untouched = scene(app.world_mut(), right).need()?.1;
-        let initial = scene(app.world_mut(), left).need()?.1;
+        let untouched = scene(app.world_mut(), right)?.1;
+        let initial = scene(app.world_mut(), left)?.1;
         app.update();
-        assert!(Arc::ptr_eq(
-            &initial,
-            &scene(app.world_mut(), left).need()?.1
-        ));
+        assert!(Arc::ptr_eq(&initial, &scene(app.world_mut(), left)?.1));
         // The descendant deliberately has no Node. Newly inserted, previously
         // absent types and ordinary in-place writes must still reach the scene.
         app.world_mut().entity_mut(leaf).insert(Extra(7));
         // A synchronous control can observe this mutation before another Update.
-        app.world_mut()
-            .run_system_cached(invalidate_layouts)
-            .need()?;
-        let inserted = scene(app.world_mut(), left).need()?.1;
+        app.world_mut().run_system_cached(invalidate_layouts)?;
+        let inserted = scene(app.world_mut(), left)?.1;
         assert!(!Arc::ptr_eq(&initial, &inserted));
-        assert!(Arc::ptr_eq(
-            &untouched,
-            &scene(app.world_mut(), right).need()?.1
-        ));
+        assert!(Arc::ptr_eq(&untouched, &scene(app.world_mut(), right)?.1));
         app.world_mut().get_mut::<Extra>(leaf).need()?.0 = 9;
         app.update();
-        let modified = scene(app.world_mut(), left).need()?.1;
+        let modified = scene(app.world_mut(), left)?.1;
         assert!(!Arc::ptr_eq(&inserted, &modified));
         app.world_mut().entity_mut(leaf).remove::<Extra>();
         app.update();
-        let removed = scene(app.world_mut(), left).need()?.1;
+        let removed = scene(app.world_mut(), left)?.1;
         assert!(!Arc::ptr_eq(&modified, &removed));
-        assert!(Arc::ptr_eq(
-            &untouched,
-            &scene(app.world_mut(), right).need()?.1
-        ));
+        assert!(Arc::ptr_eq(&untouched, &scene(app.world_mut(), right)?.1));
         app.world_mut().entity_mut(nested).insert(ChildOf(right));
         app.update();
-        let emptied = scene(app.world_mut(), left).need()?.1;
-        let moved = scene(app.world_mut(), right).need()?.1;
+        let emptied = scene(app.world_mut(), left)?.1;
+        let moved = scene(app.world_mut(), right)?.1;
         assert!(!Arc::ptr_eq(&removed, &emptied));
         assert!(!Arc::ptr_eq(&untouched, &moved));
         assert!(!emptied.entities.iter().any(|entity| entity.entity == leaf));
         assert!(moved.entities.iter().any(|entity| entity.entity == leaf));
         app.world_mut().despawn(nested);
         app.update();
-        let despawned = scene(app.world_mut(), right).need()?.1;
+        let despawned = scene(app.world_mut(), right)?.1;
         assert!(
             !despawned
                 .entities
                 .iter()
                 .any(|entity| entity.entity == leaf)
         );
-        assert!(Arc::ptr_eq(
-            &emptied,
-            &scene(app.world_mut(), left).need()?.1
-        ));
+        assert!(Arc::ptr_eq(&emptied, &scene(app.world_mut(), left)?.1));
         app.world_mut().entity_mut(right).remove::<Workspace>();
         assert!(scene(app.world_mut(), right).is_err());
         app.world_mut().despawn(right);
         let replacement = app.world_mut().spawn(Workspace).id();
         app.update();
-        assert_eq!(
-            scene(app.world_mut(), replacement).need()?.1.entities.len(),
-            1
-        );
+        assert_eq!(scene(app.world_mut(), replacement)?.1.entities.len(), 1);
         Ok(())
     }
 }

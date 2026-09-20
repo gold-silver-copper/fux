@@ -130,12 +130,18 @@ fn settings_hot_reload_short_empty_and_unicode_help() -> Outcome {
     for _ in 0..30 {
         s.key(v, "down", false)?;
     }
-    assert!(s.viewer(v)?.at("help_scroll").as_u64().need()? > 0);
-    fs::write(s.directory.join("fux.json"),serde_json::to_vec(&json!({
-        "prefix":"ctrl-a", "bindings":[{"key":"界","action":"custom_界é"},{"key":"d","action":"detach"}]
-    })).need()?).need()?;
+    let last = s.selected(v, 8, 32)?.need()?;
+    assert!(!last.contains("split side by side"), "{last}");
+    fs::write(
+        s.directory.join("fux.json"),
+        serde_json::to_vec(&json!({
+            "prefix":"ctrl-a", "bindings":[{"key":"界","action":"custom_界é"},{"key":"d","action":"detach"}]
+        }))?,
+    )?;
     eventually(|| Ok(s.painted(v, 8, 32)?.contents().contains("custom 界é")))?;
-    assert_eq!(s.viewer(v)?.at("help_scroll"), 1); // clamp selected action, not viewport offset
+    // The selection clamps to the last action, not to a viewport offset.
+    let selected = s.selected(v, 8, 32)?.need()?;
+    assert!(selected.starts_with("界  custom"), "{selected}");
     let screen = s.painted(v, 8, 32)?;
     assert!(!screen.contents().contains("more"));
     assert!(row(&screen, 6).contains("custom 界é"));
@@ -149,7 +155,7 @@ fn settings_hot_reload_short_empty_and_unicode_help() -> Outcome {
     assert!((0..32).any(|x| screen.cell(3, x).is_some_and(|c| c.bold())));
     s.key(v, "escape", false)?;
     s.key(v, "a", true)?;
-    assert_eq!(s.viewer(v)?.at("prefix"), true);
+    assert!(s.column_open(v, 8, 32)?);
     s.key(v, "界", false)?; // unknown action remains discoverable and errors visibly
     assert!(
         s.viewer(v)?
@@ -165,10 +171,11 @@ fn settings_hot_reload_short_empty_and_unicode_help() -> Outcome {
             .is_some_and(|c| c.fgcolor() == Color::Idx(1))
     }));
     s.control(v, "help", "")?;
-    fs::write(s.directory.join("fux.json"), r#"{"bindings":[]}"#).need()?;
+    fs::write(s.directory.join("fux.json"), r#"{"bindings":[]}"#)?;
     eventually(|| Ok(s.painted(v, 8, 32)?.contents().contains("No bindings")))?;
     s.key(v, "down", false)?;
-    assert_eq!(s.viewer(v)?.at("help_scroll"), 0);
+    assert!(s.column_open(v, 8, 32)?);
+    assert_eq!(s.selected(v, 8, 32)?, None);
     for (rows, cols) in [(2, 1), (3, 2), (4, 3), (1, 1)] {
         s.resize(v, rows, cols)?;
         let screen = s.painted(v, rows, cols)?;
@@ -189,7 +196,7 @@ fn viewers_keep_independent_focus_zoom_history_and_exit_status() -> Outcome {
     let b = s.attach()?;
     s.painted(a, 24, 80)?;
     s.painted(b, 24, 80)?;
-    let b_focus = s.viewer(b)?.at("focus").clone();
+    let b_focus = s.viewer(b)?.at("focus");
     assert_ne!(s.viewer(a)?.at("focus"), b_focus);
     s.control(a, "zoom", "")?;
     s.control(a, "scroll_up", "")?;
@@ -215,9 +222,10 @@ fn viewers_keep_independent_focus_zoom_history_and_exit_status() -> Outcome {
             .cell(23, x)
             .is_some_and(|c| c.fgcolor() == Color::Idx(3))
     }));
-    s.control(b, "not_an_action", "")?;
+    // An unknown action name no longer reaches the viewer: the request itself fails.
+    assert!(s.control(b, "not_an_action", "").is_err());
     let screen = s.painted(b, 24, 80)?;
-    assert!((0..80).any(|x| {
+    assert!(!(0..80).any(|x| {
         screen
             .cell(23, x)
             .is_some_and(|c| c.fgcolor() == Color::Idx(1))

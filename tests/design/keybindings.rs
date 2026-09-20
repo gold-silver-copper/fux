@@ -7,7 +7,7 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     let b = s.attach()?;
     s.screen(a)?;
     let before = s.query("bevy_ui::ui_node::Node")?;
-    let focus = s.viewer(a)?.at("focus").clone();
+    let focus = s.viewer(a)?.at("focus");
     fs::write(
         s.directory.join("fux.json"),
         serde_json::to_vec(&json!({
@@ -17,10 +17,8 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
                 {"key":"t","action":"tab_new"},
                 {"key":"[","action":"tab_previous"}
             ]
-        }))
-        .need()?,
-    )
-    .need()?;
+        }))?,
+    )?;
     s.control(a, "help", "")?;
     eventually(|| {
         Ok(s.painted(a, 24, 80)?
@@ -30,12 +28,18 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     s.key(a, "escape", false)?;
     s.key(a, "a", true)?;
     s.key(a, "down", false)?;
-    assert_eq!(s.viewer(a)?.at("help_scroll"), 1);
+    assert_eq!(
+        s.selected(a, 24, 80)?.as_deref(),
+        Some("right  shrink width")
+    );
     s.key(a, "right", false)?;
-    assert_eq!(s.viewer(a)?.at("help_scroll"), 1);
+    assert_eq!(
+        s.selected(a, 24, 80)?.as_deref(),
+        Some("right  shrink width")
+    );
     s.key(a, "down", false)?;
-    assert_eq!(s.viewer(a)?.at("help_scroll"), 2);
-    assert_eq!(s.viewer(b)?.at("help_scroll"), 0);
+    assert_eq!(s.selected(a, 24, 80)?.as_deref(), Some("t  new tab"));
+    assert!(!s.column_open(b, 24, 80)?);
     assert_eq!(s.viewer(a)?.at("focus"), focus);
     assert_eq!(s.query("bevy_ui::ui_node::Node")?, before);
     let screen = s.painted(a, 24, 80)?;
@@ -45,8 +49,8 @@ fn reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_actio
     assert!((0..80).any(|x| screen.cell(selected_row, x).is_some_and(|c| c.inverse())));
     s.capture(a, 24, 80, "keybindings-selected")?;
     s.enter(a)?;
-    assert_eq!(s.query("fux::model::Tab")?.len(), 2);
-    assert_eq!(s.viewer(a)?.at("prefix"), false);
+    assert_eq!(s.query("fux::model::Tab")?.rows().count(), 2);
+    assert!(!s.column_open(a, 24, 80)?);
     assert_ne!(s.viewer(a)?.at("tab"), s.viewer(b)?.at("tab"));
     s.capture(a, 24, 80, "keybindings-new-tab")?;
     Ok(())
@@ -70,10 +74,8 @@ fn a_navigation_key_prefix_still_forwards_its_literal_when_doubled() -> Outcome 
         s.directory.join("fux.json"),
         serde_json::to_vec(&json!({
             "prefix":"up", "bindings":[{"key":"up","action":"terminate"}]
-        }))
-        .need()?,
-    )
-    .need()?;
+        }))?,
+    )?;
     s.control(v, "help", "")?;
     eventually(|| {
         Ok(s.painted(v, 24, 80)?
@@ -82,9 +84,9 @@ fn a_navigation_key_prefix_still_forwards_its_literal_when_doubled() -> Outcome 
     })?;
     s.key(v, "escape", false)?;
     s.key(v, "up", false)?;
-    assert_eq!(s.viewer(v)?.at("prefix"), true);
+    assert!(s.column_open(v, 24, 80)?);
     s.key(v, "up", false)?;
-    assert_eq!(s.viewer(v)?.at("prefix"), false);
+    assert!(!s.column_open(v, 24, 80)?);
     eventually(|| Ok(fs::read(&input).is_ok_and(|b| b == b"\x1b[A")))?;
     Ok(())
 }
@@ -98,10 +100,8 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
         s.directory.join("fux.json"),
         serde_json::to_vec(&json!({
             "bindings":[{"key":"[","action":"tab_previous"}]
-        }))
-        .need()?,
-    )
-    .need()?;
+        }))?,
+    )?;
     s.control(v, "help", "")?;
     eventually(|| Ok(!s.painted(v, 24, 80)?.contents().contains("split side")))?;
     let screen = s.painted(v, 24, 80)?;
@@ -118,7 +118,7 @@ fn unavailable_selected_command_reports_reason_and_copy_escape_exits_once() -> O
             .need()?
             .contains("only one tab")
     );
-    assert_eq!(s.query("fux::model::Tab")?.len(), 1);
+    assert_eq!(s.query("fux::model::Tab")?.rows().count(), 1);
     s.control(v, "copy_mode", "")?;
     s.key(v, " ", false)?;
     assert!(s.painted(v, 24, 80)?.hide_cursor());

@@ -32,6 +32,28 @@ pub enum Mode {
         buffer: String,
     },
 }
+/// The open prefix command column and its selected action row. Present only
+/// while the column is open, like `Overlay` and `Selection`.
+#[derive(Component, Default)]
+pub struct Prefix {
+    pub scroll: usize,
+}
+
+/// A modal viewer owns its input: the prefix column, an overlay or copy mode.
+pub(crate) fn modal(world: &World, id: Entity) -> bool {
+    world.get_entity(id).is_ok_and(|entity| {
+        entity.contains::<Prefix>()
+            || entity.contains::<Overlay>()
+            || entity.contains::<crate::selection::Selection>()
+    })
+}
+
+pub(crate) fn close_prefix(world: &mut World, id: Entity) {
+    if let Ok(mut entity) = world.get_entity_mut(id) {
+        entity.remove::<Prefix>();
+    }
+}
+
 #[derive(Component, Clone)]
 pub struct Overlay {
     pub serial: u64,
@@ -47,26 +69,19 @@ fn label(world: &World, entity: Entity) -> String {
 }
 use crate::navigation::workspaces as roots;
 fn open(world: &mut World, id: Entity, target: Target, mode: Mode) {
-    let Some(mut ownership) = world.get_mut::<crate::paste::Ownership>(id) else {
+    if world.get::<Viewer>(id).is_none() {
         return;
-    };
-    ownership.serial = ownership.serial.wrapping_add(1);
-    let serial = ownership.serial;
-    let Some(mut v) = world.get_mut::<Viewer>(id) else {
-        return;
-    };
-    v.prefix = false;
-    world.entity_mut(id).insert(Overlay {
-        serial,
+    }
+    // `paste::overlay_opened` assigns the serial on insertion.
+    world.entity_mut(id).remove::<Prefix>().insert(Overlay {
+        serial: 0,
         target,
         mode,
     });
 }
-fn error(world: &mut World, id: Entity, message: impl Into<String>) {
-    if let Some(mut v) = world.get_mut::<Viewer>(id) {
-        v.notice = message.into();
-        v.notice_error = true;
-    }
+
+fn notify_error(world: &mut World, id: Entity, message: impl Into<String>) {
+    notify(world, id, message, true);
 }
 
 pub fn invoke(
@@ -79,17 +94,14 @@ pub fn invoke(
     interactive: bool,
 ) -> Result<bool, String> {
     use Action::*;
-    if let Some(reason) = actions::unavailable(world, target, Some(action)) {
+    if let Some(reason) = actions::unavailable(world, target, action) {
         return Err(reason.into());
     }
     if !matches!(action, CopyMode | ScrollUp | ScrollDown) {
         world.entity_mut(id).remove::<crate::selection::Selection>();
     }
-    if let Some(mut v) = world.get_mut::<Viewer>(id) {
-        v.prefix = false;
-        v.notice.clear();
-        v.notice_error = false;
-    }
+    close_prefix(world, id);
+    notify(world, id, "", false);
     if interactive && matches!(action, Close | TabClose | WorkspaceClose) {
         open(world, id, target, Mode::Confirm { action });
         return Ok(true);
@@ -242,8 +254,8 @@ pub fn invoke(
                 TabClose => target.tab.ok_or("no tab")?,
                 _ => target.workspace,
             };
+            // Removal observers repair viewer navigation as the hierarchy goes.
             close(world, entity);
-            navigation::repair(world);
         }
         RenamePane | RenameTab | RenameWorkspace if !value.is_empty() => {
             let entity = match action {
@@ -470,21 +482,18 @@ fn swap(world: &mut World, source: Entity, destination: Entity) -> Result<(), St
 
 /// Command column navigation owns reserved keys before configured prefix bindings.
 pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
-    let Some(v) = world.get::<Viewer>(id) else {
+    let (Some(v), Some(prefix)) = (world.get::<Viewer>(id), world.get::<Prefix>(id)) else {
         return false;
     };
-    if !v.prefix {
-        return false;
-    }
-    let mut v = v.clone();
+    let (rows, cols, mut scroll) = (v.rows, v.cols, prefix.scroll);
     let settings = world.resource::<crate::assets::Settings>();
     // The prefix itself retains literal forwarding, even for a navigation-key prefix.
     if input.token().as_deref() == Some(settings.prefix.as_str()) {
         return false;
     }
-    let scroll =
-        |v: &Viewer, down, page| chrome::scroll(settings, v.rows, v.help_scroll, down, page);
+    let step = |current, down, page| chrome::scroll(settings, rows, current, down, page);
     let mut execute = None;
+    let mut close = false;
     match input {
         Input::Resize { .. } => return false,
         Input::Key {
@@ -493,39 +502,41 @@ pub fn command_input(world: &mut World, id: Entity, input: &Input) -> bool {
             alt: false,
             shift: false,
         } => match key.as_str() {
-            "up" | "pageup" => v.help_scroll = scroll(&v, false, key == "pageup"),
-            "down" | "pagedown" => v.help_scroll = scroll(&v, true, key == "pagedown"),
+            "up" | "pageup" => scroll = step(scroll, false, key == "pageup"),
+            "down" | "pagedown" => scroll = step(scroll, true, key == "pagedown"),
             "left" | "right" => {} // Vertical menus reserve all unmodified arrows.
-            "home" => v.help_scroll = 0,
-            "end" => v.help_scroll = chrome::help_limit(settings, v.rows),
+            "home" => scroll = 0,
+            "end" => scroll = chrome::help_limit(settings, rows),
             "enter" => {
-                execute = chrome::selected_action(settings, v.rows, v.cols, v.help_scroll)
-                    .map(str::to_owned)
+                execute = chrome::selected_action(settings, rows, cols, scroll).map(str::to_owned);
+                close = true;
             }
-            "escape" => {
-                v.prefix = false;
-                v.notice.clear();
-            }
+            "escape" => close = true,
             _ => return false,
         },
         Input::Mouse { action, .. } => match action.as_str() {
-            "scrollup" => v.help_scroll = scroll(&v, false, false),
-            "scrolldown" => v.help_scroll = scroll(&v, true, false),
+            "scrollup" => scroll = step(scroll, false, false),
+            "scrolldown" => scroll = step(scroll, true, false),
             _ => {}
         },
         Input::Paste { .. } | Input::PasteBegin => return true,
         _ => return false,
     }
-    let target = Target::viewer(&v);
-    if execute.is_some() {
-        v.prefix = false;
+    if close {
+        close_prefix(world, id);
+    } else if let Some(mut prefix) = world.get_mut::<Prefix>(id) {
+        prefix.scroll = scroll;
     }
-    let Some(mut current) = world.get_mut::<Viewer>(id) else {
-        return true;
-    };
-    *current = v;
-    if let Some(action) = execute {
-        dispatch_named(world, id, target, &action, None, "", true);
+    match execute {
+        Some(action) => {
+            let Some(v) = world.get::<Viewer>(id) else {
+                return true;
+            };
+            let target = Target::viewer(v);
+            dispatch_named(world, id, target, &action, None, "", true);
+        }
+        None if close => notify(world, id, "", false),
+        None => {}
     }
     true
 }
@@ -537,7 +548,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     };
     if !overlay.target.valid(world) {
         world.entity_mut(id).remove::<Overlay>();
-        error(world, id, "target changed; action cancelled");
+        notify_error(world, id, "target changed; action cancelled");
         return !matches!(input, Input::Resize { .. });
     }
     if matches!(input, Input::Resize { .. }) {
@@ -650,14 +661,13 @@ pub fn dispatch_named(
 /// validity is still checked, the selection is dropped, the prefix closes, and
 /// the bar shows the error.
 pub fn unknown(world: &mut World, id: Entity, target: Target, message: String) {
-    if let Some(reason) = actions::unavailable(world, target, None) {
-        return error(world, id, reason);
+    if !target.valid(world) {
+        return notify_error(world, id, actions::TARGET_GONE);
     }
-    world.entity_mut(id).remove::<crate::selection::Selection>();
-    if let Some(mut v) = world.get_mut::<Viewer>(id) {
-        v.prefix = false;
-    }
-    error(world, id, message);
+    world
+        .entity_mut(id)
+        .remove::<(crate::selection::Selection, Prefix)>();
+    notify_error(world, id, message);
 }
 
 pub fn dispatch(
@@ -673,7 +683,7 @@ pub fn dispatch(
         Ok(true) => {}
         Ok(false) => world.trigger(Control {
             viewer: id,
-            action: action.to_string(),
+            action,
             value: value.into(),
             target: if matches!(action, Action::SaveLayout | Action::LoadLayout) {
                 Some(target.workspace)
@@ -682,7 +692,7 @@ pub fn dispatch(
             },
             mapping: Vec::new(),
         }),
-        Err(message) => error(world, id, message),
+        Err(message) => notify_error(world, id, message),
     }
 }
 
@@ -748,8 +758,7 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
                 lines.push((format!("▲ {start} more"), "\x1b[2m"));
             }
             for (index, entry) in entries.iter().enumerate().skip(start).take(capacity) {
-                let disabled =
-                    actions::unavailable(world, overlay.target, Some(entry.action)).is_some();
+                let disabled = actions::unavailable(world, overlay.target, entry.action).is_some();
                 lines.push((
                     format!(
                         "{} {}",

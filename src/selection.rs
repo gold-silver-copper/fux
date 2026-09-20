@@ -150,10 +150,10 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         dragging: false,
         mouse_origin: false,
     });
+    crate::interaction::close_prefix(world, id);
     let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
     v.focus = Some(leaf);
     v.scrollback = offset;
-    v.prefix = false;
     v.notice = "Copy: arrows/hjkl · Space select · y copy · g live · q exit".into();
     Ok(())
 }
@@ -221,18 +221,16 @@ pub fn refresh_visible(world: &mut World, id: Entity, visible: (u16, u16)) {
             if let Some(mut v) = world.get_mut::<Viewer>(id) {
                 v.scrollback = actual;
                 if invalidated {
-                    v.notice =
-                        "selection cleared: rows changed, resized, scrolled or evicted".into();
-                    v.notice_error = true;
+                    v.notify(
+                        "selection cleared: rows changed, resized, scrolled or evicted",
+                        true,
+                    );
                 }
             }
         }
         Err(error) => {
             world.entity_mut(id).remove::<Selection>();
-            if let Some(mut v) = world.get_mut::<Viewer>(id) {
-                v.notice = error;
-                v.notice_error = true;
-            }
+            notify(world, id, error, true);
         }
     }
 }
@@ -305,10 +303,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 if let Some(mut v) = world.get_mut::<Viewer>(id) {
                     match copied {
                         Some(Ok(())) => v.scrollback = 0,
-                        Some(Err(error)) => {
-                            v.notice = error;
-                            v.notice_error = true;
-                        }
+                        Some(Err(error)) => v.notify(error, true),
                         None => v.notice = "Space starts a selection".into(),
                     }
                 }

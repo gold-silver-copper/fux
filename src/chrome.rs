@@ -282,8 +282,8 @@ pub fn scroll(settings: &Settings, rows: u16, current: usize, down: bool, page: 
 }
 
 #[cfg(test)]
-pub fn panel(out: &mut String, v: &Viewer, settings: &Settings) -> Option<Bounds> {
-    panel_context(out, v, settings, v.help_scroll, |_| false)
+pub fn panel(out: &mut String, v: &Viewer, settings: &Settings, scroll: usize) -> Option<Bounds> {
+    panel_context(out, v, settings, scroll, |_| false)
 }
 
 fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
@@ -333,53 +333,51 @@ pub fn panel_context(
         return None;
     }
     let mut lines = Vec::new();
-    {
-        if available >= 3 {
-            lines.push(("Commands".to_owned(), "\x1b[1m"));
+    if available >= 3 {
+        lines.push(("Commands".to_owned(), "\x1b[1m"));
+    }
+    let entries = help_entries(settings, v.cols);
+    let cap = capacity(v.rows);
+    let selected = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, action))| action.is_some())
+        .nth(scroll.min(help_limit(settings, v.rows)))
+        .map(|(i, _)| i);
+    let selected_row = selected.unwrap_or(0);
+    let mut start = 0;
+    let (above, below, body) = loop {
+        let above = cap >= 3 && start > 0;
+        let below = cap >= 3 && entries.len().saturating_sub(start) > cap - usize::from(above);
+        let body = cap.saturating_sub(usize::from(above) + usize::from(below));
+        if selected_row < start + body || body == 0 {
+            break (above, below, body);
         }
-        let entries = help_entries(settings, v.cols);
-        let cap = capacity(v.rows);
-        let selected = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, action))| action.is_some())
-            .nth(scroll.min(help_limit(settings, v.rows)))
-            .map(|(i, _)| i);
-        let selected_row = selected.unwrap_or(0);
-        let mut start = 0;
-        let (above, below, body) = loop {
-            let above = cap >= 3 && start > 0;
-            let below = cap >= 3 && entries.len().saturating_sub(start) > cap - usize::from(above);
-            let body = cap.saturating_sub(usize::from(above) + usize::from(below));
-            if selected_row < start + body || body == 0 {
-                break (above, below, body);
-            }
-            start += 1;
-        };
-        if above {
-            lines.push((format!("▲ {start} more"), "\x1b[2m"));
-        }
-        for (index, (text, action)) in entries.iter().enumerate().skip(start).take(body) {
-            lines.push((
-                text.clone(),
-                match action {
-                    None => "\x1b[1m",
-                    Some(action) if disabled(action) && Some(index) == selected => "\x1b[2;7m",
-                    Some(_) if Some(index) == selected => "\x1b[7m",
-                    Some(action) if disabled(action) => "\x1b[2m",
-                    _ => "",
-                },
-            ));
-        }
-        if settings.bindings.is_empty() {
-            lines.push(("No bindings".into(), "\x1b[2m"));
-        }
-        if below {
-            lines.push((
-                format!("▼ {} more", entries.len() - start - body),
-                "\x1b[2m",
-            ));
-        }
+        start += 1;
+    };
+    if above {
+        lines.push((format!("▲ {start} more"), "\x1b[2m"));
+    }
+    for (index, (text, action)) in entries.iter().enumerate().skip(start).take(body) {
+        lines.push((
+            text.clone(),
+            match action {
+                None => "\x1b[1m",
+                Some(action) if disabled(action) && Some(index) == selected => "\x1b[2;7m",
+                Some(_) if Some(index) == selected => "\x1b[7m",
+                Some(action) if disabled(action) => "\x1b[2m",
+                _ => "",
+            },
+        ));
+    }
+    if settings.bindings.is_empty() {
+        lines.push(("No bindings".into(), "\x1b[2m"));
+    }
+    if below {
+        lines.push((
+            format!("▼ {} more", entries.len() - start - body),
+            "\x1b[2m",
+        ));
     }
     surface(out, v, &lines)
 }

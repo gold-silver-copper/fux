@@ -43,7 +43,7 @@ fn native_tab_scene_round_trip_preserves_order_names_and_remapped_processes()
     world.spawn((PaneView { pane: one }, ChildOf(a)));
     world.spawn((PaneView { pane: two }, ChildOf(b)));
     world.entity_mut(root).replace_children(&[b, a]);
-    let text = serialize_layout(world, root).need()?;
+    let text = serialize_layout(world, root)?;
     for absent in [
         "Launch",
         "ProcessState",
@@ -55,8 +55,8 @@ fn native_tab_scene_round_trip_preserves_order_names_and_remapped_processes()
     ] {
         assert!(!text.contains(absent), "{absent}: {text}");
     }
-    let scene = extract_layout(world, root).need()?;
-    let loaded = apply_layout(world, &scene, &[(one, two), (two, one)]).need()?;
+    let scene = extract_layout(world, root)?;
+    let loaded = apply_layout(world, &scene, &[(one, two), (two, one)])?;
     assert_eq!(world.get::<WorkspaceOrder>(loaded).need()?.0, 7);
     let tabs = navigation::tabs(world, loaded);
     assert_eq!(tabs.len(), 2);
@@ -111,16 +111,16 @@ fn tabless_scene_migration_moves_the_layout_box_once_without_losing_panes()
     let root = world.spawn((Workspace, node.clone())).id();
     world.spawn((PaneView { pane }, ChildOf(root)));
     world.spawn((PaneView { pane }, ChildOf(root)));
-    let scene = extract_layout(world, root).need()?;
-    let loaded = apply_layout(world, &scene, &[]).need()?;
+    let scene = extract_layout(world, root)?;
+    let loaded = apply_layout(world, &scene, &[])?;
     let tabs = navigation::tabs(world, loaded);
     assert_eq!(tabs.len(), 1);
     assert_eq!(world.get::<Node>(*tabs.first().need()?).need()?, &node);
     assert_eq!(world.get::<Node>(loaded).need()?, &navigation::tab_node());
     assert_eq!(navigation::leaves(world, loaded).len(), 2);
     assert_eq!(world.query::<&Launch>().iter(world).count(), 1);
-    let resaved = extract_layout(world, loaded).need()?;
-    let reloaded = apply_layout(world, &resaved, &[]).need()?;
+    let resaved = extract_layout(world, loaded)?;
+    let reloaded = apply_layout(world, &resaved, &[])?;
     assert_eq!(navigation::tabs(world, reloaded).len(), 1);
     assert_eq!(navigation::leaves(world, reloaded).len(), 2);
     Ok(())
@@ -203,8 +203,6 @@ fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() -> crate::t
             scrollback: 0,
             notice: String::new(),
             notice_error: false,
-            help_scroll: 0,
-            prefix: false,
         },
         ChildOf(root),
     ));

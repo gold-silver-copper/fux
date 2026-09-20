@@ -14,6 +14,18 @@ pub struct Ownership {
     pub serial: u64,
     pending: Option<Owner>,
 }
+
+/// Every newly inserted overlay gets a fresh serial, whichever code path opened
+/// it, so a paste captured for an earlier overlay can never land in this one.
+pub(crate) fn overlay_opened(
+    opened: On<Insert, Overlay>,
+    mut owners: Query<(&mut Ownership, &mut Overlay)>,
+) {
+    if let Ok((mut ownership, mut overlay)) = owners.get_mut(opened.entity) {
+        ownership.serial = ownership.serial.wrapping_add(1);
+        overlay.serial = ownership.serial;
+    }
+}
 enum Owner {
     Text(u64),
     Pane(Target),
@@ -31,7 +43,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             } else {
                 Owner::Discard
             }
-        } else if v.prefix || world.get::<crate::selection::Selection>(id).is_some() {
+        } else if crate::interaction::modal(world, id) {
             Owner::Discard
         } else {
             Owner::Pane(Target::viewer(v))
@@ -39,10 +51,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         if let Some(mut ownership) = world.get_mut::<Ownership>(id) {
             ownership.pending = Some(owner);
         }
-        if let Some(mut v) = world.get_mut::<Viewer>(id) {
-            v.notice = "pasting...".into();
-            v.notice_error = false;
-        }
+        crate::model::notify(world, id, "pasting...", false);
         return true;
     }
     let Input::Paste { text } = input else {
@@ -63,21 +72,17 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         Some(Owner::Pane(target)) => {
             world
                 .get::<Viewer>(id)
-                .is_some_and(|v| Target::viewer(v) == target && !v.prefix)
-                && world.get::<Overlay>(id).is_none()
-                && world.get::<crate::selection::Selection>(id).is_none()
+                .is_some_and(|v| Target::viewer(v) == target)
+                && !crate::interaction::modal(world, id)
         }
     };
     if !valid || text.len() > LIMIT {
-        if let Some(mut v) = world.get_mut::<Viewer>(id) {
-            v.notice = if valid {
-                "paste exceeds 64 KiB; discarded"
-            } else {
-                "paste owner changed; discarded"
-            }
-            .into();
-            v.notice_error = true;
-        }
+        let reason = if valid {
+            "paste exceeds 64 KiB; discarded"
+        } else {
+            "paste owner changed; discarded"
+        };
+        crate::model::notify(world, id, reason, true);
         return true;
     }
     false

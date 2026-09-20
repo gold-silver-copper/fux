@@ -8,11 +8,11 @@ fn hidden_tabs_stop_constraining_pty_size_even_before_the_switching_viewer_paint
     s.resize(small, 8, 25)?;
     s.screen(large)?;
     s.painted(small, 8, 25)?;
-    let process = s.query("fux::model::Launch")?.at(0).at("entity").clone();
+    let process = s.query("fux::model::Launch")?.at(0).at("entity");
     let dimensions = || -> Result<(u64, u64), String> {
         let state = s
             .query("fux::model::ProcessState")?
-            .into_iter()
+            .rows()
             .find(|p| p.at("entity") == process)
             .need()?
             .at("components")
@@ -41,8 +41,8 @@ fn workspace_order_chooser_memory_and_scene_replacement_are_consistent() -> Outc
     s.screen(b)?;
     let initial = s.viewer(a)?.at("workspace").as_u64().need()?;
     s.control(a, "tab_new", "remembered")?;
-    let tab = s.viewer(a)?.at("tab").clone();
-    let focus = s.viewer(a)?.at("focus").clone();
+    let tab = s.viewer(a)?.at("tab");
+    let focus = s.viewer(a)?.at("focus");
     s.control(a, "workspace_new", "second")?;
     let second = s.viewer(a)?.at("workspace").as_u64().need()?;
     s.control(a, "workspace_new", "third")?;
@@ -66,11 +66,11 @@ fn workspace_order_chooser_memory_and_scene_replacement_are_consistent() -> Outc
     eventually(|| Ok(fs::metadata(&path).is_ok_and(|m| m.len() > 0)))?;
     s.control(a, "load_layout", path.to_str().need()?)?;
     eventually(|| Ok(s.viewer(a)?.at("workspace") != initial))?;
-    let replacement = s.viewer(a)?.at("workspace").clone();
+    let replacement = s.viewer(a)?.at("workspace");
     assert_eq!(s.viewer(b)?.at("workspace"), replacement);
     assert!(s.viewer(a)?.at("focus").as_u64().is_some());
     assert!(s.viewer(b)?.at("focus").as_u64().is_some());
-    let text = fs::read_to_string(path).need()?;
+    let text = fs::read_to_string(path)?;
     assert!(text.contains("remembered"));
     assert!(!text.contains("Navigation"));
     Ok(())
@@ -114,7 +114,7 @@ fn hidden_native_nodes_cannot_receive_focus_or_child_input() -> Outcome {
     assert_eq!(s.viewer(v)?.at("focus"), left);
     s.control(v, "focus_last", "")?;
     assert_eq!(s.viewer(v)?.at("focus"), left);
-    assert!(fs::read(&hidden_file).need()?.is_empty());
+    assert!(fs::read(&hidden_file)?.is_empty());
     s.rpc(
         "world.remove_components",
         json!({"entity":hidden,"components":["bevy_camera::visibility::Visibility"]}),
@@ -162,9 +162,9 @@ fn nested_swap_and_existing_tab_workspace_moves_keep_process_identity_and_histor
     assert_eq!(s.viewer(v)?.at("workspace"), root);
     assert_eq!(s.viewer(v)?.at("focus"), a);
     let after = s.query("fux::model::ProcessState")?;
-    for old in before {
+    for old in before.rows() {
         let retained = after
-            .iter()
+            .rows()
             .find(|p| p.at("entity") == old.at("entity"))
             .need()?;
         assert_eq!(
@@ -194,7 +194,7 @@ fn tabs_bar_native_click_chooser_and_independent_focus_survive_switches() -> Out
     s.screen(a)?;
     s.screen(b)?;
     let first = s.viewer(a)?.at("tab").as_u64().need()?;
-    let focus = s.viewer(a)?.at("focus").clone();
+    let focus = s.viewer(a)?.at("focus");
     let original = s.query("fux::model::ProcessState")?;
     s.control(a, "tab_new", "logs")?;
     let second = s.viewer(a)?.at("tab").as_u64().need()?;
@@ -219,9 +219,9 @@ fn tabs_bar_native_click_chooser_and_independent_focus_survive_switches() -> Out
     assert_eq!(s.viewer(a)?.at("tab"), first);
     assert_eq!(s.viewer(a)?.at("focus"), focus);
     let current = s.query("fux::model::ProcessState")?;
-    for process in original {
+    for process in original.rows() {
         let retained = current
-            .iter()
+            .rows()
             .find(|p| p.at("entity") == process.at("entity"))
             .need()?;
         assert_eq!(
@@ -249,12 +249,12 @@ fn interactive_close_is_modal_captured_and_automation_is_explicit() -> Outcome {
     let close = s.viewer(v)?.at("focus").as_u64().need()?;
     let other = s
         .query("fux::model::PaneView")?
-        .into_iter()
+        .rows()
         .filter_map(|p| p.at("entity").as_u64())
         .find(|e| *e != close)
         .need()?;
     targeted(&s, v, "tab_close", other)?;
-    assert_eq!(s.query("fux::model::PaneView")?.len(), 2);
+    assert_eq!(s.query("fux::model::PaneView")?.rows().count(), 2);
     assert!(
         s.viewer(v)?
             .at("notice")
@@ -264,7 +264,7 @@ fn interactive_close_is_modal_captured_and_automation_is_explicit() -> Outcome {
     );
     let tab = s.viewer(v)?.at("tab").as_u64().need()?;
     targeted(&s, v, "close", tab)?;
-    assert_eq!(s.query("fux::model::PaneView")?.len(), 2);
+    assert_eq!(s.query("fux::model::PaneView")?.rows().count(), 2);
     s.key(v, "b", true)?;
     s.key(v, "x", false)?;
     let screen = s.painted(v, 24, 80)?;
@@ -273,19 +273,19 @@ fn interactive_close_is_modal_captured_and_automation_is_explicit() -> Outcome {
     s.capture(v, 24, 80, "interaction-confirm")?;
     targeted(&s, v, "focus", other)?;
     s.input(v, json!({"kind":"paste","text":"y"}))?;
-    assert_eq!(s.query("fux::model::PaneView")?.len(), 2);
+    assert_eq!(s.query("fux::model::PaneView")?.rows().count(), 2);
     s.key(v, "y", false)?;
     assert!(
         s.query("fux::model::PaneView")?
-            .iter()
+            .rows()
             .all(|p| p.at("entity") != close)
     );
     assert_eq!(s.viewer(v)?.at("focus"), other);
     s.control(v, "close", "")?;
-    assert!(s.query("fux::model::PaneView")?.is_empty());
-    assert!(s.query("fux::model::Launch")?.is_empty());
+    assert!(s.query("fux::model::PaneView")?.rows().next().is_none());
+    assert!(s.query("fux::model::Launch")?.rows().next().is_none());
     s.control(v, "split_horizontal", "")?;
-    assert_eq!(s.query("fux::model::PaneView")?.len(), 1);
+    assert_eq!(s.query("fux::model::PaneView")?.rows().count(), 1);
     Ok(())
 }
 
@@ -343,7 +343,7 @@ fn context_menu_captures_unfocused_pane_and_grouped_help_marks_unavailable() -> 
     s.key(v, "escape", false)?;
     s.control(v, "split_horizontal", "")?;
     s.screen(v)?;
-    let focused = s.viewer(v)?.at("focus").clone();
+    let focused = s.viewer(v)?.at("focus");
     s.input(v, json!({"kind":"mouse","action":"press","button":2,"x":0,"y":0,"ctrl":false,"alt":false,"shift":true}))?;
     assert_eq!(s.viewer(v)?.at("focus"), focused);
     assert!(s.painted(v, 24, 80)?.contents().contains("Panes:"));
@@ -381,8 +381,7 @@ fn remote_viewer_removal_during_an_overlay_never_panics_the_server() -> Outcome 
     }
     assert!(s.request("rpc.discover", Value::Null).is_ok());
     assert!(
-        s.request("fux.frame", json!({"viewer":v}))
-            .need()?
+        s.request("fux.frame", json!({"viewer":v}))?
             .at("detach")
             .as_bool()
             .need()?
@@ -392,5 +391,22 @@ fn remote_viewer_removal_during_an_overlay_never_panics_the_server() -> Outcome 
     s.key(fresh, "b", true)?;
     s.key(fresh, "p", false)?;
     assert!(s.painted(fresh, 24, 80)?.contents().contains("Panes:"));
+    Ok(())
+}
+
+#[test]
+fn unknown_control_action_names_are_rejected_at_the_api_boundary() -> Outcome {
+    let s = Server::start()?;
+    let v = s.attach()?;
+    s.screen(v)?;
+    let rejected = s.request(
+        "world.trigger_event",
+        json!({"event":"fux::control::Control","value":{"viewer":v,"action":"custom_界é"}}),
+    );
+    assert!(rejected.is_err());
+    assert!(s.viewer(v)?.at("notice").as_str().need()?.is_empty());
+    assert!(s.request("rpc.discover", Value::Null).is_ok());
+    s.control(v, "split_horizontal", "")?;
+    assert_eq!(s.query("fux::model::PaneView")?.rows().count(), 2);
     Ok(())
 }

@@ -109,8 +109,6 @@ pub fn handles(action: Action) -> bool {
     )
 }
 
-const DETACHED: &str = "viewer no longer attached";
-
 pub fn control(
     world: &mut World,
     id: Entity,
@@ -134,7 +132,7 @@ pub fn control(
         .iter()
         .position(|e| *e == current)
         .ok_or("target disappeared")?;
-    world.get_mut::<Viewer>(id).ok_or(DETACHED)?.prefix = false;
+    crate::interaction::close_prefix(world, id);
     match action {
         TabNew => {
             let title = if value.is_empty() {
@@ -190,6 +188,13 @@ pub fn control(
     }
     repair(world);
     Ok(())
+}
+
+/// Hierarchy removals repair every viewer as they happen, from any code path.
+/// Removal observers see the entity still present, so the repair is queued and
+/// runs once the removal has completed.
+pub(crate) fn repair_on_remove<C: Component>(_: On<Remove, C>, mut commands: Commands) {
+    commands.queue(repair);
 }
 
 pub fn repair(world: &mut World) {

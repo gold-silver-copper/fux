@@ -13,8 +13,6 @@ fn viewer(rows: u16, cols: u16) -> Viewer {
         scrollback: 0,
         notice: String::new(),
         notice_error: false,
-        help_scroll: 0,
-        prefix: false,
     }
 }
 
@@ -39,12 +37,11 @@ fn truncation_is_cell_sized_sanitized_and_keeps_the_requested_end() -> crate::te
 fn every_binding_is_reachable_at_every_short_height() -> crate::testing::Outcome {
     let settings = Settings::default();
     for rows in 2..40 {
-        let mut v = viewer(rows, 80);
+        let v = viewer(rows, 80);
         let mut seen = std::collections::BTreeSet::new();
         for offset in 0..=help_limit(&settings, rows) {
-            v.help_scroll = offset;
             let mut out = String::new();
-            let bounds = panel(&mut out, &v, &settings).need()?;
+            let bounds = panel(&mut out, &v, &settings, offset).need()?;
             assert_eq!(bounds.y + bounds.height, rows - 1);
             assert_eq!(bounds.x + bounds.width, 80);
             let mut parser = vt100::Parser::new(rows, 80, 0);
@@ -88,10 +85,9 @@ fn tiny_unicode_command_selection_is_visible_even_when_disabled() -> crate::test
     for rows in 0..=4 {
         for cols in 0..=2 {
             for selected in 0..2 {
-                let mut v = viewer(rows, cols);
-                v.help_scroll = selected;
+                let v = viewer(rows, cols);
                 let mut out = String::new();
-                let bounds = panel_context(&mut out, &v, &settings, v.help_scroll, |_| true);
+                let bounds = panel_context(&mut out, &v, &settings, selected, |_| true);
                 if rows < 2 || cols == 0 {
                     assert!(bounds.is_none());
                     assert!(out.is_empty());
@@ -123,7 +119,7 @@ fn panel_is_content_sized_above_a_full_width_bar_and_resets_styles() -> crate::t
     let v = viewer(12, 40);
     let mut out = "\x1b[31;44;7m".to_owned();
     bar(&mut out, &v, "workspace", "7: pane");
-    let bounds = panel(&mut out, &v, &settings).need()?;
+    let bounds = panel(&mut out, &v, &settings, 0).need()?;
     assert_eq!(bounds.height, 3);
     assert_eq!(bounds.width, width("k  known action") + 2);
     let mut parser = vt100::Parser::new(12, 40, 0);

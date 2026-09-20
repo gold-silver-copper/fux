@@ -51,7 +51,7 @@ fn evicted_history_selection_is_cleared_without_moving_another_viewer() -> Outco
     s.key(a, "right", false)?;
     let old = s.viewer(a)?.at("scrollback").as_u64().need()?;
     assert!(old > 0);
-    fs::write(signal, "go").need()?;
+    fs::write(signal, "go")?;
     eventually(|| {
         if s.viewer(a)?
             .at("notice")
@@ -144,7 +144,7 @@ fn selection_invalidates_visibly_on_output_and_resize_and_paste_is_modal() -> Ou
     s.key(v, " ", false)?;
     s.key(v, "right", false)?;
     s.input(v, json!({"kind":"paste","text":"NOT-PTY-INPUT"}))?;
-    fs::write(signal, "change").need()?;
+    fs::write(signal, "change")?;
     eventually(|| {
         Ok(s.painted(v, 24, 80)?
             .contents()
@@ -172,7 +172,7 @@ fn clipboard_disabled_reports_failure_without_emitting_an_effect() -> Outcome {
     let s = Server::start()?;
     let v = s.attach()?;
     s.screen(v)?;
-    fs::write(s.directory.join("fux.json"), r#"{"clipboard":"disabled"}"#).need()?;
+    fs::write(s.directory.join("fux.json"), r#"{"clipboard":"disabled"}"#)?;
     eventually(|| {
         s.control(v, "copy", "")?;
         Ok(s.viewer(v)?

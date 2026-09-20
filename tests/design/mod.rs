@@ -27,11 +27,37 @@ impl Server {
     fn viewer(&self, viewer: u64) -> Result<Value, String> {
         Ok(self
             .query("fux::model::Viewer")?
-            .into_iter()
+            .rows()
             .find(|r| r.at("entity") == viewer)
             .need()?
             .at("components")
             .at("fux::model::Viewer"))
+    }
+    /// Whether the prefix command column is painted for this viewer.
+    fn column_open(&self, viewer: u64, rows: u16, cols: u16) -> Result<bool, String> {
+        Ok(self
+            .painted(viewer, rows, cols)?
+            .contents()
+            .contains("Commands"))
+    }
+    /// The reversed (selected) row of the painted command column, if it is open.
+    fn selected(&self, viewer: u64, rows: u16, cols: u16) -> Result<Option<String>, String> {
+        let screen = self.painted(viewer, rows, cols)?;
+        if !screen.contents().contains("Commands") {
+            return Ok(None);
+        }
+        // The bar's active tab is also reversed, so only rows above it count, and
+        // only the reversed cells: pane content shares the row left of the column.
+        Ok((0..rows.saturating_sub(1))
+            .find(|&y| (0..cols).any(|x| screen.cell(y, x).is_some_and(|c| c.inverse())))
+            .map(|y| {
+                (0..cols)
+                    .filter_map(|x| screen.cell(y, x).filter(|c| c.inverse()))
+                    .map(vt100::Cell::contents)
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            }))
     }
     fn run(&self, viewer: u64, command: &str) -> Result<(), String> {
         self.input(viewer, json!({"kind":"paste","text":command}))?;
@@ -43,7 +69,7 @@ impl Server {
     fn capture(&self, viewer: u64, rows: u16, cols: u16, name: &str) -> Result<(), Fail> {
         if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
             let directory = PathBuf::from(directory);
-            fs::create_dir_all(&directory).need()?;
+            fs::create_dir_all(&directory)?;
             let frame = self.rpc("fux.frame", json!({"viewer":viewer}))?;
             let paint = frame.at("paint");
             let paint = paint.as_str().need()?;
@@ -51,7 +77,7 @@ impl Server {
             let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
             parser.process(paint.as_bytes());
             let screen = parser.screen();
-            fs::write(directory.join(format!("{name}.txt")), plain(screen)).need()?;
+            fs::write(directory.join(format!("{name}.txt")), plain(screen))?;
             let cells: Vec<_> = (0..rows).map(|y| (0..cols).map(|x| {
                 screen.cell(y,x).map_or(Value::Null, |c| json!({"text":c.contents(),"fg":format!("{:?}",c.fgcolor()),"bg":format!("{:?}",c.bgcolor()),"bold":c.bold(),"dim":c.dim(),"inverse":c.inverse(),"wide_continuation":c.is_wide_continuation()}))
             }).collect::<Vec<_>>()).collect();
@@ -140,13 +166,13 @@ fn native_splits_junctions_focus_zoom_and_no_margin_chrome() -> Outcome {
     assert!(screen.cell(10, 30).need()?.bold());
     assert_eq!(screen.cell(0, 30).need()?.fgcolor(), Color::Idx(8));
     s.capture(v, 15, 61, "nested")?;
-    let before = s.viewer(v)?.at("focus").clone();
+    let before = s.viewer(v)?.at("focus");
     s.mouse(v, "press", 0, 0)?;
     assert_ne!(s.viewer(v)?.at("focus"), before);
     let screen = s.painted(v, 15, 61)?;
     assert!(screen.cell(0, 30).need()?.bold());
     assert!(!screen.cell(7, 50).need()?.bold());
-    let selected = s.viewer(v)?.at("focus").clone();
+    let selected = s.viewer(v)?.at("focus");
     s.mouse(v, "press", 30, 3)?; // separator cannot pick a pane
     s.mouse(v, "press", 0, 14)?; // bottom bar cannot pick a pane
     assert_eq!(s.viewer(v)?.at("focus"), selected);
@@ -159,9 +185,9 @@ fn native_splits_junctions_focus_zoom_and_no_margin_chrome() -> Outcome {
     s.painted(v, 15, 61)?;
     // Preserve arbitrary native spacing instead of painting every empty cell.
     let nodes = s.query("bevy_ui::ui_node::Node")?;
-    for split in s.query("fux::model::Split")? {
+    for split in s.query("fux::model::Split")?.rows() {
         let mut node = nodes
-            .iter()
+            .rows()
             .find(|n| n.at("entity") == split.at("entity"))
             .need()?
             .at("components")
@@ -198,7 +224,7 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     assert!(row(&panel, 11).starts_with(" main"));
     assert_eq!(panel.cell(0, 0).need()?.bgcolor(), Color::Default);
     s.key(v, "f12", false)?;
-    assert_eq!(s.viewer(v)?.at("prefix"), true);
+    assert!(s.column_open(v, 12, 60)?);
     s.input(v, json!({"kind":"paste","text":"NOT-PTY-INPUT"}))?;
     s.key(v, "escape", false)?;
     let closed = s.painted(v, 12, 60)?;
@@ -206,10 +232,10 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     assert!(!closed.contents().contains("Commands"));
     assert!(!closed.contents().contains("NOT-PTY-INPUT"));
     // Modified arrow invokes resize; unmodified arrows belong to the list.
-    let focus = s.viewer(v)?.at("focus").clone();
+    let focus = s.viewer(v)?.at("focus");
     let grow = || -> Result<f64, String> {
         s.query("bevy_ui::ui_node::Node")?
-            .into_iter()
+            .rows()
             .find(|n| n.at("entity") == focus)
             .need()?
             .at("components")
@@ -222,25 +248,28 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     s.key(v, "b", true)?;
     s.key(v, "down", false)?;
     assert_eq!(grow()?, before);
-    assert_eq!(s.viewer(v)?.at("help_scroll"), 1);
+    assert_eq!(s.selected(v, 12, 60)?.as_deref(), Some("v  split stacked"));
     s.key(v, "right", true)?;
     assert!(grow()? > before);
-    assert_eq!(s.viewer(v)?.at("prefix"), false);
-    assert_eq!(s.viewer(v)?.at("help_scroll"), 1);
+    assert!(!s.column_open(v, 12, 60)?);
     // Help is the command column itself: the prefix key is the only way in.
     s.key(v, "b", true)?;
     s.painted(v, 12, 60)?;
     s.mouse(v, "scrolldown", 59, 10)?;
-    assert_eq!(s.viewer(v)?.at("help_scroll"), 1);
+    assert_eq!(s.selected(v, 12, 60)?.as_deref(), Some("v  split stacked"));
     s.mouse(v, "scrollup", 59, 10)?;
-    assert_eq!(s.viewer(v)?.at("help_scroll"), 0);
+    assert_eq!(
+        s.selected(v, 12, 60)?.as_deref(),
+        Some("h  split side by side")
+    );
     s.key(v, "down", false)?;
-    assert_eq!(s.viewer(v)?.at("help_scroll"), 1);
+    assert_eq!(s.selected(v, 12, 60)?.as_deref(), Some("v  split stacked"));
     s.key(v, "pagedown", false)?;
-    assert!(s.viewer(v)?.at("help_scroll").as_u64().need()? > 1);
+    let paged = s.selected(v, 12, 60)?.need()?;
+    assert!(!paged.contains("split"), "{paged}");
     let screen = s.painted(v, 12, 60)?;
     assert!(screen.contents().contains("▲"));
-    let focus = s.viewer(v)?.at("focus").clone();
+    let focus = s.viewer(v)?.at("focus");
     s.mouse(v, "press", 0, 0)?;
     assert_eq!(s.viewer(v)?.at("focus"), focus);
     s.input(v, json!({"kind":"paste","text":"NOT-HELP-INPUT"}))?;
@@ -256,7 +285,10 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
             .contains("split side by side")
     );
     s.key(v, "home", false)?;
-    assert_eq!(s.viewer(v)?.at("help_scroll"), 0);
+    assert_eq!(
+        s.selected(v, 60, 60)?.as_deref(),
+        Some("h  split side by side")
+    );
     s.capture(v, 60, 60, "help")?;
     s.resize(v, 7, 18)?;
     s.capture(v, 7, 18, "narrow-help")?;
