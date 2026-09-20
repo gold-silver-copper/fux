@@ -70,7 +70,7 @@ pub struct Terminal {
     exit: Option<i32>,
     error: Option<String>,
     revision: u64,
-    snapshot: Option<(u64, usize, Vec<String>)>,
+    snapshot: Option<(u64, usize, u16, Vec<String>)>,
 }
 
 struct Job {
@@ -124,15 +124,23 @@ impl Terminal {
     }
 
     /// The temporary history offset is always reset before accepting more output.
-    pub fn snapshot(&mut self, scrollback: usize) -> (&[String], &vt100::Screen) {
+    pub fn snapshot(
+        &mut self,
+        scrollback: usize,
+        visible_cols: u16,
+    ) -> (&[String], &vt100::Screen) {
+        let visible_cols = visible_cols.min(self.parser.screen().size().1);
         if self
             .snapshot
             .as_ref()
-            .is_none_or(|(revision, offset, _)| *revision != self.revision || *offset != scrollback)
+            .is_none_or(|(revision, offset, cols, _)| {
+                *revision != self.revision || *offset != scrollback || *cols != visible_cols
+            })
         {
             let screen = self.parser.screen_mut();
             screen.set_scrollback(scrollback);
             let (rows, cols) = screen.size();
+            let cols = cols.min(visible_cols);
             let mut lines = Vec::with_capacity(usize::from(rows));
             // rows_formatted() carries wrapping state between rows and can emit CR/LF,
             // cursor moves and erases. Emit cells + SGR only: every line is relocatable.
@@ -144,7 +152,7 @@ impl Terminal {
                     let Some(cell) = screen.cell(row, col) else {
                         continue;
                     };
-                    if cell.is_wide_continuation() {
+                    if cell.is_wide_continuation() || (cell.is_wide() && col + 1 >= cols) {
                         continue;
                     }
                     let style = Style::of(cell);
@@ -162,10 +170,10 @@ impl Terminal {
                 lines.push(line);
             }
             screen.set_scrollback(0);
-            self.snapshot = Some((self.revision, scrollback, lines));
+            self.snapshot = Some((self.revision, scrollback, visible_cols, lines));
         }
         (
-            &self.snapshot.as_ref().expect("snapshot prepared above").2,
+            &self.snapshot.as_ref().expect("snapshot prepared above").3,
             self.parser.screen(),
         )
     }
@@ -182,6 +190,7 @@ impl Terminal {
         if rows == 0 || cols == 0 {
             return Err("terminal dimensions must be nonzero".into());
         }
+        let (rows, cols) = (rows.max(2), cols.max(2));
         let program = launch.argv.first().ok_or("argv must contain a program")?;
         let pair = native_pty_system()
             .openpty(size(rows, cols))
@@ -356,6 +365,9 @@ impl Terminal {
         if rows == 0 || cols == 0 {
             return Err("terminal dimensions must be nonzero".into());
         }
+        // vt100 0.16.2 underflows on one-row wrapping and wide glyphs in one column.
+        // Keep its backing PTY at least 2×2; the painter clips to actual viewer cells.
+        let (rows, cols) = (rows.max(2), cols.max(2));
         if self.parser.screen().size() == (rows, cols) {
             return Ok(());
         }

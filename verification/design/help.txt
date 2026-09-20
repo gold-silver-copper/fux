@@ -1,0 +1,40 @@
+$
+
+
+
+
+
+
+
+
+
+
+
+
+
+                              Commands
+                                        h  split horizontal
+                                        v  split vertical
+                                        x  close
+                                        k  terminate
+                                        n  focus next
+                                        z  zoom
+                                        w  workspace next
+                                        c  workspace new
+                                        r  rename pane
+                                        R  rename workspace
+                                     left  shrink width
+                                    right  grow width
+                                       up  grow height
+                                     down  shrink height
+                               shift-left  reorder prev
+                              shift-right  reorder next
+                                        p  move workspace
+                                   pageup  scroll up
+                                 pagedown  scroll down
+                                        y  copy
+                                        s  save layout
+                                        l  load layout
+                                        d  detach
+                                        ?  help
+ main                                      │ 4294967209: sh

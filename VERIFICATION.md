@@ -1,6 +1,6 @@
 # Verification
 
-This document preserves the baseline observations. See [REFINEMENT.md](REFINEMENT.md) for the current refinement, final-build fingerprints, comparable measurements and capability audit.
+This document preserves the baseline observations, including the old bordered/top-bar presentation. See [verification/design-restoration.md](verification/design-restoration.md) for the current visual/input gates and captures, and [REFINEMENT.md](REFINEMENT.md) for historical refinement measurements and the capability audit.
 
 ## Exact build
 
