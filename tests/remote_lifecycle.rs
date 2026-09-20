@@ -307,6 +307,10 @@ fn stock_viewer_removal_releases_its_native_size_constraint() {
                 json!({"entity":small,"components":["fux::model::Viewer"]}),
             );
         }
+        assert_eq!(
+            server.rpc("fux.frame", json!({"viewer":small})),
+            json!({"paint":"", "detach":true})
+        );
         server.screen(viewer);
         server.input(viewer, json!({"kind":"paste","text":"clear; stty size"}));
         server.enter(viewer);

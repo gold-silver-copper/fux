@@ -23,10 +23,7 @@ use std::{
 };
 use unicode_width::UnicodeWidthChar;
 
-#[derive(Default)]
-struct Views {
-    contexts: EntityHashMap<View>,
-}
+type Views = EntityHashMap<View>;
 struct View {
     presentation: Presentation,
     last: String,
@@ -97,7 +94,7 @@ impl Plugin for ServerPlugin {
             .add_observer(input_event)
             .add_observer(
                 |removed: On<Remove, Viewer>, mut views: NonSendMut<Views>| {
-                    views.contexts.remove(&removed.entity);
+                    views.remove(&removed.entity);
                 },
             )
             .add_observer(|_: On<Shutdown>, mut exits: MessageWriter<AppExit>| {
@@ -201,12 +198,6 @@ fn first_leaf(world: &World, root: Entity) -> Option<Entity> {
         .iter()
         .find_map(|child| first_leaf(world, child))
 }
-fn name(world: &World, entity: Entity) -> String {
-    world
-        .get::<Name>(entity)
-        .map_or_else(|| entity.to_bits().to_string(), |n| n.as_str().to_owned())
-}
-
 fn settle_remote_requests(receiver: Res<bevy_remote::BrpReceiver>, wake: Res<Wake>) {
     // Stock requests run after Update. Schedule one causal settling pass so their
     // mutations reach native lifecycle/layout systems even when otherwise idle.
@@ -325,18 +316,16 @@ fn with_views<T>(world: &mut World, f: impl FnOnce(&mut World, &mut Views) -> T)
     world.insert_non_send(views);
     result
 }
-fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<Viewer, String> {
-    let mut v = world
-        .get::<Viewer>(id)
-        .cloned()
-        .ok_or("viewer no longer attached")?;
+fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), String> {
+    let v = world.get::<Viewer>(id).ok_or("viewer no longer attached")?;
+    let root = v.workspace;
     if v.focus.is_none_or(|e| world.get::<PaneView>(e).is_none()) {
-        v.focus = first_leaf(world, v.workspace);
-        world.entity_mut(id).insert(v.clone());
+        let focus = first_leaf(world, root);
+        world.get_mut::<Viewer>(id).unwrap().focus = focus;
     }
-    let (revision, scene) = scene(world, v.workspace)?;
+    let (revision, scene) = scene(world, root)?;
     let registry = world.resource::<AppTypeRegistry>().clone();
-    let context = views.contexts.entry(id).or_insert_with(|| View {
+    let context = views.entry(id).or_insert_with(|| View {
         presentation: Presentation::new(registry),
         last: String::new(),
         clipboard: Vec::new(),
@@ -345,12 +334,11 @@ fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<Viewer,
     });
     context
         .presentation
-        .sync(&scene, revision, v.workspace, &v)?;
-    Ok(v)
+        .sync(&scene, revision, root, world.get::<Viewer>(id).unwrap())
 }
-fn size_terminals(world: &mut World, views: &Views) {
+fn size_terminals(views: &Views, terminals: &mut Query<&mut Terminal>) {
     let mut sizes = EntityHashMap::<(u16, u16)>::default();
-    for context in views.contexts.values() {
+    for context in views.values() {
         for rect in context.presentation.rects() {
             let rows = rect.height.saturating_sub(2).max(1);
             let cols = rect.width.saturating_sub(2).max(1);
@@ -364,7 +352,7 @@ fn size_terminals(world: &mut World, views: &Views) {
         }
     }
     for (pane, (rows, cols)) in sizes {
-        if let Some(mut terminal) = world.get_mut::<Terminal>(pane) {
+        if let Ok(mut terminal) = terminals.get_mut(pane) {
             let _ = terminal.resize(rows, cols);
         }
     }
@@ -420,20 +408,16 @@ fn frame(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
 fn frame_watch(In(params): In<Option<Value>>, world: &mut World) -> BrpResult<Option<Value>> {
     let id = request_viewer(params)?;
     let now = Instant::now();
-    let deferred = world
-        .non_send_mut::<Views>()
-        .contexts
-        .get_mut(&id)
-        .and_then(|view| {
-            if now >= view.next_paint {
-                view.paint_wake_pending = false;
-                None
-            } else {
-                let needs_wake = !view.paint_wake_pending;
-                view.paint_wake_pending = true;
-                Some((view.next_paint, needs_wake))
-            }
-        });
+    let deferred = world.non_send_mut::<Views>().get_mut(&id).and_then(|view| {
+        if now >= view.next_paint {
+            view.paint_wake_pending = false;
+            None
+        } else {
+            let needs_wake = !view.paint_wake_pending;
+            view.paint_wake_pending = true;
+            Some((view.next_paint, needs_wake))
+        }
+    });
     if let Some((deadline, needs_wake)) = deferred {
         if needs_wake {
             // Coalesce hot output before painting, without a periodic idle tick.
@@ -449,7 +433,6 @@ fn frame_watch(In(params): In<Option<Value>>, world: &mut World) -> BrpResult<Op
     }
     let has_effect = world
         .non_send::<Views>()
-        .contexts
         .get(&id)
         .is_some_and(|view| !view.clipboard.is_empty());
     let frame = make_frame(world, id).map_err(BrpError::internal)?;
@@ -457,7 +440,7 @@ fn frame_watch(In(params): In<Option<Value>>, world: &mut World) -> BrpResult<Op
         return Ok(Some(json!(frame)));
     }
     let mut views = world.non_send_mut::<Views>();
-    let Some(view) = views.contexts.get_mut(&id) else {
+    let Some(view) = views.get_mut(&id) else {
         return Ok(None);
     };
     if !has_effect && view.last == frame.paint {
@@ -487,131 +470,144 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
             detach: true,
         });
     }
-    with_views(world, |world, views| {
-        let v = sync_view(world, views, id)?;
-        size_terminals(world, views);
-        let view = views.contexts.get_mut(&id).ok_or("missing presentation")?;
-        let mut out = String::from("\x1b[?2026h\x1b[?7l\x1b[?25l\x1b[0m\x1b[H\x1b[2J");
-        let chrome = if v.prompt.as_deref() == Some("help") {
-            let settings = world.resource::<Settings>();
-            let index = v.buffer.parse::<usize>().unwrap_or(0) % settings.bindings.len().max(1);
-            settings.bindings.get(index).map_or_else(
-                || "help: no bindings | Esc".into(),
-                |binding| {
-                    format!(
-                        "help {}/{} | {} {}: {} | ←/→ Esc",
-                        index + 1,
-                        settings.bindings.len(),
-                        settings.prefix,
-                        binding.key,
-                        binding.action
-                    )
-                },
-            )
-        } else if let Some(prompt) = &v.prompt {
-            format!("{prompt}: {}", v.buffer)
-        } else {
-            format!(
-                "fux [{}] {}{} | {} ? help | {}",
-                name(world, v.workspace),
-                if v.zoom { "zoom " } else { "" },
-                if v.scrollback > 0 {
-                    format!("scroll:{}", v.scrollback)
-                } else {
-                    String::new()
-                },
-                world.resource::<Settings>().prefix,
-                v.notice
-            )
-        };
+    with_views(world, |world, views| sync_view(world, views, id))?;
+    world
+        .run_system_cached_with(paint, id)
+        .map_err(|e| e.to_string())?
+}
+
+fn paint(
+    In(id): In<Entity>,
+    viewers: Query<&Viewer>,
+    names: Query<&Name>,
+    states: Query<&ProcessState>,
+    mut terminals: Query<&mut Terminal>,
+    settings: Res<Settings>,
+    mut views: NonSendMut<Views>,
+) -> Result<Frame, String> {
+    let v = viewers.get(id).map_err(|e| e.to_string())?;
+    let name = |entity: Entity| {
+        names
+            .get(entity)
+            .map_or_else(|_| entity.to_bits().to_string(), |n| n.as_str().to_owned())
+    };
+    size_terminals(&views, &mut terminals);
+    let view = views.get_mut(&id).ok_or("missing presentation")?;
+    let mut out = String::from("\x1b[?2026h\x1b[?7l\x1b[?25l\x1b[0m\x1b[H\x1b[2J");
+    let chrome = if v.prompt.as_deref() == Some("help") {
+        let index = v.buffer.parse::<usize>().unwrap_or(0) % settings.bindings.len().max(1);
+        settings.bindings.get(index).map_or_else(
+            || "help: no bindings | Esc".into(),
+            |binding| {
+                format!(
+                    "help {}/{} | {} {}: {} | ←/→ Esc",
+                    index + 1,
+                    settings.bindings.len(),
+                    settings.prefix,
+                    binding.key,
+                    binding.action
+                )
+            },
+        )
+    } else if let Some(prompt) = &v.prompt {
+        format!("{prompt}: {}", v.buffer)
+    } else {
+        format!(
+            "fux [{}] {}{} | {} ? help | {}",
+            name(v.workspace),
+            if v.zoom { "zoom " } else { "" },
+            if v.scrollback > 0 {
+                format!("scroll:{}", v.scrollback)
+            } else {
+                String::new()
+            },
+            settings.prefix,
+            v.notice
+        )
+    };
+    at(
+        &mut out,
+        0,
+        0,
+        format_args!("\x1b[7m{}\x1b[0m", clipped(&chrome, v.cols)),
+    );
+    let mut cursor = None;
+    for rect in view.presentation.rects() {
+        if rect.width < 3 || rect.height < 3 {
+            continue;
+        }
+        let selected = v.focus == Some(rect.leaf);
+        let color = if selected { "\x1b[36m" } else { "\x1b[90m" };
+        let state = states.get(rect.pane).ok();
+        let status = state
+            .and_then(|s| s.exit)
+            .map(|code| format!(" [exit:{code}]"))
+            .or_else(|| {
+                state
+                    .and_then(|s| s.error.as_ref())
+                    .map(|error| format!(" [{error}]"))
+            })
+            .unwrap_or_default();
+        let label = format!(
+            " {} {}{status} ",
+            if selected { "*" } else { "-" },
+            name(rect.pane)
+        );
+        let top = format!(
+            "{color}+{}+\x1b[0m",
+            "-".repeat(usize::from(rect.width - 2))
+        );
+        at(&mut out, rect.x, rect.y, &top);
         at(
             &mut out,
-            0,
-            0,
-            format_args!("\x1b[7m{}\x1b[0m", clipped(&chrome, v.cols)),
+            rect.x + 1,
+            rect.y,
+            format_args!("{color}{}\x1b[0m", clipped(&label, rect.width - 2)),
         );
-        let mut cursor = None;
-        for rect in view.presentation.rects() {
-            if rect.width < 3 || rect.height < 3 {
-                continue;
+        at(&mut out, rect.x, rect.y + rect.height - 1, &top);
+        for row in 1..rect.height - 1 {
+            for x in [rect.x, rect.x + rect.width - 1] {
+                at(&mut out, x, rect.y + row, format_args!("{color}|\x1b[0m"));
             }
-            let selected = v.focus == Some(rect.leaf);
-            let color = if selected { "\x1b[36m" } else { "\x1b[90m" };
-            let state = world.get::<ProcessState>(rect.pane);
-            let status = state
-                .and_then(|s| s.exit)
-                .map(|code| format!(" [exit:{code}]"))
-                .or_else(|| {
-                    state
-                        .and_then(|s| s.error.as_ref())
-                        .map(|error| format!(" [{error}]"))
-                })
-                .unwrap_or_default();
-            let label = format!(
-                " {} {}{status} ",
-                if selected { "*" } else { "-" },
-                name(world, rect.pane)
-            );
-            let top = format!(
-                "{color}+{}+\x1b[0m",
-                "-".repeat(usize::from(rect.width - 2))
-            );
-            at(&mut out, rect.x, rect.y, &top);
-            at(
+        }
+        match terminals.get_mut(rect.pane) {
+            Ok(mut terminal) => {
+                let (lines, screen) = terminal.snapshot(if selected { v.scrollback } else { 0 });
+                for (row, line) in lines.iter().take(usize::from(rect.height - 2)).enumerate() {
+                    at(&mut out, rect.x + 1, rect.y + 1 + row as u16, line);
+                }
+                let (row, col) = screen.cursor_position();
+                if selected
+                    && !screen.hide_cursor()
+                    && v.scrollback == 0
+                    && row < rect.height - 2
+                    && col < rect.width - 2
+                {
+                    cursor = Some((rect.x + 1 + col, rect.y + 1 + row));
+                }
+            }
+            Err(_) => at(
                 &mut out,
                 rect.x + 1,
-                rect.y,
-                format_args!("{color}{}\x1b[0m", clipped(&label, rect.width - 2)),
-            );
-            at(&mut out, rect.x, rect.y + rect.height - 1, &top);
-            for row in 1..rect.height - 1 {
-                for x in [rect.x, rect.x + rect.width - 1] {
-                    at(&mut out, x, rect.y + row, format_args!("{color}|\x1b[0m"));
-                }
-            }
-            let mut terminal = world.get_mut::<Terminal>(rect.pane);
-            match terminal
-                .as_mut()
-                .ok_or_else(|| "terminal not found".to_owned())
-                .map(|terminal| terminal.snapshot(if selected { v.scrollback } else { 0 }))
-            {
-                Ok((lines, screen)) => {
-                    for (row, line) in lines.iter().take(usize::from(rect.height - 2)).enumerate() {
-                        at(&mut out, rect.x + 1, rect.y + 1 + row as u16, line);
-                    }
-                    let (row, col) = screen.cursor_position();
-                    if selected
-                        && !screen.hide_cursor()
-                        && v.scrollback == 0
-                        && row < rect.height - 2
-                        && col < rect.width - 2
-                    {
-                        cursor = Some((rect.x + 1 + col, rect.y + 1 + row));
-                    }
-                }
-                Err(error) => at(
-                    &mut out,
-                    rect.x + 1,
-                    rect.y + 1,
-                    clipped(&error, rect.width - 2),
-                ),
-            }
+                rect.y + 1,
+                clipped("terminal not found", rect.width - 2),
+            ),
         }
-        for text in view.clipboard.drain(..) {
-            let _ = write!(
-                out,
-                "\x1b]52;c;{}\x07",
-                base64::engine::general_purpose::STANDARD.encode(text)
-            );
-        }
-        if let Some((x, y)) = cursor {
-            at(&mut out, x, y, "\x1b[?25h");
-        }
-        out.push_str("\x1b[0m\x1b[?2026l");
-        Ok(Frame {
-            paint: out,
-            detach: false,
-        })
+    }
+    for text in view.clipboard.drain(..) {
+        let _ = write!(
+            out,
+            "\x1b]52;c;{}\x07",
+            base64::engine::general_purpose::STANDARD.encode(text)
+        );
+    }
+    if let Some((x, y)) = cursor {
+        at(&mut out, x, y, "\x1b[?25h");
+    }
+    out.push_str("\x1b[0m\x1b[?2026l");
+    Ok(Frame {
+        paint: out,
+        detach: false,
     })
 }
 
@@ -718,7 +714,6 @@ fn control_event(
                 .stop()?,
             "focus_next" => {
                 v.focus = views
-                    .contexts
                     .get_mut(&id)
                     .ok_or("presentation not initialized")?
                     .presentation
@@ -743,10 +738,7 @@ fn control_event(
                 v.scrollback = v.scrollback.saturating_sub(usize::from(v.rows / 2).max(1))
             }
             "copy" => {
-                let view = views
-                    .contexts
-                    .get_mut(&id)
-                    .ok_or("presentation not initialized")?;
+                let view = views.get_mut(&id).ok_or("presentation not initialized")?;
                 if view.clipboard.len() == 16 {
                     return Err("clipboard delivery queue is full".into());
                 }
@@ -1087,10 +1079,7 @@ fn input_event(
             } => {
                 // Pick against the last painted native layout, not a second
                 // rectangle hit-test implementation.
-                let context = views
-                    .contexts
-                    .get_mut(&id)
-                    .ok_or("presentation not initialized")?;
+                let context = views.get_mut(&id).ok_or("presentation not initialized")?;
                 let hit = context.presentation.pointer(*x, *y, action == "press");
                 if let Some(hit) = hit {
                     if action == "press" {
