@@ -2,7 +2,8 @@ use crate::protocol::{Frame, Input};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, IsTerminal, Read, Write},
+    os::{fd::AsFd, unix::net::UnixStream},
     sync::{
         Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
@@ -66,6 +67,7 @@ impl Drop for Screen {
 enum Incoming {
     Input(Input),
     Paint,
+    Resize,
     Escape(String),
     Stop,
     Error(String),
@@ -94,8 +96,16 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
         .write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1003h\x1b[?1006h\x1b[?2004h")
         .map_err(|e| e.to_string())?;
     screen.0.flush().map_err(|e| e.to_string())?;
-    let reader = screen.0.event_reader();
-    let input_waker = reader.waker();
+    // Termina still owns modes, dimensions and key/mouse decoding. This narrow
+    // readiness adapter exposes bracketed-paste start before its buffered end.
+    let input_file: std::fs::File = if std::io::stdin().is_terminal() {
+        nix::unistd::dup(std::io::stdin())
+            .map_err(|e| e.to_string())?
+            .into()
+    } else {
+        std::fs::File::open("/dev/tty").map_err(|e| e.to_string())?
+    };
+    let (mut input_waker, input_stop) = UnixStream::pair().map_err(|e| e.to_string())?;
     let stopped = Arc::new(AtomicBool::new(false));
     let input_stopped = Arc::clone(&stopped);
     let (sender, receiver) = mpsc::sync_channel(64);
@@ -103,38 +113,28 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGHUP,
+        signal_hook::consts::SIGWINCH,
     ])
     .map_err(|error| error.to_string())?;
     let signal_handle = signals.handle();
     let signal_sender = sender.clone();
     let signal_thread = thread::spawn(move || {
-        if signals.forever().next().is_some() {
-            let _ = signal_sender.send(Incoming::Stop);
+        for signal in signals.forever() {
+            if signal == signal_hook::consts::SIGWINCH {
+                if signal_sender.send(Incoming::Resize).is_err() {
+                    break;
+                }
+            } else {
+                let _ = signal_sender.send(Incoming::Stop);
+                break;
+            }
         }
     });
     let input_sender = sender.clone();
     let input_thread = thread::spawn(move || {
-        while !input_stopped.load(Ordering::Acquire) {
-            match reader.poll(None, |_| true).and_then(|ready| {
-                if ready {
-                    reader.read(|_| true).map(Some)
-                } else {
-                    Ok(None)
-                }
-            }) {
-                Ok(Some(event)) => {
-                    if let Some(input) = convert(event)
-                        && input_sender.send(Incoming::Input(input)).is_err()
-                    {
-                        break;
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    let _ = input_sender.send(Incoming::Error(error.to_string()));
-                    break;
-                }
-            }
+        let result = read_input(input_file, input_stop, &input_stopped, &input_sender);
+        if let Err(error) = result {
+            let _ = input_sender.send(Incoming::Error(error.to_string()));
         }
     });
     // Coalesce frames rather than making hot output queue stale paintings ahead
@@ -191,6 +191,14 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
                     "fux::control::UserInput",
                     json!({"viewer":viewer,"input":input}),
                 )?,
+                Incoming::Resize => {
+                    let size = screen.0.get_dimensions().map_err(|e| e.to_string())?;
+                    trigger(
+                        endpoint,
+                        "fux::control::UserInput",
+                        json!({"viewer":viewer,"input":Input::Resize { rows:size.rows, cols:size.cols }}),
+                    )?;
+                }
                 Incoming::Paint => {
                     let frame = latest.lock().take();
                     if let Some(frame) = frame {
@@ -215,7 +223,7 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
         }
     })();
     stopped.store(true, Ordering::Release);
-    let _ = input_waker.wake();
+    let _ = input_waker.write_all(&[1]);
     drop(receiver);
     signal_handle.close();
     let _ = signal_thread.join();
@@ -229,7 +237,57 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
     );
     outcome
 }
-fn convert(event: Event) -> Option<Input> {
+fn read_input(
+    mut file: std::fs::File,
+    stop: UnixStream,
+    stopped: &AtomicBool,
+    sender: &mpsc::SyncSender<Incoming>,
+) -> std::io::Result<()> {
+    use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
+    let mut decoder = crate::paste::Decoder::default();
+    let mut bytes = [0; 8192];
+    while !stopped.load(Ordering::Acquire) {
+        let mut fds = [
+            PollFd::new(file.as_fd(), PollFlags::POLLIN),
+            PollFd::new(stop.as_fd(), PollFlags::POLLIN),
+        ];
+        let timeout = if decoder.deadline_needed() {
+            PollTimeout::from(35u16)
+        } else {
+            PollTimeout::NONE
+        };
+        let ready = match poll(&mut fds, timeout) {
+            Ok(n) => n,
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(error) => return Err(std::io::Error::from(error)),
+        };
+        if fds[1].revents().is_some_and(|flags| !flags.is_empty()) {
+            break;
+        }
+        let mut closed = false;
+        let mut emit = |input| {
+            if sender.send(Incoming::Input(input)).is_err() {
+                closed = true;
+            }
+        };
+        if ready == 0 {
+            decoder.timeout(&mut emit);
+        } else {
+            let n = file.read(&mut bytes)?;
+            if n == 0 {
+                let _ = sender.send(Incoming::Stop);
+                break;
+            }
+            decoder.bytes(&bytes[..n], &mut emit);
+        }
+        if closed {
+            break;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn convert(event: Event) -> Option<Input> {
     match event {
         Event::WindowResized(size) => Some(Input::Resize {
             rows: size.rows,

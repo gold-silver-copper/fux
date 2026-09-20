@@ -34,7 +34,11 @@ impl Server {
         fs::create_dir(&directory).unwrap();
         let directory = directory.canonicalize().unwrap();
         let config = directory.join("fux.json");
-        fs::write(&config, r#"{"shell":["/bin/sh"],"history_lines":100}"#).unwrap();
+        fs::write(
+            &config,
+            r#"{"shell":["/bin/sh"],"history_lines":100,"clipboard":"write-only"}"#,
+        )
+        .unwrap();
         // Distinct non-ephemeral ports avoid port-0 reservations being reused by
         // parallel fixtures or outgoing HTTP sockets before the child binds.
         let listener = (0..20_000)

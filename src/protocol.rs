@@ -25,6 +25,8 @@ pub enum Input {
         alt: bool,
         shift: bool,
     },
+    /// Capture the current input owner before a fragmented bracketed paste.
+    PasteBegin,
     Paste {
         text: String,
     },

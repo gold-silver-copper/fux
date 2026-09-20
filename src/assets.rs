@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod tests;
 use crate::model::{Launch, PaneView, ProcessState, Wake, Workspace};
 use bevy_app::{App, PostUpdate};
 use bevy_asset::{
@@ -31,6 +33,14 @@ pub struct Binding {
     pub action: String,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Reflect, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClipboardPolicy {
+    #[default]
+    Disabled,
+    WriteOnly,
+}
+
 #[derive(Asset, Resource, Clone, Reflect, Serialize, Deserialize)]
 #[reflect(Resource, Default)]
 #[serde(default, deny_unknown_fields)]
@@ -39,6 +49,7 @@ pub struct Settings {
     pub bindings: Vec<Binding>,
     pub shell: Vec<String>,
     pub history_lines: usize,
+    pub clipboard: ClipboardPolicy,
     /// A native .scn.ron asset path, relative to the configuration directory.
     pub layout: Option<String>,
 }
@@ -70,6 +81,22 @@ impl Default for Settings {
             ("l", "load_layout"),
             ("d", "detach"),
             ("?", "help"),
+            ("t", "tab_new"),
+            ("]", "tab_next"),
+            ("[", "copy_mode"),
+            ("{", "tab_previous"),
+            ("T", "tab_choose"),
+            ("W", "workspace_choose"),
+            ("P", "workspace_previous"),
+            ("u", "focus_previous"),
+            ("!", "focus_last"),
+            ("alt-left", "focus_left"),
+            ("alt-right", "focus_right"),
+            ("alt-up", "focus_up"),
+            ("alt-down", "focus_down"),
+            (";", "pane_menu"),
+            ("'", "tab_menu"),
+            ("`", "workspace_menu"),
         ]
         .into_iter()
         .map(|(key, action)| Binding {
@@ -87,6 +114,7 @@ impl Default for Settings {
                     .unwrap_or_else(|| "/bin/sh".into()),
             ],
             history_lines: 10_000,
+            clipboard: ClipboardPolicy::Disabled,
             layout: None,
         }
     }
@@ -242,6 +270,8 @@ pub fn install(app: &mut App, path: &Path) -> Result<(), String> {
         .register_type::<Binding>()
         .register_type::<LayoutReload>()
         .register_type::<Workspace>()
+        .register_type::<crate::model::Tab>()
+        .register_type::<crate::model::WorkspaceOrder>()
         .register_type::<PaneView>()
         .register_type::<Name>()
         .register_type::<ChildOf>()
@@ -383,6 +413,16 @@ pub fn extract_layout(world: &World, root: Entity) -> Result<DynamicWorld, Strin
         if !selected.insert(entity) {
             return Err("layout hierarchy contains a cycle".into());
         }
+        if world.get::<crate::model::Viewer>(entity).is_some() {
+            return Err("viewers cannot belong to layout scenes".into());
+        }
+        if world.get::<crate::model::Tab>(entity).is_some()
+            && world
+                .get::<ChildOf>(entity)
+                .is_none_or(|p| p.parent() != root)
+        {
+            return Err("tabs must be direct workspace children".into());
+        }
         if world.get::<Launch>(entity).is_some() || world.get::<ProcessState>(entity).is_some() {
             return Err("process entities must live outside the layout hierarchy".into());
         }
@@ -489,6 +529,9 @@ pub fn apply_layout(
                 return Err(format!("{} is not a reflected component", info.type_path()));
             }
         }
+        if component::<crate::model::Viewer>(entity)?.is_some() {
+            return Err("viewers cannot belong to layout scenes".into());
+        }
         if component::<Launch>(entity)?.is_some() || component::<ProcessState>(entity)?.is_some() {
             return Err(
                 "layout scenes refer to existing processes; they cannot contain process entities"
@@ -507,6 +550,11 @@ pub fn apply_layout(
         return Err("workspace root has a parent".into());
     }
     for entity in &scene.entities {
+        if component::<crate::model::Tab>(entity)?.is_some()
+            && parents.get(&entity.entity) != Some(&root)
+        {
+            return Err("tabs must be direct workspace children".into());
+        }
         let mut cursor = entity.entity;
         let mut visited = EntityHashSet::default();
         while cursor != root {
@@ -551,5 +599,7 @@ pub fn apply_layout(
         }
         return Err(error.to_string());
     }
-    Ok(entity_map[&root])
+    let root = entity_map[&root];
+    crate::navigation::normalize_workspace(world, root);
+    Ok(root)
 }

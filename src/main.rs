@@ -1,9 +1,14 @@
+mod actions;
 mod assets;
 mod chrome;
 mod control;
+mod interaction;
 mod model;
+mod navigation;
+mod paste;
 mod presentation;
 mod protocol;
+mod selection;
 mod server;
 mod terminal;
 mod viewer;

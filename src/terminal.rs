@@ -178,6 +178,14 @@ impl Terminal {
         )
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn selection_grid(&mut self, scrollback: usize) -> Result<crate::selection::Grid, String> {
+        crate::selection::Grid::capture(self.parser.screen_mut(), scrollback)
+    }
+
     pub fn copy_text(&mut self, scrollback: usize) -> String {
         let screen = self.parser.screen_mut();
         screen.set_scrollback(scrollback);

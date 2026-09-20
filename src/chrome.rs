@@ -58,6 +58,7 @@ pub fn fit(text: &str, cols: u16, tail: bool) -> String {
     }
 }
 
+#[cfg(test)]
 pub fn bar(out: &mut String, v: &Viewer, workspace: &str, focused: &str) {
     if v.rows == 0 || v.cols == 0 {
         return;
@@ -106,7 +107,139 @@ pub fn bar(out: &mut String, v: &Viewer, workspace: &str, focused: &str) {
     out.push_str("\x1b[0m");
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Render the existing bar with an ordered, active-visible tab window.
+pub fn tab_bar(
+    out: &mut String,
+    v: &Viewer,
+    workspace: &str,
+    tabs: &[(bevy_ecs::entity::Entity, String)],
+    focused: &str,
+) -> Vec<(bevy_ecs::entity::Entity, Bounds)> {
+    if v.rows == 0 || v.cols == 0 {
+        return Vec::new();
+    }
+    let allowance = if focused.is_empty() && v.notice.is_empty() || v.cols < 12 {
+        v.cols
+    } else {
+        v.cols / 2
+    };
+    at(
+        out,
+        0,
+        v.rows - 1,
+        format_args!("{BAR}{}", " ".repeat(usize::from(v.cols))),
+    );
+    let status = format!(
+        "{focused}{}{}",
+        if v.zoom { " zoom" } else { "" },
+        if v.scrollback > 0 {
+            format!(" ↑{}", v.scrollback)
+        } else {
+            String::new()
+        }
+    );
+    let focused = status.as_str();
+    let right = if v.notice.is_empty() {
+        focused
+    } else {
+        &v.notice
+    };
+    let room = v.cols.saturating_sub(allowance + 3);
+    if room > 0 && !right.is_empty() {
+        let right = fit(right, room, v.notice.is_empty());
+        let x = v.cols.saturating_sub(width(&right) + 1);
+        at(out, x.saturating_sub(2), v.rows - 1, "│ ");
+        if !v.notice.is_empty() {
+            out.push_str(if v.notice_error {
+                "\x1b[31m"
+            } else {
+                "\x1b[33m"
+            });
+        }
+        out.push_str(&right);
+    }
+    let workspace_room = if allowance < 4 && !tabs.is_empty() {
+        0
+    } else {
+        (allowance / 3).max(1)
+    };
+    let title = fit(&format!(" {workspace}"), workspace_room, false);
+    at(
+        out,
+        0,
+        v.rows - 1,
+        format_args!("{BAR}{}", " ".repeat(usize::from(allowance))),
+    );
+    at(out, 0, v.rows - 1, &title);
+    let mut hits = vec![(
+        v.workspace,
+        Bounds {
+            x: 0,
+            y: v.rows - 1,
+            width: width(&title),
+            height: 1,
+        },
+    )];
+    let mut x = width(&title).saturating_add(u16::from(!title.is_empty()));
+    let selected = tabs
+        .iter()
+        .position(|(id, _)| Some(*id) == v.tab)
+        .unwrap_or(0);
+    // Start far enough left to retain preceding tabs when they fit, but never
+    // spend the selected tab's cell budget on an inactive label.
+    let mut start = selected;
+    let selected_width = tabs
+        .get(selected)
+        .map_or(0, |(_, name)| width(name).saturating_add(2));
+    let mut needed = selected_width.min(allowance.saturating_sub(x));
+    while start > 0 {
+        let previous = width(&tabs[start - 1].1).saturating_add(2);
+        if needed.saturating_add(previous) > allowance.saturating_sub(x) {
+            break;
+        }
+        needed += previous;
+        start -= 1;
+    }
+    for (id, name) in tabs.iter().skip(start) {
+        let room = allowance.saturating_sub(x);
+        if room == 0 {
+            break;
+        }
+        let label = fit(
+            &if room < 3 {
+                name.clone()
+            } else {
+                format!(" {name} ")
+            },
+            room,
+            false,
+        );
+        let size = width(&label);
+        at(
+            out,
+            x,
+            v.rows - 1,
+            format_args!(
+                "{BAR}{}{label}{BAR}",
+                if Some(*id) == v.tab { "\x1b[7;1m" } else { "" }
+            ),
+        );
+        hits.push((
+            *id,
+            Bounds {
+                x,
+                y: v.rows - 1,
+                width: size,
+                height: 1,
+            },
+        ));
+        x += size;
+    }
+    out.push_str("\x1b[0m");
+    hits
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bounds {
     pub x: u16,
     pub y: u16,
@@ -126,13 +259,11 @@ fn capacity(rows: u16) -> usize {
 }
 pub fn help_limit(settings: &Settings, rows: u16) -> usize {
     let cap = capacity(rows).max(1);
-    if settings.bindings.len() <= cap {
+    let count = help_entries(settings, 4096).len();
+    if count <= cap {
         0
     } else {
-        settings
-            .bindings
-            .len()
-            .saturating_sub(if cap >= 3 { cap - 1 } else { cap })
+        count.saturating_sub(if cap >= 3 { cap - 1 } else { cap })
     }
 }
 pub fn scroll(v: &mut Viewer, settings: &Settings, down: bool, page: bool) {
@@ -151,7 +282,50 @@ pub fn scroll(v: &mut Viewer, settings: &Settings, down: bool, page: bool) {
     };
 }
 
+#[cfg(test)]
 pub fn panel(out: &mut String, v: &Viewer, settings: &Settings) -> Option<Bounds> {
+    panel_context(out, v, settings, |_| false)
+}
+
+fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&str>)> {
+    let key_width = settings
+        .bindings
+        .iter()
+        .map(|b| width(&b.key))
+        .max()
+        .unwrap_or(0)
+        .min((cols.saturating_sub(4) / 3).max(1));
+    let mut lines = Vec::new();
+    for group in ["Panes", "Focus", "Tabs", "Workspaces", "Session", "Other"] {
+        let bindings: Vec<_> = settings
+            .bindings
+            .iter()
+            .filter(|b| crate::actions::metadata(&b.action).map_or("Other", |a| a.group) == group)
+            .collect();
+        if bindings.is_empty() {
+            continue;
+        }
+        lines.push((group.into(), None));
+        for binding in bindings {
+            let key = fit(&binding.key, key_width, false);
+            let padding = " ".repeat(usize::from(key_width.saturating_sub(width(&key))));
+            let label = crate::actions::metadata(&binding.action)
+                .map_or_else(|| binding.action.replace('_', " "), |a| a.label.into());
+            lines.push((
+                format!("{padding}{key}  {label}"),
+                Some(binding.action.as_str()),
+            ));
+        }
+    }
+    lines
+}
+
+pub fn panel_context(
+    out: &mut String,
+    v: &Viewer,
+    settings: &Settings,
+    disabled: impl Fn(&str) -> bool,
+) -> Option<Bounds> {
     let available = v.rows.saturating_sub(1);
     if available == 0 || v.cols == 0 || (!v.prefix && v.prompt.is_none()) {
         return None;
@@ -161,28 +335,23 @@ pub fn panel(out: &mut String, v: &Viewer, settings: &Settings) -> Option<Bounds
         if available >= 3 {
             lines.push(("Commands".to_owned(), "\x1b[1m"));
         }
+        let entries = help_entries(settings, v.cols);
         let cap = capacity(v.rows);
         let start = v.help_scroll.min(help_limit(settings, v.rows));
         let above = cap >= 3 && start > 0;
-        let below =
-            cap >= 3 && settings.bindings.len().saturating_sub(start) > cap - usize::from(above);
+        let below = cap >= 3 && entries.len().saturating_sub(start) > cap - usize::from(above);
         let body = cap.saturating_sub(usize::from(above) + usize::from(below));
         if above {
             lines.push((format!("▲ {start} more"), "\x1b[2m"));
         }
-        let key_width = settings
-            .bindings
-            .iter()
-            .map(|b| width(&b.key))
-            .max()
-            .unwrap_or(0)
-            .min((v.cols.saturating_sub(4) / 3).max(1));
-        for binding in settings.bindings.iter().skip(start).take(body) {
-            let key = fit(&binding.key, key_width, false);
-            let padding = " ".repeat(usize::from(key_width.saturating_sub(width(&key))));
+        for (text, action) in entries.iter().skip(start).take(body) {
             lines.push((
-                format!("{padding}{key}  {}", binding.action.replace('_', " ")),
-                "",
+                text.clone(),
+                match action {
+                    None => "\x1b[1m",
+                    Some(action) if disabled(action) => "\x1b[2m",
+                    _ => "",
+                },
             ));
         }
         if settings.bindings.is_empty() {
@@ -190,7 +359,7 @@ pub fn panel(out: &mut String, v: &Viewer, settings: &Settings) -> Option<Bounds
         }
         if below {
             lines.push((
-                format!("▼ {} more", settings.bindings.len() - start - body),
+                format!("▼ {} more", entries.len() - start - body),
                 "\x1b[2m",
             ));
         }
@@ -210,6 +379,15 @@ pub fn panel(out: &mut String, v: &Viewer, settings: &Settings) -> Option<Bounds
         if available >= 2 {
             lines.push(("Enter accept · Esc cancel".into(), "\x1b[2m"));
         }
+    }
+    surface(out, v, &lines)
+}
+
+/// Shared content-sized corner surface for help, prompts, choosers and menus.
+pub fn surface(out: &mut String, v: &Viewer, lines: &[(String, &str)]) -> Option<Bounds> {
+    let available = v.rows.saturating_sub(1);
+    if available == 0 || v.cols == 0 || lines.is_empty() {
+        return None;
     }
     let height = (lines.len() as u16).min(available);
     let width = lines
@@ -238,7 +416,10 @@ pub fn panel(out: &mut String, v: &Viewer, settings: &Settings) -> Option<Bounds
             out,
             bounds.x + padding,
             y,
-            format_args!("{style}{}", fit(text, width - padding * 2, false)),
+            format_args!(
+                "{style}{}",
+                fit(text, width - padding * 2, text.ends_with('▏'))
+            ),
         );
     }
     out.push_str("\x1b[0m");
