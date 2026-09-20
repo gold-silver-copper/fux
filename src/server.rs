@@ -9,10 +9,7 @@ use crate::{
 use base64::Engine;
 use bevy_app::{App, AppExit, Plugin, Startup, Update};
 use bevy_ecs::{
-    entity::EntityHashMap,
-    prelude::*,
-    relationship::RelationshipTarget,
-    system::{SystemChangeTick, SystemParam},
+    entity::EntityHashMap, prelude::*, relationship::RelationshipTarget, system::SystemChangeTick,
     world::EntityRefExcept,
 };
 use bevy_remote::{BrpError, BrpResult, RemotePlugin};
@@ -618,41 +615,28 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
     })
 }
 
-#[derive(SystemParam)]
-struct Controls<'w, 's> {
-    commands: Commands<'w, 's>,
-    viewers: Query<'w, 's, &'static mut Viewer>,
-    panes: Query<'w, 's, &'static PaneView>,
-    inverse: Query<'w, 's, &'static PaneViews>,
-    parents: Query<'w, 's, &'static ChildOf>,
-    children: Query<'w, 's, &'static Children>,
-    roots: Query<'w, 's, Entity, With<Workspace>>,
-    names: Query<'w, 's, &'static Name>,
-    nodes: Query<'w, 's, &'static mut Node>,
-    launches: Query<'w, 's, &'static Launch>,
-    settings: Res<'w, Settings>,
-    terminals: Query<'w, 's, &'static mut Terminal>,
-    views: NonSendMut<'w, Views>,
-    wake: Res<'w, Wake>,
-}
-
-fn control_event(event: On<Control>, mut controls: Controls) {
-    let Controls {
-        commands,
-        viewers,
-        panes,
-        inverse,
-        parents,
-        children,
-        roots,
-        names,
-        nodes,
-        launches,
-        settings,
-        terminals,
-        views,
-        wake,
-    } = &mut controls;
+// Direct system parameters make ECS access explicit without a borrowing wrapper.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Bevy injects each declared ECS access"
+)]
+fn control_event(
+    event: On<Control>,
+    mut commands: Commands,
+    mut viewers: Query<&mut Viewer>,
+    panes: Query<&PaneView>,
+    inverse: Query<&PaneViews>,
+    parents: Query<&ChildOf>,
+    children: Query<&Children>,
+    roots: Query<Entity, With<Workspace>>,
+    names: Query<&Name>,
+    mut nodes: Query<&mut Node>,
+    launches: Query<&Launch>,
+    settings: Res<Settings>,
+    mut terminals: Query<&mut Terminal>,
+    mut views: NonSendMut<Views>,
+    wake: Res<Wake>,
+) {
     let id = event.viewer;
     if event.action == "detach" {
         commands.entity(id).try_despawn();
@@ -682,7 +666,13 @@ fn control_event(event: On<Control>, mut controls: Controls) {
                 let argv = (!event.value.is_empty())
                     .then(|| vec!["/bin/sh".into(), "-lc".into(), event.value.clone()]);
                 if leaf.is_none() {
-                    v.focus = Some(spawn_pane(commands, settings, v.workspace, argv, cwd)?);
+                    v.focus = Some(spawn_pane(
+                        &mut commands,
+                        &settings,
+                        v.workspace,
+                        argv,
+                        cwd,
+                    )?);
                     v.zoom = false;
                     v.scrollback = 0;
                     return Ok(());
@@ -703,7 +693,7 @@ fn control_event(event: On<Control>, mut controls: Controls) {
                     FlexDirection::Row
                 };
                 let container = commands.spawn((Split, node)).id();
-                let new = spawn_pane(commands, settings, container, argv, cwd)?;
+                let new = spawn_pane(&mut commands, &settings, container, argv, cwd)?;
                 commands.entity(container).insert_children(0, &[leaf]);
                 commands.entity(parent).insert_children(index, &[container]);
                 v.focus = Some(new);
@@ -784,8 +774,14 @@ fn control_event(event: On<Control>, mut controls: Controls) {
                 } else {
                     event.value.clone()
                 };
-                v.workspace = workspace(commands, &title);
-                v.focus = Some(spawn_pane(commands, settings, v.workspace, None, None)?);
+                v.workspace = workspace(&mut commands, &title);
+                v.focus = Some(spawn_pane(
+                    &mut commands,
+                    &settings,
+                    v.workspace,
+                    None,
+                    None,
+                )?);
                 v.zoom = false;
             }
             "rename_pane" | "rename_workspace" | "save_layout" | "load_layout"
@@ -951,25 +947,20 @@ fn collapse_layout(
     }
 }
 
-#[derive(SystemParam)]
-struct Inputs<'w, 's> {
-    viewers: Query<'w, 's, &'static mut Viewer>,
-    panes: Query<'w, 's, &'static PaneView>,
-    settings: Res<'w, Settings>,
-    terminals: Query<'w, 's, &'static Terminal>,
-    views: NonSendMut<'w, Views>,
-    wake: Res<'w, Wake>,
-}
-
-fn input_event(event: On<UserInput>, mut commands: Commands, mut inputs: Inputs) {
-    let Inputs {
-        viewers,
-        panes,
-        settings,
-        terminals,
-        views,
-        wake,
-    } = &mut inputs;
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Bevy injects each declared ECS access"
+)]
+fn input_event(
+    event: On<UserInput>,
+    mut commands: Commands,
+    mut viewers: Query<&mut Viewer>,
+    panes: Query<&PaneView>,
+    settings: Res<Settings>,
+    terminals: Query<&Terminal>,
+    mut views: NonSendMut<Views>,
+    wake: Res<Wake>,
+) {
     let id = event.viewer;
     let Ok(mut v) = viewers.get_mut(id) else {
         return;
