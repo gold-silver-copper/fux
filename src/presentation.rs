@@ -196,11 +196,10 @@ impl Presentation {
             let mut leaves = world.query_filtered::<Entity, With<PaneView>>();
             let leaves: Vec<_> = leaves.iter(world).collect();
             for leaf in leaves {
-                let mut leaf = world.entity_mut(leaf);
-                leaf.insert((Interaction::None, FocusPolicy::Block));
-                if !leaf.contains::<TabIndex>() {
-                    leaf.insert(TabIndex(0));
-                }
+                world
+                    .entity_mut(leaf)
+                    .insert((Interaction::None, FocusPolicy::Block))
+                    .insert_if_new(TabIndex(0));
             }
             if let Some(source) = zoom {
                 let local = *self

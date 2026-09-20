@@ -1,5 +1,9 @@
 # Refinement evidence
 
+## Idiomatic follow-up against `136c156`
+
+`EntityHashMap`, `set_if_neq`, `resource_scope`, `insert_if_new` and borrowed formatting replace generic hashing, duplicate publication/ownership and temporary paint strings; key encoding shares CSI construction. Production code decreases 27 nonblank/noncomment lines; direct-frame CPU median improves 12.5%, scaling CPU 19.5%, and settled frame allocations fall 127→22. Capabilities, dependencies and native boundaries remain unchanged. [Paired raw evidence, conditions and reproduction scripts](https://gist.github.com/gold-silver-copper/9c38c3511a83748a949773d906bee3fa) distinguish this comparison from the historical refinement below.
+
 ## Identity and conditions
 
 Refines `b80f9ee366711e1eabb193f5f9f9fded26273dd8` without changing ancestry or committing/publishing. Baseline source and release were isolated before editing; all six original regressions passed. Measurements below are fresh comparisons, not the historical figures in VERIFICATION.md.

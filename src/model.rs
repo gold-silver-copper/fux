@@ -29,7 +29,7 @@ pub struct Launch {
     pub history_lines: usize,
 }
 
-#[derive(Component, Reflect, Clone)]
+#[derive(Component, Reflect, Clone, PartialEq)]
 #[reflect(Component, Default)]
 pub struct ProcessState {
     pub pid: Option<u32>,
