@@ -33,7 +33,7 @@ portable-pty = "=0.9.0"
 vt100 = "=0.16.2"
 termina = "=0.3.3"
 parking_lot = "0.12"
-nix = { version = "0.30", features = ["fs", "signal", "process"] }
+nix = { version = "0.30", features = ["fs", "signal", "process", "poll"] }
 async-io = "2"
 ureq = { version = "3", default-features = false, features = ["json"] }
 ron = "0.12"

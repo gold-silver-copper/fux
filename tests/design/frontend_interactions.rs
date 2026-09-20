@@ -1,0 +1,163 @@
+use super::*;
+use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use std::io::{Read, Write};
+
+struct Frontend {
+    child: Box<dyn PtyChild + Send + Sync>,
+    master: Option<Box<dyn MasterPty + Send>>,
+    writer: Option<Box<dyn Write + Send>>,
+    screens: std::sync::mpsc::Receiver<Screen>,
+    capture: Option<thread::JoinHandle<Vec<u8>>>,
+}
+impl Frontend {
+    fn start(server: &Server) -> Self {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 18,
+                cols: 70,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let writer = pair.master.take_writer().unwrap();
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
+        command.arg("attach");
+        command.env("FUX_ENDPOINT", &server.endpoint);
+        let child = {
+            let _spawn = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+            pair.slave.spawn_command(command).unwrap()
+        };
+        drop(pair.slave);
+        let (tx, screens) = std::sync::mpsc::channel();
+        let capture = thread::spawn(move || {
+            let mut parser = vt100::Parser::new(18, 70, 0);
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 8192];
+            while let Ok(n) = reader.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..n]);
+                parser.process(&chunk[..n]);
+                if bytes.ends_with(b"\x1b[?2026l") && tx.send(parser.screen().clone()).is_err() {
+                    break;
+                }
+            }
+            bytes
+        });
+        Self {
+            child,
+            master: Some(pair.master),
+            writer: Some(writer),
+            screens,
+            capture: Some(capture),
+        }
+    }
+    fn send(&mut self, bytes: &[u8]) {
+        self.writer.as_mut().unwrap().write_all(bytes).unwrap();
+    }
+    fn wait(&self, predicate: impl Fn(&Screen) -> bool) -> Screen {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let screen = self
+                .screens
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            if predicate(&screen) {
+                return screen;
+            }
+        }
+    }
+    fn finish(mut self) -> Vec<u8> {
+        eventually(|| self.child.try_wait().unwrap().is_some());
+        self.writer.take();
+        self.master.take();
+        self.capture.take().unwrap().join().unwrap()
+    }
+}
+impl Drop for Frontend {
+    fn drop(&mut self) {
+        self.writer.take();
+        self.master.take();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn attached_tabs_confirmations_copy_and_cancelled_fragmented_paste_are_isolated() {
+    let s = Server::start();
+    let mut f = Frontend::start(&s);
+    f.wait(|screen| row(screen, 17).starts_with(" main"));
+    let v = s.query("fux::model::Viewer")[0]["entity"].as_u64().unwrap();
+    let input = s.directory.join("frontend-input.bin");
+    s.run(
+        v,
+        &format!(
+            r"stty raw -echo; printf '\033[2J\033[HREADY'; cat > '{}'",
+            input.display()
+        ),
+    );
+    f.wait(|screen| screen.contents().starts_with("READY"));
+    f.send(b"\x02t");
+    f.wait(|screen| row(screen, 17).contains("tab-2"));
+    f.send(b"\x02T");
+    f.wait(|screen| screen.contents().contains("choose tab"));
+    f.send(b"\r");
+    f.wait(|screen| {
+        screen.contents().starts_with("READY") && !screen.contents().contains("choose tab")
+    });
+    f.send(b"\x02x");
+    let confirm = f.wait(|screen| screen.contents().contains("y confirm"));
+    assert!(confirm.hide_cursor());
+    f.send(b"n");
+    f.wait(|screen| !screen.contents().contains("y confirm"));
+    f.send(b"\x02[");
+    f.wait(|screen| row(screen, 17).contains("Copy:"));
+    f.send(b" \x1b[Cy"); // select RE, copy, return to live
+    f.wait(|screen| row(screen, 17).contains("copied via OSC52"));
+    f.send(b"\x02r");
+    f.wait(|screen| screen.contents().contains("rename pane"));
+    f.send(b"\x1b[200~SHOULD-");
+    f.wait(|screen| row(screen, 17).contains("pasting..."));
+    // Cancel through a concurrent stock input request while the actual frontend
+    // is still waiting for the end marker. Its remaining paste must not hit cat.
+    s.key(v, "escape", false);
+    f.wait(|screen| !screen.contents().contains("rename pane"));
+    f.send(b"NOT-LEAK\x1b[201~");
+    f.wait(|screen| row(screen, 17).contains("paste owner changed"));
+    f.send(b"OK");
+    eventually(|| fs::read(&input).is_ok_and(|bytes| bytes == b"OK"));
+    f.master
+        .as_ref()
+        .unwrap()
+        .resize(PtySize {
+            rows: 11,
+            cols: 42,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    eventually(|| s.viewer(v)["rows"] == 11 && s.viewer(v)["cols"] == 42);
+    f.send(b"\x02d");
+    let bytes = f.finish();
+    assert!(
+        bytes
+            .windows(b"\x1b]52;c;UkU=\x07".len())
+            .any(|part| part == b"\x1b]52;c;UkU=\x07")
+    );
+    assert!(bytes.ends_with(b"\x1b[?1049l"));
+    if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
+        fs::write(
+            PathBuf::from(&directory).join("frontend-interactions.ansi"),
+            bytes,
+        )
+        .unwrap();
+        fs::write(
+            PathBuf::from(directory).join("frontend-confirm.txt"),
+            plain(&confirm),
+        )
+        .unwrap();
+    }
+}

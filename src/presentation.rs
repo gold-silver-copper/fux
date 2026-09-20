@@ -25,7 +25,7 @@ use bevy_world_serialization::DynamicWorld;
 
 use crate::{
     chrome::at,
-    model::{PaneView, Split, Viewer},
+    model::{PaneView, Split, Tab, Viewer},
     protocol::PaneRect,
 };
 use std::collections::BTreeMap;
@@ -60,6 +60,9 @@ pub fn register_types(app: &mut App) {
 
 /// An inert per-viewer scene instance: UI, focus and a virtual Window/Camera only.
 /// No OS window, renderer, process or event-loop plugin is installed.
+#[derive(Component)]
+struct ChromeTarget(Entity);
+
 pub struct Presentation {
     app: App,
     window: Entity,
@@ -67,10 +70,12 @@ pub struct Presentation {
     container: Entity,
     source_to_local: EntityHashMap<Entity>,
     local_to_source: EntityHashMap<Entity>,
-    scene_key: Option<(u32, Entity, Option<Entity>)>,
+    scene_key: Option<(u32, Entity, Option<Entity>, Option<Entity>)>,
     viewport: UVec2,
     rects: Vec<PaneRect>,
     separators: BTreeMap<(u16, u16), u8>,
+    chrome: Vec<(Entity, crate::chrome::Bounds)>,
+    chrome_nodes: Vec<Entity>,
 }
 
 impl Presentation {
@@ -146,6 +151,8 @@ impl Presentation {
             viewport: UVec2::ZERO,
             rects: Vec::new(),
             separators: BTreeMap::new(),
+            chrome: Vec::new(),
+            chrome_nodes: Vec::new(),
         }
     }
 
@@ -157,7 +164,7 @@ impl Presentation {
         viewer: &Viewer,
     ) -> Result<(), String> {
         let zoom = viewer.focus.filter(|_| viewer.zoom);
-        let key = (revision, root, zoom);
+        let key = (revision, root, zoom, viewer.tab);
         let rebuild = self.scene_key != Some(key);
         if rebuild {
             self.scene_key = None;
@@ -208,6 +215,22 @@ impl Presentation {
                     .insert((Interaction::None, FocusPolicy::Block))
                     .insert_if_new(TabIndex(0));
             }
+            // Hide inactive branches in this inert projection only. Native focus
+            // navigation does not inspect Display, so remove their tab indices too.
+            let inactive: Vec<_> = world
+                .query_filtered::<Entity, With<Tab>>()
+                .iter(world)
+                .filter(|local| self.local_to_source.get(local).copied() != viewer.tab)
+                .collect();
+            for tab in inactive {
+                if let Some(mut node) = world.get_mut::<Node>(tab) {
+                    node.display = Display::None;
+                }
+                let descendants = crate::navigation::leaves(world, tab);
+                for entity in descendants {
+                    world.entity_mut(entity).remove::<TabIndex>();
+                }
+            }
             if let Some(source) = zoom {
                 let local = *self
                     .source_to_local
@@ -257,13 +280,13 @@ impl Presentation {
                 .get_mut::<Window>(self.window)
                 .ok_or("presentation window is missing")?
                 .resolution
-                .set_physical_resolution(viewport.x, viewport.y);
+                .set_physical_resolution(viewport.x, u32::from(viewer.rows));
             world
                 .get_mut::<Camera>(self.camera)
                 .ok_or("presentation camera is missing")?
                 .computed
                 .target_info = Some(RenderTargetInfo {
-                physical_size: viewport,
+                physical_size: UVec2::new(viewport.x, u32::from(viewer.rows)),
                 scale_factor: 1.0,
             });
         }
@@ -281,6 +304,7 @@ impl Presentation {
             }
         }
         if rebuild || resized {
+            world.get_mut::<Node>(self.container).unwrap().height = Val::Px(viewport.y as f32);
             self.app.update();
             self.collect_rects();
         } else if focus_changed {
@@ -290,6 +314,42 @@ impl Presentation {
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    pub fn chrome(&mut self, hits: Vec<(Entity, crate::chrome::Bounds)>) {
+        if self.chrome == hits {
+            return;
+        }
+        let world = self.app.world_mut();
+        for entity in self.chrome_nodes.drain(..) {
+            world.despawn(entity);
+        }
+        for &(target, bounds) in &hits {
+            let entity = world
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(f32::from(bounds.x)),
+                        top: Val::Px(f32::from(bounds.y)),
+                        width: Val::Px(f32::from(bounds.width)),
+                        height: Val::Px(f32::from(bounds.height)),
+                        ..Default::default()
+                    },
+                    ChromeTarget(target),
+                    Interaction::None,
+                    FocusPolicy::Block,
+                    UiTargetCamera(self.camera),
+                ))
+                .id();
+            self.chrome_nodes.push(entity);
+        }
+        self.chrome = hits;
+        self.app.update();
+        self.collect_rects();
+    }
+
+    pub fn neighbor(&self, leaf: Entity, direction: &str) -> Option<Entity> {
+        crate::server::directional_neighbor(&self.rects, leaf, direction)
     }
 
     pub fn rects(&self) -> &[PaneRect] {
@@ -389,6 +449,26 @@ impl Presentation {
                 .iter()
                 .any(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
         });
+        let hidden: Vec<_> = self
+            .source_to_local
+            .iter()
+            .filter(|(source, local)| {
+                world.get::<PaneView>(**local).is_some()
+                    && !self.rects.iter().any(|r| r.leaf == **source)
+            })
+            .map(|(_, local)| *local)
+            .collect();
+        for local in hidden {
+            self.app.world_mut().entity_mut(local).remove::<TabIndex>();
+        }
+        for rect in &self.rects {
+            if let Some(local) = self.source_to_local.get(&rect.leaf) {
+                self.app
+                    .world_mut()
+                    .entity_mut(*local)
+                    .insert_if_new(TabIndex(0));
+            }
+        }
     }
 
     pub fn paint_separators(&self, out: &mut String, focus: Option<Entity>) {
@@ -426,7 +506,14 @@ impl Presentation {
     }
 
     pub fn focus_next(&mut self) -> Option<Entity> {
-        self.app.world_mut().run_system_cached(advance_focus).ok()?;
+        self.focus_step(false)
+    }
+
+    pub fn focus_step(&mut self, previous: bool) -> Option<Entity> {
+        self.app
+            .world_mut()
+            .run_system_cached_with(advance_focus, previous)
+            .ok()?;
         self.app
             .world_mut()
             .run_system_cached(process_recorded_focus_changes)
@@ -439,7 +526,7 @@ impl Presentation {
     pub fn pointer(&mut self, x: u16, y: u16, pressed: bool) -> Option<Entity> {
         let world = self.app.world_mut();
         world.get_mut::<Window>(self.window)?.set_cursor_position(
-            (u32::from(x) < self.viewport.x && u32::from(y) < self.viewport.y)
+            (u32::from(x) < self.viewport.x && u32::from(y) <= self.viewport.y)
                 .then_some(Vec2::new(f32::from(x) + 0.5, f32::from(y) + 0.5)),
         );
         {
@@ -451,11 +538,15 @@ impl Presentation {
             }
         }
         world.run_system_cached(ui_focus_system).ok()?;
-        let mut query = world.query::<(Entity, &Interaction, &PaneView)>();
-        let local = query.iter(world).find_map(|(entity, interaction, _)| {
+        let mut query = world
+            .query_filtered::<(Entity, &Interaction), Or<(With<PaneView>, With<ChromeTarget>)>>();
+        let local = query.iter(world).find_map(|(entity, interaction)| {
             (*interaction != Interaction::None).then_some(entity)
         });
-        if pressed && let Some(local) = local {
+        if pressed
+            && let Some(local) = local
+            && world.get::<PaneView>(local).is_some()
+        {
             world
                 .resource_mut::<InputFocus>()
                 .set(local, FocusCause::Pressed);
@@ -464,12 +555,24 @@ impl Presentation {
                 .ok()?;
         }
         world.resource_mut::<ButtonInput<MouseButton>>().clear();
-        local.and_then(|local| self.local_to_source.get(&local).copied())
+        local.and_then(|local| {
+            world
+                .get::<ChromeTarget>(local)
+                .map(|t| t.0)
+                .or_else(|| self.local_to_source.get(&local).copied())
+        })
     }
 }
 
-fn advance_focus(nav: TabNavigation, mut focus: ResMut<InputFocus>) {
-    if let Ok(next) = nav.navigate(&focus, NavAction::Next) {
+fn advance_focus(In(previous): In<bool>, nav: TabNavigation, mut focus: ResMut<InputFocus>) {
+    if let Ok(next) = nav.navigate(
+        &focus,
+        if previous {
+            NavAction::Previous
+        } else {
+            NavAction::Next
+        },
+    ) {
         focus.set(next, FocusCause::Navigated);
     }
 }

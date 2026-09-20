@@ -1,0 +1,18 @@
+READY
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                       Close pane sh #4294967206?
+                                       Remove pane; stop if last view
+                                       y confirm · n/Esc cancel
+ main  main  tab-2                                   │ 4294967207: sh

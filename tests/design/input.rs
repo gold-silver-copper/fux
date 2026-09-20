@@ -118,12 +118,15 @@ fn settings_hot_reload_short_empty_and_unicode_help() {
     assert_eq!(s.viewer(v)["help_scroll"], 0);
     let screen = s.painted(v, 8, 32);
     assert!(!screen.contents().contains("more"));
-    assert!(row(&screen, 5).contains("custom 界é"));
-    assert!(row(&screen, 6).contains("detach"));
+    assert!(row(&screen, 6).contains("custom 界é"));
+    assert!(row(&screen, 4).contains("detach"));
+    assert!(row(&screen, 3).contains("Session"));
+    assert!(row(&screen, 5).contains("Other"));
     // Content sized: no full-width modal background above the bar.
     assert_eq!(screen.cell(6, 0).unwrap().bgcolor(), Color::Default);
     assert_eq!(screen.cell(6, 31).unwrap().bgcolor(), Color::Idx(8));
-    assert!(screen.cell(4, 17).unwrap().bold() || row(&screen, 4).contains("Commands"));
+    assert!(row(&screen, 2).contains("Commands"));
+    assert!((0..32).any(|x| screen.cell(3, x).unwrap().bold()));
     s.key(v, "escape", false);
     s.key(v, "a", true);
     assert_eq!(s.viewer(v)["prefix"], true);

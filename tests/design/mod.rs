@@ -2,7 +2,10 @@ use super::*;
 use vt100::{Color, Screen};
 
 mod frontend;
+mod frontend_interactions;
 mod input;
+mod interactions;
+mod selection;
 
 impl Server {
     fn key(&self, viewer: u64, key: &str, ctrl: bool) {
@@ -175,12 +178,12 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() {
     let panel = s.painted(v, 12, 60);
     assert!(panel.hide_cursor());
     assert!(panel.contents().contains("Commands"));
-    assert!(panel.contents().contains("split horizontal"));
+    assert!(panel.contents().contains("split side by side"));
     assert!(panel.contents().contains("▼"));
     assert_eq!(panel.cell(10, 59).unwrap().bgcolor(), Color::Idx(8));
     assert!(row(&panel, 11).starts_with(" main"));
     assert_eq!(panel.cell(0, 0).unwrap().bgcolor(), Color::Default);
-    s.key(v, "!", false);
+    s.key(v, "f12", false);
     assert_eq!(s.viewer(v)["prefix"], true);
     s.input(v, json!({"kind":"paste","text":"NOT-PTY-INPUT"}));
     s.key(v, "escape", false);
@@ -222,14 +225,18 @@ fn command_column_prefix_policy_scroll_prompts_and_repaint() {
     assert_eq!(s.viewer(v)["focus"], focus);
     s.input(v, json!({"kind":"paste","text":"NOT-HELP-INPUT"}));
     assert_eq!(s.viewer(v)["buffer"], "");
-    for _ in 0..30 {
+    for _ in 0..60 {
         s.key(v, "down", false);
     }
-    assert!(s.painted(v, 12, 60).contents().contains("?  help"));
-    s.resize(v, 40, 60);
-    assert!(s.painted(v, 40, 60).contents().contains("split horizontal"));
+    assert!(s.painted(v, 12, 60).contents().contains("?  command help"));
+    s.resize(v, 60, 60);
+    assert!(
+        s.painted(v, 60, 60)
+            .contents()
+            .contains("split side by side")
+    );
     assert_eq!(s.viewer(v)["help_scroll"], 0);
-    s.capture(v, 40, 60, "help");
+    s.capture(v, 60, 60, "help");
     s.resize(v, 7, 18);
     s.capture(v, 7, 18, "narrow-help");
     s.key(v, "escape", false);

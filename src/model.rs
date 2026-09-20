@@ -12,6 +12,7 @@ pub struct Workspace;
 #[derive(Component, Default)]
 pub struct LayoutCache {
     pub scene: Option<std::sync::Arc<bevy_world_serialization::DynamicWorld>>,
+    pub built_at: bevy_ecs::change_detection::Tick,
     pub members: bevy_ecs::entity::EntityHashMap<bevy_ecs::archetype::ArchetypeId>,
 }
 
@@ -19,6 +20,25 @@ pub struct LayoutCache {
 #[reflect(Component, Default)]
 #[require(Node)]
 pub struct Split;
+
+/// A workspace's ordered children are tabs; processes remain external references.
+#[derive(Component, Reflect, Default, Clone)]
+#[reflect(Component, Default)]
+#[require(Node)]
+pub struct Tab;
+
+#[derive(Component, Reflect, Default, Clone, Copy)]
+#[reflect(Component, Default)]
+pub struct WorkspaceOrder(pub i64);
+
+/// Viewer-local runtime memory, deliberately absent from scene reflection.
+#[derive(Component, Default)]
+pub struct Navigation {
+    pub tabs: bevy_ecs::entity::EntityHashMap<Entity>,
+    pub focus: bevy_ecs::entity::EntityHashMap<Entity>,
+    pub previous: bevy_ecs::entity::EntityHashMap<Entity>,
+    pub observed: Option<(Entity, Entity, Option<Entity>)>,
+}
 
 #[derive(Component, Reflect, Clone)]
 #[reflect(Component)]
@@ -71,8 +91,10 @@ pub struct PaneViews(Vec<Entity>);
 
 #[derive(Component, Reflect, Clone)]
 #[reflect(Component)]
+#[require(Navigation, crate::paste::Ownership)]
 pub struct Viewer {
     pub workspace: Entity,
+    pub tab: Option<Entity>,
     pub focus: Option<Entity>,
     pub rows: u16,
     pub cols: u16,
