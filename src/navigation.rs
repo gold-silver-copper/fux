@@ -109,8 +109,6 @@ pub fn handles(action: Action) -> bool {
     )
 }
 
-const DETACHED: &str = "viewer no longer attached";
-
 pub fn control(
     world: &mut World,
     id: Entity,

@@ -39,10 +39,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         if let Some(mut ownership) = world.get_mut::<Ownership>(id) {
             ownership.pending = Some(owner);
         }
-        if let Some(mut v) = world.get_mut::<Viewer>(id) {
-            v.notice = "pasting...".into();
-            v.notice_error = false;
-        }
+        crate::model::notify(world, id, "pasting...", false);
         return true;
     }
     let Input::Paste { text } = input else {
@@ -69,15 +66,12 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         }
     };
     if !valid || text.len() > LIMIT {
-        if let Some(mut v) = world.get_mut::<Viewer>(id) {
-            v.notice = if valid {
-                "paste exceeds 64 KiB; discarded"
-            } else {
-                "paste owner changed; discarded"
-            }
-            .into();
-            v.notice_error = true;
-        }
+        let reason = if valid {
+            "paste exceeds 64 KiB; discarded"
+        } else {
+            "paste owner changed; discarded"
+        };
+        crate::model::notify(world, id, reason, true);
         return true;
     }
     false

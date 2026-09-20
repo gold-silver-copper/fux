@@ -52,7 +52,7 @@ fn route_control(event: On<Control>, mut commands: Commands) {
         };
         if let Some(entity) = event.target {
             if world.get_entity(entity).is_err() {
-                notice(world, event.viewer, "target no longer exists", true);
+                notify(world, event.viewer, "target no longer exists", true);
                 return;
             }
             let valid_kind = match action.target_kind() {
@@ -62,7 +62,7 @@ fn route_control(event: On<Control>, mut commands: Commands) {
                 TargetKind::Any => true,
             };
             if !valid_kind {
-                notice(
+                notify(
                     world,
                     event.viewer,
                     "target has the wrong kind for this action",
@@ -109,7 +109,7 @@ fn route_control(event: On<Control>, mut commands: Commands) {
         ) {
             Ok(true) => {}
             Ok(false) => world.trigger(RoutedControl(event, action)),
-            Err(error) => notice(world, event.viewer, &error, true),
+            Err(error) => notify(world, event.viewer, error, true),
         }
     });
 }
@@ -285,7 +285,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                         action,
                         (y.saturating_sub(rect.y), x.saturating_sub(rect.x)),
                     ) {
-                        notice(world, event.viewer, &error, true);
+                        notify(world, event.viewer, error, true);
                     }
                     return;
                 }
@@ -345,10 +345,10 @@ fn scene_completions(io: Res<SceneIo>, mut commands: Commands) {
                 Err(error) => Err(error),
             };
             let error = result.is_err();
-            notice(
+            notify(
                 world,
                 done.viewer,
-                &result.unwrap_or_else(|error| error),
+                result.unwrap_or_else(|error| error),
                 error,
             );
         });
@@ -635,7 +635,7 @@ fn control_event(
         commands.queue(move |world: &mut World| {
             let result = crate::navigation::control(world, id, action, target, &value);
             if let Err(error) = result {
-                notice(world, id, &error, true);
+                notify(world, id, error, true);
             }
         });
         wake.notify();
@@ -648,8 +648,7 @@ fn control_event(
     let Ok(mut v) = viewers.get_mut(id) else {
         return;
     };
-    v.notice.clear();
-    v.notice_error = false;
+    v.notify("", false);
     v.prefix = false;
     let leaf = event
         .target
@@ -899,8 +898,7 @@ fn control_event(
         Ok(())
     })();
     if let Err(error) = result {
-        v.notice = error;
-        v.notice_error = true;
+        v.notify(error, true);
     }
     wake.notify();
 }
@@ -992,8 +990,7 @@ fn input_event(
                         return Ok(());
                     }
                     if token != settings.prefix {
-                        v.notice = format!("unbound prefix key {token}");
-                        v.notice_error = false;
+                        v.notify(format!("unbound prefix key {token}"), false);
                         return Ok(());
                     }
                     v.prefix = false;
@@ -1109,17 +1106,9 @@ fn input_event(
         Ok(())
     })();
     if let Err(error) = result {
-        v.notice = error;
-        v.notice_error = true;
+        v.notify(error, true);
     }
     wake.notify();
-}
-
-fn notice(world: &mut World, id: Entity, message: &str, error: bool) {
-    if let Some(mut v) = world.get_mut::<Viewer>(id) {
-        v.notice = message.to_owned();
-        v.notice_error = error;
-    }
 }
 
 #[cfg(test)]
@@ -1149,68 +1138,51 @@ mod tests {
             .spawn((Name::new("before"), ChildOf(nested)))
             .id();
         app.update();
-        let untouched = scene(app.world_mut(), right).need()?.1;
-        let initial = scene(app.world_mut(), left).need()?.1;
+        let untouched = scene(app.world_mut(), right)?.1;
+        let initial = scene(app.world_mut(), left)?.1;
         app.update();
-        assert!(Arc::ptr_eq(
-            &initial,
-            &scene(app.world_mut(), left).need()?.1
-        ));
+        assert!(Arc::ptr_eq(&initial, &scene(app.world_mut(), left)?.1));
         // The descendant deliberately has no Node. Newly inserted, previously
         // absent types and ordinary in-place writes must still reach the scene.
         app.world_mut().entity_mut(leaf).insert(Extra(7));
         // A synchronous control can observe this mutation before another Update.
-        app.world_mut()
-            .run_system_cached(invalidate_layouts)
-            .need()?;
-        let inserted = scene(app.world_mut(), left).need()?.1;
+        app.world_mut().run_system_cached(invalidate_layouts)?;
+        let inserted = scene(app.world_mut(), left)?.1;
         assert!(!Arc::ptr_eq(&initial, &inserted));
-        assert!(Arc::ptr_eq(
-            &untouched,
-            &scene(app.world_mut(), right).need()?.1
-        ));
+        assert!(Arc::ptr_eq(&untouched, &scene(app.world_mut(), right)?.1));
         app.world_mut().get_mut::<Extra>(leaf).need()?.0 = 9;
         app.update();
-        let modified = scene(app.world_mut(), left).need()?.1;
+        let modified = scene(app.world_mut(), left)?.1;
         assert!(!Arc::ptr_eq(&inserted, &modified));
         app.world_mut().entity_mut(leaf).remove::<Extra>();
         app.update();
-        let removed = scene(app.world_mut(), left).need()?.1;
+        let removed = scene(app.world_mut(), left)?.1;
         assert!(!Arc::ptr_eq(&modified, &removed));
-        assert!(Arc::ptr_eq(
-            &untouched,
-            &scene(app.world_mut(), right).need()?.1
-        ));
+        assert!(Arc::ptr_eq(&untouched, &scene(app.world_mut(), right)?.1));
         app.world_mut().entity_mut(nested).insert(ChildOf(right));
         app.update();
-        let emptied = scene(app.world_mut(), left).need()?.1;
-        let moved = scene(app.world_mut(), right).need()?.1;
+        let emptied = scene(app.world_mut(), left)?.1;
+        let moved = scene(app.world_mut(), right)?.1;
         assert!(!Arc::ptr_eq(&removed, &emptied));
         assert!(!Arc::ptr_eq(&untouched, &moved));
         assert!(!emptied.entities.iter().any(|entity| entity.entity == leaf));
         assert!(moved.entities.iter().any(|entity| entity.entity == leaf));
         app.world_mut().despawn(nested);
         app.update();
-        let despawned = scene(app.world_mut(), right).need()?.1;
+        let despawned = scene(app.world_mut(), right)?.1;
         assert!(
             !despawned
                 .entities
                 .iter()
                 .any(|entity| entity.entity == leaf)
         );
-        assert!(Arc::ptr_eq(
-            &emptied,
-            &scene(app.world_mut(), left).need()?.1
-        ));
+        assert!(Arc::ptr_eq(&emptied, &scene(app.world_mut(), left)?.1));
         app.world_mut().entity_mut(right).remove::<Workspace>();
         assert!(scene(app.world_mut(), right).is_err());
         app.world_mut().despawn(right);
         let replacement = app.world_mut().spawn(Workspace).id();
         app.update();
-        assert_eq!(
-            scene(app.world_mut(), replacement).need()?.1.entities.len(),
-            1
-        );
+        assert_eq!(scene(app.world_mut(), replacement)?.1.entities.len(), 1);
         Ok(())
     }
 }

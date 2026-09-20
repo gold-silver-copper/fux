@@ -21,6 +21,8 @@ type Fail = Box<dyn std::error::Error>;
 type Outcome = Result<(), Fail>;
 
 /// `need()` replaces `unwrap()`: the error names the call site, as a panic would.
+/// This duplicates `src/testing.rs`: integration tests cannot see a binary's
+/// modules, and the crate has no library target to share it through.
 trait Need<T> {
     fn need(self) -> Result<T, String>;
 }
@@ -48,12 +50,13 @@ impl At for Value {
         self.get(index).cloned().unwrap_or(Value::Null)
     }
 }
-trait Nth {
-    fn at(&self, index: usize) -> Value;
+/// Iterate a JSON array; anything else is an empty set of rows.
+trait Rows {
+    fn rows(&self) -> impl Iterator<Item = &Value>;
 }
-impl Nth for Vec<Value> {
-    fn at(&self, index: usize) -> Value {
-        self.get(index).cloned().unwrap_or(Value::Null)
+impl Rows for Value {
+    fn rows(&self) -> impl Iterator<Item = &Value> {
+        self.as_array().into_iter().flatten()
     }
 }
 
@@ -134,11 +137,12 @@ impl Server {
             .map_err(|error| format!("{method}: {error}"))
     }
 
-    fn query(&self, component: &str) -> Result<Vec<Value>, String> {
-        self.rpc("world.query", json!({"data":{"components":[component]}}))?
-            .as_array()
-            .cloned()
-            .ok_or_else(|| format!("world.query {component} did not return rows"))
+    fn query(&self, component: &str) -> Result<Value, String> {
+        let rows = self.rpc("world.query", json!({"data":{"components":[component]}}))?;
+        if !rows.is_array() {
+            return Err(format!("world.query {component} did not return rows"));
+        }
+        Ok(rows)
     }
 
     fn control(&self, viewer: u64, action: &str, value: &str) -> Result<(), String> {
@@ -224,7 +228,7 @@ fn stock_launch_removal_settles_without_another_request() -> Outcome {
     }}))?.at("entity").as_u64().need()?;
     // Observe the OS, not another RPC: a later request would mask a missing wake.
     eventually(|| Ok(fs::read_to_string(&pid_file).is_ok_and(|text| !text.trim().is_empty())))?;
-    let pid = fs::read_to_string(pid_file).need()?.trim().parse().need()?;
+    let pid = fs::read_to_string(pid_file)?.trim().parse()?;
     assert!(alive(pid));
     server.rpc(
         "world.remove_components",
@@ -233,7 +237,7 @@ fn stock_launch_removal_settles_without_another_request() -> Outcome {
     eventually(|| Ok(!alive(pid)))?;
     let states = server.query("fux::model::ProcessState")?;
     let state = &states
-        .iter()
+        .rows()
         .find(|row| row.at("entity") == entity)
         .need()?
         .at("components")
@@ -263,11 +267,9 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
     )?;
     server.enter(viewer)?;
     eventually(|| Ok(fs::read_to_string(&pid_file).is_ok_and(|text| !text.trim().is_empty())))?;
-    let background: i32 = fs::read_to_string(pid_file).need()?.trim().parse().need()?;
+    let background: i32 = fs::read_to_string(pid_file)?.trim().parse()?;
     assert_ne!(
-        nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(background)))
-            .need()?
-            .as_raw(),
+        nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(background)))?.as_raw(),
         shell
     );
     server.control(viewer, "terminate", "")?;
@@ -303,7 +305,7 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
     assert!(!chrome.contains('↑'));
     let launches = server.query("fux::model::Launch")?;
     let second = launches
-        .iter()
+        .rows()
         .filter_map(|row| row.at("entity").as_u64())
         .find(|entity| *entity != first)
         .need()?;
@@ -341,9 +343,9 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
         "{screen}"
     );
     let after = server.query("fux::model::ProcessState")?;
-    for old in &before {
+    for old in before.rows() {
         let new = after
-            .iter()
+            .rows()
             .find(|row| row.at("entity") == old.at("entity"))
             .need()?;
         assert_eq!(
@@ -381,8 +383,8 @@ fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
     )?;
     eventually(|| Ok(server.screen(viewer)?.contains("missing live pane")))?;
     let remaining = server.query("fux::model::PaneView")?;
-    assert!(remaining.iter().any(|row| row.at("entity") == focus));
-    assert_eq!(remaining.len(), 2);
+    assert!(remaining.rows().any(|row| row.at("entity") == focus));
+    assert_eq!(remaining.rows().count(), 2);
     Ok(())
 }
 
@@ -451,14 +453,14 @@ fn repeated_copy_effects_are_not_replaceable_paints() -> Outcome {
         }
         Ok(())
     });
-    assert_eq!(received.recv_timeout(Duration::from_secs(5)).need()?, 0);
+    assert_eq!(received.recv_timeout(Duration::from_secs(5))?, 0);
     // These are explicit equal copies, not four interchangeable paint snapshots.
     for _ in 0..4 {
         server.control(viewer, "copy", "")?;
     }
     let mut copies = 0;
     while copies < 4 {
-        copies += received.recv_timeout(Duration::from_secs(5)).need()?;
+        copies += received.recv_timeout(Duration::from_secs(5))?;
     }
     assert_eq!(copies, 4);
     // Direct snapshots must not replay effects already delivered to the stream.
@@ -494,22 +496,20 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
     }
 
     let server = Server::start()?;
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .need()?;
-    let mut reader = pair.master.try_clone_reader().need()?;
+    let pair = native_pty_system().openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut reader = pair.master.try_clone_reader()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");
     command.env("FUX_ENDPOINT", &server.endpoint);
     let mut terminal = SlowTerminal {
         child: {
             let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
-            pair.slave.spawn_command(command).need()?
+            pair.slave.spawn_command(command)?
         },
         master: Some(pair.master),
     };
@@ -529,7 +529,7 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
             }
         }
     });
-    received.recv_timeout(Duration::from_secs(5)).need()?;
+    received.recv_timeout(Duration::from_secs(5))?;
     first_paint
         .join()
         .map_err(|_| "first paint reader panicked")?;
@@ -551,16 +551,16 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
     assert!(
         server
             .query("fux::model::Viewer")?
-            .iter()
+            .rows()
             .any(|row| row.at("entity") == viewer)
     );
-    assert!(terminal.child.try_wait().need()?.is_none());
+    assert!(terminal.child.try_wait()?.is_none());
     let states = server.query("fux::model::ProcessState")?;
     let hot = states
-        .iter()
+        .rows()
         .find(|row| row.at("entity") != original)
         .need()?;
-    let entity = hot.at("entity").clone();
+    let entity = hot.at("entity");
     let pid = hot
         .at("components")
         .at("fux::model::ProcessState")
@@ -571,7 +571,7 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
     eventually(|| Ok(!alive(pid)))?;
     let states = server.query("fux::model::ProcessState")?;
     let state = &states
-        .iter()
+        .rows()
         .find(|row| row.at("entity") == entity)
         .need()?
         .at("components")

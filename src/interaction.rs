@@ -62,11 +62,9 @@ fn open(world: &mut World, id: Entity, target: Target, mode: Mode) {
         mode,
     });
 }
-fn error(world: &mut World, id: Entity, message: impl Into<String>) {
-    if let Some(mut v) = world.get_mut::<Viewer>(id) {
-        v.notice = message.into();
-        v.notice_error = true;
-    }
+
+fn notify_error(world: &mut World, id: Entity, message: impl Into<String>) {
+    notify(world, id, message, true);
 }
 
 pub fn invoke(
@@ -87,8 +85,7 @@ pub fn invoke(
     }
     if let Some(mut v) = world.get_mut::<Viewer>(id) {
         v.prefix = false;
-        v.notice.clear();
-        v.notice_error = false;
+        v.notify("", false);
     }
     if interactive && matches!(action, Close | TabClose | WorkspaceClose) {
         open(world, id, target, Mode::Confirm { action });
@@ -537,7 +534,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     };
     if !overlay.target.valid(world) {
         world.entity_mut(id).remove::<Overlay>();
-        error(world, id, "target changed; action cancelled");
+        notify_error(world, id, "target changed; action cancelled");
         return !matches!(input, Input::Resize { .. });
     }
     if matches!(input, Input::Resize { .. }) {
@@ -651,13 +648,13 @@ pub fn dispatch_named(
 /// the bar shows the error.
 pub fn unknown(world: &mut World, id: Entity, target: Target, message: String) {
     if let Some(reason) = actions::unavailable(world, target, None) {
-        return error(world, id, reason);
+        return notify_error(world, id, reason);
     }
     world.entity_mut(id).remove::<crate::selection::Selection>();
     if let Some(mut v) = world.get_mut::<Viewer>(id) {
         v.prefix = false;
     }
-    error(world, id, message);
+    notify_error(world, id, message);
 }
 
 pub fn dispatch(
@@ -682,7 +679,7 @@ pub fn dispatch(
             },
             mapping: Vec::new(),
         }),
-        Err(message) => error(world, id, message),
+        Err(message) => notify_error(world, id, message),
     }
 }
 

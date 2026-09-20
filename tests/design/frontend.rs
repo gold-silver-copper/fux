@@ -16,23 +16,21 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
         }
     }
     let s = Server::start()?;
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 13,
-            cols: 47,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .need()?;
-    let mut reader = pair.master.try_clone_reader().need()?;
-    let mut writer = pair.master.take_writer().need()?;
+    let pair = native_pty_system().openpty(PtySize {
+        rows: 13,
+        cols: 47,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut reader = pair.master.try_clone_reader()?;
+    let mut writer = pair.master.take_writer()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");
     command.env("FUX_ENDPOINT", &s.endpoint);
     let mut attached = Attached {
         child: {
             let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
-            pair.slave.spawn_command(command).need()?
+            pair.slave.spawn_command(command)?
         },
         master: Some(pair.master),
     };
@@ -66,32 +64,29 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
     let live = wait(|screen| row(screen, 12).starts_with(" main"))?;
     assert_eq!(live.cell(12, 46).need()?.bgcolor(), Color::Idx(8));
     assert_eq!(live.cell(0, 0).need()?.bgcolor(), Color::Default);
-    writer.write_all(b"\x02?").need()?;
+    writer.write_all(b"\x02?")?;
     let help = wait(|screen| screen.contents().contains("Commands"))?;
     assert!(help.hide_cursor());
     assert_eq!(help.cell(11, 46).need()?.bgcolor(), Color::Idx(8));
-    writer.write_all(b"\x1b").need()?;
+    writer.write_all(b"\x1b")?;
     wait(|screen| !screen.contents().contains("Commands") && !screen.hide_cursor())?;
-    writer.write_all(b"\x02r").need()?;
+    writer.write_all(b"\x02r")?;
     wait(|screen| screen.contents().contains("rename pane"))?;
-    writer
-        .write_all(b"\x1b[200~attached-proof\x1b[201~\r")
-        .need()?;
+    writer.write_all(b"\x1b[200~attached-proof\x1b[201~\r")?;
     let named = wait(|screen| row(screen, 12).contains("attached-proof"))?;
     assert!(!named.hide_cursor());
-    writer.write_all(b"\x02d").need()?;
+    writer.write_all(b"\x02d")?;
     eventually(|| Ok(attached.child.try_wait()?.is_some()))?;
     drop(writer);
     attached.master.take();
     let bytes = capture.join().map_err(|_| "capture thread panicked")?;
     assert!(bytes.ends_with(b"\x1b[?1049l"));
     if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
-        fs::write(PathBuf::from(&directory).join("frontend.ansi"), bytes).need()?;
+        fs::write(PathBuf::from(&directory).join("frontend.ansi"), bytes)?;
         fs::write(
             PathBuf::from(directory).join("frontend-help.txt"),
             plain(&help),
-        )
-        .need()?;
+        )?;
     }
     Ok(())
 }

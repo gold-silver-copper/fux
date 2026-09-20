@@ -11,22 +11,20 @@ struct Frontend {
 }
 impl Frontend {
     fn start(server: &Server) -> Result<Self, Fail> {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: 18,
-                cols: 70,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .need()?;
-        let mut reader = pair.master.try_clone_reader().need()?;
-        let writer = pair.master.take_writer().need()?;
+        let pair = native_pty_system().openpty(PtySize {
+            rows: 18,
+            cols: 70,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        let mut reader = pair.master.try_clone_reader()?;
+        let writer = pair.master.take_writer()?;
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
         command.arg("attach");
         command.env("FUX_ENDPOINT", &server.endpoint);
         let child = {
             let _spawn = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
-            pair.slave.spawn_command(command).need()?
+            pair.slave.spawn_command(command)?
         };
         drop(pair.slave);
         let (tx, screens) = std::sync::mpsc::channel();
@@ -100,7 +98,7 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
         .at("entity")
         .as_u64()
         .need()?;
-    let left = s.viewer(v)?.at("focus").clone();
+    let left = s.viewer(v)?.at("focus");
     let left_input = s.directory.join("keys-left");
     s.run(
         v,
@@ -112,7 +110,7 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
     f.wait(|screen| screen.contents().starts_with("LEFT"))?;
     f.send(b"\x02h")?;
     eventually(|| Ok(s.viewer(v)?.at("focus") != left))?;
-    let right = s.viewer(v)?.at("focus").clone();
+    let right = s.viewer(v)?.at("focus");
     let right_input = s.directory.join("keys-right");
     s.run(
         v,
@@ -151,26 +149,26 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
     f.send(b"\x02\x1b[1;2D")?;
     eventually(|| Ok(s.query("bevy_ecs::hierarchy::ChildOf")? != tree))?; // Shift+Left move
     assert_eq!(s.viewer(v)?.at("focus"), right);
-    let original_tab = s.viewer(v)?.at("tab").clone();
-    let original_workspace = s.viewer(v)?.at("workspace").clone();
+    let original_tab = s.viewer(v)?.at("tab");
+    let original_workspace = s.viewer(v)?.at("workspace");
     f.send(b"\x02t")?;
     eventually(|| Ok(s.viewer(v)?.at("tab") != original_tab))?;
-    let new_tab = s.viewer(v)?.at("tab").clone();
+    let new_tab = s.viewer(v)?.at("tab");
     f.send(b"\x02[")?;
     eventually(|| Ok(s.viewer(v)?.at("tab") == original_tab))?;
     f.send(b"\x02]")?;
     eventually(|| Ok(s.viewer(v)?.at("tab") == new_tab))?;
     f.send(b"\x02w")?;
     eventually(|| Ok(s.viewer(v)?.at("workspace") != original_workspace))?;
-    let new_workspace = s.viewer(v)?.at("workspace").clone();
+    let new_workspace = s.viewer(v)?.at("workspace");
     f.send(b"\x02{")?;
     eventually(|| Ok(s.viewer(v)?.at("workspace") == original_workspace))?;
     f.send(b"\x02}")?;
     eventually(|| Ok(s.viewer(v)?.at("workspace") == new_workspace))?;
     f.send(b"\x02{\x02[")?;
     eventually(|| Ok(s.viewer(v)?.at("tab") == original_tab))?;
-    assert!(fs::read(&left_input).need()?.is_empty());
-    assert!(fs::read(&right_input).need()?.is_empty());
+    assert!(fs::read(&left_input)?.is_empty());
+    assert!(fs::read(&right_input)?.is_empty());
     f.send(b"OK")?;
     eventually(|| Ok(fs::read(&right_input).is_ok_and(|b| b == b"OK")))?;
     f.send(b"\x02d")?;
@@ -179,13 +177,11 @@ fn actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation() -> Outc
         fs::write(
             PathBuf::from(&directory).join("keybindings-frontend.ansi"),
             bytes,
-        )
-        .need()?;
+        )?;
         fs::write(
             PathBuf::from(directory).join("keybindings-frontend.txt"),
             plain(&selected),
-        )
-        .need()?;
+        )?;
     }
     Ok(())
 }
@@ -239,16 +235,12 @@ fn attached_tabs_confirmations_copy_and_cancelled_fragmented_paste_are_isolated(
     f.wait(|screen| row(screen, 17).contains("paste owner changed"))?;
     f.send(b"OK")?;
     eventually(|| Ok(fs::read(&input).is_ok_and(|bytes| bytes == b"OK")))?;
-    f.master
-        .as_ref()
-        .need()?
-        .resize(PtySize {
-            rows: 11,
-            cols: 42,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .need()?;
+    f.master.as_ref().need()?.resize(PtySize {
+        rows: 11,
+        cols: 42,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
     eventually(|| Ok(s.viewer(v)?.at("rows") == 11 && s.viewer(v)?.at("cols") == 42))?;
     f.send(b"\x02d")?;
     let bytes = f.finish()?;
@@ -262,13 +254,11 @@ fn attached_tabs_confirmations_copy_and_cancelled_fragmented_paste_are_isolated(
         fs::write(
             PathBuf::from(&directory).join("frontend-interactions.ansi"),
             bytes,
-        )
-        .need()?;
+        )?;
         fs::write(
             PathBuf::from(directory).join("frontend-confirm.txt"),
             plain(&confirm),
-        )
-        .need()?;
+        )?;
     }
     Ok(())
 }

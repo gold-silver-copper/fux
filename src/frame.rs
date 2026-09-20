@@ -40,7 +40,6 @@ pub(crate) fn with_views<T>(
     world.insert_non_send(views);
     result
 }
-const DETACHED: &str = "viewer no longer attached";
 pub(crate) fn sync_view(world: &mut World, views: &mut Views, id: Entity) -> Result<(), String> {
     crate::navigation::repair(world);
     // Controls can arrive before the next Update; run the same native change-
@@ -320,10 +319,7 @@ pub(crate) fn clipboard(world: &mut World, id: Entity, text: String) -> Result<(
         return Err("clipboard delivery queue is full".into());
     }
     view.clipboard.push(text);
-    if let Some(mut v) = world.get_mut::<Viewer>(id) {
-        v.notice = "selection copied via OSC52".into();
-        v.notice_error = false;
-    }
+    notify(world, id, "selection copied via OSC52", false);
     Ok(())
 }
 

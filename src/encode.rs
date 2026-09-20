@@ -153,7 +153,6 @@ pub(crate) fn key_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::*;
 
     #[test]
     fn modified_keys_preserve_xterm_protocol_semantics() -> crate::testing::Outcome {
@@ -165,33 +164,21 @@ mod tests {
             ("home", "\x1b[H", "\x1b[1;8H"),
         ] {
             assert_eq!(
-                key_bytes(key, false, false, false, false).need()?,
+                key_bytes(key, false, false, false, false)?,
                 plain.as_bytes()
             );
             assert_eq!(
-                key_bytes(key, true, true, true, false).need()?,
+                key_bytes(key, true, true, true, false)?,
                 modified.as_bytes()
             );
         }
         for key in ["f0", "f13", "f999", "fno", ""] {
             assert!(key_bytes(key, false, false, false, false).is_err());
         }
-        assert_eq!(
-            key_bytes("left", false, false, false, true).need()?,
-            b"\x1bOD"
-        );
-        assert_eq!(
-            key_bytes("left", true, false, false, true).need()?,
-            b"\x1b[1;5D"
-        );
-        assert_eq!(
-            key_bytes("f1", true, false, true, false).need()?,
-            b"\x1b[1;6P"
-        );
-        assert_eq!(
-            key_bytes("f12", false, true, false, false).need()?,
-            b"\x1b[24;3~"
-        );
+        assert_eq!(key_bytes("left", false, false, false, true)?, b"\x1bOD");
+        assert_eq!(key_bytes("left", true, false, false, true)?, b"\x1b[1;5D");
+        assert_eq!(key_bytes("f1", true, false, true, false)?, b"\x1b[1;6P");
+        assert_eq!(key_bytes("f12", false, true, false, false)?, b"\x1b[24;3~");
         Ok(())
     }
 }

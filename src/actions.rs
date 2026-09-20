@@ -227,7 +227,7 @@ mod tests {
             Action::Swap,
         ]) {
             let id = action.to_string();
-            assert_eq!(id.parse::<Action>().need()?, action);
+            assert_eq!(id.parse::<Action>()?, action);
             assert!(id.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
         }
         assert_eq!(Action::SplitHorizontal.to_string(), "split_horizontal");
