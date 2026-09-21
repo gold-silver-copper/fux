@@ -442,10 +442,14 @@ impl Server {
             .read_to_end(&mut bytes)?;
         ensure(bytes.len() <= 1024 * 1024, "RPC response exceeded 1 MiB")?;
         let response: Value = serde_json::from_slice(&bytes)?;
-        ensure(
-            response.get("error").is_none(),
-            &format!("{method}: {response}"),
-        )?;
+        if let Some(error) = response.get("error") {
+            // An internal error from one of fux's own methods is the server
+            // failing to serve, not a malformed request.
+            let internal = method.starts_with("fux.")
+                && error.get("code").and_then(Value::as_i64) == Some(-32603);
+            let prefix = if internal { "application: " } else { "" };
+            return Err(format!("{prefix}{method}: {response}").into());
+        }
         response
             .get("result")
             .cloned()
