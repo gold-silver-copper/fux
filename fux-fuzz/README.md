@@ -12,7 +12,7 @@ From the repository root, with the pinned Rust toolchain:
 cargo build --locked
 cargo build --manifest-path fux-fuzz/Cargo.toml --locked
 
-# Smoke: all seven scenarios (twenty-seven isolated cases).
+# Smoke: all ten scenarios (thirty-one isolated cases).
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux
 
 # Individual scenarios:
@@ -23,6 +23,9 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario paste
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario keys
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario signal
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario mouse
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario copy
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario history
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario zoom
 
 # Explicit, bounded stress: 10 fresh fixtures, 30 generated resize pairs each.
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
@@ -35,7 +38,7 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
 
 `--fux` is mandatory and canonicalized before any child changes directory. No run implicitly builds fux or searches PATH for an installed fux. Use a trusted local binary: the application API permits unrestricted same-user command execution.
 
-The mouse scenario found a legacy mouse-release encoding defect against merged `main`, fixed in this branch; see "Finding" below. The keys scenario found a control-key encoding defect, fixed in PR #31, and the paste scenario a bracketed-paste envelope defect, fixed in PR #30. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
+The history scenario found an unclamped scroll offset against merged `main`, fixed in this branch; see "Finding" below. Earlier scenarios found a legacy mouse-release encoding defect (PR #32), a control-key encoding defect (PR #31) and a bracketed-paste envelope defect (PR #30). An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
 
 ## What the scenarios check
 
@@ -43,7 +46,10 @@ The mouse scenario found a legacy mouse-release encoding defect against merged `
 - **Resize:** two real viewers of a shared process, rapid PTY resize bursts, settled tiny viewports, conflicting dimensions, responsive BRP, reflected viewer/process sizes, and child-side `stty size` at the final negotiated size and after detach. A larger diagnostic emulator checks frame overflow and full-width bottom chrome without silently clipping the oracle. Raw-mode child files prove input isolation across split/focus/resize; delivery is acknowledged before crossing from PTY input to a BRP focus change.
 - **Paste:** bracketed-paste envelopes fragmented across PTY writes, multibyte payloads, and sizes straddling the documented 64 KiB bound, against children that do and do not request bracketed-paste mode (`DECSET 2004`). It checks ownership acknowledgement, byte-exact child delivery, explicit rejection of oversized payloads, and that an ordinary key after the end marker still reaches the pane. This scenario found a production defect, fixed in PR #30; see the finding below.
 - **Keys:** every canonical xterm key encoding, one press per PTY write, sent through the real frontend to a raw-mode `cat` child that records what arrived. Plain, shifted and multibyte characters, NUL, every Ctrl letter except the prefix, the four C0 controls above Ctrl-Z, Backspace, Enter, Tab and Shift-Tab, a lone Escape (resolved through its 35 ms deadline, never merged with the next key), Alt-x, arrows, Home/End, Insert/Delete/PageUp/PageDown, F1..F12 forms, and modified variants. Delivery must be byte-identical; each press is acknowledged before the next. A seeded shuffle of the same set covers neighbour interactions. This scenario found a production defect, fixed in PR #31; see the finding below.
-- **Mouse:** outer-terminal SGR mouse events sent through the real frontend to raw-mode children that requested DECSET 1000, 1002 or 1003, with or without SGR 1006, in one full-width pane or two split panes located by the marker each painted. Expectations are xterm's table, written independently of fux: pane-relative one-based coordinates including the far corner, motion filtered by mode, left/middle/right presses and releases, Ctrl and Alt bits, drags, wheel events, and no delivery for clicks on the bar or a separator. Each forwarded event is acknowledged in the child's file before the next; a final forwarded press per pane flushes anything wrongly forwarded. **This scenario found a production defect, fixed in this branch; see the finding below.**
+- **Mouse:** outer-terminal SGR mouse events sent through the real frontend to raw-mode children that requested DECSET 1000, 1002 or 1003, with or without SGR 1006, in one full-width pane or two split panes located by the marker each painted. Expectations are xterm's table, written independently of fux: pane-relative one-based coordinates including the far corner, motion filtered by mode, left/middle/right presses and releases, Ctrl and Alt bits, drags, wheel events, and no delivery for clicks on the bar or a separator. Each forwarded event is acknowledged in the child's file before the next; a final forwarded press per pane flushes anything wrongly forwarded. This scenario found a production defect, fixed in PR #32; see the finding below.
+- **Copy:** keyboard and mouse-drag selections in a raw child that painted known rows. The OSC 52 payload the frontend writes to the outer terminal must decode to exactly the selected text: a single word, the tail of one row joined to the head of the next by a newline, a wide glyph whose continuation cell never appears, a soft-wrapped row joined without an invented newline, and a mouse drag without copy mode. One case starts with the clipboard enabled; the other starts disabled, expects the explicit refusal, then creates `fux.json` while the server runs and expects the watched configuration to apply.
+- **History:** sixty numbered lines with 38 in history. `scroll` commands move by half the viewer height and clamp at the oldest line, scrolling back moves immediately, ordinary input returns to live output, the wheel browses without application mouse mode, copy-mode `u` pages and `k` at the top scrolls one line, a history line copies exactly and returns to live, and new output typed by a second viewer clears an anchored selection with a notice instead of copying stale text. **This scenario found a production defect, fixed in this branch; see the finding below.**
+- **Zoom:** two viewers of different sizes share two side-by-side panes. Zoom in one viewer shows only the focused pane at full width and leaves the other viewer's layout unchanged; shared PTY sizes are the minimum over the rectangles visible in any viewer, before, during and after zoom; a hidden pane is refused as a focus target while zoomed, with a notice and no frame change; and detaching the larger viewer leaves the hidden pane at its last size without killing either process.
 - **Signal:** SIGINT, SIGTERM and SIGHUP delivered to an attached frontend. It must exit successfully, restore termios and the alternate screen, and its viewer must disappear while the server is otherwise idle (only read-only queries), without killing the shared process. On failure the case records whether an unrelated paint would have removed the viewer, separating a lost detach from a lost server.
 - **Shutdown:** a SIGTERM after the pre-`app.run` announcement but before waiting for readiness; pane termination and separate bash background-job cleanup; natural exit with retained output/status; graceful detach with both termios and alternate-screen restoration; abrupt viewer loss without killing the shared process; server shutdown during `yes` output while the outer PTY is temporarily unread.
 
@@ -65,7 +71,7 @@ Each invocation creates a fresh directory under `fux-fuzz/runs/` (override with 
 - `replay.txt`: a shell-quoted, copyable command with the original binary and trace paths.
 - Failed case directories: a flushed `events.jsonl` journal of intended RPC/input/resize actions and observations; bounded server stdout/stderr tails; frontend ANSI tails and final diagnostic screens **only if captured**; controlled fixture files such as input/PID/size files.
 
-Fixed setup/assertion steps belong to the built-in scenario recipes; traces are versioned (1: startup/resize/shutdown, 2: adds paste, 3: adds keys, signal and mouse) and every earlier version still loads and validates. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
+Fixed setup/assertion steps belong to the built-in scenario recipes; traces are versioned (1: startup/resize/shutdown, 2: adds paste, 3: adds keys, signal, mouse, copy, history and zoom) and every earlier version still loads and validates. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
 
 Successful case directories are removed after cleanup. Their plan, summary, metadata and replay command remain, normally a few KiB for smoke. Failed case directories remain for diagnosis. No automatic pruning of prior invocations: remove a specific run directory when done. No real HOME, caches, target tree, or arbitrary temporary directories are copied; child HOME is the freshly created fixture directory with a cleared environment.
 
@@ -89,9 +95,22 @@ cargo test --manifest-path fux-fuzz/Cargo.toml --locked
 
 Six unit tests check deterministic generation, trace round-tripping/validation, deadline/interruption checks, bounded capture, the frame oracle, and the paste payload/envelope oracle. Three subprocess tests use deliberately faulty **fixtures, not modified fux code**: early exit, hanging startup, and interrupted startup. They assert nonzero status, bounded termination, retained diagnostics, no invented frontend capture, and disappearance of the fixture PID after cleanup.
 
-## Finding: legacy mouse releases lost their modifier bits (fixed)
+## Finding: history scrolling accumulated an offset past retained history (fixed)
 
-The mouse scenario failed against `f8a9286` (merged `main` including PR #31) in both legacy-encoding cases. The fix is included in this branch.
+The history scenario failed against `c9e8d2f` (merged `main` including PR #32). The fix is included in this branch.
+
+`scroll` added or subtracted half a viewer height to `Viewer.scrollback` without regard to how much history the emulator retains. With 38 lines of history, seven `previous` commands left the offset at 84 while the view was clamped at LINE-001. The next `next` command lowered it to 72 and the view did not move; a user had to press it four more times before anything happened. Copy mode already stored the emulator's actual offset, so keyboard paging behaved differently from command and wheel scrolling.
+
+| Step | `Viewer.scrollback` before | after |
+| --- | --- | --- |
+| 7 × `previous` | 84 (view at LINE-001) | 38 (view at LINE-001) |
+| then `next` | 72 (view still at LINE-001) | 26 (view at LINE-013) |
+
+The fix clamps the requested offset through the focused pane's emulator so command, wheel and copy-mode scrolling agree.
+
+## Earlier finding: legacy mouse releases lost their modifier bits (fixed in PR #32)
+
+The mouse scenario failed against `f8a9286` (merged `main` including PR #31) in both legacy-encoding cases.
 
 xterm's normal tracking mode (`1000`/`1002`/`1003` without `1006`) encodes a release as button 3 plus the same Shift/Meta/Control bits the press carried: Ctrl-release is `ESC [ M 3 x y` (3 + 16 + 32). fux emitted a bare 3, so an application saw Ctrl-release and Alt-release as a plain release:
 
