@@ -1,6 +1,9 @@
 # fux-vt
 
-A bounded, non-reflowing terminal emulator for fux. This document is the
+A bounded, non-reflowing terminal emulator for fux. The fixed-size cell
+representation and inherited sequence semantics were informed by Jesse
+Luehrs's MIT-licensed implementation; its license is retained in `LICENSE`.
+The grid and parser are owned implementations, not wrappers. This document is the
 implementation contract; the verification report will distinguish implemented
 and verified coverage from planned tests while the branch is in progress.
 
@@ -88,8 +91,13 @@ History rows retain their original column extent; window reads pad/clip them
 without modifying history. Width changes clear live soft-wrap metadata.
 Wide halves cut by an edit or resize are repaired before exposing the grid.
 Zero dimensions are rejected. Allocation uses checked arithmetic and explicit
-cell/row caps; errors leave the existing terminal usable. The final API docs
-and verification report must state measured allocation limits and footprints.
+cell/row caps; errors leave the existing terminal usable. Each buffer permits
+at most 64 Mi retained cells (32 bytes each) and 1,048,576 retained rows.
+Storage grows geometrically only to the configured cap as history fills;
+empty history is not eagerly allocated. At capacity, scrolling reuses slots
+without allocating. Resize builds replacement storage before swapping it in,
+so peak storage can include old and new buffers. The final verification
+report must state measured footprints, including metadata and peak resize.
 
 Windows are immutable views with bounded width/height and history offset.
 They never mutate a global scrollback setting. Copy uses inclusive endpoints,

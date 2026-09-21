@@ -13,11 +13,15 @@ Status: **in progress; not complete**. No completion PR has been opened.
 - Log: `/tmp/fux-vt-evidence/baseline-checks.log` (2026-09-21
   19:02:44–19:03:04 UTC). Baseline binary and harness copies:
   `/tmp/fux-vt-evidence/fux-baseline`, `fux-fuzz-baseline`.
-- Scale baseline in progress: warm-up index 0, measured indices 1–5;
-  `/tmp/fux-vt-evidence/baseline-scale-N.log` and matching run directories.
-  Each command uses baseline copies, `--scenario scale --seed 1 --seconds 600`.
-  A stream run follows with `--scenario stream --seed 1 --seconds 120`.
-  Parent process 2190 records statuses to `baseline-scenarios.log`.
+- Initial scale warm-up (`--seconds 600`) timed out during tab creation
+  (last action t910); diagnostics and cleanup passed. The next run was
+  explicitly interrupted and also cleaned up. Logs and bundles remain as
+  `baseline-scale-{0,1}` under the evidence directory; neither is a pass.
+- Scale baseline restarted with the supported `--seconds 3600`, warm-up
+  index 0 and measured indices 1–5, same seed 1 and preserved binaries.
+  Logs/bundles: `/tmp/fux-vt-evidence/baseline-long-scale-N*`. Parent PID
+  68251 records statuses in `baseline-long-scenarios.log`. Stream seed 1
+  follows, with `--seconds 120`. Final comparison must use the same budgets.
 
 ## Required completion ledger
 
@@ -57,5 +61,21 @@ the old crate and must migrate even though the prompt's sample grep omitted
 `tests/`. Selection validation is not a pure revision check. The existing
 cache is terminal-local and frame output is complete, not a dirty delta.
 
-No differential mismatches have been measured yet. No workaround is retired
+## Initial crate checkpoint
+
+The workspace now includes an owned parser/grid implementation. `cargo test
+-p fux-vt --locked` has passed the initial cell test and 14 semantic tests;
+strict crate Clippy passed. A temporary differential suite compares 11
+sequence families at every chunk (sizes 1/2/3/7/whole), plus ASCII history
+resize operations, including replies and all retained history windows. Both
+tests passed (`/tmp/fux-vt-evidence/differential-first.log`). This is **not**
+yet the full differential-phase acceptance: generated corpus, exact
+intentional divergences, broader parser/resize invariant coverage and xterm
+evidence remain to be added. The main application is still unchanged.
+
+One initial tiny-grid test expectation was wrong: it wrote a two-cell glyph
+before expecting the cursor for an empty grid. Resetting before the separate
+ASCII-wrap assertion corrected the fixture, not production behaviour.
+
+No measured common-subset differential mismatch yet. No workaround is retired
 and no final verification gate is claimed to pass.

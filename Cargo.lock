@@ -1995,6 +1995,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fux-vt"
+version = "0.1.0"
+dependencies = [
+ "unicode-width",
+ "vt100",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
