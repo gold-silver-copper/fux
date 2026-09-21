@@ -43,8 +43,17 @@ pub(super) fn run(s: &mut Server, seed: u64, steps: &[Step]) -> Result<()> {
     )?;
     let mut token = 0u32;
     for (i, st) in steps.iter().enumerate() {
-        let who = if i.is_multiple_of(2) { &mut a } else { &mut b };
-        walk::step(s, who, i, st)?;
+        let (who, other) = if i.is_multiple_of(2) {
+            (&mut a, &b)
+        } else {
+            (&mut b, &a)
+        };
+        let others: Vec<u64> = if other.overlay_open {
+            vec![other.driver]
+        } else {
+            Vec::new()
+        };
+        walk::step(s, who, i, st, &others)?;
         // Merge marker knowledge so both walkers judge visibility of all panes.
         let merged: std::collections::BTreeMap<u64, String> = a
             .markers

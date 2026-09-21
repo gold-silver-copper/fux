@@ -39,7 +39,7 @@ fn no_panic(s: &mut Server, label: &str) -> Result<()> {
 }
 fn check(s: &mut Server, v: u64, label: &str, cap: usize) -> Result<World> {
     let w = World::read(s)?;
-    let problems = invariant::violations(s, &w, cap, true)?;
+    let problems = invariant::violations(s, &w, cap, &[])?;
     ensure(
         problems.is_empty(),
         &format!(
@@ -73,13 +73,13 @@ fn settled(s: &mut Server, v: u64, label: &str) -> Result<String> {
 }
 
 pub(super) fn run(s: &mut Server) -> Result<()> {
-    let f = s.attach(24, 80)?;
+    let f = s.attach(200, 400)?;
     // Requests over a large world legitimately take longer than the default
     // 500 ms; time them rather than fail them.
     s.request_timeout = std::time::Duration::from_secs(10);
     let v = s.frontend(f)?.viewer;
     s.wait("first shell output", |s| {
-        Ok(s.frame(v, 24, 80)?.contains("DEFAULT-SHELL"))
+        Ok(s.frame(v, 200, 400)?.contains("DEFAULT-SHELL"))
     })?;
     running(s)?;
     let mut times = Vec::new();
@@ -87,18 +87,58 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     let start_leaf = s.relation(v, "fux::model::Focused")?;
     let home_ws = s.relation(v, "fux::model::Viewing")?;
 
-    // Hundreds of panes in one tab, split alternately so the tree nests.
+    // Hundreds of panes in one tab of a large viewer. A split halves the
+    // focused pane, so splitting the newest pane repeatedly runs out of room
+    // and is refused; split the largest painted rectangle instead, found from
+    // the paint and identified by the marker each pane prints.
     let started = Instant::now();
+    let mut markers: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for i in 0..PANES {
-        let axis = if i.is_multiple_of(2) {
-            "horizontal"
-        } else {
-            "vertical"
+        let paint = s
+            .rpc("fux.frame", json!({"viewer":v}))?
+            .get("paint")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let rects = invariant::painted_panes(&paint, 199);
+        let largest = rects
+            .iter()
+            .max_by_key(|(_, a, b, h)| u64::from(b - a) * u64::from(*h))
+            .copied();
+        let (target, axis) = match largest {
+            Some((row, a, b, h)) => {
+                let text = s.frame(v, 200, 400)?;
+                let line = text
+                    .lines()
+                    .nth(usize::from(row.saturating_sub(1)))
+                    .unwrap_or_default();
+                let cell: String = line
+                    .chars()
+                    .skip(usize::from(a.saturating_sub(1)))
+                    .take(8)
+                    .collect();
+                let name = cell.split(' ').next().unwrap_or_default().to_owned();
+                (
+                    markers.get(&name).copied(),
+                    if b - a >= h * 2 {
+                        "horizontal"
+                    } else {
+                        "vertical"
+                    },
+                )
+            }
+            None => (None, "horizontal"),
         };
-        s.control(
-            v,
-            json!({"kind":"split","axis":axis,"program":"exec cat > /dev/null"}),
-        )?;
+        if let Some(leaf) = target {
+            s.control(v, json!({"kind":"focus","pane":leaf}))?;
+        }
+        let n = i + 1;
+        s.control(v, json!({"kind":"split","axis":axis,"program":format!("stty raw -echo; S=SP; printf \"\\033[2J\\033[H${{S}}{n}\"; exec cat > /dev/null")}))?;
+        let leaf = s.relation(v, "fux::model::Focused")?;
+        markers.insert(format!("SP{n}"), leaf);
+        s.wait("pane marker printed", |s| {
+            Ok(s.frame(v, 200, 400)?.contains(&format!("SP{n}")))
+        })?;
         if i % 50 == 49 {
             timed_frame(s, v, &format!("with {} panes", i + 2), &mut times)?;
         }
@@ -206,7 +246,7 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         json!({"kind":"rename","subject":{"pane":start_leaf},"name":"界".repeat(200)}),
     )?;
     let paint = timed_frame(s, v, "with kilobyte and wide-glyph names", &mut times)?;
-    let faults = super::chrome::inspect(&paint, 24, 80)?;
+    let faults = super::chrome::inspect(&paint, 200, 400)?;
     ensure(
         faults.is_empty(),
         &format!(

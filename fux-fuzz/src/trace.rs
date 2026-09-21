@@ -743,8 +743,8 @@ impl Journal {
         )?;
         line.push(b'\n');
         ensure(
-            self.bytes + line.len() <= 4 * 1024 * 1024,
-            "event journal exceeded 4 MiB",
+            self.bytes + line.len() <= 64 * 1024 * 1024,
+            "event journal exceeded 64 MiB",
         )?;
         self.file.write_all(&line)?;
         self.file.flush()?;
