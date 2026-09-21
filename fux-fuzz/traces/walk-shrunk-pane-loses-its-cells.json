@@ -1,0 +1,23 @@
+{
+  "version": 4,
+  "seed": 0,
+  "actions": [
+    {
+      "scenario": "walk",
+      "seed": 0,
+      "steps": [
+        { "viewer_resize": 9 },
+        { "split": { "horizontal": false } },
+        { "resize": { "horizontal": false, "grow": false } },
+        { "resize": { "horizontal": false, "grow": false } },
+        { "resize": { "horizontal": false, "grow": false } },
+        { "resize": { "horizontal": false, "grow": false } },
+        "focus_next",
+        { "resize": { "horizontal": false, "grow": true } },
+        { "resize": { "horizontal": false, "grow": true } },
+        { "resize": { "horizontal": false, "grow": true } },
+        { "resize": { "horizontal": false, "grow": true } }
+      ]
+    }
+  ]
+}

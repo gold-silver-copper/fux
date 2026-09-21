@@ -50,6 +50,9 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
 
     // Attach dimensions are clamped to the documented 4096 maximum rather than
     // wrapping or being rejected.
+    // Laying out a 4096x4096 viewer takes a debug build well over the
+    // ordinary request timeout; allow it for the rest of the scenario.
+    s.request_timeout = std::time::Duration::from_secs(5);
     let huge = api_attach(s, 99_999, 99_999)?;
     let clamped = dims(s, huge)?;
     s.journal.record(

@@ -1,0 +1,19 @@
+{
+  "version": 4,
+  "seed": 0,
+  "actions": [
+    {
+      "scenario": "raw",
+      "seed": 8,
+      "steps": [
+        "zoom",
+        {
+          "raw": {
+            "kind": 250,
+            "index": 166
+          }
+        }
+      ]
+    }
+  ]
+}

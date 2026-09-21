@@ -1,0 +1,18 @@
+{
+  "version": 4,
+  "seed": 0,
+  "actions": [
+    {
+      "scenario": "walk",
+      "seed": 777,
+      "steps": [
+        {
+          "rename": 179
+        },
+        {
+          "viewer_resize": 207
+        }
+      ]
+    }
+  ]
+}
