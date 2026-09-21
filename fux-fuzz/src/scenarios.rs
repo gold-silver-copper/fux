@@ -1,4 +1,6 @@
+mod keys;
 mod paste;
+mod signal;
 
 use crate::{
     Result, ensure,
@@ -35,6 +37,8 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
             bracketed,
             chunk_bytes,
         } => paste::run(server, text, *repeats, *bracketed, *chunk_bytes),
+        Action::Signal { signal } => signal::run(server, *signal),
+        Action::Keys { sequences } => keys::run(server, sequences),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
