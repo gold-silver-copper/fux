@@ -124,8 +124,23 @@ fn wait_repaired(s: &mut Server, walker: &mut Walker, what: &str, repair: Repair
     Ok(())
 }
 
-/// Applies one raw mutation and its per-mutation oracle.
+/// Applies one raw mutation and its per-mutation oracle. Laying out a
+/// 4096x4096 viewer takes a debug build well over the ordinary request
+/// timeout, so mutations run with a generous one.
 pub(super) fn mutate(
+    s: &mut Server,
+    walker: &mut Walker,
+    kind: u8,
+    index: u8,
+    w: &World,
+) -> Result<(String, Value)> {
+    let ordinary = s.request_timeout;
+    s.request_timeout = std::time::Duration::from_secs(5);
+    let outcome = mutate_with(s, walker, kind, index, w);
+    s.request_timeout = ordinary;
+    outcome
+}
+fn mutate_with(
     s: &mut Server,
     walker: &mut Walker,
     kind: u8,
