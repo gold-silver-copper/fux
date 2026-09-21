@@ -408,7 +408,16 @@ pub(super) fn run(s: &mut Server, seed: u64, cases: &[SceneCase]) -> Result<()> 
         // Content rows only: the bar carries the load's own notice.
         let content =
             |frame: String| -> String { frame.lines().take(23).collect::<Vec<_>>().join("\n") };
-        let frame_before = content(s.frame(v, 24, 80)?);
+        // A load that applied resized the panes, and a shell redraws its
+        // prompt on resize: take the baseline once two reads agree.
+        let mut frame_before = content(s.frame(v, 24, 80)?);
+        s.wait("content settled before the load", |s| {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            let now = content(s.frame(v, 24, 80)?);
+            let same = now == frame_before;
+            frame_before = now;
+            Ok(same)
+        })?;
         let panics = s.stderr_text()?.matches("panicked").count();
         let ws = s.relation(v, "fux::model::Viewing")?;
         // The load clears the previous notice itself; a key would reach the
