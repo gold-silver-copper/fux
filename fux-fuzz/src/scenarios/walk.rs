@@ -48,6 +48,7 @@ fn specific(step: &Step) -> &'static [&'static str] {
             "Space starts a selection",
         ],
         Save | Load => &["os error", "missing live pane", "No such file"],
+        Split { .. } => &["pane too small to split"],
         _ => &[],
     }
 }
@@ -99,6 +100,8 @@ pub(super) struct Walker {
     pub cap: usize,
     /// Walk-created panes capture what they receive to pane-<marker>.bin.
     pub capture: bool,
+    /// An overlay opened by this walker's last step and not yet dismissed.
+    pub overlay_open: bool,
 }
 impl Walker {
     pub fn new(s: &mut Server) -> Result<Self> {
@@ -116,6 +119,7 @@ impl Walker {
             saved: false,
             cap: PROCESS_CAP,
             capture: false,
+            overlay_open: false,
         })
     }
     /// A step, resolved and applied. Returns the command actually sent and
@@ -295,12 +299,21 @@ impl Walker {
                     json!({"kind":"load_layout","workspace":ws,"path":"walk.scn.ron","mapping":[]}),
                 )
             }
-            Help => (v, json!({"kind":"help"})),
+            Help => {
+                self.overlay_open = true;
+                (v, json!({"kind":"help"}))
+            }
             Menu => match focused {
-                Some(p) => (v, json!({"kind":"menu","subject":{"pane":p}})),
+                Some(p) => {
+                    self.overlay_open = true;
+                    (v, json!({"kind":"menu","subject":{"pane":p}}))
+                }
                 None => return Ok(("skip".into(), json!("no pane for menu"))),
             },
-            Choose => (v, json!({"kind":"choose","chooser":"tab"})),
+            Choose => {
+                self.overlay_open = true;
+                (v, json!({"kind":"choose","chooser":"tab"}))
+            }
             AttachViewer => {
                 if self.api_viewers.len() >= 2 {
                     return Ok(("skip".into(), json!("viewer cap")));
@@ -352,13 +365,20 @@ impl Walker {
     /// Notices are cleared only by key input, so a lingering error would be
     /// misattributed to the next step. A lone Escape is harmless to a cat
     /// pane, and if the viewer is in copy mode it simply leaves it.
-    pub fn clear_notice(&self, s: &mut Server) -> Result<()> {
+    pub fn clear_notice(&mut self, s: &mut Server) -> Result<()> {
+        self.overlay_open = false;
         key_input(s, self.driver, "escape")
     }
 }
 
 /// One step with full checking; the shared engine for the walk scenarios.
-pub(super) fn step(s: &mut Server, walker: &mut Walker, index: usize, st: &Step) -> Result<()> {
+pub(super) fn step(
+    s: &mut Server,
+    walker: &mut Walker,
+    index: usize,
+    st: &Step,
+    others_with_overlay: &[u64],
+) -> Result<()> {
     walker.clear_notice(s)?;
     let before = World::read(s)?;
     let notice_before = notice(s, walker.driver)?;
@@ -373,7 +393,11 @@ pub(super) fn step(s: &mut Server, walker: &mut Walker, index: usize, st: &Step)
     // The command column, a menu or a chooser legitimately paints over pane
     // content; judge the paint only when no overlay was just opened.
     let overlay = matches!(st, Step::Help | Step::Menu | Step::Choose);
-    let mut problems = invariant::violations(s, &after, walker.cap, !overlay)?;
+    let mut skip: Vec<u64> = others_with_overlay.to_vec();
+    if overlay || walker.overlay_open {
+        skip.push(walker.driver);
+    }
+    let mut problems = invariant::violations(s, &after, walker.cap, &skip)?;
     let markers = walker.markers.clone();
     if !overlay {
         problems.extend(invariant::markers_visible(
@@ -420,7 +444,7 @@ pub(super) fn run(s: &mut Server, seed: u64, steps: &[Step]) -> Result<()> {
     s.journal
         .record("walk_begin", json!({"seed":seed,"steps":steps.len()}))?;
     for (i, st) in steps.iter().enumerate() {
-        step(s, &mut walker, i, st)?;
+        step(s, &mut walker, i, st, &[])?;
     }
     let processes = states(s)?.len();
     s.journal.record(

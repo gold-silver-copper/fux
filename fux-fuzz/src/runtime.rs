@@ -275,6 +275,9 @@ pub struct Server {
     observed_children: BTreeSet<i32>,
     /// Per-request HTTP timeout; scale scenarios raise it and record times.
     pub request_timeout: Duration,
+    /// One connection-pooling agent per server: a fresh connection per
+    /// request exhausts ephemeral ports within a few thousand requests.
+    agent: Option<(Duration, ureq::Agent)>,
 }
 impl Server {
     pub fn spawn(
@@ -365,6 +368,7 @@ impl Server {
             cleanup_attempted: false,
             observed_children: BTreeSet::new(),
             request_timeout: Duration::from_millis(500),
+            agent: None,
         })
     }
     pub fn pump(&mut self) -> Result<()> {
@@ -409,15 +413,20 @@ impl Server {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    fn request(&self, method: &str, params: Value) -> Result<Value> {
+    fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         self.budget.check(self.budget.end)?;
         let timeout = self
             .request_timeout
-            .min(self.budget.end.saturating_duration_since(Instant::now()));
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(timeout))
-            .build()
-            .into();
+            .min(self.budget.end.saturating_duration_since(Instant::now()))
+            .max(Duration::from_millis(50));
+        if self.agent.as_ref().is_none_or(|(t, _)| *t != timeout) {
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .timeout_global(Some(timeout))
+                .build()
+                .into();
+            self.agent = Some((timeout, agent));
+        }
+        let agent = &self.agent.as_ref().ok_or("agent")?.1;
         let mut response = agent
             .post(&self.endpoint)
             .send_json(json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}))?;
@@ -477,7 +486,12 @@ impl Server {
         self.journal
             .record("rpc", json!({"method":method,"params":params}))?;
         let response = self.request(method, params)?;
-        self.journal.record("response", response.clone())?;
+        // Paints and large query results dominate the journal; keep their size.
+        let logged = match serde_json::to_vec(&response) {
+            Ok(bytes) if bytes.len() > 4096 => json!({"truncated_bytes":bytes.len()}),
+            _ => response.clone(),
+        };
+        self.journal.record("response", logged)?;
         Ok(response)
     }
     pub fn query(&mut self, component: &str) -> Result<Vec<Value>> {

@@ -151,7 +151,19 @@ fn is_wide(c: char) -> bool {
 pub(super) fn spans(paint: &str, content_rows: u16) -> Vec<(u16, u16, u16)> {
     let chars: Vec<char> = paint.chars().collect();
     let mut out = Vec::new();
-    let mut current: Option<(u16, u16, u16)> = None;
+    // (row, start, end, text)
+    let mut current: Option<(u16, u16, u16, String)> = None;
+    let flush = |current: &mut Option<(u16, u16, u16, String)>, out: &mut Vec<(u16, u16, u16)>| {
+        if let Some((r, a, b, text)) = current.take() {
+            let t = text.trim();
+            // fux paints status such as `[exit:N]` inside a pane's rectangle
+            // on its last row; that is chrome, not a pane row.
+            let status = t.starts_with('[') && t.ends_with(']') && b - a <= 16;
+            if b > a && b - a > 1 && !status {
+                out.push((r, a, b));
+            }
+        }
+    };
     let mut i = 0;
     while i < chars.len() {
         let c = chars.get(i).copied().unwrap_or(' ');
@@ -168,14 +180,12 @@ pub(super) fn spans(paint: &str, content_rows: u16) -> Vec<(u16, u16, u16)> {
                         j += 1;
                     }
                     if chars.get(j).copied() == Some('H') {
-                        if let Some(span) = current.take() {
-                            out.push(span);
-                        }
+                        flush(&mut current, &mut out);
                         let mut it = params.split(';').map(|p| p.parse::<u16>().unwrap_or(1));
                         let r = it.next().unwrap_or(1);
                         let col = it.next().unwrap_or(1);
                         if r <= content_rows {
-                            current = Some((r, col, col));
+                            current = Some((r, col, col, String::new()));
                         }
                     }
                     i = j + 1;
@@ -195,19 +205,19 @@ pub(super) fn spans(paint: &str, content_rows: u16) -> Vec<(u16, u16, u16)> {
         if let Some(span) = current.as_mut() {
             let width = if is_wide(c) { 2 } else { 1 };
             span.2 = span.2.saturating_add(width);
+            span.3.push(c);
         }
         i += 1;
     }
-    if let Some(span) = current.take() {
-        out.push(span);
-    }
-    out.retain(|(_, a, b)| b > a && b - a > 1);
+    flush(&mut current, &mut out);
     out
 }
 
 /// Painted pane rectangles: groups of spans sharing a start column over
 /// contiguous rows. Stacked neighbours are separated by a separator row,
-/// which paints single cells and so breaks the run.
+/// which paints single cells and so breaks the run. A one-row rectangle
+/// strictly inside a taller one is status text fux paints within a pane,
+/// such as an exited pane's `[exit:N]`, and is not a pane.
 pub(super) fn painted_panes(paint: &str, content_rows: u16) -> Vec<(u16, u16, u16, u16)> {
     let mut spans = spans(paint, content_rows);
     spans.sort_unstable();
@@ -222,25 +232,30 @@ pub(super) fn painted_panes(paint: &str, content_rows: u16) -> Vec<(u16, u16, u1
             panes.push((r, a, b, 1));
         }
     }
+    let inside = |x: &(u16, u16, u16, u16), y: &(u16, u16, u16, u16)| {
+        x.3 == 1 && y.3 > 1 && x.0 >= y.0 && x.0 < y.0 + y.3 && x.1 >= y.1 && x.2 <= y.2
+    };
+    let all = panes.clone();
+    panes.retain(|x| !all.iter().any(|y| y != x && inside(x, y)));
     panes
 }
 
-/// Pairs of pane spans on one row that intersect.
+/// Pairs of painted pane rectangles that share cells.
 pub(super) fn overlaps(paint: &str, content_rows: u16) -> Vec<String> {
-    let spans = spans(paint, content_rows);
+    let panes = painted_panes(paint, content_rows);
     let mut v = Vec::new();
-    for (i, a) in spans.iter().enumerate() {
-        for b in spans.iter().skip(i + 1) {
-            if a.0 == b.0 && a.1 < b.2 && b.1 < a.2 {
+    for (i, a) in panes.iter().enumerate() {
+        for b in panes.iter().skip(i + 1) {
+            let rows = a.0 < b.0 + b.3 && b.0 < a.0 + a.3;
+            let cols = a.1 < b.2 && b.1 < a.2;
+            if rows && cols {
                 v.push(format!(
-                    "row {} spans [{},{}) and [{},{}) overlap",
-                    a.0, a.1, a.2, b.1, b.2
+                    "rects (row {}, cols [{},{}), {} rows) and (row {}, cols [{},{}), {} rows) overlap",
+                    a.0, a.1, a.2, a.3, b.0, b.1, b.2, b.3
                 ));
             }
         }
     }
-    v.sort();
-    v.dedup();
     v.truncate(3);
     v
 }
@@ -256,13 +271,13 @@ fn viewer_field(s: &mut Server, viewer: u64, field: &str) -> Result<Option<Value
 }
 
 /// Every structural rule, as one list of violations. Empty means healthy.
-/// `check_paint` is false when an overlay was just opened: the command
-/// column, menus and choosers legitimately paint over panes.
+/// Viewers in `skip_paint` have an overlay open (the command column, a menu
+/// or a chooser), which legitimately paints over panes.
 pub(super) fn violations(
     s: &mut Server,
     w: &World,
     process_cap: usize,
-    check_paint: bool,
+    skip_paint: &[u64],
 ) -> Result<Vec<String>> {
     let mut v = Vec::new();
     for t in &w.tabs {
@@ -385,7 +400,7 @@ pub(super) fn violations(
         match s.rpc("fux.frame", json!({"viewer":viewer})) {
             Ok(frame) => match frame.get("paint").and_then(Value::as_str) {
                 None => v.push(format!("viewer {viewer}: fux.frame returned no paint")),
-                Some(paint) if check_paint => {
+                Some(paint) if !skip_paint.contains(viewer) => {
                     let rows = viewer_field(s, *viewer, "rows")?
                         .and_then(|x| x.as_u64())
                         .unwrap_or(24) as u16;
@@ -448,7 +463,16 @@ pub(super) fn markers_visible(
         let Some(marker) = marker_of(leaf) else {
             continue;
         };
-        let count = frame.matches(&marker).count();
+        // WK1 is a prefix of WK10..WK19: count only whole tokens.
+        let count = frame
+            .match_indices(&marker)
+            .filter(|(i, m)| {
+                !frame
+                    .get(i + m.len()..)
+                    .and_then(|rest| rest.chars().next())
+                    .is_some_and(|c| c.is_ascii_digit())
+            })
+            .count();
         if count > 1 {
             v.push(format!(
                 "viewer {viewer}: marker {marker} of pane {leaf} appears {count} times"
@@ -472,7 +496,14 @@ mod tests {
         let p = painted_panes(paint, 3);
         assert_eq!(p.len(), 2, "{p:?}");
         assert!(overlaps(paint, 3).is_empty());
-        let bad = "\x1b[1;1Habcd\x1b[1;3Hxyz";
+        let bad = "\x1b[1;1Habcd\x1b[2;1Habcd\x1b[1;3Hxyz\x1b[2;3Hxyz";
         assert_eq!(overlaps(bad, 3).len(), 1);
+        // Status text inside a pane is not a pane.
+        let status = "\x1b[1;1Habcdef\x1b[2;1Habcdef\x1b[3;1Habcdef\x1b[3;4H[x]";
+        assert_eq!(painted_panes(status, 3).len(), 1);
+        // Status text outside the painted rows, as when a smaller viewer
+        // constrains the PTY, is also not a pane.
+        let below = "\x1b[1;1Habcdef\x1b[2;1Habcdef\x1b[5;3H[exit:1]";
+        assert_eq!(painted_panes(below, 6).len(), 1);
     }
 }
