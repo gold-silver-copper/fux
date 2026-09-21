@@ -1,10 +1,13 @@
+mod config;
 mod copy;
 mod history;
 mod keys;
 mod layout;
 mod mouse;
+mod nav;
 mod paste;
 mod process;
+mod scene;
 mod signal;
 mod zoom;
 
@@ -51,6 +54,9 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Zoom => zoom::run(server),
         Action::Layout => layout::run(server),
         Action::Process => process::run(server),
+        Action::Nav => nav::run(server),
+        Action::Scene => scene::run(server),
+        Action::Config => config::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),

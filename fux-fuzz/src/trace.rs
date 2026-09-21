@@ -61,6 +61,12 @@ pub enum Action {
     /// Stock-spawned Launch recipes, reflected dimension edits, termination
     /// paths, failed launches, natural exit and history_lines.
     Process,
+    /// Directional focus ranking, focus cycling and swaps.
+    Nav,
+    /// Layout save and load, including failures that must not replace it.
+    Scene,
+    /// Hot reload of prefix and bindings.
+    Config,
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -113,6 +119,9 @@ impl Plan {
                     | "zoom"
                     | "layout"
                     | "process"
+                    | "nav"
+                    | "scene"
+                    | "config"
             ),
             "unknown scenario",
         )?;
@@ -217,6 +226,15 @@ impl Plan {
             }
             if matches!(scenario, "all" | "process") {
                 actions.push(Action::Process);
+            }
+            if matches!(scenario, "all" | "nav") {
+                actions.push(Action::Nav);
+            }
+            if matches!(scenario, "all" | "scene") {
+                actions.push(Action::Scene);
+            }
+            if matches!(scenario, "all" | "config") {
+                actions.push(Action::Config);
             }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [
