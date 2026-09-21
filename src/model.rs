@@ -77,12 +77,27 @@ fn leaf_node() -> Node {
     }
 }
 
+/// A pane keeps the 2x2 backing minimum whatever its flex weight: shrinking
+/// a sibling can never squeeze it to nothing.
+fn pane_node() -> Node {
+    Node {
+        min_width: Val::Px(2.0),
+        min_height: Val::Px(2.0),
+        ..leaf_node()
+    }
+}
+
 pub(crate) fn split_node(direction: FlexDirection) -> Node {
     Node {
         flex_basis: Val::ZERO,
         flex_direction: direction,
         column_gap: Val::Px(1.0),
         row_gap: Val::Px(1.0),
+        // A container is at least as large as its panes' minimums, so a
+        // viewer too small for them overflows at the end of the axis and
+        // never lays a nested container over its neighbour.
+        min_width: Val::Auto,
+        min_height: Val::Auto,
         ..leaf_node()
     }
 }
@@ -188,7 +203,7 @@ impl Default for ProcessState {
 /// A layout leaf refers to a live process, not a serialized process recipe.
 #[derive(Component, Reflect, Clone, MapEntities)]
 #[reflect(Component, MapEntities)]
-#[require(Node = leaf_node())]
+#[require(Node = pane_node())]
 #[relationship(relationship_target = PaneViews)]
 pub struct PaneView {
     #[entities]
@@ -286,7 +301,8 @@ mod tests {
         let row = world.spawn(Split).id();
         assert_eq!(*world.get::<Node>(root).need()?, root_node());
         assert_eq!(*world.get::<Node>(tab).need()?, tab_node());
-        assert_eq!(*world.get::<Node>(leaf).need()?, leaf_node());
+        assert_eq!(*world.get::<Node>(leaf).need()?, pane_node());
+        assert_eq!(pane_node().min_height, Val::Px(2.0));
         assert_eq!(
             *world.get::<Node>(row).need()?,
             split_node(FlexDirection::Row)
