@@ -685,6 +685,15 @@ impl Walker {
             .get("viewer")
             .and_then(Value::as_u64)
             .ok_or("attach returned no viewer")?;
+        // Laying out a 4096x4096 viewer takes a debug build well over the
+        // ordinary request timeout; allow it while that viewer exists.
+        let ordinary = s.request_timeout;
+        s.request_timeout = std::time::Duration::from_secs(5);
+        let outcome = self.clamp(s, id);
+        s.request_timeout = ordinary;
+        outcome
+    }
+    fn clamp(&mut self, s: &mut Server, id: u64) -> Result<(String, Value)> {
         s.rpc(
             "world.trigger_event",
             json!({"event":"fux::control::UserInput","value":{"viewer":id,"input":{"kind":"resize","rows":9000,"cols":9000}}}),
