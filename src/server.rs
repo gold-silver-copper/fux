@@ -527,8 +527,6 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
         Ok(())
     };
     let pane_of = |world: &World, leaf: Entity| world.get::<PaneView>(leaf).map(|p| p.pane);
-    let one_tab = || nav::tabs(world, workspace).len() < 2;
-    let one_pane = || tab.is_none_or(|tab| nav::leaves(world, tab).len() < 2);
     if matches!(
         command,
         Select {
@@ -542,8 +540,8 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             }
     ) {
         tab.ok_or("no tab")?;
-        if !matches!(command, Select { .. }) && one_tab() {
-            return Err("only one tab".into());
+        if !matches!(command, Select { .. }) {
+            target.multiple_tabs(world)?;
         }
     }
     match command {
@@ -630,9 +628,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
         }
         ReorderPane { order } => {
             let leaf = focus.ok_or("no pane")?;
-            if one_pane() {
-                return Err("only one pane".into());
-            }
+            target.multiple_panes(world)?;
             let parent = world
                 .get::<ChildOf>(leaf)
                 .ok_or("pane has no parent")?
@@ -655,15 +651,11 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             interaction::swap(world, leaf, with)?;
         }
         SwapDirection { direction } => {
-            if one_pane() {
-                return Err("only one pane".into());
-            }
+            target.multiple_panes(world)?;
             interaction::beside(world, id, target, direction, true)?;
         }
         MoveDirection { direction } => {
-            if one_pane() {
-                return Err("only one pane".into());
-            }
+            target.multiple_panes(world)?;
             interaction::beside(world, id, target, direction, false)?;
         }
         Move { to } => interaction::move_pane(world, id, target, to)?,
@@ -713,9 +705,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
         }
         FocusNext | FocusPrevious => {
             focus.ok_or("no pane")?;
-            if one_pane() {
-                return Err("only one pane".into());
-            }
+            target.multiple_panes(world)?;
             let next = world
                 .get_mut::<Presentation>(id)
                 .ok_or("presentation not initialized")?
@@ -726,9 +716,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
         }
         FocusLast => {
             focus.ok_or("no pane")?;
-            if one_pane() {
-                return Err("only one pane".into());
-            }
+            target.multiple_panes(world)?;
             nav::focus_last(world, id)?;
         }
         FocusDirection { direction } => {
@@ -1031,6 +1019,59 @@ mod tests {
     #[derive(Component, bevy_reflect::Reflect)]
     #[reflect(Component)]
     struct Extra(u32);
+
+    #[test]
+    fn execution_keeps_its_guard_order_and_settles_ui_before_failure() -> crate::testing::Outcome {
+        let mut world = World::new();
+        let root = world.spawn(Workspace).id();
+        world.spawn((Tab, ChildOf(root)));
+        let id = world
+            .spawn((
+                Viewer {
+                    rows: 24,
+                    cols: 80,
+                    zoom: false,
+                    scrollback: 0,
+                    notice: Notice::info("old"),
+                },
+                Viewing(root),
+                Prefix::default(),
+            ))
+            .id();
+        let target = crate::actions::Target::of(&world, id).need()?;
+        assert_eq!(
+            crate::actions::unavailable(&world, target, Action::MoveLeft),
+            Some("no pane")
+        );
+        let command = Command::MoveDirection {
+            direction: crate::protocol::Direction::Left,
+        };
+        assert_eq!(
+            execute(&mut world, id, command),
+            Err("only one pane".into())
+        );
+        assert!(world.get::<Prefix>(id).is_none());
+        assert!(world.get::<Viewer>(id).need()?.notice.is_none());
+        assert_eq!(
+            execute(&mut world, id, Command::ReorderPane { order: Order::Next }),
+            Err("no pane".into())
+        );
+        assert_eq!(
+            execute(&mut world, id, Command::Next { scope: Scope::Tab }),
+            Err("only one tab".into())
+        );
+        assert!(
+            execute(
+                &mut world,
+                id,
+                Command::Next {
+                    scope: Scope::Workspace
+                }
+            )
+            .is_ok()
+        );
+        Ok(())
+    }
 
     #[test]
     fn scene_tasks_complete_on_deadline_and_report_io_failures() -> crate::testing::Outcome {

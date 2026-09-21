@@ -30,6 +30,7 @@ included. A revision argument reads sources directly from Git, not the worktree.
 | Section 3 | 6795 | -87 |
 | Section 4 | 6787 | -95 |
 | Section 5 | 6771 | -111 |
+| Section 6 | 6766 | -116 |
 
 ## Section 1
 
@@ -156,3 +157,21 @@ Only `tests/design/interactions.rs` changes existing integration calls:
 The harness adds `scoped(viewer, kind, scope)`; plain `command` still sends only
 kind. Three interaction unit-test command constructors also change shape. No
 behavioral assertion or observed response field was changed.
+
+## Section 6 (shared predicates, not a universal command check)
+
+The pre-edit guard matrix is in `availability.md`. `Target::multiple_panes` and
+`multiple_tabs` now supply the same cardinality predicate and static reason to
+menu and command adapters. Clipboard validation returns its existing static
+errors and is reused by the menu for empty text, preserving optional-settings
+behavior. Checks still accept `&World`, with no mutation or deferred commands.
+
+A universal `check` was not introduced: no-pane directional moves currently
+return `only one pane` in direct execution but `no pane` in the menu; settling
+selection/prefix/notices before execution failure is also observable. Prompts
+have no immediate command, and captured menus can name a target other than the
+requester's current focus. `Target::valid` and `needs_pane` therefore remain.
+Tests exercise all 59 actions against empty/singleton/multiple/stale targets,
+optional/disabled/enabled clipboard settings, an unrelated workspace, direct
+command guard precedence, and UI settling on failure. 46 unit and 35 integration
+tests pass; all four gates in `section6.log`.

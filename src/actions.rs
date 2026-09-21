@@ -25,6 +25,17 @@ impl Target {
             leaf: focused(world, id),
         })
     }
+    pub(crate) fn multiple_tabs(self, world: &World) -> Result<(), &'static str> {
+        (navigation::tabs(world, self.workspace).len() >= 2)
+            .then_some(())
+            .ok_or("only one tab")
+    }
+    pub(crate) fn multiple_panes(self, world: &World) -> Result<(), &'static str> {
+        self.tab
+            .is_some_and(|tab| navigation::leaves(world, tab).len() >= 2)
+            .then_some(())
+            .ok_or("only one pane")
+    }
     pub fn valid(self, world: &World) -> bool {
         world.get::<Workspace>(self.workspace).is_some()
             && self
@@ -254,11 +265,11 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
         return Some(TARGET_GONE);
     }
     if action == Copy
-        && world
+        && let Some(reason) = world
             .get_resource::<crate::assets::Settings>()
-            .is_some_and(|s| s.clipboard == crate::assets::ClipboardPolicy::Disabled)
+            .and_then(|s| crate::selection::validate_clipboard(s, "").err())
     {
-        return Some("clipboard disabled; configure clipboard: write-only");
+        return Some(reason);
     }
     if action.needs_pane() && target.leaf.is_none() {
         return Some("no pane");
@@ -269,9 +280,8 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
     if matches!(
         action,
         TabNext | TabPrevious | TabReorderPrevious | TabReorderNext
-    ) && navigation::tabs(world, target.workspace).len() < 2
-    {
-        return Some("only one tab");
+    ) {
+        return target.multiple_tabs(world).err();
     }
     if matches!(
         action,
@@ -289,11 +299,8 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
             | FocusLast
             | ReorderPrev
             | ReorderNext
-    ) && target
-        .tab
-        .is_none_or(|tab| navigation::leaves(world, tab).len() < 2)
-    {
-        return Some("only one pane");
+    ) {
+        return target.multiple_panes(world).err();
     }
     if action == Terminate
         && target
@@ -309,6 +316,92 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn availability_matrix_preserves_captured_targets_and_error_order() -> crate::testing::Outcome {
+        use crate::assets::{ClipboardPolicy, Settings};
+        use Action::*;
+        let mut world = World::new();
+        world.insert_resource(Settings::default());
+        let root = world.spawn(Workspace).id();
+        let tab = world.spawn((Tab, ChildOf(root))).id();
+        let process = world.spawn_empty().id();
+        let pane = world.spawn((PaneView { pane: process }, ChildOf(tab))).id();
+        let target = Target {
+            workspace: root,
+            tab: Some(tab),
+            leaf: Some(pane),
+        };
+        let pane_peers = [
+            SwapChoose,
+            SwapLeft,
+            SwapRight,
+            SwapUp,
+            SwapDown,
+            MoveLeft,
+            MoveRight,
+            MoveUp,
+            MoveDown,
+            FocusNext,
+            FocusPrevious,
+            FocusLast,
+            ReorderPrev,
+            ReorderNext,
+        ];
+        let tab_peers = [TabNext, TabPrevious, TabReorderPrevious, TabReorderNext];
+        for action in ALL.iter().copied() {
+            let expected = if action == Copy {
+                Some("clipboard disabled; configure clipboard: write-only")
+            } else if pane_peers.contains(&action) {
+                Some("only one pane")
+            } else if tab_peers.contains(&action) {
+                Some("only one tab")
+            } else if action == Terminate {
+                Some("process is not running")
+            } else {
+                None
+            };
+            assert_eq!(unavailable(&world, target, action), expected, "{action}");
+            let empty = Target {
+                leaf: None,
+                ..target
+            };
+            let expected_empty = if action == Copy {
+                expected
+            } else if matches!(action.group(), "Panes" | "Focus")
+                && !matches!(action, SplitHorizontal | SplitVertical)
+            {
+                Some("no pane")
+            } else {
+                expected
+            };
+            assert_eq!(
+                unavailable(&world, empty, action),
+                expected_empty,
+                "{action}"
+            );
+        }
+        // Extra tabs/panes in another workspace cannot enable this captured menu.
+        let other = world.spawn(Workspace).id();
+        world.spawn((Tab, ChildOf(other)));
+        assert_eq!(target.multiple_tabs(&world), Err("only one tab"));
+        world.spawn((Tab, ChildOf(root)));
+        world.spawn((PaneView { pane: process }, ChildOf(tab)));
+        assert!(target.multiple_tabs(&world).is_ok());
+        assert!(target.multiple_panes(&world).is_ok());
+        world.resource_mut::<Settings>().clipboard = ClipboardPolicy::WriteOnly;
+        for action in ALL.iter().copied() {
+            let expected = (action == Terminate).then_some("process is not running");
+            assert_eq!(unavailable(&world, target, action), expected, "{action}");
+        }
+        world.remove_resource::<Settings>();
+        assert_eq!(unavailable(&world, target, Copy), None);
+        world.despawn(root);
+        for action in ALL.iter().copied() {
+            assert_eq!(unavailable(&world, target, action), Some(TARGET_GONE));
+        }
+        Ok(())
+    }
 
     #[test]
     fn wire_names_round_trip_and_unknown_names_are_rejected() -> crate::testing::Outcome {
