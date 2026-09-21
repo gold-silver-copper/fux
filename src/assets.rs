@@ -639,7 +639,13 @@ pub fn apply_layout(
     for entity in &scene.entities {
         entity_map.insert(entity.entity, world.spawn_empty().id());
     }
-    if let Err(error) = scene.write_to_world_with(world, &mut entity_map, &registry) {
+    // Suspend normalization while the scene is written: until every component
+    // of an entity is present, a tab looks like a loose child and would be
+    // wrapped inside a second tab.
+    let guard = crate::navigation::ApplyGuard::begin(world);
+    let written = scene.write_to_world_with(world, &mut entity_map, &registry);
+    guard.end(world);
+    if let Err(error) = written {
         for old in &ids {
             if let Some(&entity) = entity_map.get(old) {
                 world.despawn(entity);

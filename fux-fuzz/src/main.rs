@@ -47,7 +47,7 @@ impl Options {
         while let Some(arg) = args.next() {
             if matches!(arg.as_str(), "--help" | "-h") {
                 println!(
-                    "fux-fuzz --fux PATH [--scenario all|startup|resize|shutdown|paste|signal|keys|mouse|copy|history|zoom|layout|process|nav|scene|config|overlay|limits|chrome|selection] [--seed N]\n  [--iterations 1..100] [--actions 1..200] [--seconds 1..600] [--output DIR]\nfux-fuzz --fux PATH --replay TRACE.json [--seconds N] [--output DIR]\nNo implicit build. Default smoke: all scenarios, seed 1, one iteration, six generated resizes.\nStress is opt-in via --iterations/--actions. Failures exit nonzero and retain bundles."
+                    "fux-fuzz --fux PATH [--scenario all|startup|resize|shutdown|paste|signal|keys|mouse|copy|history|zoom|layout|process|nav|scene|config|overlay|limits|chrome|selection|race|memory|reorder|scene_map|mouse_edge|clipqueue|resize_cmd|api_misuse] [--seed N]\n  [--iterations 1..100] [--actions 1..200] [--seconds 1..600] [--output DIR]\nfux-fuzz --fux PATH --replay TRACE.json [--seconds N] [--output DIR]\nNo implicit build. Default smoke: all scenarios, seed 1, one iteration, six generated resizes.\nStress is opt-in via --iterations/--actions. Failures exit nonzero and retain bundles."
                 );
                 return Ok(None);
             }
@@ -176,7 +176,9 @@ fn run(options: Options) -> Result<()> {
         let case_dir = directory.join(format!("case-{index:03}"));
         let config = match action {
             Action::Startup { config } => *config,
-            Action::Copy { reload: false } | Action::History => Config::Clipboard,
+            Action::Copy { reload: false } | Action::History | Action::ClipQueue => {
+                Config::Clipboard
+            }
             _ => Config::Missing,
         };
         let outcome = match Server::spawn(&options.binary, &case_dir, config, budget.clone()) {

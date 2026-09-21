@@ -843,6 +843,12 @@ fn scene_io(
         let mut queue = CommandQueue::default();
         queue.push(move |world: &mut World| {
             let result = match result {
+                // The workspace was checked when the request arrived, but the
+                // file read happened off-thread: a close in between must fail
+                // the load, not add a workspace nobody asked for.
+                Ok(Some(_)) if world.get::<Workspace>(root).is_none() => {
+                    Err("target no longer exists".to_owned())
+                }
                 Ok(Some(text)) => assets::deserialize_layout(world, &text, &mapping).map(|new| {
                     replace_workspace(world, root, new);
                     format!("loaded {path}")
