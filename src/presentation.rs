@@ -438,6 +438,29 @@ impl Presentation {
                 max.y.round().clamp(0.0, viewport.y as f32) as u16,
             ))
         };
+        // Flex layout rounds every edge on its own, and a nested container's
+        // leaves can end one cell past their container's rounded box. The
+        // edge that matters is where the leaves actually are, so a sibling's
+        // extent on the container's axis is taken from the leaf rectangles
+        // beneath it, and only its cross-axis range from its own box.
+        let extent = |child: Entity, rects: &[PaneRect], vertical: bool| -> Option<(u16, u16)> {
+            let mut span: Option<(u32, u32)> = None;
+            for local in crate::navigation::leaves(world, child) {
+                let Some(source) = self.local_to_source.get(&local) else {
+                    continue;
+                };
+                let Some(r) = rects.iter().find(|r| r.leaf == *source) else {
+                    continue;
+                };
+                let (start, end) = if vertical {
+                    (r.rect.min.y, r.rect.max.y)
+                } else {
+                    (r.rect.min.x, r.rect.max.x)
+                };
+                span = Some(span.map_or((start, end), |(s, e)| (s.min(start), e.max(end))));
+            }
+            span.map(|(s, e)| (s as u16, e as u16))
+        };
         for entity in &world.resource::<UiStack>().uinodes {
             let (Some(_), Some(node), Some(children)) = (
                 world.get::<Split>(*entity),
@@ -449,19 +472,30 @@ impl Presentation {
             if bounds(*entity).is_none() {
                 continue;
             }
-            for a in children.iter().filter_map(&bounds) {
-                for b in children.iter().filter_map(&bounds) {
-                    // Flex layout with unequal weights yields fractional cells,
-                    // and rounding can leave two siblings touching with no gap
-                    // cell at all. The documented separator must still exist,
-                    // so the one-cell gap is carved out of the later sibling's
-                    // leading cells in every leaf rectangle beneath it.
+            let kids: Vec<_> = children
+                .iter()
+                .filter_map(|child| {
+                    let b = bounds(child)?;
+                    let columns = extent(child, &self.rects, false).unwrap_or((b.0, b.2));
+                    let rows = extent(child, &self.rects, true).unwrap_or((b.1, b.3));
+                    Some((b, columns, rows))
+                })
+                .collect();
+            for (a, a_columns, a_rows) in &kids {
+                for (b, b_columns, b_rows) in &kids {
+                    // Two siblings may touch with no gap cell, or sit two cells
+                    // apart, once their edges are rounded. The documented
+                    // separator must still exist: a missing gap is carved out
+                    // of the later sibling's leading cells, and a surplus cell
+                    // is given to the earlier sibling's trailing edge, in every
+                    // leaf rectangle beneath them.
                     if node.column_gap == Val::Px(1.0) && a.1.max(b.1) < a.3.min(b.3) {
-                        let gap = if a.2.checked_add(1) == Some(b.0) {
-                            true
-                        } else if a.2 == b.0 && b.2 > b.0 + 1 {
+                        let (a_end, b_start) = (a_columns.1, b_columns.0);
+                        let gap = if a_end.checked_add(1) == Some(b_start) {
+                            Some(a_end)
+                        } else if a_end == b_start && b_columns.1 > b_start + 1 {
                             for r in &mut self.rects {
-                                if r.rect.min.x == u32::from(b.0)
+                                if r.rect.min.x == u32::from(b_start)
                                     && r.rect.min.y >= u32::from(b.1)
                                     && r.rect.max.y <= u32::from(b.3)
                                     && r.rect.width() > 1
@@ -469,22 +503,33 @@ impl Presentation {
                                     r.rect.min.x += 1;
                                 }
                             }
-                            true
+                            Some(a_end)
+                        } else if a_end.checked_add(2) == Some(b_start) {
+                            for r in &mut self.rects {
+                                if r.rect.max.x == u32::from(a_end)
+                                    && r.rect.min.y >= u32::from(a.1)
+                                    && r.rect.max.y <= u32::from(a.3)
+                                {
+                                    r.rect.max.x += 1;
+                                }
+                            }
+                            Some(a_end + 1)
                         } else {
-                            false
+                            None
                         };
-                        if gap {
+                        if let Some(x) = gap {
                             for y in a.1.max(b.1)..a.3.min(b.3) {
-                                self.separators.insert((a.2, y), 3);
+                                self.separators.insert((x, y), 3);
                             }
                         }
                     }
                     if node.row_gap == Val::Px(1.0) && a.0.max(b.0) < a.2.min(b.2) {
-                        let gap = if a.3.checked_add(1) == Some(b.1) {
-                            true
-                        } else if a.3 == b.1 && b.3 > b.1 + 1 {
+                        let (a_end, b_start) = (a_rows.1, b_rows.0);
+                        let gap = if a_end.checked_add(1) == Some(b_start) {
+                            Some(a_end)
+                        } else if a_end == b_start && b_rows.1 > b_start + 1 {
                             for r in &mut self.rects {
-                                if r.rect.min.y == u32::from(b.1)
+                                if r.rect.min.y == u32::from(b_start)
                                     && r.rect.min.x >= u32::from(b.0)
                                     && r.rect.max.x <= u32::from(b.2)
                                     && r.rect.height() > 1
@@ -492,13 +537,23 @@ impl Presentation {
                                     r.rect.min.y += 1;
                                 }
                             }
-                            true
+                            Some(a_end)
+                        } else if a_end.checked_add(2) == Some(b_start) {
+                            for r in &mut self.rects {
+                                if r.rect.max.y == u32::from(a_end)
+                                    && r.rect.min.x >= u32::from(a.0)
+                                    && r.rect.max.x <= u32::from(a.2)
+                                {
+                                    r.rect.max.y += 1;
+                                }
+                            }
+                            Some(a_end + 1)
                         } else {
-                            false
+                            None
                         };
-                        if gap {
+                        if let Some(y) = gap {
                             for x in a.0.max(b.0)..a.2.min(b.2) {
-                                self.separators.insert((x, a.3), 12);
+                                self.separators.insert((x, y), 12);
                             }
                         }
                     }
