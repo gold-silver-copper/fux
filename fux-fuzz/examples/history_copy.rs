@@ -8,5 +8,8 @@ fn main() {
     assert!(parser.screen().row_wrapped(0));
     let text = parser.screen().contents();
     assert_eq!(text, "abcdefgh");
-    println!("{}", serde_json::json!({"rows":2,"initial_cols":5,"resized_cols":10,"offset":1,"expected_text":text}));
+    println!(
+        "{}",
+        serde_json::json!({"rows":2,"initial_cols":5,"resized_cols":10,"offset":1,"expected_text":text})
+    );
 }
