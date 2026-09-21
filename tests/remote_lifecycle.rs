@@ -337,7 +337,15 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
         shell
     );
     server.command(viewer, "terminate")?;
-    eventually(|| Ok(!alive(shell) && !alive(background)))?;
+    eventually(|| Ok(!alive(shell) && !alive(background))).map_err(|error| {
+        let processes = Command::new("ps")
+            .args(["-o", "pid,ppid,pgid,stat,comm", "-p"])
+            .arg(format!("{shell},{background}"))
+            .output();
+        let processes =
+            processes.map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+        format!("{error}; remaining processes: {processes:?}")
+    })?;
     let state = &server
         .query("fux::model::ProcessState")?
         .at(0)
