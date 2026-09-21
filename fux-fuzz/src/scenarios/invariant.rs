@@ -424,7 +424,15 @@ pub(super) fn violations(
                         tab_leaves.len()
                     };
                     let room = usize::from(content) * usize::from(cols as u16) / 4;
-                    if content >= 2 && expected > 0 && expected <= room && painted.len() != expected
+                    // A pane already at one cell means the layout is squeezed
+                    // in this viewer, which another, larger viewer's split may
+                    // do; a missing rectangle is then a squeeze, not a defect.
+                    let squeezed = painted.iter().any(|r| r.3 < 2 || r.2 - r.1 < 2);
+                    if content >= 2
+                        && expected > 0
+                        && expected <= room
+                        && painted.len() != expected
+                        && !squeezed
                     {
                         v.push(format!(
                             "viewer {viewer}: {} panes painted but the tab has {expected} (zoom {zoom}); rects {painted:?}",

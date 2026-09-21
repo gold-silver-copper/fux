@@ -281,7 +281,9 @@ fn run(options: Options) -> Result<()> {
             }
         } else {
             println!("case {index} PASS ({elapsed} ms)");
-            fs::remove_dir_all(&case_dir)?;
+            if env::var_os("FUX_FUZZ_KEEP").is_none() {
+                fs::remove_dir_all(&case_dir)?;
+            }
         }
         results.push(json!({"case":index,"action":action,"ms":elapsed,"failure":failure}));
         // Persist after each case so interruption still leaves completed results.
