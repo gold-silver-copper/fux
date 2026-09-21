@@ -3,7 +3,35 @@
 mod tests;
 use super::Style;
 use fux_vt::{RowId, Screen};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::{BuildHasherDefault, Hasher},
+    sync::Arc,
+};
+
+/// Keys are a monotonically allocated row ID and a width; a multiplicative
+/// mix spreads them well without SipHash's per-lookup cost. The table is
+/// process-private and bounded, so hash flooding is not a concern.
+#[derive(Default)]
+struct KeyHasher(u64);
+impl Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0 ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 ^= self.0 >> 29;
+    }
+    fn write_u16(&mut self, value: u16) {
+        self.write_u64(u64::from(value));
+    }
+}
+type Entries = HashMap<(RowId, u16), Entry, BuildHasherDefault<KeyHasher>>;
 
 const MAX_ROWS: usize = 4096;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -14,7 +42,7 @@ struct Entry {
 }
 #[derive(Default)]
 pub(super) struct Rows {
-    entries: HashMap<(RowId, u16), Entry>,
+    entries: Entries,
     bytes: usize,
     clock: u64,
     lines: Vec<Arc<str>>,
