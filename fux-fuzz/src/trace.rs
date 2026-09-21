@@ -135,6 +135,20 @@ pub enum Action {
         seed: u64,
         steps: Vec<Step>,
     },
+    /// Ordinary steps interleaved with raw API mutations the README permits
+    /// but does not own, judged by the narrow oracle: no panic, every viewer
+    /// keeps painting, the driver's relationships are repaired, and the next
+    /// ordinary step succeeds or reports a documented notice.
+    Raw {
+        seed: u64,
+        steps: Vec<Step>,
+    },
+    /// A seeded mutator over a saved scene file: each case is loaded into a
+    /// live workspace and must either apply cleanly or be refused untouched.
+    SceneFuzz {
+        seed: u64,
+        cases: Vec<SceneCase>,
+    },
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -174,22 +188,40 @@ pub enum Shutdown {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Step {
-    Split { horizontal: bool },
+    Split {
+        horizontal: bool,
+    },
     ClosePane(u8),
     CloseTab(u8),
     CloseWorkspace(u8),
     Terminate,
     Zoom,
     Rename(u8),
-    Resize { horizontal: bool, grow: bool },
+    Resize {
+        horizontal: bool,
+        grow: bool,
+    },
     ReorderPane(u8),
-    Reorder { tab: bool, next: bool },
+    Reorder {
+        tab: bool,
+        next: bool,
+    },
     SwapDirection(u8),
     MoveDirection(u8),
-    MoveTo { kind: u8, index: u8 },
-    Select { tab: bool, index: u8 },
-    Next { tab: bool },
-    Previous { tab: bool },
+    MoveTo {
+        kind: u8,
+        index: u8,
+    },
+    Select {
+        tab: bool,
+        index: u8,
+    },
+    Next {
+        tab: bool,
+    },
+    Previous {
+        tab: bool,
+    },
     Focus(u8),
     FocusNext,
     FocusPrevious,
@@ -208,6 +240,152 @@ pub enum Step {
     Key(u8),
     TabNew,
     WorkspaceNew,
+    /// The same command expressed as keystrokes on the driver's real
+    /// frontend: the prefix, the bound key, and any prompt answered by typing.
+    Typed(Keyed),
+    /// A lone Escape, outside an overlay or inside the command column.
+    LoneEscape {
+        inside: bool,
+    },
+    /// The prefix pressed twice: one literal byte to the pane.
+    DoublePrefix,
+    /// An unbound key under the prefix leaves the column open.
+    UnknownPrefixKey,
+    /// A bracketed paste of shortcut letters into the open command column.
+    PasteInColumn,
+    /// An SGR mouse event on the frontend, placed from the current paint.
+    Mouse {
+        kind: u8,
+        at: u8,
+    },
+    /// The frontend's outer PTY resized to a size from a table that includes
+    /// 2x2; `ClampViewer` covers the 4096 clamp through an API viewer.
+    ViewerResize(u8),
+    ClampViewer,
+    /// A child that exits on its own with a code, by typing `exit N` into
+    /// the shell when it is focused, or by launching a program that exits.
+    ChildExit(u8),
+    /// A child that changes its own terminal state: alternate screen, mouse
+    /// reporting, application cursor keys, bracketed paste, or `stty`.
+    ChildMode(u8),
+    /// A configuration rewrite: prefix, clipboard, a watched `layout:` that
+    /// names the walk's own save file, a malformed file, then a valid one.
+    Config(u8),
+    /// A second real frontend attached mid-walk, and one killed with SIGHUP.
+    AttachFrontend,
+    HangupFrontend,
+    /// A raw API mutation; only `Action::Raw` walks generate these.
+    Raw {
+        kind: u8,
+        index: u8,
+    },
+}
+
+/// A command with a keyboard path through the real frontend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Keyed {
+    Split {
+        horizontal: bool,
+    },
+    /// `x`, then `y` or `n`.
+    Close {
+        confirm: bool,
+    },
+    FocusNext,
+    FocusPrevious,
+    FocusLast,
+    FocusDirection(u8),
+    Zoom,
+    /// `r`, a typed name, then Enter or Escape.
+    Rename {
+        accept: bool,
+        wide: bool,
+    },
+    Resize {
+        horizontal: bool,
+        grow: bool,
+    },
+    MoveDirection(u8),
+    TabNew,
+    TabNext,
+    TabPrevious,
+    WorkspaceNew,
+    WorkspaceNext,
+    WorkspacePrevious,
+    CopyMode,
+    /// Keys inside copy mode: movement, anchor, copy, leave.
+    CopyKey(u8),
+    Copy,
+    /// `T` or `W`, `j` presses, then Enter or `q`.
+    Choose {
+        tab: bool,
+        entry: u8,
+        accept: bool,
+    },
+    /// `p`, `s` or `S`, `j` presses, Enter or `q`, and any follow-up prompt.
+    Menu {
+        which: u8,
+        entry: u8,
+        accept: bool,
+    },
+}
+
+/// One mutation of a saved scene file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneCase {
+    DropBlock(u8),
+    DuplicateBlock(u8),
+    SwapIds(u8, u8),
+    DanglingChildOf(u8),
+    SplitOneChild(u8),
+    SplitAncestorChild(u8),
+    FlexZero(u8),
+    FlexNegative(u8),
+    FlexNan(u8),
+    GapThousand(u8),
+    HugeName(u8),
+    StripTab,
+    Truncate(u8),
+}
+
+/// Which step kinds a generator may draw.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    /// Everything but raw mutations.
+    Walk,
+    /// Two walkers share one server: no configuration rewrites, extra
+    /// frontends or clamp viewers, which would race the other walker.
+    Concurrent,
+    /// BRP steps interleaved with raw mutations.
+    Raw,
+}
+
+pub fn generate_cases(seed: u64, count: usize) -> Vec<SceneCase> {
+    let mut state = seed ^ 0x5ce4e;
+    (0..count)
+        .map(|_| {
+            let r = splitmix(&mut state);
+            let a = ((r >> 8) & 0xff) as u8;
+            let b = ((r >> 16) & 0xff) as u8;
+            match r % 13 {
+                0 => SceneCase::DropBlock(a),
+                1 => SceneCase::DuplicateBlock(a),
+                2 => SceneCase::SwapIds(a, b),
+                3 => SceneCase::DanglingChildOf(a),
+                4 => SceneCase::SplitOneChild(a),
+                5 => SceneCase::SplitAncestorChild(a),
+                6 => SceneCase::FlexZero(a),
+                7 => SceneCase::FlexNegative(a),
+                8 => SceneCase::FlexNan(a),
+                9 => SceneCase::GapThousand(a),
+                10 => SceneCase::HugeName(a),
+                11 => SceneCase::StripTab,
+                _ => SceneCase::Truncate(a),
+            }
+        })
+        .collect()
 }
 
 fn splitmix(state: &mut u64) -> u64 {
@@ -220,6 +398,56 @@ fn splitmix(state: &mut u64) -> u64 {
 
 /// Weighted so structure changes are common and closes keep the tree bounded.
 pub fn generate_steps(seed: u64, count: usize) -> Vec<Step> {
+    generate_steps_for(Profile::Walk, seed, count)
+}
+
+/// The keyboard form of a command, for the share of steps that go through
+/// the frontend instead of BRP.
+fn keyed(r: u64, a: u8, b: u8) -> Keyed {
+    match (r % 24) as u8 {
+        0 | 1 => Keyed::Split {
+            horizontal: a.is_multiple_of(2),
+        },
+        2 => Keyed::Close {
+            confirm: b.is_multiple_of(2),
+        },
+        3 => Keyed::FocusNext,
+        4 => Keyed::FocusPrevious,
+        5 => Keyed::FocusLast,
+        6 => Keyed::FocusDirection(a),
+        7 => Keyed::Zoom,
+        8 => Keyed::Rename {
+            accept: a.is_multiple_of(2),
+            wide: b.is_multiple_of(3),
+        },
+        9 => Keyed::Resize {
+            horizontal: a.is_multiple_of(2),
+            grow: b.is_multiple_of(2),
+        },
+        10 => Keyed::MoveDirection(a),
+        11 => Keyed::TabNew,
+        12 => Keyed::TabNext,
+        13 => Keyed::TabPrevious,
+        14 => Keyed::WorkspaceNew,
+        15 => Keyed::WorkspaceNext,
+        16 => Keyed::WorkspacePrevious,
+        17 => Keyed::CopyMode,
+        18 => Keyed::CopyKey(a),
+        19 => Keyed::Copy,
+        20 => Keyed::Choose {
+            tab: a.is_multiple_of(2),
+            entry: b,
+            accept: (a >> 1).is_multiple_of(2),
+        },
+        _ => Keyed::Menu {
+            which: a,
+            entry: b,
+            accept: (a >> 1).is_multiple_of(2),
+        },
+    }
+}
+
+pub fn generate_steps_for(profile: Profile, seed: u64, count: usize) -> Vec<Step> {
     let mut state = seed;
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
@@ -227,6 +455,40 @@ pub fn generate_steps(seed: u64, count: usize) -> Vec<Step> {
         let roll = (r % 100) as u8;
         let a = ((r >> 8) & 0xff) as u8;
         let b = ((r >> 16) & 0xff) as u8;
+        // A second draw decides the source and the events outside the
+        // command set, so the command distribution below is unchanged.
+        let side = splitmix(&mut state);
+        let extra = (side % 100) as u8;
+        let event = match (profile, extra) {
+            (Profile::Raw, 0..=14) => Some(Step::Raw {
+                kind: ((side >> 8) & 0xff) as u8,
+                index: ((side >> 16) & 0xff) as u8,
+            }),
+            (Profile::Raw, _) => None,
+            (_, 0..=21) => Some(Step::Typed(keyed(side >> 24, a, b))),
+            (_, 22) => Some(Step::LoneEscape {
+                inside: a.is_multiple_of(2),
+            }),
+            (_, 23) => Some(Step::DoublePrefix),
+            (_, 24) => Some(Step::UnknownPrefixKey),
+            (_, 25) => Some(Step::PasteInColumn),
+            (_, 26..=29) => Some(Step::Mouse {
+                kind: ((side >> 8) & 0xff) as u8,
+                at: ((side >> 16) & 0xff) as u8,
+            }),
+            (_, 30..=32) => Some(Step::ViewerResize(((side >> 8) & 0xff) as u8)),
+            (Profile::Walk, 33) => Some(Step::ClampViewer),
+            (_, 34) => Some(Step::ChildExit(((side >> 8) & 0xff) as u8)),
+            (_, 35) => Some(Step::ChildMode(((side >> 8) & 0xff) as u8)),
+            (Profile::Walk, 36) => Some(Step::Config(((side >> 8) & 0xff) as u8)),
+            (Profile::Walk, 37) => Some(Step::AttachFrontend),
+            (Profile::Walk, 38) => Some(Step::HangupFrontend),
+            _ => None,
+        };
+        if let Some(step) = event {
+            out.push(step);
+            continue;
+        }
         let step = match roll {
             0..=13 => Step::Split {
                 horizontal: a.is_multiple_of(2),
@@ -328,6 +590,8 @@ impl Plan {
                     | "scale"
                     | "adversarial"
                     | "concurrent"
+                    | "raw"
+                    | "scene_fuzz"
             ),
             "unknown scenario",
         )?;
@@ -521,7 +785,29 @@ impl Plan {
                 let steps = if count <= 6 { 80 } else { count };
                 actions.push(Action::Concurrent {
                     seed: seed.wrapping_add(iteration as u64),
-                    steps: generate_steps(seed.wrapping_add(iteration as u64) ^ 0x5eed, steps),
+                    steps: generate_steps_for(
+                        Profile::Concurrent,
+                        seed.wrapping_add(iteration as u64) ^ 0x5eed,
+                        steps,
+                    ),
+                });
+            }
+            if matches!(scenario, "all" | "raw") {
+                let steps = if count <= 6 { 100 } else { count };
+                actions.push(Action::Raw {
+                    seed: seed.wrapping_add(iteration as u64),
+                    steps: generate_steps_for(
+                        Profile::Raw,
+                        seed.wrapping_add(iteration as u64) ^ 0x7a3,
+                        steps,
+                    ),
+                });
+            }
+            if matches!(scenario, "all" | "scene_fuzz") {
+                let cases = if count <= 6 { 40 } else { count.min(400) };
+                actions.push(Action::SceneFuzz {
+                    seed: seed.wrapping_add(iteration as u64),
+                    cases: generate_cases(seed.wrapping_add(iteration as u64), cases),
                 });
             }
             if matches!(scenario, "all" | "mouse") {
@@ -555,7 +841,7 @@ impl Plan {
             }
         }
         Ok(Self {
-            version: 3,
+            version: 4,
             seed,
             actions,
         })
@@ -570,7 +856,7 @@ impl Plan {
         Ok(plan)
     }
     pub fn validate(&self) -> Result<()> {
-        ensure(matches!(self.version, 1..=3), "unsupported trace version")?;
+        ensure(matches!(self.version, 1..=4), "unsupported trace version")?;
         ensure(
             !self.actions.is_empty() && self.actions.len() <= 1700,
             "invalid scenario count",
@@ -624,11 +910,69 @@ impl Plan {
                     "unsupported mouse protocol mode",
                 )?;
             }
-            if let Action::Walk { steps, .. } | Action::Concurrent { steps, .. } = action {
+            if let Action::Walk { steps, .. }
+            | Action::Concurrent { steps, .. }
+            | Action::Raw { steps, .. } = action
+            {
                 ensure(self.version >= 3, "walk actions require trace version 3")?;
                 ensure(
                     !steps.is_empty() && steps.len() <= 5000,
                     "walk steps must be 1..5000",
+                )?;
+                let new = steps.iter().any(|s| {
+                    !matches!(
+                        s,
+                        Step::Split { .. }
+                            | Step::ClosePane(_)
+                            | Step::CloseTab(_)
+                            | Step::CloseWorkspace(_)
+                            | Step::Terminate
+                            | Step::Zoom
+                            | Step::Rename(_)
+                            | Step::Resize { .. }
+                            | Step::ReorderPane(_)
+                            | Step::Reorder { .. }
+                            | Step::SwapDirection(_)
+                            | Step::MoveDirection(_)
+                            | Step::MoveTo { .. }
+                            | Step::Select { .. }
+                            | Step::Next { .. }
+                            | Step::Previous { .. }
+                            | Step::Focus(_)
+                            | Step::FocusNext
+                            | Step::FocusPrevious
+                            | Step::FocusLast
+                            | Step::FocusDirection(_)
+                            | Step::Scroll(_)
+                            | Step::CopyMode
+                            | Step::LeaveCopyMode
+                            | Step::Save
+                            | Step::Load
+                            | Step::Help
+                            | Step::Menu
+                            | Step::Choose
+                            | Step::AttachViewer
+                            | Step::DetachViewer
+                            | Step::Key(_)
+                            | Step::TabNew
+                            | Step::WorkspaceNew
+                    )
+                });
+                ensure(
+                    !new || self.version >= 4,
+                    "frontend, event and raw steps require trace version 4",
+                )?;
+                ensure(
+                    matches!(action, Action::Raw { .. })
+                        || !steps.iter().any(|s| matches!(s, Step::Raw { .. })),
+                    "raw mutation steps belong to raw walks",
+                )?;
+            }
+            if let Action::SceneFuzz { cases, .. } = action {
+                ensure(self.version >= 4, "scene fuzz requires trace version 4")?;
+                ensure(
+                    !cases.is_empty() && cases.len() <= 400,
+                    "scene cases must be 1..400",
                 )?;
             }
             if let Action::Scale | Action::Adversarial { .. } = action {

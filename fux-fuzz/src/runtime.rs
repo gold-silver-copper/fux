@@ -547,7 +547,10 @@ impl Server {
             .ok_or_else(|| format!("missing {component} for {viewer}").into())
     }
     pub fn attach(&mut self, rows: u16, cols: u16) -> Result<usize> {
-        ensure(self.frontends.len() < 3, "too many frontends")?;
+        ensure(
+            self.frontends.iter().filter(|f| !f.exited).count() < 3,
+            "too many frontends",
+        )?;
         let before: Vec<_> = self
             .query("fux::model::Viewer")?
             .iter()
