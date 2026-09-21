@@ -674,13 +674,21 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
         Move { to } => interaction::move_pane(world, id, target, to)?,
         CopyMode => crate::selection::start(world, id, focus.ok_or("no pane")?)?,
         Scroll { order } => {
-            focus.ok_or("no pane")?;
+            let pane = focus
+                .and_then(|leaf| pane_of(world, leaf))
+                .ok_or("no pane")?;
             let step = usize::from(rows / 2).max(1);
-            let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-            v.scrollback = match order {
+            let requested = match order {
                 Order::Previous => scrollback.saturating_add(step),
                 Order::Next => scrollback.saturating_sub(step),
             };
+            // Clamp to retained history so scrolling back toward live output
+            // moves immediately instead of first unwinding an invisible excess.
+            let offset = match world.get_mut::<Terminal>(pane) {
+                Some(mut terminal) => terminal.clamp_scrollback(requested),
+                None => 0,
+            };
+            world.get_mut::<Viewer>(id).ok_or(DETACHED)?.scrollback = offset;
         }
         Copy => {
             let settings = world.resource::<Settings>();
