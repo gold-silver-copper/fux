@@ -1,11 +1,11 @@
 //! Byte encodings for keys and mouse events delivered to a PTY.
 use crate::protocol::{Direction, Key, Modifiers, MouseAction, MouseButton};
-use vt100::{MouseProtocolEncoding, MouseProtocolMode as MouseMode};
+use fux_vt::{MouseProtocolEncoding, MouseProtocolMode as MouseMode};
 
 /// xterm mouse bytes for a pane-relative one-based cell, or `None` when the
 /// application's protocol mode does not want this event.
 pub(crate) fn mouse_bytes(
-    screen: &vt100::Screen,
+    screen: &fux_vt::Screen,
     action: MouseAction,
     button: MouseButton,
     (col, row): (u16, u16),
@@ -201,8 +201,8 @@ mod tests {
             ..Modifiers::default()
         };
         let at = |request: &[u8], action, modifiers| {
-            let mut parser = vt100::Parser::new(24, 80, 0);
-            parser.process(request);
+            let mut parser = fux_vt::Parser::new(24, 80, 0).ok()?;
+            parser.process(request).ok()?;
             mouse_bytes(
                 parser.screen(),
                 action,

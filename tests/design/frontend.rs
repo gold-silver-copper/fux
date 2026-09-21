@@ -37,7 +37,7 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
     drop(pair.slave);
     let (tx, rx) = std::sync::mpsc::channel();
     let capture = thread::spawn(move || {
-        let mut parser = vt100::Parser::new(13, 47, 0);
+        let mut parser = fux_vt::Parser::new(13, 47, 0).need()?;
         let mut bytes = Vec::new();
         let mut chunk = [0; 8192];
         while let Ok(n) = reader.read(&mut chunk) {
@@ -45,12 +45,12 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
                 break;
             }
             bytes.extend_from_slice(chunk.get(..n).unwrap_or_default());
-            parser.process(chunk.get(..n).unwrap_or_default());
+            parser.process(chunk.get(..n).unwrap_or_default()).need()?;
             if bytes.ends_with(b"\x1b[?2026l") && tx.send(parser.screen().clone()).is_err() {
                 break;
             }
         }
-        bytes
+        Ok::<_, String>(bytes)
     });
     let wait = |predicate: fn(&Screen) -> bool| -> Result<Screen, Fail> {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -79,7 +79,7 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
     eventually(|| Ok(attached.child.try_wait()?.is_some()))?;
     drop(writer);
     attached.master.take();
-    let bytes = capture.join().map_err(|_| "capture thread panicked")?;
+    let bytes = capture.join().map_err(|_| "capture thread panicked")??;
     assert!(bytes.ends_with(b"\x1b[?1049l"));
     if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
         fs::write(PathBuf::from(&directory).join("frontend.ansi"), bytes)?;

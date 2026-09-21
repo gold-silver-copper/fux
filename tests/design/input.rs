@@ -25,7 +25,7 @@ fn cursor_uses_first_and_last_content_cells_without_insets() -> Outcome {
 }
 
 #[test]
-fn tiny_content_clips_the_emulators_minimum_backing_size() -> Outcome {
+fn tiny_content_uses_exact_one_cell_backing_without_wide_halves() -> Outcome {
     let s = Server::start()?;
     let v = s.attach()?;
     s.screen(v)?;
@@ -61,8 +61,8 @@ fn tiny_content_clips_the_emulators_minimum_backing_size() -> Outcome {
         .at(0)
         .at("components")
         .at("fux::model::ProcessState");
-    assert_eq!(state.at("rows"), 2);
-    assert_eq!(state.at("cols"), 2);
+    assert_eq!(state.at("rows"), 1);
+    assert_eq!(state.at("cols"), 1);
     Ok(())
 }
 

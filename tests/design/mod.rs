@@ -1,5 +1,5 @@
 use super::*;
-use vt100::{Color, Screen};
+use fux_vt::{Color, Screen};
 
 mod frontend;
 mod frontend_interactions;
@@ -20,8 +20,10 @@ impl Server {
     }
     fn painted(&self, viewer: u64, rows: u16, cols: u16) -> Result<Screen, String> {
         let frame = self.rpc("fux.frame", json!({"viewer":viewer}))?;
-        let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
-        parser.process(frame.at("paint").as_str().need()?.as_bytes());
+        let mut parser = fux_vt::Parser::new(rows.max(1), cols.max(1), 0).need()?;
+        parser
+            .process(frame.at("paint").as_str().need()?.as_bytes())
+            .need()?;
         Ok(parser.screen().clone())
     }
     pub(crate) fn viewer(&self, viewer: u64) -> Result<Value, String> {
@@ -53,7 +55,7 @@ impl Server {
             .map(|y| {
                 (0..cols)
                     .filter_map(|x| screen.cell(y, x).filter(|c| c.inverse()))
-                    .map(vt100::Cell::contents)
+                    .map(fux_vt::Cell::contents)
                     .collect::<String>()
                     .trim()
                     .to_owned()
@@ -74,8 +76,8 @@ impl Server {
             let paint = frame.at("paint");
             let paint = paint.as_str().need()?;
             fs::write(directory.join(format!("{name}.ansi")), paint)?;
-            let mut parser = vt100::Parser::new(rows.max(1), cols.max(1), 0);
-            parser.process(paint.as_bytes());
+            let mut parser = fux_vt::Parser::new(rows.max(1), cols.max(1), 0)?;
+            parser.process(paint.as_bytes())?;
             let screen = parser.screen();
             fs::write(directory.join(format!("{name}.txt")), plain(screen))?;
             let cells: Vec<_> = (0..rows).map(|y| (0..cols).map(|x| {
@@ -102,7 +104,7 @@ fn plain(screen: &Screen) -> String {
 }
 
 fn text(screen: &Screen, y: u16, x: u16) -> &str {
-    screen.cell(y, x).map_or("", vt100::Cell::contents)
+    screen.cell(y, x).map_or("", fux_vt::Cell::contents)
 }
 fn row(screen: &Screen, y: u16) -> String {
     (0..screen.size().1).map(|x| text(screen, y, x)).collect()

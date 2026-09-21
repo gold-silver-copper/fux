@@ -4,8 +4,8 @@ A bounded, non-reflowing terminal emulator for fux. The fixed-size cell
 representation and inherited sequence semantics were informed by Jesse
 Luehrs's MIT-licensed implementation; its license is retained in `LICENSE`.
 The grid and parser are owned implementations, not wrappers. This document is the
-implementation contract; the verification report will distinguish implemented
-and verified coverage from planned tests while the branch is in progress.
+implementation contract; the verification report distinguishes implemented
+coverage from the remaining end-to-end completion gates.
 
 ## Sequence matrix
 
@@ -106,6 +106,8 @@ Windows are immutable views with bounded width/height and history offset.
 They never mutate a global scrollback setting. Copy uses inclusive endpoints,
 normalizes wide continuations to their leaders, joins soft wraps, trims blank
 padding at hard ends, and enforces cell/byte caps while constructing output.
+An explicitly selected trailing empty row retains its hard line break; the
+application's whole-pane copy trims trailing empty rows separately.
 
 Change marks are non-destructive: row versions plus a structural generation
 support independent readers. Structural changes (scroll, resize, reset,
@@ -116,9 +118,12 @@ revision/width snapshots, and full frames still contain unchanged rows.
 
 ## Verification lifecycle
 
-Before migration, temporary differential tests compare cells, attributes,
+Before migration, temporary differential tests compared cells, attributes,
 wide flags, wrap flags, cursor, modes, history and replies at operation
-boundaries, whole and under split inputs. Unobservable internal upstream
+boundaries, whole and under split inputs. Passing checkpoint `b8fa0d8` retains
+the recorder, adapters and diagnostic switch in history. The test, feature
+and dependency were removed only after the permanent mapping in
+[`tests/golden/README.md`](tests/golden/README.md) was committed. Unobservable internal upstream
 state is checked by behavioural probes. The corpus adapts the deterministic
 adversarial generator and terminal-edge streams from fux-fuzz at main commit
 9140af1. Seeds and operation sequences remain permanently after the temporary
@@ -130,7 +135,8 @@ mappings. The two known tiny-grid crashes never execute in the oracle; they
 have explicit independent expectations. Any additional mismatch must be
 fixed or narrowly justified with evidence before migration completes.
 
-The independent `fuzz/` package exercises parsing, chunking, resize, windows,
+The independent [`fuzz/` package](fuzz/README.md) documents its exact nightly
+toolchain, seed generation and bounded run command. It exercises parsing, chunking, resize, windows,
 copy, history and invariants. Final completion requires at least 600 seconds
 clean on macOS plus all root/harness gates and trace replay described in
 `../docs/prompt-fux-vt.md`. Passing coverage is not evidence that every input

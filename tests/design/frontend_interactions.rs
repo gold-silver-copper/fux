@@ -7,7 +7,7 @@ struct Frontend {
     master: Option<Box<dyn MasterPty + Send>>,
     writer: Option<Box<dyn Write + Send>>,
     screens: std::sync::mpsc::Receiver<Screen>,
-    capture: Option<thread::JoinHandle<Vec<u8>>>,
+    capture: Option<thread::JoinHandle<Result<Vec<u8>, String>>>,
 }
 impl Frontend {
     fn start(server: &Server) -> Result<Self, Fail> {
@@ -29,7 +29,7 @@ impl Frontend {
         drop(pair.slave);
         let (tx, screens) = std::sync::mpsc::channel();
         let capture = thread::spawn(move || {
-            let mut parser = vt100::Parser::new(18, 70, 0);
+            let mut parser = fux_vt::Parser::new(18, 70, 0).need()?;
             let mut bytes = Vec::new();
             let mut chunk = [0; 8192];
             while let Ok(n) = reader.read(&mut chunk) {
@@ -37,12 +37,12 @@ impl Frontend {
                     break;
                 }
                 bytes.extend_from_slice(chunk.get(..n).unwrap_or_default());
-                parser.process(chunk.get(..n).unwrap_or_default());
+                parser.process(chunk.get(..n).unwrap_or_default()).need()?;
                 if bytes.ends_with(b"\x1b[?2026l") && tx.send(parser.screen().clone()).is_err() {
                     break;
                 }
             }
-            bytes
+            Ok::<_, String>(bytes)
         });
         Ok(Self {
             child,
@@ -75,7 +75,8 @@ impl Frontend {
             .take()
             .need()?
             .join()
-            .map_err(|_| "frontend capture thread panicked".into())
+            .map_err(|_| "frontend capture thread panicked")?
+            .map_err(Into::into)
     }
 }
 impl Drop for Frontend {

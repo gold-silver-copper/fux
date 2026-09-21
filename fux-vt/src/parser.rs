@@ -1,5 +1,5 @@
 //! Direct DEC ANSI transition parser, based on Paul Williams's transition
-//! model (https://vt100.net/emu/dec_ansi_parser), with UTF-8 ground decoding.
+//! model (reference and attribution in the crate README), with UTF-8 ground decoding.
 //! Ignored control strings retain no payload. No parser dependency is used.
 
 use crate::{Error, Screen};
@@ -115,11 +115,6 @@ impl Parser {
             utf8_len: 0,
             utf8_need: 0,
         })
-    }
-    /// Temporary causal diagnostic: reproduce only the documented oracle bugs.
-    #[cfg(feature = "differential")]
-    pub fn oracle_compatibility(&mut self) {
-        self.screen.oracle_compatibility = true;
     }
     pub fn screen(&self) -> &Screen {
         &self.screen
