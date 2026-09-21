@@ -220,11 +220,13 @@ impl Screen {
         up: bool,
         history: bool,
     ) -> Result<(), Error> {
+        // A bounded multi-row scroll can fail after earlier rows have moved
+        // (allocation/identity exhaustion). Even that partial result must
+        // invalidate every reader's window, not just its newly blank rows.
+        self.structural = self.version;
         self.with_grid(|g, next, version| {
             g.scroll((top, bottom), count, up, history, next, version)
-        })?;
-        self.structural = self.version;
-        Ok(())
+        })
     }
     fn linefeed(&mut self) -> Result<(), Error> {
         let g = self.grid();

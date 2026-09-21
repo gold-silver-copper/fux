@@ -212,6 +212,8 @@ fn copy_soft_wraps_trim_hard_padding_and_enforce_limits() -> Result {
 fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> Result {
     let mut p = Parser::new(2, 5, 0)?;
     let mark = p.screen().mark();
+    p.process(b"")?;
+    assert_eq!(p.screen().mark(), mark);
     p.process(b"\x1b[?25l")?;
     assert!(p.screen().changed_since(mark));
     assert!(!p.screen().full_refresh_since(mark));

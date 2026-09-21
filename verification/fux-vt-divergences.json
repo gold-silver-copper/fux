@@ -4,6 +4,18 @@
   "oracle": "vt100 0.16.2 with fux Replies callback",
   "fixed": [
     {
+      "id": "partial-scroll-error-mark",
+      "found": "error-boundary audit with injected row-ID exhaustion",
+      "rows": 2, "cols": 1, "history": 2,
+      "initial_rows": ["A", "B"],
+      "next_row_id": "u64::MAX - 1",
+      "operation": "begin update; full-screen upward scroll count 2",
+      "expected": {"error":"IdentityExhausted","history_rows":1,"full_refresh":true,"dirty_rows_for_each_reader":3},
+      "reason": "The first scroll iteration can move rows before the second allocation fails. Structural invalidation must be published before the fallible operation, not only on success. No upstream analogue exists for owned row IDs/marks.",
+      "regression": "partially_completed_scroll_error_still_invalidates_every_window",
+      "before_log": "/tmp/fux-vt-evidence/exhausted-scroll-before.log"
+    },
+    {
       "id": "copy-history-padding",
       "found": "post-migration requirement audit of widened historical soft wraps",
       "rows": 2, "cols": 5, "history": 2,

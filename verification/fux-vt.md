@@ -221,3 +221,21 @@ checks/probes are reproducible through `verification/fux-vt-checks.py`;
 alternates version order, and refuses any scale median regression.
 The actual CLI accepts 1–100 iterations, 1–5000 actions, and 1–3600 seconds
 (`final-harness-help.txt`). No timeout, interruption or unrun gate is a pass.
+
+A second error-boundary audit injected row-ID exhaustion after the first of
+two scroll iterations. The grid remained valid, but the structural mark was
+only updated on success; moved unchanged rows could be missed by a marks-based
+reader after the error. `79332e3` pins that failure. Structural invalidation
+is now published before the fallible scroll; independent readers both get
+all three retained rows. Reset/resize already construct replacements before
+committing, so they do not have this partial-mutation issue. This owned-API
+case has no upstream row-ID analogue and cannot be reached in a practical
+black-box run without the test-only exhaustion injection.
+
+`exhausted-scroll-before.log` preserves the assertion failure. The in-progress
+second fuzz run and second long walk were deliberately interrupted to avoid
+claiming them against superseded code; both exit 1. The walk reports diagnostics
+and cleanup OK. Their logs remain `fuzz-final-v2.log` and
+`final-stress-v2/walk-777x3000.log`. No interruption counts as a pass. The
+post-exhaustion-fix final checks, clean fuzz run and complete harness chain
+will use new artifact directories.
