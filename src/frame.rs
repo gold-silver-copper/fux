@@ -34,6 +34,20 @@ pub(crate) fn sync_view(world: &mut World, id: Entity) -> Result<(), String> {
         world.entity_mut(id).insert(Presentation::new(registry));
     }
     let state = (on_tab(world, id), focused(world, id));
+    // A raw hierarchy edit can take the zoomed pane out of the workspace
+    // without touching the viewer's focus. Zoom then has nothing to show:
+    // paint the tab instead of failing the frame, which would end the
+    // viewer's session.
+    let v = if v.zoom
+        && !state
+            .1
+            .is_some_and(|leaf| scene.entities.iter().any(|e| e.entity == leaf))
+    {
+        world.get_mut::<Viewer>(id).ok_or(DETACHED)?.zoom = false;
+        world.get::<Viewer>(id).ok_or(DETACHED)?.clone()
+    } else {
+        v
+    };
     let mut context = world
         .get_mut::<Presentation>(id)
         .ok_or("missing presentation")?;
