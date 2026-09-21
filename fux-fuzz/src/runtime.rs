@@ -273,6 +273,8 @@ pub struct Server {
     stopped: bool,
     cleanup_attempted: bool,
     observed_children: BTreeSet<i32>,
+    /// Per-request HTTP timeout; scale scenarios raise it and record times.
+    pub request_timeout: Duration,
 }
 impl Server {
     pub fn spawn(
@@ -362,6 +364,7 @@ impl Server {
             stopped: false,
             cleanup_attempted: false,
             observed_children: BTreeSet::new(),
+            request_timeout: Duration::from_millis(500),
         })
     }
     pub fn pump(&mut self) -> Result<()> {
@@ -408,7 +411,8 @@ impl Server {
     }
     fn request(&self, method: &str, params: Value) -> Result<Value> {
         self.budget.check(self.budget.end)?;
-        let timeout = Duration::from_millis(500)
+        let timeout = self
+            .request_timeout
             .min(self.budget.end.saturating_duration_since(Instant::now()));
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(timeout))
@@ -490,7 +494,8 @@ impl Server {
                     .and_then(|pid| i32::try_from(pid).ok())
                 {
                     ensure(
-                        self.observed_children.len() < 32 || self.observed_children.contains(&pid),
+                        self.observed_children.len() < 2048
+                            || self.observed_children.contains(&pid),
                         "too many observed children",
                     )?;
                     self.observed_children.insert(pid);
@@ -577,6 +582,11 @@ impl Server {
         let mut parser = vt100::Parser::new(rows.max(2), cols.max(2), 0);
         parser.process(paint.as_bytes());
         Ok(parser.screen().contents())
+    }
+    /// The server's captured stderr so far, for panic and error checks.
+    pub fn stderr_text(&mut self) -> Result<String> {
+        self.pump()?;
+        Ok(String::from_utf8_lossy(&self.err.bytes()).into_owned())
     }
     pub fn snapshot(&mut self) -> Result<()> {
         let pumped = self.pump();

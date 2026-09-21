@@ -2,7 +2,7 @@ use super::*;
 
 /// Renders a painted frame at exactly the requested size and reports any cell
 /// that breaks a documented painting rule.
-fn inspect(paint: &str, rows: u16, cols: u16) -> Result<Vec<String>> {
+pub(super) fn inspect(paint: &str, rows: u16, cols: u16) -> Result<Vec<String>> {
     // One extra row and column so overflow is visible rather than clipped.
     let mut parser = vt100::Parser::new(rows + 1, cols + 1, 0);
     parser.process(paint.as_bytes());
