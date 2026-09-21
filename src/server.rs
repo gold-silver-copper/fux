@@ -946,7 +946,7 @@ fn terminal_input(world: &mut World, id: Entity, input: &Input) -> Result<(), St
             let pane = pane_of(world)?;
             let terminal = world.get::<Terminal>(pane).ok_or("terminal not found")?;
             if terminal.screen().bracketed_paste() {
-                terminal.input(format!("\x1b[200~{text}\x1b[201~").as_bytes())?;
+                terminal.input(&crate::paste::bracketed(text))?;
             } else {
                 terminal.input(text.as_bytes())?;
             }
