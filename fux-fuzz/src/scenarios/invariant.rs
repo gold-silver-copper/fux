@@ -297,15 +297,23 @@ fn required(w: &World, nodes: &BTreeMap<u64, Value>, entity: u64) -> (u32, u32) 
         (rows, n * cols + (n - 1))
     }
 }
-fn flex_grow(s: &mut Server, entity: u64) -> Option<f64> {
-    s.query("bevy_ui::ui_node::Node")
-        .ok()?
-        .iter()
-        .find(|r| id(r).ok() == Some(entity))
-        .and_then(|r| {
-            r.pointer("/components/bevy_ui::ui_node::Node/flex_grow")?
-                .as_f64()
-        })
+/// The layout nodes of entities carrying `marker`, by entity.
+fn nodes_with(s: &mut Server, marker: &str) -> Result<BTreeMap<u64, Value>> {
+    Ok(s.rpc(
+        "world.query",
+        json!({"data":{"components":["bevy_ui::ui_node::Node"]},"filter":{"with":[marker]}}),
+    )?
+    .as_array()
+    .cloned()
+    .unwrap_or_default()
+    .iter()
+    .filter_map(|r| {
+        Some((
+            id(r).ok()?,
+            r.pointer("/components/bevy_ui::ui_node::Node")?.clone(),
+        ))
+    })
+    .collect())
 }
 fn viewer_field(s: &mut Server, viewer: u64, field: &str) -> Result<Option<Value>> {
     Ok(s.query(VIEWER)?
@@ -412,16 +420,10 @@ pub(super) fn violations(
         }
     }
     let leaves = w.leaves();
-    let nodes: BTreeMap<u64, Value> = s
-        .query("bevy_ui::ui_node::Node")?
-        .iter()
-        .filter_map(|r| {
-            Some((
-                id(r).ok()?,
-                r.pointer("/components/bevy_ui::ui_node::Node")?.clone(),
-            ))
-        })
-        .collect();
+    // Layout nodes of containers and leaves only: a scale layout has
+    // thousands of tabs whose nodes would exceed the response bound.
+    let mut nodes = nodes_with(s, SPLIT)?;
+    nodes.extend(nodes_with(s, PANE_VIEW)?);
     for viewer in &w.viewers {
         let viewing = s.relation(*viewer, "fux::model::Viewing");
         let on_tab = s.relation(*viewer, "fux::model::OnTab");
@@ -504,7 +506,11 @@ pub(super) fn violations(
                                 if w.tabs.contains(&e) {
                                     break;
                                 }
-                                if flex_grow(s, e).is_some_and(|f| (f - 1.0).abs() > 0.01) {
+                                if nodes
+                                    .get(&e)
+                                    .and_then(|n| n.get("flex_grow")?.as_f64())
+                                    .is_some_and(|f| (f - 1.0).abs() > 0.01)
+                                {
                                     return true;
                                 }
                                 cursor = w.parent(e);
