@@ -491,8 +491,25 @@ impl Presentation {
                     // leaf rectangle beneath them.
                     if node.column_gap == Val::Px(1.0) && a.1.max(b.1) < a.3.min(b.3) {
                         let (a_end, b_start) = (a_columns.1, b_columns.0);
+                        // Touching siblings give up one cell for the gap: the
+                        // later one unless that would take its second cell
+                        // while the earlier one has more than two.
                         let gap = if a_end.checked_add(1) == Some(b_start) {
                             Some(a_end)
+                        } else if a_end == b_start
+                            && b_columns.1 <= b_start + 2
+                            && a_end > a_columns.0 + 2
+                        {
+                            for r in &mut self.rects {
+                                if r.rect.max.x == u32::from(a_end)
+                                    && r.rect.min.y >= u32::from(a.1)
+                                    && r.rect.max.y <= u32::from(a.3)
+                                    && r.rect.width() > 1
+                                {
+                                    r.rect.max.x -= 1;
+                                }
+                            }
+                            Some(a_end - 1)
                         } else if a_end == b_start && b_columns.1 > b_start + 1 {
                             for r in &mut self.rects {
                                 if r.rect.min.x == u32::from(b_start)
@@ -527,6 +544,20 @@ impl Presentation {
                         let (a_end, b_start) = (a_rows.1, b_rows.0);
                         let gap = if a_end.checked_add(1) == Some(b_start) {
                             Some(a_end)
+                        } else if a_end == b_start
+                            && b_rows.1 <= b_start + 2
+                            && a_end > a_rows.0 + 2
+                        {
+                            for r in &mut self.rects {
+                                if r.rect.max.y == u32::from(a_end)
+                                    && r.rect.min.x >= u32::from(a.0)
+                                    && r.rect.max.x <= u32::from(a.2)
+                                    && r.rect.height() > 1
+                                {
+                                    r.rect.max.y -= 1;
+                                }
+                            }
+                            Some(a_end - 1)
                         } else if a_end == b_start && b_rows.1 > b_start + 1 {
                             for r in &mut self.rects {
                                 if r.rect.min.y == u32::from(b_start)
