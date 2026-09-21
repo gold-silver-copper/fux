@@ -40,7 +40,9 @@ is vt100 0.16.2 plus fux's existing reply callback, not every xterm feature.
 
 Upstream does **not** dispatch DECAWM 7; implementing it is a required,
 standards-backed correction, tested independently as well as tracked in the
-differential inventory. Upstream dispatches 47/1049 but **not** 1047/1048;
+differential inventory. IL/DL outside scrolling margins are ignored, unlike
+upstream's accidental row edits there. Both corrections have executed
+XTerm(411) evidence from `../verification/fux-vt-xterm.py`. Upstream dispatches 47/1049 but **not** 1047/1048;
 the latter remain ignored rather than pretending all alternate-screen aliases
 are equivalent. ESC D/E/H, CSI f/s/u/g, CSI 3J, character-set designation and
 programmable tab stops are not implemented by the baseline and remain ignored.
@@ -88,7 +90,8 @@ removed IDs. Identity exhaustion must be an explicit error, never wrap/reuse.
 Resize is not reflow: retained live rows keep their upper-left cells, extra
 bottom rows/columns are discarded, growth is blank, and saved cursors clamp.
 History rows retain their original column extent; window reads pad/clip them
-without modifying history. Width changes clear live soft-wrap metadata.
+without modifying history. Every effective resize clears live soft-wrap metadata, matching the inherited
+resize contract; historical wrap metadata is retained.
 Wide halves cut by an edit or resize are repaired before exposing the grid.
 Zero dimensions are rejected. Allocation uses checked arithmetic and explicit
 cell/row caps; errors leave the existing terminal usable. Each buffer permits

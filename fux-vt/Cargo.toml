@@ -6,6 +6,10 @@ rust-version = "1.95"
 license = "MIT"
 description = "Bounded terminal emulation for fux"
 
+# Temporary diagnostic switch; removed with the differential scaffolding.
+[features]
+differential = []
+
 [dependencies]
 unicode-width = "0.2"
 

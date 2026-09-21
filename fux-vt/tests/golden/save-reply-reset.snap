@@ -1,0 +1,47 @@
+operation=0 replies=[]
+size=(4, 12) cursor=(0, 3) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+row=0 wrapped=false
+cell=0 text="a" wide=false continuation=false attrs=Default/Default/0
+cell=1 text="b" wide=false continuation=false attrs=Default/Default/0
+cell=2 text="c" wide=false continuation=false attrs=Default/Default/0
+row=1 wrapped=false
+row=2 wrapped=false
+row=3 wrapped=false
+operation=1 replies=[]
+size=(4, 12) cursor=(1, 2) modes=(false, false, false, false) mouse=None encoding=Default attrs=Idx(2)/Default/0
+row=0 wrapped=false
+cell=0 text="a" wide=false continuation=false attrs=Default/Default/0
+cell=1 text="b" wide=false continuation=false attrs=Default/Default/0
+cell=2 text="c" wide=false continuation=false attrs=Default/Default/0
+row=1 wrapped=false
+cell=1 text="Q" wide=false continuation=false attrs=Idx(2)/Default/0
+row=2 wrapped=false
+row=3 wrapped=false
+operation=2 replies=[]
+size=(4, 12) cursor=(0, 4) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+row=0 wrapped=false
+cell=0 text="a" wide=false continuation=false attrs=Default/Default/0
+cell=1 text="b" wide=false continuation=false attrs=Default/Default/0
+cell=2 text="c" wide=false continuation=false attrs=Default/Default/0
+cell=3 text="X" wide=false continuation=false attrs=Default/Default/0
+row=1 wrapped=false
+cell=1 text="Q" wide=false continuation=false attrs=Idx(2)/Default/0
+row=2 wrapped=false
+row=3 wrapped=false
+operation=3 replies=[[27, 91, 48, 110], [27, 91, 49, 59, 53, 82], [27, 91, 63, 49, 59, 50, 99]]
+size=(4, 12) cursor=(0, 4) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+row=0 wrapped=false
+cell=0 text="a" wide=false continuation=false attrs=Default/Default/0
+cell=1 text="b" wide=false continuation=false attrs=Default/Default/0
+cell=2 text="c" wide=false continuation=false attrs=Default/Default/0
+cell=3 text="X" wide=false continuation=false attrs=Default/Default/0
+row=1 wrapped=false
+cell=1 text="Q" wide=false continuation=false attrs=Idx(2)/Default/0
+row=2 wrapped=false
+row=3 wrapped=false
+operation=4 replies=[[27, 91, 48, 110], [27, 91, 49, 59, 53, 82], [27, 91, 63, 49, 59, 50, 99]]
+size=(4, 12) cursor=(0, 0) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+row=0 wrapped=false
+row=1 wrapped=false
+row=2 wrapped=false
+row=3 wrapped=false
