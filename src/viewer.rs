@@ -235,7 +235,7 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
     let _ = trigger(
         endpoint,
         "fux::control::Control",
-        json!({"viewer":viewer,"action":"detach","value":"","target":null}),
+        json!({"viewer":viewer,"command":{"kind":"detach"}}),
     );
     outcome
 }
