@@ -39,10 +39,9 @@ pub(crate) fn sync_view(world: &mut World, id: Entity) -> Result<(), String> {
     // paint the tab instead of failing the frame, which would end the
     // viewer's session.
     let v = if v.zoom
-        && !state
-            .1
-            .is_some_and(|leaf| scene.entities.iter().any(|e| e.entity == leaf))
-    {
+        && !state.1.is_some_and(|leaf| {
+            world.get::<PaneView>(leaf).is_some() && scene.entities.iter().any(|e| e.entity == leaf)
+        }) {
         world.get_mut::<Viewer>(id).ok_or(DETACHED)?.zoom = false;
         world.get::<Viewer>(id).ok_or(DETACHED)?.clone()
     } else {
@@ -209,15 +208,54 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
         .query_filtered::<Entity, With<Viewer>>()
         .iter(world)
         .collect();
+    // One viewer's unextractable workspace, which a raw hierarchy edit can
+    // produce, must not fail every other viewer's frame; and the viewer
+    // itself gets a bar that says what is wrong rather than a failed
+    // request, which would end its session.
+    let mut own = Ok(());
     for viewer in viewers {
-        sync_view(world, viewer)?;
+        let synced = sync_view(world, viewer);
+        if viewer == id {
+            own = synced;
+        }
     }
     size_terminals(world);
+    if let Err(error) = own {
+        return Ok(degraded(world, id, &error));
+    }
     if let Some(selection) = world.get::<crate::selection::Selection>(id) {
         let visible = rect(world, id, selection.leaf).map_or((0, 0), |r| (r.height(), r.width()));
         crate::selection::refresh_visible(world, id, visible);
     }
     paint(world, id)
+}
+
+/// A frame with no content and the failure in the bar, for a viewer whose
+/// layout cannot be projected.
+fn degraded(world: &World, id: Entity, error: &str) -> Frame {
+    let mut out = String::from("\x1b[?2026h\x1b[?7l\x1b[?25l\x1b[0m\x1b[H\x1b[2J");
+    if let Some(v) = world.get::<Viewer>(id)
+        && v.rows > 0
+        && v.cols > 0
+    {
+        at(
+            &mut out,
+            0,
+            v.rows - 1,
+            format_args!("{}{}", chrome::BAR, " ".repeat(usize::from(v.cols))),
+        );
+        at(
+            &mut out,
+            0,
+            v.rows - 1,
+            format_args!("{}\x1b[31m{}", chrome::BAR, fit(error, v.cols, false)),
+        );
+    }
+    out.push_str("\x1b[0m\x1b[?2026l");
+    Frame {
+        paint: out,
+        detach: false,
+    }
 }
 
 pub(crate) fn rect(

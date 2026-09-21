@@ -92,3 +92,98 @@ fn attach_preserves_permissive_defaults_and_clamps_before_narrowing() -> Outcome
     assert_eq!(error.message, "workspace not found");
     Ok(())
 }
+
+#[test]
+fn a_zoomed_pane_taken_out_of_the_scene_paints_the_tab_instead_of_failing() -> Outcome {
+    let mut app = bevy_app::App::new();
+    app.insert_resource(Wake(std::thread::current()));
+    app.insert_resource(crate::assets::Settings::default());
+    app.add_plugins(crate::server::ServerPlugin);
+    let world = app.world_mut();
+    let root = world.spawn(Workspace).id();
+    let tab = world.spawn((Tab, ChildOf(root))).id();
+    let process = world.spawn_empty().id();
+    let a = world.spawn((PaneView { pane: process }, ChildOf(tab))).id();
+    let b = world.spawn((PaneView { pane: process }, ChildOf(tab))).id();
+    let id = world
+        .spawn((
+            Viewer {
+                rows: 24,
+                cols: 80,
+                zoom: true,
+                scrollback: 0,
+                notice: None,
+            },
+            Viewing(root),
+            OnTab(tab),
+            Focused(a),
+        ))
+        .id();
+    sync_view(world, id)?;
+    assert!(world.get::<Viewer>(id).need()?.zoom);
+    // Unlinked from its tab, the focused pane is no longer in the scene,
+    // yet it still exists so no relationship hook repairs the focus.
+    world.entity_mut(a).remove::<ChildOf>();
+    let frame = make_frame(world, id)?;
+    assert!(!frame.detach);
+    assert!(!world.get::<Viewer>(id).need()?.zoom);
+    assert_eq!(focused(world, id), Some(b));
+    // The same when the focused entity stops being a pane view.
+    world.entity_mut(id).insert(Focused(b));
+    world.get_mut::<Viewer>(id).need()?.zoom = true;
+    world.entity_mut(b).remove::<PaneView>();
+    let frame = make_frame(world, id)?;
+    assert!(!frame.detach);
+    assert!(!world.get::<Viewer>(id).need()?.zoom);
+    Ok(())
+}
+
+#[test]
+fn one_viewer_without_a_layout_does_not_fail_another_viewer_frame() -> Outcome {
+    let mut app = bevy_app::App::new();
+    app.insert_resource(Wake(std::thread::current()));
+    app.insert_resource(crate::assets::Settings::default());
+    app.add_plugins(crate::server::ServerPlugin);
+    let world = app.world_mut();
+    let root = world.spawn(Workspace).id();
+    let tab = world.spawn((Tab, ChildOf(root))).id();
+    let process = world.spawn_empty().id();
+    let pane = world.spawn((PaneView { pane: process }, ChildOf(tab))).id();
+    let healthy = world
+        .spawn((
+            Viewer {
+                rows: 24,
+                cols: 80,
+                zoom: false,
+                scrollback: 0,
+                notice: None,
+            },
+            Viewing(root),
+        ))
+        .id();
+    let broken = world
+        .spawn((
+            Viewer {
+                rows: 24,
+                cols: 80,
+                zoom: false,
+                scrollback: 0,
+                notice: None,
+            },
+            Viewing(root),
+        ))
+        .id();
+    // The broken viewer's workspace loses its Workspace component: its
+    // layout cannot be projected, which must not cost the healthy viewer
+    // its frame nor the broken viewer its session.
+    let orphan = world.spawn((Tab, ChildOf(root))).id();
+    world.entity_mut(broken).insert(OnTab(orphan));
+    world.entity_mut(root).remove::<Workspace>();
+    let frame = make_frame(world, healthy);
+    assert!(frame.is_ok(), "{frame:?}");
+    let frame = make_frame(world, broken)?;
+    assert!(!frame.detach);
+    assert!(frame.paint.contains("layout root is not a workspace"));
+    let _ = (pane, tab);
+    Ok(())
+}

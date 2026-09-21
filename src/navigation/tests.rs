@@ -114,3 +114,33 @@ fn viewers_remember_independent_tabs_focus_and_last_focus() -> crate::testing::O
     assert_eq!(focus_of(&world, right), Some(c));
     Ok(())
 }
+
+#[test]
+fn a_child_of_into_its_own_subtree_is_rejected_like_self_parenting() -> Outcome {
+    let mut app = bevy_app::App::new();
+    app.insert_resource(Wake(std::thread::current()));
+    app.add_plugins(crate::server::ServerPlugin);
+    let world = app.world_mut();
+    let root = world.spawn(Workspace).id();
+    let tab = world.spawn((Tab, ChildOf(root))).id();
+    let split = world.spawn((Split, ChildOf(tab))).id();
+    let pane = leaf(world, split);
+    // A raw client parents the tab under a pane inside it: a cycle that
+    // every hierarchy walk would follow forever.
+    world.entity_mut(tab).insert(ChildOf(pane));
+    world.flush();
+    assert!(world.get::<ChildOf>(tab).is_none());
+    assert_eq!(world.get::<ChildOf>(split).need()?.parent(), tab);
+    assert!(
+        world
+            .get::<Children>(pane)
+            .is_none_or(|children| !children.contains(&tab))
+    );
+    assert_eq!(leaves(world, tab), vec![pane]);
+    // An ordinary reparent still works.
+    let other = world.spawn((Tab, ChildOf(root))).id();
+    world.entity_mut(pane).insert(ChildOf(other));
+    world.flush();
+    assert_eq!(world.get::<ChildOf>(pane).need()?.parent(), other);
+    Ok(())
+}
