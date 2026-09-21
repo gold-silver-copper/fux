@@ -2,6 +2,52 @@ use super::*;
 use crate::testing::*;
 
 #[test]
+fn sync_uses_viewer_state_after_focus_repair_resets_zoom() -> Outcome {
+    let mut app = bevy_app::App::new();
+    app.insert_resource(Wake(std::thread::current()));
+    app.add_plugins(crate::server::ServerPlugin);
+    let world = app.world_mut();
+    let root = world.spawn(Workspace).id();
+    let tab = world.spawn((Tab, ChildOf(root))).id();
+    let process = world.spawn_empty().id();
+    let hidden = world
+        .spawn((
+            PaneView { pane: process },
+            ChildOf(tab),
+            bevy_camera::visibility::Visibility::Hidden,
+        ))
+        .id();
+    let visible = world.spawn((PaneView { pane: process }, ChildOf(tab))).id();
+    let id = world
+        .spawn((
+            Viewer {
+                rows: 24,
+                cols: 80,
+                zoom: true,
+                scrollback: 7,
+                notice: None,
+            },
+            Viewing(root),
+            OnTab(tab),
+            Focused(hidden),
+        ))
+        .id();
+    sync_view(world, id)?;
+    let viewer = world.get::<Viewer>(id).need()?;
+    assert!(!viewer.zoom);
+    assert_eq!(viewer.scrollback, 0);
+    assert!(
+        world
+            .get::<Presentation>(id)
+            .need()?
+            .rects()
+            .iter()
+            .any(|rect| rect.leaf == visible)
+    );
+    Ok(())
+}
+
+#[test]
 fn attach_preserves_permissive_defaults_and_clamps_before_narrowing() -> Outcome {
     let mut app = bevy_app::App::new();
     app.insert_resource(Wake(std::thread::current()));

@@ -52,6 +52,7 @@ pub(crate) fn sync_view(world: &mut World, id: Entity) -> Result<(), String> {
             }
         }
         let state = (on_tab(world, id), focused(world, id));
+        let v = world.get::<Viewer>(id).ok_or(DETACHED)?.clone();
         world
             .get_mut::<Presentation>(id)
             .ok_or("missing presentation")?

@@ -33,6 +33,7 @@ included. A revision argument reads sources directly from Git, not the worktree.
 | Section 6 | 6766 | -116 |
 | Section 7 | 6766 | -116 |
 | Section 8 (tests only) | 6766 | -116 |
+| Focus audit follow-up | 6767 | -115 |
 
 ## Section 1
 
@@ -262,3 +263,15 @@ Source trace, Bevy 0.19.1:
 
 All 49 unit and 35 integration tests pass, including existing settings and
 keybinding hot-reload tests. Four gates: `section8.log`.
+
+## Focus audit follow-up
+
+A final control-flow audit found that section 2's second synchronization reused
+its original Viewer snapshot after focus repair. Repair may reset zoom and
+scrollback: with a hidden zoom target and a visible sibling, reusing the snapshot
+keeps the sibling hidden for that synchronization. The original map-based code
+re-read Viewer at this point. A new regression test failed before the fix and
+passes after refreshing the snapshot at the second borrow boundary. This adds
+one production line. A separate correctness commit keeps the verified history
+honest instead of folding a Rust fix into the README commit. 50 unit and 35
+integration tests pass; four gates in `focus-audit.log`.
