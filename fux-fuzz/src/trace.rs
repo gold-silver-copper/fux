@@ -58,6 +58,24 @@ pub enum Action {
     Zoom,
     /// Pane moves, tab/workspace closes, shared references and confirmations.
     Layout,
+    /// Stock-spawned Launch recipes, reflected dimension edits, termination
+    /// paths, failed launches, natural exit and history_lines.
+    Process,
+    /// Directional focus ranking, focus cycling and swaps.
+    Nav,
+    /// Layout save and load, including failures that must not replace it.
+    Scene,
+    /// Hot reload of prefix and bindings.
+    Config,
+    /// Prompts, confirmations, choosers and unavailable actions.
+    Overlay,
+    /// Documented hard limits: attach clamping, copy cell cap, clipboard
+    /// policy and the paste bound.
+    Limits,
+    /// Painting rules at narrow sizes: wide glyphs, viewport bounds, tab bar.
+    Chrome,
+    /// Selection invalidation when the view changes underneath it.
+    Selection,
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -109,6 +127,14 @@ impl Plan {
                     | "history"
                     | "zoom"
                     | "layout"
+                    | "process"
+                    | "nav"
+                    | "scene"
+                    | "config"
+                    | "overlay"
+                    | "limits"
+                    | "chrome"
+                    | "selection"
             ),
             "unknown scenario",
         )?;
@@ -211,6 +237,30 @@ impl Plan {
             if matches!(scenario, "all" | "layout") {
                 actions.push(Action::Layout);
             }
+            if matches!(scenario, "all" | "process") {
+                actions.push(Action::Process);
+            }
+            if matches!(scenario, "all" | "nav") {
+                actions.push(Action::Nav);
+            }
+            if matches!(scenario, "all" | "scene") {
+                actions.push(Action::Scene);
+            }
+            if matches!(scenario, "all" | "config") {
+                actions.push(Action::Config);
+            }
+            if matches!(scenario, "all" | "overlay") {
+                actions.push(Action::Overlay);
+            }
+            if matches!(scenario, "all" | "limits") {
+                actions.push(Action::Limits);
+            }
+            if matches!(scenario, "all" | "chrome") {
+                actions.push(Action::Chrome);
+            }
+            if matches!(scenario, "all" | "selection") {
+                actions.push(Action::Selection);
+            }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [
                     (1002, true, false),
@@ -290,7 +340,12 @@ impl Plan {
             if let Action::Signal { .. } = action {
                 ensure(self.version >= 3, "signal actions require trace version 3")?;
             }
-            if let Action::Copy { .. } | Action::History | Action::Zoom | Action::Layout = action {
+            if let Action::Copy { .. }
+            | Action::History
+            | Action::Zoom
+            | Action::Layout
+            | Action::Process = action
+            {
                 ensure(self.version >= 3, "this action requires trace version 3")?;
             }
             if let Action::Startup { config } = action {

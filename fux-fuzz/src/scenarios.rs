@@ -1,9 +1,17 @@
+mod chrome;
+mod config;
 mod copy;
 mod history;
 mod keys;
 mod layout;
+mod limits;
 mod mouse;
+mod nav;
+mod overlay;
 mod paste;
+mod process;
+mod scene;
+mod selection;
 mod signal;
 mod zoom;
 
@@ -49,6 +57,14 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::History => history::run(server),
         Action::Zoom => zoom::run(server),
         Action::Layout => layout::run(server),
+        Action::Process => process::run(server),
+        Action::Nav => nav::run(server),
+        Action::Scene => scene::run(server),
+        Action::Config => config::run(server),
+        Action::Overlay => overlay::run(server),
+        Action::Limits => limits::run(server),
+        Action::Chrome => chrome::run(server),
+        Action::Selection => selection::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
