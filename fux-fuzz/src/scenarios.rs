@@ -1,7 +1,10 @@
+mod copy;
+mod history;
 mod keys;
 mod mouse;
 mod paste;
 mod signal;
+mod zoom;
 
 use crate::{
     Result, ensure,
@@ -41,6 +44,9 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Signal { signal } => signal::run(server, *signal),
         Action::Keys { sequences } => keys::run(server, sequences),
         Action::Mouse { mode, sgr, split } => mouse::run(server, *mode, *sgr, *split),
+        Action::Copy { reload } => copy::run(server, *reload),
+        Action::History => history::run(server),
+        Action::Zoom => zoom::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
@@ -69,7 +75,9 @@ fn startup(s: &mut Server, config: Config) -> Result<()> {
     )?;
     let (name, marker) = match config {
         Config::Valid => ("configured-shell", "CONFIGURED-SHELL"),
-        Config::Missing | Config::Malformed => ("default-shell", "DEFAULT-SHELL"),
+        Config::Missing | Config::Malformed | Config::Clipboard => {
+            ("default-shell", "DEFAULT-SHELL")
+        }
     };
     let expected = json!([s.directory.join(name)]);
     ensure(
