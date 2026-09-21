@@ -1,0 +1,30 @@
+{
+  "version": 3,
+  "seed": 5,
+  "actions": [
+    {
+      "scenario": "walk",
+      "seed": 5,
+      "steps": [
+        {
+          "split": {
+            "horizontal": true
+          }
+        },
+        {
+          "split": {
+            "horizontal": false
+          }
+        },
+        {
+          "split": {
+            "horizontal": true
+          }
+        },
+        {
+          "close_pane": 220
+        }
+      ]
+    }
+  ]
+}
