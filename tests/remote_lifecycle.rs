@@ -101,7 +101,7 @@ impl Server {
         let child = Command::new(env!("CARGO_BIN_EXE_fux"))
             .args(["server", "--port", &address.port().to_string(), "--config"])
             .arg(config)
-            .env("SHELL", "/bin/sh")
+            .env("SHELL", shell)
             .env("PS1", "$ ")
             .env("HOME", &directory)
             .env("HISTFILE", "/dev/null")
@@ -315,6 +315,15 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
     // /bin/sh is bash, which does. Require that shell behavior explicitly.
     let server = Server::start_with_shell("/bin/bash")?;
     let viewer = server.attach()?;
+    assert_eq!(
+        server
+            .query("fux::model::Launch")?
+            .at(0)
+            .at("components")
+            .at("fux::model::Launch")
+            .at("argv"),
+        json!(["/bin/bash"])
+    );
     let shell = server
         .query("fux::model::ProcessState")?
         .at(0)
