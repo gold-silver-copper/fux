@@ -76,6 +76,13 @@ pub enum Action {
     Chrome,
     /// Selection invalidation when the view changes underneath it.
     Selection,
+    /// Commands racing an in-flight scene load, a prompt whose target another
+    /// viewer closes, and detaching during copy mode.
+    Race,
+    /// Two viewers' independent tab selection and per-tab focus memory.
+    Memory,
+    /// Tab, workspace and pane reorder invariants.
+    Reorder,
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -135,6 +142,9 @@ impl Plan {
                     | "limits"
                     | "chrome"
                     | "selection"
+                    | "race"
+                    | "memory"
+                    | "reorder"
             ),
             "unknown scenario",
         )?;
@@ -260,6 +270,15 @@ impl Plan {
             }
             if matches!(scenario, "all" | "selection") {
                 actions.push(Action::Selection);
+            }
+            if matches!(scenario, "all" | "race") {
+                actions.push(Action::Race);
+            }
+            if matches!(scenario, "all" | "memory") {
+                actions.push(Action::Memory);
+            }
+            if matches!(scenario, "all" | "reorder") {
+                actions.push(Action::Reorder);
             }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [
