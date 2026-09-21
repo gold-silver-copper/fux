@@ -1,7 +1,9 @@
+mod adversarial;
 mod api_misuse;
 mod chrome;
 mod churn;
 mod clipqueue;
+mod concurrent;
 mod config;
 mod copy;
 mod history;
@@ -20,6 +22,7 @@ mod race;
 mod reorder;
 mod repair;
 mod resize_cmd;
+mod scale;
 mod scene;
 mod scene_fidelity;
 mod scene_map;
@@ -100,15 +103,9 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::TerminalEdge => terminal_edge::run(server),
         Action::Stream => stream::run(server),
         Action::Walk { seed, steps } => walk::run(server, *seed, steps),
-        Action::Scale => Err("scale scenario not yet implemented".into()),
-        Action::Adversarial { seed } => {
-            Err(format!("adversarial {seed} not yet implemented").into())
-        }
-        Action::Concurrent { seed, steps } => Err(format!(
-            "concurrent {seed} ({} steps) not yet implemented",
-            steps.len()
-        )
-        .into()),
+        Action::Scale => scale::run(server),
+        Action::Adversarial { seed } => adversarial::run(server, *seed),
+        Action::Concurrent { seed, steps } => concurrent::run(server, *seed, steps),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),

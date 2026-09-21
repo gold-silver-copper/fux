@@ -97,6 +97,8 @@ pub(super) struct Walker {
     pub next_marker: u32,
     pub saved: bool,
     pub cap: usize,
+    /// Walk-created panes capture what they receive to pane-<marker>.bin.
+    pub capture: bool,
 }
 impl Walker {
     pub fn new(s: &mut Server) -> Result<Self> {
@@ -113,10 +115,11 @@ impl Walker {
             next_marker: 1,
             saved: false,
             cap: PROCESS_CAP,
+            capture: false,
         })
     }
     /// A step, resolved and applied. Returns the command actually sent and
-    /// the viewer it was sent to, for the journal.
+    /// its JSON, for the journal.
     pub fn apply(&mut self, s: &mut Server, step: &Step, w: &World) -> Result<(String, Value)> {
         use Step::*;
         let v = self.driver;
@@ -141,8 +144,13 @@ impl Walker {
                 } else {
                     "vertical"
                 };
+                let sink = if self.capture {
+                    format!("pane-WK{n}.bin")
+                } else {
+                    "/dev/null".to_owned()
+                };
                 let program = format!(
-                    "stty raw -echo; W=WK; printf \"\\033[2J\\033[H${{W}}{n}\"; exec cat > /dev/null"
+                    "stty raw -echo; W=WK; printf \"\\033[2J\\033[H${{W}}{n}\"; exec cat > {sink}"
                 );
                 let before = focused;
                 s.control(v, json!({"kind":"split","axis":axis,"program":program}))?;
@@ -156,6 +164,8 @@ impl Walker {
                     json!({"axis":axis,"marker":format!("WK{n}")}),
                 ));
             }
+            TabNew => (v, json!({"kind":"tab_new","name":Value::Null})),
+            WorkspaceNew => (v, json!({"kind":"workspace_new","name":Value::Null})),
             ClosePane(i) => match pick(&leaves_here, *i).or_else(|| pick(&w.leaves(), *i)) {
                 Some(leaf) => (v, json!({"kind":"close","subject":{"pane":leaf}})),
                 None => return Ok(("skip".into(), json!("no pane to close"))),
@@ -174,12 +184,10 @@ impl Walker {
                     None => return Ok(("skip".into(), json!("no workspace"))),
                 }
             }
-            TabNew => (v, json!({"kind":"tab_new","name":Value::Null})),
-            WorkspaceNew => (v, json!({"kind":"workspace_new","name":Value::Null})),
             Terminate => (v, json!({"kind":"terminate"})),
             Zoom => (v, json!({"kind":"zoom"})),
             Rename(i) => {
-                let name = format!("n{}", i);
+                let name = format!("n{i}");
                 let subject = match i % 3 {
                     0 => focused.map(|p| json!({"pane":p})),
                     1 => on_tab.map(|t| json!({"tab":t})),
@@ -362,14 +370,19 @@ pub(super) fn step(s: &mut Server, walker: &mut Walker, index: usize, st: &Step)
             .all(|(_, st)| st.pointer("/status/kind") != Some(&json!("starting"))))
     })?;
     let after = World::read(s)?;
-    let mut problems = invariant::violations(s, &after, walker.cap)?;
+    // The command column, a menu or a chooser legitimately paints over pane
+    // content; judge the paint only when no overlay was just opened.
+    let overlay = matches!(st, Step::Help | Step::Menu | Step::Choose);
+    let mut problems = invariant::violations(s, &after, walker.cap, !overlay)?;
     let markers = walker.markers.clone();
-    problems.extend(invariant::markers_visible(
-        s,
-        &after,
-        walker.driver,
-        &|leaf| markers.get(&leaf).cloned(),
-    )?);
+    if !overlay {
+        problems.extend(invariant::markers_visible(
+            s,
+            &after,
+            walker.driver,
+            &|leaf| markers.get(&leaf).cloned(),
+        )?);
+    }
     let n = notice(s, walker.driver)?;
     let changed = n != notice_before;
     let text = n
@@ -384,10 +397,14 @@ pub(super) fn step(s: &mut Server, walker: &mut Walker, index: usize, st: &Step)
     if text.to_lowercase().contains("panic") {
         problems.push(format!("notice mentions a panic: {text:?}"));
     }
-    s.journal.record(
-        "walk_step",
-        json!({"index":index,"step":st,"sent":kind,"command":command,"notice":n,"processes":after.states.len(),"leaves":after.views.len(),"tabs":after.tabs.len(),"workspaces":after.workspaces.len(),"problems":problems}),
-    )?;
+    // Keep the journal small enough for walks of thousands of steps: the
+    // command and notice are recorded only when something went wrong.
+    let record = if problems.is_empty() {
+        json!({"i":index,"step":st,"sent":kind,"p":after.states.len(),"l":after.views.len(),"t":after.tabs.len(),"w":after.workspaces.len()})
+    } else {
+        json!({"index":index,"step":st,"sent":kind,"command":command,"notice":n,"processes":after.states.len(),"leaves":after.views.len(),"tabs":after.tabs.len(),"workspaces":after.workspaces.len(),"problems":problems})
+    };
+    s.journal.record("walk_step", record)?;
     ensure(
         problems.is_empty(),
         &format!(

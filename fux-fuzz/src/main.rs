@@ -47,7 +47,7 @@ impl Options {
         while let Some(arg) = args.next() {
             if matches!(arg.as_str(), "--help" | "-h") {
                 println!(
-                    "fux-fuzz --fux PATH [--scenario all|startup|resize|shutdown|paste|signal|keys|mouse|copy|history|zoom|layout|process|nav|scene|config|overlay|limits|chrome|selection|race|memory|reorder|scene_map|mouse_edge|clipqueue|resize_cmd|api_misuse|scene_fidelity|tabless|churn|scene_refs|soak|repair|terminal_edge|stream|walk|scale|adversarial|concurrent] [--seed N]\n  [--iterations 1..100] [--actions 1..5000] [--seconds 1..600] [--output DIR]\nfux-fuzz --fux PATH --replay TRACE.json [--seconds N] [--output DIR]\nNo implicit build. Default smoke: all scenarios, seed 1, one iteration, six generated resizes.\nStress is opt-in via --iterations/--actions. Failures exit nonzero and retain bundles."
+                    "fux-fuzz --fux PATH [--scenario all|startup|resize|shutdown|paste|signal|keys|mouse|copy|history|zoom|layout|process|nav|scene|config|overlay|limits|chrome|selection|race|memory|reorder|scene_map|mouse_edge|clipqueue|resize_cmd|api_misuse|scene_fidelity|tabless|churn|scene_refs|soak|repair|terminal_edge|stream|walk|scale|adversarial|concurrent] [--seed N]\n  [--iterations 1..100] [--actions 1..5000] [--seconds 1..3600] [--output DIR]\nfux-fuzz --fux PATH --replay TRACE.json [--seconds N] [--output DIR]\nNo implicit build. Default smoke: all scenarios, seed 1, one iteration, six generated resizes.\nStress is opt-in via --iterations/--actions. Failures exit nonzero and retain bundles."
                 );
                 return Ok(None);
             }
@@ -78,7 +78,7 @@ impl Options {
                 _ => return Err(format!("unknown option: {arg}").into()),
             }
         }
-        ensure((1..=600).contains(&seconds), "seconds must be 1..600")?;
+        ensure((1..=3600).contains(&seconds), "seconds must be 1..3600")?;
         ensure(
             replay.is_none() || !generated_options,
             "replay cannot be combined with generation options",
