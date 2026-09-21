@@ -495,34 +495,12 @@ pub(super) fn violations(
                     // A pane already at one cell means the layout is squeezed
                     // in this viewer, which another, larger viewer's split may
                     // do; a missing rectangle is then a squeeze, not a defect.
-                    // Likewise once resize commands have changed flex weights:
-                    // a weight of 0.1 beside larger ones may round to no cell
-                    // in a small viewer, which the split rule never promised.
                     let squeezed = painted.iter().any(|r| r.3 < 2 || r.2 - r.1 < 2);
-                    let weighted = painted.len() != expected
-                        && tab_leaves.iter().any(|leaf| {
-                            let mut cursor = Some(*leaf);
-                            while let Some(e) = cursor {
-                                if w.tabs.contains(&e) {
-                                    break;
-                                }
-                                if nodes
-                                    .get(&e)
-                                    .and_then(|n| n.get("flex_grow")?.as_f64())
-                                    .is_some_and(|f| (f - 1.0).abs() > 0.01)
-                                {
-                                    return true;
-                                }
-                                cursor = w.parent(e);
-                            }
-                            false
-                        });
                     if content >= 2
                         && expected > 0
                         && fits
                         && painted.len() != expected
                         && !squeezed
-                        && !weighted
                     {
                         v.push(format!(
                             "viewer {viewer}: {} panes painted but the tab has {expected} (zoom {zoom}); rects {painted:?}",

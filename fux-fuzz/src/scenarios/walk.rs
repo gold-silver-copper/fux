@@ -207,9 +207,6 @@ pub(super) struct Walker {
     /// The `layout:` path the configuration currently names, if any.
     pub layout: Option<String>,
     pub oracle: Oracle,
-    /// A raw hierarchy edit has left something nothing repairs, such as a
-    /// tab unlinked from its workspace; later mutations promise less.
-    pub degraded: bool,
 }
 impl Walker {
     pub fn new(s: &mut Server) -> Result<Self> {
@@ -236,7 +233,6 @@ impl Walker {
             copy_mode: false,
             layout: None,
             oracle: Oracle::Full,
-            degraded: false,
         })
     }
     /// Keyboard steps need room for the column and its headings; smaller
@@ -1441,7 +1437,7 @@ pub(super) fn run(s: &mut Server, seed: u64, steps: &[Step]) -> Result<()> {
     let mut walker = Walker::new(s)?;
     // Thousands of steps: the per-step summary is the evidence; a failure
     // records its command and notice in full, and the minimizer reproduces it.
-    s.quiet = true;
+    s.quiet = std::env::var_os("FUX_FUZZ_VERBOSE").is_none();
     s.journal
         .record("walk_begin", json!({"seed":seed,"steps":steps.len()}))?;
     let mut sources = (0usize, 0usize);

@@ -99,17 +99,6 @@ fn repaired(s: &mut Server, driver: u64, repair: Repair) -> Result<Option<String
 }
 fn wait_repaired(s: &mut Server, walker: &mut Walker, what: &str, repair: Repair) -> Result<()> {
     let driver = walker.driver;
-    // Once a tab has been unlinked from its workspace nothing brings it
-    // back; a viewer left on it stays there until it moves. Later mutations
-    // can then only promise painting.
-    let repair = if walker.degraded {
-        Repair::Painting
-    } else {
-        repair
-    };
-    if repair == Repair::Painting {
-        walker.degraded = true;
-    }
     let mut last = None;
     s.wait("driver relationships repaired", |s| {
         last = repaired(s, driver, repair)?;
@@ -216,7 +205,7 @@ fn mutate_with(
                 return Ok(("skip".into(), json!("no parent")));
             };
             remove(s, parent, invariant::CHILDREN)?;
-            wait_repaired(s, walker, "removing a Children component", Repair::Painting)?;
+            wait_repaired(s, walker, "removing a Children component", Repair::Full)?;
             ("remove Children", json!(parent))
         }
         9 => {
@@ -224,7 +213,7 @@ fn mutate_with(
                 return Ok(("skip".into(), json!("no tab")));
             };
             remove(s, tab, invariant::CHILD_OF)?;
-            wait_repaired(s, walker, "removing a tab's ChildOf", Repair::Painting)?;
+            wait_repaired(s, walker, "removing a tab's ChildOf", Repair::Full)?;
             ("remove a tab's ChildOf", json!(tab))
         }
         10 => {
@@ -296,16 +285,16 @@ fn mutate_with(
             )
         }
         14 => {
-            let (Some(tab), Some(leaf)) = (pick(&tabs_here, index), pick(&leaves, index)) else {
+            // A different index for the pane, or with as many tabs as panes
+            // it would always be the tab's own pane and hit the cycle guard.
+            let (Some(tab), Some(leaf)) = (
+                pick(&tabs_here, index),
+                pick(&leaves, index.wrapping_add(1)),
+            ) else {
                 return Ok(("skip".into(), json!("no tab or pane")));
             };
             insert(s, tab, invariant::CHILD_OF, json!(leaf))?;
-            wait_repaired(
-                s,
-                walker,
-                "reparenting a tab under a pane",
-                Repair::Painting,
-            )?;
+            wait_repaired(s, walker, "reparenting a tab under a pane", Repair::Full)?;
             (
                 "reparent a tab under a pane",
                 json!({"tab":tab,"pane":leaf}),
@@ -340,7 +329,7 @@ fn mutate_with(
                 return Ok(("skip".into(), json!("no pane view")));
             };
             remove(s, leaf, invariant::PANE_VIEW)?;
-            wait_repaired(s, walker, "removing a PaneView", Repair::Painting)?;
+            wait_repaired(s, walker, "removing a PaneView", Repair::Full)?;
             ("remove PaneView", json!(leaf))
         }
         18 => {
@@ -348,7 +337,7 @@ fn mutate_with(
                 return Ok(("skip".into(), json!("no tab")));
             };
             insert(s, tab, invariant::CHILD_OF, json!(tab))?;
-            wait_repaired(s, walker, "making a tab its own parent", Repair::Painting)?;
+            wait_repaired(s, walker, "making a tab its own parent", Repair::Full)?;
             ("insert ChildOf(self)", json!(tab))
         }
         19 => {
@@ -384,7 +373,7 @@ fn mutate_with(
 pub(super) fn run(s: &mut Server, seed: u64, steps: &[Step]) -> Result<()> {
     let mut walker = Walker::new(s)?;
     walker.oracle = Oracle::Narrow;
-    s.quiet = true;
+    s.quiet = std::env::var_os("FUX_FUZZ_VERBOSE").is_none();
     s.journal
         .record("raw_begin", json!({"seed":seed,"steps":steps.len()}))?;
     let mut mutations = 0;

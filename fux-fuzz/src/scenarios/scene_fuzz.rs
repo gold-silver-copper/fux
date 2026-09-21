@@ -385,7 +385,7 @@ pub(super) fn run(s: &mut Server, seed: u64, cases: &[SceneCase]) -> Result<()> 
     // The last base whose geometry is untouched; its processes are all
     // alive because every case that closes one also refreshes it.
     let mut clean = base.clone();
-    s.quiet = true;
+    s.quiet = std::env::var_os("FUX_FUZZ_VERBOSE").is_none();
     s.journal.record(
         "scene_fuzz_begin",
         json!({"seed":seed,"cases":cases.len(),"base_bytes":base.len()}),
