@@ -87,6 +87,11 @@ fn size_terminals(world: &mut World) {
 pub(crate) fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
     let params = params.unwrap_or_default();
     let requested = params.get("workspace").and_then(Value::as_str);
+    // Closing the last workspace detaches its viewers but must not leave a
+    // server nobody can attach to again: recreate the initial workspace.
+    if crate::navigation::workspaces(world).is_empty() {
+        crate::server::initialize(world);
+    }
     let root = crate::navigation::workspaces(world)
         .into_iter()
         .find(|e| {
