@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn partially_completed_scroll_error_still_invalidates_every_window() -> Result<(), Error> {
+    let mut s = Screen::new(2, 1, 2)?;
+    s.begin()?;
+    s.print('A')?;
+    s.control(10)?;
+    s.control(13)?;
+    s.print('B')?;
+    let mark = s.mark();
+    s.next_id = u64::MAX - 1;
+    s.begin()?;
+    assert_eq!(s.scroll(0, 1, 2, true, true), Err(Error::IdentityExhausted));
+    assert_eq!(s.history_len(), 1); // First row moved; second allocation failed.
+    assert_eq!(s.cell(0, 0).ok_or(Error::InvalidRange)?.contents(), "B");
+    assert!(s.full_refresh_since(mark));
+    assert_eq!(s.dirty_rows_since(mark).count(), 3);
+    assert_eq!(s.dirty_rows_since(mark).count(), 3);
+    Ok(())
+}
+
+#[test]
 fn identity_and_mark_exhaustion_never_alias_old_rows() -> Result<(), Error> {
     let mut s = Screen::new(1, 1, 0)?;
     let id = s.row_from_bottom(0).ok_or(Error::InvalidRange)?.id;
