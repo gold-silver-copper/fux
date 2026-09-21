@@ -135,7 +135,9 @@ pub(crate) fn attach(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
         ))
         .id();
     crate::navigation::repair(world);
-    sync_view(world, id).map_err(BrpError::internal)?;
+    // A workspace a raw hierarchy edit left unprojectable must not refuse
+    // every new attach: the viewer's frames name the failure instead.
+    let _ = sync_view(world, id);
     Ok(json!({"viewer":id.to_bits()}))
 }
 fn request_viewer(params: Option<Value>) -> Result<Entity, BrpError> {
