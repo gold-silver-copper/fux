@@ -45,6 +45,17 @@ pub enum Action {
     Keys {
         sequences: Vec<String>,
     },
+    /// Copy-mode selections whose OSC 52 payload must decode to the selected text.
+    Copy {
+        /// Start with the clipboard disabled and enable it by creating the
+        /// configuration file while the server runs.
+        reload: bool,
+    },
+    /// History scrolling by command, wheel and copy-mode paging, plus copying
+    /// from history and the selection-invalidation rule.
+    History,
+    /// Viewer-local zoom with two viewers sharing two panes.
+    Zoom,
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -68,6 +79,8 @@ pub enum Config {
     Valid,
     Missing,
     Malformed,
+    /// No shell override; only `clipboard: write-only`.
+    Clipboard,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -82,7 +95,17 @@ impl Plan {
         ensure(
             matches!(
                 scenario,
-                "all" | "startup" | "resize" | "shutdown" | "paste" | "signal" | "keys" | "mouse"
+                "all"
+                    | "startup"
+                    | "resize"
+                    | "shutdown"
+                    | "paste"
+                    | "signal"
+                    | "keys"
+                    | "mouse"
+                    | "copy"
+                    | "history"
+                    | "zoom"
             ),
             "unknown scenario",
         )?;
@@ -171,6 +194,17 @@ impl Plan {
                     sequences: shuffled,
                 });
             }
+            if matches!(scenario, "all" | "copy") {
+                for reload in [false, true] {
+                    actions.push(Action::Copy { reload });
+                }
+            }
+            if matches!(scenario, "all" | "history") {
+                actions.push(Action::History);
+            }
+            if matches!(scenario, "all" | "zoom") {
+                actions.push(Action::Zoom);
+            }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [
                     (1002, true, false),
@@ -249,6 +283,15 @@ impl Plan {
             }
             if let Action::Signal { .. } = action {
                 ensure(self.version >= 3, "signal actions require trace version 3")?;
+            }
+            if let Action::Copy { .. } | Action::History | Action::Zoom = action {
+                ensure(self.version >= 3, "this action requires trace version 3")?;
+            }
+            if let Action::Startup { config } = action {
+                ensure(
+                    *config != Config::Clipboard,
+                    "startup recipes use shell configurations",
+                )?;
             }
             if let Action::Mouse { mode, .. } = action {
                 ensure(self.version >= 3, "mouse actions require trace version 3")?;
