@@ -5,6 +5,32 @@ use crate::{control::Scope, model::*};
 use bevy_ecs::{lifecycle::HookContext, prelude::*, world::DeferredWorld};
 use bevy_ui::Node;
 
+/// Set while a layout scene is being written into the world. Writing a scene
+/// inserts components one at a time, so a tab briefly has its parent before it
+/// has `Tab`. Normalizing in that window wraps the scene's own tab inside a
+/// fresh one, and a tab nested in a tab makes the whole workspace
+/// unextractable. `apply_layout` normalizes once when the write is complete.
+#[derive(Resource, Default)]
+pub struct ApplyingLayout(pub u32);
+
+/// Suspends hierarchy normalization for the duration of a scene write.
+pub struct ApplyGuard;
+impl ApplyGuard {
+    pub fn begin(world: &mut World) -> Self {
+        let mut applying = world.get_resource_or_insert_with(ApplyingLayout::default);
+        applying.0 = applying.0.saturating_add(1);
+        Self
+    }
+    pub fn end(self, world: &mut World) {
+        if let Some(mut applying) = world.get_resource_mut::<ApplyingLayout>() {
+            applying.0 = applying.0.saturating_sub(1);
+        }
+    }
+}
+fn applying(applying: &Option<Res<ApplyingLayout>>) -> bool {
+    applying.as_ref().is_some_and(|a| a.0 > 0)
+}
+
 pub fn workspaces(world: &mut World) -> Vec<Entity> {
     let mut roots: Vec<_> = world
         .query_filtered::<Entity, With<Workspace>>()
@@ -168,8 +194,12 @@ pub fn select(world: &mut World, id: Entity, scope: Scope, pick: Pick) -> Result
 pub(crate) fn normalize_on_tab_removed(
     removed: On<Remove, Tab>,
     parents: Query<&ChildOf>,
+    in_progress: Option<Res<ApplyingLayout>>,
     mut commands: Commands,
 ) {
+    if applying(&in_progress) {
+        return;
+    }
     if let Ok(parent) = parents.get(removed.entity) {
         let workspace = parent.parent();
         commands.queue(move |world: &mut World| {
@@ -186,8 +216,12 @@ pub(crate) fn normalize_on_child_added(
     parents: Query<&ChildOf>,
     workspaces: Query<(), With<Workspace>>,
     tabs: Query<(), With<Tab>>,
+    in_progress: Option<Res<ApplyingLayout>>,
     mut commands: Commands,
 ) {
+    if applying(&in_progress) {
+        return;
+    }
     let entity = added.entity;
     if let Ok(parent) = parents.get(entity)
         && workspaces.contains(parent.parent())
