@@ -32,13 +32,13 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
 
 `--fux` is mandatory and canonicalized before any child changes directory. No run implicitly builds fux or searches PATH for an installed fux. Use a trusted local binary: the application API permits unrestricted same-user command execution.
 
-**The paste scenario currently fails against merged `main`; that is a retained application finding, not a harness defect.** See "Open finding" below. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
+The paste scenario found a bracketed-paste envelope defect against merged `main`, fixed in this branch; see "Finding" below. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
 
 ## What the scenarios check
 
 - **Startup:** missing, malformed, and valid configuration; real frontend attach immediately after read-only readiness checks; first `Launch.argv` and its actual terminal output. Distinct executable wrappers identify the configured and environment-default shell. No settling sleep precedes the initial observation.
 - **Resize:** two real viewers of a shared process, rapid PTY resize bursts, settled tiny viewports, conflicting dimensions, responsive BRP, reflected viewer/process sizes, and child-side `stty size` at the final negotiated size and after detach. A larger diagnostic emulator checks frame overflow and full-width bottom chrome without silently clipping the oracle. Raw-mode child files prove input isolation across split/focus/resize; delivery is acknowledged before crossing from PTY input to a BRP focus change.
-- **Paste:** bracketed-paste envelopes fragmented across PTY writes, multibyte payloads, and sizes straddling the documented 64 KiB bound, against children that do and do not request bracketed-paste mode (`DECSET 2004`). It checks ownership acknowledgement, byte-exact child delivery, explicit rejection of oversized payloads, and that an ordinary key after the end marker still reaches the pane. **This scenario currently fails against `addd9052fee737e23dc55e36c26e52827af1bffe`; see the finding below.**
+- **Paste:** bracketed-paste envelopes fragmented across PTY writes, multibyte payloads, and sizes straddling the documented 64 KiB bound, against children that do and do not request bracketed-paste mode (`DECSET 2004`). It checks ownership acknowledgement, byte-exact child delivery, explicit rejection of oversized payloads, and that an ordinary key after the end marker still reaches the pane. **This scenario found a production defect, fixed in this branch; see the finding below.**
 - **Shutdown:** a SIGTERM after the pre-`app.run` announcement but before waiting for readiness; pane termination and separate bash background-job cleanup; natural exit with retained output/status; graceful detach with both termios and alternate-screen restoration; abrupt viewer loss without killing the shared process; server shutdown during `yes` output while the outer PTY is temporarily unread.
 
 Paste sizes are counted in UTF-8 payload bytes, excluding the terminal's `\e[200~`/`\e[201~` framing, matching `paste::LIMIT`. An accepted paste must arrive byte-exact, and a rejected paste must deliver nothing at all rather than a truncated prefix. The oracle is validated by passing cases on both sides of the boundary, including a payload delivered with the 12-byte envelope intact.
@@ -83,17 +83,17 @@ cargo test --manifest-path fux-fuzz/Cargo.toml --locked
 
 Six unit tests check deterministic generation, trace round-tripping/validation, deadline/interruption checks, bounded capture, the frame oracle, and the paste payload/envelope oracle. Three subprocess tests use deliberately faulty **fixtures, not modified fux code**: early exit, hanging startup, and interrupted startup. They assert nonzero status, bounded termination, retained diagnostics, no invented frontend capture, and disappearance of the fixture PID after cleanup.
 
-## Open finding: a valid paste is accepted, then dropped
+## Finding: a valid paste was accepted, then dropped (fixed)
 
-The paste scenario fails against `addd9052fee737e23dc55e36c26e52827af1bffe`. **No production fix is included here.**
+The paste scenario failed against `addd9052fee737e23dc55e36c26e52827af1bffe`. The fix is included in this branch.
 
-When the focused application has requested bracketed-paste mode, a paste that fux's own policy accepts can still be discarded by its PTY write path:
+When the focused application had requested bracketed-paste mode, a paste that fux's own policy accepted could still be discarded by its PTY write path:
 
 - `paste::LIMIT` is `64 * 1024`, and `paste::input` rejects only `text.len() > LIMIT`, so a 65,536-byte payload is explicitly accepted.
 - `server::terminal_input` then wraps it as `\e[200~{text}\e[201~`, adding 12 bytes.
-- `Terminal::input` rejects anything over `MAX_INPUT` (65,536), so the wrapped write fails.
+- `Terminal::input` rejected anything over `MAX_INPUT` (then 65,536), so the wrapped write failed.
 
-The effective bracketed limit is therefore 65,524 payload bytes. Payloads of 65,525..=65,536 bytes are accepted by the policy layer and then dropped whole: the child receives **zero** bytes, and the bar shows the internal message `input exceeds 65536 bytes; send smaller chunks`, which misattributes a fux-generated envelope to the user's paste and is not actionable within the documented 64 KiB bound.
+The effective bracketed limit was therefore 65,524 payload bytes. Payloads of 65,525..=65,536 bytes are accepted by the policy layer and then dropped whole: the child receives **zero** bytes, and the bar shows the internal message `input exceeds 65536 bytes; send smaller chunks`, which misattributes a fux-generated envelope to the user's paste and is not actionable within the documented 64 KiB bound.
 
 Observed boundary, all with the same payload delivered to a real `cat` child:
 
@@ -109,7 +109,7 @@ Observed boundary, all with the same payload delivered to a real `cat` child:
 
 The same size succeeds or fails purely on whether the application requested the mode, so this is an inconsistency between two layers' limits rather than an intentional bound. On this machine `zsh` and `vim` both request `2004`; `/bin/bash` 3.2 does not, which is why non-bracketed cases pass.
 
-Suggested smallest fix, for a separate change: account for the envelope before accepting the paste, or frame it without exceeding the transport budget, so the accepted payload bound and the delivered bound agree. Truncating a paste or silently splitting it across writes would change observable paste semantics and should not be adopted just to make this scenario pass.
+The fix frames the envelope in `paste::bracketed` and sizes the transport budget as `paste::LIMIT + paste::ENVELOPE` (65,548 bytes), so the accepted payload bound and the delivered bound agree. Pastes are neither truncated nor split; the 64 KiB payload bound is unchanged. A unit test pins the largest accepted paste plus envelope to the transport budget, and the paste scenario now passes all ten cases; full smoke passes 17/17.
 
 ## Earlier finding and verification
 

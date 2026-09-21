@@ -91,6 +91,18 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
 const START: &[u8] = b"\x1b[200~";
 const END: &[u8] = b"\x1b[201~";
 pub const LIMIT: usize = 64 * 1024;
+/// Bytes fux adds around an accepted paste when the application requested
+/// bracketed-paste mode; the PTY transport budget covers `LIMIT + ENVELOPE`.
+pub const ENVELOPE: usize = START.len() + END.len();
+
+/// Frames an accepted paste for an application that requested bracketed paste.
+pub fn bracketed(text: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(text.len() + ENVELOPE);
+    bytes.extend_from_slice(START);
+    bytes.extend_from_slice(text.as_bytes());
+    bytes.extend_from_slice(END);
+    bytes
+}
 
 #[derive(Default)]
 pub struct Decoder {
@@ -173,6 +185,17 @@ mod tests {
             assert_eq!(events.len(), 5);
         }
         Ok(())
+    }
+    #[test]
+    fn largest_accepted_paste_fits_the_transport_with_its_envelope() {
+        let text = "x".repeat(LIMIT);
+        let framed = bracketed(&text);
+        assert!(framed.starts_with(START) && framed.ends_with(END));
+        assert_eq!(framed.len(), LIMIT + ENVELOPE);
+        assert_eq!(
+            framed.get(START.len()..framed.len() - END.len()),
+            Some(text.as_bytes())
+        );
     }
     #[test]
     fn oversized_paste_is_bounded_and_drains_before_following_keys() -> crate::testing::Outcome {
