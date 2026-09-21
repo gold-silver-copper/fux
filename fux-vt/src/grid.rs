@@ -445,3 +445,6 @@ pub(crate) fn repair_wide(cells: &mut [Cell]) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
