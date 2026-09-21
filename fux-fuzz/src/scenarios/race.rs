@@ -223,14 +223,18 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
             .iter()
             .any(|r| id(r).ok() == Some(target)))
     })?;
-    s.send(f, b"HIJACKED")?;
-    s.send(f, b"\r")?;
+    // The first key cancels the stale overlay and sets the notice; any key
+    // after it is ordinary input, which clears the notice. Send one key,
+    // observe the cancellation, then type the rest.
+    s.send(f, b"H")?;
     let mut text = String::new();
     s.wait("stale prompt cancelled", |s| {
         text = notice_text(s, v)?;
         Ok(text.contains("target changed") || text.contains("no longer exists"))
     })
     .map_err(|e| format!("application: confirming a prompt whose target was closed elsewhere: notice {text:?}: {e}"))?;
+    s.send(f, b"IJACKED")?;
+    s.send(f, b"\r")?;
     std::thread::sleep(std::time::Duration::from_millis(100));
     s.pump()?;
     ensure(

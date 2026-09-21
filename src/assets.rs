@@ -653,6 +653,17 @@ pub fn apply_layout(
         }
         return Err(error.to_string());
     }
+    // Scene writing applies components with relationship hooks skipped, so a
+    // loaded PaneView is never recorded in its process's PaneViews, and a
+    // later close of another view of that process would terminate it while
+    // this view still shows it. Re-insert each view so the relationship holds.
+    for old in &ids {
+        if let Some(&entity) = entity_map.get(old)
+            && let Some(view) = world.get::<PaneView>(entity).cloned()
+        {
+            world.entity_mut(entity).insert(view);
+        }
+    }
     let root = *entity_map
         .get(&root)
         .ok_or("workspace root was not instantiated")?;

@@ -34,7 +34,7 @@ Press **Ctrl-B** to open the command column, then a configured shortcut or navig
 | `t` / `T` | New tab / tab chooser |
 | `w` / `W` | New workspace / workspace chooser |
 | `p` / `s` / `S` | Pane / current tab / current workspace actions |
-| `h` / `v` | Split side-by-side / stacked; also open a pane in an empty tab |
+| `h` / `v` | Split side-by-side / stacked; also open a pane in an empty tab. Refused with a notice when the pane cannot hold two panes and a separator |
 | `z` | Viewer-local zoom |
 | `r` | Rename pane |
 | `x` | Confirm pane close |
@@ -168,7 +168,7 @@ The runner parks without an idle tick; PTY data/exit, requests, disconnections, 
 
 ## Scope and verification
 
-[`fux-fuzz`](fux-fuzz/README.md) is an unpublished, opt-in black-box harness for replayable startup, resize, paste, key round-trip, mouse forwarding, copy, history, zoom, layout lifecycle, process lifecycle, navigation, scenes, configuration reload, overlays, limits, chrome, selection, concurrency races, viewer memory, reorder, scene mapping, mouse edge cases, clipboard queueing, pane resizing, API misuse, scene fidelity, tabless scenes, configuration churn, scene process references, a repetition soak, relationship repair, terminal edge cases and frontend stream scenarios. It runs separately from the normal tests and CI; its documentation covers resource bounds, replay and verification.
+[`fux-fuzz`](fux-fuzz/README.md) is an unpublished, opt-in black-box harness for replayable startup, resize, paste, key round-trip, mouse forwarding, copy, history, zoom, layout lifecycle, process lifecycle, navigation, scenes, configuration reload, overlays, limits, chrome, selection, concurrency races, viewer memory, reorder, scene mapping, mouse edge cases, clipboard queueing, pane resizing, API misuse, scene fidelity, tabless scenes, configuration churn, scene process references, a repetition soak, relationship repair, terminal edge cases, frontend stream, and generated random-walk, scale, adversarial-output and concurrent-walk scenarios with automatic trace minimization. It runs separately from the normal tests and CI; its documentation covers resource bounds, replay and verification.
 
 Tested on macOS arm64; see [verification/keybinding-consistency.md](verification/keybinding-consistency.md) for the current binding/menu verification, [verification/interaction-restoration.md](verification/interaction-restoration.md) for this interaction pass and intentional differences from original main, [verification/design-restoration.md](verification/design-restoration.md) for the current visual/input verification and captured renders, [verification/REFINEMENT.md](verification/REFINEMENT.md) for historical comparable measurements and the capability audit, and [verification/VERIFICATION.md](verification/VERIFICATION.md) for preserved baseline evidence. Linux and other Unix systems are unvalidated; this is not a Windows/mobile implementation.
 
