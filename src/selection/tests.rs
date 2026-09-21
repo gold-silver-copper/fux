@@ -83,6 +83,7 @@ fn selection(parser: &Parser, a: (u16, u16), b: (u16, u16)) -> Result<Selection,
         anchor: grid.identity(a),
         grid,
         revision: 0,
+        instance: 0,
         dragging: false,
         mouse_origin: false,
     })
@@ -164,6 +165,64 @@ fn eviction_of_unselected_top_is_safe_but_loss_of_required_rows_is_not() -> Outc
     assert!(renew(&mut lost, &parser)?);
     Ok(())
 }
+#[test]
+fn parser_local_row_ids_cannot_cross_terminal_instances() -> Outcome {
+    for replace_same_entity in [false, true] {
+        let mut old = Parser::new(2, 5, 2)?;
+        let mut new = Parser::new(2, 5, 2)?;
+        old.process(b"AAA")?;
+        new.process(b"BBB")?;
+        let mut selection = selection(&old, (0, 0), (0, 2))?;
+        let mut world = World::new();
+        let root = world.spawn(Workspace).id();
+        let tab = world.spawn((Tab, ChildOf(root))).id();
+        let terminal = Terminal::for_test(old);
+        selection.instance = terminal.instance();
+        let pane = world.spawn(terminal).id();
+        let leaf = world.spawn((PaneView { pane }, ChildOf(tab))).id();
+        selection.leaf = leaf;
+        let id = world
+            .spawn((
+                Viewer {
+                    rows: 3,
+                    cols: 5,
+                    zoom: false,
+                    scrollback: 0,
+                    notice: None,
+                },
+                Viewing(root),
+                OnTab(tab),
+                Focused(leaf),
+                selection,
+            ))
+            .id();
+        refresh_visible(&mut world, id, (2, 5));
+        assert!(world.get::<Selection>(id).is_some());
+        if replace_same_entity {
+            world.entity_mut(pane).insert(Terminal::for_test(new));
+        } else {
+            let other = world.spawn(Terminal::for_test(new)).id();
+            world.entity_mut(leaf).insert(PaneView { pane: other });
+        }
+        refresh_visible(&mut world, id, (2, 5));
+        assert!(
+            world.get::<Selection>(id).is_none(),
+            "parser-local row IDs aliased a replacement terminal"
+        );
+        assert!(
+            world
+                .get::<Viewer>(id)
+                .need()?
+                .notice
+                .as_ref()
+                .need()?
+                .text
+                .contains("selection cleared")
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn pane_removal_ends_copy_mode_with_a_notice() -> Outcome {
     let mut parser = Parser::new(3, 12, 2)?;
