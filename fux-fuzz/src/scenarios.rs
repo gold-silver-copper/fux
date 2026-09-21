@@ -5,11 +5,14 @@ mod history;
 mod keys;
 mod layout;
 mod limits;
+mod memory;
 mod mouse;
 mod nav;
 mod overlay;
 mod paste;
 mod process;
+mod race;
+mod reorder;
 mod scene;
 mod selection;
 mod signal;
@@ -65,6 +68,9 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Limits => limits::run(server),
         Action::Chrome => chrome::run(server),
         Action::Selection => selection::run(server),
+        Action::Race => race::run(server),
+        Action::Memory => memory::run(server),
+        Action::Reorder => reorder::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
