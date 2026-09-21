@@ -201,6 +201,16 @@ impl Terminal {
         crate::selection::Grid::capture(self.parser.screen_mut(), scrollback)
     }
 
+    /// The history offset the emulator can actually show for a request, so a
+    /// viewer never accumulates an offset past the oldest retained line.
+    pub fn clamp_scrollback(&mut self, scrollback: usize) -> usize {
+        let screen = self.parser.screen_mut();
+        screen.set_scrollback(scrollback);
+        let actual = screen.scrollback();
+        screen.set_scrollback(0);
+        actual
+    }
+
     pub fn copy_text(&mut self, scrollback: usize) -> String {
         let screen = self.parser.screen_mut();
         screen.set_scrollback(scrollback);
