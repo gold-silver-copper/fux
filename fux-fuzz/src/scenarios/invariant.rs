@@ -157,8 +157,10 @@ pub(super) fn spans(paint: &str, content_rows: u16) -> Vec<(u16, u16, u16)> {
         if let Some((r, a, b, text)) = current.take() {
             let t = text.trim();
             // fux paints status such as `[exit:N]` inside a pane's rectangle
-            // on its last row; that is chrome, not a pane row.
-            let status = t.starts_with('[') && t.ends_with(']') && b - a <= 16;
+            // on its last row; that is chrome, not a pane row. A narrow pane
+            // shows it cut with an ellipsis.
+            let status =
+                t.starts_with('[') && (t.ends_with(']') || t.ends_with('…')) && b - a <= 16;
             if b > a && b - a > 1 && !status {
                 out.push((r, a, b));
             }

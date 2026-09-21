@@ -204,9 +204,6 @@ pub(super) struct Walker {
     /// An overlay opened by this walker's last step and not yet dismissed.
     pub overlay_open: bool,
     pub copy_mode: bool,
-    /// The initial shell's pane view, the only pane `exit N` can be typed into.
-    pub shell_leaf: Option<u64>,
-    pub shell_exited: bool,
     /// The `layout:` path the configuration currently names, if any.
     pub layout: Option<String>,
     pub oracle: Oracle,
@@ -219,7 +216,6 @@ impl Walker {
             Ok(s.frame(v, 24, 80)?.contains("DEFAULT-SHELL"))
         })?;
         running(s)?;
-        let shell_leaf = s.relation(v, "fux::model::Focused").ok();
         Ok(Self {
             driver: v,
             frontend: f,
@@ -235,8 +231,6 @@ impl Walker {
             capture: false,
             overlay_open: false,
             copy_mode: false,
-            shell_leaf,
-            shell_exited: false,
             layout: None,
             oracle: Oracle::Full,
         })
@@ -525,8 +519,14 @@ impl Walker {
                 let (key, title, count): (&[u8], &str, usize) = match which % 3 {
                     0 => (b"p", "Panes:", 29),
                     1 => (b"s", "Tabs:", 5),
-                    _ => (b"S", "Workspaces:", 7),
+                    _ => (b"S", "Workspaces:", 8),
                 };
+                // Closing the only workspace detaches the driver by design;
+                // that entry's confirmation is answered `n`.
+                let accept = accept
+                    && !(which % 3 == 2
+                        && usize::from(entry) % count == 3
+                        && w.workspaces.len() < 2);
                 self.open_column(s)?;
                 let Pressed::Overlay(frame) = self.press(s, key)? else {
                     return Ok(("typed".into(), json!(format!("{k:?}"))));
@@ -722,18 +722,31 @@ impl Walker {
     fn child_exit(&mut self, s: &mut Server, i: u8) -> Result<(String, Value)> {
         let v = self.driver;
         let code = i % 5 + 1;
-        let focused = s.relation(v, "fux::model::Focused").ok();
-        if focused == self.shell_leaf && !self.shell_exited && self.keyboard_ok() {
-            // The interactive shell exits on its own when told to. The
-            // notice-clearing Escape reached readline, which treats the next
-            // byte as Meta; a space absorbs it and Ctrl-U clears the line.
-            self.send(s, format!(" \x15exit {code}\r").as_bytes())?;
-            self.shell_exited = true;
+        let n = self.next_marker;
+        self.next_marker += 1;
+        if i.is_multiple_of(2) && self.keyboard_ok() {
+            // A shell-script pane that exits when `exit N` is typed into it.
+            // The tty's canonical mode, not readline, reads the line, so the
+            // Escapes that clear notices cannot swallow the next byte: Ctrl-U
+            // kills them before the command.
+            let program = format!(
+                "W=WK; printf \"\\033[2J\\033[H${{W}}{n}\"; while read l; do case \"$l\" in *exit*) exit ${{l##*exit }};; esac; done"
+            );
+            let before = s.relation(v, "fux::model::Focused").ok();
+            self.split_program(s, (i >> 1).is_multiple_of(2), &program, &format!("WK{n}"))?;
+            if s.relation(v, "fux::model::Focused").ok() == before {
+                // Refused, with the documented notice.
+                return Ok(("child_exit".into(), json!({"code":code,"split":"refused"})));
+            }
+            running(s)?;
+            self.send(s, format!("\x15exit {code}\r").as_bytes())?;
         } else {
-            let n = self.next_marker;
-            self.next_marker += 1;
+            let before = s.relation(v, "fux::model::Focused").ok();
             let program = format!("W=WK; printf \"\\033[2J\\033[H${{W}}{n}\"; exit {code}");
             self.split_program(s, i.is_multiple_of(2), &program, &format!("WK{n}"))?;
+            if s.relation(v, "fux::model::Focused").ok() == before {
+                return Ok(("child_exit".into(), json!({"code":code,"split":"refused"})));
+            }
         }
         let Some(leaf) = s.relation(v, "fux::model::Focused").ok() else {
             return Ok(("child_exit".into(), json!({"code":code})));
@@ -836,7 +849,11 @@ impl Walker {
         } else {
             layout.is_some() && s.directory.join(watched).is_file()
         };
-        let reload = layout.is_some() && layout != self.layout;
+        // A changed path loads the file; a fresh copy under the same path
+        // is a modification the watcher reloads. Both replace the workspace
+        // asynchronously, so both are awaited before the world is judged.
+        let copied = layout.is_some() && self.saved;
+        let reload = layout.is_some() && (layout != self.layout || copied);
         let before_ws: Vec<u64> = s
             .query(invariant::WORKSPACE)?
             .iter()
