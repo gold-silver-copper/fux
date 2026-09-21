@@ -68,6 +68,10 @@ struct Server {
 
 impl Server {
     fn start() -> Result<Self, Fail> {
+        Self::start_with_shell("/bin/sh")
+    }
+
+    fn start_with_shell(shell: &str) -> Result<Self, Fail> {
         let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
         let directory = std::env::temp_dir().join(format!(
             "fux-test-{}-{}",
@@ -79,7 +83,9 @@ impl Server {
         let config = directory.join("fux.json");
         fs::write(
             &config,
-            r#"{"shell":["/bin/sh"],"history_lines":100,"clipboard":"write-only"}"#,
+            serde_json::to_vec(&json!({
+                "shell": [shell], "history_lines": 100, "clipboard": "write-only"
+            }))?,
         )?;
         // Distinct non-ephemeral ports avoid port-0 reservations being reused by
         // parallel fixtures or outgoing HTTP sockets before the child binds.
@@ -304,7 +310,10 @@ fn stock_launch_removal_settles_without_another_request() -> Outcome {
 
 #[test]
 fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
-    let server = Server::start()?;
+    // This tests shell hangup propagation to a separate job group. Ubuntu's
+    // /bin/sh is dash, which does not forward SIGHUP to background jobs; macOS's
+    // /bin/sh is bash, which does. Require that shell behavior explicitly.
+    let server = Server::start_with_shell("/bin/bash")?;
     let viewer = server.attach()?;
     let shell = server
         .query("fux::model::ProcessState")?
