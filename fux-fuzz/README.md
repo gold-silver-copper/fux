@@ -12,7 +12,7 @@ From the repository root, with the pinned Rust toolchain:
 cargo build --locked
 cargo build --manifest-path fux-fuzz/Cargo.toml --locked
 
-# Smoke: all four scenarios (seventeen isolated cases).
+# Smoke: all six scenarios (twenty-two isolated cases).
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux
 
 # Individual scenarios:
@@ -20,6 +20,8 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario startup
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario resize
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario shutdown
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario paste
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario keys
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario signal
 
 # Explicit, bounded stress: 10 fresh fixtures, 30 generated resize pairs each.
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
@@ -32,13 +34,15 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
 
 `--fux` is mandatory and canonicalized before any child changes directory. No run implicitly builds fux or searches PATH for an installed fux. Use a trusted local binary: the application API permits unrestricted same-user command execution.
 
-The paste scenario found a bracketed-paste envelope defect against merged `main`, fixed in this branch; see "Finding" below. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
+The keys scenario found a control-key encoding defect against merged `main`, fixed in this branch; see "Finding" below. The paste scenario found a bracketed-paste envelope defect, fixed in PR #30. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
 
 ## What the scenarios check
 
 - **Startup:** missing, malformed, and valid configuration; real frontend attach immediately after read-only readiness checks; first `Launch.argv` and its actual terminal output. Distinct executable wrappers identify the configured and environment-default shell. No settling sleep precedes the initial observation.
 - **Resize:** two real viewers of a shared process, rapid PTY resize bursts, settled tiny viewports, conflicting dimensions, responsive BRP, reflected viewer/process sizes, and child-side `stty size` at the final negotiated size and after detach. A larger diagnostic emulator checks frame overflow and full-width bottom chrome without silently clipping the oracle. Raw-mode child files prove input isolation across split/focus/resize; delivery is acknowledged before crossing from PTY input to a BRP focus change.
-- **Paste:** bracketed-paste envelopes fragmented across PTY writes, multibyte payloads, and sizes straddling the documented 64 KiB bound, against children that do and do not request bracketed-paste mode (`DECSET 2004`). It checks ownership acknowledgement, byte-exact child delivery, explicit rejection of oversized payloads, and that an ordinary key after the end marker still reaches the pane. **This scenario found a production defect, fixed in this branch; see the finding below.**
+- **Paste:** bracketed-paste envelopes fragmented across PTY writes, multibyte payloads, and sizes straddling the documented 64 KiB bound, against children that do and do not request bracketed-paste mode (`DECSET 2004`). It checks ownership acknowledgement, byte-exact child delivery, explicit rejection of oversized payloads, and that an ordinary key after the end marker still reaches the pane. This scenario found a production defect, fixed in PR #30; see the finding below.
+- **Keys:** every canonical xterm key encoding, one press per PTY write, sent through the real frontend to a raw-mode `cat` child that records what arrived. Plain, shifted and multibyte characters, NUL, every Ctrl letter except the prefix, the four C0 controls above Ctrl-Z, Backspace, Enter, Tab and Shift-Tab, a lone Escape (resolved through its 35 ms deadline, never merged with the next key), Alt-x, arrows, Home/End, Insert/Delete/PageUp/PageDown, F1..F12 forms, and modified variants. Delivery must be byte-identical; each press is acknowledged before the next. A seeded shuffle of the same set covers neighbour interactions. **This scenario found a production defect, fixed in this branch; see the finding below.**
+- **Signal:** SIGINT, SIGTERM and SIGHUP delivered to an attached frontend. It must exit successfully, restore termios and the alternate screen, and its viewer must disappear while the server is otherwise idle (only read-only queries), without killing the shared process. On failure the case records whether an unrelated paint would have removed the viewer, separating a lost detach from a lost server.
 - **Shutdown:** a SIGTERM after the pre-`app.run` announcement but before waiting for readiness; pane termination and separate bash background-job cleanup; natural exit with retained output/status; graceful detach with both termios and alternate-screen restoration; abrupt viewer loss without killing the shared process; server shutdown during `yes` output while the outer PTY is temporarily unread.
 
 Paste sizes are counted in UTF-8 payload bytes, excluding the terminal's `\e[200~`/`\e[201~` framing, matching `paste::LIMIT`. An accepted paste must arrive byte-exact, and a rejected paste must deliver nothing at all rather than a truncated prefix. The oracle is validated by passing cases on both sides of the boundary, including a payload delivered with the 12-byte envelope intact.
@@ -59,7 +63,7 @@ Each invocation creates a fresh directory under `fux-fuzz/runs/` (override with 
 - `replay.txt`: a shell-quoted, copyable command with the original binary and trace paths.
 - Failed case directories: a flushed `events.jsonl` journal of intended RPC/input/resize actions and observations; bounded server stdout/stderr tails; frontend ANSI tails and final diagnostic screens **only if captured**; controlled fixture files such as input/PID/size files.
 
-Fixed setup/assertion steps belong to version 1 of the built-in scenario recipes. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
+Fixed setup/assertion steps belong to the built-in scenario recipes; traces are versioned (1: startup/resize/shutdown, 2: adds paste, 3: adds keys and signal) and every earlier version still loads and validates. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
 
 Successful case directories are removed after cleanup. Their plan, summary, metadata and replay command remain, normally a few KiB for smoke. Failed case directories remain for diagnosis. No automatic pruning of prior invocations: remove a specific run directory when done. No real HOME, caches, target tree, or arbitrary temporary directories are copied; child HOME is the freshly created fixture directory with a cleared environment.
 
@@ -83,9 +87,26 @@ cargo test --manifest-path fux-fuzz/Cargo.toml --locked
 
 Six unit tests check deterministic generation, trace round-tripping/validation, deadline/interruption checks, bounded capture, the frame oracle, and the paste payload/envelope oracle. Three subprocess tests use deliberately faulty **fixtures, not modified fux code**: early exit, hanging startup, and interrupted startup. They assert nonzero status, bounded termination, retained diagnostics, no invented frontend capture, and disappearance of the fixture PID after cleanup.
 
-## Finding: a valid paste was accepted, then dropped (fixed)
+## Finding: Ctrl-\, Ctrl-], Ctrl-^ and Ctrl-_ reached the pane as Ctrl-T..Ctrl-W (fixed)
 
-The paste scenario failed against `addd9052fee737e23dc55e36c26e52827af1bffe`. The fix is included in this branch.
+The keys scenario failed against `8f64d5c` (merged `main` including PR #30). The fix is included in this branch.
+
+Termina names the C0 controls above Ctrl-Z after the digit xterm sends them for: bytes `0x1c..=0x1f` decode as Ctrl-4..Ctrl-7. fux re-encoded a Ctrl character as its uppercase form masked with `0x1f`, which maps `'4'..='7'` to `0x14..=0x17`. So the four presses arrived at the application as Ctrl-T, Ctrl-U, Ctrl-V and Ctrl-W:
+
+| Sent | Decoded as | Delivered before | Delivered now |
+| --- | --- | --- | --- |
+| `0x1c` (Ctrl-\, SIGQUIT in cooked mode) | Ctrl-4 | `0x14` (Ctrl-T) | `0x1c` |
+| `0x1d` (Ctrl-], telnet escape) | Ctrl-5 | `0x15` (Ctrl-U) | `0x1d` |
+| `0x1e` (Ctrl-^) | Ctrl-6 | `0x16` (Ctrl-V) | `0x1e` |
+| `0x1f` (Ctrl-_, undo in Emacs and readline) | Ctrl-7 | `0x17` (Ctrl-W) | `0x1f` |
+
+The other 60 encodings in the set round-tripped byte-exact, including NUL (Ctrl-Space), every Ctrl letter, and every escape-prefixed form, so the mismatch is confined to the encoder's control table. The fix encodes Ctrl through xterm's table: Ctrl-2 is NUL, Ctrl-3 is Escape, Ctrl-4..Ctrl-7 are `0x1c..=0x1f`, Ctrl-8 and Ctrl-? are DEL, Ctrl-0/1/9 send the digit itself, and letters/punctuation are unchanged. A unit test now pins every C0 control.
+
+The same branch also corrects the frontend's explicit detach request after a signal-driven exit, which still used the pre-`Command` wire shape and was rejected by the server. The signal scenario passed before that fix because the server also detaches a viewer when its watch stream closes; the scenario retains the explicit-detach expectation so a regression in either path is caught.
+
+## Earlier finding: a valid paste was accepted, then dropped (fixed in PR #30)
+
+The paste scenario failed against `addd9052fee737e23dc55e36c26e52827af1bffe`.
 
 When the focused application had requested bracketed-paste mode, a paste that fux's own policy accepted could still be discarded by its PTY write path:
 
@@ -109,7 +130,7 @@ Observed boundary, all with the same payload delivered to a real `cat` child:
 
 The same size succeeds or fails purely on whether the application requested the mode, so this is an inconsistency between two layers' limits rather than an intentional bound. On this machine `zsh` and `vim` both request `2004`; `/bin/bash` 3.2 does not, which is why non-bracketed cases pass.
 
-The fix frames the envelope in `paste::bracketed` and sizes the transport budget as `paste::LIMIT + paste::ENVELOPE` (65,548 bytes), so the accepted payload bound and the delivered bound agree. Pastes are neither truncated nor split; the 64 KiB payload bound is unchanged. A unit test pins the largest accepted paste plus envelope to the transport budget, and the paste scenario now passes all ten cases; full smoke passes 17/17.
+The fix frames the envelope in `paste::bracketed` and sizes the transport budget as `paste::LIMIT + paste::ENVELOPE` (65,548 bytes), so the accepted payload bound and the delivered bound agree. Pastes are neither truncated nor split; the 64 KiB payload bound is unchanged. A unit test pins the largest accepted paste plus envelope to the transport budget, and the paste scenario passes all ten cases.
 
 ## Earlier finding and verification
 

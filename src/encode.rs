@@ -119,7 +119,7 @@ pub(crate) fn key_bytes(key: Key, modifiers: Modifiers, application: bool) -> Ve
                 None => Vec::new(),
             }
         }
-        Key::Char(c) if ctrl && c.is_ascii() => vec![(c.to_ascii_uppercase() as u8) & 0x1f],
+        Key::Char(c) if ctrl && c.is_ascii() => vec![control_byte(c)],
         Key::Char(c) => c.to_string().into_bytes(),
         // Handled by the cursor table above.
         Key::Arrow(_) | Key::Home | Key::End => Vec::new(),
@@ -128,6 +128,21 @@ pub(crate) fn key_bytes(key: Key, modifiers: Modifiers, application: bool) -> Ve
         bytes.insert(0, 27);
     }
     bytes
+}
+
+/// xterm's control-key byte. Masking works for letters and the punctuation
+/// that shares a column with a C0 control, but the decoder names the controls
+/// above Ctrl-Z after digits (Ctrl-4 is 0x1c), and xterm sends the digit itself
+/// for the digits that have no control.
+fn control_byte(c: char) -> u8 {
+    match c {
+        '2' => 0,
+        '3' => 0x1b,
+        '4'..='7' => 0x1c + (c as u8 - b'4'),
+        '8' | '?' => 0x7f,
+        '0' | '1' | '9' => c as u8,
+        _ => (c.to_ascii_uppercase() as u8) & 0x1f,
+    }
 }
 
 #[cfg(test)]
@@ -175,5 +190,37 @@ mod tests {
         assert_eq!(key_bytes(Key::F(12), alt, false), b"\x1b[24;3~");
         assert_eq!(key_bytes(Key::Char('c'), ctrl, false), vec![3]);
         assert!(key_bytes(Key::F(13), Modifiers::default(), false).is_empty());
+    }
+
+    #[test]
+    fn control_bytes_follow_xterm_for_every_c0_control() {
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        // The outer terminal's decoder names each C0 control by the key xterm
+        // sends it for; re-encoding must produce the same byte it received.
+        for (c, byte) in [
+            (' ', 0x00),
+            ('2', 0x00),
+            ('a', 0x01),
+            ('Z', 0x1a),
+            ('3', 0x1b),
+            ('[', 0x1b),
+            ('4', 0x1c),
+            ('\\', 0x1c),
+            ('5', 0x1d),
+            (']', 0x1d),
+            ('6', 0x1e),
+            ('^', 0x1e),
+            ('7', 0x1f),
+            ('_', 0x1f),
+            ('8', 0x7f),
+            ('?', 0x7f),
+            ('0', b'0'),
+            ('9', b'9'),
+        ] {
+            assert_eq!(key_bytes(Key::Char(c), ctrl, false), vec![byte], "{c:?}");
+        }
     }
 }
