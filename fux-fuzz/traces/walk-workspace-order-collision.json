@@ -1,0 +1,15 @@
+{
+  "version": 3,
+  "seed": 2,
+  "actions": [
+    {
+      "scenario": "walk",
+      "seed": 2,
+      "steps": [
+        "save",
+        "workspace_new",
+        "load"
+      ]
+    }
+  ]
+}

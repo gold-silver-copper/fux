@@ -421,6 +421,7 @@ impl Presentation {
         }
         // Only actual one-cell gaps between visible siblings of a Split are chrome.
         // User-scene margins, padding, and arbitrary empty grid areas remain blank.
+        let viewport = self.viewport;
         let bounds = |entity| {
             let node = world.get::<ComputedNode>(entity)?;
             let transform = world.get::<UiGlobalTransform>(entity)?;
@@ -431,10 +432,10 @@ impl Presentation {
             let min = transform.translation - node.size() * 0.5;
             let max = min + node.size();
             Some((
-                min.x.round().clamp(0.0, self.viewport.x as f32) as u16,
-                min.y.round().clamp(0.0, self.viewport.y as f32) as u16,
-                max.x.round().clamp(0.0, self.viewport.x as f32) as u16,
-                max.y.round().clamp(0.0, self.viewport.y as f32) as u16,
+                min.x.round().clamp(0.0, viewport.x as f32) as u16,
+                min.y.round().clamp(0.0, viewport.y as f32) as u16,
+                max.x.round().clamp(0.0, viewport.x as f32) as u16,
+                max.y.round().clamp(0.0, viewport.y as f32) as u16,
             ))
         };
         for entity in &world.resource::<UiStack>().uinodes {
@@ -450,14 +451,55 @@ impl Presentation {
             }
             for a in children.iter().filter_map(&bounds) {
                 for b in children.iter().filter_map(&bounds) {
-                    if node.column_gap == Val::Px(1.0) && a.2.checked_add(1) == Some(b.0) {
-                        for y in a.1.max(b.1)..a.3.min(b.3) {
-                            self.separators.insert((a.2, y), 3);
+                    // Flex layout with unequal weights yields fractional cells,
+                    // and rounding can leave two siblings touching with no gap
+                    // cell at all. The documented separator must still exist,
+                    // so the one-cell gap is carved out of the later sibling's
+                    // leading cells in every leaf rectangle beneath it.
+                    if node.column_gap == Val::Px(1.0) && a.1.max(b.1) < a.3.min(b.3) {
+                        let gap = if a.2.checked_add(1) == Some(b.0) {
+                            true
+                        } else if a.2 == b.0 && b.2 > b.0 + 1 {
+                            for r in &mut self.rects {
+                                if r.rect.min.x == u32::from(b.0)
+                                    && r.rect.min.y >= u32::from(b.1)
+                                    && r.rect.max.y <= u32::from(b.3)
+                                    && r.rect.width() > 1
+                                {
+                                    r.rect.min.x += 1;
+                                }
+                            }
+                            true
+                        } else {
+                            false
+                        };
+                        if gap {
+                            for y in a.1.max(b.1)..a.3.min(b.3) {
+                                self.separators.insert((a.2, y), 3);
+                            }
                         }
                     }
-                    if node.row_gap == Val::Px(1.0) && a.3.checked_add(1) == Some(b.1) {
-                        for x in a.0.max(b.0)..a.2.min(b.2) {
-                            self.separators.insert((x, a.3), 12);
+                    if node.row_gap == Val::Px(1.0) && a.0.max(b.0) < a.2.min(b.2) {
+                        let gap = if a.3.checked_add(1) == Some(b.1) {
+                            true
+                        } else if a.3 == b.1 && b.3 > b.1 + 1 {
+                            for r in &mut self.rects {
+                                if r.rect.min.y == u32::from(b.1)
+                                    && r.rect.min.x >= u32::from(b.0)
+                                    && r.rect.max.x <= u32::from(b.2)
+                                    && r.rect.height() > 1
+                                {
+                                    r.rect.min.y += 1;
+                                }
+                            }
+                            true
+                        } else {
+                            false
+                        };
+                        if gap {
+                            for x in a.0.max(b.0)..a.2.min(b.2) {
+                                self.separators.insert((x, a.3), 12);
+                            }
                         }
                     }
                 }

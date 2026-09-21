@@ -464,6 +464,18 @@ fn reload_layouts(mut reloads: MessageReader<assets::LayoutReload>, mut commands
                                 .map(|(entity, _)| entity);
                             if let Some(old) = old {
                                 replace_workspace(world, old, root);
+                            } else {
+                                // Added beside the existing workspaces: the
+                                // file's saved order is meaningless here and
+                                // may collide with a live one.
+                                let order = crate::navigation::workspaces(world)
+                                    .into_iter()
+                                    .filter(|e| *e != root)
+                                    .filter_map(|e| world.get::<WorkspaceOrder>(e).map(|o| o.0))
+                                    .max()
+                                    .unwrap_or(-1)
+                                    .saturating_add(1);
+                                world.entity_mut(root).insert(WorkspaceOrder(order));
                             }
                         }
                         Err(error) => bevy_log::error!("layout reload: {error}"),
@@ -474,6 +486,12 @@ fn reload_layouts(mut reloads: MessageReader<assets::LayoutReload>, mut commands
     }
 }
 fn replace_workspace(world: &mut World, old: Entity, new: Entity) {
+    // The new workspace takes the replaced one's place in the order. The
+    // order saved in the file belongs to the session that saved it and can
+    // collide with a workspace created or reordered since.
+    if let Some(order) = world.get::<WorkspaceOrder>(old).copied() {
+        world.entity_mut(new).insert(order);
+    }
     let first = first_leaf(world, new);
     let viewers: Vec<Entity> = world
         .get::<Viewers>(old)
@@ -489,7 +507,9 @@ fn replace_workspace(world: &mut World, old: Entity, new: Entity) {
             v.zoom = false;
         }
     }
-    let _ = world.despawn(old);
+    // Replacing is a close: the old hierarchy goes, and any process it alone
+    // referenced is terminated rather than left running with no view.
+    crate::interaction::close(world, old);
 }
 pub(crate) fn scene(world: &mut World, root: Entity) -> Result<(u32, Arc<DynamicWorld>), String> {
     if world.get::<Workspace>(root).is_none() {
@@ -575,6 +595,20 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 .and_then(|pane| world.get::<Launch>(pane))
                 .map(|launch| launch.cwd.clone());
             let argv = program.map(|program| vec!["/bin/sh".into(), "-lc".into(), program]);
+            // A split must leave both panes at least the 2x2 backing minimum
+            // with a one-cell separator between them; otherwise one pane would
+            // exist, take focus and input, and paint nothing at all.
+            if let Some(leaf) = leaf
+                && let Some(rect) = frame::rect(world, id, leaf)
+            {
+                let room = match axis {
+                    Axis::Vertical => rect.height(),
+                    Axis::Horizontal => rect.width(),
+                };
+                if room < 5 {
+                    return Err("pane too small to split".into());
+                }
+            }
             let new = match leaf {
                 Some(leaf) => {
                     let parent = world
@@ -889,7 +923,14 @@ fn collapse_layout(
         // Collapse bottom-up so two deferred operations never destroy each
         // other's still-parented children.
         let child = descendants.and_then(|children| children.first()).copied();
-        if child.is_some_and(|child| containers.contains(child)) {
+        // Defer only to a child container that will itself collapse this
+        // frame. A healthy child split is hoisted like a leaf; otherwise a
+        // single-child wrapper would survive every later frame.
+        if child.is_some_and(|child| {
+            containers
+                .get(child)
+                .is_ok_and(|(_, _, kids)| kids.map_or(0, Children::len) <= 1)
+        }) {
             continue;
         }
         if let Some(child) = child {

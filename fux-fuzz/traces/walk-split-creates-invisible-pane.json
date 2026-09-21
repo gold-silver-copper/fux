@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "seed": 101,
+  "actions": [
+    {
+      "scenario": "walk",
+      "seed": 101,
+      "steps": [
+        {
+          "split": {
+            "horizontal": false
+          }
+        },
+        {
+          "split": {
+            "horizontal": false
+          }
+        },
+        {
+          "split": {
+            "horizontal": false
+          }
+        },
+        {
+          "split": {
+            "horizontal": false
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,10 +1,13 @@
+mod adversarial;
 mod api_misuse;
 mod chrome;
 mod churn;
 mod clipqueue;
+mod concurrent;
 mod config;
 mod copy;
 mod history;
+mod invariant;
 mod keys;
 mod layout;
 mod limits;
@@ -19,6 +22,7 @@ mod race;
 mod reorder;
 mod repair;
 mod resize_cmd;
+mod scale;
 mod scene;
 mod scene_fidelity;
 mod scene_map;
@@ -29,6 +33,7 @@ mod soak;
 mod stream;
 mod tabless;
 mod terminal_edge;
+mod walk;
 mod zoom;
 
 use crate::{
@@ -97,6 +102,10 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Repair => repair::run(server),
         Action::TerminalEdge => terminal_edge::run(server),
         Action::Stream => stream::run(server),
+        Action::Walk { seed, steps } => walk::run(server, *seed, steps),
+        Action::Scale => scale::run(server),
+        Action::Adversarial { seed } => adversarial::run(server, *seed),
+        Action::Concurrent { seed, steps } => concurrent::run(server, *seed, steps),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),

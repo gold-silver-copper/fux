@@ -47,7 +47,7 @@ impl Options {
         while let Some(arg) = args.next() {
             if matches!(arg.as_str(), "--help" | "-h") {
                 println!(
-                    "fux-fuzz --fux PATH [--scenario all|startup|resize|shutdown|paste|signal|keys|mouse|copy|history|zoom|layout|process|nav|scene|config|overlay|limits|chrome|selection|race|memory|reorder|scene_map|mouse_edge|clipqueue|resize_cmd|api_misuse|scene_fidelity|tabless|churn|scene_refs|soak|repair|terminal_edge|stream] [--seed N]\n  [--iterations 1..100] [--actions 1..200] [--seconds 1..600] [--output DIR]\nfux-fuzz --fux PATH --replay TRACE.json [--seconds N] [--output DIR]\nNo implicit build. Default smoke: all scenarios, seed 1, one iteration, six generated resizes.\nStress is opt-in via --iterations/--actions. Failures exit nonzero and retain bundles."
+                    "fux-fuzz --fux PATH [--scenario all|startup|resize|shutdown|paste|signal|keys|mouse|copy|history|zoom|layout|process|nav|scene|config|overlay|limits|chrome|selection|race|memory|reorder|scene_map|mouse_edge|clipqueue|resize_cmd|api_misuse|scene_fidelity|tabless|churn|scene_refs|soak|repair|terminal_edge|stream|walk|scale|adversarial|concurrent] [--seed N]\n  [--iterations 1..100] [--actions 1..5000] [--seconds 1..3600] [--output DIR]\nfux-fuzz --fux PATH --replay TRACE.json [--seconds N] [--output DIR]\nNo implicit build. Default smoke: all scenarios, seed 1, one iteration, six generated resizes.\nStress is opt-in via --iterations/--actions. Failures exit nonzero and retain bundles."
                 );
                 return Ok(None);
             }
@@ -78,7 +78,7 @@ impl Options {
                 _ => return Err(format!("unknown option: {arg}").into()),
             }
         }
-        ensure((1..=600).contains(&seconds), "seconds must be 1..600")?;
+        ensure((1..=3600).contains(&seconds), "seconds must be 1..3600")?;
         ensure(
             replay.is_none() || !generated_options,
             "replay cannot be combined with generation options",
@@ -222,6 +222,17 @@ fn run(options: Options) -> Result<()> {
         if let Some(error) = &failure {
             failures += 1;
             eprintln!("case {index} FAIL ({elapsed} ms): {error}");
+            if let Action::Walk { seed, steps } = action
+                && error.starts_with("scenario:")
+            {
+                match minimize(&options.binary, &directory, index, *seed, steps, &budget) {
+                    Ok(Some(n)) => println!(
+                        "case {index} minimized to {n} steps; see minimized-{index:03}.json"
+                    ),
+                    Ok(None) => println!("case {index} did not reproduce during minimization"),
+                    Err(e) => eprintln!("case {index} minimization stopped: {e}"),
+                }
+            }
         } else {
             println!("case {index} PASS ({elapsed} ms)");
             fs::remove_dir_all(&case_dir)?;
@@ -251,6 +262,117 @@ fn run(options: Options) -> Result<()> {
     );
     ensure(failures == 0, "scenario run failed; see retained bundle")
 }
+/// Runs one walk on a fresh server and reports whether the scenario failed.
+fn walk_fails(
+    binary: &Path,
+    dir: &Path,
+    seed: u64,
+    steps: &[trace::Step],
+    budget: &Arc<Budget>,
+) -> Result<bool> {
+    budget.check(budget.end)?;
+    let action = Action::Walk {
+        seed,
+        steps: steps.to_vec(),
+    };
+    let mut server = Server::spawn(binary, dir, Config::Missing, budget.clone())?;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        scenarios::execute(&mut server, &action)
+    }));
+    let _ = server.cleanup();
+    Ok(match outcome {
+        Ok(Ok(())) => false,
+        Ok(Err(e)) => e.to_string().starts_with("application:"),
+        Err(_) => true,
+    })
+}
+
+/// Shrinks a failing walk: first the shortest failing prefix by bisection,
+/// then delta debugging over the remaining steps. Saves the shortest failing
+/// trace next to the bundle. Stops early, keeping the best so far, when the
+/// budget runs out.
+fn minimize(
+    binary: &Path,
+    directory: &Path,
+    index: usize,
+    seed: u64,
+    steps: &[trace::Step],
+    budget: &Arc<Budget>,
+) -> Result<Option<usize>> {
+    let scratch = directory.join(format!("minimize-{index:03}"));
+    fs::create_dir_all(&scratch)?;
+    let mut attempt = 0usize;
+    let mut fails = |steps: &[trace::Step]| -> Result<bool> {
+        attempt += 1;
+        let dir = scratch.join(format!("try-{attempt:04}"));
+        let result = walk_fails(binary, &dir, seed, steps, budget);
+        let _ = fs::remove_dir_all(&dir);
+        result
+    };
+    if !fails(steps)? {
+        return Ok(None);
+    }
+    let save = |steps: &[trace::Step]| -> Result<()> {
+        let plan = Plan {
+            version: 3,
+            seed,
+            actions: vec![Action::Walk {
+                seed,
+                steps: steps.to_vec(),
+            }],
+        };
+        fs::write(
+            directory.join(format!("minimized-{index:03}.json")),
+            serde_json::to_vec_pretty(&plan)?,
+        )?;
+        Ok(())
+    };
+    // Shortest failing prefix.
+    let (mut lo, mut hi) = (0usize, steps.len());
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        match fails(steps.get(..mid).unwrap_or(steps)) {
+            Ok(true) => hi = mid,
+            Ok(false) => lo = mid,
+            Err(e) => {
+                save(steps.get(..hi).unwrap_or(steps))?;
+                return Err(e);
+            }
+        }
+    }
+    let mut current: Vec<trace::Step> = steps.get(..hi).unwrap_or(steps).to_vec();
+    save(&current)?;
+    // Delta debugging: remove chunks while the failure reproduces.
+    let mut chunk = current.len() / 2;
+    while chunk >= 1 && current.len() > 1 {
+        let mut start = 0;
+        let mut removed_any = false;
+        while start < current.len() {
+            let end = (start + chunk).min(current.len());
+            // Never remove the final step: the failure is observed after it.
+            if end == current.len() {
+                break;
+            }
+            let mut candidate = current.clone();
+            candidate.drain(start..end);
+            match fails(&candidate) {
+                Ok(true) => {
+                    current = candidate;
+                    save(&current)?;
+                    removed_any = true;
+                }
+                Ok(false) => start = end,
+                Err(e) => return Err(e),
+            }
+        }
+        if !removed_any {
+            chunk /= 2;
+        }
+    }
+    let _ = fs::remove_dir_all(&scratch);
+    Ok(Some(current.len()))
+}
+
 fn main() -> ExitCode {
     match Options::parse().and_then(|o| o.map_or(Ok(()), run)) {
         Ok(()) => ExitCode::SUCCESS,
