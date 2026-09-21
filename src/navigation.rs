@@ -94,8 +94,7 @@ pub fn tab_new(world: &mut World, id: Entity, name: Option<String>) -> Result<()
     let title = name.unwrap_or_else(|| format!("tab-{}", tabs(world, root).len() + 1));
     let tab = world.spawn((Tab, Name::new(title), ChildOf(root))).id();
     let settings = world.resource::<crate::assets::Settings>().clone();
-    let leaf = crate::server::spawn_pane(&mut world.commands(), &settings, tab, None, None)?;
-    world.flush();
+    let leaf = crate::server::spawn_pane(world, &settings, tab, None, None)?;
     world
         .get_entity_mut(id)
         .map_err(|_| DETACHED)?
@@ -161,9 +160,7 @@ pub fn select(world: &mut World, id: Entity, scope: Scope, pick: Pick) -> Result
             entity.remove::<Focused>().insert(OnTab(selected));
         }
     }
-    let mut v = world.get_mut::<Viewer>(id).ok_or(DETACHED)?;
-    v.zoom = false;
-    v.scrollback = 0;
+    world.get_mut::<Viewer>(id).ok_or(DETACHED)?.reset_view();
     Ok(())
 }
 
@@ -334,8 +331,7 @@ pub fn repair(world: &mut World) {
                 }
             }
             if let Some(mut v) = world.get_mut::<Viewer>(id) {
-                v.scrollback = 0;
-                v.zoom = false;
+                v.reset_view();
             }
         }
     }

@@ -2,6 +2,35 @@ use super::*;
 use crate::{model::Workspace, testing::*};
 
 #[test]
+fn chrome_rectangles_keep_native_half_open_picking_and_empty_bounds() -> Outcome {
+    let mut view = Presentation::new(AppTypeRegistry::default());
+    view.viewport = UVec2::new(10, 9);
+    view.world
+        .get_mut::<Window>(view.window)
+        .need()?
+        .resolution
+        .set_physical_resolution(10, 10);
+    view.world
+        .get_mut::<Camera>(view.camera)
+        .need()?
+        .computed
+        .target_info = Some(RenderTargetInfo {
+        physical_size: UVec2::new(10, 10),
+        scale_factor: 1.0,
+    });
+    let target = Entity::from_bits(42);
+    view.chrome(vec![(target, URect::new(2, 3, 5, 4))]);
+    assert_eq!(view.pointer(2, 3, false), Some(target));
+    assert_eq!(view.pointer(4, 3, false), Some(target));
+    assert_eq!(view.pointer(5, 3, false), None);
+    assert_eq!(view.pointer(1, 3, false), None);
+    assert_eq!(view.pointer(2, 4, false), None);
+    view.chrome(vec![(target, URect::new(2, 3, 2, 4))]);
+    assert_eq!(view.pointer(2, 3, false), None);
+    Ok(())
+}
+
+#[test]
 fn extracted_world_matches_app_across_scene_resize_focus_and_removal() -> Outcome {
     #[derive(Message)]
     struct Probe;

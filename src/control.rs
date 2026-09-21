@@ -132,6 +132,21 @@ pub enum Subject {
     Workspace(Entity),
 }
 
+impl Subject {
+    pub fn entity(self) -> Entity {
+        match self {
+            Self::Pane(entity) | Self::Tab(entity) | Self::Workspace(entity) => entity,
+        }
+    }
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Pane(_) => "pane",
+            Self::Tab(_) => "tab",
+            Self::Workspace(_) => "workspace",
+        }
+    }
+}
+
 #[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[reflect(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

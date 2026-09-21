@@ -212,6 +212,13 @@ pub struct Viewer {
     pub notice: Option<Notice>,
 }
 
+impl Viewer {
+    pub(crate) fn reset_view(&mut self) {
+        self.zoom = false;
+        self.scrollback = 0;
+    }
+}
+
 /// The bar's right zone shows the latest notice until further input clears it.
 #[derive(Reflect, Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[reflect(Serialize, Deserialize)]

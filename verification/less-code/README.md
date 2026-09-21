@@ -31,6 +31,7 @@ included. A revision argument reads sources directly from Git, not the worktree.
 | Section 4 | 6787 | -95 |
 | Section 5 | 6771 | -111 |
 | Section 6 | 6766 | -116 |
+| Section 7 | 6766 | -116 |
 
 ## Section 1
 
@@ -175,3 +176,34 @@ Tests exercise all 59 actions against empty/singleton/multiple/stale targets,
 optional/disabled/enabled clipboard settings, an unrelated workspace, direct
 command guard precedence, and UI settling on failure. 46 unit and 35 integration
 tests pass; all four gates in `section6.log`.
+
+## Section 7 (typed attach parsing omitted)
+
+`Subject` provides entity/kind for checks, rename/reorder and confirmation text.
+Pane rename still resolves the referenced process before applying the name.
+`URect` replaces the four-field chrome bounds type; native UI picking continues
+to own hit-testing. Bevy's `URect::contains` includes the maximum edge, so it is
+**not** substituted for half-open terminal hit tests. A new native-picking test
+checks left/right/bottom boundaries and zero-width chrome. Existing Unicode,
+overflow and zero-viewport tests still pass. The test-only `bar` is deleted;
+its style test calls production `tab_bar` with no tabs instead.
+
+`spawn_pane` and workspace creation now use immediate world spawns; initialization
+is exclusive. The former command/flush pairs are gone. `Launch` process creation
+runs in the unchanged `TerminalSystems` Update chain, not an insertion hook;
+the pane's parent already exists before insertion. Tab/ChildOf observers still
+see complete spawn bundles, and split child insertion order is unchanged. All
+real-PTY creation, move, close and process-lifecycle tests pass.
+
+`Viewer::reset_view` replaces the three actual two-field reset sites (the old
+seven-site estimate was stale). Single-field resets remain untouched. Production
+line count for this section is neutral: explicit type/conversion helpers offset
+the eliminated duplication; the branch remains negative overall.
+
+Typed attach parsing is deliberately omitted: preserving permissive non-object,
+wrong-type and overflowing dimension inputs needs custom deserialization that
+is longer than the current field reads. A retained test covers absent/null,
+non-object, negative/fractional/wrong-type, zero, u64::MAX, omitted single fields,
+unknown fields, valid/missing workspace names, and clamping before conversion.
+No second wire break was introduced. 48 unit and 35 integration tests pass;
+four gates in `section7.log`.

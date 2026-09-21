@@ -38,8 +38,8 @@ fn every_binding_is_reachable_at_every_short_height() -> crate::testing::Outcome
         for offset in 0..=help_limit(&settings, rows) {
             let mut out = String::new();
             let bounds = panel(&mut out, &v, &settings, offset).need()?;
-            assert_eq!(bounds.y + bounds.height, rows - 1);
-            assert_eq!(bounds.x + bounds.width, 80);
+            assert_eq!(bounds.max.y, u32::from(rows - 1));
+            assert_eq!(bounds.max.x, 80);
             let mut parser = vt100::Parser::new(rows, 80, 0);
             parser.process(out.as_bytes());
             let contents = parser.screen().contents();
@@ -113,10 +113,16 @@ fn panel_is_content_sized_above_a_full_width_bar_and_resets_styles() -> crate::t
     };
     let v = viewer(12, 40);
     let mut out = "\x1b[31;44;7m".to_owned();
-    bar(&mut out, &v, "workspace", "7: pane");
+    tab_bar(
+        &mut out,
+        &v,
+        (Entity::PLACEHOLDER, "workspace"),
+        (None, &[]),
+        "7: pane",
+    );
     let bounds = panel(&mut out, &v, &settings, 0).need()?;
-    assert_eq!(bounds.height, 3);
-    assert_eq!(bounds.width, width("k  known action") + 2);
+    assert_eq!(bounds.height(), 3);
+    assert_eq!(bounds.width(), u32::from(width("k  known action") + 2));
     let mut parser = vt100::Parser::new(12, 40, 0);
     parser.process(out.as_bytes());
     let screen = parser.screen();
@@ -124,11 +130,12 @@ fn panel_is_content_sized_above_a_full_width_bar_and_resets_styles() -> crate::t
         assert_eq!(screen.cell(11, x).need()?.bgcolor(), vt100::Color::Idx(8));
         assert!(!screen.cell(11, x).need()?.inverse());
     }
-    assert!(screen.cell(bounds.y, bounds.x + 1).need()?.bold());
-    assert!(screen.cell(bounds.y + 1, bounds.x + 1).need()?.bold());
-    assert!(!screen.cell(bounds.y + 2, bounds.x + 1).need()?.bold());
+    let (x, y) = (bounds.min.x as u16, bounds.min.y as u16);
+    assert!(screen.cell(y, x + 1).need()?.bold());
+    assert!(screen.cell(y + 1, x + 1).need()?.bold());
+    assert!(!screen.cell(y + 2, x + 1).need()?.bold());
     assert_eq!(
-        screen.cell(bounds.y, bounds.x - 1).need()?.bgcolor(),
+        screen.cell(y, x - 1).need()?.bgcolor(),
         vt100::Color::Default
     );
     assert_eq!(screen.bgcolor(), vt100::Color::Default);
@@ -161,17 +168,25 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
             }
             assert!(
                 hits.iter()
-                    .any(|(id, bounds)| Some(*id) == tab && bounds.width > 0),
+                    .any(|(id, bounds)| Some(*id) == tab && bounds.width() > 0),
                 "{rows}x{cols}"
             );
             for (_, bounds) in &hits {
-                assert!(bounds.x + bounds.width <= cols);
-                assert_eq!(bounds.y + bounds.height, rows);
+                assert!(bounds.max.x <= u32::from(cols));
+                assert_eq!(bounds.max.y, u32::from(rows));
+                assert_eq!(bounds.height(), 1);
+                assert_eq!(bounds.min.y, u32::from(rows - 1));
             }
             let mut parser = vt100::Parser::new(rows.max(2), cols.max(2), 0);
             parser.process(out.as_bytes());
             let active = hits.iter().find(|(id, _)| Some(*id) == tab).need()?.1;
-            assert!(parser.screen().cell(rows - 1, active.x).need()?.inverse());
+            assert!(
+                parser
+                    .screen()
+                    .cell(rows - 1, active.min.x as u16)
+                    .need()?
+                    .inverse()
+            );
             for x in 0..cols {
                 // vt100 stores a wide glyph's attributes on its leading cell.
                 if parser

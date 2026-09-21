@@ -260,15 +260,16 @@ pub(crate) fn menu(
 
 /// Reorders a tab among its workspace's tabs or a workspace among all workspaces.
 pub(crate) fn reorder(world: &mut World, subject: Subject, order: Order) -> Result<(), String> {
-    let (mut entities, entity, workspace) = match subject {
+    let entity = subject.entity();
+    let (mut entities, workspace) = match subject {
         Subject::Tab(tab) => {
             let workspace = world
                 .get::<ChildOf>(tab)
                 .ok_or("tab has no workspace")?
                 .parent();
-            (navigation::tabs(world, workspace), tab, Some(workspace))
+            (navigation::tabs(world, workspace), Some(workspace))
         }
-        Subject::Workspace(workspace) => (roots(world), workspace, None),
+        Subject::Workspace(_) => (roots(world), None),
         Subject::Pane(_) => return Err("target has the wrong kind for this action".into()),
     };
     let index = entities
@@ -298,8 +299,7 @@ pub(crate) fn reorder(world: &mut World, subject: Subject, order: Order) -> Resu
 pub(crate) fn rename(world: &mut World, subject: Subject, name: String) -> Result<(), String> {
     let entity = match subject {
         Subject::Pane(leaf) => world.get::<PaneView>(leaf).ok_or("pane removed")?.pane,
-        Subject::Tab(tab) => tab,
-        Subject::Workspace(workspace) => workspace,
+        other => other.entity(),
     };
     world
         .get_entity_mut(entity)
@@ -310,10 +310,11 @@ pub(crate) fn rename(world: &mut World, subject: Subject, name: String) -> Resul
 
 /// The kind a subject names must match the entity, whichever caller built it.
 pub(crate) fn check(world: &World, subject: Subject) -> Result<Entity, String> {
-    let (entity, ok) = match subject {
-        Subject::Pane(e) => (e, world.get::<PaneView>(e).is_some()),
-        Subject::Tab(e) => (e, world.get::<Tab>(e).is_some()),
-        Subject::Workspace(e) => (e, world.get::<Workspace>(e).is_some()),
+    let entity = subject.entity();
+    let ok = match subject {
+        Subject::Pane(_) => world.get::<PaneView>(entity).is_some(),
+        Subject::Tab(_) => world.get::<Tab>(entity).is_some(),
+        Subject::Workspace(_) => world.get::<Workspace>(entity).is_some(),
     };
     if world.get_entity(entity).is_err() {
         return Err("target no longer exists".into());
@@ -420,9 +421,10 @@ pub(crate) fn move_pane(
         .get_entity_mut(id)
         .map_err(|_| "viewer removed")?
         .insert((Viewing(workspace), OnTab(tab), Focused(leaf)));
-    let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
-    v.zoom = false;
-    v.scrollback = 0;
+    world
+        .get_mut::<Viewer>(id)
+        .ok_or("viewer removed")?
+        .reset_view();
     Ok(())
 }
 
@@ -738,15 +740,7 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
     match &overlay.mode {
         Mode::Confirm { command } => {
             let (kind, entity) = match command {
-                Command::Close {
-                    subject: Subject::Pane(e),
-                } => ("pane", *e),
-                Command::Close {
-                    subject: Subject::Tab(e),
-                } => ("tab", *e),
-                Command::Close {
-                    subject: Subject::Workspace(e),
-                } => ("workspace", *e),
+                Command::Close { subject } => (subject.kind(), subject.entity()),
                 _ => ("target", Entity::PLACEHOLDER),
             };
             let named = if world.get_entity(entity).is_ok() {

@@ -1,4 +1,6 @@
 //! Per-viewer presentation contexts, size negotiation and frame painting.
+#[cfg(test)]
+mod tests;
 use crate::{
     actions,
     assets::{BindingAction, Settings},

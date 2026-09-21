@@ -305,21 +305,22 @@ pub fn remote() -> RemotePlugin {
         .with_watching_method_main("fux.frame+watch", frame::frame_watch)
 }
 
-fn initialize(mut commands: Commands, settings: Res<Settings>) {
-    let root = workspace(&mut commands, "main");
-    let tab = commands.spawn((Tab, Name::new("main"), ChildOf(root))).id();
-    if let Err(error) = spawn_pane(&mut commands, &settings, tab, None, None) {
+fn initialize(world: &mut World) {
+    let settings = world.resource::<Settings>().clone();
+    let root = workspace(world, "main");
+    let tab = world.spawn((Tab, Name::new("main"), ChildOf(root))).id();
+    if let Err(error) = spawn_pane(world, &settings, tab, None, None) {
         bevy_log::error!("initial terminal: {error}");
     }
 }
 
-pub(crate) fn workspace(commands: &mut Commands, name: &str) -> Entity {
-    commands
+pub(crate) fn workspace(world: &mut World, name: &str) -> Entity {
+    world
         .spawn((Workspace, WorkspaceOrder(0), Name::new(name.to_owned())))
         .id()
 }
 pub(crate) fn spawn_pane(
-    commands: &mut Commands,
+    world: &mut World,
     settings: &Settings,
     parent: Entity,
     argv: Option<Vec<String>>,
@@ -344,8 +345,8 @@ pub(crate) fn spawn_pane(
         .and_then(|program| program.rsplit('/').next())
         .unwrap_or("shell")
         .to_owned();
-    let pane = commands.spawn((launch, Name::new(name))).id();
-    Ok(commands.spawn((PaneView { pane }, ChildOf(parent))).id())
+    let pane = world.spawn((launch, Name::new(name))).id();
+    Ok(world.spawn((PaneView { pane }, ChildOf(parent))).id())
 }
 pub(crate) fn first_leaf(world: &World, root: Entity) -> Option<Entity> {
     if world.get::<PaneView>(root).is_some() {
@@ -569,20 +570,14 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                         container.insert(split_node(FlexDirection::Column));
                     }
                     let container = container.id();
-                    let new = spawn_pane(&mut world.commands(), &settings, container, argv, cwd)?;
-                    world.flush();
+                    let new = spawn_pane(world, &settings, container, argv, cwd)?;
                     world.entity_mut(container).insert_children(0, &[leaf]);
                     world
                         .entity_mut(parent)
                         .insert_children(index, &[container]);
                     new
                 }
-                None => {
-                    let new =
-                        spawn_pane(&mut world.commands(), &settings, container_of, argv, cwd)?;
-                    world.flush();
-                    new
-                }
+                None => spawn_pane(world, &settings, container_of, argv, cwd)?,
             };
             focus_on(world, new)?;
             world.get_mut::<Viewer>(id).ok_or(DETACHED)?.zoom = false;
@@ -755,11 +750,10 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 .max()
                 .unwrap_or(-1)
                 .saturating_add(1);
-            let root = self::workspace(&mut world.commands(), &title);
-            world.commands().entity(root).insert(WorkspaceOrder(order));
+            let root = self::workspace(world, &title);
+            world.entity_mut(root).insert(WorkspaceOrder(order));
             let tab = world.spawn((Tab, Name::new("main"), ChildOf(root))).id();
-            let leaf = spawn_pane(&mut world.commands(), &settings, tab, None, None)?;
-            world.flush();
+            let leaf = spawn_pane(world, &settings, tab, None, None)?;
             world.get_entity_mut(id).map_err(|_| DETACHED)?.insert((
                 Viewing(root),
                 OnTab(tab),

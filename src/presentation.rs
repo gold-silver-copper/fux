@@ -82,7 +82,7 @@ pub struct Presentation {
     viewport: UVec2,
     rects: Vec<PaneRect>,
     separators: BTreeMap<(u16, u16), u8>,
-    chrome: Vec<(Entity, crate::chrome::Bounds)>,
+    chrome: Vec<(Entity, URect)>,
     chrome_nodes: Vec<Entity>,
 }
 
@@ -336,7 +336,7 @@ impl Presentation {
         Ok(())
     }
 
-    pub fn chrome(&mut self, hits: Vec<(Entity, crate::chrome::Bounds)>) {
+    pub fn chrome(&mut self, hits: Vec<(Entity, URect)>) {
         if self.chrome == hits {
             return;
         }
@@ -349,10 +349,10 @@ impl Presentation {
                 .spawn((
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(f32::from(bounds.x)),
-                        top: Val::Px(f32::from(bounds.y)),
-                        width: Val::Px(f32::from(bounds.width)),
-                        height: Val::Px(f32::from(bounds.height)),
+                        left: Val::Px(bounds.min.x as f32),
+                        top: Val::Px(bounds.min.y as f32),
+                        width: Val::Px(bounds.width() as f32),
+                        height: Val::Px(bounds.height() as f32),
                         ..Default::default()
                     },
                     ChromeTarget(target),

@@ -5,6 +5,7 @@ use crate::{
     assets::{Binding, BindingAction, Settings},
     model::Viewer,
 };
+use bevy_math::URect;
 use std::fmt::Write;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -61,47 +62,6 @@ pub fn fit(text: &str, cols: u16, tail: bool) -> String {
     }
 }
 
-#[cfg(test)]
-pub fn bar(out: &mut String, v: &Viewer, workspace: &str, focused: &str) {
-    if v.rows == 0 || v.cols == 0 {
-        return;
-    }
-    let row = v.rows - 1;
-    at(
-        out,
-        0,
-        row,
-        format_args!("{BAR}{}", " ".repeat(usize::from(v.cols))),
-    );
-    let mode = if v.zoom { " zoom" } else { "" };
-    let history = if v.scrollback > 0 {
-        format!(" ↑{}", v.scrollback)
-    } else {
-        String::new()
-    };
-    let left = format!(" {workspace}{mode}{history}");
-    let right = v.notice.as_ref().map_or(focused, |n| n.text.as_str());
-    // Both identities get space before secondary details; tiny bars keep the workspace.
-    let allowance = if right.is_empty() || v.cols < 12 {
-        v.cols
-    } else {
-        v.cols / 2
-    };
-    let left = fit(&left, allowance, false);
-    at(out, 0, row, &left);
-    let room = v.cols.saturating_sub(width(&left) + 3);
-    if room > 0 && !right.is_empty() {
-        let right = fit(right, room, v.notice.is_none());
-        let x = v.cols.saturating_sub(width(&right) + 1);
-        at(out, x.saturating_sub(2), row, "│ ");
-        if let Some(notice) = &v.notice {
-            out.push_str(if notice.error { "\x1b[31m" } else { "\x1b[33m" });
-        }
-        out.push_str(&right);
-    }
-    out.push_str("\x1b[0m");
-}
-
 /// Render the existing bar with an ordered, active-visible tab window.
 pub fn tab_bar(
     out: &mut String,
@@ -112,7 +72,7 @@ pub fn tab_bar(
         &[(bevy_ecs::entity::Entity, String)],
     ),
     focused: &str,
-) -> Vec<(bevy_ecs::entity::Entity, Bounds)> {
+) -> Vec<(bevy_ecs::entity::Entity, URect)> {
     if v.rows == 0 || v.cols == 0 {
         return Vec::new();
     }
@@ -163,12 +123,12 @@ pub fn tab_bar(
     at(out, 0, v.rows - 1, &title);
     let mut hits = vec![(
         workspace_id,
-        Bounds {
-            x: 0,
-            y: v.rows - 1,
-            width: width(&title),
-            height: 1,
-        },
+        URect::new(
+            0,
+            u32::from(v.rows - 1),
+            u32::from(width(&title)),
+            u32::from(v.rows),
+        ),
     )];
     let mut x = width(&title).saturating_add(u16::from(!title.is_empty()));
     let selected = tabs
@@ -216,12 +176,12 @@ pub fn tab_bar(
         );
         hits.push((
             *id,
-            Bounds {
-                x,
-                y: v.rows - 1,
-                width: size,
-                height: 1,
-            },
+            URect::new(
+                u32::from(x),
+                u32::from(v.rows - 1),
+                u32::from(x + size),
+                u32::from(v.rows),
+            ),
         ));
         x += size;
     }
@@ -229,13 +189,6 @@ pub fn tab_bar(
     hits
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Bounds {
-    pub x: u16,
-    pub y: u16,
-    pub width: u16,
-    pub height: u16,
-}
 // A heading is expendable on tiny screens; at least one command remains reachable.
 fn capacity(rows: u16) -> usize {
     let available = rows.saturating_sub(1);
@@ -273,7 +226,7 @@ pub fn scroll(settings: &Settings, rows: u16, current: usize, down: bool, page: 
 }
 
 #[cfg(test)]
-pub fn panel(out: &mut String, v: &Viewer, settings: &Settings, scroll: usize) -> Option<Bounds> {
+pub fn panel(out: &mut String, v: &Viewer, settings: &Settings, scroll: usize) -> Option<URect> {
     panel_context(out, v, settings, scroll, |_| false)
 }
 
@@ -320,7 +273,7 @@ pub fn panel_context(
     settings: &Settings,
     scroll: usize,
     disabled: impl Fn(&BindingAction) -> bool,
-) -> Option<Bounds> {
+) -> Option<URect> {
     let available = v.rows.saturating_sub(1);
     if available == 0 || v.cols == 0 {
         return None;
@@ -376,7 +329,7 @@ pub fn panel_context(
 }
 
 /// Shared content-sized corner surface for help, prompts, choosers and menus.
-pub fn surface(out: &mut String, v: &Viewer, lines: &[(String, &str)]) -> Option<Bounds> {
+pub fn surface(out: &mut String, v: &Viewer, lines: &[(String, &str)]) -> Option<URect> {
     let available = v.rows.saturating_sub(1);
     if available == 0 || v.cols == 0 || lines.is_empty() {
         return None;
@@ -389,24 +342,26 @@ pub fn surface(out: &mut String, v: &Viewer, lines: &[(String, &str)]) -> Option
         .unwrap_or(0)
         .saturating_add(2)
         .min(v.cols);
-    let bounds = Bounds {
-        x: v.cols - width,
-        y: available - height,
-        width,
-        height,
-    };
+    let x = v.cols - width;
+    let top = available - height;
+    let bounds = URect::new(
+        u32::from(x),
+        u32::from(top),
+        u32::from(v.cols),
+        u32::from(available),
+    );
     let padding = u16::from(width >= 3);
     for (row, (text, style)) in lines.iter().take(usize::from(height)).enumerate() {
-        let y = bounds.y + row as u16;
+        let y = top + row as u16;
         at(
             out,
-            bounds.x,
+            x,
             y,
             format_args!("{PANEL}{}", " ".repeat(usize::from(width))),
         );
         at(
             out,
-            bounds.x + padding,
+            x + padding,
             y,
             format_args!(
                 "{style}{}",
