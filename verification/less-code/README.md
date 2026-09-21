@@ -34,6 +34,7 @@ included. A revision argument reads sources directly from Git, not the worktree.
 | Section 7 | 6766 | -116 |
 | Section 8 (tests only) | 6766 | -116 |
 | Focus audit follow-up | 6767 | -115 |
+| Section 9 | 6767 | -115 |
 
 ## Section 1
 
@@ -275,3 +276,19 @@ passes after refreshing the snapshot at the second borrow boundary. This adds
 one production line. A separate correctness commit keeps the verified history
 honest instead of folding a Rust fix into the README commit. 50 unit and 35
 integration tests pass; four gates in `focus-audit.log`.
+
+## Section 9
+
+README remote-control descriptions/examples use the exact tested scoped and
+nested move shapes. Architecture bullets describe required nodes, relationship
+hooks plus retained server observers, viewer presentation Worlds, and scene
+completion queues. Controls/configuration content before the remote-control
+section and all scope/behavioral promises after the architecture section are
+byte-identical to the base. The spike log's extra trailing blank line is removed
+for committed-range whitespace validation; its command output is unchanged.
+
+Final production total: **6882 → 6767 (−115 lines)**. Tests and their fixtures
+remain excluded by the same counter throughout. Ordinary source added/deleted
+line totals (including tests/comments) are reported separately in the PR.
+Section 9 gates: `section9.log`. The final committed head is gated again before
+PR creation, with exact output and committed-range whitespace status in the PR.
