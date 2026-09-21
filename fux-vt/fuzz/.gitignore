@@ -3,3 +3,4 @@
 /coverage/
 /corpus/terminal/*
 !/corpus/terminal/adversarial-*
+!/corpus/terminal/fixture-*

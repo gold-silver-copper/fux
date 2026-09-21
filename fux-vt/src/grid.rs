@@ -415,45 +415,6 @@ impl Grid {
         Ok(())
     }
 
-    /// Temporary diagnostic reproducing the oracle's line edits outside margins.
-    #[cfg(feature = "differential")]
-    pub fn oracle_edit_lines(
-        &mut self,
-        count: u16,
-        insert: bool,
-        next: &mut u64,
-        version: u64,
-    ) -> Result<(), Error> {
-        let row = self.cursor.0;
-        let count = if insert {
-            count
-        } else {
-            count.min(self.rows - row)
-        };
-        for _ in 0..count {
-            if !insert && row == self.bottom + 1 {
-                continue;
-            }
-            let (from, to) = if insert {
-                (self.bottom, row)
-            } else if row <= self.bottom {
-                (row, self.bottom)
-            } else {
-                (row - 1, self.bottom + 1)
-            };
-            let id = next_id(next)?;
-            let offset = self.history_len();
-            if let Some(slot) = self.order.remove(offset + usize::from(from)) {
-                self.recycle(slot, id, version);
-                self.order.insert(offset + usize::from(to), slot);
-            }
-            if insert {
-                self.wrap(self.bottom, false, version);
-            }
-        }
-        Ok(())
-    }
-
     pub fn in_region(&self) -> bool {
         (self.top..=self.bottom).contains(&self.cursor.0)
     }

@@ -28,6 +28,7 @@ use parking_lot::Mutex;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::model::{Launch, ProcessState, Status, Wake};
+mod rows;
 
 const CHUNK: usize = 8192;
 const OUTPUT_SLOTS: usize = 16;
@@ -60,7 +61,7 @@ impl Plugin for TerminalPlugin {
 
 #[derive(Component)]
 pub struct Terminal {
-    parser: vt100::Parser<Replies>,
+    parser: fux_vt::Parser,
     runtime: Runtime,
     /// The reader outlives the process: it drains output queued in the PTY
     /// after the group is killed, then ends at EOF.
@@ -70,7 +71,7 @@ pub struct Terminal {
     published_size: (u16, u16),
     status: Status,
     revision: u64,
-    snapshot: Option<(u64, usize, u16, Vec<String>)>,
+    rows: rows::Rows,
 }
 
 /// Everything that exists only while the child runs. Input after exit is a
@@ -117,7 +118,7 @@ impl Notify {
 }
 
 impl Terminal {
-    pub fn screen(&self) -> &vt100::Screen {
+    pub fn screen(&self) -> &fux_vt::Screen {
         self.parser.screen()
     }
 
@@ -137,93 +138,60 @@ impl Terminal {
         }
     }
 
-    /// The temporary history offset is always reset before accepting more output.
+    /// Reuse row extraction while returning EVERY row of a complete frame.
     pub fn snapshot(
         &mut self,
         scrollback: usize,
+        visible_rows: u16,
         visible_cols: u16,
-    ) -> (&[String], &vt100::Screen) {
-        let visible_cols = visible_cols.min(self.parser.screen().size().1);
-        if self
-            .snapshot
-            .as_ref()
-            .is_none_or(|(revision, offset, cols, _)| {
-                *revision != self.revision || *offset != scrollback || *cols != visible_cols
-            })
-        {
-            let screen = self.parser.screen_mut();
-            screen.set_scrollback(scrollback);
-            let (rows, cols) = screen.size();
-            let cols = cols.min(visible_cols);
-            let mut lines = Vec::with_capacity(usize::from(rows));
-            // rows_formatted() carries wrapping state between rows and can emit CR/LF,
-            // cursor moves and erases. Emit cells + SGR only: every line is relocatable.
-            for row in 0..rows {
-                let mut line = String::with_capacity(usize::from(cols) + 16);
-                line.push_str("\x1b[0m");
-                let mut previous = None;
-                for col in 0..cols {
-                    let Some(cell) = screen.cell(row, col) else {
-                        continue;
-                    };
-                    if cell.is_wide_continuation() || (cell.is_wide() && col + 1 >= cols) {
-                        continue;
-                    }
-                    let style = Style::of(cell);
-                    if previous != Some(style) {
-                        style.write(&mut line);
-                        previous = Some(style);
-                    }
-                    if cell.has_contents() {
-                        line.push_str(cell.contents());
-                    } else {
-                        line.push(' ');
-                    }
-                }
-                line.push_str("\x1b[0m");
-                lines.push(line);
-            }
-            screen.set_scrollback(0);
-            self.snapshot = Some((self.revision, scrollback, visible_cols, lines));
-        }
-        let lines = self
-            .snapshot
-            .as_ref()
-            .map_or(&[][..], |(_, _, _, lines)| lines.as_slice());
-        (lines, self.parser.screen())
+    ) -> (&[Arc<str>], &fux_vt::Screen) {
+        let screen = self.parser.screen();
+        (
+            self.rows
+                .snapshot(screen, scrollback, visible_rows, visible_cols),
+            screen,
+        )
     }
 
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    pub fn selection_grid(&mut self, scrollback: usize) -> Result<crate::selection::Grid, String> {
-        crate::selection::Grid::capture(self.parser.screen_mut(), scrollback)
+    pub fn selection_grid(&self, scrollback: usize) -> Result<crate::selection::Grid, String> {
+        crate::selection::Grid::capture(self.parser.screen(), scrollback)
     }
 
     /// The history offset the emulator can actually show for a request, so a
     /// viewer never accumulates an offset past the oldest retained line.
-    pub fn clamp_scrollback(&mut self, scrollback: usize) -> usize {
-        let screen = self.parser.screen_mut();
-        screen.set_scrollback(scrollback);
-        let actual = screen.scrollback();
-        screen.set_scrollback(0);
-        actual
+    pub fn clamp_scrollback(&self, scrollback: usize) -> usize {
+        scrollback.min(self.screen().history_len())
     }
 
-    pub fn copy_text(&mut self, scrollback: usize) -> String {
-        let screen = self.parser.screen_mut();
-        screen.set_scrollback(scrollback);
-        let text = screen.contents();
-        screen.set_scrollback(0);
-        text
+    pub fn copy_text(&self, scrollback: usize) -> Result<String, String> {
+        let (rows, cols) = self.screen().size();
+        self.screen()
+            .window(scrollback, rows, cols)
+            .text(
+                (0, 0),
+                (rows - 1, cols - 1),
+                crate::selection::MAX_CELLS,
+                crate::selection::MAX_COPY_BYTES,
+            )
+            .map(|mut text| {
+                // Whole-pane copy omits trailing empty rows; an explicitly
+                // selected range retains its requested hard line breaks.
+                text.truncate(text.trim_end_matches('\n').len());
+                text
+            })
+            .map_err(|e| e.to_string())
     }
 
     fn spawn(launch: &Launch, rows: u16, cols: u16, notify: Notify) -> Result<Self, String> {
         if rows == 0 || cols == 0 {
             return Err("terminal dimensions must be nonzero".into());
         }
-        let (rows, cols) = (rows.max(2), cols.max(2));
+        let parser =
+            fux_vt::Parser::new(rows, cols, launch.history_lines).map_err(|e| e.to_string())?;
         let program = launch.argv.first().ok_or("argv must contain a program")?;
         let pair = native_pty_system()
             .openpty(size(rows, cols))
@@ -370,15 +338,7 @@ impl Terminal {
             }
         });
         Ok(Self {
-            parser: vt100::Parser::new_with_callbacks(
-                rows,
-                cols,
-                launch.history_lines,
-                Replies {
-                    input: input.clone(),
-                    error: None,
-                },
-            ),
+            parser,
             status: Status::Running { pid, error: None },
             runtime: Runtime::Live(Live {
                 job,
@@ -391,7 +351,7 @@ impl Terminal {
             revision: 1,
             notify,
             published_size: (rows, cols),
-            snapshot: None,
+            rows: rows::Rows::default(),
         })
     }
 
@@ -399,9 +359,7 @@ impl Terminal {
         if rows == 0 || cols == 0 {
             return Err("terminal dimensions must be nonzero".into());
         }
-        // vt100 0.16.2 underflows on one-row wrapping and wide glyphs in one column.
-        // Keep its backing PTY at least 2×2; the painter clips to actual viewer cells.
-        let (rows, cols) = (rows.max(2), cols.max(2));
+        // Backing dimensions are exact; pane-layout usability minima are separate.
         if self.parser.screen().size() == (rows, cols) {
             return Ok(());
         }
@@ -414,7 +372,17 @@ impl Terminal {
                 .resize(size(rows, cols))
                 .map_err(|e| e.to_string())?;
         }
-        self.parser.screen_mut().set_size(rows, cols);
+        if let Err(error) = self.parser.resize(rows, cols) {
+            if let Runtime::Live(live) = &self.runtime {
+                let (old_rows, old_cols) = self.parser.screen().size();
+                if let Some(master) = live.job.master.lock().as_ref() {
+                    master
+                        .resize(size(old_rows, old_cols))
+                        .map_err(|rollback| format!("{error}; PTY rollback: {rollback}"))?;
+                }
+            }
+            return Err(error.to_string());
+        }
         self.revision = self.revision.wrapping_add(1);
         self.notify.send();
         Ok(())
@@ -660,7 +628,14 @@ fn update_terminals(
             match event {
                 Output::Bytes(bytes) => {
                     consumed += bytes.len();
-                    terminal.parser.process(&bytes);
+                    let input = match &terminal.runtime {
+                        Runtime::Live(live) => Some(live.input.clone()),
+                        Runtime::Stopped => None,
+                    };
+                    if let Err(error) = process_output(&mut terminal.parser, input.as_ref(), &bytes)
+                    {
+                        terminal.fault(error);
+                    }
                 }
                 Output::Error(error) => terminal.fault(error),
                 Output::Eof => {
@@ -670,9 +645,6 @@ fn update_terminals(
             terminal.revision = terminal.revision.wrapping_add(1);
         }
         remaining_output |= !terminal.output.is_empty();
-        if let Some(error) = terminal.parser.callbacks_mut().error.take() {
-            terminal.fault(error);
-        }
         let exited = match &terminal.runtime {
             Runtime::Live(live) => live.job.exited.lock().take(),
             Runtime::Stopped => None,
@@ -698,48 +670,33 @@ fn update_terminals(
     }
 }
 
-struct Replies {
-    input: Sender<Vec<u8>>,
-    error: Option<String>,
-}
-
-impl vt100::Callbacks for Replies {
-    fn unhandled_csi(
-        &mut self,
-        screen: &mut vt100::Screen,
-        i1: Option<u8>,
-        i2: Option<u8>,
-        params: &[&[u16]],
-        c: char,
-    ) {
-        if i1.is_some() || i2.is_some() {
-            return;
-        }
-        let first = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
-        let reply = match (c, first) {
-            ('n', 5) => b"\x1b[0n".to_vec(),
-            ('n', 6) => {
-                let (row, col) = screen.cursor_position();
-                format!("\x1b[{};{}R", u32::from(row) + 1, u32::from(col) + 1).into_bytes()
+fn process_output(
+    parser: &mut fux_vt::Parser,
+    input: Option<&Sender<Vec<u8>>>,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mut reply_error = None;
+    parser
+        .process_with_replies(bytes, |reply| {
+            if let Some(input) = input
+                && let Err(error) = input.try_send(reply.to_vec())
+            {
+                reply_error = Some(format!("terminal reply: {error}"));
             }
-            ('c', 0) => b"\x1b[?1;2c".to_vec(),
-            _ => return,
-        };
-        if let Err(error) = self.input.try_send(reply) {
-            self.error = Some(format!("terminal reply: {error}"));
-        }
-    }
+        })
+        .map_err(|e| e.to_string())?;
+    reply_error.map_or(Ok(()), Err)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Style {
-    foreground: vt100::Color,
-    background: vt100::Color,
+    foreground: fux_vt::Color,
+    background: fux_vt::Color,
     flags: u8,
 }
 
 impl Style {
-    fn of(cell: &vt100::Cell) -> Self {
+    fn of(cell: &fux_vt::Cell) -> Self {
         Self {
             foreground: cell.fgcolor(),
             background: cell.bgcolor(),
@@ -760,11 +717,11 @@ impl Style {
         }
         for (color, selector) in [(self.foreground, 38), (self.background, 48)] {
             match color {
-                vt100::Color::Default => {}
-                vt100::Color::Idx(index) => {
+                fux_vt::Color::Default => {}
+                fux_vt::Color::Idx(index) => {
                     let _ = write!(output, ";{selector};5;{index}");
                 }
-                vt100::Color::Rgb(r, g, b) => {
+                fux_vt::Color::Rgb(r, g, b) => {
                     let _ = write!(output, ";{selector};2;{r};{g};{b}");
                 }
             }
@@ -777,6 +734,65 @@ impl Style {
 mod tests {
     use super::*;
     use crate::testing::*;
+
+    #[test]
+    fn replies_remain_byte_exact_nonblocking_and_bounded() -> Outcome {
+        let mut parser = fux_vt::Parser::new(2, 2, 0)?;
+        let (tx, rx) = async_channel::bounded(3);
+        process_output(&mut parser, Some(&tx), b"AB\x1b[5n\x1b[6n\x1b[c")?;
+        assert_eq!(rx.try_recv()?, b"\x1b[0n");
+        assert_eq!(rx.try_recv()?, b"\x1b[1;3R");
+        assert_eq!(rx.try_recv()?, b"\x1b[?1;2c");
+        assert!(process_output(&mut parser, Some(&tx), &b"\x1b[5n".repeat(1000)).is_err());
+        assert_eq!(rx.len(), 3);
+        rx.close();
+        assert!(
+            process_output(&mut parser, Some(&tx), b"\x1b[5n")
+                .err()
+                .need()?
+                .starts_with("terminal reply:")
+        );
+        process_output(&mut parser, None, b"\x1b[5n")?;
+        Ok(())
+    }
+
+    #[test]
+    fn backing_pty_creation_and_resize_are_exact_and_bad_sizes_roll_back() -> Outcome {
+        let mut app = App::new();
+        app.add_plugins(bevy_app::TaskPoolPlugin::default());
+        let notify = Notify {
+            wake: Wake(thread::current()),
+            pending: Arc::default(),
+        };
+        let recipe = Launch {
+            argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+            cwd: String::new(),
+            history_lines: 4,
+        };
+        let mut terminal = Terminal::spawn(&recipe, 1, 1, notify.clone())?;
+        for (rows, cols) in [(1, 1), (1, 12), (12, 1), (1, 1)] {
+            terminal.resize(rows, cols)?;
+            let Runtime::Live(live) = &terminal.runtime else {
+                return Err("child not running".into());
+            };
+            let size = live.job.master.lock().as_ref().need()?.get_size()?;
+            assert_eq!((size.rows, size.cols), (rows, cols));
+            assert_eq!(terminal.screen().size(), (rows, cols));
+            terminal.parser.process("\x1bc界ABCD".as_bytes())?;
+        }
+        assert!(terminal.resize(0, 1).is_err());
+        assert!(terminal.resize(u16::MAX, u16::MAX).is_err());
+        assert_eq!(terminal.screen().size(), (1, 1));
+        let Runtime::Live(live) = &terminal.runtime else {
+            return Err("child not running".into());
+        };
+        let size = live.job.master.lock().as_ref().need()?.get_size()?;
+        assert_eq!((size.rows, size.cols), (1, 1));
+        terminal.stop()?;
+        assert!(Terminal::spawn(&recipe, 0, 1, notify.clone()).is_err());
+        assert!(Terminal::spawn(&recipe, u16::MAX, u16::MAX, notify).is_err());
+        Ok(())
+    }
 
     #[test]
     fn recipe_replacement_reinsertion_and_despawn_preserve_process_ownership()

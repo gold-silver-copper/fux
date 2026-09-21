@@ -32,8 +32,6 @@ pub struct Screen {
     attributes: Attributes,
     saved_attributes: Attributes,
     autowrap: bool,
-    #[cfg(feature = "differential")]
-    pub(crate) oracle_compatibility: bool,
     application_cursor: bool,
     hide_cursor: bool,
     bracketed_paste: bool,
@@ -57,8 +55,6 @@ impl Screen {
             attributes: Attributes::default(),
             saved_attributes: Attributes::default(),
             autowrap: true,
-            #[cfg(feature = "differential")]
-            oracle_compatibility: false,
             application_cursor: false,
             hide_cursor: false,
             bracketed_paste: false,
@@ -254,8 +250,6 @@ impl Screen {
             return Ok(());
         }
         let wrap = self.autowrap;
-        #[cfg(feature = "differential")]
-        let wrap = wrap || self.oracle_compatibility;
         if !wrap {
             self.grid_mut().cursor.1 = g.cols - width;
             return Ok(());
@@ -576,12 +570,6 @@ impl Screen {
                 }
             }
             b'L' | b'M' => {
-                #[cfg(feature = "differential")]
-                if self.oracle_compatibility && !self.grid().in_region() {
-                    self.with_grid(|g, next, v| g.oracle_edit_lines(n, byte == b'L', next, v))?;
-                    self.structural = self.version;
-                    return Ok(None);
-                }
                 let g = self.grid();
                 if g.in_region() {
                     self.scroll(row, g.bottom, n, byte == b'M', false)?;

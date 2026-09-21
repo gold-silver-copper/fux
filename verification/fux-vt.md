@@ -34,13 +34,13 @@ Status: **in progress; not complete**. No completion PR has been opened.
 - [x] Permanent operation/boundary tests and sequence matrix coverage.
 - [x] Differential corpus, chunking/resize/history/reply comparisons,
   minimized divergence inventory and passing differential-phase checkpoint.
-- [ ] Independent expected-result mappings, then scaffolding removal commit.
+- [x] Independent expected-result mappings, then scaffolding removal.
 - [x] Root workspace membership; excluded independent harness/fuzz package.
-- [ ] Complete migration of production and root tests, including frame paths.
-- [ ] Actual 1x1 PTY creation/resize with traces, unchanged 2x2 layout rule.
-- [ ] Persistent safe row-ID selections and overwrite/eviction tests/traces.
-- [ ] Row-version caching, complete-frame semantics, multi-viewer traces.
-- [ ] Updated root/harness documentation.
+- [x] Complete migration of production and root tests, including frame paths.
+- [x] Actual 1x1 PTY creation/resize with traces, unchanged 2x2 layout rule.
+- [x] Persistent safe row-ID selections and overwrite/eviction tests/traces.
+- [x] Row-version caching, complete-frame semantics, multi-viewer traces.
+- [x] Updated root/harness documentation.
 - [ ] Final fuzz compile, fmt and clean 600-second run with artifacts.
 - [ ] Final root/harness fmt, strict Clippy, tests and builds.
 - [ ] Dependency/source audit (include root `tests/` as well as prompt paths).
@@ -116,10 +116,62 @@ result after generated operations.
 
 The first long-budget scale measurement failed on a ten-second HTTP timeout
 after loading the large scene, not its 3,600-second run deadline; diagnostics
-and cleanup passed. Indices 2–5 passed. A replacement measurement index 6
-is running (PID 2992); warm-up index 0 is not counted. The baseline stream
+and cleanup passed. Indices 2–5 passed. Replacement measurement index 6
+passed; warm-up index 0 is not counted. The baseline stream
 passed in 3.485 seconds, including final frame equality. Record every failed
 or interrupted measurement rather than silently excluding its existence.
 
-No application workaround is retired yet and no final verification gate is
-claimed to pass.
+## Migration checkpoint
+
+All application consumers and root tests now use fux-vt. The temporary
+scaffolding, diagnostic feature and dev-dependency are removed, after passing
+checkpoint `b8fa0d8` and its permanent mapping. The prompt's exact source /
+manifest / lock grep exits 1 with no matches; a separate grep of root `tests/`
+also has no matches. The independent harness still uses upstream.
+
+All three workarounds are retired in code, with unit coverage and saved
+`owned-terminal-*` traces. The tiny and selection regressions were committed
+**before** migration in `1be79f5`; both fail against the preserved baseline
+with diagnostics/cleanup passing, and both pass after migration:
+
+- `regression-tiny-before.log`: child PTY never reaches 1x1; after: 655 ms PASS.
+- `regression-selection-before.log`: anchored top LINE-039 changes to LINE-042;
+  after: 1,122 ms PASS, exact retained `LI` OSC52 effect.
+- `regression-stream-after.log`: 3,499 ms PASS; catch-up 1 ms, advancing 9 ms,
+  convergence 130 ms, final frame equality true. This is a checkpoint, not
+  the final paired benchmark.
+
+Selection now uses row IDs/columns, row versions and selected-span comparisons,
+including all interior rows. Tests pin unrelated writes/styles, full and
+partial scrolling, unselected eviction versus required-row loss, explicit
+browsing, clipping, resize, buffer switch/reset and pane removal notices.
+Copy checks byte limits while extracting. A newly added cache test exposed
+an integration semantic difference: full-window bounded extraction preserves
+a trailing selected empty row, whereas whole-pane copy historically trims
+trailing empty rows. Whole-pane copy now trims those newlines explicitly;
+selected-range extraction does not. The test-only frame text helper has the
+same whole-screen display convention.
+
+Terminal caches extracted rows by identity/version/width with a 4096-entry /
+4 MiB budget, not a revision-keyed screen. Independent complete row sets are
+returned on every request, including a new viewer and cursor-only changes.
+Unit tests alternate widths/history offsets without another extraction,
+verify SGR-only relocation, resize/reset/alternate behaviour, and sustain
+12,000 output scrolls through eviction with equal plateau footprints.
+
+`migration-final-tests.log` records passing workspace tests: 70 application
+unit + 35 integration, 3 crate unit + 1 golden + 4 invariant + 17 semantic
+(in addition to two explicitly ignored performance probes, still to be run).
+Root strict Clippy/fmt/build and independent harness strict Clippy/fmt/tests /
+build pass. Harness test log: `migration-harness-tests.log`.
+
+Fixture mistakes are separate from production defects: a pane-removal unit
+fixture originally inserted Focused without any workspace; navigation repair
+correctly removed that unattached Viewer. The isolated fixture no longer
+constructs an unrelated invalid navigation graph.
+
+Baseline scale replacement index 6 completed in 161.636 seconds, PASS. The
+five valid measurements 2–6 have medians 45 ms (201 panes) and 148 ms (move to
+tab 1000). Stream instrumentation and necessary scenario changes mean the
+final comparison will rerun BOTH binaries with the same final harness.
+No final stress/performance/fuzz completion gate is claimed yet.

@@ -1,4 +1,41 @@
 mod corpus;
+#[path = "corpus/fixtures.rs"]
+mod fixtures;
+
+#[test]
+fn seed_fuzz_with_golden_terminal_edge_and_tiny_operations() -> Result {
+    let Ok(directory) = std::env::var("FUX_VT_FUZZ_CORPUS") else {
+        return Ok(());
+    };
+    let directory = std::path::Path::new(&directory);
+    std::fs::create_dir_all(directory)?;
+    let seed = |name: &str, operations: &[&[u8]]| -> std::io::Result<()> {
+        let mut encoded = vec![3, 11, 8];
+        for operation in operations {
+            for bytes in operation.chunks(254) {
+                encoded.push((bytes.len() - 1) as u8);
+                encoded.extend_from_slice(bytes);
+            }
+        }
+        // Explicitly exercise tiny resize followed by bounded window/copy.
+        encoded.extend_from_slice(&[255, 0, 0, 254, 0, 1, 1, 0, 0, 0, 0, 1]);
+        encoded.truncate(4096);
+        std::fs::write(directory.join(name), encoded)
+    };
+    for (name, operations) in fixtures::CASES {
+        seed(&format!("fixture-{name}"), operations)?;
+    }
+    let terminal = corpus::terminal_edge();
+    seed(
+        "fixture-terminal-edge",
+        &terminal.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+    )?;
+    seed(
+        "fixture-tiny",
+        &["\x1bc界ABCD\r\nZ\x1b[1;1r\x1b[S\x1b[T".as_bytes()],
+    )?;
+    Ok(())
+}
 #[path = "corpus/invariants.rs"]
 mod invariants;
 use fux_vt::Parser;

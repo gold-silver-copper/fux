@@ -1,5 +1,6 @@
 {
-  "status": "differential phase in progress",
+  "status": "passed at b8fa0d8; scaffolding removed after permanent mapping",
+  "open_mismatches": 0,
   "oracle": "vt100 0.16.2 with fux Replies callback",
   "fixed": [
     {

@@ -37,12 +37,40 @@ fuzz_target!(|data: &[u8]| {
                 );
             }
             0xfe => {
+                let Some(parameters) = input.get(..8) else {
+                    break;
+                };
+                input = input.get(8..).unwrap_or_default();
+                let mut values = parameters.iter().copied();
+                let offset = usize::from(values.next().unwrap_or_default());
+                let height = u16::from(values.next().unwrap_or_default());
+                let width = u16::from(values.next().unwrap_or_default());
+                let a = (
+                    u16::from(values.next().unwrap_or_default()),
+                    u16::from(values.next().unwrap_or_default()),
+                );
+                let b = (
+                    u16::from(values.next().unwrap_or_default()),
+                    u16::from(values.next().unwrap_or_default()),
+                );
+                let cells = usize::from(values.next().unwrap_or_default());
+                let bytes = cells * 4;
                 let screen = whole.screen();
-                let window = screen.window(usize::MAX, screen.size().0, screen.size().1);
-                let result = window.text((0, 0), (window.rows - 1, window.cols - 1), 384, 512);
+                let mark = screen.mark();
+                let result = screen
+                    .window(offset, height, width)
+                    .text(a, b, cells, bytes);
+                assert_eq!(
+                    result,
+                    split
+                        .screen()
+                        .window(offset, height, width)
+                        .text(a, b, cells, bytes)
+                );
                 if let Ok(text) = result {
-                    assert!(text.len() <= 512);
+                    assert!(text.len() <= bytes);
                 }
+                assert_eq!(mark, screen.mark());
             }
             operation => {
                 let length = (usize::from(operation) + 1).min(input.len());

@@ -376,11 +376,14 @@ fn paint(world: &mut World, id: Entity) -> Result<Frame, String> {
         let exited = !status.is_empty();
         match world.get_mut::<Terminal>(rect.pane) {
             Some(mut terminal) => {
-                let (lines, screen) =
-                    terminal.snapshot(if selected { scrollback } else { 0 }, rect.width());
+                let (lines, screen) = terminal.snapshot(
+                    if selected { scrollback } else { 0 },
+                    rect.height(),
+                    rect.width(),
+                );
                 for (row, line) in lines.iter().take(usize::from(rect.height())).enumerate() {
                     // Snapshot rows already reset style at both ends.
-                    at(&mut out, rect.x(), rect.y() + row as u16, line);
+                    at(&mut out, rect.x(), rect.y() + row as u16, line.as_ref());
                 }
                 let (row, col) = screen.cursor_position();
                 if selected
