@@ -5,12 +5,14 @@ use crate::{
     actions::{self, Action, Target},
     assets::BindingAction,
     chrome,
-    control::{Chooser, Command, Order, Subject},
+    control::{Chooser, Command, Order, Scope, Subject},
     model::*,
     navigation,
     protocol::{Direction, Input, Key, Modifiers, MouseAction},
 };
 use bevy_ecs::prelude::*;
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 pub struct Entry {
@@ -62,6 +64,7 @@ pub(crate) fn close_prefix(world: &mut World, id: Entity) {
 }
 
 #[derive(Component, Clone)]
+#[component(on_insert = crate::paste::overlay_opened)]
 pub struct Overlay {
     pub serial: u64,
     pub target: Target,
@@ -138,44 +141,47 @@ pub(crate) fn choose(
     target: Target,
     chooser: Chooser,
 ) -> Result<(), String> {
-    let (title, entries): (Action, Vec<Entry>) = match chooser {
-        Chooser::Tab => (
-            Action::TabChoose,
-            navigation::tabs(world, target.workspace)
-                .into_iter()
-                .map(|tab| entry(world, tab, Command::TabSelect { tab }))
-                .collect(),
-        ),
-        Chooser::Workspace => (
-            Action::WorkspaceChoose,
-            roots(world)
-                .into_iter()
-                .map(|workspace| entry(world, workspace, Command::WorkspaceSelect { workspace }))
-                .collect(),
-        ),
-        Chooser::SwapTarget => (
-            Action::SwapChoose,
-            navigation::leaves(world, target.tab.ok_or("no tab")?)
-                .into_iter()
-                .filter(|e| Some(*e) != target.leaf)
-                .map(|with| entry(world, with, Command::Swap { with }))
-                .collect(),
-        ),
-        Chooser::MoveToTab => (
-            Action::MoveTab,
-            navigation::tabs(world, target.workspace)
-                .into_iter()
-                .map(|tab| entry(world, tab, Command::MoveToTab { tab }))
-                .collect(),
-        ),
-        Chooser::MoveToWorkspace => (
-            Action::MoveWorkspace,
-            roots(world)
-                .into_iter()
-                .map(|workspace| entry(world, workspace, Command::MoveToWorkspace { workspace }))
-                .collect(),
-        ),
+    let title = match chooser {
+        Chooser::Tab => Action::TabChoose,
+        Chooser::Workspace => Action::WorkspaceChoose,
+        Chooser::SwapTarget => Action::SwapChoose,
+        Chooser::MoveToTab => Action::MoveTab,
+        Chooser::MoveToWorkspace => Action::MoveWorkspace,
     };
+    let entities = match chooser {
+        Chooser::Tab | Chooser::MoveToTab => navigation::tabs(world, target.workspace),
+        Chooser::Workspace | Chooser::MoveToWorkspace => roots(world),
+        Chooser::SwapTarget => navigation::leaves(world, target.tab.ok_or("no tab")?)
+            .into_iter()
+            .filter(|e| Some(*e) != target.leaf)
+            .collect(),
+    };
+    let entries = entities
+        .into_iter()
+        .map(|entity| {
+            let command = match chooser {
+                Chooser::Tab => Command::Select {
+                    scope: Scope::Tab,
+                    entity,
+                },
+                Chooser::Workspace => Command::Select {
+                    scope: Scope::Workspace,
+                    entity,
+                },
+                Chooser::SwapTarget => Command::Swap { with: entity },
+                Chooser::MoveToTab => Command::Move {
+                    to: MoveTo::Tab { tab: entity },
+                },
+                Chooser::MoveToWorkspace => Command::Move {
+                    to: MoveTo::Workspace { workspace: entity },
+                },
+            };
+            Entry {
+                label: label(world, entity),
+                run: Run::Command(command),
+            }
+        })
+        .collect();
     if let Some(reason) = actions::unavailable(world, target, title) {
         return Err(reason.into());
     }
@@ -192,13 +198,6 @@ pub(crate) fn choose(
     );
     Ok(())
 }
-fn entry(world: &World, entity: Entity, command: Command) -> Entry {
-    Entry {
-        label: label(world, entity),
-        run: Run::Command(command),
-    }
-}
-
 /// Opens the action menu for a pane, tab or workspace.
 pub(crate) fn menu(
     world: &mut World,
@@ -261,15 +260,16 @@ pub(crate) fn menu(
 
 /// Reorders a tab among its workspace's tabs or a workspace among all workspaces.
 pub(crate) fn reorder(world: &mut World, subject: Subject, order: Order) -> Result<(), String> {
-    let (mut entities, entity, workspace) = match subject {
+    let entity = subject.entity();
+    let (mut entities, workspace) = match subject {
         Subject::Tab(tab) => {
             let workspace = world
                 .get::<ChildOf>(tab)
                 .ok_or("tab has no workspace")?
                 .parent();
-            (navigation::tabs(world, workspace), tab, Some(workspace))
+            (navigation::tabs(world, workspace), Some(workspace))
         }
-        Subject::Workspace(workspace) => (roots(world), workspace, None),
+        Subject::Workspace(_) => (roots(world), None),
         Subject::Pane(_) => return Err("target has the wrong kind for this action".into()),
     };
     let index = entities
@@ -299,8 +299,7 @@ pub(crate) fn reorder(world: &mut World, subject: Subject, order: Order) -> Resu
 pub(crate) fn rename(world: &mut World, subject: Subject, name: String) -> Result<(), String> {
     let entity = match subject {
         Subject::Pane(leaf) => world.get::<PaneView>(leaf).ok_or("pane removed")?.pane,
-        Subject::Tab(tab) => tab,
-        Subject::Workspace(workspace) => workspace,
+        other => other.entity(),
     };
     world
         .get_entity_mut(entity)
@@ -311,10 +310,11 @@ pub(crate) fn rename(world: &mut World, subject: Subject, name: String) -> Resul
 
 /// The kind a subject names must match the entity, whichever caller built it.
 pub(crate) fn check(world: &World, subject: Subject) -> Result<Entity, String> {
-    let (entity, ok) = match subject {
-        Subject::Pane(e) => (e, world.get::<PaneView>(e).is_some()),
-        Subject::Tab(e) => (e, world.get::<Tab>(e).is_some()),
-        Subject::Workspace(e) => (e, world.get::<Workspace>(e).is_some()),
+    let entity = subject.entity();
+    let ok = match subject {
+        Subject::Pane(_) => world.get::<PaneView>(entity).is_some(),
+        Subject::Tab(_) => world.get::<Tab>(entity).is_some(),
+        Subject::Workspace(_) => world.get::<Workspace>(entity).is_some(),
     };
     if world.get_entity(entity).is_err() {
         return Err("target no longer exists".into());
@@ -326,11 +326,14 @@ pub(crate) fn check(world: &World, subject: Subject) -> Result<Entity, String> {
 }
 
 /// Where a pane moves to. New containers are created on demand.
-pub(crate) enum MoveTo {
-    Tab(Entity),
-    NewTab(Option<String>),
-    Workspace(Entity),
-    NewWorkspace(Option<String>),
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum MoveTo {
+    Tab { tab: Entity },
+    NewTab { name: Option<String> },
+    Workspace { workspace: Entity },
+    NewWorkspace { name: Option<String> },
 }
 
 /// Moves the viewer's focused pane and follows it, without overwriting other
@@ -343,7 +346,7 @@ pub(crate) fn move_pane(
 ) -> Result<(), String> {
     let leaf = target.leaf.ok_or("no pane")?;
     let (workspace, tab) = match to {
-        MoveTo::NewWorkspace(name) => {
+        MoveTo::NewWorkspace { name } => {
             let order = roots(world)
                 .into_iter()
                 .filter_map(|e| world.get::<WorkspaceOrder>(e).map(|o| o.0))
@@ -355,31 +358,23 @@ pub(crate) fn move_pane(
                     Workspace,
                     WorkspaceOrder(order),
                     Name::new(name.unwrap_or_else(|| "workspace".into())),
-                    navigation::tab_node(),
+                    tab_node(),
                 ))
                 .id();
-            let tab = world
-                .spawn((
-                    Tab,
-                    Name::new("main"),
-                    navigation::tab_node(),
-                    ChildOf(root),
-                ))
-                .id();
+            let tab = world.spawn((Tab, Name::new("main"), ChildOf(root))).id();
             (root, tab)
         }
-        MoveTo::NewTab(name) => {
+        MoveTo::NewTab { name } => {
             let tab = world
                 .spawn((
                     Tab,
                     Name::new(name.unwrap_or_else(|| "tab".into())),
-                    navigation::tab_node(),
                     ChildOf(target.workspace),
                 ))
                 .id();
             (target.workspace, tab)
         }
-        MoveTo::Workspace(root) => {
+        MoveTo::Workspace { workspace: root } => {
             if world.get::<Workspace>(root).is_none() {
                 return Err("destination workspace removed".into());
             }
@@ -389,7 +384,7 @@ pub(crate) fn move_pane(
             let tab = navigation::tabs(world, root)[0];
             (root, tab)
         }
-        MoveTo::Tab(tab) => {
+        MoveTo::Tab { tab } => {
             if world.get::<Tab>(tab).is_none() {
                 return Err("destination tab removed".into());
             }
@@ -426,9 +421,10 @@ pub(crate) fn move_pane(
         .get_entity_mut(id)
         .map_err(|_| "viewer removed")?
         .insert((Viewing(workspace), OnTab(tab), Focused(leaf)));
-    let mut v = world.get_mut::<Viewer>(id).ok_or("viewer removed")?;
-    v.zoom = false;
-    v.scrollback = 0;
+    world
+        .get_mut::<Viewer>(id)
+        .ok_or("viewer removed")?
+        .reset_view();
     Ok(())
 }
 
@@ -475,7 +471,7 @@ fn move_beside(
     destination: Entity,
     direction: Direction,
 ) -> Result<(), String> {
-    use bevy_ui::{FlexDirection, Val};
+    use bevy_ui::FlexDirection;
     let parent = world
         .get::<ChildOf>(destination)
         .ok_or("destination removed")?
@@ -484,18 +480,11 @@ fn move_beside(
         .get::<Children>(parent)
         .and_then(|children| children.iter().position(|e| e == destination))
         .ok_or("destination removed")?;
-    let mut node = navigation::tab_node();
-    node.width = Val::Auto;
-    node.height = Val::Auto;
-    node.flex_basis = Val::ZERO;
-    node.flex_direction = if matches!(direction, Direction::Up | Direction::Down) {
-        FlexDirection::Column
-    } else {
-        FlexDirection::Row
-    };
-    node.row_gap = Val::Px(1.0);
-    node.column_gap = Val::Px(1.0);
-    let split = world.spawn((Split, node)).id();
+    let mut split = world.spawn(Split);
+    if matches!(direction, Direction::Up | Direction::Down) {
+        split.insert(split_node(FlexDirection::Column));
+    }
+    let split = split.id();
     let children = if matches!(direction, Direction::Left | Direction::Up) {
         [source, destination]
     } else {
@@ -751,15 +740,7 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
     match &overlay.mode {
         Mode::Confirm { command } => {
             let (kind, entity) = match command {
-                Command::Close {
-                    subject: Subject::Pane(e),
-                } => ("pane", *e),
-                Command::Close {
-                    subject: Subject::Tab(e),
-                } => ("tab", *e),
-                Command::Close {
-                    subject: Subject::Workspace(e),
-                } => ("workspace", *e),
+                Command::Close { subject } => (subject.kind(), subject.entity()),
                 _ => ("target", Entity::PLACEHOLDER),
             };
             let named = if world.get_entity(entity).is_ok() {

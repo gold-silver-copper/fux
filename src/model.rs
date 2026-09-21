@@ -1,11 +1,11 @@
 use bevy_ecs::{entity::MapEntities, prelude::*, reflect::ReflectMapEntities};
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize, std_traits::ReflectDefault};
-use bevy_ui::Node;
+use bevy_ui::{FlexDirection, Node, Val};
 use serde::{Deserialize, Serialize};
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-#[require(Node, LayoutCache)]
+#[require(Node = root_node(), LayoutCache)]
 pub struct Workspace;
 
 /// Derived scene data belongs to its workspace and dies with that entity.
@@ -42,14 +42,50 @@ pub(crate) fn shape(world: &World, entity: Entity) -> Shape {
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-#[require(Node)]
+#[require(Node = split_node(FlexDirection::Row))]
 pub struct Split;
 
 /// A workspace's ordered children are tabs; processes remain external references.
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-#[require(Node)]
+#[require(Node = tab_node())]
 pub struct Tab;
+
+fn root_node() -> Node {
+    Node {
+        flex_basis: Val::ZERO,
+        ..tab_node()
+    }
+}
+
+pub(crate) fn tab_node() -> Node {
+    Node {
+        width: Val::Percent(100.0),
+        height: Val::Percent(100.0),
+        flex_basis: Val::Auto,
+        ..leaf_node()
+    }
+}
+
+fn leaf_node() -> Node {
+    Node {
+        flex_grow: 1.0,
+        flex_basis: Val::ZERO,
+        min_width: Val::ZERO,
+        min_height: Val::ZERO,
+        ..Default::default()
+    }
+}
+
+pub(crate) fn split_node(direction: FlexDirection) -> Node {
+    Node {
+        flex_basis: Val::ZERO,
+        flex_direction: direction,
+        column_gap: Val::Px(1.0),
+        row_gap: Val::Px(1.0),
+        ..leaf_node()
+    }
+}
 
 #[derive(Component, Reflect, Default, Clone, Copy)]
 #[reflect(Component, Default)]
@@ -60,6 +96,7 @@ pub struct WorkspaceOrder(pub i64);
 #[derive(Component, Reflect, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[reflect(Component, Serialize, Deserialize)]
 #[serde(transparent)]
+#[component(on_insert = crate::navigation::repair_later, on_remove = crate::navigation::repair_later)]
 #[relationship(relationship_target = Viewers)]
 pub struct Viewing(pub Entity);
 /// Unreflected on purpose: it lives on layout entities and must stay out of scenes.
@@ -71,6 +108,7 @@ pub struct Viewers(Vec<Entity>);
 #[derive(Component, Reflect, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[reflect(Component, Serialize, Deserialize)]
 #[serde(transparent)]
+#[component(on_insert = crate::navigation::remember_tab, on_remove = crate::navigation::repair_later)]
 #[relationship(relationship_target = TabViewers)]
 pub struct OnTab(pub Entity);
 #[derive(Component, Default)]
@@ -81,6 +119,7 @@ pub struct TabViewers(Vec<Entity>);
 #[derive(Component, Reflect, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[reflect(Component, Serialize, Deserialize)]
 #[serde(transparent)]
+#[component(on_insert = crate::navigation::remember_focus, on_remove = crate::navigation::repair_later)]
 #[relationship(relationship_target = FocusedBy)]
 pub struct Focused(pub Entity);
 #[derive(Component, Default)]
@@ -88,8 +127,8 @@ pub struct Focused(pub Entity);
 pub struct FocusedBy(Vec<Entity>);
 
 /// Viewer-local memory of where it was: the tab per workspace, the focused pane
-/// per tab and the previously focused pane per tab. Observers record entries
-/// as the relationships change and prune them as their entities die.
+/// per tab and the previously focused pane per tab. Hooks record relationship
+/// changes; server observers prune entries as their layout entities die.
 #[derive(Component, Default)]
 pub struct Memory {
     pub tabs: bevy_ecs::entity::EntityHashMap<Entity>,
@@ -149,7 +188,7 @@ impl Default for ProcessState {
 /// A layout leaf refers to a live process, not a serialized process recipe.
 #[derive(Component, Reflect, Clone, MapEntities)]
 #[reflect(Component, MapEntities)]
-#[require(Node)]
+#[require(Node = leaf_node())]
 #[relationship(relationship_target = PaneViews)]
 pub struct PaneView {
     #[entities]
@@ -171,6 +210,13 @@ pub struct Viewer {
     pub zoom: bool,
     pub scrollback: usize,
     pub notice: Option<Notice>,
+}
+
+impl Viewer {
+    pub(crate) fn reset_view(&mut self) {
+        self.zoom = false;
+        self.scrollback = 0;
+    }
 }
 
 /// The bar's right zone shows the latest notice until further input clears it.
@@ -229,6 +275,37 @@ impl Wake {
 mod tests {
     use super::*;
     use crate::testing::*;
+
+    #[test]
+    fn required_layout_nodes_preserve_defaults_and_explicit_overrides() -> Outcome {
+        let mut world = World::new();
+        let pane = world.spawn_empty().id();
+        let root = world.spawn(Workspace).id();
+        let tab = world.spawn(Tab).id();
+        let leaf = world.spawn(PaneView { pane }).id();
+        let row = world.spawn(Split).id();
+        assert_eq!(*world.get::<Node>(root).need()?, root_node());
+        assert_eq!(*world.get::<Node>(tab).need()?, tab_node());
+        assert_eq!(*world.get::<Node>(leaf).need()?, leaf_node());
+        assert_eq!(
+            *world.get::<Node>(row).need()?,
+            split_node(FlexDirection::Row)
+        );
+        let column = split_node(FlexDirection::Column);
+        let custom = Node {
+            width: Val::Px(37.0),
+            padding: bevy_ui::UiRect::all(Val::Px(3.0)),
+            ..column.clone()
+        };
+        let split = world.spawn((Split, column.clone())).id();
+        let explicit = world.spawn((custom.clone(), Tab)).id();
+        assert_eq!(*world.get::<Node>(split).need()?, column);
+        world.entity_mut(explicit).insert(Split);
+        assert_eq!(*world.get::<Node>(explicit).need()?, custom);
+        world.entity_mut(explicit).remove::<Node>();
+        assert!(world.get::<Node>(explicit).is_none());
+        Ok(())
+    }
 
     #[test]
     fn layout_relationships_do_not_own_shared_processes() -> crate::testing::Outcome {

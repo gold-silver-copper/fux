@@ -1,3 +1,5 @@
+mod reload_spike;
+
 use super::*;
 use crate::testing::*;
 use crate::{model::*, navigation};
@@ -109,7 +111,7 @@ fn tabless_scene_migration_moves_the_layout_box_once_without_losing_panes()
         column_gap: Val::Px(3.0),
         padding: UiRect::all(Val::Px(2.0)),
         margin: UiRect::all(Val::Px(1.0)),
-        ..navigation::tab_node()
+        ..crate::model::tab_node()
     };
     let root = world.spawn((Workspace, node.clone())).id();
     world.spawn((PaneView { pane }, ChildOf(root)));
@@ -119,7 +121,7 @@ fn tabless_scene_migration_moves_the_layout_box_once_without_losing_panes()
     let tabs = navigation::tabs(world, loaded);
     assert_eq!(tabs.len(), 1);
     assert_eq!(world.get::<Node>(*tabs.first().need()?).need()?, &node);
-    assert_eq!(world.get::<Node>(loaded).need()?, &navigation::tab_node());
+    assert_eq!(world.get::<Node>(loaded).need()?, &crate::model::tab_node());
     assert_eq!(navigation::leaves(world, loaded).len(), 2);
     assert_eq!(world.query::<&Launch>().iter(world).count(), 1);
     let resaved = extract_layout(world, loaded)?;

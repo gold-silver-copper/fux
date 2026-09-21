@@ -1,6 +1,7 @@
 //! One source of identity, labels, groups, and availability for every action.
 use crate::{
-    control::{Axis, Chooser, Command, Order, Subject},
+    control::{Axis, Chooser, Command, Order, Scope, Subject},
+    interaction::MoveTo,
     model::*,
     navigation,
     protocol::Direction,
@@ -23,6 +24,17 @@ impl Target {
             tab: on_tab(world, id),
             leaf: focused(world, id),
         })
+    }
+    pub(crate) fn multiple_tabs(self, world: &World) -> Result<(), &'static str> {
+        (navigation::tabs(world, self.workspace).len() >= 2)
+            .then_some(())
+            .ok_or("only one tab")
+    }
+    pub(crate) fn multiple_panes(self, world: &World) -> Result<(), &'static str> {
+        self.tab
+            .is_some_and(|tab| navigation::leaves(world, tab).len() >= 2)
+            .then_some(())
+            .ok_or("only one pane")
     }
     pub fn valid(self, world: &World) -> bool {
         world.get::<Workspace>(self.workspace).is_some()
@@ -115,6 +127,10 @@ impl Action {
         let pane = target.leaf.map(Subject::Pane);
         let tab = target.tab.map(Subject::Tab);
         let workspace = Subject::Workspace(target.workspace);
+        let scope = match self {
+            TabNext | TabPrevious | TabReorderPrevious | TabReorderNext => Scope::Tab,
+            _ => Scope::Workspace,
+        };
         Some(match self {
             SplitHorizontal => Command::Split {
                 axis: Axis::Horizontal,
@@ -140,10 +156,10 @@ impl Action {
                 axis: Axis::Vertical,
                 grow: self == GrowHeight,
             },
-            ReorderPrev => Command::Reorder {
+            ReorderPrev => Command::ReorderPane {
                 order: Order::Previous,
             },
-            ReorderNext => Command::Reorder { order: Order::Next },
+            ReorderNext => Command::ReorderPane { order: Order::Next },
             SwapChoose => Command::Choose {
                 chooser: Chooser::SwapTarget,
             },
@@ -156,11 +172,15 @@ impl Action {
             MoveTab => Command::Choose {
                 chooser: Chooser::MoveToTab,
             },
-            MoveNewTab => Command::MoveToNewTab { name: None },
+            MoveNewTab => Command::Move {
+                to: MoveTo::NewTab { name: None },
+            },
             MoveWorkspace => Command::Choose {
                 chooser: Chooser::MoveToWorkspace,
             },
-            MoveNewWorkspace => Command::MoveToNewWorkspace { name: None },
+            MoveNewWorkspace => Command::Move {
+                to: MoveTo::NewWorkspace { name: None },
+            },
             CopyMode => Command::CopyMode,
             ScrollUp => Command::Scroll {
                 order: Order::Previous,
@@ -174,25 +194,23 @@ impl Action {
                 direction: self.direction()?,
             },
             TabNew => Command::TabNew { name: None },
-            TabNext => Command::TabNext,
-            TabPrevious => Command::TabPrevious,
+            TabNext | WorkspaceNext => Command::Next { scope },
+            TabPrevious | WorkspacePrevious => Command::Previous { scope },
             TabChoose => Command::Choose {
                 chooser: Chooser::Tab,
             },
-            TabReorderPrevious => Command::TabReorder {
+            TabReorderPrevious | WorkspaceReorderPrevious => Command::Reorder {
+                scope,
                 order: Order::Previous,
             },
-            TabReorderNext => Command::TabReorder { order: Order::Next },
+            TabReorderNext | WorkspaceReorderNext => Command::Reorder {
+                scope,
+                order: Order::Next,
+            },
             WorkspaceNew => Command::WorkspaceNew { name: None },
-            WorkspaceNext => Command::WorkspaceNext,
-            WorkspacePrevious => Command::WorkspacePrevious,
             WorkspaceChoose => Command::Choose {
                 chooser: Chooser::Workspace,
             },
-            WorkspaceReorderPrevious => Command::WorkspaceReorder {
-                order: Order::Previous,
-            },
-            WorkspaceReorderNext => Command::WorkspaceReorder { order: Order::Next },
             Help => Command::Help,
             Detach => Command::Detach,
             RenamePane | RenameTab | RenameWorkspace | SaveLayout | LoadLayout => return None,
@@ -247,11 +265,11 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
         return Some(TARGET_GONE);
     }
     if action == Copy
-        && world
+        && let Some(reason) = world
             .get_resource::<crate::assets::Settings>()
-            .is_some_and(|s| s.clipboard == crate::assets::ClipboardPolicy::Disabled)
+            .and_then(|s| crate::selection::validate_clipboard(s, "").err())
     {
-        return Some("clipboard disabled; configure clipboard: write-only");
+        return Some(reason);
     }
     if action.needs_pane() && target.leaf.is_none() {
         return Some("no pane");
@@ -262,9 +280,8 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
     if matches!(
         action,
         TabNext | TabPrevious | TabReorderPrevious | TabReorderNext
-    ) && navigation::tabs(world, target.workspace).len() < 2
-    {
-        return Some("only one tab");
+    ) {
+        return target.multiple_tabs(world).err();
     }
     if matches!(
         action,
@@ -282,11 +299,8 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
             | FocusLast
             | ReorderPrev
             | ReorderNext
-    ) && target
-        .tab
-        .is_none_or(|tab| navigation::leaves(world, tab).len() < 2)
-    {
-        return Some("only one pane");
+    ) {
+        return target.multiple_panes(world).err();
     }
     if action == Terminate
         && target
@@ -302,6 +316,92 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn availability_matrix_preserves_captured_targets_and_error_order() -> crate::testing::Outcome {
+        use crate::assets::{ClipboardPolicy, Settings};
+        use Action::*;
+        let mut world = World::new();
+        world.insert_resource(Settings::default());
+        let root = world.spawn(Workspace).id();
+        let tab = world.spawn((Tab, ChildOf(root))).id();
+        let process = world.spawn_empty().id();
+        let pane = world.spawn((PaneView { pane: process }, ChildOf(tab))).id();
+        let target = Target {
+            workspace: root,
+            tab: Some(tab),
+            leaf: Some(pane),
+        };
+        let pane_peers = [
+            SwapChoose,
+            SwapLeft,
+            SwapRight,
+            SwapUp,
+            SwapDown,
+            MoveLeft,
+            MoveRight,
+            MoveUp,
+            MoveDown,
+            FocusNext,
+            FocusPrevious,
+            FocusLast,
+            ReorderPrev,
+            ReorderNext,
+        ];
+        let tab_peers = [TabNext, TabPrevious, TabReorderPrevious, TabReorderNext];
+        for action in ALL.iter().copied() {
+            let expected = if action == Copy {
+                Some("clipboard disabled; configure clipboard: write-only")
+            } else if pane_peers.contains(&action) {
+                Some("only one pane")
+            } else if tab_peers.contains(&action) {
+                Some("only one tab")
+            } else if action == Terminate {
+                Some("process is not running")
+            } else {
+                None
+            };
+            assert_eq!(unavailable(&world, target, action), expected, "{action}");
+            let empty = Target {
+                leaf: None,
+                ..target
+            };
+            let expected_empty = if action == Copy {
+                expected
+            } else if matches!(action.group(), "Panes" | "Focus")
+                && !matches!(action, SplitHorizontal | SplitVertical)
+            {
+                Some("no pane")
+            } else {
+                expected
+            };
+            assert_eq!(
+                unavailable(&world, empty, action),
+                expected_empty,
+                "{action}"
+            );
+        }
+        // Extra tabs/panes in another workspace cannot enable this captured menu.
+        let other = world.spawn(Workspace).id();
+        world.spawn((Tab, ChildOf(other)));
+        assert_eq!(target.multiple_tabs(&world), Err("only one tab"));
+        world.spawn((Tab, ChildOf(root)));
+        world.spawn((PaneView { pane: process }, ChildOf(tab)));
+        assert!(target.multiple_tabs(&world).is_ok());
+        assert!(target.multiple_panes(&world).is_ok());
+        world.resource_mut::<Settings>().clipboard = ClipboardPolicy::WriteOnly;
+        for action in ALL.iter().copied() {
+            let expected = (action == Terminate).then_some("process is not running");
+            assert_eq!(unavailable(&world, target, action), expected, "{action}");
+        }
+        world.remove_resource::<Settings>();
+        assert_eq!(unavailable(&world, target, Copy), None);
+        world.despawn(root);
+        for action in ALL.iter().copied() {
+            assert_eq!(unavailable(&world, target, action), Some(TARGET_GONE));
+        }
+        Ok(())
+    }
 
     #[test]
     fn wire_names_round_trip_and_unknown_names_are_rejected() -> crate::testing::Outcome {

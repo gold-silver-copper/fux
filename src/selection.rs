@@ -115,12 +115,12 @@ pub struct Selection {
     pub mouse_origin: bool,
 }
 
-pub fn validate_clipboard(settings: &Settings, text: &str) -> Result<(), String> {
+pub fn validate_clipboard(settings: &Settings, text: &str) -> Result<(), &'static str> {
     if settings.clipboard != ClipboardPolicy::WriteOnly {
-        return Err("clipboard disabled; configure clipboard: write-only".into());
+        return Err("clipboard disabled; configure clipboard: write-only");
     }
     if text.len() > MAX_COPY_BYTES {
-        return Err("copy exceeds 1 MiB encoded clipboard limit".into());
+        return Err("copy exceeds 1 MiB encoded clipboard limit");
     }
     Ok(())
 }

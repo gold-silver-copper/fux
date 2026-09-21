@@ -1,4 +1,10 @@
-use crate::protocol::{Direction, Input};
+#[cfg(test)]
+mod tests;
+
+use crate::{
+    interaction::MoveTo,
+    protocol::{Direction, Input},
+};
 use bevy_ecs::prelude::*;
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use serde::{Deserialize, Serialize};
@@ -48,7 +54,7 @@ pub enum Command {
         axis: Axis,
         grow: bool,
     },
-    Reorder {
+    ReorderPane {
         order: Order,
     },
     Swap {
@@ -60,17 +66,8 @@ pub enum Command {
     MoveDirection {
         direction: Direction,
     },
-    MoveToTab {
-        tab: Entity,
-    },
-    MoveToNewTab {
-        name: Option<String>,
-    },
-    MoveToWorkspace {
-        workspace: Entity,
-    },
-    MoveToNewWorkspace {
-        name: Option<String>,
+    Move {
+        to: MoveTo,
     },
     CopyMode,
     /// `Previous` shows older output, `Next` newer.
@@ -90,30 +87,22 @@ pub enum Command {
     TabNew {
         name: Option<String>,
     },
-    TabSelect {
-        tab: Entity,
+    Select {
+        scope: Scope,
+        entity: Entity,
     },
-    TabNext,
-    TabPrevious,
-    TabReorder {
+    Next {
+        scope: Scope,
+    },
+    Previous {
+        scope: Scope,
+    },
+    Reorder {
+        scope: Scope,
         order: Order,
-    },
-    TabClose {
-        tab: Entity,
     },
     WorkspaceNew {
         name: Option<String>,
-    },
-    WorkspaceSelect {
-        workspace: Entity,
-    },
-    WorkspaceNext,
-    WorkspacePrevious,
-    WorkspaceReorder {
-        order: Order,
-    },
-    WorkspaceClose {
-        workspace: Entity,
     },
     SaveLayout {
         workspace: Entity,
@@ -143,6 +132,21 @@ pub enum Subject {
     Workspace(Entity),
 }
 
+impl Subject {
+    pub fn entity(self) -> Entity {
+        match self {
+            Self::Pane(entity) | Self::Tab(entity) | Self::Workspace(entity) => entity,
+        }
+    }
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Pane(_) => "pane",
+            Self::Tab(_) => "tab",
+            Self::Workspace(_) => "workspace",
+        }
+    }
+}
+
 #[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[reflect(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -157,6 +161,14 @@ pub enum Axis {
 pub enum Order {
     Previous,
     Next,
+}
+
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    Tab,
+    Workspace,
 }
 
 /// Interactive lists: the destination is chosen from what exists now.

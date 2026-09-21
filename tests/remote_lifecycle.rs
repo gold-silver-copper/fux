@@ -157,6 +157,9 @@ impl Server {
     fn command(&self, viewer: u64, kind: &str) -> Result<(), String> {
         self.control(viewer, json!({"kind":kind}))
     }
+    fn scoped(&self, viewer: u64, kind: &str, scope: &str) -> Result<(), String> {
+        self.control(viewer, json!({"kind":kind,"scope":scope}))
+    }
     fn split(&self, viewer: u64, axis: &str, program: Option<&str>) -> Result<(), String> {
         self.control(
             viewer,

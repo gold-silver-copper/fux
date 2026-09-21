@@ -1,0 +1,111 @@
+
+$ cargo fmt --all --check
+exit 0
+
+$ cargo clippy --all-targets --locked -- -D warnings
+    Checking fux v0.12.0 (/Users/kisaczka/Desktop/code/fux)
+    Finished `dev` profile [unoptimized] target(s) in 0.94s
+exit 0
+
+$ cargo test --locked
+    Finished `test` profile [unoptimized] target(s) in 0.25s
+     Running unittests src/main.rs (target/debug/deps/fux-00b99e4ceb0e5459)
+
+running 49 tests
+test actions::tests::wire_names_round_trip_and_unknown_names_are_rejected ... ok
+test assets::tests::coherent_defaults_have_exact_unique_keys_and_action_pairs ... ok
+test chrome::tests::panel_is_content_sized_above_a_full_width_bar_and_resets_styles ... ok
+test chrome::tests::tiny_unicode_command_selection_is_visible_even_when_disabled ... ok
+test encode::tests::modified_keys_preserve_xterm_protocol_semantics ... ok
+test control::tests::removed_shapes_and_invalid_scopes_are_rejected ... ok
+test chrome::tests::truncation_is_cell_sized_sanitized_and_keeps_the_requested_end ... ok
+test control::tests::scoped_commands_have_exact_wire_shapes ... ok
+test actions::tests::availability_matrix_preserves_captured_targets_and_error_order ... ok
+test interaction::tests::every_chooser_entry_remains_visible_on_tiny_terminals ... ok
+test interaction::tests::confirmation_captures_target_and_preserves_a_shared_process ... ok
+test interaction::tests::menus_keep_unbound_actions_and_share_navigation_including_layout_prompts ... ok
+test interaction::tests::pasted_text_cannot_cross_a_cancelled_or_reopened_prompt ... ok
+test interaction::tests::removed_confirmation_target_cancels_without_retargeting ... ok
+test interaction::tests::rename_prompt_keeps_its_original_target_and_escape_cancels ... ok
+test interaction::tests::stale_chooser_destination_never_changes_the_source_or_an_unrelated_target ... ok
+test interaction::tests::tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers ... ok
+test model::tests::layout_relationships_do_not_own_shared_processes ... ok
+test interaction::tests::rearrangement_keeps_entity_identity_and_native_child_order ... ok
+test navigation::tests::inert_scene_worlds_do_not_normalize_tab_removal ... ok
+test model::tests::required_layout_nodes_preserve_defaults_and_explicit_overrides ... ok
+test interaction::tests::each_close_scope_requires_confirmation_and_cancel_keeps_its_hierarchy ... ok
+test navigation::tests::legacy_children_are_wrapped_without_process_ownership_or_node_changes ... ok
+test paste::tests::every_fragment_boundary_preserves_paste_ownership_and_embedded_escape ... ok
+test assets::tests::invalid_tab_placement_and_runtime_viewers_are_not_scene_content ... ok
+test navigation::tests::viewers_remember_independent_tabs_focus_and_last_focus ... ok
+test assets::tests::tabless_scene_migration_moves_the_layout_box_once_without_losing_panes ... ok
+test protocol::tests::binding_tokens_match_configuration_spelling ... ok
+test navigation::tests::relationship_hooks_repair_without_observer_registration ... ok
+test selection::tests::clipped_viewports_never_select_a_backing_only_row_or_half_a_wide_glyph ... ok
+test selection::tests::clipboard_policy_and_encoded_limit_are_explicit ... ok
+test protocol::tests::every_key_round_trips_and_bad_names_are_rejected ... ok
+test selection::tests::history_capture_restores_live_offset_and_clamps_to_retained_rows ... ok
+test selection::tests::wrapped_rows_join_and_hard_breaks_remain_newlines ... ok
+test selection::tests::unicode_selection_normalizes_wide_continuations_and_preserves_combining_marks ... ok
+test assets::tests::native_tab_scene_round_trip_preserves_order_names_and_remapped_processes ... ok
+test server::tests::execution_keeps_its_guard_order_and_settles_ui_before_failure ... ok
+test server::tests::detaching_during_synchronous_scene_io_finishes_the_operation ... ok
+test server::tests::arbitrary_layout_changes_invalidate_only_the_owning_workspace ... ok
+test chrome::tests::overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewport ... ok
+test paste::tests::oversized_paste_is_bounded_and_drains_before_following_keys ... ok
+test server::tests::removing_viewer_drops_presentation_without_despawning_entity ... ok
+test terminal::tests::recipe_replacement_reinsertion_and_despawn_preserve_process_ownership ... ok
+test presentation::tests::chrome_rectangles_keep_native_half_open_picking_and_empty_bounds ... ok
+test server::tests::scene_tasks_complete_on_deadline_and_report_io_failures ... ok
+test presentation::tests::extracted_world_matches_app_across_scene_resize_focus_and_removal ... ok
+test frame::tests::attach_preserves_permissive_defaults_and_clamps_before_narrowing ... ok
+test chrome::tests::every_binding_is_reachable_at_every_short_height ... ok
+test assets::tests::reload_spike::load_state_cannot_replace_idle_runner_pending_bridge ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s
+
+     Running tests/remote_lifecycle.rs (target/debug/deps/remote_lifecycle-7b1902d9fddff680)
+
+running 35 tests
+test design::borderless_surface_bottom_bar_edges_and_tiny_viewports ... ok
+test design::input::mouse_edges_literal_prefix_and_modal_input_are_byte_exact ... ok
+test design::input::tiny_content_clips_the_emulators_minimum_backing_size ... ok
+test design::command_column_prefix_policy_scroll_prompts_and_repaint ... ok
+test design::interactions::context_menu_captures_unfocused_pane_and_grouped_help_marks_unavailable ... ok
+test design::input::viewers_keep_independent_focus_zoom_history_and_exit_status ... ok
+test design::input::cursor_uses_first_and_last_content_cells_without_insets ... ok
+test design::interactions::directional_previous_last_focus_and_rearrangement_preserve_processes ... ok
+test design::frontend::actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys ... ok
+test design::interactions::hidden_tabs_stop_constraining_pty_size_even_before_the_switching_viewer_paints ... ok
+test design::interactions::hidden_native_nodes_cannot_receive_focus_or_child_input ... ok
+test design::interactions::interactive_close_is_modal_captured_and_automation_is_explicit ... ok
+test design::interactions::remote_viewer_removal_during_an_overlay_never_panics_the_server ... ok
+test design::frontend_interactions::attached_tabs_confirmations_copy_and_cancelled_fragmented_paste_are_isolated ... ok
+test design::interactions::unknown_control_action_names_are_rejected_at_the_api_boundary ... ok
+test design::interactions::nested_swap_and_existing_tab_workspace_moves_keep_process_identity_and_history ... ok
+test design::interactions::tabs_bar_native_click_chooser_and_independent_focus_survive_switches ... ok
+test design::frontend_interactions::actual_default_shortcuts_decode_modifiers_pairs_and_menu_navigation ... ok
+test design::interactions::workspace_order_chooser_memory_and_scene_replacement_are_consistent ... ok
+test design::native_splits_junctions_focus_zoom_and_no_margin_chrome ... ok
+test design::selection::evicted_history_selection_is_cleared_without_moving_another_viewer ... ok
+test design::selection::keyboard_and_drag_selection_copy_unicode_without_touching_other_viewers ... ok
+test design::selection::selection_invalidates_visibly_on_output_and_resize_and_paste_is_modal ... ok
+test design::selection::shift_drag_and_keyboard_copy_mode_do_not_leak_application_mouse_bytes ... ok
+test interactive_background_jobs_hang_up_when_pane_terminates ... ok
+test repeated_copy_effects_are_not_replaceable_paints ... ok
+test stock_launch_removal_settles_without_another_request ... ok
+test layout_mapping_and_prompt_paste_preserve_live_process_identity ... ok
+test design::input::settings_hot_reload_short_empty_and_unicode_help ... ok
+test design::keybindings::a_navigation_key_prefix_still_forwards_its_literal_when_doubled ... ok
+test design::selection::clipboard_disabled_reports_failure_without_emitting_an_effect ... ok
+test blocked_terminal_paint_does_not_block_stream_drain ... ok
+test design::keybindings::reserved_menu_keys_override_custom_bindings_and_enter_executes_selected_action ... ok
+test stock_viewer_removal_releases_its_native_size_constraint ... ok
+test design::keybindings::unavailable_selected_command_reports_reason_and_copy_escape_exits_once ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s
+
+exit 0
+
+$ git diff --check
+exit 0

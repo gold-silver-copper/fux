@@ -26,7 +26,7 @@ fn hidden_tabs_stop_constraining_pty_size_even_before_the_switching_viewer_paint
     s.tab_new(small, Some("hidden-from-large"))?;
     s.screen(large)?;
     eventually(|| Ok(dimensions()? == (23, 80)))?;
-    s.command(small, "tab_previous")?;
+    s.scoped(small, "previous", "tab")?;
     s.screen(large)?;
     eventually(|| Ok(dimensions()? == (7, 25)))?;
     Ok(())
@@ -47,17 +47,26 @@ fn workspace_order_chooser_memory_and_scene_replacement_are_consistent() -> Outc
     let second = s.viewing(a)?.as_u64().need()?;
     s.control(a, json!({"kind":"workspace_new","name":"third"}))?;
     let third = s.viewing(a)?.as_u64().need()?;
-    s.control(a, json!({"kind":"workspace_reorder","order":"previous"}))?;
-    s.control(a, json!({"kind":"workspace_select","workspace":initial}))?;
+    s.control(
+        a,
+        json!({"kind":"reorder","scope":"workspace","order":"previous"}),
+    )?;
+    s.control(
+        a,
+        json!({"kind":"select","scope":"workspace","entity":initial}),
+    )?;
     assert_eq!(s.on_tab(a)?, tab);
     assert_eq!(s.focused(a)?, focus);
-    s.command(a, "workspace_next")?;
+    s.scoped(a, "next", "workspace")?;
     assert_eq!(s.viewing(a)?, third);
-    s.command(a, "workspace_next")?;
+    s.scoped(a, "next", "workspace")?;
     assert_eq!(s.viewing(a)?, second);
-    s.command(a, "workspace_previous")?;
+    s.scoped(a, "previous", "workspace")?;
     assert_eq!(s.viewing(a)?, third);
-    s.control(a, json!({"kind":"workspace_select","workspace":initial}))?;
+    s.control(
+        a,
+        json!({"kind":"select","scope":"workspace","entity":initial}),
+    )?;
     s.control(a, json!({"kind":"choose","chooser":"workspace"}))?;
     s.capture(a, 24, 80, "interaction-workspaces")?;
     s.key(a, "escape", false)?;
@@ -151,9 +160,9 @@ fn nested_swap_and_existing_tab_workspace_moves_keep_process_identity_and_histor
     assert_eq!(s.focused(v)?, c);
     s.tab_new(v, Some("destination"))?;
     let tab = s.on_tab(v)?.as_u64().need()?;
-    s.command(v, "tab_previous")?;
+    s.scoped(v, "previous", "tab")?;
     s.focus(v, a)?;
-    s.control(v, json!({"kind":"move_to_tab","tab":tab}))?;
+    s.control(v, json!({"kind":"move","to":{"kind":"tab","tab":tab}}))?;
     s.screen(v)?;
     assert_eq!(s.on_tab(v)?, tab);
     assert_eq!(s.focused(v)?, a);
@@ -165,9 +174,12 @@ fn nested_swap_and_existing_tab_workspace_moves_keep_process_identity_and_histor
         json!({"kind":"workspace_new","name":"destination-workspace"}),
     )?;
     let root = s.viewing(v)?.as_u64().need()?;
-    s.command(v, "workspace_previous")?;
+    s.scoped(v, "previous", "workspace")?;
     assert_eq!(s.focused(v)?, a);
-    s.control(v, json!({"kind":"move_to_workspace","workspace":root}))?;
+    s.control(
+        v,
+        json!({"kind":"move","to":{"kind":"workspace","workspace":root}}),
+    )?;
     s.screen(v)?;
     assert_eq!(s.viewing(v)?, root);
     assert_eq!(s.focused(v)?, a);
@@ -211,7 +223,7 @@ fn tabs_bar_native_click_chooser_and_independent_focus_survive_switches() -> Out
     assert!(row(&screen, 23).contains("logs"));
     let log_x = (0..80).find(|x| text(&screen, 23, *x) == "l").need()?;
     assert!(screen.cell(23, log_x).need()?.inverse());
-    s.command(a, "tab_previous")?;
+    s.scoped(a, "previous", "tab")?;
     assert_eq!(s.focused(a)?, focus);
     let screen = s.painted(a, 24, 80)?;
     let log_x = (0..40).find(|x| text(&screen, 23, *x) == "l").need()?;
@@ -262,7 +274,7 @@ fn interactive_close_is_modal_captured_and_automation_is_explicit() -> Outcome {
         .filter_map(|p| p.at("entity").as_u64())
         .find(|e| *e != close)
         .need()?;
-    s.control(v, json!({"kind":"tab_close","tab":other}))?;
+    s.close(v, json!({"tab":other}))?;
     assert_eq!(s.query("fux::model::PaneView")?.rows().count(), 2);
     assert!(
         s.viewer(v)?
@@ -324,12 +336,15 @@ fn directional_previous_last_focus_and_rearrangement_preserve_processes() -> Out
     let before = s.query("fux::model::Launch")?;
     s.command(v, "zoom")?;
     assert_eq!(s.viewer(v)?.at("zoom"), true);
-    s.control(v, json!({"kind":"move_to_new_tab","name":"moved"}))?;
+    s.control(
+        v,
+        json!({"kind":"move","to":{"kind":"new_tab","name":"moved"}}),
+    )?;
     assert_eq!(s.viewer(v)?.at("zoom"), false);
     assert_eq!(s.focused(v)?, left);
     assert_eq!(s.query("fux::model::Launch")?, before);
     s.command(v, "zoom")?;
-    s.command(v, "tab_previous")?;
+    s.scoped(v, "previous", "tab")?;
     assert_eq!(s.viewer(v)?.at("zoom"), false);
     assert_eq!(s.focused(v)?, right);
     Ok(())

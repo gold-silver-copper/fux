@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use bevy_app::{App, TaskPoolPlugin};
 use bevy_asset::{AssetApp, AssetPlugin};
 use bevy_camera::{
@@ -63,8 +66,13 @@ pub fn register_types(app: &mut App) {
 #[derive(Component)]
 struct ChromeTarget(Entity);
 
+#[derive(Component)]
 pub struct Presentation {
-    app: App,
+    world: World,
+    pub(crate) last: String,
+    pub(crate) clipboard: Vec<String>,
+    pub(crate) next_paint: std::time::Instant,
+    pub(crate) paint_wake_pending: bool,
     window: Entity,
     camera: Entity,
     container: Entity,
@@ -74,12 +82,12 @@ pub struct Presentation {
     viewport: UVec2,
     rects: Vec<PaneRect>,
     separators: BTreeMap<(u16, u16), u8>,
-    chrome: Vec<(Entity, crate::chrome::Bounds)>,
+    chrome: Vec<(Entity, URect)>,
     chrome_nodes: Vec<Entity>,
 }
 
 impl Presentation {
-    pub fn new(registry: AppTypeRegistry) -> Self {
+    fn build(registry: AppTypeRegistry) -> (App, Entity, Entity, Entity) {
         let mut app = App::new();
         app.insert_resource(registry);
         register_types(&mut app);
@@ -140,8 +148,17 @@ impl Presentation {
         app.finish();
         app.cleanup();
         app.update();
+        (app, window, camera, container)
+    }
+
+    pub fn new(registry: AppTypeRegistry) -> Self {
+        let (mut app, window, camera, container) = Self::build(registry);
         Self {
-            app,
+            world: std::mem::take(app.world_mut()),
+            last: String::new(),
+            clipboard: Vec::new(),
+            next_paint: std::time::Instant::now(),
+            paint_wake_pending: false,
             window,
             camera,
             container,
@@ -170,7 +187,7 @@ impl Presentation {
         if rebuild {
             self.scene_key = None;
             self.rects.clear();
-            let world = self.app.world_mut();
+            let world = &mut self.world;
             world.resource_mut::<InputFocus>().clear();
             for local in self.source_to_local.values() {
                 // Relationships may already have recursively removed children;
@@ -276,7 +293,7 @@ impl Presentation {
         let resized = self.viewport != viewport;
         if resized {
             self.viewport = viewport;
-            let world = self.app.world_mut();
+            let world = &mut self.world;
             world
                 .get_mut::<Window>(self.window)
                 .ok_or("presentation window is missing")?
@@ -293,8 +310,8 @@ impl Presentation {
         }
         let desired = focus
             .and_then(|source| self.source_to_local.get(&source).copied())
-            .filter(|local| self.app.world().get::<PaneView>(*local).is_some());
-        let world = self.app.world_mut();
+            .filter(|local| self.world.get::<PaneView>(*local).is_some());
+        let world = &mut self.world;
         let mut focus = world.resource_mut::<InputFocus>();
         let focus_changed = focus.get() != desired;
         if focus_changed {
@@ -308,22 +325,22 @@ impl Presentation {
                 .get_mut::<Node>(self.container)
                 .ok_or("presentation container is missing")?
                 .height = Val::Px(viewport.y as f32);
-            self.app.update();
+            self.world.run_schedule(bevy_app::Main);
+            self.world.clear_trackers();
             self.collect_rects();
         } else if focus_changed {
-            self.app
-                .world_mut()
+            self.world
                 .run_system_cached(process_recorded_focus_changes)
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
 
-    pub fn chrome(&mut self, hits: Vec<(Entity, crate::chrome::Bounds)>) {
+    pub fn chrome(&mut self, hits: Vec<(Entity, URect)>) {
         if self.chrome == hits {
             return;
         }
-        let world = self.app.world_mut();
+        let world = &mut self.world;
         for entity in self.chrome_nodes.drain(..) {
             world.despawn(entity);
         }
@@ -332,10 +349,10 @@ impl Presentation {
                 .spawn((
                     Node {
                         position_type: PositionType::Absolute,
-                        left: Val::Px(f32::from(bounds.x)),
-                        top: Val::Px(f32::from(bounds.y)),
-                        width: Val::Px(f32::from(bounds.width)),
-                        height: Val::Px(f32::from(bounds.height)),
+                        left: Val::Px(bounds.min.x as f32),
+                        top: Val::Px(bounds.min.y as f32),
+                        width: Val::Px(bounds.width() as f32),
+                        height: Val::Px(bounds.height() as f32),
                         ..Default::default()
                     },
                     ChromeTarget(target),
@@ -347,7 +364,8 @@ impl Presentation {
             self.chrome_nodes.push(entity);
         }
         self.chrome = hits;
-        self.app.update();
+        self.world.run_schedule(bevy_app::Main);
+        self.world.clear_trackers();
         self.collect_rects();
     }
 
@@ -365,7 +383,7 @@ impl Presentation {
         if self.viewport.min_element() == 0 {
             return;
         }
-        let world = self.app.world();
+        let world = &self.world;
         for local in &world.resource::<UiStack>().uinodes {
             let (Some(view), Some(node), Some(transform), Some(visible)) = (
                 world.get::<PaneView>(*local),
@@ -458,14 +476,11 @@ impl Presentation {
             .map(|(_, local)| *local)
             .collect();
         for local in hidden {
-            self.app.world_mut().entity_mut(local).remove::<TabIndex>();
+            self.world.entity_mut(local).remove::<TabIndex>();
         }
         for rect in &self.rects {
             if let Some(local) = self.source_to_local.get(&rect.leaf) {
-                self.app
-                    .world_mut()
-                    .entity_mut(*local)
-                    .insert_if_new(TabIndex(0));
+                self.world.entity_mut(*local).insert_if_new(TabIndex(0));
             }
         }
     }
@@ -500,20 +515,17 @@ impl Presentation {
     }
 
     pub fn focus(&self) -> Option<Entity> {
-        self.app
-            .world()
+        self.world
             .resource::<InputFocus>()
             .get()
             .and_then(|local| self.local_to_source.get(&local).copied())
     }
 
     pub fn focus_step(&mut self, previous: bool) -> Option<Entity> {
-        self.app
-            .world_mut()
+        self.world
             .run_system_cached_with(advance_focus, previous)
             .ok()?;
-        self.app
-            .world_mut()
+        self.world
             .run_system_cached(process_recorded_focus_changes)
             .ok()?;
         self.focus()
@@ -522,7 +534,7 @@ impl Presentation {
     /// Coordinates are terminal cells, including the global chrome row. The
     /// virtual window uses cells as physical pixels; native UI does the picking.
     pub fn pointer(&mut self, x: u16, y: u16, pressed: bool) -> Option<Entity> {
-        let world = self.app.world_mut();
+        let world = &mut self.world;
         world.get_mut::<Window>(self.window)?.set_cursor_position(
             (u32::from(x) < self.viewport.x && u32::from(y) <= self.viewport.y)
                 .then_some(Vec2::new(f32::from(x) + 0.5, f32::from(y) + 0.5)),
