@@ -179,6 +179,19 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
 }
 
 #[test]
+fn copying_widened_history_joins_original_row_extents_without_padding() -> Result {
+    let mut p = Parser::new(2, 5, 2)?;
+    p.process(b"abcdefgh\r\nlast")?;
+    assert_eq!(p.screen().history_len(), 1);
+    p.resize(2, 10)?;
+    let window = p.screen().window(1, 2, 10);
+    assert!(window.row_wrapped(0));
+    assert!(window.cell(0, 5).is_none());
+    assert_eq!(window.text((0, 0), (1, 9), 20, 100)?, "abcdefgh");
+    Ok(())
+}
+
+#[test]
 fn copy_soft_wraps_trim_hard_padding_and_enforce_limits() -> Result {
     let mut p = Parser::new(4, 5, 0)?;
     p.process(b"abcdefgh\r\nijk")?;
