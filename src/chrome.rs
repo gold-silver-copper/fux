@@ -62,6 +62,15 @@ pub fn fit(text: &str, cols: u16, tail: bool) -> String {
     }
 }
 
+/// A padded label when it fits, else the bare name cut to the room.
+fn label(padded: &str, bare: &str, room: u16) -> String {
+    if width(padded) <= room {
+        padded.to_owned()
+    } else {
+        fit(bare, room, false)
+    }
+}
+
 /// Render the existing bar with an ordered, active-visible tab window.
 pub fn tab_bar(
     out: &mut String,
@@ -113,7 +122,9 @@ pub fn tab_bar(
     } else {
         (allowance / 3).max(1)
     };
-    let title = fit(&format!(" {workspace}"), workspace_room, false);
+    // Padding is dropped before a label's own glyphs are: at three cells a
+    // name that starts with a wide glyph would otherwise be an ellipsis only.
+    let title = label(&format!(" {workspace}"), workspace, workspace_room);
     at(
         out,
         0,
@@ -155,15 +166,7 @@ pub fn tab_bar(
         if room == 0 {
             break;
         }
-        let label = fit(
-            &if room < 3 {
-                name.clone()
-            } else {
-                format!(" {name} ")
-            },
-            room,
-            false,
-        );
+        let label = label(&format!(" {name} "), name, room);
         let size = width(&label);
         at(
             out,
