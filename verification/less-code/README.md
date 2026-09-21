@@ -32,6 +32,7 @@ included. A revision argument reads sources directly from Git, not the worktree.
 | Section 5 | 6771 | -111 |
 | Section 6 | 6766 | -116 |
 | Section 7 | 6766 | -116 |
+| Section 8 (tests only) | 6766 | -116 |
 
 ## Section 1
 
@@ -207,3 +208,57 @@ non-object, negative/fractional/wrong-type, zero, u64::MAX, omitted single field
 unknown fields, valid/missing workspace names, and clamping before conversion.
 No second wire break was introduced. 48 unit and 35 integration tests pass;
 four gates in `section7.log`.
+
+## Section 8 (production refactor rejected; regression evidence retained)
+
+The barrier-controlled spike disproves equivalence, so `PendingAssets`,
+`LoadWake`, guards and watcher marking remain unchanged. This section's commit
+contains tests/evidence, **not** the proposed asset-state refactor.
+
+Exact reproduction:
+
+```sh
+cargo test --locked load_state_cannot_replace -- --nocapture
+```
+
+Output (`asset-spike.log`):
+
+```text
+barrier: after reload + full update, native state=Loaded, native pending=false, bridge pending=true
+idle runner: initial load, queued reload, invalid config, recovery, failed layout and removed layout all settled without requests
+```
+
+The retained test isolates a one-worker I/O pool in a subprocess, loads settings,
+blocks that worker with a channel barrier, marks the path as the watcher does,
+and calls native `AssetServer::reload`. After a **full App update**, the old
+asset is still `Loaded`; the reload task has not run to mark `Loading`. Native
+load-state-only pending would let `main.rs` park indefinitely at this point.
+Releasing the barrier and using the existing pending deadline completes reload.
+The subsequent invalid-config/recovery/layout-failure/layout-removal cycles use
+only actual file-watcher events: no explicit reload, remote requests or frames.
+An eight-second watchdog fails *before* another update, so it cannot mask a lost
+wake. No sleeps are used to manufacture the counterexample's scheduling window.
+
+Source trace, Bevy 0.19.1:
+
+- `server/mod.rs::handle_internal_asset_events` handles filesystem events by
+  calling `reload_internal`; it does not synchronously change the load state.
+- `reload_internal` spawns on `IoTaskPool`; only that future calls
+  `load_internal(..., true, None)`.
+- `server/info.rs::get_or_create_path_handle_internal` marks the state `Loading`
+  for `HandleLoadingMode::Force`, after that future starts. `Last` ticks local
+  executors, not the global pool on which `reload_internal` spawns.
+- Initial loads retain `with_guard(LoadWake(..))`; completion/failure events are
+  applied by the asset schedule. Settings/layout consumers run after
+  `AssetEventSystems` in `PostUpdate`; layout consumers emit `LayoutReload` for
+  the runner's next `Update`, and explicitly wake it. Native load-state success
+  alone is not proof all fux consumers have run.
+- A settings layout path is an independent load initiated by `track_layout`;
+  replacing/removing it clears the old pending path. Failed settings retain
+  usable values; failed layouts clear their apply flag. The idle test covers
+  these paths. Direct and recursive load states also differ for asset
+  dependencies; no claim of interchangeable recursive readiness is made. The
+  earlier demonstrated primary-state race already rules out the replacement.
+
+All 49 unit and 35 integration tests pass, including existing settings and
+keybinding hot-reload tests. Four gates: `section8.log`.

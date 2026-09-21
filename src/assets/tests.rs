@@ -1,3 +1,5 @@
+mod reload_spike;
+
 use super::*;
 use crate::testing::*;
 use crate::{model::*, navigation};
