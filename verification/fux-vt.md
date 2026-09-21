@@ -1,6 +1,9 @@
 # fux-vt implementation and verification
 
-Status: **in progress; not complete**. No completion PR has been opened.
+Status: **correctness gates complete on the final tree; the performance
+gate is explicitly deferred by the user's instruction ("only correctness")
+and is reported below with all measured numbers, not claimed as passed.**
+See the final report at the end.
 
 ## Baseline
 
@@ -282,5 +285,92 @@ In the unoptimized profile the measured debug cost was about 213 ns per row
 few thousand rows per 201-pane frame. `c5e867d` replaces SipHash with a
 multiplicative key mix (process-private, bounded table), halving that to
 about 96 ns per row (9.2 ms per 96,000 rows) with byte-identical output.
-The whole-screen memo was deliberately not reintroduced. Both binaries were
-then remeasured with the same harness as `paired-performance-2`.
+Both binaries were then remeasured with the same harness as
+`paired-performance-2`. That run was noisier (isolated 200–300 ms outliers on
+both sides) but still showed 43 ms before / 45 ms after at 201 panes and
+50 / 53 ms after the large round trip, so hashing alone was not enough: an
+unchanged pane still paid one lookup per painted row.
+
+The row cache therefore gained a bounded index of the eight most recently
+served windows, keyed by the emulator's non-destructive mark and the
+window's offset/height/width and sharing the row entries' `Arc`s. It is not
+the removed revision-keyed snapshot: several viewers' windows coexist, keys
+are emulator marks rather than the terminal revision, and any change
+(including cursor-only) falls back to row-ID/version reuse rather than a
+full rebuild. Unit tests assert zero row lookups for alternating unchanged
+windows, three lookups and zero extractions after a cursor-only change,
+and the eight-window bound with row reuse after eviction. Debug probe:
+window hit 0.1 µs/frame, row reuse 2.5 µs/frame, rebuild 165 µs/frame
+(release: 0.01 / 0.16 / 12 µs). A third paired comparison was started as
+`paired-performance-3` and then **stopped after three of twelve scale runs**
+when the user directed that only correctness matters for now. Its partial
+results (warm-ups plus one measured pair) are retained; they are not a
+measurement. The performance gate in the prompt is therefore **deferred, not
+passed**: the last complete comparison (`paired-performance-2`, before the
+window index) showed +2 ms median at 201 panes and no change at the move to
+tab 1000.
+
+## Final report (commit `39724bc`)
+
+**Differential mismatches.** Open mismatches: **zero**. Fixed in fux-vt:
+wrap below margins, height-only resize wrap metadata, widened-history copy
+padding, partial-scroll mark invalidation. Allowlisted with executed
+XTerm(411) evidence: DECAWM (upstream ignores it) and IL/DL outside margins
+(upstream edits rows there). Narrow exclusions with explicit expectations:
+the two known upstream tiny-grid crashes. Inventory:
+`fux-vt-divergences.json`; all 180 seeded comparisons:
+`fux-vt-corpus-differences.json`.
+
+**Sequence coverage and exclusions.** `fux-vt/README.md` matrix; permanent
+mapping of every scaffolding case in `fux-vt/tests/golden/README.md`; goldens
+recorded from upstream only, never fux-vt. Exclusions: 1047/1048, reflow,
+graphics, kitty keyboard, grapheme segmentation beyond wide+combining,
+alternate-screen history, programmable tabs.
+
+**Workarounds retired (all three).** 1x1 PTY creation/resize verified by
+child `stty size` (process scenario, `owned-terminal-tiny-child-geometry`);
+row-ID selections with span/version validation and instance binding
+(`owned-terminal-retained-selection`, 14 selection unit tests); the
+revision-keyed whole-screen snapshot removed in favour of a bounded
+row-ID/version cache plus a bounded mark-keyed window index
+(`owned-terminal-complete-slow-frames`, 4 cache unit tests). Pane layout
+keeps its 2x2 usability minimum.
+
+**Fuzz.** cargo-fuzz 0.13.2, rustc 1.100.0-nightly (bba531001 2026-09-20),
+`-max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -seed=481504938`:
+615,992 executions in 601 s, peak RSS 523 MiB, exit 0 (`fuzz-final-v3.log`).
+fux-vt is byte-identical since that run (`git diff da6f606 -- fux-vt` empty).
+134 named seeds committed.
+
+**Memory.** 24x80 with 10,000 history rows: 26.0 MB steady reserved
+(cells 25.66 MB + row metadata 0.24 MB + slot order 0.08 MB), identical
+after a further 10,000 scrolls; transactional resize to 60x120 peaks at
+65.2 MB reserved (`memory-plateau.log`). Row cache: 4096 entries / 4 MiB;
+window index: 8 windows sharing those rows.
+
+**Harness mistakes (not production defects).** Resize scenario asserted the
+retired 2x2 backing minimum; resize_cmd settle could straddle size
+publication (reproduced on the baseline binary); one history-copy fixture
+compared padded frame text; one unit fixture built an unattached viewer;
+xterm probe printer margins/atomic rename.
+
+**Final-tree checks** (`final-checks-v5/checks.json`, all pass): fmt,
+strict Clippy, tests (70 unit + 35 integration + 27 fux-vt), builds, harness
+fmt/Clippy/tests/build, fuzz fmt/build, `cargo tree --workspace --locked`,
+source/manifest/lock audit exit 1 with no output (also root `tests/`).
+
+**Harness gates on the final binary** (sha256 `113403b8…`, results.json
+under `final-scenarios-v6`, `final-traces-v5`, `final-stress-v5`,
+`final-smoke-v4`), all on commit `39724bc`, every invocation exit 0:
+
+| Group | Invocations | Result |
+| --- | --- | --- |
+| terminal_edge, adversarial, selection, history, resize, process, stream (`--seconds 3600`) | 7 | pass, 21.5 s |
+| every saved trace under `fux-fuzz/traces` (`--replay PATH --seconds 3600`) | 22 | pass, 38.6 s |
+| walk 100×20, walk 777×3000 actions, raw 600×20, scene_fuzz 300×20 | 4 (61 cases) | pass, 608.2 s |
+| full smoke `--seconds 600` | 1 (62 cases) | pass, 308.8 s |
+
+Stream convergence (`STREAM-TIMES`, five measured runs each, final frame
+equal in every run): catch-up 1 ms both versions; advancing 13 ms before /
+12 ms after; convergence 130 ms before / 129 ms after
+(`paired-performance-1`).
