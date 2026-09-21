@@ -29,6 +29,7 @@ included. A revision argument reads sources directly from Git, not the worktree.
 | Section 2 | 6799 | -83 |
 | Section 3 | 6795 | -87 |
 | Section 4 | 6787 | -95 |
+| Section 5 | 6771 | -111 |
 
 ## Section 1
 
@@ -124,3 +125,34 @@ cancelled before its first poll starts I/O; the baseline did not guarantee that.
 Existing integration coverage verifies scene mappings, failed mappings, and
 process identity across replacement. 42 unit and 35 integration tests pass;
 four gates in `section4.log`.
+
+## Section 5
+
+Folded commands and exact old/new JSON are in `wire.md`. `Scope` moved into
+`control.rs`; the existing `interaction::MoveTo` is the single wire/domain
+destination type. Both are registered with the type registry. Chooser variants
+remain unchanged, but entity collection and entry construction are shared.
+All 59 action names and configuration bindings retain their original spelling.
+Tab-only guards (`no tab`, `only one tab`) remain tab-only; workspace singleton
+navigation remains permitted. Close routes through the same subject check.
+
+Golden tests round-trip both scopes, both order values, all move destinations,
+and explicit entity-bit encoding; all removed kinds and the old unscoped reorder
+shape are rejected. Bad/missing scopes, destinations and entity types are also
+rejected. No legacy aliases were added. 44 unit and 35 integration tests pass;
+four gates in `section5.log`. README wire examples are updated in section 9.
+
+Only `tests/design/interactions.rs` changes existing integration calls:
+
+| Test | Wire changes (exact examples in `wire.md`) |
+| --- | --- |
+| `hidden_tabs_stop_constraining_pty_size_even_before_the_switching_viewer_paints` | tab_previous → previous/tab |
+| `workspace_order_chooser_memory_and_scene_replacement_are_consistent` | workspace_reorder/select/next/previous → scoped operations |
+| `nested_swap_and_existing_tab_workspace_moves_keep_process_identity_and_history` | tab/workspace previous and move-to-existing destinations |
+| `tabs_bar_native_click_chooser_and_independent_focus_survive_switches` | tab_previous → previous/tab |
+| `interactive_close_is_modal_captured_and_automation_is_explicit` | tab_close → close with tab subject (including wrong-kind test) |
+| `directional_previous_last_focus_and_rearrangement_preserve_processes` | move_to_new_tab → move/new_tab; tab_previous → previous/tab |
+
+The harness adds `scoped(viewer, kind, scope)`; plain `command` still sends only
+kind. Three interaction unit-test command constructors also change shape. No
+behavioral assertion or observed response field was changed.

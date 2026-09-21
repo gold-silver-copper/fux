@@ -5,12 +5,14 @@ use crate::{
     actions::{self, Action, Target},
     assets::BindingAction,
     chrome,
-    control::{Chooser, Command, Order, Subject},
+    control::{Chooser, Command, Order, Scope, Subject},
     model::*,
     navigation,
     protocol::{Direction, Input, Key, Modifiers, MouseAction},
 };
 use bevy_ecs::prelude::*;
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
 pub struct Entry {
@@ -139,44 +141,47 @@ pub(crate) fn choose(
     target: Target,
     chooser: Chooser,
 ) -> Result<(), String> {
-    let (title, entries): (Action, Vec<Entry>) = match chooser {
-        Chooser::Tab => (
-            Action::TabChoose,
-            navigation::tabs(world, target.workspace)
-                .into_iter()
-                .map(|tab| entry(world, tab, Command::TabSelect { tab }))
-                .collect(),
-        ),
-        Chooser::Workspace => (
-            Action::WorkspaceChoose,
-            roots(world)
-                .into_iter()
-                .map(|workspace| entry(world, workspace, Command::WorkspaceSelect { workspace }))
-                .collect(),
-        ),
-        Chooser::SwapTarget => (
-            Action::SwapChoose,
-            navigation::leaves(world, target.tab.ok_or("no tab")?)
-                .into_iter()
-                .filter(|e| Some(*e) != target.leaf)
-                .map(|with| entry(world, with, Command::Swap { with }))
-                .collect(),
-        ),
-        Chooser::MoveToTab => (
-            Action::MoveTab,
-            navigation::tabs(world, target.workspace)
-                .into_iter()
-                .map(|tab| entry(world, tab, Command::MoveToTab { tab }))
-                .collect(),
-        ),
-        Chooser::MoveToWorkspace => (
-            Action::MoveWorkspace,
-            roots(world)
-                .into_iter()
-                .map(|workspace| entry(world, workspace, Command::MoveToWorkspace { workspace }))
-                .collect(),
-        ),
+    let title = match chooser {
+        Chooser::Tab => Action::TabChoose,
+        Chooser::Workspace => Action::WorkspaceChoose,
+        Chooser::SwapTarget => Action::SwapChoose,
+        Chooser::MoveToTab => Action::MoveTab,
+        Chooser::MoveToWorkspace => Action::MoveWorkspace,
     };
+    let entities = match chooser {
+        Chooser::Tab | Chooser::MoveToTab => navigation::tabs(world, target.workspace),
+        Chooser::Workspace | Chooser::MoveToWorkspace => roots(world),
+        Chooser::SwapTarget => navigation::leaves(world, target.tab.ok_or("no tab")?)
+            .into_iter()
+            .filter(|e| Some(*e) != target.leaf)
+            .collect(),
+    };
+    let entries = entities
+        .into_iter()
+        .map(|entity| {
+            let command = match chooser {
+                Chooser::Tab => Command::Select {
+                    scope: Scope::Tab,
+                    entity,
+                },
+                Chooser::Workspace => Command::Select {
+                    scope: Scope::Workspace,
+                    entity,
+                },
+                Chooser::SwapTarget => Command::Swap { with: entity },
+                Chooser::MoveToTab => Command::Move {
+                    to: MoveTo::Tab { tab: entity },
+                },
+                Chooser::MoveToWorkspace => Command::Move {
+                    to: MoveTo::Workspace { workspace: entity },
+                },
+            };
+            Entry {
+                label: label(world, entity),
+                run: Run::Command(command),
+            }
+        })
+        .collect();
     if let Some(reason) = actions::unavailable(world, target, title) {
         return Err(reason.into());
     }
@@ -193,13 +198,6 @@ pub(crate) fn choose(
     );
     Ok(())
 }
-fn entry(world: &World, entity: Entity, command: Command) -> Entry {
-    Entry {
-        label: label(world, entity),
-        run: Run::Command(command),
-    }
-}
-
 /// Opens the action menu for a pane, tab or workspace.
 pub(crate) fn menu(
     world: &mut World,
@@ -327,11 +325,14 @@ pub(crate) fn check(world: &World, subject: Subject) -> Result<Entity, String> {
 }
 
 /// Where a pane moves to. New containers are created on demand.
-pub(crate) enum MoveTo {
-    Tab(Entity),
-    NewTab(Option<String>),
-    Workspace(Entity),
-    NewWorkspace(Option<String>),
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum MoveTo {
+    Tab { tab: Entity },
+    NewTab { name: Option<String> },
+    Workspace { workspace: Entity },
+    NewWorkspace { name: Option<String> },
 }
 
 /// Moves the viewer's focused pane and follows it, without overwriting other
@@ -344,7 +345,7 @@ pub(crate) fn move_pane(
 ) -> Result<(), String> {
     let leaf = target.leaf.ok_or("no pane")?;
     let (workspace, tab) = match to {
-        MoveTo::NewWorkspace(name) => {
+        MoveTo::NewWorkspace { name } => {
             let order = roots(world)
                 .into_iter()
                 .filter_map(|e| world.get::<WorkspaceOrder>(e).map(|o| o.0))
@@ -362,7 +363,7 @@ pub(crate) fn move_pane(
             let tab = world.spawn((Tab, Name::new("main"), ChildOf(root))).id();
             (root, tab)
         }
-        MoveTo::NewTab(name) => {
+        MoveTo::NewTab { name } => {
             let tab = world
                 .spawn((
                     Tab,
@@ -372,7 +373,7 @@ pub(crate) fn move_pane(
                 .id();
             (target.workspace, tab)
         }
-        MoveTo::Workspace(root) => {
+        MoveTo::Workspace { workspace: root } => {
             if world.get::<Workspace>(root).is_none() {
                 return Err("destination workspace removed".into());
             }
@@ -382,7 +383,7 @@ pub(crate) fn move_pane(
             let tab = navigation::tabs(world, root)[0];
             (root, tab)
         }
-        MoveTo::Tab(tab) => {
+        MoveTo::Tab { tab } => {
             if world.get::<Tab>(tab).is_none() {
                 return Err("destination tab removed".into());
             }

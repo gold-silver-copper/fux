@@ -1,7 +1,7 @@
 //! Native hierarchy normalization and viewer-local navigation memory.
 #[cfg(test)]
 mod tests;
-use crate::model::*;
+use crate::{control::Scope, model::*};
 use bevy_ecs::{lifecycle::HookContext, prelude::*, world::DeferredWorld};
 use bevy_ui::Node;
 
@@ -82,10 +82,6 @@ pub fn normalize_workspace(world: &mut World, root: Entity) {
     }
 }
 
-pub enum Scope {
-    Tab,
-    Workspace,
-}
 pub enum Pick {
     Entity(Entity),
     Next,

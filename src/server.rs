@@ -1,7 +1,7 @@
 use crate::{
     actions::Action,
     assets::{self, Settings},
-    control::{Axis, Chooser, Command, Control, Order, Shutdown, Subject, UserInput},
+    control::{Axis, Chooser, Command, Control, Order, Scope, Shutdown, Subject, UserInput},
     frame::{self, sync_view},
     interaction::Prefix,
     model::*,
@@ -104,7 +104,10 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                             subject: Subject::Tab(hit),
                         }
                     } else {
-                        Command::TabSelect { tab: hit }
+                        Command::Select {
+                            scope: Scope::Tab,
+                            entity: hit,
+                        }
                     })
                 } else if world.get::<Workspace>(hit).is_some() {
                     Some(Command::Menu {
@@ -253,6 +256,8 @@ impl Plugin for ServerPlugin {
             .register_type::<Axis>()
             .register_type::<Order>()
             .register_type::<Chooser>()
+            .register_type::<Scope>()
+            .register_type::<crate::interaction::MoveTo>()
             .register_type::<Control>()
             .register_type::<UserInput>()
             .register_type::<Shutdown>()
@@ -496,8 +501,8 @@ pub(crate) fn scene(world: &mut World, root: Entity) -> Result<(u32, Arc<Dynamic
 /// Runs one command for a viewer. Every arm either changes the world here or
 /// hands off to the module that owns that part of the model.
 pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result<(), String> {
-    use crate::interaction::{self, MoveTo, check};
-    use crate::navigation::{self as nav, Pick, Scope};
+    use crate::interaction::{self, check};
+    use crate::navigation::{self as nav, Pick};
     use Command::*;
     if !matches!(command, CopyMode | Scroll { .. })
         && let Ok(mut entity) = world.get_entity_mut(id)
@@ -524,6 +529,23 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
     let pane_of = |world: &World, leaf: Entity| world.get::<PaneView>(leaf).map(|p| p.pane);
     let one_tab = || nav::tabs(world, workspace).len() < 2;
     let one_pane = || tab.is_none_or(|tab| nav::leaves(world, tab).len() < 2);
+    if matches!(
+        command,
+        Select {
+            scope: Scope::Tab,
+            ..
+        } | Next { scope: Scope::Tab }
+            | Previous { scope: Scope::Tab }
+            | Reorder {
+                scope: Scope::Tab,
+                ..
+            }
+    ) {
+        tab.ok_or("no tab")?;
+        if !matches!(command, Select { .. }) && one_tab() {
+            return Err("only one tab".into());
+        }
+    }
     match command {
         Split { axis, program } => {
             let settings = world.resource::<Settings>().clone();
@@ -606,7 +628,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 child = parent;
             }
         }
-        Reorder { order } => {
+        ReorderPane { order } => {
             let leaf = focus.ok_or("no pane")?;
             if one_pane() {
                 return Err("only one pane".into());
@@ -644,14 +666,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             }
             interaction::beside(world, id, target, direction, false)?;
         }
-        MoveToTab { tab } => interaction::move_pane(world, id, target, MoveTo::Tab(tab))?,
-        MoveToNewTab { name } => interaction::move_pane(world, id, target, MoveTo::NewTab(name))?,
-        MoveToWorkspace { workspace } => {
-            interaction::move_pane(world, id, target, MoveTo::Workspace(workspace))?;
-        }
-        MoveToNewWorkspace { name } => {
-            interaction::move_pane(world, id, target, MoveTo::NewWorkspace(name))?;
-        }
+        Move { to } => interaction::move_pane(world, id, target, to)?,
         CopyMode => crate::selection::start(world, id, focus.ok_or("no pane")?)?,
         Scroll { order } => {
             focus.ok_or("no pane")?;
@@ -726,32 +741,21 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             tab.ok_or("no tab")?;
             nav::tab_new(world, id, name)?;
         }
-        TabSelect { tab: chosen } => {
-            tab.ok_or("no tab")?;
-            nav::select(world, id, Scope::Tab, Pick::Entity(chosen))?;
-        }
-        TabNext | TabPrevious => {
-            tab.ok_or("no tab")?;
-            if one_tab() {
-                return Err("only one tab".into());
-            }
-            let pick = if command == TabNext {
+        Select { scope, entity } => nav::select(world, id, scope, Pick::Entity(entity))?,
+        Next { scope } | Previous { scope } => {
+            let pick = if matches!(command, Next { .. }) {
                 Pick::Next
             } else {
                 Pick::Previous
             };
-            nav::select(world, id, Scope::Tab, pick)?;
+            nav::select(world, id, scope, pick)?;
         }
-        TabReorder { order } => {
-            let tab = tab.ok_or("no tab")?;
-            if one_tab() {
-                return Err("only one tab".into());
-            }
-            interaction::reorder(world, Subject::Tab(tab), order)?;
-        }
-        TabClose { tab } => {
-            check(world, Subject::Tab(tab))?;
-            interaction::close(world, tab);
+        Reorder { scope, order } => {
+            let subject = match scope {
+                Scope::Tab => Subject::Tab(tab.ok_or("no tab")?),
+                Scope::Workspace => Subject::Workspace(workspace),
+            };
+            interaction::reorder(world, subject, order)?;
         }
         WorkspaceNew { name } => {
             let settings = world.resource::<Settings>().clone();
@@ -774,24 +778,6 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 Focused(leaf),
             ));
             world.get_mut::<Viewer>(id).ok_or(DETACHED)?.zoom = false;
-        }
-        WorkspaceSelect { workspace } => {
-            nav::select(world, id, Scope::Workspace, Pick::Entity(workspace))?;
-        }
-        WorkspaceNext | WorkspacePrevious => {
-            let pick = if command == WorkspaceNext {
-                Pick::Next
-            } else {
-                Pick::Previous
-            };
-            nav::select(world, id, Scope::Workspace, pick)?;
-        }
-        WorkspaceReorder { order } => {
-            interaction::reorder(world, Subject::Workspace(workspace), order)?;
-        }
-        WorkspaceClose { workspace } => {
-            check(world, Subject::Workspace(workspace))?;
-            interaction::close(world, workspace);
         }
         SaveLayout { workspace, path } => {
             check(world, Subject::Workspace(workspace))?;

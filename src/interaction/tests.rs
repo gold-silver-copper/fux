@@ -240,8 +240,10 @@ fn rearrangement_keeps_entity_identity_and_native_child_order() -> crate::testin
     crate::server::execute(
         &mut world,
         id,
-        Command::MoveToNewWorkspace {
-            name: Some("destination".into()),
+        Command::Move {
+            to: MoveTo::NewWorkspace {
+                name: Some("destination".into()),
+            },
         },
     )?;
     assert_ne!(viewing(&world, id), Some(target.workspace));
@@ -309,7 +311,9 @@ fn stale_chooser_destination_never_changes_the_source_or_an_unrelated_target()
             selected: 0,
             entries: vec![Entry {
                 label: "removed".into(),
-                run: Run::Command(Command::MoveToTab { tab: destination }),
+                run: Run::Command(Command::Move {
+                    to: MoveTo::Tab { tab: destination },
+                }),
             }],
         },
     };
@@ -340,7 +344,10 @@ fn every_chooser_entry_remains_visible_on_tiny_terminals() -> crate::testing::Ou
             let entries = (0..10)
                 .map(|i| Entry {
                     label: format!("entry-{i}"),
-                    run: Run::Command(Command::TabSelect { tab }),
+                    run: Run::Command(Command::Select {
+                        scope: Scope::Tab,
+                        entity: tab,
+                    }),
                 })
                 .collect();
             let overlay = Overlay {

@@ -1,6 +1,7 @@
 //! One source of identity, labels, groups, and availability for every action.
 use crate::{
-    control::{Axis, Chooser, Command, Order, Subject},
+    control::{Axis, Chooser, Command, Order, Scope, Subject},
+    interaction::MoveTo,
     model::*,
     navigation,
     protocol::Direction,
@@ -115,6 +116,10 @@ impl Action {
         let pane = target.leaf.map(Subject::Pane);
         let tab = target.tab.map(Subject::Tab);
         let workspace = Subject::Workspace(target.workspace);
+        let scope = match self {
+            TabNext | TabPrevious | TabReorderPrevious | TabReorderNext => Scope::Tab,
+            _ => Scope::Workspace,
+        };
         Some(match self {
             SplitHorizontal => Command::Split {
                 axis: Axis::Horizontal,
@@ -140,10 +145,10 @@ impl Action {
                 axis: Axis::Vertical,
                 grow: self == GrowHeight,
             },
-            ReorderPrev => Command::Reorder {
+            ReorderPrev => Command::ReorderPane {
                 order: Order::Previous,
             },
-            ReorderNext => Command::Reorder { order: Order::Next },
+            ReorderNext => Command::ReorderPane { order: Order::Next },
             SwapChoose => Command::Choose {
                 chooser: Chooser::SwapTarget,
             },
@@ -156,11 +161,15 @@ impl Action {
             MoveTab => Command::Choose {
                 chooser: Chooser::MoveToTab,
             },
-            MoveNewTab => Command::MoveToNewTab { name: None },
+            MoveNewTab => Command::Move {
+                to: MoveTo::NewTab { name: None },
+            },
             MoveWorkspace => Command::Choose {
                 chooser: Chooser::MoveToWorkspace,
             },
-            MoveNewWorkspace => Command::MoveToNewWorkspace { name: None },
+            MoveNewWorkspace => Command::Move {
+                to: MoveTo::NewWorkspace { name: None },
+            },
             CopyMode => Command::CopyMode,
             ScrollUp => Command::Scroll {
                 order: Order::Previous,
@@ -174,25 +183,23 @@ impl Action {
                 direction: self.direction()?,
             },
             TabNew => Command::TabNew { name: None },
-            TabNext => Command::TabNext,
-            TabPrevious => Command::TabPrevious,
+            TabNext | WorkspaceNext => Command::Next { scope },
+            TabPrevious | WorkspacePrevious => Command::Previous { scope },
             TabChoose => Command::Choose {
                 chooser: Chooser::Tab,
             },
-            TabReorderPrevious => Command::TabReorder {
+            TabReorderPrevious | WorkspaceReorderPrevious => Command::Reorder {
+                scope,
                 order: Order::Previous,
             },
-            TabReorderNext => Command::TabReorder { order: Order::Next },
+            TabReorderNext | WorkspaceReorderNext => Command::Reorder {
+                scope,
+                order: Order::Next,
+            },
             WorkspaceNew => Command::WorkspaceNew { name: None },
-            WorkspaceNext => Command::WorkspaceNext,
-            WorkspacePrevious => Command::WorkspacePrevious,
             WorkspaceChoose => Command::Choose {
                 chooser: Chooser::Workspace,
             },
-            WorkspaceReorderPrevious => Command::WorkspaceReorder {
-                order: Order::Previous,
-            },
-            WorkspaceReorderNext => Command::WorkspaceReorder { order: Order::Next },
             Help => Command::Help,
             Detach => Command::Detach,
             RenamePane | RenameTab | RenameWorkspace | SaveLayout | LoadLayout => return None,
