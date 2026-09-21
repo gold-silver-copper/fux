@@ -22,6 +22,28 @@
     "ack": "1b5b306e"
   },
   {
+    "case": "decawm-reenable",
+    "input_hex": "1b5b3f376c6162636465661b5b3f376847",
+    "screen_hex": "6162660a47",
+    "size": [
+      2,
+      3
+    ],
+    "cursor": "1b5b323b3252",
+    "ack": "1b5b306e"
+  },
+  {
+    "case": "decawm-disable-pending",
+    "input_hex": "6162631b5b3f376c44",
+    "screen_hex": "616244",
+    "size": [
+      2,
+      3
+    ],
+    "cursor": "1b5b313b3352",
+    "ack": "1b5b306e"
+  },
+  {
     "case": "below-region-control",
     "input_hex": "1b5b323b33721b5b343b34485a",
     "screen_hex": "0a0a0a2020205a",

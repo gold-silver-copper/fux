@@ -75,6 +75,8 @@ def main():
             for name, geometry, sequence, expected in [
                 ("decawm-off", "3x2", b"\x1b[?7labcdef", b"abf"),
                 ("decawm-on", "3x2", b"abcdef", b"abc\ndef"),
+                ("decawm-reenable", "3x2", b"\x1b[?7labcdef\x1b[?7hG", b"abf\nG"),
+                ("decawm-disable-pending", "3x2", b"abc\x1b[?7lD", b"abD"),
                 ("below-region-control", "4x4", b"\x1b[2;3r\x1b[4;4HZ", b"\n\n\n   Z"),
                 ("insert-below-region", "4x4", b"\x1b[2;3r\x1b[4;4HZ\x1b[L", b"\n\n\n   Z"),
                 ("delete-below-region", "4x4", b"\x1b[2;3r\x1b[4;4HZ\x1b[M", b"\n\n\n   Z"),
