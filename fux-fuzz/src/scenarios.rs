@@ -1,5 +1,6 @@
 mod api_misuse;
 mod chrome;
+mod churn;
 mod clipqueue;
 mod config;
 mod copy;
@@ -16,11 +17,18 @@ mod paste;
 mod process;
 mod race;
 mod reorder;
+mod repair;
 mod resize_cmd;
 mod scene;
+mod scene_fidelity;
 mod scene_map;
+mod scene_refs;
 mod selection;
 mod signal;
+mod soak;
+mod stream;
+mod tabless;
+mod terminal_edge;
 mod zoom;
 
 use crate::{
@@ -81,6 +89,14 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::ClipQueue => clipqueue::run(server),
         Action::ResizeCmd => resize_cmd::run(server),
         Action::ApiMisuse => api_misuse::run(server),
+        Action::SceneFidelity => scene_fidelity::run(server),
+        Action::Tabless => tabless::run(server),
+        Action::Churn => churn::run(server),
+        Action::SceneRefs => scene_refs::run(server),
+        Action::Soak { cycles } => soak::run(server, *cycles),
+        Action::Repair => repair::run(server),
+        Action::TerminalEdge => terminal_edge::run(server),
+        Action::Stream => stream::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
