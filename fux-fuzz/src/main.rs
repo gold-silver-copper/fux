@@ -47,7 +47,7 @@ impl Options {
         while let Some(arg) = args.next() {
             if matches!(arg.as_str(), "--help" | "-h") {
                 println!(
-                    "fux-fuzz --fux PATH [--scenario all|startup|resize|shutdown|paste|signal|keys|mouse|copy|history|zoom|layout|process|nav|scene|config|overlay|limits|chrome|selection|race|memory|reorder|scene_map|mouse_edge|clipqueue|resize_cmd|api_misuse|scene_fidelity|tabless|churn|scene_refs|soak|repair|terminal_edge|stream|walk|scale|adversarial|concurrent] [--seed N]\n  [--iterations 1..100] [--actions 1..5000] [--seconds 1..3600] [--output DIR]\nfux-fuzz --fux PATH --replay TRACE.json [--seconds N] [--output DIR]\nNo implicit build. Default smoke: all scenarios, seed 1, one iteration, six generated resizes.\nStress is opt-in via --iterations/--actions. Failures exit nonzero and retain bundles."
+                    "fux-fuzz --fux PATH [--scenario all|startup|resize|shutdown|paste|signal|keys|mouse|copy|history|zoom|layout|process|nav|scene|config|overlay|limits|chrome|selection|race|memory|reorder|scene_map|mouse_edge|clipqueue|resize_cmd|api_misuse|scene_fidelity|tabless|churn|scene_refs|soak|repair|terminal_edge|stream|walk|scale|adversarial|concurrent|raw|scene_fuzz] [--seed N]\n  [--iterations 1..100] [--actions 1..5000] [--seconds 1..3600] [--output DIR]\nfux-fuzz --fux PATH --replay TRACE.json [--seconds N] [--output DIR]\nNo implicit build. Default smoke: all scenarios, seed 1, one iteration, six generated resizes.\nStress is opt-in via --iterations/--actions. Failures exit nonzero and retain bundles."
                 );
                 return Ok(None);
             }
@@ -222,15 +222,61 @@ fn run(options: Options) -> Result<()> {
         if let Some(error) = &failure {
             failures += 1;
             eprintln!("case {index} FAIL ({elapsed} ms): {error}");
-            if let Action::Walk { seed, steps } = action
-                && error.starts_with("scenario:")
-            {
-                match minimize(&options.binary, &directory, index, *seed, steps, &budget) {
-                    Ok(Some(n)) => println!(
+            if error.starts_with("scenario:") {
+                let outcome = match action {
+                    Action::Walk { seed, steps } => {
+                        let seed = *seed;
+                        Some(minimize(
+                            &options.binary,
+                            &directory,
+                            index,
+                            steps,
+                            &budget,
+                            |steps| Action::Walk {
+                                seed,
+                                steps: steps.to_vec(),
+                            },
+                        ))
+                    }
+                    Action::Raw { seed, steps } => {
+                        let seed = *seed;
+                        Some(minimize(
+                            &options.binary,
+                            &directory,
+                            index,
+                            steps,
+                            &budget,
+                            |steps| Action::Raw {
+                                seed,
+                                steps: steps.to_vec(),
+                            },
+                        ))
+                    }
+                    Action::SceneFuzz { seed, cases } => {
+                        let seed = *seed;
+                        Some(minimize(
+                            &options.binary,
+                            &directory,
+                            index,
+                            cases,
+                            &budget,
+                            |cases| Action::SceneFuzz {
+                                seed,
+                                cases: cases.to_vec(),
+                            },
+                        ))
+                    }
+                    _ => None,
+                };
+                match outcome {
+                    Some(Ok(Some(n))) => println!(
                         "case {index} minimized to {n} steps; see minimized-{index:03}.json"
                     ),
-                    Ok(None) => println!("case {index} did not reproduce during minimization"),
-                    Err(e) => eprintln!("case {index} minimization stopped: {e}"),
+                    Some(Ok(None)) => {
+                        println!("case {index} did not reproduce during minimization");
+                    }
+                    Some(Err(e)) => eprintln!("case {index} minimization stopped: {e}"),
+                    None => {}
                 }
             }
         } else {
@@ -262,22 +308,12 @@ fn run(options: Options) -> Result<()> {
     );
     ensure(failures == 0, "scenario run failed; see retained bundle")
 }
-/// Runs one walk on a fresh server and reports whether the scenario failed.
-fn walk_fails(
-    binary: &Path,
-    dir: &Path,
-    seed: u64,
-    steps: &[trace::Step],
-    budget: &Arc<Budget>,
-) -> Result<bool> {
+/// Runs one generated case on a fresh server and reports whether it failed.
+fn case_fails(binary: &Path, dir: &Path, action: &Action, budget: &Arc<Budget>) -> Result<bool> {
     budget.check(budget.end)?;
-    let action = Action::Walk {
-        seed,
-        steps: steps.to_vec(),
-    };
     let mut server = Server::spawn(binary, dir, Config::Missing, budget.clone())?;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        scenarios::execute(&mut server, &action)
+        scenarios::execute(&mut server, action)
     }));
     let _ = server.cleanup();
     Ok(match outcome {
@@ -287,39 +323,36 @@ fn walk_fails(
     })
 }
 
-/// Shrinks a failing walk: first the shortest failing prefix by bisection,
-/// then delta debugging over the remaining steps. Saves the shortest failing
-/// trace next to the bundle. Stops early, keeping the best so far, when the
-/// budget runs out.
-fn minimize(
+/// Shrinks a failing generated case: first the shortest failing prefix by
+/// bisection, then delta debugging over the remaining steps. Saves the
+/// shortest failing trace next to the bundle. Stops early, keeping the best
+/// so far, when the budget runs out.
+fn minimize<T: Clone>(
     binary: &Path,
     directory: &Path,
     index: usize,
-    seed: u64,
-    steps: &[trace::Step],
+    steps: &[T],
     budget: &Arc<Budget>,
+    build: impl Fn(&[T]) -> Action,
 ) -> Result<Option<usize>> {
     let scratch = directory.join(format!("minimize-{index:03}"));
     fs::create_dir_all(&scratch)?;
     let mut attempt = 0usize;
-    let mut fails = |steps: &[trace::Step]| -> Result<bool> {
+    let mut fails = |steps: &[T]| -> Result<bool> {
         attempt += 1;
         let dir = scratch.join(format!("try-{attempt:04}"));
-        let result = walk_fails(binary, &dir, seed, steps, budget);
+        let result = case_fails(binary, &dir, &build(steps), budget);
         let _ = fs::remove_dir_all(&dir);
         result
     };
     if !fails(steps)? {
         return Ok(None);
     }
-    let save = |steps: &[trace::Step]| -> Result<()> {
+    let save = |steps: &[T]| -> Result<()> {
         let plan = Plan {
-            version: 3,
-            seed,
-            actions: vec![Action::Walk {
-                seed,
-                steps: steps.to_vec(),
-            }],
+            version: 4,
+            seed: 0,
+            actions: vec![build(steps)],
         };
         fs::write(
             directory.join(format!("minimized-{index:03}.json")),
@@ -340,7 +373,7 @@ fn minimize(
             }
         }
     }
-    let mut current: Vec<trace::Step> = steps.get(..hi).unwrap_or(steps).to_vec();
+    let mut current: Vec<T> = steps.get(..hi).unwrap_or(steps).to_vec();
     save(&current)?;
     // Delta debugging: remove chunks while the failure reproduces.
     let mut chunk = current.len() / 2;
