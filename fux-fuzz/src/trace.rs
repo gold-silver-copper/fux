@@ -83,6 +83,20 @@ pub enum Action {
     Memory,
     /// Tab, workspace and pane reorder invariants.
     Reorder,
+    /// Layout loads with explicit, duplicate, misdirected and missing
+    /// mappings, and the configured `layout:` reload path.
+    SceneMap,
+    /// Mouse events beyond the legacy encoding range, Shift-right-click while
+    /// the application owns the mouse, wheel on chrome, and API coordinates
+    /// outside the viewer.
+    MouseEdge,
+    /// The 16-entry clipboard delivery queue and a reload that disables it.
+    ClipQueue,
+    /// Ctrl+arrow pane resizing: conservation, minimums and no-op axes.
+    ResizeCmd,
+    /// Malformed API requests rejected at deserialization, and zero or
+    /// oversized viewports.
+    ApiMisuse,
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -145,6 +159,11 @@ impl Plan {
                     | "race"
                     | "memory"
                     | "reorder"
+                    | "scene_map"
+                    | "mouse_edge"
+                    | "clipqueue"
+                    | "resize_cmd"
+                    | "api_misuse"
             ),
             "unknown scenario",
         )?;
@@ -279,6 +298,21 @@ impl Plan {
             }
             if matches!(scenario, "all" | "reorder") {
                 actions.push(Action::Reorder);
+            }
+            if matches!(scenario, "all" | "scene_map") {
+                actions.push(Action::SceneMap);
+            }
+            if matches!(scenario, "all" | "mouse_edge") {
+                actions.push(Action::MouseEdge);
+            }
+            if matches!(scenario, "all" | "clipqueue") {
+                actions.push(Action::ClipQueue);
+            }
+            if matches!(scenario, "all" | "resize_cmd") {
+                actions.push(Action::ResizeCmd);
+            }
+            if matches!(scenario, "all" | "api_misuse") {
+                actions.push(Action::ApiMisuse);
             }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [
