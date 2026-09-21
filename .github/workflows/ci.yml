@@ -25,9 +25,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      CI_LOGS: ${{ runner.temp }}/fux-ci
-      FUX_DESIGN_CAPTURE: ${{ runner.temp }}/fux-ci/captures
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -37,6 +34,10 @@ jobs:
       - name: Platform and pinned toolchain
         run: |
           set -euo pipefail
+          CI_LOGS="$RUNNER_TEMP/fux-ci"
+          FUX_DESIGN_CAPTURE="$CI_LOGS/captures"
+          echo "CI_LOGS=$CI_LOGS" >> "$GITHUB_ENV"
+          echo "FUX_DESIGN_CAPTURE=$FUX_DESIGN_CAPTURE" >> "$GITHUB_ENV"
           mkdir -p "$FUX_DESIGN_CAPTURE"
           {
             uname -a
@@ -95,6 +96,6 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ci-failure-${{ matrix.os }}-${{ runner.arch }}
-          path: ${{ env.CI_LOGS }}/
+          path: ${{ runner.temp }}/fux-ci/
           retention-days: 7
           if-no-files-found: ignore
