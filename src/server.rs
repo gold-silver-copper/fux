@@ -595,6 +595,20 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 .and_then(|pane| world.get::<Launch>(pane))
                 .map(|launch| launch.cwd.clone());
             let argv = program.map(|program| vec!["/bin/sh".into(), "-lc".into(), program]);
+            // A split must leave both panes at least the 2x2 backing minimum
+            // with a one-cell separator between them; otherwise one pane would
+            // exist, take focus and input, and paint nothing at all.
+            if let Some(leaf) = leaf
+                && let Some(rect) = frame::rect(world, id, leaf)
+            {
+                let room = match axis {
+                    Axis::Vertical => rect.height(),
+                    Axis::Horizontal => rect.width(),
+                };
+                if room < 5 {
+                    return Err("pane too small to split".into());
+                }
+            }
             let new = match leaf {
                 Some(leaf) => {
                     let parent = world
