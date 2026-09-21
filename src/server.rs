@@ -9,7 +9,7 @@ use crate::{
     protocol::{Input, MouseAction, MouseButton, Token},
     terminal::{Terminal, TerminalPlugin},
 };
-use bevy_app::{App, AppExit, Plugin, Startup, Update};
+use bevy_app::{App, AppExit, Plugin, PostUpdate, Update};
 use bevy_ecs::{
     prelude::*,
     system::SystemChangeTick,
@@ -279,7 +279,20 @@ impl Plugin for ServerPlugin {
             .add_observer(|_: On<Shutdown>, mut exits: MessageWriter<AppExit>| {
                 exits.write(AppExit::Success);
             })
-            .add_systems(Startup, initialize)
+            .add_systems(
+                PostUpdate,
+                initialize.after(assets::SettingsApplied).run_if(
+                    assets::initial_settings_settled
+                        .and_then(bevy_ecs::schedule::common_conditions::run_once),
+                ),
+            )
+            // Do not advertise BRP readiness or accept attach before the initial
+            // workspace exists. Subsequent reloads leave this gate open.
+            .configure_sets(
+                bevy_remote::RemoteLast,
+                bevy_remote::RemoteSystems::ProcessRequests
+                    .run_if(assets::initial_settings_settled),
+            )
             .add_systems(
                 Update,
                 (
@@ -293,7 +306,9 @@ impl Plugin for ServerPlugin {
             )
             .add_systems(
                 bevy_remote::RemoteLast,
-                settle_remote_requests.before(bevy_remote::RemoteSystems::ProcessRequests),
+                settle_remote_requests
+                    .before(bevy_remote::RemoteSystems::ProcessRequests)
+                    .run_if(assets::initial_settings_settled),
             );
     }
 }
@@ -312,6 +327,9 @@ fn initialize(world: &mut World) {
     if let Err(error) = spawn_pane(world, &settings, tab, None, None) {
         bevy_log::error!("initial terminal: {error}");
     }
+    // Launch is created after Update; settle its native PTY lifecycle next turn,
+    // including the missing/invalid-config fallback without another request.
+    world.resource::<Wake>().notify();
 }
 
 pub(crate) fn workspace(world: &mut World, name: &str) -> Entity {

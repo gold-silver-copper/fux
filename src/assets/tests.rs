@@ -5,6 +5,72 @@ use crate::testing::*;
 use crate::{model::*, navigation};
 use bevy_ui::{Display, Node, RepeatedGridTrack, UiRect, Val};
 
+#[test]
+fn initial_shell_waits_for_settings_and_is_not_recreated_on_reload() -> Outcome {
+    let mut app = App::new();
+    app.add_plugins(bevy_app::TaskPoolPlugin::default());
+    app.insert_resource(Wake(std::thread::current()));
+    app.insert_resource(Settings {
+        shell: vec!["must-not-launch-before-config".into()],
+        ..Default::default()
+    });
+    app.insert_resource(ConfigAssets {
+        settings: Handle::default(),
+        settings_path: "fux.json".into(),
+        initial_settings_settled: false,
+        layout: None,
+        layout_needs_apply: false,
+    });
+    app.add_plugins(crate::server::ServerPlugin);
+    app.insert_resource(crate::server::Disconnected(async_channel::unbounded().1));
+    app.add_message::<LayoutReload>();
+    // Waiting updates must not consume the one-shot initialization condition.
+    for _ in 0..2 {
+        app.update();
+        assert_eq!(
+            app.world_mut().query::<&Launch>().iter(app.world()).count(),
+            0
+        );
+        assert!(navigation::workspaces(app.world_mut()).is_empty());
+    }
+    let configured = vec!["/bin/sh".to_owned(), "-c".into(), "exit 0".into()];
+    app.world_mut().resource_mut::<Settings>().shell = configured.clone();
+    app.world_mut()
+        .resource_mut::<ConfigAssets>()
+        .initial_settings_settled = true;
+    app.update();
+    let launches: Vec<_> = app
+        .world_mut()
+        .query::<&Launch>()
+        .iter(app.world())
+        .cloned()
+        .collect();
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches.first().need()?.argv, configured);
+    assert_eq!(navigation::workspaces(app.world_mut()).len(), 1);
+
+    let loading = PendingAssets::default();
+    loading.start("fux.json".into());
+    app.insert_resource(loading);
+    app.world_mut().resource_mut::<Settings>().shell =
+        vec!["reload-must-not-replace-live-shell".into()];
+    assert!(pending(app.world()));
+    assert!(initial_settings_settled(app.world()));
+    for _ in 0..2 {
+        app.update();
+    }
+    let launches: Vec<_> = app
+        .world_mut()
+        .query::<&Launch>()
+        .iter(app.world())
+        .cloned()
+        .collect();
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches.first().need()?.argv, configured);
+    assert_eq!(navigation::workspaces(app.world_mut()).len(), 1);
+    Ok(())
+}
+
 fn app() -> App {
     let mut app = App::new();
     app.register_type::<Workspace>()
