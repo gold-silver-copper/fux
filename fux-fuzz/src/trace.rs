@@ -37,6 +37,21 @@ pub enum Action {
         bracketed: bool,
         chunk_bytes: usize,
     },
+    /// A graceful termination signal delivered to an attached frontend.
+    Signal {
+        signal: FrontendSignal,
+    },
+    /// Raw outer-terminal key encodings that must reach the pane byte-exact.
+    Keys {
+        sequences: Vec<String>,
+    },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrontendSignal {
+    Interrupt,
+    Terminate,
+    Hangup,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -58,7 +73,7 @@ impl Plan {
         ensure(
             matches!(
                 scenario,
-                "all" | "startup" | "resize" | "shutdown" | "paste"
+                "all" | "startup" | "resize" | "shutdown" | "paste" | "signal" | "keys"
             ),
             "unknown scenario",
         )?;
@@ -127,6 +142,35 @@ impl Plan {
                     });
                 }
             }
+            if matches!(scenario, "all" | "keys") {
+                let canonical = canonical_keys();
+                actions.push(Action::Keys {
+                    sequences: canonical.clone(),
+                });
+                // A seeded order finds escape-timing interactions between
+                // neighbours that the canonical order happens to avoid.
+                let mut shuffled = canonical;
+                for i in (1..shuffled.len()).rev() {
+                    state = state.wrapping_add(0x9e3779b97f4a7c15);
+                    let mut x = state;
+                    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+                    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+                    let j = ((x ^ (x >> 31)) % (i as u64 + 1)) as usize;
+                    shuffled.swap(i, j);
+                }
+                actions.push(Action::Keys {
+                    sequences: shuffled,
+                });
+            }
+            if matches!(scenario, "all" | "signal") {
+                for signal in [
+                    FrontendSignal::Interrupt,
+                    FrontendSignal::Terminate,
+                    FrontendSignal::Hangup,
+                ] {
+                    actions.push(Action::Signal { signal });
+                }
+            }
             if matches!(scenario, "all" | "shutdown") {
                 for mode in [
                     Shutdown::Initializing,
@@ -138,7 +182,7 @@ impl Plan {
             }
         }
         Ok(Self {
-            version: 2,
+            version: 3,
             seed,
             actions,
         })
@@ -153,7 +197,7 @@ impl Plan {
         Ok(plan)
     }
     pub fn validate(&self) -> Result<()> {
-        ensure(matches!(self.version, 1 | 2), "unsupported trace version")?;
+        ensure(matches!(self.version, 1..=3), "unsupported trace version")?;
         ensure(
             !self.actions.is_empty() && self.actions.len() <= 1700,
             "invalid scenario count",
@@ -166,7 +210,7 @@ impl Plan {
                 ..
             } = action
             {
-                ensure(self.version == 2, "paste actions require trace version 2")?;
+                ensure(self.version >= 2, "paste actions require trace version 2")?;
                 let bytes = text
                     .len()
                     .checked_mul(*repeats)
@@ -182,6 +226,18 @@ impl Plan {
                     "paste bounds exceeded",
                 )?;
                 ensure(bytes.div_ceil(*chunk_bytes) <= 256, "too many paste chunks")?;
+            }
+            if let Action::Signal { .. } = action {
+                ensure(self.version >= 3, "signal actions require trace version 3")?;
+            }
+            if let Action::Keys { sequences } = action {
+                ensure(self.version >= 3, "keys actions require trace version 3")?;
+                ensure(
+                    !sequences.is_empty()
+                        && sequences.len() <= 256
+                        && sequences.iter().all(|k| !k.is_empty() && k.len() <= 16),
+                    "invalid key sequences",
+                )?;
             }
             if let Action::Resize { sizes, token } = action {
                 ensure(
@@ -204,6 +260,60 @@ impl Plan {
         }
         Ok(())
     }
+}
+
+/// Every xterm encoding the frontend decodes and fux re-encodes with the same
+/// bytes: an ordinary application must see what the user typed. The prefix
+/// itself (Ctrl-B) is excluded because fux owns it by design.
+pub fn canonical_keys() -> Vec<String> {
+    let mut keys: Vec<String> = ["a", "Z", " ", "~", "界", "é"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    // Control characters: NUL, Ctrl-A..Ctrl-Z except the prefix, then the four
+    // C0 controls above Ctrl-Z (Ctrl-\, Ctrl-], Ctrl-^, Ctrl-_).
+    keys.push("\0".into());
+    keys.extend(
+        (1u8..=0x1a)
+            .filter(|c| *c != 0x02 && *c != 0x1b)
+            .map(|c| char::from(c).to_string()),
+    );
+    keys.extend((0x1cu8..=0x1f).map(|c| char::from(c).to_string()));
+    keys.extend(
+        [
+            "\x7f",
+            "\r",
+            "\t",
+            "\x1b[Z",
+            "\x1b",
+            "\x1bx",
+            "\x1b[A",
+            "\x1b[B",
+            "\x1b[C",
+            "\x1b[D",
+            "\x1b[H",
+            "\x1b[F",
+            "\x1b[2~",
+            "\x1b[3~",
+            "\x1b[5~",
+            "\x1b[6~",
+            "\x1bOP",
+            "\x1bOQ",
+            "\x1bOR",
+            "\x1bOS",
+            "\x1b[15~",
+            "\x1b[17~",
+            "\x1b[24~",
+            "\x1b[1;5D",
+            "\x1b[1;2A",
+            "\x1b[1;3C",
+            "\x1b[3;5~",
+            "\x1b[1;8P",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    keys
 }
 
 pub struct Journal {
