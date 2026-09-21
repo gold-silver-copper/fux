@@ -12,7 +12,7 @@ From the repository root, with the pinned Rust toolchain:
 cargo build --locked
 cargo build --manifest-path fux-fuzz/Cargo.toml --locked
 
-# Smoke: all thirty-five scenarios (fifty-six isolated cases).
+# Smoke: all thirty-nine scenarios (sixty isolated cases, including one generated walk).
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux
 
 # Individual scenarios:
@@ -51,6 +51,17 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario soak
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario repair
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario terminal_edge
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario stream
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario walk
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario scale
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario adversarial
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario concurrent
+
+# Generative walks: twenty distinct seeds, then one seed for three thousand steps.
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario walk --seed 100 --iterations 20 --seconds 3600
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario walk --seed 777 --actions 3000 --seconds 3600
+
+# Replay a saved minimized finding:
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --replay fux-fuzz/traces/walk-workspace-order-collision.json
 
 # Explicit, bounded stress: 10 fresh fixtures, 30 generated resize pairs each.
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
@@ -63,7 +74,7 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
 
 `--fux` is mandatory and canonicalized before any child changes directory. No run implicitly builds fux or searches PATH for an installed fux. Use a trusted local binary: the application API permits unrestricted same-user command execution.
 
-Scenarios in this harness have found seven production defects so far, each fixed in the pull request that added the scenario: a layout scene write corrupting the live hierarchy and a layout load surviving its own workspace's close (both below), an empty-workspace attach failure (PR #34), an unclamped scroll offset (PR #33), a legacy mouse-release encoding defect (PR #32), a control-key encoding defect (PR #31) and a bracketed-paste envelope defect (PR #30). The nine scenarios added in PR #35 and the eight added after PR #36 (scene fidelity, tabless scenes, configuration churn, scene process references, a repetition soak, relationship repair, terminal edge cases and frontend stream behaviour) found no further defects; they are retained as coverage. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
+Scenarios in this harness have found thirteen production defects so far, each fixed in the pull request that added the scenario or trace. The generative walk found six in one run (below): a loaded workspace colliding on `WorkspaceOrder`, a single-child split container never collapsing, a loaded pane view not counted as a process reference, processes stranded by a load that replaced their workspace, a split creating a pane with no cells, and siblings of a gapped split touching with no separator. Earlier scenarios found a layout scene write corrupting the live hierarchy and a layout load surviving its own workspace's close (PR #36), an empty-workspace attach failure (PR #34), an unclamped scroll offset (PR #33), a legacy mouse-release encoding defect (PR #32), a control-key encoding defect (PR #31) and a bracketed-paste envelope defect (PR #30). The scenarios of PR #35 and PR #37 found no defects and are retained as coverage. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
 
 ## What the scenarios check
 
@@ -100,6 +111,10 @@ Scenarios in this harness have found seven production defects so far, each fixed
 - **Repair:** raw API despawns, which the README says are not closes. A despawned focused view lands its viewer on the first surviving leaf, a despawned tab lands its viewer on the first tab and leaf, neither terminates a process, despawning the only workspace detaches both frontends gracefully with terminals restored and still terminates nothing, and a new attach recreates the initial workspace.
 - **Terminal edge:** through a real child: the alternate screen entered and left with the main screen and its history intact, DECCKM turning an Up arrow from CSI A into SS3 A, a child that ran `stty rows 5 cols 20` seeing fux's negotiated size again after a genuine negotiation, and 8-bit C1 bytes in output leaving the paint and bar intact. Markers are assembled at runtime so the shell's echo of the typed command can never satisfy a wait.
 - **Stream:** the frontend's outer PTY left unread for three seconds under hot output while the server keeps serving requests; after reads resume the frontend catches up, keeps advancing, and once the hot process is terminated its screen converges byte-for-byte with a fresh server frame.
+- **Walk:** a seeded random walk over the whole command set, weighted toward structure changes, with small indices resolved against the live world so a saved trace replays the same choices. After every step, for every viewer: every tab a direct workspace child; every view's process state present and running pids alive; `WorkspaceOrder` duplicate-free and one per workspace; `Children` and `ChildOf` agreeing both ways; every Split container holding at least two children; no process without a view; no relationship dangling and the viewer's tab inside its workspace; and, from the paint itself, no two pane rectangles sharing cells and exactly as many rectangles painted as the tab has panes unless zoomed. Only the documented availability messages may appear as error notices. Growth beyond a process cap turns into a close. A failing walk is minimized automatically, first to the shortest failing prefix by bisection and then by delta debugging, and saved as `minimized-NNN.json` beside the bundle; the shortest traces live under `fux-fuzz/traces/`.
+- **Scale:** two hundred panes in a 200x400 viewer, splitting the largest painted rectangle each time; a thousand tabs and fifty workspaces by moving one pane; four-kilobyte and wide-glyph names; a 64 KiB wide-glyph paste delivered byte-exact; and a scene round trip of the large layout. `fux.frame` and `move` timings are recorded (`SCALE-TIMES` on stdout) and bounded at two seconds; server stderr must show no panic.
+- **Adversarial:** a seeded byte stream of valid and truncated escapes, C1 bytes, invalid UTF-8, 500-character lines, scroll regions, wrap and origin modes, alternate-screen switches and OSC sequences, trickled through a real child while the viewer resizes down to 2x2 and scrolls. Nothing may paint outside the viewport, the server must not panic, and the frontend must converge with the server frame once the stream ends.
+- **Concurrent:** two real frontends each walking their own seeded steps, interleaved over one workspace, with every invariant checked for both after every step and a focus-isolation check that bytes typed into one viewer arrive only in the pane it focused.
 - **Signal:** SIGINT, SIGTERM and SIGHUP delivered to an attached frontend. It must exit successfully, restore termios and the alternate screen, and its viewer must disappear while the server is otherwise idle (only read-only queries), without killing the shared process. On failure the case records whether an unrelated paint would have removed the viewer, separating a lost detach from a lost server.
 - **Shutdown:** a SIGTERM after the pre-`app.run` announcement but before waiting for readiness; pane termination and separate bash background-job cleanup; natural exit with retained output/status; graceful detach with both termios and alternate-screen restoration; abrupt viewer loss without killing the shared process; server shutdown during `yes` output while the outer PTY is temporarily unread.
 
@@ -121,7 +136,7 @@ Each invocation creates a fresh directory under `fux-fuzz/runs/` (override with 
 - `replay.txt`: a shell-quoted, copyable command with the original binary and trace paths.
 - Failed case directories: a flushed `events.jsonl` journal of intended RPC/input/resize actions and observations; bounded server stdout/stderr tails; frontend ANSI tails and final diagnostic screens **only if captured**; controlled fixture files such as input/PID/size files.
 
-Fixed setup/assertion steps belong to the built-in scenario recipes; traces are versioned (1: startup/resize/shutdown, 2: adds paste, 3: adds keys, signal, mouse, copy, history, zoom, layout, process, nav, scene, config, overlay, limits, chrome, selection, race, memory, reorder, scene_map, mouse_edge, clipqueue, resize_cmd, api_misuse, scene_fidelity, tabless, churn, scene_refs, soak, repair, terminal_edge and stream) and every earlier version still loads and validates. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
+Fixed setup/assertion steps belong to the built-in scenario recipes; traces are versioned (1: startup/resize/shutdown, 2: adds paste, 3: adds keys, signal, mouse, copy, history, zoom, layout, process, nav, scene, config, overlay, limits, chrome, selection, race, memory, reorder, scene_map, mouse_edge, clipqueue, resize_cmd, api_misuse, scene_fidelity, tabless, churn, scene_refs, soak, repair, terminal_edge, stream, walk, scale, adversarial and concurrent) and every earlier version still loads and validates. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
 
 Successful case directories are removed after cleanup. Their plan, summary, metadata and replay command remain, normally a few KiB for smoke. Failed case directories remain for diagnosis. No automatic pruning of prior invocations: remove a specific run directory when done. No real HOME, caches, target tree, or arbitrary temporary directories are copied; child HOME is the freshly created fixture directory with a cleared environment.
 
@@ -145,7 +160,22 @@ cargo test --manifest-path fux-fuzz/Cargo.toml --locked
 
 Six unit tests check deterministic generation, trace round-tripping/validation, deadline/interruption checks, bounded capture, the frame oracle, and the paste payload/envelope oracle. Three subprocess tests use deliberately faulty **fixtures, not modified fux code**: early exit, hanging startup, and interrupted startup. They assert nonzero status, bounded termination, retained diagnostics, no invented frontend capture, and disappearance of the fixture PID after cleanup.
 
-## Finding: writing a layout scene corrupted the live hierarchy (fixed)
+## Findings of the generative walk (all fixed)
+
+The first walk runs failed against `0d09981` (merged `main` including PR #37). Each trace under `fux-fuzz/traces/` is the minimizer's output and replays in one case.
+
+| Trace | Steps | Defect | Fix |
+| --- | --- | --- | --- |
+| `walk-workspace-order-collision` | save, workspace_new, load | The loaded workspace restored the file's `WorkspaceOrder` while the workspace it replaced had another, so two workspaces shared an order and reordering lost its meaning. | A loaded workspace takes the replaced one's order; one added by a configured `layout:` gets a fresh one. |
+| `walk-uncollapsed-split-*` | three splits then a close, or split, focus_next, move_direction | A Split left with a single child that is itself a two-child Split was never collapsed, because the collapse system deferred to any child container. Nesting then accumulated on every such close or move. | Defer only to a child container that will itself collapse; hoist a healthy child split like a leaf. |
+| `walk-orphan-view-after-close` | save, workspace_new, load, previous workspace, close_pane | Scene writing applies components with relationship hooks skipped, so a loaded `PaneView` was never recorded in its process's `PaneViews`; closing another view of that process terminated it while the loaded view still showed it. | `apply_layout` re-inserts every loaded view so the relationship is recorded. |
+| `walk-load-strands-replaced-processes` | save, workspace_new, load | `replace_workspace` despawned the replaced hierarchy but never terminated the processes only it referenced, leaving them running with no view anywhere. | Replacing closes the old workspace with the same semantics as an explicit close. |
+| `walk-split-creates-invisible-pane` | four stacked splits | A 2-row pane split into a 1-row pane and a 0-row pane; the latter could be focused and receive input yet painted nothing. | A split is refused with `pane too small to split` unless both panes keep the 2x2 backing minimum with a one-cell separator, as tmux does. |
+| `walk-gapped-split-siblings-touch` | resize grow, two stacked splits | Unequal flex weights lay out in fractional cells and rounding left two siblings touching with no gap cell, so the separator between default siblings was not painted. Reproduced over BRP: both containers carried `row_gap: 1`. | When siblings of a gapped Split touch, the painter carves the gap out of the later sibling's leading cells and paints the separator there. |
+
+Runs after the fixes: twenty distinct seeds of 120 steps and one seed of 3,000 steps, all clean. Scale timings on the verification machine, in a 200x400 viewer: `fux.frame` grows from 7 ms alone to 51 ms with 201 panes, and `move` to a new tab from 49 ms with 100 tabs to 146 ms with 1,000, roughly linear in workspace size and well under the two-second bound; recorded as an observation, not a defect.
+
+## Earlier finding: writing a layout scene corrupted the live hierarchy (fixed in PR #36)
 
 The scene_map scenario failed against `406b1f2` (merged `main` including PR #35). The fix is included in this branch.
 

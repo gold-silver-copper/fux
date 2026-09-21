@@ -93,6 +93,10 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     // the paint and identified by the marker each pane prints.
     let started = Instant::now();
     let mut markers: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    // The initial shell prints DEFAULT-SHELL at its origin; without a marker
+    // entry it could never be chosen, and every split would chain on the
+    // newest pane until the refusal stops it.
+    markers.insert("DEFAULT-".into(), start_leaf);
     for i in 0..PANES {
         let paint = s
             .rpc("fux.frame", json!({"viewer":v}))?
