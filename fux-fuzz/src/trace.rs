@@ -45,6 +45,15 @@ pub enum Action {
     Keys {
         sequences: Vec<String>,
     },
+    /// Outer-terminal mouse events against a pane that requested a protocol.
+    Mouse {
+        /// The DECSET the child requests: 1000, 1002 or 1003.
+        mode: u16,
+        /// Whether the child also requests SGR (1006) encoding.
+        sgr: bool,
+        /// Two side-by-side panes instead of one full-width pane.
+        split: bool,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,7 +82,7 @@ impl Plan {
         ensure(
             matches!(
                 scenario,
-                "all" | "startup" | "resize" | "shutdown" | "paste" | "signal" | "keys"
+                "all" | "startup" | "resize" | "shutdown" | "paste" | "signal" | "keys" | "mouse"
             ),
             "unknown scenario",
         )?;
@@ -162,6 +171,17 @@ impl Plan {
                     sequences: shuffled,
                 });
             }
+            if matches!(scenario, "all" | "mouse") {
+                for (mode, sgr, split) in [
+                    (1002, true, false),
+                    (1000, false, false),
+                    (1003, true, false),
+                    (1002, true, true),
+                    (1000, false, true),
+                ] {
+                    actions.push(Action::Mouse { mode, sgr, split });
+                }
+            }
             if matches!(scenario, "all" | "signal") {
                 for signal in [
                     FrontendSignal::Interrupt,
@@ -229,6 +249,13 @@ impl Plan {
             }
             if let Action::Signal { .. } = action {
                 ensure(self.version >= 3, "signal actions require trace version 3")?;
+            }
+            if let Action::Mouse { mode, .. } = action {
+                ensure(self.version >= 3, "mouse actions require trace version 3")?;
+                ensure(
+                    matches!(mode, 1000 | 1002 | 1003),
+                    "unsupported mouse protocol mode",
+                )?;
             }
             if let Action::Keys { sequences } = action {
                 ensure(self.version >= 3, "keys actions require trace version 3")?;
