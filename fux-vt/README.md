@@ -94,7 +94,9 @@ without modifying history. Every effective resize clears live soft-wrap metadata
 resize contract; historical wrap metadata is retained.
 Wide halves cut by an edit or resize are repaired before exposing the grid.
 Zero dimensions are rejected. Allocation uses checked arithmetic and explicit
-cell/row caps; errors leave the existing terminal usable. Each buffer permits
+cell/row caps; errors leave the existing terminal usable. Processing may
+retain an already-applied input prefix; even a partially completed scroll
+forces every old window mark to refresh. Resize replacement is transactional. Each buffer permits
 at most 64 Mi retained cells (32 bytes each) and 1,048,576 retained rows.
 Storage grows geometrically only to the configured cap as history fills;
 empty history is not eagerly allocated. At capacity, scrolling reuses slots
