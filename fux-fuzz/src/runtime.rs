@@ -303,6 +303,10 @@ impl Server {
                 serde_json::to_vec(&json!({"shell":[configured]}))?,
             )?,
             Config::Malformed => fs::write(directory.join("fux.json"), "{ invalid configuration")?,
+            Config::Clipboard => fs::write(
+                directory.join("fux.json"),
+                serde_json::to_vec(&json!({"clipboard":"write-only"}))?,
+            )?,
             Config::Missing => (),
         }
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
