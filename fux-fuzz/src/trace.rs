@@ -67,6 +67,8 @@ pub enum Action {
     Scene,
     /// Hot reload of prefix and bindings.
     Config,
+    /// Prompts, confirmations, choosers and unavailable actions.
+    Overlay,
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -122,6 +124,7 @@ impl Plan {
                     | "nav"
                     | "scene"
                     | "config"
+                    | "overlay"
             ),
             "unknown scenario",
         )?;
@@ -235,6 +238,9 @@ impl Plan {
             }
             if matches!(scenario, "all" | "config") {
                 actions.push(Action::Config);
+            }
+            if matches!(scenario, "all" | "overlay") {
+                actions.push(Action::Overlay);
             }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [

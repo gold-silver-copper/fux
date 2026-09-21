@@ -5,6 +5,7 @@ mod keys;
 mod layout;
 mod mouse;
 mod nav;
+mod overlay;
 mod paste;
 mod process;
 mod scene;
@@ -57,6 +58,7 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Nav => nav::run(server),
         Action::Scene => scene::run(server),
         Action::Config => config::run(server),
+        Action::Overlay => overlay::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
