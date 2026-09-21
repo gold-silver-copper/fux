@@ -239,3 +239,28 @@ and cleanup OK. Their logs remain `fuzz-final-v2.log` and
 `final-stress-v2/walk-777x3000.log`. No interruption counts as a pass. The
 post-exhaustion-fix final checks, clean fuzz run and complete harness chain
 will use new artifact directories.
+
+## Instance identity and harness settling
+
+Row IDs are parser-local. A selection whose leaf is retargeted to another
+process, or whose process entity receives a replacement `Terminal`, could
+match coincidentally equal IDs. `Terminal` now carries a process-wide unique
+instance number; `Selection` records it and a mismatch clears copy mode with
+`selection cleared: terminal replaced`. Unit test:
+`parser_local_row_ids_cannot_cross_terminal_instances` (both retarget forms);
+`selection-instance-before.log` preserves the failing assertion.
+
+The third clean fuzz run passed with the same libFuzzer seed 481504938:
+615,992 executions in 601 seconds, peak RSS 523 MiB, exit 0, 21:13:39–21:23:41
+UTC (`fuzz-final-v3.log`, initial corpus archived as
+`fuzz-final-v3-initial-corpus.tgz`). The fux-vt crate is unchanged since
+that run (`git diff da6f606 -- fux-vt` is empty), so it covers the final tree.
+
+The full smoke failed once at case 35 (`resize_cmd`): the repeated-grow
+settle accepted two consecutive equal 5 ms polls, which can straddle the
+reflected size publication. Replaying the scenario six times per binary
+reproduced the same failure on the preserved **baseline** binary
+(`resize-cmd-repeat-baseline-2.log`), so this is a harness race, not an
+emulator defect. The scenario now requests a frame to apply queued layout
+changes and requires twenty consecutive equal observations; ten replays per
+binary then pass (`resize-cmd-fixed-*.log`). No assertion was weakened.

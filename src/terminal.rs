@@ -72,6 +72,14 @@ pub struct Terminal {
     status: Status,
     revision: u64,
     rows: rows::Rows,
+    /// Process-wide unique. Row IDs are parser-local, so a selection must
+    /// also remember which terminal instance issued them.
+    instance: u64,
+}
+
+static INSTANCES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+fn next_instance() -> u64 {
+    INSTANCES.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Everything that exists only while the child runs. Input after exit is a
@@ -118,8 +126,32 @@ impl Notify {
 }
 
 impl Terminal {
+    #[cfg(test)]
+    pub(crate) fn for_test(parser: fux_vt::Parser) -> Self {
+        let (_, output) = async_channel::bounded(1);
+        let published_size = parser.screen().size();
+        Self {
+            parser,
+            runtime: Runtime::Stopped,
+            reader: None,
+            output,
+            notify: Notify {
+                wake: Wake(thread::current()),
+                pending: Arc::default(),
+            },
+            published_size,
+            status: Status::Exited { code: 0 },
+            revision: 0,
+            rows: rows::Rows::default(),
+            instance: next_instance(),
+        }
+    }
+
     pub fn screen(&self) -> &fux_vt::Screen {
         self.parser.screen()
+    }
+    pub fn instance(&self) -> u64 {
+        self.instance
     }
 
     /// Input is accepted atomically into a bounded queue, never partially queued.
@@ -349,6 +381,7 @@ impl Terminal {
             reader: Some(reader),
             output,
             revision: 1,
+            instance: next_instance(),
             notify,
             published_size: (rows, cols),
             rows: rows::Rows::default(),

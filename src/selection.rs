@@ -165,6 +165,8 @@ pub struct Selection {
     pub anchor: Option<(fux_vt::RowId, u16)>,
     pub grid: Grid,
     pub revision: u64,
+    /// The terminal instance whose row IDs this selection refers to.
+    pub instance: u64,
     pub dragging: bool,
     pub mouse_origin: bool,
 }
@@ -259,6 +261,7 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         crate::frame::content_size(world, id, leaf).ok_or("no visible content to select")?;
     let terminal = world.get::<Terminal>(pane).ok_or("terminal not found")?;
     let revision = terminal.revision();
+    let instance = terminal.instance();
     let grid = terminal.selection_grid(offset)?.clip(visible)?;
     let offset = grid.offset;
     world.entity_mut(id).insert(Selection {
@@ -267,6 +270,7 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         anchor: None,
         grid,
         revision,
+        instance,
         dragging: false,
         mouse_origin: false,
     });
@@ -313,6 +317,17 @@ pub fn refresh_visible(world: &mut World, id: Entity, visible: (u16, u16)) {
     let old_offset = selection.grid.offset;
     let result = if let Some(terminal) = world.get::<Terminal>(pane) {
         let size = terminal.screen().size();
+        if terminal.instance() != selection.instance {
+            // A replaced process has its own parser; its row IDs are unrelated
+            // even where the numbers coincide.
+            world.entity_mut(id).remove::<Selection>();
+            notify(
+                world,
+                id,
+                Notice::error("selection cleared: terminal replaced"),
+            );
+            return;
+        }
         if revision == terminal.revision()
             && offset == old_offset
             && old_size == (visible.0.min(size.0), visible.1.min(size.1))
