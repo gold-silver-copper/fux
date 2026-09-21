@@ -58,6 +58,9 @@ pub enum Action {
     Zoom,
     /// Pane moves, tab/workspace closes, shared references and confirmations.
     Layout,
+    /// Stock-spawned Launch recipes, reflected dimension edits, termination
+    /// paths, failed launches, natural exit and history_lines.
+    Process,
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -109,6 +112,7 @@ impl Plan {
                     | "history"
                     | "zoom"
                     | "layout"
+                    | "process"
             ),
             "unknown scenario",
         )?;
@@ -211,6 +215,9 @@ impl Plan {
             if matches!(scenario, "all" | "layout") {
                 actions.push(Action::Layout);
             }
+            if matches!(scenario, "all" | "process") {
+                actions.push(Action::Process);
+            }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [
                     (1002, true, false),
@@ -290,7 +297,12 @@ impl Plan {
             if let Action::Signal { .. } = action {
                 ensure(self.version >= 3, "signal actions require trace version 3")?;
             }
-            if let Action::Copy { .. } | Action::History | Action::Zoom | Action::Layout = action {
+            if let Action::Copy { .. }
+            | Action::History
+            | Action::Zoom
+            | Action::Layout
+            | Action::Process = action
+            {
                 ensure(self.version >= 3, "this action requires trace version 3")?;
             }
             if let Action::Startup { config } = action {
