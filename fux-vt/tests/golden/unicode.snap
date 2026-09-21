@@ -1,0 +1,63 @@
+operation=0 replies=[]
+size=(4, 12) cursor=(0, 5) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+row=0 wrapped=false
+cell=0 text="A" wide=false continuation=false attrs=Default/Default/0
+cell=1 text="界" wide=true continuation=false attrs=Default/Default/0
+cell=2 text="" wide=false continuation=true attrs=Default/Default/0
+cell=3 text="e\u{301}" wide=false continuation=false attrs=Default/Default/0
+cell=4 text="Z" wide=false continuation=false attrs=Default/Default/0
+row=1 wrapped=false
+row=2 wrapped=false
+row=3 wrapped=false
+operation=1 replies=[]
+size=(4, 12) cursor=(1, 0) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+row=0 wrapped=false
+cell=0 text="A" wide=false continuation=false attrs=Default/Default/0
+cell=1 text="界" wide=true continuation=false attrs=Default/Default/0
+cell=2 text="" wide=false continuation=true attrs=Default/Default/0
+cell=3 text="e\u{301}" wide=false continuation=false attrs=Default/Default/0
+cell=4 text="Z" wide=false continuation=false attrs=Default/Default/0
+row=1 wrapped=false
+row=2 wrapped=false
+row=3 wrapped=false
+operation=2 replies=[]
+size=(4, 12) cursor=(1, 4) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+row=0 wrapped=false
+cell=0 text="A" wide=false continuation=false attrs=Default/Default/0
+cell=1 text="界" wide=true continuation=false attrs=Default/Default/0
+cell=2 text="" wide=false continuation=true attrs=Default/Default/0
+cell=3 text="e\u{301}" wide=false continuation=false attrs=Default/Default/0
+cell=4 text="Z" wide=false continuation=false attrs=Default/Default/0
+row=1 wrapped=false
+cell=0 text="界" wide=true continuation=false attrs=Default/Default/0
+cell=1 text="" wide=false continuation=true attrs=Default/Default/0
+cell=2 text="界\u{301}" wide=true continuation=false attrs=Default/Default/0
+cell=3 text="" wide=false continuation=true attrs=Default/Default/0
+row=2 wrapped=false
+row=3 wrapped=false
+operation=3 replies=[]
+size=(4, 12) cursor=(1, 2) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+row=0 wrapped=false
+cell=0 text="A" wide=false continuation=false attrs=Default/Default/0
+cell=1 text="界" wide=true continuation=false attrs=Default/Default/0
+cell=2 text="" wide=false continuation=true attrs=Default/Default/0
+cell=3 text="e\u{301}" wide=false continuation=false attrs=Default/Default/0
+cell=4 text="Z" wide=false continuation=false attrs=Default/Default/0
+row=1 wrapped=false
+cell=1 text="x" wide=false continuation=false attrs=Default/Default/0
+cell=2 text="界\u{301}" wide=true continuation=false attrs=Default/Default/0
+cell=3 text="" wide=false continuation=true attrs=Default/Default/0
+row=2 wrapped=false
+row=3 wrapped=false
+operation=4 replies=[]
+size=(4, 12) cursor=(1, 2) modes=(false, false, false, false) mouse=None encoding=Default attrs=Default/Default/0
+row=0 wrapped=false
+cell=0 text="A" wide=false continuation=false attrs=Default/Default/0
+cell=1 text="界" wide=true continuation=false attrs=Default/Default/0
+cell=2 text="" wide=false continuation=true attrs=Default/Default/0
+cell=3 text="e\u{301}" wide=false continuation=false attrs=Default/Default/0
+cell=4 text="Z" wide=false continuation=false attrs=Default/Default/0
+row=1 wrapped=false
+cell=1 text="x" wide=false continuation=false attrs=Default/Default/0
+row=2 wrapped=false
+row=3 wrapped=false

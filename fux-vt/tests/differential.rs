@@ -1,5 +1,11 @@
 //! Temporary compatibility scaffolding. Remove only after the fixture/invariant
 //! mapping and minimized divergence inventory have permanent coverage.
+#[cfg(feature = "differential")]
+mod corpus;
+#[path = "corpus/fixtures.rs"]
+mod fixtures;
+#[path = "corpus/snapshot.rs"]
+mod snapshot;
 use fux_vt::{Cell, Color, Error, Parser, Screen};
 type Result = std::result::Result<(), Box<dyn std::error::Error>>;
 
@@ -254,6 +260,11 @@ fn supported_operations_match_at_each_boundary_and_chunk_size() -> Result {
             ],
         ),
     ];
+    assert_eq!(
+        cases,
+        fixtures::CASES,
+        "permanent corpus must preserve every differential operation"
+    );
     for &(name, operations) in cases {
         for chunk_size in [1, 2, 3, 7, usize::MAX] {
             let mut ours = Parser::new(4, 12, 3)?;
@@ -276,8 +287,199 @@ fn supported_operations_match_at_each_boundary_and_chunk_size() -> Result {
     Ok(())
 }
 
+#[cfg(feature = "differential")]
+fn equivalent(a: &Screen, b: &Screen) -> bool {
+    a.size() == b.size()
+        && a.cursor_position() == b.cursor_position()
+        && a.history_len() == b.history_len()
+        && a.attributes() == b.attributes()
+        && a.alternate_screen() == b.alternate_screen()
+        && a.hide_cursor() == b.hide_cursor()
+        && a.application_cursor() == b.application_cursor()
+        && a.bracketed_paste() == b.bracketed_paste()
+        && a.mouse_protocol_mode() == b.mouse_protocol_mode()
+        && a.mouse_protocol_encoding() == b.mouse_protocol_encoding()
+        && (0..a.history_len() + usize::from(a.size().0)).all(|offset| {
+            match (a.row_from_bottom(offset), b.row_from_bottom(offset)) {
+                (Some(a), Some(b)) => a.wrapped == b.wrapped && a.cells == b.cells,
+                _ => false,
+            }
+        })
+}
+
+#[cfg(feature = "differential")]
+#[test]
+fn generated_adversarial_streams_have_only_causally_proven_allowlisted_differences() -> Result {
+    let mut inventory = Vec::new();
+    for seed in 0..20 {
+        for (rows, cols, chunking) in [(2, 2), (4, 12), (24, 80)]
+            .into_iter()
+            .flat_map(|(rows, cols)| [0, 1, 7].map(|chunking| (rows, cols, chunking)))
+        {
+            let mut random = seed;
+            let mut actual = Parser::new(rows, cols, 8)?;
+            // Controlled experiment, not a blanket mismatch waiver: the second
+            // owned parser differs ONLY for ignored DECAWM and line edits
+            // outside margins. Both corrections have minimized xterm evidence.
+            // It must equal upstream at every operation and retained cell.
+            let mut diagnostic = Parser::new(rows, cols, 8)?;
+            diagnostic.oracle_compatibility();
+            let mut reference = vt100::Parser::new(rows, cols, 8);
+            let mut offset = 0;
+            let mut differences = 0;
+            let mut first = None;
+            for operation in corpus::operations(seed, 4096) {
+                let chunk = match chunking {
+                    0 => usize::MAX,
+                    1 => 1,
+                    _ => (corpus::splitmix(&mut random) % 13 + 1) as usize,
+                };
+                for bytes in operation.chunks(chunk) {
+                    actual.process(bytes)?;
+                    diagnostic.process(bytes)?;
+                    reference.process(bytes);
+                }
+                compare(
+                    diagnostic.screen(),
+                    reference.screen_mut(),
+                    &format!(
+                        "seed={seed} {rows}x{cols} chunking={chunking} offset={offset} bytes={operation:?}"
+                    ),
+                )?;
+                if !equivalent(actual.screen(), diagnostic.screen()) {
+                    differences += 1;
+                    first.get_or_insert(offset);
+                }
+                offset += operation.len();
+            }
+            inventory.push(format!("{{\"seed\":{seed},\"rows\":{rows},\"cols\":{cols},\"bytes\":4096,\"chunking\":{chunking},\"differing_boundaries\":{differences},\"first_offset\":{},\"cause\":\"DECAWM-or-outside-margin-line-edit\"}}", first.map_or("null".into(),|n| n.to_string())));
+        }
+    }
+    let report = format!("[\n{}\n]\n", inventory.join(",\n"));
+    if let Ok(path) = std::env::var("FUX_VT_DIFF_REPORT") {
+        std::fs::write(path, report)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "differential")]
+#[test]
+fn terminal_edge_streams_match_whole_and_byte_at_a_time() -> Result {
+    for chunk in [1, 7, usize::MAX] {
+        let mut ours = Parser::new(23, 80, 40)?;
+        let mut reference = vt100::Parser::new(23, 80, 40);
+        for (i, operation) in corpus::terminal_edge().iter().enumerate() {
+            for bytes in operation.chunks(chunk) {
+                ours.process(bytes)?;
+                reference.process(bytes);
+            }
+            compare(
+                ours.screen(),
+                reference.screen_mut(),
+                &format!("terminal-edge {i} chunk={chunk}"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn reference_snapshot(s: &mut vt100::Screen) -> String {
+    use std::fmt::Write;
+    let attrs = snapshot::attributes(
+        colour(s.fgcolor()),
+        colour(s.bgcolor()),
+        snapshot::flags(s.bold(), s.dim(), s.italic(), s.underline(), s.inverse()),
+    );
+    let mut out = snapshot::header(
+        s.size(),
+        s.cursor_position(),
+        (
+            s.hide_cursor(),
+            s.application_cursor(),
+            s.bracketed_paste(),
+            s.alternate_screen(),
+        ),
+        &format!("{:?}", s.mouse_protocol_mode()),
+        &format!("{:?}", s.mouse_protocol_encoding()),
+        &attrs,
+    );
+    s.set_scrollback(usize::MAX);
+    let history = s.scrollback();
+    let (rows, cols) = s.size();
+    for index in 0..history + usize::from(rows) {
+        let row = if index < history {
+            s.set_scrollback(history - index);
+            0
+        } else {
+            s.set_scrollback(0);
+            (index - history) as u16
+        };
+        let _ = writeln!(out, "row={index} wrapped={}", s.row_wrapped(row));
+        for i in 0..cols {
+            if let Some(c) = s.cell(row, i) {
+                snapshot::cell(
+                    &mut out,
+                    usize::from(i),
+                    c.contents(),
+                    c.is_wide(),
+                    c.is_wide_continuation(),
+                    &snapshot::attributes(
+                        colour(c.fgcolor()),
+                        colour(c.bgcolor()),
+                        snapshot::flags(c.bold(), c.dim(), c.italic(), c.underline(), c.inverse()),
+                    ),
+                );
+            }
+        }
+    }
+    s.set_scrollback(0);
+    out
+}
+
+#[test]
+fn permanent_fixtures_are_captured_from_the_independent_oracle_only() -> Result {
+    use std::fmt::Write;
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    for (name, operations) in fixtures::CASES {
+        let mut reference = vt100::Parser::new_with_callbacks(4, 12, 3, Replies::default());
+        let mut ours = Parser::new(4, 12, 3)?;
+        let mut expected = String::new();
+        for (index, operation) in operations.iter().enumerate() {
+            reference.process(operation);
+            ours.process(operation)?;
+            let _ = writeln!(
+                expected,
+                "operation={index} replies={:?}",
+                reference.callbacks().0
+            );
+            let state = reference_snapshot(reference.screen_mut());
+            assert_eq!(snapshot::screen(ours.screen()), state, "{name} {index}");
+            expected.push_str(&state);
+        }
+        let path = directory.join(format!("{name}.snap"));
+        if std::env::var_os("FUX_VT_CAPTURE_ORACLE").is_some() {
+            std::fs::create_dir_all(&directory)?;
+            std::fs::write(path, expected)?;
+        } else {
+            assert_eq!(std::fs::read_to_string(path)?, expected);
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn resize_and_history_match_for_retained_ascii_rows() -> Result {
+    let mut wrapped = Parser::new(3, 5, 0)?;
+    let mut wrapped_reference = vt100::Parser::new(3, 5, 0);
+    wrapped.process(b"abcdef")?;
+    wrapped_reference.process(b"abcdef");
+    wrapped.resize(4, 5)?;
+    wrapped_reference.screen_mut().set_size(4, 5);
+    compare(
+        wrapped.screen(),
+        wrapped_reference.screen_mut(),
+        "height-only wrapped resize",
+    )?;
     let mut ours = Parser::new(3, 8, 4)?;
     let mut reference = vt100::Parser::new(3, 8, 4);
     for operation in [b"abcdefghij\r\n".as_slice(), b"klmnopqrstuv\r\n", b"wxyz"] {

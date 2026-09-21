@@ -4,6 +4,10 @@
 
 use crate::{Error, Screen};
 
+#[cfg(test)]
+#[path = "../tests/corpus/mod.rs"]
+mod test_corpus;
+
 #[derive(Clone, Debug)]
 pub(crate) struct Parameters {
     values: [u16; 32],
@@ -95,6 +99,9 @@ pub struct Parser {
     utf8_len: usize,
     utf8_need: usize,
 }
+#[cfg(test)]
+mod tests;
+
 impl Parser {
     pub fn new(rows: u16, cols: u16, history_lines: usize) -> Result<Self, Error> {
         Ok(Self {
@@ -108,6 +115,11 @@ impl Parser {
             utf8_len: 0,
             utf8_need: 0,
         })
+    }
+    /// Temporary causal diagnostic: reproduce only the documented oracle bugs.
+    #[cfg(feature = "differential")]
+    pub fn oracle_compatibility(&mut self) {
+        self.screen.oracle_compatibility = true;
     }
     pub fn screen(&self) -> &Screen {
         &self.screen

@@ -1,0 +1,77 @@
+{
+  "status": "differential phase in progress",
+  "oracle": "vt100 0.16.2 with fux Replies callback",
+  "fixed": [
+    {
+      "id": "wrap-below-region",
+      "found": "adversarial seed 5, 24x80, offset 3510",
+      "rows": 4, "cols": 4,
+      "input_hex": "1b5b323b33721b5b343b34486162",
+      "expected_lines": ["", "", "", "b  a"],
+      "expected_cursor": [3, 1],
+      "expected_last_row_wrapped": false,
+      "reason": "Our wrap flag was set even when linefeed could not advance below the scroll region. Fixed by checking whether wrapping advances or scrolls.",
+      "regression": "wrapping_below_the_scroll_region_does_not_invent_a_soft_line_join",
+      "before_log": "/tmp/fux-vt-evidence/wrap-region-before.log"
+    },
+    {
+      "id": "height-resize-wrap",
+      "rows": 3, "cols": 5,
+      "input_hex": "616263646566",
+      "resize": [4, 5],
+      "expected_lines": ["abcde", "f", "", ""],
+      "expected_first_row_wrapped": false,
+      "reason": "The old resize clears live wrap metadata on height-only changes too. The first implementation incorrectly preserved it.",
+      "regression": "height_only_resize_clears_live_wrap_metadata",
+      "before_log": "/tmp/fux-vt-evidence/differential-height-resize-before.log"
+    }
+  ],
+  "allowlisted": [
+    {
+      "id": "one-column-wide-underflow",
+      "rows": 1, "cols": 1,
+      "input_hex": "e7958c",
+      "expected_lines": [""], "expected_cursor": [0, 0],
+      "reason": "Known oracle cols-width subtraction underflow; required one-column policy drops wide glyphs without moving the cursor. This input is not executed in the oracle.",
+      "regression": "tiny_grids_wrap_and_drop_wide_glyphs_without_underflow"
+    },
+    {
+      "id": "one-row-wrap-underflow",
+      "rows": 1, "cols": 2,
+      "input_hex": "616263",
+      "expected_lines": ["c"], "expected_cursor": [0, 1],
+      "reason": "Known oracle previous-row subtraction underflow on scroll while wrapping. This input is not executed in the oracle.",
+      "regression": "tiny_grids_wrap_and_drop_wide_glyphs_without_underflow"
+    },
+    {
+      "id": "decawm",
+      "found": "adversarial seed 0, 2x2, offset 3530",
+      "rows": 2, "cols": 3,
+      "input_hex": "1b5b3f376c616263646566",
+      "expected_lines": ["abf", ""],
+      "oracle_lines": ["abc", "def"],
+      "reason": "The oracle ignores DECAWM 7. Required disabled autowrap overwrites the last cell without scrolling, as xterm does.",
+      "reference": "https://invisible-island.net/xterm/ctlseqs/ctlseqs.html (DECAWM)",
+      "xterm": "XTerm(411), macOS, verification/fux-vt-xterm.py; /tmp/fux-vt-evidence/xterm/results.json",
+      "regression": "autowrap_disabled_overwrites_without_scrolling"
+    },
+    {
+      "id": "line-edit-outside-region",
+      "found": "adversarial seed 9, 24x80, offset 2443 (L completes an unfinished CSI)",
+      "rows": 4, "cols": 4,
+      "input_hex": "1b5b323b33721b5b343b34485a1b5b4c",
+      "expected_lines": ["", "", "", "   Z"],
+      "oracle_lines": ["", "", "   Z", ""],
+      "reason": "IL/DL outside the scrolling region must be ignored. The oracle edits rows outside the region, including moving the bottom row upward for IL below it. xterm confirms the no-op both above and below margins, for both IL and DL.",
+      "reference": "https://invisible-island.net/xterm/ctlseqs/ctlseqs.html (IL/DL)",
+      "xterm": "XTerm(411), macOS, verification/fux-vt-xterm.py; /tmp/fux-vt-evidence/xterm/results.json",
+      "regression": "line_edits_outside_margins_leave_the_grid_unchanged"
+    }
+  ],
+  "diagnostic_method": "Generated streams are fed identically to actual, upstream, and a temporary diagnostic parser. The diagnostic parser changes only DECAWM and outside-margin IL/DL back to the documented oracle behaviour. It must match upstream at every operation and in every retained cell, attribute, wrap flag, cursor and mode. Thus downstream differences in original streams are causally attributed, not blindly ignored. The switch is removed with the scaffolding.",
+  "inherited_non_xterm_behaviour": [
+    "CPR reports absolute one-based coordinates, including a parked column one past width, preserving fux's existing callback rather than adding a reply compatibility change.",
+    "Fixed eight-column tabs, mutually exclusive bold/dim, 47/1049 supported but 1047/1048 ignored."
+  ],
+  "open": []
+}

@@ -45,7 +45,7 @@ fn text_controls_cursor_and_pending_wrap() -> Result {
 
 #[test]
 fn tiny_grids_wrap_and_drop_wide_glyphs_without_underflow() -> Result {
-    for (rows, cols) in [(1, 1), (1, 8), (8, 1)] {
+    for (rows, cols) in [(1, 1), (1, 2), (1, 8), (8, 1)] {
         let mut p = Parser::new(rows, cols, 2)?;
         p.process("界".as_bytes())?;
         if cols == 1 {
@@ -214,6 +214,17 @@ fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> 
 }
 
 #[test]
+fn height_only_resize_clears_live_wrap_metadata() -> Result {
+    let mut p = Parser::new(3, 5, 0)?;
+    p.process(b"abcdef")?;
+    assert!(p.screen().row_wrapped(0));
+    p.resize(4, 5)?;
+    assert!(!p.screen().row_wrapped(0));
+    assert_eq!(lines(&p), ["abcde", "f", "", ""]);
+    Ok(())
+}
+
+#[test]
 fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
     assert_eq!(Parser::new(0, 1, 0).err(), Some(Error::ZeroSize));
     assert_eq!(Parser::new(1, 1, usize::MAX).err(), Some(Error::Capacity));
@@ -291,6 +302,31 @@ fn alternate_mouse_modes_saved_cursor_and_replies() -> Result {
     );
     p.process(b"\x1b7\x1b[H\x1b8")?;
     assert_eq!(p.screen().cursor_position(), (0, 5));
+    Ok(())
+}
+
+#[test]
+fn line_edits_outside_margins_leave_the_grid_unchanged() -> Result {
+    for edit in *b"LM" {
+        let mut p = Parser::new(4, 4, 0)?;
+        p.process(b"\x1b[2;3r\x1b[4;4HZ")?;
+        p.process(&[27, b'[', edit])?;
+        assert_eq!(lines(&p), ["", "", "", "   Z"]);
+        p.process(b"\x1b[1;1HA")?;
+        p.process(&[27, b'[', edit])?;
+        assert_eq!(lines(&p), ["A", "", "", "   Z"]);
+        assert_eq!(p.screen().history_len(), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn wrapping_below_the_scroll_region_does_not_invent_a_soft_line_join() -> Result {
+    let mut p = Parser::new(4, 4, 0)?;
+    p.process(b"\x1b[2;3r\x1b[4;4Hab")?;
+    assert_eq!(p.screen().cursor_position(), (3, 1));
+    assert_eq!(lines(&p), ["", "", "", "b  a"]);
+    assert!(!p.screen().row_wrapped(3));
     Ok(())
 }
 

@@ -30,12 +30,12 @@ Status: **in progress; not complete**. No completion PR has been opened.
 - [x] Baseline branch, preserved binaries and passing ordinary checks.
 - [x] Pre-implementation sequence/semantics contract in `fux-vt/README.md`.
 - [ ] Fresh six-run scale baseline and stream evidence.
-- [ ] Owned bounded parser, ASCII fast path, row-major arenas and row IDs.
-- [ ] Permanent operation/boundary tests and full sequence matrix coverage.
-- [ ] Differential corpus, chunking/resize/history/reply comparisons,
-  minimized divergence inventory and passing differential-phase commit.
+- [x] Owned bounded parser, ASCII fast path, row-major arenas and row IDs.
+- [x] Permanent operation/boundary tests and sequence matrix coverage.
+- [x] Differential corpus, chunking/resize/history/reply comparisons,
+  minimized divergence inventory and passing differential-phase checkpoint.
 - [ ] Independent expected-result mappings, then scaffolding removal commit.
-- [ ] Root workspace membership; excluded independent harness/fuzz package.
+- [x] Root workspace membership; excluded independent harness/fuzz package.
 - [ ] Complete migration of production and root tests, including frame paths.
 - [ ] Actual 1x1 PTY creation/resize with traces, unchanged 2x2 layout rule.
 - [ ] Persistent safe row-ID selections and overwrite/eviction tests/traces.
@@ -77,5 +77,49 @@ One initial tiny-grid test expectation was wrong: it wrote a two-cell glyph
 before expecting the cursor for an empty grid. Resetting before the separate
 ASCII-wrap assertion corrected the fixture, not production behaviour.
 
-No measured common-subset differential mismatch yet. No workaround is retired
-and no final verification gate is claimed to pass.
+## Passing differential phase
+
+`cargo test -p fux-vt --all-features --locked` passes 3 unit tests, 5
+scaffolding tests, the permanent 11-fixture test (five chunkings), 3 corpus
+invariant tests and 17 semantic tests. Log:
+`/tmp/fux-vt-evidence/differential-phase-final.log`. Root/fuzz fmt and strict
+crate Clippy (`--all-features --all-targets`) also pass. The permanent mapping
+is `fux-vt/tests/golden/README.md`; all goldens were recorded from the independent
+oracle, never from fux-vt.
+
+Two implementation differences were fixed (wrap below margins and height-only
+resize wrap metadata). Two deliberate corrections beyond the known tiny-grid
+crashes were verified against XTerm(411): DECAWM and ignored out-of-margin
+IL/DL. The exact inventory is `fux-vt-divergences.json`; all 180 seeded
+geometry/chunking comparisons and differing-boundary counts are retained in
+`fux-vt-corpus-differences.json`. The diagnostic switch restores ONLY those two
+oracle behaviours; otherwise it must match every retained cell and operation.
+No measured mismatch remains unexplained. This does not claim exhaustive
+terminal correctness.
+
+Homebrew xterm and xorg-server were installed on macOS to execute
+`python3 verification/fux-vt-xterm.py /tmp/fux-vt-evidence/xterm`. This owns
+its Xvfb/xterm children and uses a controlled printer command, not an
+interactive shell. Seven checks pass; results are retained in
+`fux-vt-xterm-results.json`. Probe mistakes, not emulator defects: printing
+was initially limited by margins, and printer completion needed an atomic
+rename acknowledgement rather than reading an unfinished file.
+
+The independent cargo-fuzz package builds with the installed nightly.
+A preliminary `cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz --
+-max_total_time=30 -max_len=4096 -rss_limit_mb=1024` passed 16,388 executions
+in 31 seconds (`fuzz-preliminary.log`). This is NOT the final 600-second gate.
+The 120 named seed files are encoded from the permanent adversarial corpus;
+untracked coverage-growth files remain local and ignored. Shared invariants
+check every retained row ID, wide half, cursor, clipped window and split-input
+result after generated operations.
+
+The first long-budget scale measurement failed on a ten-second HTTP timeout
+after loading the large scene, not its 3,600-second run deadline; diagnostics
+and cleanup passed. Indices 2–5 passed. A replacement measurement index 6
+is running (PID 2992); warm-up index 0 is not counted. The baseline stream
+passed in 3.485 seconds, including final frame equality. Record every failed
+or interrupted measurement rather than silently excluding its existence.
+
+No application workaround is retired yet and no final verification gate is
+claimed to pass.
