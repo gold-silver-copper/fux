@@ -114,22 +114,20 @@ impl<'a> Window<'a> {
             let right = if y == end.0 { end.1 } else { self.cols - 1 };
             let line_start = output.len();
             for x in left..=right {
-                let cell = self.cell(y, x);
-                if cell.is_some_and(Cell::is_wide_continuation) {
+                // Clipped wide glyphs and padding beyond a historical row's
+                // original extent are display blanks, not stored copy text.
+                // In particular, padding must not enter a soft-wrapped join.
+                let Some(cell) = self.cell(y, x) else {
+                    continue;
+                };
+                if cell.is_wide_continuation() {
                     continue;
                 }
-                // Clipped wide glyphs are blank for rendering, but not copied.
-                if cell.is_none()
-                    && self
-                        .row(y)
-                        .and_then(|r| r.cells.get(usize::from(x)))
-                        .is_some_and(Cell::is_wide)
-                {
-                    continue;
-                }
-                let text = cell
-                    .filter(|c| c.has_contents())
-                    .map_or(" ", Cell::contents);
+                let text = if cell.has_contents() {
+                    cell.contents()
+                } else {
+                    " "
+                };
                 if output
                     .len()
                     .checked_add(text.len())

@@ -34,6 +34,10 @@ fn seed_fuzz_with_golden_terminal_edge_and_tiny_operations() -> Result {
         "fixture-tiny",
         &["\x1bc界ABCD\r\nZ\x1b[1;1r\x1b[S\x1b[T".as_bytes()],
     )?;
+    let mut history_copy = vec![1, 4, 2, 13];
+    history_copy.extend_from_slice(b"abcdefgh\r\nlast");
+    history_copy.extend_from_slice(&[255, 1, 9, 254, 1, 2, 10, 0, 0, 1, 9, 20]);
+    std::fs::write(directory.join("fixture-history-copy"), history_copy)?;
     Ok(())
 }
 #[path = "corpus/invariants.rs"]

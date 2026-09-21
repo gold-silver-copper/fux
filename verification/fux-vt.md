@@ -174,4 +174,50 @@ Baseline scale replacement index 6 completed in 161.636 seconds, PASS. The
 five valid measurements 2–6 have medians 45 ms (201 panes) and 148 ms (move to
 tab 1000). Stream instrumentation and necessary scenario changes mean the
 final comparison will rerun BOTH binaries with the same final harness.
-No final stress/performance/fuzz completion gate is claimed yet.
+No final performance/completion gate is claimed yet.
+
+## Late copy audit and mandatory re-verification
+
+The first 600-second run passed: 374,057 executions in 601 seconds, seed
+481504938, peak RSS 518 MiB, exit 0, 2026-09-21 20:29:51–20:39:52 UTC.
+`fuzz-final.log` retains the complete result. The test-only metadata probe
+was appended while it ran; rebuilding proved the fuzz binary byte-identical
+(`terminal-fuzz-813dd51`). This clean run is nevertheless **not final**:
+a later production copy fix requires restarting the full clean run.
+
+The preliminary final harness series passed all seven affected scenarios,
+21 saved traces, and all four stress invocations (20 walk cases in 192.920 s;
+3000-action walk in 388.160 s; 20 raw cases in 53.874 s; 20 scene-fuzz cases
+in 67.780 s). Reports are `final-scenarios-v2/results.json`,
+`final-traces/results.json` and `final-stress/results.json` under the evidence
+root. These must be rerun on the post-copy-fix binaries. The first scenario
+attempt had one harness error: resize still asserted the retired 2x2 backing
+minimum. That assertion now requires exact positive dimensions; frame
+oracle minima remain unchanged.
+
+An audit of bounded extraction across resize found an additional production
+bug: a historical soft wrap widened from 5 to 10 columns copied
+`abcde     fgh` instead of `abcdefgh`. `036f8b1` committed the failing unit
+regression and independent upstream example; `0e7a21e`/`8c35989` committed
+the real clipboard trace before the fix. The new `Window::text` skips
+nonexistent historical padding just as it skips a clipped wide leader.
+Actual stored spaces are still retained at soft joins. Root whole-pane copy
+has a direct unit assertion too; the independent example has no fux-vt
+link/dependency.
+
+Evidence: `history-copy-before.log`, `history-copy-oracle.log`,
+`history-copy-trace-before-v2.log` (FAIL at exact clipboard assertion, cleanup
+and diagnostics pass), `history-copy-after-tests.log` and
+`history-copy-trace-after.log` (1,126 ms PASS). The first new trace attempt
+incorrectly expected padded frame text to omit trailing display spaces;
+trimming only those visual assertion line ends fixed the fixture. The exact
+clipboard assertion was never relaxed. The divergence inventory includes
+this fixed mismatch; open mismatches remain zero.
+
+There are now **22** saved traces and **134** named fuzz seeds. Final-tree
+checks/probes are reproducible through `verification/fux-vt-checks.py`;
+`fux-vt-gates.py` enumerates scenarios/traces/stress/smoke; the paired
+`fux-vt-performance.py` retains every scale/stream run, includes warm-ups,
+alternates version order, and refuses any scale median regression.
+The actual CLI accepts 1–100 iterations, 1–5000 actions, and 1–3600 seconds
+(`final-harness-help.txt`). No timeout, interruption or unrun gate is a pass.
