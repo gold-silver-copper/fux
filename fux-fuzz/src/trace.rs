@@ -97,6 +97,25 @@ pub enum Action {
     /// Malformed API requests rejected at deserialization, and zero or
     /// oversized viewports.
     ApiMisuse,
+    /// Save, load, save: structural equality and custom Node fidelity.
+    SceneFidelity,
+    /// A tabless (PR #20) scene wrapped into one tab, stable on round trip.
+    Tabless,
+    /// Configuration and layout file churn under the asset watcher.
+    Churn,
+    /// Scene process references dying between validation and application.
+    SceneRefs,
+    /// One server through repeated lifecycle cycles with invariants after each.
+    Soak {
+        cycles: usize,
+    },
+    /// Viewer relationship repair under raw API despawns.
+    Repair,
+    /// Alternate screen, application cursor keys, self-resizing children and
+    /// 8-bit C1 bytes through a real child.
+    TerminalEdge,
+    /// A frontend whose outer PTY is not read under hot output, then resumes.
+    Stream,
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -164,6 +183,14 @@ impl Plan {
                     | "clipqueue"
                     | "resize_cmd"
                     | "api_misuse"
+                    | "scene_fidelity"
+                    | "tabless"
+                    | "churn"
+                    | "scene_refs"
+                    | "soak"
+                    | "repair"
+                    | "terminal_edge"
+                    | "stream"
             ),
             "unknown scenario",
         )?;
@@ -314,6 +341,30 @@ impl Plan {
             if matches!(scenario, "all" | "api_misuse") {
                 actions.push(Action::ApiMisuse);
             }
+            if matches!(scenario, "all" | "scene_fidelity") {
+                actions.push(Action::SceneFidelity);
+            }
+            if matches!(scenario, "all" | "tabless") {
+                actions.push(Action::Tabless);
+            }
+            if matches!(scenario, "all" | "churn") {
+                actions.push(Action::Churn);
+            }
+            if matches!(scenario, "all" | "scene_refs") {
+                actions.push(Action::SceneRefs);
+            }
+            if matches!(scenario, "all" | "soak") {
+                actions.push(Action::Soak { cycles: 8 });
+            }
+            if matches!(scenario, "all" | "repair") {
+                actions.push(Action::Repair);
+            }
+            if matches!(scenario, "all" | "terminal_edge") {
+                actions.push(Action::TerminalEdge);
+            }
+            if matches!(scenario, "all" | "stream") {
+                actions.push(Action::Stream);
+            }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [
                     (1002, true, false),
@@ -413,6 +464,10 @@ impl Plan {
                     matches!(mode, 1000 | 1002 | 1003),
                     "unsupported mouse protocol mode",
                 )?;
+            }
+            if let Action::Soak { cycles } = action {
+                ensure(self.version >= 3, "soak actions require trace version 3")?;
+                ensure((1..=50).contains(cycles), "soak cycles must be 1..50")?;
             }
             if let Action::Keys { sequences } = action {
                 ensure(self.version >= 3, "keys actions require trace version 3")?;
