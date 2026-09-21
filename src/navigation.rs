@@ -219,10 +219,30 @@ pub(crate) fn normalize_on_child_added(
     in_progress: Option<Res<ApplyingLayout>>,
     mut commands: Commands,
 ) {
+    let entity = added.entity;
+    // A raw `ChildOf` pointing into the entity's own subtree makes the
+    // hierarchy a cycle: layout extraction, cache invalidation and closes
+    // then never terminate. Bevy rejects only self-parenting; reject the
+    // rest here, leaving the entity unparented like a self-parented one.
+    if let Ok(parent) = parents.get(entity) {
+        let mut cursor = parent.parent();
+        for _ in 0..u16::MAX {
+            if cursor == entity {
+                bevy_log::warn!(
+                    "The ChildOf relationship on entity {entity} points into its own descendants. The cyclic ChildOf relationship has been removed."
+                );
+                commands.entity(entity).try_remove::<ChildOf>();
+                return;
+            }
+            match parents.get(cursor) {
+                Ok(next) => cursor = next.parent(),
+                Err(_) => break,
+            }
+        }
+    }
     if applying(&in_progress) {
         return;
     }
-    let entity = added.entity;
     if let Ok(parent) = parents.get(entity)
         && workspaces.contains(parent.parent())
         && !tabs.contains(entity)
