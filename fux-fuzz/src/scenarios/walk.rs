@@ -441,6 +441,9 @@ pub(super) fn step(
 
 pub(super) fn run(s: &mut Server, seed: u64, steps: &[Step]) -> Result<()> {
     let mut walker = Walker::new(s)?;
+    // Thousands of steps: the per-step summary is the evidence; a failure
+    // records its command and notice in full, and the minimizer reproduces it.
+    s.quiet = true;
     s.journal
         .record("walk_begin", json!({"seed":seed,"steps":steps.len()}))?;
     for (i, st) in steps.iter().enumerate() {

@@ -502,22 +502,22 @@ impl Plan {
             if matches!(scenario, "all" | "stream") {
                 actions.push(Action::Stream);
             }
-            if matches!(scenario, "walk") {
+            if matches!(scenario, "all" | "walk") {
                 let steps = if count <= 6 { 120 } else { count };
                 actions.push(Action::Walk {
                     seed: seed.wrapping_add(iteration as u64),
                     steps: generate_steps(seed.wrapping_add(iteration as u64), steps),
                 });
             }
-            if matches!(scenario, "scale") {
+            if matches!(scenario, "all" | "scale") {
                 actions.push(Action::Scale);
             }
-            if matches!(scenario, "adversarial") {
+            if matches!(scenario, "all" | "adversarial") {
                 actions.push(Action::Adversarial {
                     seed: seed.wrapping_add(iteration as u64),
                 });
             }
-            if matches!(scenario, "concurrent") {
+            if matches!(scenario, "all" | "concurrent") {
                 let steps = if count <= 6 { 80 } else { count };
                 actions.push(Action::Concurrent {
                     seed: seed.wrapping_add(iteration as u64),

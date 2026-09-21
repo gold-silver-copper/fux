@@ -275,6 +275,9 @@ pub struct Server {
     observed_children: BTreeSet<i32>,
     /// Per-request HTTP timeout; scale scenarios raise it and record times.
     pub request_timeout: Duration,
+    /// Skip journaling successful requests and responses; long walks record
+    /// their own compact summary per step and keep failures verbose.
+    pub quiet: bool,
     /// One connection-pooling agent per server: a fresh connection per
     /// request exhausts ephemeral ports within a few thousand requests.
     agent: Option<(Duration, ureq::Agent)>,
@@ -368,6 +371,7 @@ impl Server {
             cleanup_attempted: false,
             observed_children: BTreeSet::new(),
             request_timeout: Duration::from_millis(500),
+            quiet: false,
             agent: None,
         })
     }
@@ -483,6 +487,16 @@ impl Server {
     }
     pub fn rpc(&mut self, method: &str, params: Value) -> Result<Value> {
         self.healthy()?;
+        if self.quiet {
+            let response = self.request(method, params.clone());
+            if let Err(e) = &response {
+                self.journal.record(
+                    "rpc_failed",
+                    json!({"method":method,"params":params,"error":e.to_string()}),
+                )?;
+            }
+            return response;
+        }
         self.journal
             .record("rpc", json!({"method":method,"params":params}))?;
         let response = self.request(method, params)?;

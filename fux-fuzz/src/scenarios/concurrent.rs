@@ -29,6 +29,7 @@ fn captures(s: &mut Server) -> Result<Vec<(String, Vec<u8>)>> {
 pub(super) fn run(s: &mut Server, seed: u64, steps: &[Step]) -> Result<()> {
     let mut a = Walker::new(s)?;
     let mut b = Walker::new(s)?;
+    s.quiet = true;
     // Markers must be unique across both walks.
     b.next_marker = 5000;
     // Panes created by either walk capture what they receive.
