@@ -210,6 +210,15 @@ impl Frontend {
         }
         Ok(())
     }
+    /// Delivers a termination signal to the frontend process itself, as a
+    /// terminal emulator or the user would, and expects a graceful exit.
+    pub fn signal(&mut self, signal: Signal) -> Result<()> {
+        ensure(!self.exited, "frontend exited before signal")?;
+        let pid = self.child.process_id().ok_or("frontend has no PID")?;
+        self.expected_exit = true;
+        kill(Pid::from_raw(i32::try_from(pid)?), signal)?;
+        Ok(())
+    }
     pub fn stop(&mut self) -> Result<()> {
         if self.stop_attempted {
             return ensure(self.exited, "frontend previous reap attempt failed");
@@ -540,6 +549,13 @@ impl Server {
             .record("pty_input", json!({"frontend":index,"bytes":bytes}))?;
         let budget = self.budget.clone();
         self.frontend(index)?.send(bytes, &budget)
+    }
+    pub fn signal_frontend(&mut self, index: usize, signal: Signal) -> Result<()> {
+        self.journal.record(
+            "frontend_signal",
+            json!({"frontend":index,"signal":signal.as_str()}),
+        )?;
+        self.frontend(index)?.signal(signal)
     }
     pub fn resize(&mut self, index: usize, rows: u16, cols: u16) -> Result<()> {
         self.journal.record(
