@@ -45,9 +45,23 @@ pub(super) struct Rows {
     entries: Entries,
     bytes: usize,
     clock: u64,
-    lines: Vec<Arc<str>>,
+    /// Recently served windows, most recent first. A window is reusable only
+    /// while the emulator's non-destructive mark is unchanged; it shares the
+    /// row cache's `Arc`s, so it retains at most `MAX_WINDOWS` × height rows.
+    windows: Vec<WindowEntry>,
     #[cfg(test)]
     pub extractions: usize,
+    #[cfg(test)]
+    pub row_lookups: usize,
+}
+/// Enough for every viewer of a shared pane at distinct offsets/widths.
+const MAX_WINDOWS: usize = 8;
+struct WindowEntry {
+    mark: fux_vt::Mark,
+    offset: usize,
+    height: u16,
+    width: u16,
+    lines: Vec<Arc<str>>,
 }
 impl Rows {
     pub fn snapshot(
@@ -57,8 +71,19 @@ impl Rows {
         height: u16,
         width: u16,
     ) -> &[Arc<str>] {
+        // Same window, unchanged emulator: the previous rows are still exact,
+        // without per-row work. Unlike a single revision-keyed snapshot, each
+        // viewer's window survives the others' requests.
+        let mark = screen.mark();
+        if let Some(index) = self.windows.iter().position(|w| {
+            w.mark == mark && w.offset == offset && w.height == height && w.width == width
+        }) {
+            let entry = self.windows.remove(index);
+            self.windows.insert(0, entry);
+            return self.windows.first().map_or(&[], |w| w.lines.as_slice());
+        }
         let window = screen.window(offset, height, width);
-        self.lines.clear();
+        let mut lines = Vec::with_capacity(usize::from(window.rows));
         if self.clock == u64::MAX {
             self.entries.clear();
             self.bytes = 0;
@@ -67,12 +92,16 @@ impl Rows {
         self.clock += 1;
         for y in 0..window.rows {
             let Some(row) = window.row(y) else { continue };
+            #[cfg(test)]
+            {
+                self.row_lookups += 1;
+            }
             let key = (row.id, window.cols);
             if let Some(entry) = self.entries.get_mut(&key)
                 && entry.version == row.version
             {
                 entry.used = self.clock;
-                self.lines.push(entry.text.clone());
+                lines.push(entry.text.clone());
                 continue;
             }
             if let Some(old) = self.entries.remove(&key) {
@@ -131,8 +160,19 @@ impl Rows {
                     },
                 );
             }
-            self.lines.push(text);
+            lines.push(text);
         }
-        &self.lines
+        self.windows.truncate(MAX_WINDOWS - 1);
+        self.windows.insert(
+            0,
+            WindowEntry {
+                mark,
+                offset,
+                height,
+                width,
+                lines,
+            },
+        );
+        self.windows.first().map_or(&[], |w| w.lines.as_slice())
     }
 }

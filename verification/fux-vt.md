@@ -264,3 +264,23 @@ reproduced the same failure on the preserved **baseline** binary
 emulator defect. The scenario now requests a frame to apply queued layout
 changes and requires twenty consecutive equal observations; ten replays per
 binary then pass (`resize-cmd-fixed-*.log`). No assertion was weakened.
+
+## Performance investigation
+
+The first paired comparison on `b63f1ef` (`paired-performance-1/performance.json`;
+one warm-up plus five measurements per version and scenario, alternating
+order, seed 1, debug profile, same harness build, stream final frames all
+equal) showed medians of 44 ms before / 45 ms after at 201 panes and 147 ms /
+147 ms for the move to tab 1000, with +1 ms medians on nine labels. The
+timer resolution is 1 ms, but the pane-count labels moved consistently, so
+this was investigated as real rather than dismissed as noise.
+
+Cause: the old whole-screen snapshot returned an unchanged pane's lines with
+no per-row work, whereas the row cache performs one lookup per painted row.
+In the unoptimized profile the measured debug cost was about 213 ns per row
+(`ROW-REUSE-TIMES` reused 20.4 ms for 96,000 rows), or roughly 1 ms at a
+few thousand rows per 201-pane frame. `c5e867d` replaces SipHash with a
+multiplicative key mix (process-private, bounded table), halving that to
+about 96 ns per row (9.2 ms per 96,000 rows) with byte-identical output.
+The whole-screen memo was deliberately not reintroduced. Both binaries were
+then remeasured with the same harness as `paired-performance-2`.
