@@ -116,6 +116,25 @@ pub enum Action {
     TerminalEdge,
     /// A frontend whose outer PTY is not read under hot output, then resumes.
     Stream,
+    /// A seeded random walk over the command set with invariants after
+    /// every step. Steps are stored so replay is exact.
+    Walk {
+        seed: u64,
+        steps: Vec<Step>,
+    },
+    /// Hundreds of panes, a thousand tabs, fifty workspaces, huge names and
+    /// pastes, and a scene round trip of the large layout.
+    Scale,
+    /// A seeded adversarial byte stream through a real child under resize
+    /// and scroll.
+    Adversarial {
+        seed: u64,
+    },
+    /// Two frontends each walking their own seeded steps, interleaved.
+    Concurrent {
+        seed: u64,
+        steps: Vec<Step>,
+    },
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -148,6 +167,120 @@ pub enum Shutdown {
     Initializing,
     Lifecycle,
     Output,
+}
+
+/// One generated command. Indices are resolved modulo the live counts when
+/// the step runs, so the same trace makes the same choices on replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Step {
+    Split { horizontal: bool },
+    ClosePane(u8),
+    CloseTab(u8),
+    CloseWorkspace(u8),
+    Terminate,
+    Zoom,
+    Rename(u8),
+    Resize { horizontal: bool, grow: bool },
+    ReorderPane(u8),
+    Reorder { tab: bool, next: bool },
+    SwapDirection(u8),
+    MoveDirection(u8),
+    MoveTo { kind: u8, index: u8 },
+    Select { tab: bool, index: u8 },
+    Next { tab: bool },
+    Previous { tab: bool },
+    Focus(u8),
+    FocusNext,
+    FocusPrevious,
+    FocusLast,
+    FocusDirection(u8),
+    Scroll(u8),
+    CopyMode,
+    LeaveCopyMode,
+    Save,
+    Load,
+    Help,
+    Menu,
+    Choose,
+    AttachViewer,
+    DetachViewer,
+    Key(u8),
+    TabNew,
+    WorkspaceNew,
+}
+
+fn splitmix(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e3779b97f4a7c15);
+    let mut x = *state;
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
+}
+
+/// Weighted so structure changes are common and closes keep the tree bounded.
+pub fn generate_steps(seed: u64, count: usize) -> Vec<Step> {
+    let mut state = seed;
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let r = splitmix(&mut state);
+        let roll = (r % 100) as u8;
+        let a = ((r >> 8) & 0xff) as u8;
+        let b = ((r >> 16) & 0xff) as u8;
+        let step = match roll {
+            0..=13 => Step::Split {
+                horizontal: a.is_multiple_of(2),
+            },
+            14..=21 => Step::ClosePane(a),
+            22..=24 => Step::CloseTab(a),
+            25..=26 => Step::CloseWorkspace(a),
+            27..=30 => Step::MoveTo { kind: a, index: b },
+            31..=33 => Step::SwapDirection(a),
+            34..=36 => Step::MoveDirection(a),
+            37..=39 => Step::Reorder {
+                tab: a.is_multiple_of(2),
+                next: b.is_multiple_of(2),
+            },
+            40..=41 => Step::ReorderPane(a),
+            42..=45 => Step::Select {
+                tab: a.is_multiple_of(2),
+                index: b,
+            },
+            46..=47 => Step::Next {
+                tab: a.is_multiple_of(2),
+            },
+            48..=49 => Step::Previous {
+                tab: a.is_multiple_of(2),
+            },
+            50..=52 => Step::Focus(a),
+            53 => Step::FocusNext,
+            54 => Step::FocusPrevious,
+            55 => Step::FocusLast,
+            56..=58 => Step::FocusDirection(a),
+            59..=61 => Step::Zoom,
+            62..=65 => Step::Resize {
+                horizontal: a.is_multiple_of(2),
+                grow: b.is_multiple_of(2),
+            },
+            66..=68 => Step::TabNew,
+            69..=70 => Step::WorkspaceNew,
+            71..=72 => Step::Rename(a),
+            73..=75 => Step::Save,
+            76..=78 => Step::Load,
+            79..=80 => Step::Scroll(a),
+            81..=82 => Step::CopyMode,
+            83..=84 => Step::LeaveCopyMode,
+            85 => Step::Help,
+            86 => Step::Menu,
+            87 => Step::Choose,
+            88..=90 => Step::AttachViewer,
+            91..=92 => Step::DetachViewer,
+            93..=94 => Step::Terminate,
+            _ => Step::Key(a),
+        };
+        out.push(step);
+    }
+    out
 }
 
 impl Plan {
@@ -191,16 +324,20 @@ impl Plan {
                     | "repair"
                     | "terminal_edge"
                     | "stream"
+                    | "walk"
+                    | "scale"
+                    | "adversarial"
+                    | "concurrent"
             ),
             "unknown scenario",
         )?;
         ensure(
-            (1..=100).contains(&iterations) && (1..=200).contains(&count),
-            "iterations must be 1..100 and actions 1..200",
+            (1..=100).contains(&iterations) && (1..=5000).contains(&count),
+            "iterations must be 1..100 and actions 1..5000",
         )?;
         let mut state = seed;
         let mut actions = Vec::new();
-        for _ in 0..iterations {
+        for iteration in 0..iterations {
             if matches!(scenario, "all" | "startup") {
                 for config in [Config::Missing, Config::Malformed, Config::Valid] {
                     actions.push(Action::Startup { config });
@@ -365,6 +502,28 @@ impl Plan {
             if matches!(scenario, "all" | "stream") {
                 actions.push(Action::Stream);
             }
+            if matches!(scenario, "walk") {
+                let steps = if count <= 6 { 120 } else { count };
+                actions.push(Action::Walk {
+                    seed: seed.wrapping_add(iteration as u64),
+                    steps: generate_steps(seed.wrapping_add(iteration as u64), steps),
+                });
+            }
+            if matches!(scenario, "scale") {
+                actions.push(Action::Scale);
+            }
+            if matches!(scenario, "adversarial") {
+                actions.push(Action::Adversarial {
+                    seed: seed.wrapping_add(iteration as u64),
+                });
+            }
+            if matches!(scenario, "concurrent") {
+                let steps = if count <= 6 { 80 } else { count };
+                actions.push(Action::Concurrent {
+                    seed: seed.wrapping_add(iteration as u64),
+                    steps: generate_steps(seed.wrapping_add(iteration as u64) ^ 0x5eed, steps),
+                });
+            }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [
                     (1002, true, false),
@@ -464,6 +623,16 @@ impl Plan {
                     matches!(mode, 1000 | 1002 | 1003),
                     "unsupported mouse protocol mode",
                 )?;
+            }
+            if let Action::Walk { steps, .. } | Action::Concurrent { steps, .. } = action {
+                ensure(self.version >= 3, "walk actions require trace version 3")?;
+                ensure(
+                    !steps.is_empty() && steps.len() <= 5000,
+                    "walk steps must be 1..5000",
+                )?;
+            }
+            if let Action::Scale | Action::Adversarial { .. } = action {
+                ensure(self.version >= 3, "this action requires trace version 3")?;
             }
             if let Action::Soak { cycles } = action {
                 ensure(self.version >= 3, "soak actions require trace version 3")?;
