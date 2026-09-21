@@ -1,6 +1,7 @@
 //! The structural invariants every generated step must preserve, checked for
 //! every viewer. Shared by the walk, the concurrent walk and scale scenarios.
 use super::*;
+use std::collections::BTreeMap;
 
 pub(super) const TAB: &str = "fux::model::Tab";
 pub(super) const WORKSPACE: &str = "fux::model::Workspace";
@@ -262,6 +263,50 @@ pub(super) fn overlaps(paint: &str, content_rows: u16) -> Vec<String> {
     v
 }
 
+/// The rows and columns a subtree needs at two cells per pane with one-cell
+/// gaps, given equal weights: a stacked container of n children needs n
+/// times the tallest child plus n-1 gaps, and the widest child.
+fn required(w: &World, nodes: &BTreeMap<u64, Value>, entity: u64) -> (u32, u32) {
+    if w.views.iter().any(|(l, _)| *l == entity) {
+        return (2, 2);
+    }
+    let kids: Vec<(u32, u32)> = w
+        .children
+        .iter()
+        .find(|(p, _)| *p == entity)
+        .map(|(_, kids)| kids.iter().map(|k| required(w, nodes, *k)).collect())
+        .unwrap_or_default();
+    let kids: Vec<(u32, u32)> = kids.into_iter().filter(|(r, c)| *r > 0 && *c > 0).collect();
+    if kids.is_empty() {
+        return (0, 0);
+    }
+    let n = kids.len() as u32;
+    let stacked = nodes
+        .get(&entity)
+        .and_then(|node| {
+            node.get("flex_direction")?
+                .as_str()
+                .map(|d| d.starts_with("Column"))
+        })
+        .unwrap_or(false);
+    let rows = kids.iter().map(|(r, _)| *r).max().unwrap_or(0);
+    let cols = kids.iter().map(|(_, c)| *c).max().unwrap_or(0);
+    if stacked {
+        (n * rows + (n - 1), cols)
+    } else {
+        (rows, n * cols + (n - 1))
+    }
+}
+fn flex_grow(s: &mut Server, entity: u64) -> Option<f64> {
+    s.query("bevy_ui::ui_node::Node")
+        .ok()?
+        .iter()
+        .find(|r| id(r).ok() == Some(entity))
+        .and_then(|r| {
+            r.pointer("/components/bevy_ui::ui_node::Node/flex_grow")?
+                .as_f64()
+        })
+}
 fn viewer_field(s: &mut Server, viewer: u64, field: &str) -> Result<Option<Value>> {
     Ok(s.query(VIEWER)?
         .iter()
@@ -367,6 +412,16 @@ pub(super) fn violations(
         }
     }
     let leaves = w.leaves();
+    let nodes: BTreeMap<u64, Value> = s
+        .query("bevy_ui::ui_node::Node")?
+        .iter()
+        .filter_map(|r| {
+            Some((
+                id(r).ok()?,
+                r.pointer("/components/bevy_ui::ui_node::Node")?.clone(),
+            ))
+        })
+        .collect();
     for viewer in &w.viewers {
         let viewing = s.relation(*viewer, "fux::model::Viewing");
         let on_tab = s.relation(*viewer, "fux::model::OnTab");
@@ -425,16 +480,43 @@ pub(super) fn violations(
                     } else {
                         tab_leaves.len()
                     };
-                    let room = usize::from(content) * usize::from(cols as u16) / 4;
+                    // Equal-weight halving needs 2^depth cells along an axis:
+                    // a tab whose tree cannot fit at two cells per pane in
+                    // this viewer legitimately leaves panes unpainted.
+                    let (need_rows, need_cols) = on_tab
+                        .as_ref()
+                        .ok()
+                        .map(|t| required(w, &nodes, *t))
+                        .unwrap_or((0, 0));
+                    let fits =
+                        need_rows <= u32::from(content) && need_cols <= u32::from(cols as u16);
                     // A pane already at one cell means the layout is squeezed
                     // in this viewer, which another, larger viewer's split may
                     // do; a missing rectangle is then a squeeze, not a defect.
+                    // Likewise once resize commands have changed flex weights:
+                    // a weight of 0.1 beside larger ones may round to no cell
+                    // in a small viewer, which the split rule never promised.
                     let squeezed = painted.iter().any(|r| r.3 < 2 || r.2 - r.1 < 2);
+                    let weighted = painted.len() != expected
+                        && tab_leaves.iter().any(|leaf| {
+                            let mut cursor = Some(*leaf);
+                            while let Some(e) = cursor {
+                                if w.tabs.contains(&e) {
+                                    break;
+                                }
+                                if flex_grow(s, e).is_some_and(|f| (f - 1.0).abs() > 0.01) {
+                                    return true;
+                                }
+                                cursor = w.parent(e);
+                            }
+                            false
+                        });
                     if content >= 2
                         && expected > 0
-                        && expected <= room
+                        && fits
                         && painted.len() != expected
                         && !squeezed
+                        && !weighted
                     {
                         v.push(format!(
                             "viewer {viewer}: {} panes painted but the tab has {expected} (zoom {zoom}); rects {painted:?}",
