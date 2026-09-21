@@ -21,9 +21,22 @@ pub struct Plan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "scenario", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
-    Startup { config: Config },
-    Resize { sizes: Vec<[u16; 4]>, token: String },
-    Shutdown { mode: Shutdown },
+    Startup {
+        config: Config,
+    },
+    Resize {
+        sizes: Vec<[u16; 4]>,
+        token: String,
+    },
+    Shutdown {
+        mode: Shutdown,
+    },
+    Paste {
+        text: String,
+        repeats: usize,
+        bracketed: bool,
+        chunk_bytes: usize,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,7 +56,10 @@ pub enum Shutdown {
 impl Plan {
     pub fn generate(scenario: &str, seed: u64, iterations: usize, count: usize) -> Result<Self> {
         ensure(
-            matches!(scenario, "all" | "startup" | "resize" | "shutdown"),
+            matches!(
+                scenario,
+                "all" | "startup" | "resize" | "shutdown" | "paste"
+            ),
             "unknown scenario",
         )?;
         ensure(
@@ -87,6 +103,30 @@ impl Plan {
                     token: format!("INPUT-{state:016x}"),
                 });
             }
+            if matches!(scenario, "all" | "paste") {
+                // Payload limit is in UTF-8 bytes, exclusive of terminal framing.
+                // The boundary controls distinguish envelope overhead from size
+                // rejection, Unicode decoding, fragmentation, or a blocked PTY.
+                for (text, repeats, bracketed, chunk_bytes) in [
+                    ("x", 0, false, 1),
+                    ("line\n界é", 3, true, 1),
+                    ("x", 65_524, true, 1024),
+                    ("x", 65_525, true, 1024),
+                    ("x", 65_536, false, 1024),
+                    ("x", 65_536, true, 1024),
+                    ("界", 21_845, false, 1024),
+                    ("界", 21_845, true, 1024),
+                    ("x", 65_537, false, 1024),
+                    ("x", 65_537, true, 1024),
+                ] {
+                    actions.push(Action::Paste {
+                        text: text.into(),
+                        repeats,
+                        bracketed,
+                        chunk_bytes,
+                    });
+                }
+            }
             if matches!(scenario, "all" | "shutdown") {
                 for mode in [
                     Shutdown::Initializing,
@@ -98,7 +138,7 @@ impl Plan {
             }
         }
         Ok(Self {
-            version: 1,
+            version: 2,
             seed,
             actions,
         })
@@ -113,12 +153,36 @@ impl Plan {
         Ok(plan)
     }
     pub fn validate(&self) -> Result<()> {
-        ensure(self.version == 1, "unsupported trace version")?;
+        ensure(matches!(self.version, 1 | 2), "unsupported trace version")?;
         ensure(
-            !self.actions.is_empty() && self.actions.len() <= 700,
+            !self.actions.is_empty() && self.actions.len() <= 1700,
             "invalid scenario count",
         )?;
         for action in &self.actions {
+            if let Action::Paste {
+                text,
+                repeats,
+                chunk_bytes,
+                ..
+            } = action
+            {
+                ensure(self.version == 2, "paste actions require trace version 2")?;
+                let bytes = text
+                    .len()
+                    .checked_mul(*repeats)
+                    .ok_or("paste size overflow")?;
+                ensure(
+                    !text.is_empty()
+                        && text.len() <= 64
+                        && text.chars().all(|ch| !ch.is_control() || ch == '\n'),
+                    "invalid paste text",
+                )?;
+                ensure(
+                    bytes <= 65_537 && (1..=4096).contains(chunk_bytes),
+                    "paste bounds exceeded",
+                )?;
+                ensure(bytes.div_ceil(*chunk_bytes) <= 256, "too many paste chunks")?;
+            }
             if let Action::Resize { sizes, token } = action {
                 ensure(
                     !sizes.is_empty() && sizes.len() <= 210,
@@ -188,7 +252,7 @@ mod tests {
     #[test]
     fn rejects_unbounded_or_unknown_recipes() -> Result<()> {
         let mut plan = Plan::generate("resize", 0, 1, 1)?;
-        plan.version = 2;
+        plan.version = 99;
         assert!(plan.validate().is_err());
         assert!(Plan::generate("all", 0, 101, 1).is_err());
         assert!(
