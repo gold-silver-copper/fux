@@ -1,6 +1,7 @@
 mod copy;
 mod history;
 mod keys;
+mod layout;
 mod mouse;
 mod paste;
 mod signal;
@@ -47,6 +48,7 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Copy { reload } => copy::run(server, *reload),
         Action::History => history::run(server),
         Action::Zoom => zoom::run(server),
+        Action::Layout => layout::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
