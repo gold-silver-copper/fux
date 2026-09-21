@@ -4,6 +4,7 @@ mod keys;
 mod layout;
 mod mouse;
 mod paste;
+mod process;
 mod signal;
 mod zoom;
 
@@ -49,6 +50,7 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::History => history::run(server),
         Action::Zoom => zoom::run(server),
         Action::Layout => layout::run(server),
+        Action::Process => process::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
