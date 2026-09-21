@@ -1,4 +1,5 @@
 mod keys;
+mod mouse;
 mod paste;
 mod signal;
 
@@ -39,6 +40,7 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         } => paste::run(server, text, *repeats, *bracketed, *chunk_bytes),
         Action::Signal { signal } => signal::run(server, *signal),
         Action::Keys { sequences } => keys::run(server, sequences),
+        Action::Mouse { mode, sgr, split } => mouse::run(server, *mode, *sgr, *split),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),

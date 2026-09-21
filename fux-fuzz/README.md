@@ -12,7 +12,7 @@ From the repository root, with the pinned Rust toolchain:
 cargo build --locked
 cargo build --manifest-path fux-fuzz/Cargo.toml --locked
 
-# Smoke: all six scenarios (twenty-two isolated cases).
+# Smoke: all seven scenarios (twenty-seven isolated cases).
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux
 
 # Individual scenarios:
@@ -22,6 +22,7 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario shutdown
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario paste
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario keys
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario signal
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario mouse
 
 # Explicit, bounded stress: 10 fresh fixtures, 30 generated resize pairs each.
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
@@ -34,14 +35,15 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
 
 `--fux` is mandatory and canonicalized before any child changes directory. No run implicitly builds fux or searches PATH for an installed fux. Use a trusted local binary: the application API permits unrestricted same-user command execution.
 
-The keys scenario found a control-key encoding defect against merged `main`, fixed in this branch; see "Finding" below. The paste scenario found a bracketed-paste envelope defect, fixed in PR #30. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
+The mouse scenario found a legacy mouse-release encoding defect against merged `main`, fixed in this branch; see "Finding" below. The keys scenario found a control-key encoding defect, fixed in PR #31, and the paste scenario a bracketed-paste envelope defect, fixed in PR #30. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
 
 ## What the scenarios check
 
 - **Startup:** missing, malformed, and valid configuration; real frontend attach immediately after read-only readiness checks; first `Launch.argv` and its actual terminal output. Distinct executable wrappers identify the configured and environment-default shell. No settling sleep precedes the initial observation.
 - **Resize:** two real viewers of a shared process, rapid PTY resize bursts, settled tiny viewports, conflicting dimensions, responsive BRP, reflected viewer/process sizes, and child-side `stty size` at the final negotiated size and after detach. A larger diagnostic emulator checks frame overflow and full-width bottom chrome without silently clipping the oracle. Raw-mode child files prove input isolation across split/focus/resize; delivery is acknowledged before crossing from PTY input to a BRP focus change.
 - **Paste:** bracketed-paste envelopes fragmented across PTY writes, multibyte payloads, and sizes straddling the documented 64 KiB bound, against children that do and do not request bracketed-paste mode (`DECSET 2004`). It checks ownership acknowledgement, byte-exact child delivery, explicit rejection of oversized payloads, and that an ordinary key after the end marker still reaches the pane. This scenario found a production defect, fixed in PR #30; see the finding below.
-- **Keys:** every canonical xterm key encoding, one press per PTY write, sent through the real frontend to a raw-mode `cat` child that records what arrived. Plain, shifted and multibyte characters, NUL, every Ctrl letter except the prefix, the four C0 controls above Ctrl-Z, Backspace, Enter, Tab and Shift-Tab, a lone Escape (resolved through its 35 ms deadline, never merged with the next key), Alt-x, arrows, Home/End, Insert/Delete/PageUp/PageDown, F1..F12 forms, and modified variants. Delivery must be byte-identical; each press is acknowledged before the next. A seeded shuffle of the same set covers neighbour interactions. **This scenario found a production defect, fixed in this branch; see the finding below.**
+- **Keys:** every canonical xterm key encoding, one press per PTY write, sent through the real frontend to a raw-mode `cat` child that records what arrived. Plain, shifted and multibyte characters, NUL, every Ctrl letter except the prefix, the four C0 controls above Ctrl-Z, Backspace, Enter, Tab and Shift-Tab, a lone Escape (resolved through its 35 ms deadline, never merged with the next key), Alt-x, arrows, Home/End, Insert/Delete/PageUp/PageDown, F1..F12 forms, and modified variants. Delivery must be byte-identical; each press is acknowledged before the next. A seeded shuffle of the same set covers neighbour interactions. This scenario found a production defect, fixed in PR #31; see the finding below.
+- **Mouse:** outer-terminal SGR mouse events sent through the real frontend to raw-mode children that requested DECSET 1000, 1002 or 1003, with or without SGR 1006, in one full-width pane or two split panes located by the marker each painted. Expectations are xterm's table, written independently of fux: pane-relative one-based coordinates including the far corner, motion filtered by mode, left/middle/right presses and releases, Ctrl and Alt bits, drags, wheel events, and no delivery for clicks on the bar or a separator. Each forwarded event is acknowledged in the child's file before the next; a final forwarded press per pane flushes anything wrongly forwarded. **This scenario found a production defect, fixed in this branch; see the finding below.**
 - **Signal:** SIGINT, SIGTERM and SIGHUP delivered to an attached frontend. It must exit successfully, restore termios and the alternate screen, and its viewer must disappear while the server is otherwise idle (only read-only queries), without killing the shared process. On failure the case records whether an unrelated paint would have removed the viewer, separating a lost detach from a lost server.
 - **Shutdown:** a SIGTERM after the pre-`app.run` announcement but before waiting for readiness; pane termination and separate bash background-job cleanup; natural exit with retained output/status; graceful detach with both termios and alternate-screen restoration; abrupt viewer loss without killing the shared process; server shutdown during `yes` output while the outer PTY is temporarily unread.
 
@@ -63,7 +65,7 @@ Each invocation creates a fresh directory under `fux-fuzz/runs/` (override with 
 - `replay.txt`: a shell-quoted, copyable command with the original binary and trace paths.
 - Failed case directories: a flushed `events.jsonl` journal of intended RPC/input/resize actions and observations; bounded server stdout/stderr tails; frontend ANSI tails and final diagnostic screens **only if captured**; controlled fixture files such as input/PID/size files.
 
-Fixed setup/assertion steps belong to the built-in scenario recipes; traces are versioned (1: startup/resize/shutdown, 2: adds paste, 3: adds keys and signal) and every earlier version still loads and validates. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
+Fixed setup/assertion steps belong to the built-in scenario recipes; traces are versioned (1: startup/resize/shutdown, 2: adds paste, 3: adds keys, signal and mouse) and every earlier version still loads and validates. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
 
 Successful case directories are removed after cleanup. Their plan, summary, metadata and replay command remain, normally a few KiB for smoke. Failed case directories remain for diagnosis. No automatic pruning of prior invocations: remove a specific run directory when done. No real HOME, caches, target tree, or arbitrary temporary directories are copied; child HOME is the freshly created fixture directory with a cleared environment.
 
@@ -87,9 +89,22 @@ cargo test --manifest-path fux-fuzz/Cargo.toml --locked
 
 Six unit tests check deterministic generation, trace round-tripping/validation, deadline/interruption checks, bounded capture, the frame oracle, and the paste payload/envelope oracle. Three subprocess tests use deliberately faulty **fixtures, not modified fux code**: early exit, hanging startup, and interrupted startup. They assert nonzero status, bounded termination, retained diagnostics, no invented frontend capture, and disappearance of the fixture PID after cleanup.
 
-## Finding: Ctrl-\, Ctrl-], Ctrl-^ and Ctrl-_ reached the pane as Ctrl-T..Ctrl-W (fixed)
+## Finding: legacy mouse releases lost their modifier bits (fixed)
 
-The keys scenario failed against `8f64d5c` (merged `main` including PR #30). The fix is included in this branch.
+The mouse scenario failed against `f8a9286` (merged `main` including PR #31) in both legacy-encoding cases. The fix is included in this branch.
+
+xterm's normal tracking mode (`1000`/`1002`/`1003` without `1006`) encodes a release as button 3 plus the same Shift/Meta/Control bits the press carried: Ctrl-release is `ESC [ M 3 x y` (3 + 16 + 32). fux emitted a bare 3, so an application saw Ctrl-release and Alt-release as a plain release:
+
+| Sent (outer SGR) | Delivered before | Delivered now |
+| --- | --- | --- |
+| `ESC [ < 16 ; 1 ; 2 m` (Ctrl-release) | `ESC [ M # ! "` | `ESC [ M 3 ! "` |
+| `ESC [ < 8 ; 2 ; 1 m` (Alt-release) | `ESC [ M # " !` | `ESC [ M + " !` |
+
+The SGR path already kept modifiers on release, and every other event in the set (44 of 46 in the split case) was delivered exactly, including pane-relative coordinates for the second pane and nothing for bar or separator clicks. The fix keeps the modifier bits on legacy release; a unit test pins both encodings.
+
+## Earlier finding: Ctrl-\, Ctrl-], Ctrl-^ and Ctrl-_ reached the pane as Ctrl-T..Ctrl-W (fixed in PR #31)
+
+The keys scenario failed against `8f64d5c` (merged `main` including PR #30).
 
 Termina names the C0 controls above Ctrl-Z after the digit xterm sends them for: bytes `0x1c..=0x1f` decode as Ctrl-4..Ctrl-7. fux re-encoded a Ctrl character as its uppercase form masked with `0x1f`, which maps `'4'..='7'` to `0x14..=0x17`. So the four presses arrived at the application as Ctrl-T, Ctrl-U, Ctrl-V and Ctrl-W:
 
