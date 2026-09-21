@@ -61,7 +61,7 @@ fn startup(s: &mut Server, config: Config) -> Result<()> {
     ensure(
         first.get("argv") == Some(&expected) && frame.contains(marker),
         &format!(
-            "startup contract: {config:?} config should launch {name} first; observed recipe={first}, frame={frame:?}. Startup currently precedes asynchronous asset application; no production fix is included."
+            "startup contract: {config:?} config should launch {name} first; observed recipe={first}, frame={frame:?}. The first pane must use settled initial configuration."
         ),
     )
 }
