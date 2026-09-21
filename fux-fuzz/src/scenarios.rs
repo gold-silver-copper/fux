@@ -1,4 +1,6 @@
+mod api_misuse;
 mod chrome;
+mod clipqueue;
 mod config;
 mod copy;
 mod history;
@@ -7,13 +9,16 @@ mod layout;
 mod limits;
 mod memory;
 mod mouse;
+mod mouse_edge;
 mod nav;
 mod overlay;
 mod paste;
 mod process;
 mod race;
 mod reorder;
+mod resize_cmd;
 mod scene;
+mod scene_map;
 mod selection;
 mod signal;
 mod zoom;
@@ -71,6 +76,11 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Race => race::run(server),
         Action::Memory => memory::run(server),
         Action::Reorder => reorder::run(server),
+        Action::SceneMap => scene_map::run(server),
+        Action::MouseEdge => mouse_edge::run(server),
+        Action::ClipQueue => clipqueue::run(server),
+        Action::ResizeCmd => resize_cmd::run(server),
+        Action::ApiMisuse => api_misuse::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
