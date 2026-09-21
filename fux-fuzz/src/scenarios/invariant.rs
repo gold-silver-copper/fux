@@ -1,6 +1,7 @@
 //! The structural invariants every generated step must preserve, checked for
 //! every viewer. Shared by the walk, the concurrent walk and scale scenarios.
 use super::*;
+use std::collections::BTreeMap;
 
 pub(super) const TAB: &str = "fux::model::Tab";
 pub(super) const WORKSPACE: &str = "fux::model::Workspace";
@@ -157,8 +158,10 @@ pub(super) fn spans(paint: &str, content_rows: u16) -> Vec<(u16, u16, u16)> {
         if let Some((r, a, b, text)) = current.take() {
             let t = text.trim();
             // fux paints status such as `[exit:N]` inside a pane's rectangle
-            // on its last row; that is chrome, not a pane row.
-            let status = t.starts_with('[') && t.ends_with(']') && b - a <= 16;
+            // on its last row; that is chrome, not a pane row. A narrow pane
+            // shows it cut with an ellipsis.
+            let status =
+                t.starts_with('[') && (t.ends_with(']') || t.ends_with('…')) && b - a <= 16;
             if b > a && b - a > 1 && !status {
                 out.push((r, a, b));
             }
@@ -260,6 +263,58 @@ pub(super) fn overlaps(paint: &str, content_rows: u16) -> Vec<String> {
     v
 }
 
+/// The rows and columns a subtree needs at two cells per pane with one-cell
+/// gaps, given equal weights: a stacked container of n children needs n
+/// times the tallest child plus n-1 gaps, and the widest child.
+fn required(w: &World, nodes: &BTreeMap<u64, Value>, entity: u64) -> (u32, u32) {
+    if w.views.iter().any(|(l, _)| *l == entity) {
+        return (2, 2);
+    }
+    let kids: Vec<(u32, u32)> = w
+        .children
+        .iter()
+        .find(|(p, _)| *p == entity)
+        .map(|(_, kids)| kids.iter().map(|k| required(w, nodes, *k)).collect())
+        .unwrap_or_default();
+    let kids: Vec<(u32, u32)> = kids.into_iter().filter(|(r, c)| *r > 0 && *c > 0).collect();
+    if kids.is_empty() {
+        return (0, 0);
+    }
+    let n = kids.len() as u32;
+    let stacked = nodes
+        .get(&entity)
+        .and_then(|node| {
+            node.get("flex_direction")?
+                .as_str()
+                .map(|d| d.starts_with("Column"))
+        })
+        .unwrap_or(false);
+    let rows = kids.iter().map(|(r, _)| *r).max().unwrap_or(0);
+    let cols = kids.iter().map(|(_, c)| *c).max().unwrap_or(0);
+    if stacked {
+        (n * rows + (n - 1), cols)
+    } else {
+        (rows, n * cols + (n - 1))
+    }
+}
+/// The layout nodes of entities carrying `marker`, by entity.
+fn nodes_with(s: &mut Server, marker: &str) -> Result<BTreeMap<u64, Value>> {
+    Ok(s.rpc(
+        "world.query",
+        json!({"data":{"components":["bevy_ui::ui_node::Node"]},"filter":{"with":[marker]}}),
+    )?
+    .as_array()
+    .cloned()
+    .unwrap_or_default()
+    .iter()
+    .filter_map(|r| {
+        Some((
+            id(r).ok()?,
+            r.pointer("/components/bevy_ui::ui_node::Node")?.clone(),
+        ))
+    })
+    .collect())
+}
 fn viewer_field(s: &mut Server, viewer: u64, field: &str) -> Result<Option<Value>> {
     Ok(s.query(VIEWER)?
         .iter()
@@ -365,6 +420,10 @@ pub(super) fn violations(
         }
     }
     let leaves = w.leaves();
+    // Layout nodes of containers and leaves only: a scale layout has
+    // thousands of tabs whose nodes would exceed the response bound.
+    let mut nodes = nodes_with(s, SPLIT)?;
+    nodes.extend(nodes_with(s, PANE_VIEW)?);
     for viewer in &w.viewers {
         let viewing = s.relation(*viewer, "fux::model::Viewing");
         let on_tab = s.relation(*viewer, "fux::model::OnTab");
@@ -423,8 +482,25 @@ pub(super) fn violations(
                     } else {
                         tab_leaves.len()
                     };
-                    let room = usize::from(content) * usize::from(cols as u16) / 4;
-                    if content >= 2 && expected > 0 && expected <= room && painted.len() != expected
+                    // Equal-weight halving needs 2^depth cells along an axis:
+                    // a tab whose tree cannot fit at two cells per pane in
+                    // this viewer legitimately leaves panes unpainted.
+                    let (need_rows, need_cols) = on_tab
+                        .as_ref()
+                        .ok()
+                        .map(|t| required(w, &nodes, *t))
+                        .unwrap_or((0, 0));
+                    let fits =
+                        need_rows <= u32::from(content) && need_cols <= u32::from(cols as u16);
+                    // A pane already at one cell means the layout is squeezed
+                    // in this viewer, which another, larger viewer's split may
+                    // do; a missing rectangle is then a squeeze, not a defect.
+                    let squeezed = painted.iter().any(|r| r.3 < 2 || r.2 - r.1 < 2);
+                    if content >= 2
+                        && expected > 0
+                        && fits
+                        && painted.len() != expected
+                        && !squeezed
                     {
                         v.push(format!(
                             "viewer {viewer}: {} panes painted but the tab has {expected} (zoom {zoom}); rects {painted:?}",
@@ -442,6 +518,248 @@ pub(super) fn violations(
             "{} processes exceed the cap of {process_cap}",
             w.states.len()
         ));
+    }
+    Ok(v)
+}
+
+/// The background every overlay surface and the command column paint with;
+/// the bar uses a different foreground, so this marks an open overlay.
+pub(super) const PANEL: &str = "\x1b[0;97;100m";
+const BOLD_SEPARATOR: &str = "\x1b[0;1m";
+const BOX_GLYPHS: [char; 7] = ['│', '─', '┼', '┤', '├', '┴', '┬'];
+
+pub(super) struct ViewerPaint {
+    pub rows: u16,
+    pub cols: u16,
+    pub zoom: bool,
+    pub notice: Value,
+    pub paint: String,
+    /// The paint rendered at the viewer's size.
+    pub text: String,
+}
+pub(super) fn viewer_paint(s: &mut Server, viewer: u64) -> Result<ViewerPaint> {
+    let row = s
+        .query(VIEWER)?
+        .into_iter()
+        .find(|r| id(r).ok() == Some(viewer))
+        .ok_or("viewer disappeared")?;
+    let v = component(&row, VIEWER)?;
+    let rows = v.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
+    let cols = v.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
+    let paint = s
+        .rpc("fux.frame", json!({"viewer":viewer}))?
+        .get("paint")
+        .and_then(Value::as_str)
+        .ok_or("missing paint")?
+        .to_owned();
+    let mut parser = vt100::Parser::new(rows.max(2), cols.max(2), 0);
+    parser.process(paint.as_bytes());
+    Ok(ViewerPaint {
+        rows,
+        cols,
+        zoom: v.get("zoom").and_then(Value::as_bool).unwrap_or(false),
+        notice: v.get("notice").cloned().unwrap_or(Value::Null),
+        paint,
+        text: parser.screen().contents(),
+    })
+}
+pub(super) fn name_of(s: &mut Server, entity: u64) -> Result<Option<String>> {
+    Ok(s.query("bevy_ecs::name::Name")?
+        .iter()
+        .find(|r| id(r).ok() == Some(entity))
+        .and_then(|r| {
+            r.pointer("/components/bevy_ecs::name::Name")?
+                .as_str()
+                .map(str::to_owned)
+        }))
+}
+/// Where `[exit:N]`-style status labels are painted: (row, col) one-based.
+fn status_labels(paint: &str) -> Vec<(u16, u16, String)> {
+    let mut out = Vec::new();
+    let mut rest = paint;
+    const DIM_REVERSE: &str = "\x1b[0;2;7m";
+    while let Some(i) = rest.find(DIM_REVERSE) {
+        let head = rest.get(..i).unwrap_or_default();
+        let tail = rest.get(i + DIM_REVERSE.len()..).unwrap_or_default();
+        let label: String = tail.chars().take_while(|c| *c != '\x1b').collect();
+        if let Some(h) = head.rfind("\x1b[")
+            && let Some(m) = head.get(h + 2..)
+            && let Some((coords, _)) = m.split_once('H')
+            && let Some((r, c)) = coords.split_once(';')
+            && let (Ok(r), Ok(c)) = (r.parse::<u16>(), c.parse::<u16>())
+        {
+            out.push((r, c, label));
+        }
+        rest = tail;
+    }
+    out
+}
+fn find_text(text: &str, needle: &str) -> Option<(u16, u16)> {
+    for (y, line) in text.lines().enumerate() {
+        if let Some(i) = line.find(needle) {
+            let x = line.get(..i)?.chars().count();
+            return Some((y as u16 + 1, x as u16 + 1));
+        }
+    }
+    None
+}
+fn first_char(name: &str) -> String {
+    name.chars().filter(|c| !c.is_control()).take(1).collect()
+}
+
+/// What is painted, not only where: the bar names the active tab and
+/// workspace and reverses the active tab, a zoomed viewer says so, the
+/// focused pane's separators are bold, an exited pane shows its exit marker
+/// inside its own rectangle, and nothing paints outside the viewport or
+/// starts a wide glyph in the last column.
+pub(super) fn presentation(
+    s: &mut Server,
+    w: &World,
+    viewer: u64,
+    marker_of: &dyn Fn(u64) -> Option<String>,
+) -> Result<Vec<String>> {
+    let mut v = Vec::new();
+    let p = viewer_paint(s, viewer)?;
+    for fault in super::chrome::inspect(&p.paint, p.rows, p.cols)? {
+        v.push(format!("viewer {viewer}: {fault}"));
+    }
+    if p.rows < 2 || p.cols < 4 {
+        return Ok(v);
+    }
+    let bar = p.text.lines().last().unwrap_or_default().to_owned();
+    let Ok(ws) = s.relation(viewer, "fux::model::Viewing") else {
+        return Ok(v);
+    };
+    let tab = s.relation(viewer, "fux::model::OnTab").ok();
+    let focused = s.relation(viewer, "fux::model::Focused").ok();
+    let overlay = p.paint.contains(PANEL);
+    if let Some(tab) = tab {
+        let name = name_of(s, tab)?.unwrap_or_default();
+        let first = first_char(&name);
+        if !first.is_empty() && !bar.contains(&first) {
+            v.push(format!(
+                "viewer {viewer}: the bar {bar:?} does not show the active tab {name:?}"
+            ));
+        }
+        if !p.paint.contains("\x1b[7;1m") {
+            v.push(format!(
+                "viewer {viewer}: the bar does not mark the active tab {name:?}"
+            ));
+        }
+    }
+    // The workspace label gets a third of the tab allowance, which is half
+    // the width once a right zone exists; below twenty columns it may be
+    // nothing but an ellipsis, which the README permits.
+    if p.cols >= 20 {
+        let name = name_of(s, ws)?.unwrap_or_default();
+        let first = first_char(&name);
+        if !first.is_empty() && !bar.contains(&first) {
+            v.push(format!(
+                "viewer {viewer}: the bar {bar:?} does not show the workspace {name:?}"
+            ));
+        }
+    }
+    let quiet = p.notice.is_null();
+    if p.zoom && quiet && p.cols >= 40 && !bar.contains("zoom") {
+        v.push(format!(
+            "viewer {viewer}: zoomed, but the bar {bar:?} has no zoom indicator"
+        ));
+    }
+    let leaves = tab.map(|t| w.leaves_under(t)).unwrap_or_default();
+    let content = p.rows - 1;
+    let painted = painted_panes(&p.paint, content);
+    if !overlay
+        && !p.zoom
+        && leaves.len() >= 2
+        && painted.len() == leaves.len()
+        && content >= 3
+        && p.cols >= 10
+        && focused.is_some()
+    {
+        let bold = p.paint.match_indices(BOLD_SEPARATOR).any(|(i, m)| {
+            p.paint
+                .get(i + m.len()..)
+                .and_then(|r| r.chars().next())
+                .is_some_and(|c| BOX_GLYPHS.contains(&c))
+        });
+        if !bold {
+            v.push(format!(
+                "viewer {viewer}: {} panes but no separator is painted bold next to the focused pane",
+                leaves.len()
+            ));
+        }
+    }
+    if !overlay {
+        let labels = status_labels(&p.paint);
+        for leaf in &leaves {
+            let Some((_, pane)) = w.views.iter().find(|(l, _)| l == leaf) else {
+                continue;
+            };
+            let Some((_, st)) = w.states.iter().find(|(e, _)| e == pane) else {
+                continue;
+            };
+            let Some(code) = st.pointer("/status/code").and_then(Value::as_i64) else {
+                continue;
+            };
+            let label = format!("[exit:{code}]");
+            if Some(*leaf) == focused {
+                if quiet && p.cols >= 60 && !bar.contains(&label) {
+                    v.push(format!(
+                        "viewer {viewer}: focused pane {leaf} exited with {code} but the bar {bar:?} does not say so"
+                    ));
+                }
+                continue;
+            }
+            let Some(marker) = marker_of(*leaf) else {
+                continue;
+            };
+            let Some((my, mx)) = find_text(&p.text, &marker) else {
+                continue;
+            };
+            let Some(rect) = painted
+                .iter()
+                .find(|(r, a, b, n)| my >= *r && my < r + n && mx >= *a && mx < *b)
+            else {
+                continue;
+            };
+            if rect.2 - rect.1 < label.chars().count() as u16 + 1 {
+                continue;
+            }
+            // A stopped terminal keeps its last size, so its painted content
+            // may be smaller than its layout rectangle, whose bottom-right
+            // corner carries the label. The label must start at or after the
+            // content's origin and lie inside no other pane's content.
+            let inside = labels.iter().any(|(r, c, l)| {
+                l.contains(&label)
+                    && *r >= rect.0
+                    && *c >= rect.1
+                    && !painted
+                        .iter()
+                        .any(|o| o != rect && *r >= o.0 && *r < o.0 + o.3 && *c >= o.1 && *c < o.2)
+            });
+            if !inside {
+                v.push(format!(
+                    "viewer {viewer}: pane {leaf} ({marker}) exited with {code} but {label} is not painted within its own rectangle {rect:?}; labels {labels:?}"
+                ));
+            }
+        }
+    }
+    Ok(v)
+}
+
+/// The narrow oracle for walks that include raw API mutations: every viewer
+/// still paints, within its viewport, and nothing else is promised.
+pub(super) fn narrow(s: &mut Server, w: &World) -> Result<Vec<String>> {
+    let mut v = Vec::new();
+    for viewer in &w.viewers {
+        match viewer_paint(s, *viewer) {
+            Ok(p) => {
+                for fault in super::chrome::inspect(&p.paint, p.rows, p.cols)? {
+                    v.push(format!("viewer {viewer}: {fault}"));
+                }
+            }
+            Err(e) => v.push(format!("viewer {viewer}: fux.frame failed: {e}")),
+        }
     }
     Ok(v)
 }

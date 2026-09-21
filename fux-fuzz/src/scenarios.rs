@@ -19,12 +19,15 @@ mod overlay;
 mod paste;
 mod process;
 mod race;
+mod raw;
 mod reorder;
 mod repair;
 mod resize_cmd;
+mod ron;
 mod scale;
 mod scene;
 mod scene_fidelity;
+mod scene_fuzz;
 mod scene_map;
 mod scene_refs;
 mod selection;
@@ -106,6 +109,8 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Scale => scale::run(server),
         Action::Adversarial { seed } => adversarial::run(server, *seed),
         Action::Concurrent { seed, steps } => concurrent::run(server, *seed, steps),
+        Action::Raw { seed, steps } => raw::run(server, *seed, steps),
+        Action::SceneFuzz { seed, cases } => scene_fuzz::run(server, *seed, cases),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),

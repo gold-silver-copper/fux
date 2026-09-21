@@ -207,3 +207,39 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
     }
     Ok(())
 }
+
+#[test]
+fn squeezed_labels_keep_their_first_glyph_even_when_it_is_wide() -> crate::testing::Outcome {
+    let tabs = vec![(Entity::from_bits(1), "界139".to_owned())];
+    for cols in 8..40u16 {
+        let v = viewer(3, cols);
+        let mut out = String::new();
+        let hits = tab_bar(
+            &mut out,
+            &v,
+            (Entity::PLACEHOLDER, "宇167"),
+            (Some(Entity::from_bits(1)), &tabs),
+            "process",
+        );
+        let mut parser = vt100::Parser::new(3, cols, 0);
+        parser.process(out.as_bytes());
+        let bar = parser.screen().contents();
+        let bar = bar.lines().last().need()?.to_owned();
+        // Three cells hold a wide glyph and an ellipsis; padding must not
+        // spend them first.
+        let tab = hits
+            .iter()
+            .find(|(id, _)| *id == Entity::from_bits(1))
+            .need()?;
+        if tab.1.width() >= 3 {
+            assert!(bar.contains('界'), "{cols}: {bar:?}");
+        }
+        if hits.first().need()?.1.width() >= 3 {
+            assert!(bar.contains('宇'), "{cols}: {bar:?}");
+        }
+        if cols >= 40 {
+            assert!(bar.contains(" 界139 "), "{cols}: {bar:?}");
+        }
+    }
+    Ok(())
+}
