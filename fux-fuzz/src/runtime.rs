@@ -494,12 +494,21 @@ impl Server {
                     "rpc_failed",
                     json!({"method":method,"params":params,"error":e.to_string()}),
                 )?;
+                // A connection dropped mid-request is usually the server
+                // dying under it; report that, which the minimizer can chase.
+                self.healthy()?;
             }
             return response;
         }
         self.journal
             .record("rpc", json!({"method":method,"params":params}))?;
-        let response = self.request(method, params)?;
+        let response = match self.request(method, params) {
+            Ok(response) => response,
+            Err(e) => {
+                self.healthy()?;
+                return Err(e);
+            }
+        };
         // Paints and large query results dominate the journal; keep their size.
         let logged = match serde_json::to_vec(&response) {
             Ok(bytes) if bytes.len() > 4096 => json!({"truncated_bytes":bytes.len()}),

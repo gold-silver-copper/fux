@@ -34,15 +34,18 @@ fn settled(s: &mut Server, viewer: u64, label: &str) -> Result<Value> {
 fn pick_index(len: usize, i: u8) -> usize {
     if len == 0 { 0 } else { usize::from(i) % len }
 }
+/// The saved form is `"bevy_ecs::hierarchy::Children": ([` with one id per
+/// line, ten spaces deep.
+const CHILDREN: &str = "Children\": ([";
 fn children_of(block: &Block) -> Vec<u64> {
-    let Some(start) = block.text.find("Children\": [") else {
+    let Some(start) = block.text.find(CHILDREN) else {
         return Vec::new();
     };
     let rest = block.text.get(start..).unwrap_or_default();
     let Some(end) = rest.find(']') else {
         return Vec::new();
     };
-    rest.get("Children\": [".len()..end)
+    rest.get(CHILDREN.len()..end)
         .unwrap_or_default()
         .split(',')
         .filter_map(|t| t.trim().parse().ok())
@@ -51,7 +54,7 @@ fn children_of(block: &Block) -> Vec<u64> {
 fn remove_child(block: &mut Block, child: u64) {
     block.text = block
         .text
-        .replace(&format!("\n        {child},"), "")
+        .replace(&format!("\n          {child},"), "")
         .replace(&format!("{child},"), "");
 }
 
@@ -153,12 +156,15 @@ pub(super) fn mutate(ron: &str, case: SceneCase) -> Result<(String, String)> {
             let parent = parent.ok_or("split has no parent")?;
             label = format!("split block {k} lists its ancestor {parent} as a child");
             if let Some(b) = list.get_mut(k) {
-                b.text = b.text.replacen(
-                    "Children\": [",
-                    &format!("Children\": [\n        {parent},"),
-                    1,
-                );
+                b.text = b
+                    .text
+                    .replacen(CHILDREN, &format!("{CHILDREN}\n          {parent},"), 1);
             }
+            ensure(
+                list.get(k)
+                    .is_some_and(|b| children_of(b).contains(&parent)),
+                "the ancestor was not added to the split's children",
+            )?;
         }
         SceneCase::FlexZero(i) | SceneCase::FlexNegative(i) | SceneCase::FlexNan(i) => {
             let value = match case {
@@ -249,7 +255,7 @@ pub(super) fn mutate(ron: &str, case: SceneCase) -> Result<(String, String)> {
                         .iter()
                         .map(|k| format!("{k},"))
                         .collect::<Vec<_>>()
-                        .join("\n        ");
+                        .join("\n          ");
                     b.text = b.text.replace(&format!("{tab},"), &replacement);
                 }
             }
@@ -281,6 +287,19 @@ fn kind_of(block: Option<&Block>) -> &'static str {
     }
 }
 
+/// The process entities the mutant's pane views refer to.
+fn referenced_panes(mutant: &str) -> Vec<u64> {
+    mutant
+        .split("\"fux::model::PaneView\": (")
+        .skip(1)
+        .filter_map(|rest| {
+            let start = rest.find("pane: ")? + "pane: ".len();
+            let tail = rest.get(start..)?;
+            tail.get(..tail.find(',')?)?.trim().parse().ok()
+        })
+        .collect()
+}
+
 /// A snapshot that must not change when a load is refused.
 #[derive(PartialEq, Debug)]
 struct Shape {
@@ -289,10 +308,25 @@ struct Shape {
     views: Vec<(u64, u64)>,
     parents: Vec<(u64, u64)>,
     pids: Vec<i32>,
+    /// (pane entity, pid)
+    processes: Vec<(u64, i32)>,
+}
+impl Shape {
+    fn pid_of(&self, pane: u64) -> Option<i32> {
+        self.processes
+            .iter()
+            .find(|(e, _)| *e == pane)
+            .map(|(_, p)| *p)
+    }
 }
 fn shape(s: &mut Server) -> Result<Shape> {
     let w = World::read(s)?;
-    let mut pids: Vec<i32> = w.states.iter().filter_map(|(_, st)| pid(st).ok()).collect();
+    let processes: Vec<(u64, i32)> = w
+        .states
+        .iter()
+        .filter_map(|(e, st)| Some((*e, pid(st).ok()?)))
+        .collect();
+    let mut pids: Vec<i32> = processes.iter().map(|(_, p)| *p).collect();
     pids.sort_unstable();
     let mut parents = w.parents.clone();
     parents.sort_unstable();
@@ -304,6 +338,7 @@ fn shape(s: &mut Server) -> Result<Shape> {
         views,
         parents,
         pids,
+        processes,
     })
 }
 
@@ -347,6 +382,9 @@ pub(super) fn run(s: &mut Server, seed: u64, cases: &[SceneCase]) -> Result<()> 
         Ok(fs::read_to_string(s.directory.join(BASE))?)
     };
     let mut base = save(s)?;
+    // The last base whose geometry is untouched; its processes are all
+    // alive because every case that closes one also refreshes it.
+    let mut clean = base.clone();
     s.quiet = true;
     s.journal.record(
         "scene_fuzz_begin",
@@ -365,6 +403,7 @@ pub(super) fn run(s: &mut Server, seed: u64, cases: &[SceneCase]) -> Result<()> 
             }
         };
         fs::write(s.directory.join(MUTANT), &mutant)?;
+        fs::write(s.directory.join(format!("mutant-{i:03}.scn.ron")), &mutant)?;
         let before = shape(s)?;
         // Content rows only: the bar carries the load's own notice.
         let content =
@@ -385,6 +424,13 @@ pub(super) fn run(s: &mut Server, seed: u64, cases: &[SceneCase]) -> Result<()> 
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        let geometry = matches!(
+            case,
+            SceneCase::FlexZero(_)
+                | SceneCase::FlexNegative(_)
+                | SceneCase::FlexNan(_)
+                | SceneCase::GapThousand(_)
+        );
         let mut problems = Vec::new();
         if s.stderr_text()?.matches("panicked").count() > panics {
             problems.push("server stderr reports a panic".to_owned());
@@ -417,13 +463,6 @@ pub(super) fn run(s: &mut Server, seed: u64, cases: &[SceneCase]) -> Result<()> 
             // flex factor gets exactly that: loaded Nodes are not rewritten,
             // so its panes may legitimately have no cells. Overlaps and every
             // structural rule still apply; only the painted count does not.
-            let geometry = matches!(
-                case,
-                SceneCase::FlexZero(_)
-                    | SceneCase::FlexNegative(_)
-                    | SceneCase::FlexNan(_)
-                    | SceneCase::GapThousand(_)
-            );
             problems.extend(
                 invariant::violations(s, &w, 64, &[])?
                     .into_iter()
@@ -432,20 +471,56 @@ pub(super) fn run(s: &mut Server, seed: u64, cases: &[SceneCase]) -> Result<()> 
             problems.extend(invariant::presentation(s, &w, v, &|leaf| {
                 markers.get(&leaf).cloned()
             })?);
-            if !before.pids.iter().all(|p| alive(*p)) {
-                problems.push("an applied load terminated a process".into());
-            }
-            if w.states.len() != before.pids.len() {
+            // Loading launches nothing. Replacing the workspace closes the
+            // old one, so exactly the processes the mutant no longer views
+            // are terminated; every process it still views survives.
+            let viewed = referenced_panes(&mutant);
+            let mut expected: Vec<i32> = before
+                .views
+                .iter()
+                .filter(|(_, pane)| viewed.contains(pane))
+                .filter_map(|(_, pane)| before.pid_of(*pane))
+                .collect();
+            expected.sort_unstable();
+            expected.dedup();
+            let mut now: Vec<i32> = w.states.iter().filter_map(|(_, st)| pid(st).ok()).collect();
+            now.sort_unstable();
+            if now != expected {
                 problems.push(format!(
-                    "an applied load changed the process count from {} to {}",
-                    before.pids.len(),
-                    w.states.len()
+                    "an applied load left pids {now:?} running; the mutant views {expected:?}"
+                ));
+            }
+            if w.states.len() != expected.len() {
+                problems.push(format!(
+                    "an applied load left {} processes; the mutant views {}",
+                    w.states.len(),
+                    expected.len()
                 ));
             }
             // The mutant replaced the workspace, so later cases mutate a
-            // fresh save of what is live now.
-            markers.clear();
-            base = save(s)?;
+            // fresh save of what is live now. A geometry mutation would
+            // otherwise become every later case's baseline: put the last
+            // clean layout back first, which its live processes allow.
+            if geometry {
+                fs::write(s.directory.join(MUTANT), &clean)?;
+                let ws = s.relation(v, "fux::model::Viewing")?;
+                s.control(
+                    v,
+                    json!({"kind":"load_layout","workspace":ws,"path":MUTANT,"mapping":[]}),
+                )?;
+                let restored = settled(s, v, "clean restore")?;
+                ensure(
+                    restored.get("error") != Some(&json!(true)),
+                    &format!(
+                        "application: reloading the clean layout after case {i} failed: {restored}"
+                    ),
+                )?;
+                base = save(s)?;
+            } else {
+                markers.clear();
+                base = save(s)?;
+                clean = base.clone();
+            }
         }
         s.journal.record(
             "scene_case",

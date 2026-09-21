@@ -724,8 +724,10 @@ impl Walker {
         let code = i % 5 + 1;
         let focused = s.relation(v, "fux::model::Focused").ok();
         if focused == self.shell_leaf && !self.shell_exited && self.keyboard_ok() {
-            // The interactive shell exits on its own when told to.
-            self.send(s, format!("exit {code}\r").as_bytes())?;
+            // The interactive shell exits on its own when told to. The
+            // notice-clearing Escape reached readline, which treats the next
+            // byte as Meta; a space absorbs it and Ctrl-U clears the line.
+            self.send(s, format!(" \x15exit {code}\r").as_bytes())?;
             self.shell_exited = true;
         } else {
             let n = self.next_marker;
