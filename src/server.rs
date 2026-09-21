@@ -10,7 +10,11 @@ use crate::{
     terminal::{Terminal, TerminalPlugin},
 };
 use bevy_app::{App, AppExit, Plugin, Startup, Update};
-use bevy_ecs::{prelude::*, system::SystemChangeTick, world::EntityRefExcept};
+use bevy_ecs::{
+    prelude::*,
+    system::SystemChangeTick,
+    world::{CommandQueue, EntityRefExcept},
+};
 use bevy_remote::RemotePlugin;
 use bevy_ui::{FlexDirection, Node};
 use bevy_world_serialization::DynamicWorld;
@@ -204,13 +208,7 @@ pub struct Disconnected(pub async_channel::Receiver<Entity>);
 /// A scene save or load in flight for the viewer that asked. Detaching the
 /// viewer drops the task with it; the file operation still completes.
 #[derive(Component)]
-struct PendingScene(bevy_tasks::Task<SceneDone>);
-struct SceneDone {
-    root: Entity,
-    path: String,
-    mapping: Vec<(Entity, Entity)>,
-    result: Result<Option<String>, String>,
-}
+struct PendingScene(bevy_tasks::Task<CommandQueue>);
 
 /// While a scene task runs, the runner polls on a deadline instead of parking:
 /// a task cannot wake the runner after its own result is stored.
@@ -224,30 +222,10 @@ pub(crate) fn pending_scenes(world: &mut World) -> bool {
 
 fn scene_completions(mut pending: Query<(Entity, &mut PendingScene)>, mut commands: Commands) {
     for (viewer, mut task) in &mut pending {
-        let Some(done) = bevy_tasks::block_on(bevy_tasks::poll_once(&mut task.0)) else {
-            continue;
-        };
-        commands.entity(viewer).remove::<PendingScene>();
-        commands.queue(move |world: &mut World| {
-            let result = match done.result {
-                Ok(Some(text)) => {
-                    assets::deserialize_layout(world, &text, &done.mapping).map(|new| {
-                        replace_workspace(world, done.root, new);
-                        format!("loaded {}", done.path)
-                    })
-                }
-                Ok(None) => Ok(format!("saved {}", done.path)),
-                Err(error) => Err(error),
-            };
-            notify(
-                world,
-                viewer,
-                match result {
-                    Ok(text) => Notice::info(text),
-                    Err(error) => Notice::error(error),
-                },
-            );
-        });
+        if let Some(mut queue) = bevy_tasks::futures::check_ready(&mut task.0) {
+            commands.entity(viewer).remove::<PendingScene>();
+            commands.append(&mut queue);
+        }
     }
 }
 
@@ -866,14 +844,28 @@ fn scene_io(
                 .map(Some)
                 .map_err(|e| e.to_string()),
         });
+        let mut queue = CommandQueue::default();
+        queue.push(move |world: &mut World| {
+            let result = match result {
+                Ok(Some(text)) => assets::deserialize_layout(world, &text, &mapping).map(|new| {
+                    replace_workspace(world, root, new);
+                    format!("loaded {path}")
+                }),
+                Ok(None) => Ok(format!("saved {path}")),
+                Err(error) => Err(error),
+            };
+            notify(
+                world,
+                id,
+                match result {
+                    Ok(text) => Notice::info(text),
+                    Err(error) => Notice::error(error),
+                },
+            );
+        });
         // Wakes the runner for the common case; `pending_scenes` covers the rest.
         wake.notify();
-        SceneDone {
-            root,
-            path,
-            mapping,
-            result,
-        }
+        queue
     });
     if let Ok(mut viewer) = world.get_entity_mut(id) {
         viewer.insert(PendingScene(task));
@@ -1053,6 +1045,108 @@ mod tests {
     #[derive(Component, bevy_reflect::Reflect)]
     #[reflect(Component)]
     struct Extra(u32);
+
+    #[test]
+    fn scene_tasks_complete_on_deadline_and_report_io_failures() -> crate::testing::Outcome {
+        fn settle(world: &mut World) -> crate::testing::Outcome {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while pending_scenes(world) {
+                if std::time::Instant::now() >= deadline {
+                    return Err("scene task did not complete".into());
+                }
+                world.run_system_cached(scene_completions)?;
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Ok(())
+        }
+        let mut app = App::new();
+        app.insert_resource(Wake(std::thread::current()));
+        app.add_plugins((
+            bevy_app::TaskPoolPlugin::default(),
+            bevy_asset::AssetPlugin::default(),
+            ServerPlugin,
+        ));
+        let world = app.world_mut();
+        let root = world.spawn(Workspace).id();
+        world.spawn((Tab, ChildOf(root)));
+        let id = world
+            .spawn((
+                Viewer {
+                    rows: 24,
+                    cols: 80,
+                    zoom: false,
+                    scrollback: 0,
+                    notice: None,
+                },
+                Viewing(root),
+            ))
+            .id();
+        let path = std::env::temp_dir().join(format!("fux-scene-task-{}.ron", std::process::id()));
+        let path = path.to_str().need()?.to_owned();
+        scene_io(world, id, root, path.clone(), None);
+        settle(world)?;
+        assert_eq!(
+            world.get::<Viewer>(id).need()?.notice,
+            Notice::info(format!("saved {path}"))
+        );
+        scene_io(world, id, root, path.clone(), Some(Vec::new()));
+        settle(world)?;
+        assert_eq!(
+            world.get::<Viewer>(id).need()?.notice,
+            Notice::info(format!("loaded {path}"))
+        );
+        let root = viewing(world, id).need()?;
+        std::fs::remove_file(&path)?;
+        let expected = std::fs::read_to_string(&path).err().need()?.to_string();
+        scene_io(world, id, root, path, Some(Vec::new()));
+        settle(world)?;
+        assert_eq!(
+            world.get::<Viewer>(id).need()?.notice,
+            Notice::error(expected)
+        );
+        // Completion commands see the pending marker already removed.
+        let task = bevy_tasks::IoTaskPool::get().spawn(async move {
+            let mut queue = CommandQueue::default();
+            queue.push(move |world: &mut World| {
+                assert!(world.get::<PendingScene>(id).is_none());
+                world.entity_mut(id).insert(Name::new("completed once"));
+            });
+            queue
+        });
+        world.entity_mut(id).insert(PendingScene(task));
+        settle(world)?;
+        assert_eq!(world.get::<Name>(id).need()?.as_str(), "completed once");
+        world.run_system_cached(scene_completions)?;
+        Ok(())
+    }
+
+    #[test]
+    fn detaching_during_synchronous_scene_io_finishes_the_operation() -> crate::testing::Outcome {
+        let mut app = App::new();
+        app.add_plugins(bevy_app::TaskPoolPlugin::default());
+        let (started, ready) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (done, completed) = std::sync::mpsc::channel();
+        let path =
+            std::env::temp_dir().join(format!("fux-detached-scene-{}.ron", std::process::id()));
+        let destination = path.clone();
+        let task = bevy_tasks::IoTaskPool::get().spawn(async move {
+            let _ = started.send(());
+            // Like scene_io's filesystem call, this interval has no await point.
+            let _ = wait.recv();
+            let _ = done.send(std::fs::write(destination, "completed"));
+            CommandQueue::default()
+        });
+        let id = app.world_mut().spawn(PendingScene(task)).id();
+        ready.recv_timeout(std::time::Duration::from_secs(5))?;
+        app.world_mut().despawn(id);
+        release.send(())?;
+        completed.recv_timeout(std::time::Duration::from_secs(5))??;
+        assert_eq!(std::fs::read_to_string(&path)?, "completed");
+        std::fs::remove_file(path)?;
+        assert!(!pending_scenes(app.world_mut()));
+        Ok(())
+    }
 
     #[test]
     fn removing_viewer_drops_presentation_without_despawning_entity() -> crate::testing::Outcome {

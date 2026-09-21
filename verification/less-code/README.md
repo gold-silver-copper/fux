@@ -28,6 +28,7 @@ included. A revision argument reads sources directly from Git, not the worktree.
 | Section 1 | 6846 | -36 |
 | Section 2 | 6799 | -83 |
 | Section 3 | 6795 | -87 |
+| Section 4 | 6787 | -95 |
 
 ## Section 1
 
@@ -103,3 +104,23 @@ add machinery or change timing, so the existing scoped observers are smaller
 and preserve the boundary. The `ChildOf` observer remains explicitly registered.
 
 Verification: 40 unit and 35 integration tests; all four gates in `section3.log`.
+
+## Section 4
+
+Scene I/O returns `CommandQueue`, polled with Bevy 0.19.1's `check_ready` as in
+`examples/async_tasks/async_compute.rs`. Removal of the pending marker is queued
+**before** appending completion commands, preserving fux's existing ordering
+rather than blindly copying the example. The result's error/notice mapping,
+synchronous filesystem operation on `IoTaskPool`, viewer-bound cancellation,
+wake and 25ms runner deadline remain unchanged. Replacement requests still drop
+the old task through the same component replacement path.
+
+A unit test performs real save/load/failure completion using only deadline-style
+polling (no controls or paints), compares exact notices, and asserts the pending
+marker is absent during its completion command. A barrier-controlled task tests
+that dropping the component during an already executing synchronous filesystem
+interval does not interrupt that operation. This does not promise that a task
+cancelled before its first poll starts I/O; the baseline did not guarantee that.
+Existing integration coverage verifies scene mappings, failed mappings, and
+process identity across replacement. 42 unit and 35 integration tests pass;
+four gates in `section4.log`.
