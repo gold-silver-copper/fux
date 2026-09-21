@@ -56,6 +56,8 @@ pub enum Action {
     History,
     /// Viewer-local zoom with two viewers sharing two panes.
     Zoom,
+    /// Pane moves, tab/workspace closes, shared references and confirmations.
+    Layout,
     /// Outer-terminal mouse events against a pane that requested a protocol.
     Mouse {
         /// The DECSET the child requests: 1000, 1002 or 1003.
@@ -106,6 +108,7 @@ impl Plan {
                     | "copy"
                     | "history"
                     | "zoom"
+                    | "layout"
             ),
             "unknown scenario",
         )?;
@@ -205,6 +208,9 @@ impl Plan {
             if matches!(scenario, "all" | "zoom") {
                 actions.push(Action::Zoom);
             }
+            if matches!(scenario, "all" | "layout") {
+                actions.push(Action::Layout);
+            }
             if matches!(scenario, "all" | "mouse") {
                 for (mode, sgr, split) in [
                     (1002, true, false),
@@ -284,7 +290,7 @@ impl Plan {
             if let Action::Signal { .. } = action {
                 ensure(self.version >= 3, "signal actions require trace version 3")?;
             }
-            if let Action::Copy { .. } | Action::History | Action::Zoom = action {
+            if let Action::Copy { .. } | Action::History | Action::Zoom | Action::Layout = action {
                 ensure(self.version >= 3, "this action requires trace version 3")?;
             }
             if let Action::Startup { config } = action {

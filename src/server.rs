@@ -320,7 +320,9 @@ pub fn remote() -> RemotePlugin {
         .with_watching_method_main("fux.frame+watch", frame::frame_watch)
 }
 
-fn initialize(world: &mut World) {
+/// Creates the initial workspace, tab and configured shell. Runs once at
+/// startup and again if an attach finds no workspace left to join.
+pub(crate) fn initialize(world: &mut World) {
     let settings = world.resource::<Settings>().clone();
     let root = workspace(world, "main");
     let tab = world.spawn((Tab, Name::new("main"), ChildOf(root))).id();
