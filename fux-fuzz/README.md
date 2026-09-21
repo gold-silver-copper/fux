@@ -12,7 +12,7 @@ From the repository root, with the pinned Rust toolchain:
 cargo build --locked
 cargo build --manifest-path fux-fuzz/Cargo.toml --locked
 
-# Smoke: all nineteen scenarios (forty isolated cases).
+# Smoke: all twenty-seven scenarios (forty-eight isolated cases).
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux
 
 # Individual scenarios:
@@ -35,6 +35,14 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario overlay
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario limits
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario chrome
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario selection
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario race
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario memory
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario reorder
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario scene_map
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario mouse_edge
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario clipqueue
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario resize_cmd
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario api_misuse
 
 # Explicit, bounded stress: 10 fresh fixtures, 30 generated resize pairs each.
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
@@ -47,7 +55,7 @@ fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux \
 
 `--fux` is mandatory and canonicalized before any child changes directory. No run implicitly builds fux or searches PATH for an installed fux. Use a trusted local binary: the application API permits unrestricted same-user command execution.
 
-Scenarios in this harness have found five production defects so far, each fixed in the pull request that added the scenario: an empty-workspace attach failure (PR #34), an unclamped scroll offset (PR #33), a legacy mouse-release encoding defect (PR #32), a control-key encoding defect (PR #31) and a bracketed-paste envelope defect (PR #30). The nine scenarios added after PR #34 found no further defects; they are retained as coverage. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
+Scenarios in this harness have found seven production defects so far, each fixed in the pull request that added the scenario: a layout scene write corrupting the live hierarchy and a layout load surviving its own workspace's close (both below), an empty-workspace attach failure (PR #34), an unclamped scroll offset (PR #33), a legacy mouse-release encoding defect (PR #32), a control-key encoding defect (PR #31) and a bracketed-paste envelope defect (PR #30). The nine scenarios added in PR #35 found no further defects; they are retained as coverage. An earlier first-pane configuration bug this harness found was fixed in PR #29; its original saved failure trace still passes. Exit 1 means at least one scenario, setup, diagnostic, cleanup, interruption, or deadline failed. Other cases still execute within the overall budget; no failed case is retried. A dependency panic during scenario execution is reported as a harness/dependency failure, not an application defect.
 
 ## What the scenarios check
 
@@ -68,6 +76,14 @@ Scenarios in this harness have found five production defects so far, each fixed 
 - **Limits:** attach dimensions clamped to 4096, the copy viewport cell cap reached through a workspace sized by one viewer alone, a copy refused while the clipboard is disabled without writing OSC 52, a zero viewport painting nothing, and the 64 KiB paste bound.
 - **Chrome:** painting at eight sizes down to 2x2, asserting that nothing paints outside the requested viewport and that no wide glyph ever starts in the last column, plus the active tab remaining in the bar as it narrows to four columns.
 - **Selection:** an anchored selection cleared with a visible notice when the viewer resizes or scrolls under it, and copying with no anchor reporting rather than writing OSC 52.
+- **Race:** a scene load held in flight by a named pipe while a concurrent command runs, so the race is exact rather than a matter of scheduling. It covers the load's workspace being closed mid-flight, the requesting viewer detaching mid-flight, a rename prompt whose target a second viewer closes, and detaching while in copy mode. **This scenario found a production defect, fixed in this branch; see the finding below.**
+- **Memory:** two viewers on one workspace switching tabs independently, per-tab focus memory restored across round trips, `focus_last` returning to the pane left behind, and a pane moved to another tab never surviving in the other viewer's memory.
+- **Reorder:** tab order in both the hierarchy and the bar, reorder being a no-op at either edge, `WorkspaceOrder` staying a duplicate-free sequence across reorders and a middle workspace close, and `reorder_pane` swapping siblings and repainting.
+- **Scene map:** layout loads with an explicit old-to-existing mapping, and duplicate, layout-entity and missing-target mappings each failing without replacing the current layout, then the configured `layout:` reload path replacing a same-named workspace and adding a renamed one. **This scenario found a production defect, fixed in this branch; see the finding below.**
+- **Mouse edge:** pane-relative coordinates past the legacy encoding's 223-column limit dropped rather than wrapped, the same coordinate delivered exactly under SGR, Shift-right-click opening fux's pane menu while the application owns the mouse, wheel events on the bar never reaching the pane, and API coordinates outside the viewer ignored without an error.
+- **Clipboard queue:** sixteen queued copies accepted and the seventeenth refused with the documented message, one paint delivering all sixteen and the next delivering none, and a reload that disables the clipboard dropping what was pending instead of writing it.
+- **Resize commands:** Ctrl+arrow pane resizing conserving rows and columns, never pushing a sibling below the 2-cell backing minimum, leaving the other axis untouched, and a no-op axis reporting nothing. The height case uses a fresh tab because a pane carries one flex factor for whichever axis its container uses.
+- **API misuse:** unsupported key names, unknown input and command kinds, a close with no subject, a retired paired command kind and a mouse action outside the enum all rejected when they deserialize, with a JSON-RPC error and no change to the notice; a despawned target reporting "target no longer exists" while a live entity of the wrong kind reports otherwise; and zero and oversized viewports.
 - **Signal:** SIGINT, SIGTERM and SIGHUP delivered to an attached frontend. It must exit successfully, restore termios and the alternate screen, and its viewer must disappear while the server is otherwise idle (only read-only queries), without killing the shared process. On failure the case records whether an unrelated paint would have removed the viewer, separating a lost detach from a lost server.
 - **Shutdown:** a SIGTERM after the pre-`app.run` announcement but before waiting for readiness; pane termination and separate bash background-job cleanup; natural exit with retained output/status; graceful detach with both termios and alternate-screen restoration; abrupt viewer loss without killing the shared process; server shutdown during `yes` output while the outer PTY is temporarily unread.
 
@@ -89,7 +105,7 @@ Each invocation creates a fresh directory under `fux-fuzz/runs/` (override with 
 - `replay.txt`: a shell-quoted, copyable command with the original binary and trace paths.
 - Failed case directories: a flushed `events.jsonl` journal of intended RPC/input/resize actions and observations; bounded server stdout/stderr tails; frontend ANSI tails and final diagnostic screens **only if captured**; controlled fixture files such as input/PID/size files.
 
-Fixed setup/assertion steps belong to the built-in scenario recipes; traces are versioned (1: startup/resize/shutdown, 2: adds paste, 3: adds keys, signal, mouse, copy, history, zoom, layout, process, nav, scene, config, overlay, limits, chrome and selection) and every earlier version still loads and validates. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
+Fixed setup/assertion steps belong to the built-in scenario recipes; traces are versioned (1: startup/resize/shutdown, 2: adds paste, 3: adds keys, signal, mouse, copy, history, zoom, layout, process, nav, scene, config, overlay, limits, chrome, selection, race, memory, reorder, scene_map, mouse_edge, clipqueue, resize_cmd and api_misuse) and every earlier version still loads and validates. Use the same harness revision to replay them. New ports, directories, entity IDs and process IDs are necessarily rebound to the new fixture. The event journal records those runtime values. A seed or saved action trace reproduces choices, **not OS scheduling**. No arbitrary sleeps are generated; short sleeps only pace bounded observation loops.
 
 Successful case directories are removed after cleanup. Their plan, summary, metadata and replay command remain, normally a few KiB for smoke. Failed case directories remain for diagnosis. No automatic pruning of prior invocations: remove a specific run directory when done. No real HOME, caches, target tree, or arbitrary temporary directories are copied; child HOME is the freshly created fixture directory with a cleared environment.
 
@@ -113,7 +129,30 @@ cargo test --manifest-path fux-fuzz/Cargo.toml --locked
 
 Six unit tests check deterministic generation, trace round-tripping/validation, deadline/interruption checks, bounded capture, the frame oracle, and the paste payload/envelope oracle. Three subprocess tests use deliberately faulty **fixtures, not modified fux code**: early exit, hanging startup, and interrupted startup. They assert nonzero status, bounded termination, retained diagnostics, no invented frontend capture, and disappearance of the fixture PID after cleanup.
 
-## Finding: a server with no workspace refused every attach (fixed)
+## Finding: writing a layout scene corrupted the live hierarchy (fixed)
+
+The scene_map scenario failed against `406b1f2` (merged `main` including PR #35). The fix is included in this branch.
+
+Writing a layout scene inserts an entity's components one at a time, so a tab briefly has its `ChildOf` before it has `Tab`. The normalize-on-child-added observer saw a loose child directly under a workspace and wrapped it in a fresh tab, leaving the scene's own tab nested inside that wrapper:
+
+```
+Workspace
+└── Tab "main"          <- wrapper added by normalization
+    └── Tab "main"      <- the scene's own tab
+        └── Split → two PaneViews
+```
+
+`extract_layout` rejects that with `tabs must be direct workspace children`, and because every painted frame extracts the workspace layout, **every** `fux.frame` request then failed permanently and every attached frontend was killed with a JSON-RPC error. The server had to be restarted.
+
+Reproduced outside the harness in five steps: attach, split, `save_layout`, `load_layout`, `save_layout` again, then set `layout:` in `fux.json`. The fix suspends both normalization observers for the duration of the scene write with an `ApplyingLayout` guard; `apply_layout` already normalizes once when the write is complete.
+
+## Finding: a layout load outlived the workspace it was loading into (fixed)
+
+The race scenario failed against the same commit. The fix is included in this branch.
+
+`load_layout` checks its workspace when the request arrives, then reads the file on the I/O pool. Closing that workspace before the read finished did not stop the completion: `replace_workspace` found no viewers on the dead root, its despawn was a no-op, and a workspace nobody asked for was added while the viewer was told `loaded <path>`. The scenario makes this exact rather than timing-dependent by pointing the load at a named pipe and writing to it only after the close has been observed. The fix re-checks the workspace on the ECS thread before deserializing and reports `target no longer exists`, matching every other command that names a missing entity.
+
+## Earlier finding: a server with no workspace refused every attach (fixed in PR #34)
 
 The layout scenario failed against `3811746` (merged `main` including PR #33). The fix is included in this branch.
 
