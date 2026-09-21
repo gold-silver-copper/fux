@@ -18,7 +18,7 @@ cargo build --release --locked
 
 Server options: `--address IP`, `--port PORT`, `--config FILE`. Clients use `FUX_ENDPOINT` (default `http://127.0.0.1:15702`). SIGINT, SIGTERM and SIGHUP stop the server; graceful viewer signals restore its terminal and detach. A forcibly killed viewer cannot restore its terminal, but does not kill the shared process.
 
-No configuration file is required: the default command is `$SHELL` or `/bin/sh`, in the server's working directory. Missing or invalid configuration is logged; usable defaults/the previous valid configuration remain active.
+No configuration file is required: the default command is `$SHELL` or `/bin/sh`, in the server's working directory. The first pane waits for initial configuration loading to succeed or fail, so a valid configured shell applies from startup. Missing or invalid configuration is logged; usable defaults/the previous valid configuration remain active.
 
 ## Controls
 
@@ -167,6 +167,8 @@ For exact argv/cwd, stock-spawn a `fux::model::Launch` component, then a `PaneVi
 The runner parks without an idle tick; PTY data/exit, requests, disconnections, signals and asset notifications wake it. Streamed paints coalesce behind a 16 ms minimum interval, using an on-demand one-shot I/O-pool timer; idle viewers have no recurring paint timer. Direct `fux.frame` snapshots are immediate. While native asset loads are pending the runner uses a 25 ms settling deadline. Scene/UI projections are caches, never process/session authorities. Transitive Bevy rendering-related types are dependencies of native UI/camera APIs; renderer plugins are not running.
 
 ## Scope and verification
+
+[`fux-fuzz`](fux-fuzz/README.md) is an unpublished, opt-in black-box harness for replayable startup, resize and shutdown scenarios. It runs separately from the normal tests and CI; its documentation covers resource bounds, replay and verification.
 
 Tested on macOS arm64; see [verification/keybinding-consistency.md](verification/keybinding-consistency.md) for the current binding/menu verification, [verification/interaction-restoration.md](verification/interaction-restoration.md) for this interaction pass and intentional differences from original main, [verification/design-restoration.md](verification/design-restoration.md) for the current visual/input verification and captured renders, [verification/REFINEMENT.md](verification/REFINEMENT.md) for historical comparable measurements and the capability audit, and [verification/VERIFICATION.md](verification/VERIFICATION.md) for preserved baseline evidence. Linux and other Unix systems are unvalidated; this is not a Windows/mobile implementation.
 

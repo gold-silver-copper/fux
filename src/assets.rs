@@ -203,6 +203,7 @@ impl PendingAssets {
 struct ConfigAssets {
     settings: Handle<Settings>,
     settings_path: PathBuf,
+    initial_settings_settled: bool,
     layout: Option<(String, Handle<DynamicWorld>)>,
     layout_needs_apply: bool,
 }
@@ -303,7 +304,11 @@ pub fn install(app: &mut App, path: &Path) -> Result<(), String> {
         .add_message::<LayoutReload>()
         .add_systems(
             PostUpdate,
-            (update_settings, track_layout, layout_events)
+            (
+                update_settings.in_set(SettingsApplied),
+                track_layout,
+                layout_events,
+            )
                 .chain()
                 .after(AssetEventSystems),
         );
@@ -317,6 +322,7 @@ pub fn install(app: &mut App, path: &Path) -> Result<(), String> {
     app.insert_resource(pending).insert_resource(ConfigAssets {
         settings,
         settings_path: filename,
+        initial_settings_settled: false,
         layout: None,
         layout_needs_apply: false,
     });
@@ -331,11 +337,22 @@ pub fn pending(world: &World) -> bool {
         .is_some_and(|pending| pending.0.lock().values().any(|value| *value))
 }
 
+/// Initial readiness is latched after applying the first load or observing its
+/// failure. Later reloads must neither delay requests nor recreate the first pane.
+pub(crate) fn initial_settings_settled(world: &World) -> bool {
+    world
+        .get_resource::<ConfigAssets>()
+        .is_none_or(|config| config.initial_settings_settled)
+}
+
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SettingsApplied;
+
 fn update_settings(
     mut events: MessageReader<AssetEvent<Settings>>,
     mut failures: MessageReader<AssetLoadFailedEvent<Settings>>,
     assets: Res<Assets<Settings>>,
-    config: Res<ConfigAssets>,
+    mut config: ResMut<ConfigAssets>,
     pending: Res<PendingAssets>,
     mut settings: ResMut<Settings>,
     wake: Res<Wake>,
@@ -345,12 +362,14 @@ fn update_settings(
             && let Some(value) = assets.get(&config.settings)
         {
             *settings = value.clone();
+            config.initial_settings_settled = true;
             pending.finish(&config.settings_path);
             wake.notify();
         }
     }
     for failure in failures.read() {
         if failure.id == config.settings.id() {
+            config.initial_settings_settled = true;
             pending.finish(&config.settings_path);
             bevy_log::warn!(error = %failure.error, "keeping previous usable configuration");
         }
