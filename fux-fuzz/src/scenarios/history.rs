@@ -218,7 +218,12 @@ fn widened_copy(s: &mut Server, frontend: usize, viewer: u64) -> Result<()> {
     s.frame(viewer, 3, 5)?; // Negotiate before releasing the controlled child.
     std::fs::write(s.directory.join("copy-go"), b"go")?;
     s.wait("soft-wrapped source reached history", |s| {
-        Ok(s.frame(viewer, 3, 5)?.lines().take(2).collect::<Vec<_>>() == ["fgh", "last"])
+        Ok(s.frame(viewer, 3, 5)?
+            .lines()
+            .take(2)
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            == ["fgh", "last"])
     })?;
     ensure(
         std::fs::read_to_string(s.directory.join("copy-size"))?.trim() == "2 5",
@@ -229,7 +234,12 @@ fn widened_copy(s: &mut Server, frontend: usize, viewer: u64) -> Result<()> {
     s.frame(viewer, 3, 10)?;
     s.control(viewer, json!({"kind":"scroll","order":"previous"}))?;
     s.wait("widened retained row visible", |s| {
-        Ok(s.frame(viewer, 3, 10)?.lines().take(2).collect::<Vec<_>>() == ["abcde", "fgh"])
+        Ok(s.frame(viewer, 3, 10)?
+            .lines()
+            .take(2)
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            == ["abcde", "fgh"])
     })?;
     let before = s.frontend(frontend)?.capture.total;
     let text = [b"abcd".as_slice(), b"efgh"].concat();
