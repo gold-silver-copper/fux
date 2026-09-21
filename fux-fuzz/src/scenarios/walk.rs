@@ -207,6 +207,9 @@ pub(super) struct Walker {
     /// The `layout:` path the configuration currently names, if any.
     pub layout: Option<String>,
     pub oracle: Oracle,
+    /// A raw hierarchy edit has left something nothing repairs, such as a
+    /// tab unlinked from its workspace; later mutations promise less.
+    pub degraded: bool,
 }
 impl Walker {
     pub fn new(s: &mut Server) -> Result<Self> {
@@ -233,6 +236,7 @@ impl Walker {
             copy_mode: false,
             layout: None,
             oracle: Oracle::Full,
+            degraded: false,
         })
     }
     /// Keyboard steps need room for the column and its headings; smaller
@@ -734,11 +738,26 @@ impl Walker {
             );
             let before = s.relation(v, "fux::model::Focused").ok();
             self.split_program(s, (i >> 1).is_multiple_of(2), &program, &format!("WK{n}"))?;
-            if s.relation(v, "fux::model::Focused").ok() == before {
+            let Some(leaf) = s
+                .relation(v, "fux::model::Focused")
+                .ok()
+                .filter(|l| Some(*l) != before)
+            else {
                 // Refused, with the documented notice.
                 return Ok(("child_exit".into(), json!({"code":code,"split":"refused"})));
-            }
-            running(s)?;
+            };
+            // The reader must be running before the line is typed; other
+            // panes may already have exited.
+            let pane = s
+                .query(invariant::PANE_VIEW)?
+                .iter()
+                .find(|r| id(r).ok() == Some(leaf))
+                .and_then(|r| r.pointer("/components/fux::model::PaneView/pane")?.as_u64());
+            s.wait("reader pane running", |s| {
+                Ok(states(s)?.iter().any(|(e, st)| {
+                    Some(*e) == pane && st.pointer("/status/kind") == Some(&json!("running"))
+                }))
+            })?;
             self.send(s, format!("\x15exit {code}\r").as_bytes())?;
         } else {
             let before = s.relation(v, "fux::model::Focused").ok();

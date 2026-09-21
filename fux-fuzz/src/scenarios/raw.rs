@@ -97,7 +97,19 @@ fn repaired(s: &mut Server, driver: u64, repair: Repair) -> Result<Option<String
         ))),
     }
 }
-fn wait_repaired(s: &mut Server, driver: u64, what: &str, repair: Repair) -> Result<()> {
+fn wait_repaired(s: &mut Server, walker: &mut Walker, what: &str, repair: Repair) -> Result<()> {
+    let driver = walker.driver;
+    // Once a tab has been unlinked from its workspace nothing brings it
+    // back; a viewer left on it stays there until it moves. Later mutations
+    // can then only promise painting.
+    let repair = if walker.degraded {
+        Repair::Painting
+    } else {
+        repair
+    };
+    if repair == Repair::Painting {
+        walker.degraded = true;
+    }
     let mut last = None;
     s.wait("driver relationships repaired", |s| {
         last = repaired(s, driver, repair)?;
@@ -142,7 +154,7 @@ pub(super) fn mutate(
                 return Ok(("skip".into(), json!("no tab")));
             };
             despawn(s, tab)?;
-            wait_repaired(s, driver, "despawning a tab", Repair::Full)?;
+            wait_repaired(s, walker, "despawning a tab", Repair::Full)?;
             ("despawn a tab", json!(tab))
         }
         2 => {
@@ -150,7 +162,7 @@ pub(super) fn mutate(
                 return Ok(("skip".into(), json!("no split container")));
             };
             despawn(s, split)?;
-            wait_repaired(s, driver, "despawning a split container", Repair::Full)?;
+            wait_repaired(s, walker, "despawning a split container", Repair::Full)?;
             ("despawn a split container", json!(split))
         }
         3 => {
@@ -158,22 +170,22 @@ pub(super) fn mutate(
                 return Ok(("skip".into(), json!("no pane view")));
             };
             despawn(s, leaf)?;
-            wait_repaired(s, driver, "despawning a pane view", Repair::Full)?;
+            wait_repaired(s, walker, "despawning a pane view", Repair::Full)?;
             ("despawn a pane view", json!(leaf))
         }
         4 => {
             remove(s, driver, VIEWING)?;
-            wait_repaired(s, driver, "removing the driver's Viewing", Repair::Full)?;
+            wait_repaired(s, walker, "removing the driver's Viewing", Repair::Full)?;
             ("remove Viewing", json!(driver))
         }
         5 => {
             remove(s, driver, ON_TAB)?;
-            wait_repaired(s, driver, "removing the driver's OnTab", Repair::Full)?;
+            wait_repaired(s, walker, "removing the driver's OnTab", Repair::Full)?;
             ("remove OnTab", json!(driver))
         }
         6 => {
             remove(s, driver, FOCUSED)?;
-            wait_repaired(s, driver, "removing the driver's Focused", Repair::Full)?;
+            wait_repaired(s, walker, "removing the driver's Focused", Repair::Full)?;
             ("remove Focused", json!(driver))
         }
         7 => {
@@ -189,7 +201,7 @@ pub(super) fn mutate(
                 return Ok(("skip".into(), json!("no parent")));
             };
             remove(s, parent, invariant::CHILDREN)?;
-            wait_repaired(s, driver, "removing a Children component", Repair::Painting)?;
+            wait_repaired(s, walker, "removing a Children component", Repair::Painting)?;
             ("remove Children", json!(parent))
         }
         9 => {
@@ -197,7 +209,7 @@ pub(super) fn mutate(
                 return Ok(("skip".into(), json!("no tab")));
             };
             remove(s, tab, invariant::CHILD_OF)?;
-            wait_repaired(s, driver, "removing a tab's ChildOf", Repair::Painting)?;
+            wait_repaired(s, walker, "removing a tab's ChildOf", Repair::Painting)?;
             ("remove a tab's ChildOf", json!(tab))
         }
         10 => {
@@ -210,7 +222,7 @@ pub(super) fn mutate(
             insert(s, driver, VIEWING, json!(dead))?;
             wait_repaired(
                 s,
-                driver,
+                walker,
                 "inserting a Viewing that points at a despawned entity",
                 Repair::Full,
             )?;
@@ -223,7 +235,7 @@ pub(super) fn mutate(
             insert(s, driver, VIEWING, json!(leaf))?;
             wait_repaired(
                 s,
-                driver,
+                walker,
                 "inserting a Viewing that points at a pane",
                 Repair::Full,
             )?;
@@ -275,7 +287,7 @@ pub(super) fn mutate(
             insert(s, tab, invariant::CHILD_OF, json!(leaf))?;
             wait_repaired(
                 s,
-                driver,
+                walker,
                 "reparenting a tab under a pane",
                 Repair::Painting,
             )?;
@@ -313,7 +325,7 @@ pub(super) fn mutate(
                 return Ok(("skip".into(), json!("no pane view")));
             };
             remove(s, leaf, invariant::PANE_VIEW)?;
-            wait_repaired(s, driver, "removing a PaneView", Repair::Painting)?;
+            wait_repaired(s, walker, "removing a PaneView", Repair::Painting)?;
             ("remove PaneView", json!(leaf))
         }
         18 => {
@@ -321,7 +333,7 @@ pub(super) fn mutate(
                 return Ok(("skip".into(), json!("no tab")));
             };
             insert(s, tab, invariant::CHILD_OF, json!(tab))?;
-            wait_repaired(s, driver, "making a tab its own parent", Repair::Painting)?;
+            wait_repaired(s, walker, "making a tab its own parent", Repair::Painting)?;
             ("insert ChildOf(self)", json!(tab))
         }
         19 => {
@@ -337,7 +349,7 @@ pub(super) fn mutate(
                 return Ok(("skip".into(), json!("no tab")));
             };
             insert(s, driver, FOCUSED, json!(tab))?;
-            wait_repaired(s, driver, "focusing a tab", Repair::Full)?;
+            wait_repaired(s, walker, "focusing a tab", Repair::Full)?;
             ("insert Focused at a tab", json!(tab))
         }
         _ => {
@@ -345,7 +357,7 @@ pub(super) fn mutate(
                 return Ok(("skip".into(), json!("no tab")));
             };
             insert(s, driver, ON_TAB, json!(tab))?;
-            wait_repaired(s, driver, "inserting OnTab at any tab", Repair::Full)?;
+            wait_repaired(s, walker, "inserting OnTab at any tab", Repair::Full)?;
             ("insert OnTab at any tab", json!(tab))
         }
     };
