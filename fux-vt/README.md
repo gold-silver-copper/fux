@@ -106,8 +106,13 @@ Windows are immutable views with bounded width/height and history offset.
 They never mutate a global scrollback setting. Copy uses inclusive endpoints,
 normalizes wide continuations to their leaders, joins soft wraps, trims blank
 padding at hard ends, and enforces cell/byte caps while constructing output.
-An explicitly selected trailing empty row retains its hard line break; the
-application's whole-pane copy trims trailing empty rows separately.
+Display-only padding beyond a history row's original extent is not copied,
+including at soft joins after widening. An explicitly selected trailing
+empty row retains its hard line break; the application's whole-pane copy
+trims trailing empty rows separately. The conservative cell budget charges
+full touched rows at the window width; the byte budget applies before hard
+padding is trimmed. `Window::row` exposes underlying retained-row data and
+metadata; use `Window::cell` for clipped viewport cells.
 
 Change marks are non-destructive: row versions plus a structural generation
 support independent readers. Structural changes (scroll, resize, reset,

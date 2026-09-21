@@ -4,6 +4,23 @@
   "oracle": "vt100 0.16.2 with fux Replies callback",
   "fixed": [
     {
+      "id": "copy-history-padding",
+      "found": "post-migration requirement audit of widened historical soft wraps",
+      "rows": 2, "cols": 5, "history": 2,
+      "input_hex": "61626364656667680d0a6c617374",
+      "resize": [2, 10], "window_offset": 1,
+      "expected_text": "abcdefgh",
+      "incorrect_text": "abcde     fgh",
+      "reason": "Window copy treated display-only padding beyond a historical row's original extent as stored spaces. Skip absent cells when extracting text, while rendering still pads them. The independent upstream example confirms the expectation.",
+      "oracle_command": "cargo run --manifest-path fux-fuzz/Cargo.toml --example history_copy --locked",
+      "regression": "copying_widened_history_joins_original_row_extents_without_padding",
+      "before_log": "/tmp/fux-vt-evidence/history-copy-before.log",
+      "oracle_log": "/tmp/fux-vt-evidence/history-copy-oracle.log",
+      "trace": "fux-fuzz/traces/owned-terminal-widened-history-copy.json",
+      "trace_before": "/tmp/fux-vt-evidence/history-copy-trace-before-v2.log",
+      "trace_after": "/tmp/fux-vt-evidence/history-copy-trace-after.log"
+    },
+    {
       "id": "wrap-below-region",
       "found": "adversarial seed 5, 24x80, offset 3510",
       "rows": 4, "cols": 4,

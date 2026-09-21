@@ -780,6 +780,14 @@ mod tests {
             assert_eq!(terminal.screen().size(), (rows, cols));
             terminal.parser.process("\x1bc界ABCD".as_bytes())?;
         }
+        terminal.resize(2, 5)?;
+        terminal.parser.process(b"\x1bcabcdefgh\r\nlast")?;
+        terminal.resize(2, 10)?;
+        assert_eq!(terminal.copy_text(1)?, "abcdefgh");
+        terminal.resize(3, 10)?;
+        terminal.parser.process(b"\x1bcHELLO")?;
+        assert_eq!(terminal.copy_text(0)?, "HELLO");
+        terminal.resize(1, 1)?;
         assert!(terminal.resize(0, 1).is_err());
         assert!(terminal.resize(u16::MAX, u16::MAX).is_err());
         assert_eq!(terminal.screen().size(), (1, 1));

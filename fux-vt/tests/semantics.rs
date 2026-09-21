@@ -202,6 +202,9 @@ fn copy_soft_wraps_trim_hard_padding_and_enforce_limits() -> Result {
     assert_eq!(w.text((0, 0), (2, 2), 100, 5), Err(Error::CopyLimit));
     assert_eq!(w.text((0, 0), (4, 0), 100, 100), Err(Error::InvalidRange));
     assert!(!p.screen().window(0, 4, 3).row_wrapped(0));
+    assert_eq!(w.text((0, 0), (0, 0), 4, 100), Err(Error::CopyLimit));
+    assert_eq!(w.text((0, 0), (0, 0), 5, 1)?, "a");
+    assert_eq!(w.text((0, 0), (0, 0), 5, 0), Err(Error::CopyLimit));
     Ok(())
 }
 
