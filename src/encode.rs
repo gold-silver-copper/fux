@@ -56,11 +56,13 @@ pub(crate) fn mouse_bytes(
             .into_bytes(),
         )
     } else if col <= 223 && row <= 223 {
+        // A legacy release is button 3 with the same modifier bits as the press.
+        let byte = if release { (code & !3) | 3 } else { code };
         Some(vec![
             27,
             b'[',
             b'M',
-            (if release { 3 } else { code }) as u8 + 32,
+            byte as u8 + 32,
             col as u8 + 32,
             row as u8 + 32,
         ])
@@ -190,6 +192,42 @@ mod tests {
         assert_eq!(key_bytes(Key::F(12), alt, false), b"\x1b[24;3~");
         assert_eq!(key_bytes(Key::Char('c'), ctrl, false), vec![3]);
         assert!(key_bytes(Key::F(13), Modifiers::default(), false).is_empty());
+    }
+
+    #[test]
+    fn legacy_mouse_release_keeps_modifiers_like_sgr() {
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        let at = |request: &[u8], action, modifiers| {
+            let mut parser = vt100::Parser::new(24, 80, 0);
+            parser.process(request);
+            mouse_bytes(
+                parser.screen(),
+                action,
+                MouseButton::Left,
+                (1, 2),
+                modifiers,
+            )
+        };
+        let legacy: &[u8] = b"\x1b[?1000h";
+        assert_eq!(
+            at(legacy, MouseAction::Press, ctrl),
+            Some(b"\x1b[M0!\"".to_vec())
+        );
+        assert_eq!(
+            at(legacy, MouseAction::Release, ctrl),
+            Some(b"\x1b[M3!\"".to_vec())
+        );
+        assert_eq!(
+            at(legacy, MouseAction::Release, Modifiers::default()),
+            Some(b"\x1b[M#!\"".to_vec())
+        );
+        assert_eq!(
+            at(b"\x1b[?1000h\x1b[?1006h", MouseAction::Release, ctrl),
+            Some(b"\x1b[<16;1;2m".to_vec())
+        );
     }
 
     #[test]
