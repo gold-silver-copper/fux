@@ -32,7 +32,9 @@ use crate::model::{Launch, ProcessState, Status, Wake};
 const CHUNK: usize = 8192;
 const OUTPUT_SLOTS: usize = 16;
 const INPUT_SLOTS: usize = 16;
-const MAX_INPUT: usize = 65536;
+/// One write must fit the largest accepted paste plus its bracketed envelope,
+/// so a paste the policy layer accepts is never dropped by the transport.
+const MAX_INPUT: usize = crate::paste::LIMIT + crate::paste::ENVELOPE;
 const UPDATE_BYTES: usize = 65536;
 
 pub struct TerminalPlugin;

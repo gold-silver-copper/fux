@@ -1,3 +1,5 @@
+mod paste;
+
 use crate::{
     Result, ensure,
     runtime::{Server, alive, component, id},
@@ -27,6 +29,12 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
     match action {
         Action::Startup { config } => startup(server, *config),
         Action::Resize { sizes, token } => resize(server, sizes, token),
+        Action::Paste {
+            text,
+            repeats,
+            bracketed,
+            chunk_bytes,
+        } => paste::run(server, text, *repeats, *bracketed, *chunk_bytes),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
