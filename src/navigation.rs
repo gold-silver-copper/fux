@@ -243,6 +243,16 @@ pub(crate) fn normalize_on_child_added(
     if applying(&in_progress) {
         return;
     }
+    // A tab parented under anything but a workspace by a raw edit leaves its
+    // viewers looking at a tab their workspace no longer lists; repair moves
+    // them, as after a despawn.
+    if tabs.contains(entity)
+        && parents
+            .get(entity)
+            .is_ok_and(|parent| !workspaces.contains(parent.parent()))
+    {
+        commands.queue(repair);
+    }
     if let Ok(parent) = parents.get(entity)
         && workspaces.contains(parent.parent())
         && !tabs.contains(entity)
@@ -254,6 +264,20 @@ pub(crate) fn normalize_on_child_added(
             }
         });
     }
+}
+
+/// A tab unlinked from its workspace by a raw edit stays where it is, but
+/// the viewers on it must not: they are repaired onto a listed tab.
+pub(crate) fn repair_on_tab_unlinked(
+    removed: On<Remove, ChildOf>,
+    tabs: Query<(), With<Tab>>,
+    in_progress: Option<Res<ApplyingLayout>>,
+    mut commands: Commands,
+) {
+    if applying(&in_progress) || !tabs.contains(removed.entity) {
+        return;
+    }
+    commands.queue(repair);
 }
 
 /// Insertion or removal of a viewer relationship, by any code path, repairs
@@ -295,9 +319,15 @@ pub(crate) fn remember_focus(mut world: DeferredWorld, context: HookContext) {
     repair_later(world, context);
 }
 
-/// Memory entries die with the entities they name.
-pub(crate) fn forget<C: Component>(removed: On<Remove, C>, mut viewers: Query<&mut Memory>) {
+/// Memory entries die with the entities they name, and viewers that relied
+/// on the removed component are repaired.
+pub(crate) fn forget<C: Component>(
+    removed: On<Remove, C>,
+    mut viewers: Query<&mut Memory>,
+    mut commands: Commands,
+) {
     let gone = removed.entity;
+    commands.queue(repair);
     for mut memory in &mut viewers {
         memory
             .tabs
@@ -315,6 +345,7 @@ pub(crate) fn forget<C: Component>(removed: On<Remove, C>, mut viewers: Query<&m
 pub(crate) fn observe(world: &mut World) {
     world.add_observer(normalize_on_tab_removed);
     world.add_observer(normalize_on_child_added);
+    world.add_observer(repair_on_tab_unlinked);
     world.add_observer(forget::<Workspace>);
     world.add_observer(forget::<Tab>);
     world.add_observer(forget::<PaneView>);

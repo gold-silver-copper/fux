@@ -173,17 +173,22 @@ fn one_viewer_without_a_layout_does_not_fail_another_viewer_frame() -> Outcome {
             Viewing(root),
         ))
         .id();
-    // The broken viewer's workspace loses its Workspace component: its
-    // layout cannot be projected, which must not cost the healthy viewer
-    // its frame nor the broken viewer its session.
-    let orphan = world.spawn((Tab, ChildOf(root))).id();
-    world.entity_mut(broken).insert(OnTab(orphan));
-    world.entity_mut(root).remove::<Workspace>();
+    // The broken viewer's workspace loses its Workspace component. Its
+    // viewers are repaired onto the surviving workspace, and even a viewer
+    // that cannot be projected costs nobody else a frame.
+    let other = world.spawn(Workspace).id();
+    world.spawn((Tab, ChildOf(other)));
+    world.entity_mut(broken).insert(Viewing(other));
+    world.entity_mut(other).remove::<Workspace>();
+    world.flush();
+    assert_eq!(viewing(world, broken), Some(root));
     let frame = make_frame(world, healthy);
     assert!(frame.is_ok(), "{frame:?}");
     let frame = make_frame(world, broken)?;
     assert!(!frame.detach);
-    assert!(frame.paint.contains("layout root is not a workspace"));
+    // A projection failure paints the failure in the bar.
+    let degraded = degraded(world, broken, "layout root is not a workspace");
+    assert!(degraded.paint.contains("layout root is not a workspace"));
     let _ = (pane, tab);
     Ok(())
 }
