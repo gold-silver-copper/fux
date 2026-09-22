@@ -516,3 +516,138 @@ fn watches_stream_over_the_socket_and_closing_one_detaches_its_viewer() -> Outco
     eventually(|| Ok(!viewer_exists(&server, idle)?))?;
     Ok(())
 }
+
+/// Hunt 6 finding 003. A `fux.frame+watch` request names the viewer to stream,
+/// and fux used to despawn whatever that id named when the connection closed:
+/// a tab, a process entity and its child, or one of Bevy's resource entities,
+/// which ended the server. The detach applies to viewers only.
+fn entities_with(server: &Server, component: &str) -> Result<Vec<u64>, String> {
+    Ok(server
+        .query(component)?
+        .rows()
+        .filter_map(|row| row.at("entity").as_u64())
+        .collect())
+}
+
+/// Opens a watch for `id`, lets the request be dispatched, then closes it.
+fn watch_then_close(server: &Server, id: u64) -> Result<(), Fail> {
+    let (stream, mut reader) = watch(&server.socket, id)?;
+    let mut line = String::new();
+    // Read whatever arrives, if anything: an id that is not a viewer is
+    // answered with an error rather than a stream.
+    let _ = reader.read_line(&mut line);
+    drop(reader);
+    drop(stream);
+    thread::sleep(Duration::from_millis(400));
+    Ok(())
+}
+
+#[test]
+fn a_closed_watch_detaches_only_a_viewer() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+    server.tab_new(viewer, Some("victim"))?;
+    server.split(viewer, "horizontal", Some("exec sleep 600"))?;
+    eventually(|| Ok(entities_with(&server, "fux::model::ProcessState")?.len() >= 2))?;
+
+    let tabs = entities_with(&server, "fux::model::Tab")?;
+    let victim_tab = tabs.iter().copied().max().need()?;
+    let processes = server.query("fux::model::ProcessState")?;
+    let (process_entity, pid) = processes
+        .rows()
+        .find_map(|row| {
+            let pid = row
+                .at("components")
+                .at("fux::model::ProcessState")
+                .at("status")
+                .at("pid")
+                .as_i64()?;
+            Some((row.at("entity").as_u64()?, pid as i32))
+        })
+        .need()?;
+    assert!(alive(pid));
+
+    // A tab, by the streaming route and by the refused-batch route.
+    watch_then_close(&server, victim_tab)?;
+    let batch = post(
+        &server.socket,
+        &format!(
+            r#"[{{"jsonrpc":"2.0","id":1,"method":"fux.frame+watch","params":{{"viewer":{victim_tab}}}}}]"#
+        ),
+    )?;
+    assert!(
+        batch.contains("Streaming can not be used in batch requests"),
+        "{batch}"
+    );
+    thread::sleep(Duration::from_millis(400));
+    assert!(
+        entities_with(&server, "fux::model::Tab")?.contains(&victim_tab),
+        "a closed watch despawned a tab"
+    );
+
+    // A process entity: its child must keep running.
+    watch_then_close(&server, process_entity)?;
+    assert!(alive(pid), "a closed watch killed a child process");
+    assert!(entities_with(&server, "fux::model::ProcessState")?.contains(&process_entity));
+
+    // Bevy's resource entities sit at the top of the id space, because
+    // `Entity::to_bits` complements the index. Despawning one aborted the server.
+    for bits in [0xFFFF_FFFF_u64, 0xFFFF_FFFE, 0xFFFF_FFFD] {
+        watch_then_close(&server, bits)?;
+        assert!(
+            server.rpc("rpc.discover", Value::Null).is_ok(),
+            "watching entity bits {bits:#x} ended the server"
+        );
+    }
+
+    // A workspace, and the viewer's own focused pane view.
+    let workspace = server.workspace_of(viewer)?;
+    let focused = server.focused(viewer)?.as_u64().need()?;
+    for id in [workspace, focused] {
+        watch_then_close(&server, id)?;
+    }
+    assert!(entities_with(&server, "fux::model::Workspace")?.contains(&workspace));
+    assert!(entities_with(&server, "fux::model::PaneView")?.contains(&focused));
+
+    // Everything the viewer needs is still there, and it still paints.
+    assert_viewer_consistent(&server, viewer)?;
+    assert!(!server.screen(viewer)?.is_empty());
+    Ok(())
+}
+
+/// The documented behaviour is unchanged: closing a watch on a real viewer
+/// detaches that viewer, whether or not frames were flowing.
+#[test]
+fn a_closed_watch_still_detaches_a_real_viewer() -> Outcome {
+    let server = Server::start()?;
+    let busy = server.attach()?;
+    let (stream, mut reader) = watch(&server.socket, busy)?;
+    let mut headers = String::new();
+    while reader.read_line(&mut headers)? > 2 && !headers.ends_with("\r\n\r\n") {}
+    next_event(&mut reader)?;
+    server.split(busy, "horizontal", Some("exec yes stream"))?;
+    next_event(&mut reader)?;
+    drop(reader);
+    drop(stream);
+    eventually(|| Ok(!viewer_exists(&server, busy)?))?;
+
+    // A refused batch, by contrast, must leave the viewer attached: a refused
+    // request may not change the world.
+    let idle = server.attach()?;
+    let batch = post(
+        &server.socket,
+        &format!(
+            r#"[{{"jsonrpc":"2.0","id":1,"method":"fux.frame+watch","params":{{"viewer":{idle}}}}}]"#
+        ),
+    )?;
+    assert!(
+        batch.contains("Streaming can not be used in batch requests"),
+        "{batch}"
+    );
+    thread::sleep(Duration::from_millis(500));
+    assert!(
+        viewer_exists(&server, idle)?,
+        "a refused batch detached the viewer it named"
+    );
+    Ok(())
+}
