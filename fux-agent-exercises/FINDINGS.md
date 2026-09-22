@@ -13,7 +13,7 @@ sections say what changed and what each re-run showed.
 
 | | |
 | --- | --- |
-| Model | `google/gemini-3.8-flash` ("Gemini 3.8 Flash"), thinking level `low`, identical in all four campaigns |
+| Model | `google/gemini-3.8-flash` ("Gemini 3.8 Flash"), thinking level `low`, identical in all five campaigns |
 | Model verification | Passed. Chosen by version rank from pi's catalog, then confirmed against the live Gemini model list (`version` `3.0`, no preview marker) and `https://ai.google.dev/gemini-api/docs/models?hl=en` |
 | Rejected as ineligible | `gemini-flash-latest`, `gemini-flash-lite-latest`, `gemini-3-flash-preview`, `gemini-3.1-flash-live-preview`, and every `-lite` id |
 | pi | 0.86.1 |
@@ -21,7 +21,7 @@ sections say what changed and what each re-run showed.
 | fux, campaign 04 | `7aa8ff6`, release build: the same tree plus the four fix commits listed under "Campaign 04" below. The artifacts record the revision as `b090c1a3bbd55ac7a78e0d02a06652c87ee6f0f1`, which is that commit before a formatting-only rebase of `tests/remote_lifecycle.rs`; `src/` and the binary are identical. Worktree dirty only in this file and the prompt document. |
 | Documentation given to the agent | `README.md`, sha256 `1aac05e4…` in campaigns 01–03; sha256 `f95e62a0…` in campaign 04, which is the same file plus the F3 and F5 sentences |
 | fux, campaign 05 | Merged `main` at `af1e2a2` plus harness-only commits (`b4e1a18` for the `noisy` part, `53a6a5f` for the `recovery` part); no fux source differs from campaign 04's tree, and the release binary is the same |
-| Budgets | 40 tool calls and 300 s per run, 15 s per request. No run came close in campaigns 01–04: the most was 26 calls and 43 s. Campaign 05 exhausted the 40-call budget in 3 of 30 `noisy` runs (longest 84 s) |
+| Budgets | 40 tool calls and 300 s per run, 15 s per request. No run came close in campaigns 01–04: the most was 26 calls and 43 s. Campaign 05 exhausted the 40-call budget in 4 of 30 `noisy` runs (`noisy-mid-r2`, `noisy-shallow-r4`, `noisy-mid-r17`, `noisy-deep-r18`; longest 84 s); 2 of those still answered, wrongly |
 | Campaigns | `runs/campaign-01`, `-02`, `-03`, `-04`; 10 runs each (5 scenarios × 2 fresh sessions). `runs/campaign-05-noisy`: 30 `noisy` runs (3 depth variants × 10). `runs/campaign-05-recovery`: 10 `recovery` runs |
 | Cost | $3.52 for campaigns 01–03 (6.26 M tokens, 427 accepted BRP requests, 30 runs); $1.06 for campaign 04 (1.51 M tokens, 119 accepted requests, 10 runs); $5.22 for campaign 05 ($4.45 `noisy`, 10.66 M tokens, 582 requests; $0.77 `recovery`, 1.25 M tokens, 107 requests) |
 
@@ -652,7 +652,7 @@ node run.ts dry-run --artifacts /tmp/fux-ex-dry        # no model calls
 node run.ts campaign --repetitions 2 --artifacts runs/campaign-06
 node run.ts campaign --scenarios noisy --repetitions 30 --artifacts runs/campaign-06-noisy       # 10 per depth variant
 node run.ts campaign --scenarios recovery --repetitions 10 --artifacts runs/campaign-06-recovery
-node run.ts report --artifacts runs/campaign-05-noisy  # includes the per-finding "Findings" section
+node run.ts report --artifacts runs/campaign-06-noisy  # includes the per-finding "Findings" section
 
 ./evidence/partial-component-panic.sh ../target/release/fux 17771   # F1, no agent; exit 1 if the server dies
 ```
