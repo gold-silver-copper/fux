@@ -76,7 +76,7 @@ pub(crate) fn sync_view(world: &mut World, id: Entity) -> Result<(), String> {
 fn size_terminals(world: &mut World) {
     let mut sizes = EntityHashMap::<(u16, u16)>::default();
     for context in world
-        .query_filtered::<&Presentation, With<Viewer>>()
+        .query_filtered::<&Presentation, IsViewer>()
         .iter(world)
     {
         for rect in context.rects() {
@@ -207,7 +207,7 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
     // Size negotiation must never count another viewer's stale, now-hidden
     // tab projection merely because that viewer has not requested a frame.
     let viewers: Vec<_> = world
-        .query_filtered::<Entity, With<Viewer>>()
+        .query_filtered::<Entity, IsViewer>()
         .iter(world)
         .collect();
     // One viewer's unextractable workspace, which a raw hierarchy edit can
