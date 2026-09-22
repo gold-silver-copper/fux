@@ -749,3 +749,156 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
     assert!(state.at("status").at("code").is_number(), "{state}");
     Ok(())
 }
+
+/// The components on one entity, as non-strict `world.get_components` reports them.
+fn components(server: &Server, entity: u64, names: &[&str]) -> Result<Value, String> {
+    Ok(server
+        .rpc(
+            "world.get_components",
+            json!({"entity":entity,"components":names}),
+        )?
+        .at("components"))
+}
+
+fn parent_of(server: &Server, entity: u64) -> Result<Option<u64>, String> {
+    Ok(
+        components(server, entity, &["bevy_ecs::hierarchy::ChildOf"])?
+            .at("bevy_ecs::hierarchy::ChildOf")
+            .as_u64(),
+    )
+}
+
+/// The viewer names a workspace, a tab listed under it, and a pane view inside
+/// that tab: membership, not just the presence of the three components.
+fn assert_viewer_consistent(server: &Server, viewer: u64) -> Outcome {
+    let workspace = server.workspace_of(viewer)?;
+    let tab = server.on_tab(viewer)?.as_u64().need()?;
+    let focus = server.focused(viewer)?.as_u64().need()?;
+    assert!(
+        server
+            .query("fux::model::Workspace")?
+            .rows()
+            .any(|row| row.at("entity") == workspace)
+    );
+    assert!(
+        server
+            .query("fux::model::Tab")?
+            .rows()
+            .any(|row| row.at("entity") == tab)
+    );
+    assert_eq!(parent_of(server, tab)?, Some(workspace));
+    assert!(
+        components(server, focus, &["fux::model::PaneView"])?
+            .get("fux::model::PaneView")
+            .is_some()
+    );
+    let mut cursor = focus;
+    let mut depth = 0;
+    while cursor != tab {
+        cursor = parent_of(server, cursor)?.ok_or("focused pane is not inside its tab")?;
+        depth += 1;
+        assert!(depth < 64, "focused pane is not inside its tab");
+    }
+    Ok(())
+}
+
+const VIEWER: &str = "fux::model::Viewer";
+fn viewer_value() -> Value {
+    json!({"rows":24,"cols":80,"zoom":false,"scrollback":0,"notice":null})
+}
+
+/// Hunt 5 finding 001: a `Viewer` on a layout entity, then any viewer
+/// relationship inserted on a real viewer, overflowed the stack and aborted
+/// the server. Each combination runs on a fresh server, bounded by `eventually`.
+fn viewer_on_layout_entity(layout: &str) -> Outcome {
+    for relation in ["Viewing", "OnTab", "Focused"] {
+        for order in ["viewer_first", "layout_last", "both"] {
+            let server = Server::start()?;
+            let viewer = server.attach()?;
+            server.split(viewer, "horizontal", None)?;
+            eventually(|| Ok(server.query("fux::model::Split")?.rows().next().is_some()))?;
+            let focus = server.focused(viewer)?.as_u64().need()?;
+            let process = components(&server, focus, &["fux::model::PaneView"])?
+                .at("fux::model::PaneView")
+                .at("pane");
+            let layout_value = match layout {
+                "fux::model::PaneView" => json!({"pane":process}),
+                _ => json!({}),
+            };
+            let node = match order {
+                "viewer_first" => {
+                    let node = match layout {
+                        "fux::model::Workspace" => server.workspace_of(viewer)?,
+                        "fux::model::Tab" => server.on_tab(viewer)?.as_u64().need()?,
+                        "fux::model::PaneView" => focus,
+                        _ => server
+                            .query("fux::model::Split")?
+                            .rows()
+                            .next()
+                            .need()?
+                            .at("entity")
+                            .as_u64()
+                            .need()?,
+                    };
+                    server.rpc(
+                        "world.insert_components",
+                        json!({"entity":node,"components":{VIEWER:viewer_value()}}),
+                    )?;
+                    node
+                }
+                "layout_last" => {
+                    let second = server.attach()?;
+                    server.rpc(
+                        "world.insert_components",
+                        json!({"entity":second,"components":{layout:layout_value}}),
+                    )?;
+                    second
+                }
+                _ => server
+                    .rpc(
+                        "world.spawn_entity",
+                        json!({"components":{layout:layout_value,VIEWER:viewer_value()}}),
+                    )?
+                    .at("entity")
+                    .as_u64()
+                    .need()?,
+            };
+            let value = match relation {
+                "Viewing" => json!(server.workspace_of(viewer)?),
+                "OnTab" => server.on_tab(viewer)?,
+                _ => server.focused(viewer)?,
+            };
+            let component = format!("fux::model::{relation}");
+            server.rpc(
+                "world.insert_components",
+                json!({"entity":viewer,"components":{component:value}}),
+            )?;
+            let context = format!("{layout} {relation} {order}");
+            eventually(|| Ok(server.rpc("rpc.discover", Value::Null).is_ok()))
+                .map_err(|e| format!("{context}: {e}"))?;
+            let left = components(&server, node, &[VIEWER, layout])?;
+            assert!(left.get(VIEWER).is_none(), "{context}: Viewer kept");
+            assert!(left.get(layout).is_some(), "{context}: layout role lost");
+            assert_viewer_consistent(&server, viewer).map_err(|e| format!("{context}: {e}"))?;
+            assert!(!server.screen(viewer)?.is_empty(), "{context}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_viewer_on_a_tab_is_removed_and_the_server_survives() -> Outcome {
+    viewer_on_layout_entity("fux::model::Tab")
+}
+#[test]
+fn a_viewer_on_a_workspace_is_removed_and_the_server_survives() -> Outcome {
+    viewer_on_layout_entity("fux::model::Workspace")
+}
+#[test]
+fn a_viewer_on_a_pane_view_is_removed_and_the_server_survives() -> Outcome {
+    viewer_on_layout_entity("fux::model::PaneView")
+}
+#[test]
+fn a_viewer_on_a_split_is_removed_and_the_server_survives() -> Outcome {
+    viewer_on_layout_entity("fux::model::Split")
+}

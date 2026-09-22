@@ -145,9 +145,8 @@ pub enum Action {
     },
     /// A seeded mutator over a saved scene file: each case is loaded into a
     /// live workspace and must either apply cleanly or be refused untouched.
-    /// Hostile inputs that reproduce a known unfixed break (hunt 5). Registered
-    /// but never part of `all`; runs only via `--scenario hostile` and is
-    /// expected to FAIL against a vulnerable binary. See fux-fuzz/BREAKS.md.
+    /// Hostile inputs from hunt 5 that once broke the server. Part of `all`;
+    /// FAILS against a vulnerable binary. See fux-fuzz/BREAKS.md.
     Hostile,
     SceneFuzz {
         seed: u64,
@@ -808,9 +807,7 @@ impl Plan {
                     ),
                 });
             }
-            // `hostile` is deliberately excluded from `all` so the smoke stays
-            // green; it reproduces a known unfixed break and fails on purpose.
-            if scenario == "hostile" {
+            if matches!(scenario, "all" | "hostile") {
                 actions.push(Action::Hostile);
             }
             if matches!(scenario, "all" | "scene_fuzz") {
