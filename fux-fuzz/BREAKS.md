@@ -692,6 +692,72 @@ Highlights of the non-findings, because they bound the findings above:
   relationship churn did not reach repair's sixteen-pass bound, so its warning
   was not observed to be reachable from raw mutation alone.
 
+## The identifier surfaces, and what each one did
+
+Area 3 sent all 20 value classes at each of these 29 surfaces, on both builds.
+"refused" means a typed JSON-RPC error or a documented notice; "absorbed" means
+the request was applied and the world stayed consistent.
+
+| Surface | Verdict |
+| --- | --- |
+| `fux.frame` params.viewer | refused: invalid-params naming the id |
+| `fux.frame+watch` params.viewer | **BREAK 003** on entity indices 0, 1, 2 |
+| `Control` event target `.viewer` | refused or absorbed |
+| `UserInput` event target `.viewer` | refused or absorbed |
+| `close {pane}`, `close {tab}`, `close {workspace}` | refused: "target no longer exists" or a wrong-kind notice |
+| `focus {pane}` | refused or absorbed |
+| `rename {pane}` | refused or absorbed |
+| `select {scope, entity}` | refused or absorbed |
+| `swap {pane}` | refused or absorbed |
+| `move {to: tab}` | refused or absorbed |
+| `load_layout {workspace}` | refused or absorbed |
+| `load_layout` mapping, old id | refused or absorbed |
+| `load_layout` mapping, new id | refused or absorbed |
+| `Viewing`, `OnTab`, `Focused` inserted on a viewer | refused at deserialization, or repaired |
+| `PaneView.pane` inserted on a viewer | refused at deserialization, or repaired |
+| `ChildOf` inserted on a viewer | refused, or normalized |
+| `Children` with a duplicated id | refused, or normalized |
+| `Overlay.target.leaf` | refused or absorbed |
+| `world.get_components` entity | refused: typed error |
+| `world.list_components` entity | refused: typed error |
+| `world.despawn_entity` entity | **BREAK 004** on entity indices 0, 1, 2 |
+| `world.remove_components` entity | refused: typed error |
+| `world.mutate_components` entity | **BREAK 005** on any missing entity |
+| `world.reparent_entities` parent, and child | refused: typed error |
+
+The pattern worth keeping: every surface that takes an entity id through a
+reflected component field is safe, because `Entity`'s `Deserialize` goes
+through `try_from_bits` and a bad id never reaches the world. The three that
+broke are the three that take an id and *act* on the entity — stream to it,
+despawn it, or mutate it — rather than looking it up.
+
+## Not run this hunt, and what would differ on Linux
+
+macOS arm64 only, as hunt 5 was. Nothing here was run on Linux, and these are
+the specific places where the result should be expected to differ:
+
+- **`sun_path` is 108 bytes on Linux, 104 on macOS.** fux takes the limit from
+  `libc` rather than hardcoding it, so the path-length refusals in area 2 will
+  refuse at a different length. The 205-byte value used here is over both.
+- **`$XDG_RUNTIME_DIR` is normally set on Linux and normally unset on macOS.**
+  Every default-path case here therefore resolved through `$TMPDIR`, which on
+  macOS is already per-user under `/var/folders`. On Linux the default lands in
+  `/run/user/$UID`, whose ownership and mode come from the system rather than
+  from fux, so `private_directory`'s checks meet a directory it did not create.
+- **`flock` semantics.** The ownership lock is advisory `flock` on a lockfile.
+  Linux `flock` follows the open file description the same way, but the
+  interaction with a `/run/user` tmpfs and with `noexec`/`nosuid` mounts was not
+  exercised here.
+- **`lsof` output differs**, and the `-U`/`-i` selectors behave differently, so
+  the descriptor accounting in area 1 and the no-TCP assertion in fux's own
+  integration test would need checking rather than assuming.
+- **`EMFILE` reachability.** The default soft descriptor limit differs
+  (`launchctl limit maxfiles` is 256 on macOS; Linux distributions commonly set
+  1024 or far higher), so finding 006 needs a different number of held
+  connections, not a different mechanism.
+- **PTY and process-group behaviour** in the frontend cases, which hunt 5
+  already flagged as macOS-specific in `src/terminal.rs`.
+
 ## Harness mistakes (not findings)
 
 - An early "the server stops accepting at 450 connections" was a measurement
