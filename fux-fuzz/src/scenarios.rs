@@ -7,6 +7,7 @@ mod concurrent;
 mod config;
 mod copy;
 mod history;
+mod hostile;
 mod invariant;
 mod keys;
 mod layout;
@@ -111,6 +112,7 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Concurrent { seed, steps } => concurrent::run(server, *seed, steps),
         Action::Raw { seed, steps } => raw::run(server, *seed, steps),
         Action::SceneFuzz { seed, cases } => scene_fuzz::run(server, *seed, cases),
+        Action::Hostile => hostile::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
