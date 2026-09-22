@@ -1,9 +1,13 @@
 /**
- * Minimal JSON-RPC client for a fux server's Bevy Remote Protocol endpoint.
+ * Minimal JSON-RPC client for a fux server's Bevy Remote Protocol socket.
  *
  * This is the harness's own transport. It performs no fux-specific translation:
  * the agent-facing tool and the verifiers both send raw method names and params.
+ * fux serves HTTP only on a Unix domain socket; `fetch` cannot dial one, so this
+ * uses `node:http` with `socketPath` and a keep-alive agent, which pools
+ * connections as `fetch` did.
  */
+import { Agent, request as httpRequest } from "node:http";
 
 export interface BrpOutcome {
   method: string;
@@ -21,15 +25,52 @@ export interface BrpOutcome {
 }
 
 export class BrpClient {
-  #endpoint: string;
+  #socket: string;
+  #agent = new Agent({ keepAlive: true });
   #nextId = 1;
 
-  constructor(endpoint: string) {
-    this.#endpoint = endpoint;
+  constructor(socket: string) {
+    this.#socket = socket;
   }
 
-  get endpoint(): string {
-    return this.#endpoint;
+  /** The Unix domain socket this client talks to. */
+  get socket(): string {
+    return this.#socket;
+  }
+
+  /** Releases pooled connections. */
+  close(): void {
+    this.#agent.destroy();
+  }
+
+  /** One HTTP exchange over the socket: status and the whole body as text. */
+  #post(payload: string, timeoutMs: number): Promise<{ status: number | null; text: string }> {
+    return new Promise((resolve, reject) => {
+      const request = httpRequest(
+        {
+          socketPath: this.#socket,
+          agent: this.#agent,
+          path: "/",
+          method: "POST",
+          headers: {
+            host: "fux",
+            "content-type": "application/json",
+            "content-length": Buffer.byteLength(payload),
+          },
+          signal: AbortSignal.timeout(timeoutMs),
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.on("error", reject);
+          response.on("end", () =>
+            resolve({ status: response.statusCode ?? null, text: Buffer.concat(chunks).toString("utf8") }),
+          );
+        },
+      );
+      request.on("error", reject);
+      request.end(payload);
+    });
   }
 
   async call(method: string, params: unknown, timeoutMs = 10_000): Promise<BrpOutcome> {
@@ -43,14 +84,9 @@ export class BrpClient {
     let httpStatus: number | null = null;
     let body: string | null = null;
     try {
-      const response = await fetch(this.#endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(request),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      const response = await this.#post(JSON.stringify(request), timeoutMs);
       httpStatus = response.status;
-      body = await response.text();
+      body = response.text;
       let envelope: unknown;
       try {
         envelope = JSON.parse(body);

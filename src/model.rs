@@ -218,6 +218,25 @@ pub struct PaneView {
 #[relationship_target(relationship = PaneView)]
 pub struct PaneViews(Vec<Entity>);
 
+/// The components that make an entity a layout node. A layout node is never a
+/// viewer: `navigation::reject_viewer_on_layout` removes a `Viewer` inserted
+/// onto one, whichever arrives first. `LayoutRole` and `NotLayout` below name
+/// the same four components and must change together with this bundle.
+pub type LayoutNode = (Workspace, Tab, Split, PaneView);
+/// Matches an entity carrying any `LayoutNode` component.
+pub type LayoutRole = Or<(With<Workspace>, With<Tab>, With<Split>, With<PaneView>)>;
+/// Matches an entity carrying no `LayoutNode` component.
+pub type NotLayout = (
+    Without<Workspace>,
+    Without<Tab>,
+    Without<Split>,
+    Without<PaneView>,
+);
+/// A genuine viewer. Every pass that treats viewers as viewers selects these,
+/// so a `Viewer` on a layout node is never repaired or painted, even in the
+/// moment before normalization removes it.
+pub type IsViewer = (With<Viewer>, NotLayout);
+
 #[derive(Component, Reflect, Clone, Serialize, Deserialize)]
 #[reflect(Component, Serialize, Deserialize)]
 #[require(Memory, crate::paste::Ownership)]

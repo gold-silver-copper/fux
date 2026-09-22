@@ -76,7 +76,7 @@ pub(crate) fn sync_view(world: &mut World, id: Entity) -> Result<(), String> {
 fn size_terminals(world: &mut World) {
     let mut sizes = EntityHashMap::<(u16, u16)>::default();
     for context in world
-        .query_filtered::<&Presentation, With<Viewer>>()
+        .query_filtered::<&Presentation, IsViewer>()
         .iter(world)
     {
         for rect in context.rects() {
@@ -144,7 +144,13 @@ fn request_viewer(params: Option<Value>) -> Result<Entity, BrpError> {
     let id = params
         .and_then(|p| p.get("viewer").and_then(Value::as_u64))
         .ok_or_else(|| BrpError::internal("viewer entity required"))?;
-    Ok(Entity::from_bits(id))
+    // Any u64 arrives here; `from_bits` panics on one that no entity can
+    // have (0, for one), which would take down every session.
+    Entity::try_from_bits(id).ok_or_else(|| BrpError {
+        code: bevy_remote::error_codes::INVALID_PARAMS,
+        message: format!("{id} is not an entity id"),
+        data: None,
+    })
 }
 pub(crate) fn frame(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
     make_frame(world, request_viewer(params)?)
@@ -207,7 +213,7 @@ fn make_frame(world: &mut World, id: Entity) -> Result<Frame, String> {
     // Size negotiation must never count another viewer's stale, now-hidden
     // tab projection merely because that viewer has not requested a frame.
     let viewers: Vec<_> = world
-        .query_filtered::<Entity, With<Viewer>>()
+        .query_filtered::<Entity, IsViewer>()
         .iter(world)
         .collect();
     // One viewer's unextractable workspace, which a raw hierarchy edit can

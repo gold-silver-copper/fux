@@ -6,7 +6,7 @@
 # script reproduces that request with no agent and no harness involved, and
 # now documents the fixed behavior.
 #
-#   ./evidence/partial-component-panic.sh ../target/release/fux 17771
+#   ./evidence/partial-component-panic.sh ../target/release/fux
 #
 # Expected since the fix: the complete five-field payload is accepted; the same
 # payload minus `notice` is accepted as well, because `notice` is an `Option`
@@ -18,23 +18,25 @@
 #   Couldn't create an instance of `fux::model::Viewer` using the reflected
 #   `FromReflect`, `Default` or `FromWorld` traits.
 #
+# The server listens only on a Unix domain socket, so requests go through
+# `curl --unix-socket`; the URL's host is not contacted.
+#
 # Exits non-zero if the server dies or a required-field payload is accepted.
 set -u
 
-BIN="${1:?usage: partial-component-panic.sh PATH_TO_FUX PORT}"
-PORT="${2:?usage: partial-component-panic.sh PATH_TO_FUX PORT}"
+BIN="${1:?usage: partial-component-panic.sh PATH_TO_FUX}"
 
 DIR=$(mktemp -d "${TMPDIR:-/tmp}/fux-f1.XXXXXX")
+SOCK="$DIR/s/fux.sock"
 printf '{"shell":["/bin/sh"],"history_lines":100}' > "$DIR/fux.json"
 
 # A minimal environment: nothing credential-shaped reaches the server or its children.
 env -i PATH=/usr/bin:/bin HOME="$DIR" SHELL=/bin/sh PS1='$ ' \
-  "$BIN" server --port "$PORT" --config "$DIR/fux.json" > "$DIR/server.log" 2>&1 &
+  "$BIN" server --socket "$SOCK" --config "$DIR/fux.json" > "$DIR/server.log" 2>&1 &
 SERVER=$!
-sleep 1.5
 
 rpc() {
-  curl -sS -m 5 -X POST "http://127.0.0.1:$PORT" \
+  curl -sS -m 5 --unix-socket "$SOCK" -X POST http://fux/ \
     -H 'content-type: application/json' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" 2>&1
 }
@@ -43,6 +45,17 @@ STATUS=0
 alive() {
   if rpc rpc.discover null 2>/dev/null | grep -q jsonrpc; then echo "SERVER ALIVE"; else echo "SERVER DEAD"; STATUS=1; fi
 }
+
+# Wait for readiness instead of guessing a delay.
+TRIES=0
+until rpc rpc.discover null 2>/dev/null | grep -q jsonrpc; do
+  TRIES=$((TRIES + 1))
+  if [ "$TRIES" -ge 100 ]; then
+    echo "server never answered on $SOCK; log:"; tail -4 "$DIR/server.log"
+    kill -9 "$SERVER" 2>/dev/null; rm -rf "$DIR"; exit 1
+  fi
+  sleep 0.05
+done
 
 VIEWER=$(rpc fux.attach '{"rows":24,"cols":80}' |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["viewer"])')

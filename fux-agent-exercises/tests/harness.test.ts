@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { decodeScreen, stripAnsi } from "../src/ansi.ts";
 import { BrpClient } from "../src/brp.ts";
 import { EVENT_LIMIT, MODEL_VISIBLE_LIMIT, RunJournal, truncate } from "../src/journal.ts";
@@ -81,13 +84,17 @@ async function withStubServer(
       response.end(typeof payload === "string" ? payload : JSON.stringify(payload));
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
+  // fux serves only on a Unix domain socket, so the stand-in does too.
+  const directory = mkdtempSync(join(tmpdir(), "fxa-stub-"));
+  const socket = join(directory, "stub.sock");
+  await new Promise<void>((resolve) => server.listen(socket, resolve));
+  const client = new BrpClient(socket);
   try {
-    await run(new BrpClient(`http://127.0.0.1:${port}`), seen);
+    await run(client, seen);
   } finally {
+    client.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(directory, { recursive: true, force: true });
   }
 }
 
@@ -194,8 +201,8 @@ test("oversized responses are truncated for the model and marked in both places"
 test("a transport failure is surfaced as a tool error, not a silent retry", async () => {
   const sdk = await loadPiSdk();
   const journal = new RunJournal();
-  // Port 1 is not listening; the request cannot be completed.
-  const tool = createFuxRpcTool(sdk, new BrpClient("http://127.0.0.1:1"), journal, {
+  // Nothing listens at this socket path; the request cannot be completed.
+  const tool = createFuxRpcTool(sdk, new BrpClient(join(tmpdir(), "fxa-absent", "fux.sock")), journal, {
     maxToolCalls: 2,
     requestTimeoutMs: 1_000,
   });
