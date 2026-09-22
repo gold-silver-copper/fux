@@ -50,6 +50,10 @@ struct Server {
 
 impl Server {
     fn start() -> Result<Self, Fail> {
+        Self::start_with_shell("/bin/sh")
+    }
+
+    fn start_with_shell(shell: &str) -> Result<Self, Fail> {
         let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
         let directory = std::env::temp_dir().join(format!(
             "fux-test-{}-{}",
@@ -61,7 +65,9 @@ impl Server {
         let config = directory.join("fux.json");
         fs::write(
             &config,
-            r#"{"shell":["/bin/sh"],"history_lines":100,"clipboard":"write-only"}"#,
+            serde_json::to_vec(&json!({
+                "shell": [shell], "history_lines": 100, "clipboard": "write-only"
+            }))?,
         )?;
         // Distinct non-ephemeral ports avoid port-0 reservations being reused by
         // parallel fixtures or outgoing HTTP sockets before the child binds.
@@ -77,7 +83,7 @@ impl Server {
         let child = Command::new(env!("CARGO_BIN_EXE_fux"))
             .args(["server", "--port", &address.port().to_string(), "--config"])
             .arg(config)
-            .env("SHELL", "/bin/sh")
+            .env("SHELL", shell)
             .env("PS1", "$ ")
             .env("HOME", &directory)
             .env("HISTFILE", "/dev/null")
@@ -416,8 +422,20 @@ fn partial_component_payloads_are_rejected_without_ending_the_server() -> Outcom
 
 #[test]
 fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
-    let server = Server::start()?;
+    // This tests shell hangup propagation to a separate job group. Ubuntu's
+    // /bin/sh is dash, which does not forward SIGHUP to background jobs; macOS's
+    // /bin/sh is bash, which does. Require that shell behavior explicitly.
+    let server = Server::start_with_shell("/bin/bash")?;
     let viewer = server.attach()?;
+    assert_eq!(
+        server
+            .query("fux::model::Launch")?
+            .at(0)
+            .at("components")
+            .at("fux::model::Launch")
+            .at("argv"),
+        json!(["/bin/bash"])
+    );
     let shell = server
         .query("fux::model::ProcessState")?
         .at(0)
@@ -440,7 +458,15 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
         shell
     );
     server.command(viewer, "terminate")?;
-    eventually(|| Ok(!alive(shell) && !alive(background)))?;
+    eventually(|| Ok(!alive(shell) && !alive(background))).map_err(|error| {
+        let processes = Command::new("ps")
+            .args(["-o", "pid,ppid,pgid,stat,comm", "-p"])
+            .arg(format!("{shell},{background}"))
+            .output();
+        let processes =
+            processes.map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
+        format!("{error}; remaining processes: {processes:?}")
+    })?;
     let state = &server
         .query("fux::model::ProcessState")?
         .at(0)

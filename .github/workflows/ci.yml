@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Platform and pinned toolchain
+        run: |
+          set -euo pipefail
+          CI_LOGS="$RUNNER_TEMP/fux-ci"
+          FUX_DESIGN_CAPTURE="$CI_LOGS/captures"
+          echo "CI_LOGS=$CI_LOGS" >> "$GITHUB_ENV"
+          echo "FUX_DESIGN_CAPTURE=$FUX_DESIGN_CAPTURE" >> "$GITHUB_ENV"
+          mkdir -p "$FUX_DESIGN_CAPTURE"
+          {
+            uname -a
+            if [[ "$RUNNER_OS" == macOS ]]; then sw_vers; else cat /etc/os-release; fi
+            rustup show
+            rustc -Vv
+            cargo -V
+          } 2>&1 | tee "$CI_LOGS/platform.log"
+
+      - uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          key: ${{ matrix.os }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Rust gates
+        run: |
+          set -euo pipefail
+          for gate in fmt clippy test; do
+            case "$gate" in
+              fmt) command=(cargo fmt --all --check) ;;
+              clippy) command=(cargo clippy --all-targets --locked -- -D warnings) ;;
+              test) command=(cargo test --locked) ;;
+            esac
+            echo "[$RUNNER_OS/$RUNNER_ARCH] ${command[*]}"
+            "${command[@]}" 2>&1 | tee "$CI_LOGS/$gate.log"
+          done
+
+      - name: Worktree and committed-range whitespace
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "[$RUNNER_OS/$RUNNER_ARCH] git diff --check"
+            git diff --check
+            git fetch --no-tags --depth=1 origin "$HEAD"
+            if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+              if [[ "$EVENT" == pull_request ]]; then
+                echo 'Missing PR base SHA' >&2
+                exit 1
+              fi
+              BASE=$(git hash-object -t tree /dev/null)
+              echo 'No previous push SHA: validating the entire head tree'
+            else
+              git fetch --no-tags --depth=1 origin "$BASE"
+            fi
+            echo "git diff --check $BASE $HEAD"
+            git diff --check "$BASE" "$HEAD"
+          } 2>&1 | tee "$CI_LOGS/whitespace.log"
+
+      # Available evidence only; hard timeouts/cancellations may prevent upload.
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-failure-${{ matrix.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/fux-ci/
+          retention-days: 7
+          if-no-files-found: ignore
