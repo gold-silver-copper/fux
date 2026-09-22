@@ -447,9 +447,21 @@ pub(crate) fn invalidate_layouts(
         }
     }
 }
-fn disconnected(mut commands: Commands, closed: Res<Disconnected>) {
+/// A closed `fux.frame+watch` connection detaches the viewer it was streaming.
+/// The entity came from that request's params, so it names whatever the caller
+/// chose; this despawns it only if it is in fact a viewer. The check belongs
+/// here rather than only where the watch was registered, because the world can
+/// change in between: the id may have been despawned and its index reused by an
+/// entity of another kind.
+fn disconnected(mut commands: Commands, closed: Res<Disconnected>, viewers: Query<(), IsViewer>) {
     while let Ok(entity) = closed.0.try_recv() {
-        commands.entity(entity).try_despawn();
+        if viewers.contains(entity) {
+            commands.entity(entity).try_despawn();
+        } else {
+            bevy_log::debug!(
+                "A frame-watch connection for entity {entity} closed, but that entity is not a viewer; nothing was detached."
+            );
+        }
     }
 }
 fn reload_layouts(mut reloads: MessageReader<assets::LayoutReload>, mut commands: Commands) {

@@ -544,6 +544,19 @@ async fn batch(
         Ok(BrpBatch::Batch(batch)) => {
             let mut responses = Vec::new();
             for request in batch {
+                // A streaming request is refused here rather than dispatched
+                // and then refused. Dispatching it opens a response channel
+                // that is immediately dropped, and the runner reads that as a
+                // watcher going away, which detaches a viewer; a refused
+                // request must leave the world alone. The reply is unchanged.
+                if streaming(&request) {
+                    let id = request.as_object().and_then(|map| map.get("id")).cloned();
+                    responses.push(invalid(
+                        id,
+                        "Streaming can not be used in batch requests".to_string(),
+                    ));
+                    continue;
+                }
                 responses.push(match single(request, &requests).await {
                     Reply::Complete(response) => response,
                     Reply::Stream(Watch { id, .. }) => invalid(
@@ -565,6 +578,15 @@ fn complete(serialized: String) -> Response<Payload> {
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     response
+}
+
+/// Whether a request in a batch names a watching method, read before the
+/// request is dispatched.
+fn streaming(request: &Value) -> bool {
+    request
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| method.contains("+watch"))
 }
 
 async fn single(request: Value, requests: &Sender<BrpMessage>) -> Reply {
