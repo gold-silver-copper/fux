@@ -15,7 +15,7 @@ description = "A minimal trusted Bevy terminal multiplexer"
 bevy_app = "=0.19.1"
 bevy_ecs = { version = "=0.19.1", features = ["serialize"] }
 bevy_reflect = "=0.19.1"
-bevy_remote = { version = "=0.19.1", default-features = false, features = ["http", "bevy_asset"] }
+bevy_remote = { version = "=0.19.1", default-features = false, features = ["bevy_asset"] }
 bevy_tasks = { version = "=0.19.1", features = ["multi_threaded", "async-io"] }
 bevy_time = "=0.19.1"
 bevy_log = "=0.19.1"
@@ -38,9 +38,16 @@ portable-pty = "=0.9.0"
 fux-vt = { path = "fux-vt" }
 termina = "=0.3.3"
 parking_lot = "0.12"
-nix = { version = "0.30", features = ["fs", "signal", "process", "poll"] }
+nix = { version = "0.30", features = ["fs", "signal", "process", "poll", "socket", "user"] }
 async-io = "2"
-ureq = { version = "3", default-features = false, features = ["json"] }
+# The Unix-socket transport: bevy_remote 0.19 binds only TCP, so fux serves
+# BRP itself. These were already in the graph through bevy_remote's `http`.
+hyper = { version = "1", features = ["server", "http1"] }
+smol-hyper = "0.1"
+http-body-util = "0.1"
+# Exact: the Unix connector implements ureq's `unversioned` transport API,
+# which is outside ureq's semver promise.
+ureq = { version = "=3.4.2", default-features = false, features = ["json"] }
 ron = "0.12"
 bevy_mesh = "=0.19.1"
 base64 = "0.22"

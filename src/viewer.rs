@@ -4,8 +4,9 @@ use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, IsTerminal, Read, Write},
     os::{fd::AsFd, unix::net::UnixStream},
+    path::{Path, PathBuf},
     sync::{
-        Arc, LazyLock,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -19,21 +20,30 @@ use termina::{
 
 const RESET: &[u8] = b"\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
 
-pub fn rpc(endpoint: &str, method: &str, params: Option<Value>) -> Result<Value, String> {
-    static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
-        ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(10)))
-            .build()
-            .into()
+pub fn rpc(socket: &Path, method: &str, params: Option<Value>) -> Result<Value, String> {
+    // One pooled agent per socket, reused for every call of this process.
+    static AGENT: OnceLock<(PathBuf, ureq::Agent)> = OnceLock::new();
+    let (path, agent) = AGENT.get_or_init(|| {
+        (
+            socket.to_owned(),
+            crate::unix_http::agent(socket, Some(Duration::from_secs(10))),
+        )
     });
+    let fresh;
+    let agent = if path == socket {
+        agent
+    } else {
+        fresh = crate::unix_http::agent(socket, Some(Duration::from_secs(10)));
+        &fresh
+    };
     let mut request = json!({"jsonrpc":"2.0","id":1,"method":method});
     if let Some(params) = params
         && let Some(object) = request.as_object_mut()
     {
         object.insert("params".into(), params);
     }
-    let response: Value = AGENT
-        .post(endpoint)
+    let response: Value = agent
+        .post(crate::unix_http::URL)
         .send_json(request)
         .map_err(|e| e.to_string())?
         .body_mut()
@@ -50,9 +60,9 @@ fn result(mut response: Value) -> Result<Value, String> {
         .ok_or("missing RPC result")?
         .take())
 }
-fn trigger(endpoint: &str, event: &str, value: Value) -> Result<(), String> {
+fn trigger(socket: &Path, event: &str, value: Value) -> Result<(), String> {
     rpc(
-        endpoint,
+        socket,
         "world.trigger_event",
         Some(json!({"event":event,"value":value})),
     )
@@ -75,11 +85,11 @@ enum Incoming {
     Error(String),
 }
 
-pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
+pub fn run(socket: &Path, workspace: Option<&str>) -> Result<(), String> {
     let terminal = PlatformTerminal::new().map_err(|e| e.to_string())?;
     let size = terminal.get_dimensions().map_err(|e| e.to_string())?;
     let attached = rpc(
-        endpoint,
+        socket,
         "fux.attach",
         Some(json!({"workspace":workspace,"rows":size.rows,"cols":size.cols})),
     )?;
@@ -143,10 +153,14 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
     // of keyboard input. The transport and terminal event buffers remain bounded.
     let latest = Arc::new(Mutex::new(None::<Frame>));
     let received = Arc::clone(&latest);
-    let endpoint_owned = endpoint.to_owned();
+    // The watch has no deadline: it lasts as long as the attachment.
+    let watch = crate::unix_http::agent(socket, None);
     thread::spawn(move || {
         let stream = (|| -> Result<(), String> {
-            let response=ureq::post(&endpoint_owned).send_json(json!({"jsonrpc":"2.0","id":2,"method":"fux.frame+watch","params":{"viewer":viewer}})).map_err(|e|e.to_string())?;
+            let response = watch
+                .post(crate::unix_http::URL)
+                .send_json(json!({"jsonrpc":"2.0","id":2,"method":"fux.frame+watch","params":{"viewer":viewer}}))
+                .map_err(|e| e.to_string())?;
             let mut reader = BufReader::new(response.into_body().into_reader());
             let mut line = String::new();
             loop {
@@ -189,14 +203,14 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
         loop {
             match receiver.recv().map_err(|e| e.to_string())? {
                 Incoming::Input(input) => trigger(
-                    endpoint,
+                    socket,
                     "fux::control::UserInput",
                     json!({"viewer":viewer,"input":input}),
                 )?,
                 Incoming::Resize => {
                     let size = screen.0.get_dimensions().map_err(|e| e.to_string())?;
                     trigger(
-                        endpoint,
+                        socket,
                         "fux::control::UserInput",
                         json!({"viewer":viewer,"input":Input::Resize { rows:size.rows, cols:size.cols }}),
                     )?;
@@ -233,7 +247,7 @@ pub fn run(endpoint: &str, workspace: Option<&str>) -> Result<(), String> {
     // Restore the user's terminal before a potentially slow final network call.
     drop(screen);
     let _ = trigger(
-        endpoint,
+        socket,
         "fux::control::Control",
         json!({"viewer":viewer,"command":{"kind":"detach"}}),
     );

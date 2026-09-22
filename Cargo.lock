@@ -890,7 +890,6 @@ checksum = "26bcc7f749957fbc05d3d0c7c4526426507de6607238f10b17392559d49163d1"
 dependencies = [
  "anyhow",
  "async-channel",
- "async-io",
  "bevy_app",
  "bevy_asset",
  "bevy_color",
@@ -902,11 +901,8 @@ dependencies = [
  "bevy_reflect",
  "bevy_tasks",
  "bevy_utils",
- "http-body-util",
- "hyper",
  "serde",
  "serde_json",
- "smol-hyper",
 ]
 
 [[package]]
@@ -1982,6 +1978,8 @@ dependencies = [
  "bevy_window",
  "bevy_world_serialization",
  "fux-vt",
+ "http-body-util",
+ "hyper",
  "nix 0.30.1",
  "parking_lot",
  "portable-pty",
@@ -1989,6 +1987,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "smol-hyper",
  "termina",
  "unicode-width",
  "ureq",
@@ -2647,6 +2646,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2763,6 +2771,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases 0.2.2",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

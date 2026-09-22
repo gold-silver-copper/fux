@@ -117,9 +117,11 @@ contact no model.
 
 ## Isolation and safety
 
-Each run gets its own fux server, loopback port, temporary `HOME`, working directory
-and shell configuration, so an exercise never touches a server you are already
-running. Only the process this harness spawned is signalled during cleanup. The
+Each run gets its own fux server, listening on a Unix domain socket in a fresh private
+(0700) directory under the system temporary directory, plus a temporary `HOME`, working
+directory and shell configuration, so an exercise never touches a server you are already
+running. The harness speaks HTTP to that socket with `node:http` (`fetch` cannot dial a
+socket path), still with no package dependencies. Only the process this harness spawned is signalled during cleanup. The
 child environment is rebuilt from a small allowlist, and anything whose name looks
 like a credential is dropped, so fixtures cannot read the campaign's provider key.
 

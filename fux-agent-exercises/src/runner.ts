@@ -381,7 +381,7 @@ export async function runOnce(
     },
     baseline: setup?.baseline ?? null,
     server: server
-      ? { endpoint: server.endpoint, port: server.port, pid: server.pid, directory: server.directory }
+      ? { socket: server.socket, pid: server.pid, directory: server.directory }
       : null,
     serverStop: serverStop ?? null,
     serverCrashed,

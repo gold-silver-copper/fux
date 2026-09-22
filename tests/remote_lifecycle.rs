@@ -1,8 +1,7 @@
 use serde_json::{Value, json};
 use std::{
     fs,
-    net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     thread,
@@ -10,17 +9,19 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
-static NEXT_PORT: AtomicU64 = AtomicU64::new(0);
-// A concurrent fork can temporarily inherit a reserved listener until exec.
-// Serialize reservation-to-ready with outer-PTY spawns, not the test scenarios.
+// Serialize server spawns with outer-PTY spawns, so a concurrent fork never
+// inherits a descriptor another fixture is about to hand to its child.
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 mod brp;
 mod design;
+mod socket;
 
 type Fail = Box<dyn std::error::Error>;
 #[path = "../src/testing.rs"]
 mod testing;
+#[path = "../src/unix_http.rs"]
+mod unix_http;
 use testing::{Need, Outcome, ScreenText};
 
 /// JSON lookup with `Value`'s own null-on-miss semantics, without the index lint.
@@ -44,52 +45,68 @@ impl Rows for Value {
 
 struct Server {
     child: Child,
-    endpoint: String,
+    /// The server's socket, in a private directory of this fixture.
+    socket: PathBuf,
     directory: PathBuf,
+}
+
+/// A fixture directory under the system temporary directory, and the socket
+/// path inside its private `s/` subdirectory, which the server creates.
+fn fixture() -> Result<(PathBuf, PathBuf), Fail> {
+    let directory = std::env::temp_dir().join(format!(
+        "fux-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&directory)?;
+    let directory = directory.canonicalize()?;
+    let socket = directory.join("s").join("fux.sock");
+    Ok((directory, socket))
+}
+
+/// A server command with the fixture environment: the configured shell and
+/// a clean environment for the transport.
+fn server_command(directory: &Path, args: &[&std::ffi::OsStr]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fux"));
+    command
+        .arg("server")
+        .args(args)
+        .env("SHELL", "/bin/sh")
+        .env("PS1", "$ ")
+        .env("HOME", directory)
+        .env("HISTFILE", "/dev/null")
+        .env_remove("ENV")
+        .env_remove("BASH_ENV")
+        .env_remove("FUX_ENDPOINT")
+        .env_remove("FUX_SOCKET")
+        .current_dir(directory);
+    command
 }
 
 impl Server {
     fn start() -> Result<Self, Fail> {
         let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
-        let directory = std::env::temp_dir().join(format!(
-            "fux-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&directory)?;
-        let directory = directory.canonicalize()?;
+        let (directory, socket) = fixture()?;
         let config = directory.join("fux.json");
         fs::write(
             &config,
             r#"{"shell":["/bin/sh"],"history_lines":100,"clipboard":"write-only"}"#,
         )?;
-        // Distinct non-ephemeral ports avoid port-0 reservations being reused by
-        // parallel fixtures or outgoing HTTP sockets before the child binds.
-        let listener = (0..20_000)
-            .find_map(|_| {
-                let index =
-                    u64::from(std::process::id()) + NEXT_PORT.fetch_add(1, Ordering::Relaxed);
-                TcpListener::bind(("127.0.0.1", 10_000 + (index % 20_000) as u16)).ok()
-            })
-            .ok_or("no free test port")?;
-        let address = listener.local_addr()?;
-        drop(listener);
-        let child = Command::new(env!("CARGO_BIN_EXE_fux"))
-            .args(["server", "--port", &address.port().to_string(), "--config"])
-            .arg(config)
-            .env("SHELL", "/bin/sh")
-            .env("PS1", "$ ")
-            .env("HOME", &directory)
-            .env("HISTFILE", "/dev/null")
-            .env_remove("ENV")
-            .env_remove("BASH_ENV")
-            .current_dir(&directory)
-            .stdout(Stdio::null())
-            .stderr(fs::File::create(directory.join("server.log"))?)
-            .spawn()?;
+        let child = server_command(
+            &directory,
+            &[
+                "--socket".as_ref(),
+                socket.as_ref(),
+                "--config".as_ref(),
+                config.as_ref(),
+            ],
+        )
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(directory.join("server.log"))?)
+        .spawn()?;
         let server = Self {
             child,
-            endpoint: format!("http://{address}"),
+            socket,
             directory,
         };
         eventually(|| Ok(server.request("rpc.discover", Value::Null).is_ok()))?;
@@ -97,12 +114,8 @@ impl Server {
     }
 
     fn request(&self, method: &str, params: Value) -> Result<Value, String> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(5)))
-            .build()
-            .into();
-        let response: Value = agent
-            .post(&self.endpoint)
+        let response: Value = unix_http::agent(&self.socket, Some(Duration::from_secs(5)))
+            .post(unix_http::URL)
             .send_json(json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}))
             .map_err(|error| error.to_string())?
             .body_mut()
@@ -590,15 +603,11 @@ fn repeated_copy_effects_are_not_replaceable_paints() -> Outcome {
     use std::io::{BufRead, BufReader};
     let server = Server::start()?;
     let viewer = server.attach()?;
-    let endpoint = server.endpoint.clone();
+    let socket = server.socket.clone();
     let (sender, received) = std::sync::mpsc::channel();
     let reader = thread::spawn(move || -> Result<(), String> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(5)))
-            .build()
-            .into();
-        let response = agent
-            .post(&endpoint)
+        let response = unix_http::agent(&socket, Some(Duration::from_secs(5)))
+            .post(unix_http::URL)
             .send_json(json!({
                 "jsonrpc":"2.0", "id":2, "method":"fux.frame+watch", "params":{"viewer":viewer}
             }))
@@ -672,7 +681,8 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
     let mut reader = pair.master.try_clone_reader()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");
-    command.env("FUX_ENDPOINT", &server.endpoint);
+    command.env("FUX_SOCKET", &server.socket);
+    command.env_remove("FUX_ENDPOINT");
     let mut terminal = SlowTerminal {
         child: {
             let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
@@ -917,11 +927,8 @@ fn frame_requests_for_impossible_entity_ids_are_refused() -> Outcome {
         assert!(error.contains("not an entity id"), "{id}: {error}");
         // The watch's error arrives as an event; what matters is that the
         // request bridge survives to carry the next request.
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(1)))
-            .build()
-            .into();
-        if let Ok(mut response) = agent.post(&server.endpoint).send_json(
+        let agent = unix_http::agent(&server.socket, Some(Duration::from_secs(1)));
+        if let Ok(mut response) = agent.post(unix_http::URL).send_json(
             json!({"jsonrpc":"2.0","id":1,"method":"fux.frame+watch","params":{"viewer":id}}),
         ) {
             let _ = response.body_mut().read_to_string();
