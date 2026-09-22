@@ -208,6 +208,7 @@ export async function runOnce(
         journal,
         { maxToolCalls: config.maxToolCalls, requestTimeoutMs: config.requestTimeoutMs },
         {
+          beforeCall: (method, params, index) => run.beforeToolCall?.(ctx, method, params, index),
           onCall: (record, outcome) => run.onToolCall?.(ctx, record, outcome),
           onBudgetExhausted: (reason) => {
             if (journal.abortReason === null) journal.abortReason = reason;

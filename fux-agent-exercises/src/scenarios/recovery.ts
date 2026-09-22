@@ -1,18 +1,19 @@
 /**
  * Scenario 5 — recovery and coexistence.
  *
- * A second viewer is attached with its own navigation state. Once the agent has
- * actually observed the pane it was asked to close, the harness closes that pane
- * from a separate operator viewer. The agent has to notice that its target is
- * gone, recover, and still finish the rest of the task without disturbing an
- * unrelated process or the observer's view.
+ * A second viewer is attached with its own navigation state. When the agent
+ * first acts on the pane it was asked to close, the harness closes that pane
+ * from a separate operator viewer before the agent's request is forwarded. The
+ * agent has to notice that its target is gone, recover, and still finish the
+ * rest of the task without disturbing an unrelated process or the observer's
+ * view.
  *
- * The disruption fires on an observable milestone — the target's entity id
- * appearing in a response the agent received — not on a timer.
+ * The disruption fires on an observable milestone — the first `close` or
+ * `focus` command naming the target — not on a timer, and not on the target
+ * merely appearing in a response (which was always the opening query, so no
+ * run ever met the stale-target error; see FINDINGS F8).
  */
-import type { BrpOutcome } from "../brp.ts";
 import { attach, eventually, triggerControl } from "../brp.ts";
-import type { ToolCallRecord } from "../journal.ts";
 import {
   addProcessPane,
   addTab,
@@ -50,6 +51,21 @@ interface Disruption {
   triggeringMethod: string | null;
   error: string | null;
   skippedReason: string | null;
+}
+
+/** A `Control` whose `close` subject or `focus` pane is the target's pane view. */
+function actsOnTarget(method: string, params: unknown, paneView: number): boolean {
+  if (method !== "world.trigger_event" || typeof params !== "object" || params === null) return false;
+  const request = params as { event?: unknown; value?: { command?: Record<string, unknown> } };
+  if (request.event !== "fux::control::Control") return false;
+  const command = request.value?.command;
+  if (typeof command !== "object" || command === null) return false;
+  if (command.kind === "focus") return command.pane === paneView;
+  if (command.kind === "close") {
+    const subject = command.subject as { pane?: unknown } | undefined;
+    return subject?.pane === paneView;
+  }
+  return false;
 }
 
 function create(variant: string): ScenarioRun {
@@ -178,12 +194,9 @@ function create(variant: string): ScenarioRun {
       };
     },
 
-    async onToolCall(ctx: ScenarioContext, record: ToolCallRecord, _outcome: BrpOutcome | null) {
+    async beforeToolCall(ctx: ScenarioContext, method: string, params: unknown, index: number) {
       if (disruption.applied || disruption.skippedReason !== null || firing) return;
-      const body = record.response ?? "";
-      const mentionsTarget =
-        body.includes(String(state.targetProcess)) || body.includes(String(state.targetPaneView));
-      if (!mentionsTarget || record.rejected !== null) return;
+      if (!actsOnTarget(method, params, state.targetPaneView)) return;
 
       firing = true;
       try {
@@ -199,10 +212,10 @@ function create(variant: string): ScenarioRun {
         });
         disruption.applied = true;
         disruption.at = new Date().toISOString();
-        disruption.triggeredByCallIndex = record.index;
-        disruption.triggeringMethod = record.method;
+        disruption.triggeredByCallIndex = index;
+        disruption.triggeringMethod = method;
         ctx.journal.note(
-          `disruption: closed ${TARGET} (pane view ${live}) after tool call ${record.index} (${record.method}) surfaced its entity id`,
+          `disruption: closed ${TARGET} (pane view ${live}) before tool call ${index} (${method}) acted on it`,
         );
       } catch (error) {
         disruption.error = (error as Error).message;
@@ -261,7 +274,7 @@ function create(variant: string): ScenarioRun {
 
       if (!disruption.applied) {
         notes.push(
-          `the controlled disruption did not fire (${disruption.skippedReason ?? disruption.error ?? "the target id never appeared in a response the agent received"}); this run did not test recovery`,
+          `the controlled disruption did not fire (${disruption.skippedReason ?? disruption.error ?? "the agent never sent a close or focus naming the target"}); this run did not test recovery`,
         );
       } else {
         notes.push(

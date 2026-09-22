@@ -399,22 +399,25 @@ test("positive control: modal confirm verifier passes when the close is declined
 });
 
 test("positive control: recovery verifier passes after the injected disruption", async () => {
+  let noticeAfterClose: unknown = null;
   const { result, artifactsRoot } = await driveScenario(requireScenario("recovery"), "a", async (rpc, task) => {
     const viewer = viewerFrom(task);
-    // This query surfaces target-a's entity id, which fires the disruption.
     const byName = await processesByName(rpc);
     const target = byName.get("target-a");
     const keep = byName.get("target-b");
     assert.ok(target && keep);
 
+    // The pane is still there when we look; the disruption fires just before
+    // this close is forwarded, so the close itself meets a stale target.
     const view = await paneViewFor(rpc, target);
-    let closeResponse = "(target already gone)";
-    if (view !== undefined) {
-      closeResponse = await rpc(
-        "world.trigger_event",
-        control(viewer, { kind: "close", subject: { pane: view } }),
-      );
-    }
+    assert.ok(view !== undefined, "target-a must still have a pane view before the agent acts");
+    const closeResponse = await rpc(
+      "world.trigger_event",
+      control(viewer, { kind: "close", subject: { pane: view } }),
+    );
+    noticeAfterClose = jsonOf(
+      await rpc("world.get_components", { entity: viewer, components: ["fux::model::Viewer"] }),
+    ).result?.components?.["fux::model::Viewer"]?.notice;
     // Confirm the real state rather than assuming the close did it.
     for (let attempt = 0; attempt < 40; attempt += 1) {
       const status = jsonOf(
@@ -435,12 +438,16 @@ test("positive control: recovery verifier passes after the injected disruption",
   try {
     assert.equal(result.outcome, "pass", JSON.stringify(result.checks.filter((c) => !c.ok), null, 2));
     const artifact = JSON.parse(readFileSync(result.artifactPath, "utf8"));
+    const disruption = artifact.verification.evidence.disruption;
+    assert.equal(disruption.applied, true, "the milestone disruption must have fired");
+    assert.equal(disruption.triggeringMethod, "world.trigger_event");
+    // Not the opening query: the close is the fourth call (query, query, close).
+    assert.equal(disruption.triggeredByCallIndex, 2);
     assert.equal(
-      artifact.verification.evidence.disruption.applied,
+      artifact.verification.evidence.sawStaleTargetNotice,
       true,
-      "the milestone disruption must have fired",
+      `the agent's own close must meet the stale-target notice; notice was ${JSON.stringify(noticeAfterClose)}`,
     );
-    assert.equal(typeof artifact.verification.evidence.disruption.triggeredByCallIndex, "number");
   } finally {
     rmSync(artifactsRoot, { recursive: true, force: true });
   }
