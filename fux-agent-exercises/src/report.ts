@@ -5,18 +5,25 @@
  * finding as a fux bug, a documentation gap or an agent mistake is a judgement
  * that belongs in the written report, with the run ids cited here.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { renderFindings, type RunArtifact } from "./findings.ts";
 import type { CampaignSummary, RunResult } from "./runner.ts";
 
 export function loadCampaign(artifactsRoot: string): CampaignSummary {
   return JSON.parse(readFileSync(join(artifactsRoot, "campaign.json"), "utf8")) as CampaignSummary;
 }
 
+/** The run's artifact, by its recorded path or, if the campaign moved, beside `campaign.json`. */
+function loadArtifact(artifactsRoot: string, run: RunResult): RunArtifact {
+  const candidates = [run.artifactPath, join(artifactsRoot, run.runId, "run.json")];
+  const path = candidates.find((candidate) => existsSync(candidate));
+  if (path === undefined) throw new Error(`no artifact for ${run.runId}`);
+  return JSON.parse(readFileSync(path, "utf8")) as RunArtifact;
+}
+
 function methodHistogram(artifactsRoot: string, run: RunResult): Map<string, number> {
-  const artifact = JSON.parse(readFileSync(run.artifactPath, "utf8")) as {
-    journal: { toolCalls: Array<{ method: string; rejected: string | null }> };
-  };
+  const artifact = loadArtifact(artifactsRoot, run);
   const counts = new Map<string, number>();
   for (const call of artifact.journal.toolCalls) {
     const key = call.rejected === null ? call.method : `${call.method} (rejected)`;
@@ -127,6 +134,21 @@ export function renderReport(artifactsRoot: string): string {
     lines.push(`### \`${run.runId}\``);
     lines.push("");
     for (const note of run.notes) lines.push(`- ${note}`);
+    lines.push("");
+  }
+
+  const artifacts: RunArtifact[] = [];
+  const unavailable: string[] = [];
+  for (const run of campaign.runs) {
+    try {
+      artifacts.push(loadArtifact(artifactsRoot, run));
+    } catch {
+      unavailable.push(run.runId);
+    }
+  }
+  lines.push(...renderFindings(artifacts));
+  if (unavailable.length > 0) {
+    lines.push(`Artifacts unavailable for: ${unavailable.map((id) => `\`${id}\``).join(", ")}.`);
     lines.push("");
   }
 
