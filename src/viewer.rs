@@ -162,12 +162,12 @@ pub fn run(socket: &Path, workspace: Option<&str>) -> Result<(), String> {
                 .send_json(json!({"jsonrpc":"2.0","id":2,"method":"fux.frame+watch","params":{"viewer":viewer}}))
                 .map_err(|e| e.to_string())?;
             let mut reader = BufReader::new(response.into_body().into_reader());
-            let mut line = String::new();
+            let mut line = Vec::new();
             loop {
-                line.clear();
-                if reader.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+                if read_event(&mut reader, &mut line)? == 0 {
                     return Err("server attachment closed".into());
                 }
+                let line = String::from_utf8_lossy(&line);
                 if let Some(data) = line.strip_prefix("data:") {
                     let response: Value =
                         serde_json::from_str(data.trim()).map_err(|e| e.to_string())?;
@@ -253,6 +253,34 @@ pub fn run(socket: &Path, workspace: Option<&str>) -> Result<(), String> {
     );
     outcome
 }
+/// The largest server-sent event the frontend will buffer before it gives up.
+///
+/// Events are newline framed, so a peer that never sends a newline would
+/// otherwise be buffered without bound: hunt 6 finding 008 reached 5.3 GB in
+/// sixty seconds. The bound has to clear the largest frame a real server can
+/// send. Viewer dimensions clamp to 4096, and a 4096x4096 viewer showing a
+/// pane that changes colour every cell measured 11.6 MB of JSON, so this is
+/// about five times the densest legitimate frame and a fixed ceiling instead
+/// of none.
+const MAX_EVENT: usize = 64 << 20;
+
+/// One server-sent event line, bounded. Returns the bytes read, zero at the
+/// end of the stream, and an error if the peer runs past the bound.
+fn read_event(reader: &mut impl BufRead, line: &mut Vec<u8>) -> Result<usize, String> {
+    line.clear();
+    reader
+        .by_ref()
+        .take(MAX_EVENT as u64 + 1)
+        .read_until(b'\n', line)
+        .map_err(|e| e.to_string())?;
+    if line.len() > MAX_EVENT {
+        return Err(format!(
+            "the server sent an event of more than {MAX_EVENT} bytes without ending it; detaching"
+        ));
+    }
+    Ok(line.len())
+}
+
 fn read_input(
     mut file: std::fs::File,
     stop: UnixStream,
