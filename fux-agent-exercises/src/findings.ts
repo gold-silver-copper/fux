@@ -7,6 +7,7 @@
  * one place they come from now, shared by `run.ts report`, the recovery
  * verifier and the tests. Every function is pure over a parsed `run.json`.
  */
+import { stripAnsi } from "./ansi.ts";
 import type { ToolCallRecord } from "./journal.ts";
 
 /** The parts of a `run.json` these metrics read. */
@@ -75,6 +76,14 @@ export interface NoisyMetrics {
   finalOffset: number | null;
   linesBackFromBottom: number | null;
   outcome: string | null;
+  /** The code the agent's final answer claimed, and the fixture's real one. */
+  claimedCode: string | null;
+  expectedCode: string | null;
+  /**
+   * Whether the claimed code appears in any response the agent received,
+   * with ANSI stripped. A claim that appears nowhere was made up (F2).
+   */
+  claimSeenInAnyResponse: boolean | null;
 }
 
 function isScrollAttempt(call: ToolCallRecord): boolean {
@@ -114,6 +123,12 @@ export function noisyMetrics(artifact: RunArtifact): NoisyMetrics | null {
   const evidence = artifact.verification?.evidence ?? {};
   const viewer = evidence.viewer as { scrollback?: number } | undefined;
   const linesBack = artifact.baseline?.linesBackFromBottom;
+  const claimedCode = typeof evidence.claimedCode === "string" ? evidence.claimedCode : null;
+  const expectedCode = typeof evidence.expectedCode === "string" ? evidence.expectedCode : null;
+  const claimSeenInAnyResponse =
+    claimedCode === null
+      ? null
+      : calls.some((call) => call.response !== null && stripAnsi(call.response).includes(claimedCode));
   return {
     scrollAttempts,
     scrollRejections,
@@ -124,6 +139,9 @@ export function noisyMetrics(artifact: RunArtifact): NoisyMetrics | null {
     finalOffset: typeof viewer?.scrollback === "number" ? viewer.scrollback : null,
     linesBackFromBottom: typeof linesBack === "number" ? linesBack : null,
     outcome: artifact.verification?.outcome ?? null,
+    claimedCode,
+    expectedCode,
+    claimSeenInAnyResponse,
   };
 }
 
@@ -306,15 +324,23 @@ export function renderFindings(artifacts: RunArtifact[]): string[] {
     lines.push("No `noisy` runs in this campaign.");
   } else {
     lines.push(
-      "| Run | Outcome | Lines back | Scroll attempts | Rejected | First scroll accepted | Direct `scrollback` writes | `fux.frame` calls | Accepted calls | Final offset |",
+      "| Run | Outcome | Lines back | Scroll attempts | Rejected | First scroll accepted | Direct `scrollback` writes | `fux.frame` calls | Accepted calls | Final offset | Claimed | Expected | Claim seen in a response |",
     );
-    lines.push("| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |");
+    lines.push("| --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- | --- | --- |");
+    let fabricated = 0;
+    let answered = 0;
     for (const [artifact, m] of noisy) {
       if (!m) continue;
+      if (m.claimedCode !== null) answered += 1;
+      if (m.claimSeenInAnyResponse === false) fabricated += 1;
       lines.push(
-        `| \`${artifact.identity.runId}\` | ${String(m.outcome)} | ${m.linesBackFromBottom ?? "—"} | ${m.scrollAttempts} | ${m.scrollRejections} | ${yesNo(m.firstScrollAccepted)} | ${m.directScrollbackWrites} | ${m.frameCalls} | ${m.acceptedCalls} | ${m.finalOffset ?? "—"} |`,
+        `| \`${artifact.identity.runId}\` | ${m.outcome ?? "—"} | ${m.linesBackFromBottom ?? "—"} | ${m.scrollAttempts} | ${m.scrollRejections} | ${yesNo(m.firstScrollAccepted)} | ${m.directScrollbackWrites} | ${m.frameCalls} | ${m.acceptedCalls} | ${m.finalOffset ?? "—"} | ${m.claimedCode ?? "—"} | ${m.expectedCode ?? "—"} | ${yesNo(m.claimSeenInAnyResponse)} |`,
       );
     }
+    lines.push("");
+    lines.push(
+      `Answers whose claimed code appears in no response the run received (F2, fabricated): ${fabricated} of ${answered} answered.`,
+    );
   }
   lines.push("");
 

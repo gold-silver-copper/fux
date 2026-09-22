@@ -60,7 +60,19 @@ test("noisy metrics reproduce the campaign 04 numbers for noisy-a-r1", () => {
     finalOffset: 130,
     linesBackFromBottom: 139,
     outcome: "pass",
+    claimedCode: "E-4417",
+    expectedCode: "E-4417",
+    claimSeenInAnyResponse: true,
   });
+});
+
+test("a fabricated code is one that appears in no response the run received (F2)", () => {
+  const metrics = noisyMetrics(fixture("campaign-02-noisy-a-r1"));
+  assert.ok(metrics);
+  assert.equal(metrics.claimedCode, "E-9412");
+  assert.equal(metrics.expectedCode, "E-4417");
+  assert.equal(metrics.claimSeenInAnyResponse, false);
+  assert.equal(metrics.outcome, "fail");
 });
 
 test("noisy metrics count the rejected scroll guess and the direct write in campaign 01", () => {
@@ -152,11 +164,16 @@ test("the findings section renders every table from the fixtures", () => {
     fixture("campaign-04-recovery-a-r1"),
     fixture("campaign-03-discovery-b-r2"),
     fixture("campaign-01-noisy-b-r2"),
+    fixture("campaign-02-noisy-a-r1"),
   ]).join("\n");
   assert.match(text, /^## Findings$/m);
-  assert.match(text, /\| `noisy-a-r1` \| pass \| 139 \| 1 \| 0 \| yes \| 3 \| 5 \| 11 \| 130 \|/);
+  assert.match(text, /\| `noisy-a-r1` \| pass \| 139 \| 1 \| 0 \| yes \| 3 \| 5 \| 11 \| 130 \| E-4417 \| E-4417 \| yes \|/);
+  assert.match(text, /\| `noisy-a-r1` \| fail \| 139 \| .* \| E-9412 \| E-4417 \| no \|/);
+  // campaign-01 noisy-b-r2 died before answering, so it is not among the answered.
+  assert.match(text, /fabricated\): 1 of 2 answered\./);
+  assert.match(text, /\| `noisy-b-r2` \| — \| 131 \| 1 \| 1 \| no \| 1 \| 8 \| 23 \| — \| — \| — \| — \|/);
   assert.match(text, /\| `discovery-b-r2` \| 16 \| 15 \| 17 \|/);
-  assert.match(text, /Runs with a `list_components` call: 1 of 4\. Runs with a wrong hierarchy path guess: 1 of 4\./);
+  assert.match(text, /Runs with a `list_components` call: 1 of 5\. Runs with a wrong hierarchy path guess: 1 of 5\./);
   assert.match(text, /\| `noisy-b-r2` \| 20 \| world\.insert_components \| `fux::model::Viewer` \| notice \| none \| transport error: fetch failed \|/);
   assert.match(text, /\| `recovery-a-r1` \| yes \| 6 \| world\.trigger_event \| no \| no \| — \| 7 \|/);
   assert.match(text, /Agents that read state before acting again: 0 of 1\./);
