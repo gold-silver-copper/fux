@@ -573,7 +573,9 @@ line and can bound it.
 **Smallest input that does NOT break, to bound it.** An ordinary request leaves
 RSS flat (the negative control sends 1 MB and measures under 64 MB of growth).
 Bodies up to a few megabytes are answered immediately. There is no threshold in
-the code: the cost is proportional to what the caller sends.
+the code: the cost is proportional to what the caller sends, and not to how fast
+they send it — 64 MB dribbled in 256 KiB steps over 27 s reached 193 MB of RSS
+just the same, with other clients served throughout.
 
 **Class of inputs the fix must cover.** Any request whose size the caller
 chooses, and any response whose size follows from it. A byte limit on the body,
@@ -630,8 +632,8 @@ proper frames and exits 1.
 | Area | Inputs tried | Correctly refused / absorbed | Breaks |
 | --- | ---: | ---: | ---: |
 | 1 the owned HTTP transport: parsing, framing, pipelining | 32 | 32 | 0 |
-| 1 the transport under resource pressure | 23 | 21 | 2 (006, 007) |
-| 2 socket location, lock and lifecycle | 60 | 60 | 0 |
+| 1 the transport under resource pressure | 24 | 22 | 2 (006, 007) |
+| 2 socket location, lock and lifecycle | 65 | 65 | 0 |
 | 2 the client against a hostile peer | 18 | 17 | 1 (008) |
 | 3 caller-chosen identifiers: 29 surfaces x 20 values, both builds | 1160 | 1140 | 3 (003, 004, 005) |
 | 4 panics the lints do not catch, both builds | 14 | 14 | 0 |
@@ -694,7 +696,11 @@ Highlights of the non-findings, because they bound the findings above:
   socket at ..." rather than connect to something else. A lockfile held by a
   process that is not fux was refused (the message says "another fux server",
   which is a wording nit rather than a break). A socket directory on a full
-  filesystem was refused with "No space left on device", naming the path.
+  filesystem was refused with "No space left on device", naming the path. A
+  `FUX_SOCKET` holding non-UTF-8 bytes was refused with "FUX_SOCKET is not valid
+  UTF-8". A `SIGKILL` delivered at four points *during* graceful cleanup left the
+  socket file behind every time, as a `SIGKILL` must, and the next server
+  recovered the path through the stale-socket probe every time.
 - **The client against a hostile peer.** `fux rpc` against a peer that accepts
   and never answers, answers garbage, sends an endless SSE line, sends a 100 MB
   frame, closes mid-frame, or dribbles one byte per second: bounded every time,
