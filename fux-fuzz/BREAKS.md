@@ -1,5 +1,9 @@
 # Where fux breaks under hostile input (hunt 5)
 
+> **Status: both findings are fixed.** 001 in `938f257`, 002 in `334752a`; see
+> "Fixed" under each finding and "Found while fixing" at the end. The analysis
+> below is the state before those commits and is kept as it was found.
+
 This run removed the conditions earlier hunts kept: it spoke to the loopback
 port with raw sockets, called stock reflection methods no scenario had called,
 made the filesystem an adversary, starved file descriptors, drove a real
@@ -73,14 +77,41 @@ be depth-bounded so a pathological entity cannot recurse it. The README already
 warns that raw component mutation "can bypass normal transitions"; this is the
 case where it aborts rather than degrades.
 
-**Reproduction.** `fux-fuzz/repro/001-viewer-on-tab-repair-recursion.sh <fux>`
-(no agent, no seed; exit 0 = reproduced). Also in the harness as the currently
+**Reproduction (as recorded before the fix).** `fux-fuzz/repro/001-viewer-on-tab-repair-recursion.sh <fux>`
+(no agent, no seed; exit 0 = reproduced). Also in the harness as the then
 failing `hostile` scenario and the trace
 `fux-fuzz/traces/open/001-viewer-on-layout-entity.json`:
 
 ```
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario hostile
 ```
+
+---
+
+**Fixed in `938f257`.** The impossible state is removed where it is created,
+following the cycle guard in `normalize_on_child_added`: an observer on the
+insertion of `Viewer` and of each layout component (`Workspace`, `Tab`,
+`Split`, `PaneView`) removes the `Viewer` from any entity that has both, in
+either order or in one insertion. The layout role wins; the node also loses
+the viewer-only state it gained (the relationships repair gave it, `Memory`,
+paste `Ownership`, and any presentation, prefix, overlay or selection). Passes
+over viewers (`repair` and the frame passes) select only entities with
+`Viewer` and no layout component, so the moment before the removal is safe
+too. `repair` no longer relies on "cannot trigger another repair": a request
+made while a pass runs only marks another pass, and repair stops after at most
+sixteen, with a warning. Rejected: narrowing repair's query alone, which stops
+this crash but leaves the stray `Viewer` for the frame passes.
+
+Regression coverage: unit tests in `src/navigation/tests.rs`; integration
+tests `a_viewer_on_a_{tab,workspace,pane_view,split}_is_removed_and_the_server_survives`
+in `tests/remote_lifecycle.rs`, each relationship trigger and insertion order
+on a fresh server; the `hostile` scenario, which now also asserts the Viewer
+is gone and the viewer consistent, runs in the default smoke; the trace moved
+to `fux-fuzz/traces/viewer-on-layout-entity.json` and replays green. The
+repro script now speaks to the Unix socket and exits 0 reproduced (abort,
+no answer, or the Viewer kept), 1 verified not reproduced (answers before and
+after the trigger and the tab carries no Viewer), 2 setup failure; against
+the fixed build it exits 1.
 
 ---
 
@@ -130,7 +161,7 @@ can then deny), and/or move the listener to a Unix domain socket or add a bearer
 token. This is a same-user local endpoint by design, so the target is the
 *browser* reachability, not local same-user callers.
 
-**Reproduction.** `fux-fuzz/repro/002-cross-origin-web-page-rce.sh <fux>`
+**Reproduction (as recorded before the fix).** `fux-fuzz/repro/002-cross-origin-web-page-rce.sh <fux>`
 (no agent; exit 0 = a cross-origin simple request executed a program).
 
 Both repro scripts discriminate through neutered negative controls (a variant
@@ -138,6 +169,35 @@ that omits the trigger exits non-zero). Building the pre-F1-fix commit
 `5936ff1^` for a second cross-check was not cheap here — the full Bevy graph
 rebuilds — so discrimination rests on the negative controls rather than an old
 binary.
+
+---
+
+**Fixed in `334752a`, by removing reachability rather than filtering.** fux
+no longer listens on TCP at all: it serves the same HTTP/1 BRP only on a Unix
+domain socket (`--socket`, `FUX_SOCKET`, else `$XDG_RUNTIME_DIR/fux/server.sock`
+or `$TMPDIR/fux/server.sock`), mode 0600 in a mode-0700 directory owned by the
+user. A web page cannot open a Unix socket, so the whole cross-origin class is
+gone by construction, and the permissions also close the other-local-user
+exposure of the loopback port. There is still no authentication for a caller
+who can open the socket. `--address`, `--port` and `FUX_ENDPOINT` were removed
+without a fallback. Rejected: an `Origin` allowlist or a `Content-Type:
+application/json` requirement (they out-guess what a browser can send and
+leave the port open to other users) and a bearer token (the brief ruled out
+credentials; permissions do the same job for a same-user tool).
+
+Regression coverage: an integration test asserts the socket is 0600 and its
+directory 0700 under `umask 000` and that the server's own pid holds no
+internet socket (`lsof`, after proving `lsof` sees the pid's Unix socket).
+The repro script now fires the original browser request only at TCP
+listeners it finds on the server's own pid, never over the socket and never
+at a port the server does not own. It exits 0 reproduced, 1 verified not
+reproduced (healthy over the socket, no internet listener), 2 setup failure;
+against the fixed build it exits 1.
+
+Both repro scripts as merged in PR #44 still exit 0 against a fresh build of
+`839516a`, the commit before the fixes, so the discrimination they were
+written with stands. The migrated scripts start the server with `--socket`,
+which a pre-fix build rejects, so they report exit 2 there, not a finding.
 
 ---
 
@@ -220,6 +280,10 @@ Highlights of the non-findings, because they bound the two that did break:
 
 ## Ranked fixes for the hardening PR
 
+> Superseded: both were made, as described under "Fixed" in each finding. For
+> 002 the chosen fix is the Unix-socket listener; the `Content-Type`/`Origin`
+> gate and the bearer token listed below were not adopted.
+
 1. **Class 1 — `repair` must select only genuine viewers.** Exclude entities
    that also carry a layout-node component from `navigation::repair`'s
    `With<Viewer>` query, or bound repair's recursion, so no `Viewer` component
@@ -229,3 +293,16 @@ Highlights of the non-findings, because they bound the two that did break:
    dispatch, or offer a Unix-socket / bearer-token listener, so a cross-origin
    simple request from a web page cannot execute commands on the loopback
    server. (Finding 002; review finding 6.)
+
+## Found while fixing
+
+**`fux.frame` with an impossible entity id aborted the server (class 1). Fixed
+in `4158e4d`.** `fux.frame`, `fux.frame+watch` and the watch-detach bridge
+built the viewer's `Entity` with `Entity::from_bits`, which panics on bits no
+entity can have (any id whose low 32 bits are zero, 0 among them). One request
+`{"method":"fux.frame","params":{"viewer":0}}` ended the server. Area 2 above
+tried `-1`, `1.5`, `u64::MAX` and `u64::MAX + 1`, which either fail to parse or
+map to valid bits, but not 0. Both sites now use `try_from_bits`: the methods
+answer with an invalid-params error naming the id, and the bridge registers no
+detach for it. Covered by `frame_requests_for_impossible_entity_ids_are_refused`
+in `tests/remote_lifecycle.rs`, which fails against the previous source.
