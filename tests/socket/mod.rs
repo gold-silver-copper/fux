@@ -241,9 +241,14 @@ fn retired_and_invalid_transport_settings_fail_naming_the_change() -> Outcome {
     fs::create_dir(&occupied)?;
     fs::set_permissions(&occupied, fs::Permissions::from_mode(0o700))?;
     fs::write(occupied.join("fux.sock"), "keep")?;
+    // A symbolic link at the socket path, and one in place of its directory.
+    std::os::unix::fs::symlink(occupied.join("fux.sock"), occupied.join("link.sock"))?;
+    std::os::unix::fs::symlink(&occupied, directory.join("linked"))?;
     for (target, needle) in [
         (open.join("fux.sock"), "mode 0700"),
         (occupied.join("fux.sock"), "not a socket"),
+        (occupied.join("link.sock"), "not a socket"),
+        (directory.join("linked").join("fux.sock"), "symbolic link"),
     ] {
         let target = target.to_string_lossy().into_owned();
         let output = fux(&["server", "--socket", &target], &[])?;
@@ -256,6 +261,20 @@ fn retired_and_invalid_transport_settings_fail_naming_the_change() -> Outcome {
     assert_eq!(mode(&open)?, 0o755);
     assert!(fs::read_dir(&open)?.next().is_none());
     assert_eq!(fs::read_to_string(occupied.join("fux.sock"))?, "keep");
+    assert!(
+        fs::symlink_metadata(occupied.join("link.sock"))?
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        fs::symlink_metadata(directory.join("linked"))?
+            .file_type()
+            .is_symlink()
+    );
+    let names: Vec<_> = fs::read_dir(&occupied)?
+        .map(|e| e.map(|e| e.file_name()))
+        .collect::<Result<_, _>>()?;
+    assert_eq!(names.len(), 2, "{names:?}");
     fs::remove_dir_all(directory)?;
     Ok(())
 }
