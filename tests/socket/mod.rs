@@ -4,6 +4,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt},
     process::Output,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 /// A server started with arbitrary arguments and environment, for cases the
@@ -914,5 +915,229 @@ fn request_bodies_and_batches_are_bounded() -> Outcome {
 
     assert_viewer_consistent(&server, viewer)?;
     assert!(!server.screen(viewer)?.is_empty());
+    Ok(())
+}
+
+/// A peer that completes `fux.attach` and then streams an event that never
+/// ends. It is deliberately not fux: `FUX_SOCKET` names a socket, and any
+/// same-user process can create one, so the frontend has to defend itself
+/// against a server that is wedged, buggy or replaced.
+struct EndlessPeer {
+    directory: PathBuf,
+    socket: PathBuf,
+    stop: Arc<AtomicBool>,
+    sent: Arc<AtomicU64>,
+}
+
+impl EndlessPeer {
+    fn start(terminated: bool) -> Result<Self, Fail> {
+        let directory = std::env::temp_dir().join(format!(
+            "fux-peer-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory)?;
+        let inner = directory.join("s");
+        fs::create_dir(&inner)?;
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o700))?;
+        let socket = inner.join("fux.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let sent = Arc::new(AtomicU64::new(0));
+        let (flag, counter) = (Arc::clone(&stop), Arc::clone(&sent));
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                if flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                let Ok(stream) = stream else { return };
+                // One thread per connection, and every connection serves
+                // requests until it is closed: the frontend pools them.
+                let (flag, counter) = (Arc::clone(&flag), Arc::clone(&counter));
+                thread::spawn(move || serve_peer(stream, terminated, &flag, &counter));
+            }
+        });
+        Ok(Self {
+            directory,
+            socket,
+            stop,
+            sent,
+        })
+    }
+}
+
+impl Drop for EndlessPeer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = std::os::unix::net::UnixStream::connect(&self.socket);
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Answers every request on one connection, and streams once asked to watch.
+fn serve_peer(
+    mut stream: std::os::unix::net::UnixStream,
+    terminated: bool,
+    flag: &Arc<AtomicBool>,
+    counter: &Arc<AtomicU64>,
+) {
+    loop {
+        let mut request = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            match stream.read(&mut byte) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => request.extend_from_slice(&byte),
+            }
+        }
+        let length = String::from_utf8_lossy(&request)
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        let mut body = vec![0_u8; length];
+        if stream.read_exact(&mut body).is_err() {
+            return;
+        }
+        if !String::from_utf8_lossy(&body).contains("fux.frame+watch") {
+            // Anything else: a result the frontend can parse, connection kept.
+            let reply = br#"{"jsonrpc":"2.0","id":1,"result":{"viewer":4294967295}}"#;
+            if write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                reply.len()
+            )
+            .is_err()
+                || stream.write_all(reply).is_err()
+            {
+                return;
+            }
+            continue;
+        }
+        if stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                  transfer-encoding: chunked\r\n\r\n",
+            )
+            .is_err()
+        {
+            return;
+        }
+        let blob = vec![b'a'; 1 << 20];
+        while !flag.load(Ordering::Relaxed) {
+            // Terminated: ordinary frames. Otherwise: one endless line.
+            let payload: Vec<u8> = if terminated {
+                format!(
+                    "data: {{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\
+                     {{\"paint\":\"{}\",\"detach\":false}}}}\n\n",
+                    "x".repeat(4096)
+                )
+                .into_bytes()
+            } else {
+                blob.clone()
+            };
+            if write!(stream, "{:x}\r\n", payload.len()).is_err()
+                || stream.write_all(&payload).is_err()
+                || stream.write_all(b"\r\n").is_err()
+            {
+                return;
+            }
+            counter.fetch_add(payload.len() as u64, Ordering::Relaxed);
+        }
+        return;
+    }
+}
+
+/// Hunt 6 finding 008. `fux attach` read the watch stream with
+/// `read_line` into a `String`, so a peer that never sent a newline was
+/// buffered without bound: 5.3 GB in sixty seconds, climbing at 95 MB/s.
+#[test]
+fn an_endless_event_ends_the_attachment_and_restores_the_terminal() -> Outcome {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    let peer = EndlessPeer::start(false)?;
+    let pair = native_pty_system().openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut reader = pair.master.try_clone_reader()?;
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
+    command.arg("attach");
+    command.env("FUX_SOCKET", &peer.socket);
+    command.env("TERM", "xterm-256color");
+    command.env_remove("FUX_ENDPOINT");
+    let mut child = {
+        let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
+        pair.slave.spawn_command(command)?
+    };
+    drop(pair.slave);
+    let collected = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        while let Ok(n) = reader.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(chunk.get(..n).unwrap_or_default());
+        }
+        bytes
+    });
+
+    // It must end on its own, from the bound rather than from a signal.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            return Err("the frontend never stopped reading an endless event".into());
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    assert!(!status.success(), "the frontend exited successfully");
+
+    // The outer terminal is left as it was found: the real PTY's termios is
+    // cooked again, and the frontend wrote the resets on its way out.
+    let master = pair.master;
+    let fd = master.as_raw_fd().need()?;
+    // SAFETY: `fd` is the live PTY master owned by `master`, and `attributes`
+    // is a plain C struct that tcgetattr fills.
+    let cooked = unsafe {
+        let mut attributes: nix::libc::termios = std::mem::zeroed();
+        assert_eq!(
+            nix::libc::tcgetattr(fd, &mut attributes),
+            0,
+            "could not read the outer terminal's attributes"
+        );
+        attributes.c_lflag & (nix::libc::ICANON | nix::libc::ECHO)
+    };
+    assert_eq!(
+        cooked,
+        nix::libc::ICANON | nix::libc::ECHO,
+        "the outer terminal was left in raw mode"
+    );
+    drop(master);
+    let written = collected.join().map_err(|_| "capture thread panicked")?;
+    let text = String::from_utf8_lossy(&written);
+    for reset in ["\x1b[?1049l", "\x1b[?1003l", "\x1b[?2004l", "\x1b[?25h"] {
+        assert!(
+            text.contains(reset),
+            "the frontend did not write {reset:?} on its way out"
+        );
+    }
+    assert!(
+        text.contains("without ending it"),
+        "the frontend did not name the bound it hit: {:.400}",
+        &text[text.len().saturating_sub(600)..]
+    );
+    // The peer had to send more than a legitimate frame before this happened.
+    assert!(peer.sent.load(Ordering::Relaxed) > 16 << 20);
     Ok(())
 }
