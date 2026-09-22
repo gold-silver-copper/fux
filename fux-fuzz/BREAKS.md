@@ -1,6 +1,8 @@
 # Where fux breaks under hostile input (hunt 5)
 
-> **Status: both findings are fixed.** 001 in `938f257`, 002 in `334752a`; see
+> **Status: both findings are fixed.** 001 in `938f257`, 002 in `334752a`
+> (with `8e3a341`, which refuses a non-socket at the path before creating a
+> lockfile beside it); see
 > "Fixed" under each finding and "Found while fixing" at the end. The analysis
 > below is the state before those commits and is kept as it was found.
 
@@ -172,7 +174,7 @@ binary.
 
 ---
 
-**Fixed in `334752a`, by removing reachability rather than filtering.** fux
+**Fixed in `334752a` (refined in `8e3a341`), by removing reachability rather than filtering.** fux
 no longer listens on TCP at all: it serves the same HTTP/1 BRP only on a Unix
 domain socket (`--socket`, `FUX_SOCKET`, else `$XDG_RUNTIME_DIR/fux/server.sock`
 or `$TMPDIR/fux/server.sock`), mode 0600 in a mode-0700 directory owned by the
