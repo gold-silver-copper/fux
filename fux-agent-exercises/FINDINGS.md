@@ -1,32 +1,35 @@
 # Where a real agent struggles with today's fux
 
-Three campaigns of the pi-driven exercises. The point was to find friction, not to
-prove a pass rate, and the most valuable result is a reproducible crash that the
-existing suites do not reach.
+Three campaigns of the pi-driven exercises, then a fourth after the fixes. The point was
+to find friction, not to prove a pass rate, and the most valuable result is a
+reproducible crash that the existing suites did not reach. Findings F1, F3, F5 and F8
+are fixed on this branch, one commit each, and campaign 04 measures those fixes; the
+per-finding sections say what changed and what the re-run showed.
 
 ## What was run
 
 | | |
 | --- | --- |
-| Model | `google/gemini-3.8-flash` ("Gemini 3.8 Flash"), thinking level `low`, identical in all three campaigns |
+| Model | `google/gemini-3.8-flash` ("Gemini 3.8 Flash"), thinking level `low`, identical in all four campaigns |
 | Model verification | Passed. Chosen by version rank from pi's catalog, then confirmed against the live Gemini model list (`version` `3.0`, no preview marker) and `https://ai.google.dev/gemini-api/docs/models?hl=en` |
 | Rejected as ineligible | `gemini-flash-latest`, `gemini-flash-lite-latest`, `gemini-3-flash-preview`, `gemini-3.1-flash-live-preview`, and every `-lite` id |
 | pi | 0.86.1 |
-| fux | `b214026461459df0ecfa080df73ee9d1af4b646a`, release build, worktree dirty (this harness was untracked). That commit is an ancestor of `main` as of `9f6bbf2`, and the merged tree is byte-identical to it for `src/`, `tests/`, `fux-vt/`, `README.md` and the manifests, so these findings describe current `main`. |
-| Documentation given to the agent | `README.md`, sha256 `1aac05e4…`, identical in all three campaigns |
-| Budgets | 40 tool calls and 300 s per run, 15 s per request. No run came close: the most was 26 calls and 43 s |
-| Campaigns | `runs/campaign-01`, `-02`, `-03`; 10 runs each (5 scenarios × 2 fresh sessions) |
-| Cost | $3.52 total, 6.26 M tokens, 427 accepted BRP requests, 30 runs |
+| fux, campaigns 01–03 | `b214026461459df0ecfa080df73ee9d1af4b646a`, release build, worktree dirty (this harness was untracked). That commit is an ancestor of `main` as of `9f6bbf2`, and the merged tree is byte-identical to it for `src/`, `tests/`, `fux-vt/`, `README.md` and the manifests, so findings F1–F8 describe `main` at that point. |
+| fux, campaign 04 | `7aa8ff6`, release build: the same tree plus the four fix commits listed under "Campaign 04" below. The artifacts record the revision as `b090c1a3bbd55ac7a78e0d02a06652c87ee6f0f1`, which is that commit before a formatting-only rebase of `tests/remote_lifecycle.rs`; `src/` and the binary are identical. Worktree dirty only in this file and the prompt document. |
+| Documentation given to the agent | `README.md`, sha256 `1aac05e4…` in campaigns 01–03; sha256 `f95e62a0…` in campaign 04, which is the same file plus the F3 and F5 sentences |
+| Budgets | 40 tool calls and 300 s per run, 15 s per request. No run came close: the most was 26 calls and 43 s (campaign 04: 18 calls and 27 s) |
+| Campaigns | `runs/campaign-01`, `-02`, `-03`, `-04`; 10 runs each (5 scenarios × 2 fresh sessions) |
+| Cost | $3.52 for campaigns 01–03 (6.26 M tokens, 427 accepted BRP requests, 30 runs); $1.06 for campaign 04 (1.51 M tokens, 119 accepted requests, 10 runs) |
 
-**Pooled result: 27 pass, 2 fail, 1 error out of 30.**
+**Pooled result of campaigns 01–03: 27 pass, 2 fail, 1 error out of 30. Campaign 04, after the fixes: 10 pass out of 10.**
 
-| Scenario | c-01 | c-02 | c-03 | Median BRP calls |
-| --- | --- | --- | --- | ---: |
-| `discovery` | 2 pass | 2 pass | 2 pass | 21 |
-| `launch` | 2 pass | 2 pass | 2 pass | 11 |
-| `noisy` | 1 pass, 1 error | 2 fail | 2 pass | 25 |
-| `modal` | 2 pass | 2 pass | 2 pass | 9 |
-| `recovery` | 2 pass | 2 pass | 2 pass | 10 |
+| Scenario | c-01 | c-02 | c-03 | Median BRP calls, 01–03 | c-04 | Median BRP calls, 04 |
+| --- | --- | --- | --- | ---: | --- | ---: |
+| `discovery` | 2 pass | 2 pass | 2 pass | 21 | 2 pass | 17 |
+| `launch` | 2 pass | 2 pass | 2 pass | 11 | 2 pass | 11 |
+| `noisy` | 1 pass, 1 error | 2 fail | 2 pass | 25 | 2 pass | 10.5 |
+| `modal` | 2 pass | 2 pass | 2 pass | 9 | 2 pass | 9 |
+| `recovery` | 2 pass | 2 pass | 2 pass | 10 | 2 pass | 12 |
 
 Campaigns 01 and 02 are directly comparable: identical prompts, tool, budgets and
 documentation; the only change between them was harness-side crash detection, which
@@ -36,6 +39,32 @@ recorded in each artifact as `baseline.promptRevision = "noisy/2"`. Everything e
 campaign 03 is unchanged.
 
 Thirty runs on one model locates friction; it does not measure reliability.
+
+## Campaign 04: after the fixes
+
+Campaign 04 is the measurement of the fixes, not a fourth repetition of the same
+experiment. It ran on fux `7aa8ff6`, which is campaign 03's tree plus four commits, one
+per finding:
+
+| Finding | Commit | What changed |
+| --- | --- | --- |
+| F1 | `5936ff1` | `Viewer`, `Launch`, `PaneView` and `Prefix` reflect through serde, so a payload missing a required field is a JSON-RPC error naming it; `Overlay` registers a reflected `Default`. A registry audit test, an integration test, a fuzz mutation and a harness positive control cover it. |
+| F3 | `3629345` | The README documents `scroll {order}` and what `Viewer.scrollback` measures. |
+| F5 | `e08c841` | The README names `bevy_ecs::hierarchy::ChildOf` and `Children` with a `get_components` example. |
+| F8 | `7aa8ff6` | The harness gained a pre-forward tool hook, and the `recovery` disruption fires from it on the agent's first `close` or `focus` naming the target. |
+
+Same model, thinking level, budgets, tool and prompts as campaign 03 (`noisy` on prompt
+revision 2). The agent's README differs only by the F3 and F5 sentences. Its `recovery`
+runs are not comparable with earlier campaigns because the disruption moved (F8).
+
+What each fix did to the numbers, from the stored traces:
+
+| Finding | Campaigns 01–03 | Campaign 04 |
+| --- | --- | --- |
+| F1 | 1 organic partial payload in 30 runs, 1 dead server | 0 partial payloads sent in 10 runs (9 complete `Viewer`/`Launch`/`PaneView` inserts, all accepted), 0 dead servers. The organic path was not re-exercised; the deterministic evidence script and the tests are what cover it. |
+| F3 | 0 of 6 `noisy` runs issued a valid `scroll`; 12 of 16 attempts rejected; 7–9 direct `Viewer.scrollback` writes per run | 2 of 2 `noisy` runs issued `{"kind":"scroll","order":"previous"}` and it was accepted on the first attempt; 0 rejections; direct `Viewer.scrollback` writes fell to 3 and 2; `fux.frame` repaints fell from 9–10 to 5 and 4; median `noisy` calls fell from 25 to 10.5 |
+| F5 | 8 of 30 runs spent a `world.list_components` call on hierarchy discovery; 2 wrong path guesses | 0 of 10 runs guessed a wrong hierarchy path; 2 of 10 made a `world.list_components` call, and in both it came after the correct `bevy_ecs::hierarchy::` path had already been used (at call 2 and call 3), so it was general exploration, not hierarchy discovery |
+| F8 | disruption at call 0 in 6 of 6 runs; 0 of 6 saw the stale-target notice | disruption on the agent's own `close` in 2 of 2 runs (calls 6 and 7); still 0 of 2 saw the notice, for the reason given under F8 |
 
 ---
 
@@ -96,13 +125,43 @@ UI components remain available to stock inspection/mutation."* An unauthenticate
 local caller ends every session and loses every child process with one well-formed
 JSON-RPC request, and it is reachable by accident.
 
-**Smallest next step:** give the reflected components a reflected `Default` (or
-`FromWorld`) so a partial payload is an error rather than a panic. `ProcessState`
-already shows the pattern. This also covers `fux::interaction::Prefix` and `Overlay`,
-which the previous PR registered; the index-saturation guards added there addressed
-logic panics, not this class.
+**Fixed in `5936ff1`.** The cause is in Bevy's insertion path, read from the vendored
+source: the reflect deserializer accepts a struct with missing fields, and
+`from_reflect_with_fallback` then tries `FromReflect` (fails on a partial struct), a
+reflected `Default`, a reflected `FromWorld`, and panics with the message above when
+none is registered. `Viewer`, `Launch`, `PaneView`, `Prefix` and `Overlay` registered
+`Component` alone.
 
-**Not fixed here**, per the exercise brief: fux was not modified to make exercises pass.
+`Viewer`, `Launch`, `PaneView` and `Prefix` now register serde `Serialize`/`Deserialize`
+as well, the pattern `Status`, `Viewing`, `OnTab` and `Focused` already used. The
+deserializer then produces the concrete type and a missing required field is a JSON-RPC
+error naming it:
+
+```json
+{"code":-23402,"message":"fux::model::Viewer is invalid: missing field `rows`"}
+```
+
+`get_components` output for all four is byte-identical to before. `Overlay` keeps its
+reflect encoding, because its enum fields' documented JSON shape must not drift, and
+registers a reflected `Default` instead (an empty list with a placeholder target, which
+execution validates like any capture). One consequence to know about: the exact F1
+payload, `Viewer` minus `notice`, is now *accepted* with `notice: null`, not rejected.
+`notice` is an `Option`, serde treats an absent `Option` as `None`, and the published
+`registry.schema` already omitted `notice` from `required`; rejecting it would contradict
+the schema fux publishes. Omitting a required field is what rejects.
+
+Re-inserting a complete `Launch` over a running process replaces the recipe and nothing
+else: a replaced component updates only its changed tick, so the `Added<Launch>` spawn
+system does not re-run. The integration test checks the pid across the re-insert.
+
+Covered by: a unit test that walks the type registry and fails if any `ReflectComponent`
+registration lacks `ReflectDeserialize`, `ReflectDefault` or `ReflectFromWorld` (on the
+old registrations it fails naming exactly these five); an integration test in
+`tests/remote_lifecycle.rs` sending the evidence script's payloads and the
+required-field variants for all five components; a `fux-fuzz` raw mutation that sends
+partial payloads and requires a rejection naming the field with nothing changed; and a
+harness positive control. The evidence script now documents the fixed behavior and exits
+non-zero if the server dies or a required-field payload is accepted.
 
 ---
 
@@ -160,6 +219,9 @@ here supports a rate.
 matters, run `noisy` many more times under revision 2 before quoting any number. The
 deeper mitigation is F4.
 
+**Campaign 04:** both `noisy` runs again answered the real code (`E-4417`, `E-8823`),
+which makes 4 of 4 under revision 2. Still not a rate; nothing here was changed for F2.
+
 ---
 
 ## F3 — The `scroll` command's shape is undocumented, and no `noisy` run got it right
@@ -215,10 +277,18 @@ their guesses were rejected, and `campaign-02/noisy-a-r1` without attempting the
 command at all. That is the low-level path the README itself says is not the normal way
 to drive an interaction, and it is what walked `campaign-01/noisy-b-r2` into F1.
 
-**Smallest next step:** document the `scroll` command and the meaning of
-`Viewer.scrollback` in the README's remote-control section. This is the cheapest fix in
-this report, no run ever got the command right, and it targets the only scenario that
-ever failed.
+**Fixed in `3629345`.** The README's remote-control section now states, next to the
+`reorder` documentation, that `scroll {order}` moves the focused pane's history by half
+the viewer's rows, that `previous` is older and `next` newer, that the offset is clamped
+to retained history, and that `Viewer.scrollback` is the resulting offset in lines above
+the live bottom with zero meaning live. The sample block gained a `scroll` line.
+
+**Campaign 04:** both `noisy` runs issued `{"kind":"scroll","order":"previous"}` as
+their first and only scroll attempt and it was accepted (2 of 2 runs, 0 rejections,
+against 0 of 6 runs and 12 rejections before). Both then jumped deeper with direct
+`Viewer.scrollback` writes, 3 and 2 of them against 7 and 8 before, and needed 5 and 4
+repaints against 9 and 10. Median `noisy` calls fell from 25 to 10.5, and the scenario
+that had produced every failure passed twice.
 
 ---
 
@@ -226,7 +296,7 @@ ever failed.
 
 **Classification: API ergonomic gap. Recurrence: all 6 `noisy` runs.**
 
-**Runs:** all `noisy` runs in all three campaigns.
+**Runs:** all `noisy` runs in campaigns 01–03.
 
 **Expected:** some way to ask what a pane's history contains.
 
@@ -257,7 +327,7 @@ Recorded here as demonstrated demand with numbers attached.
 
 ## F5 — Hierarchy component type paths are never stated
 
-**Classification: documentation gap. Recurrence: 8 runs across all three campaigns.**
+**Classification: documentation gap. Recurrence: 8 runs across campaigns 01–03.**
 
 **Runs:** 8 runs spent a `world.list_components` discovery call —
 `campaign-01/launch-fail-r2`, `campaign-02/discovery-a-r1` (twice),
@@ -293,8 +363,15 @@ after a failed or empty hierarchy lookup.
 Agents recovered every time, so this is friction rather than a blocker — on the single
 most common traversal in the API.
 
-**Smallest next step:** name `bevy_ecs::hierarchy::ChildOf` and
-`bevy_ecs::hierarchy::Children` once in the README's remote-control section.
+**Fixed in `e08c841`.** The paragraph documenting the viewer's relationship components
+now opens by naming `bevy_ecs::hierarchy::ChildOf` and `bevy_ecs::hierarchy::Children`,
+their serialized shapes, and one `world.get_components` example that reads a pane view's
+parent.
+
+**Campaign 04:** 0 of 10 runs guessed a wrong hierarchy path (2 of 10 in campaign 03).
+2 of 10 runs still made a `world.list_components` call (4 of 10 in campaign 03), but in
+both the correct `bevy_ecs::hierarchy::` path had already been used at call 2 or 3, so
+those calls were general exploration rather than the discovery detour described above.
 
 ---
 
@@ -351,7 +428,7 @@ artifact rather than assumed.
 
 ## F8 — The `recovery` disruption fires earlier than intended
 
-**Classification: harness/verifier defect (scenario design). Not fixed.**
+**Classification: harness/verifier defect (scenario design). Fixed in the harness; see below.**
 
 **Runs:** all 6 `recovery` runs.
 
@@ -374,8 +451,24 @@ already gone, they confirmed the real state rather than assuming, and they finis
 rest while preserving the bystander process and the observer viewer's navigation. It is
 just not the mid-operation failure the scenario was meant to create.
 
-**Smallest next step:** fire on the first `close` or `focus` request that names the
-target, instead of on first mention.
+**Fixed in `7aa8ff6`, in the harness.** Firing on the first `close` or `focus` was
+necessary but not sufficient: the only scenario hook ran after a request completed, so
+the agent's own close would already have succeeded. The tool gained a pre-forward hook,
+called with the parsed request before it is sent, and `recovery` fires the disruption
+from it on the first `Control` whose `close` subject or `focus` pane is the target's pane
+view. The positive control asserts the disruption fires on the close (call index 2, not
+0) and that the scripted agent, which reads its viewer after the close, sees the notice.
+
+**Campaign 04:** the disruption fired on the agent's own `close` in both runs (tool
+calls 6 and 7, `world.trigger_event`), so the scenario now creates the mid-operation
+failure it was designed for. `sawStaleTargetNotice` is still `false` in both, and the
+traces show why: a `close` naming a vanished pane answers `{"result":null}`, the
+"target no longer exists" text goes to `Viewer.notice`, and both agents sent `focus` as
+their very next call, which clears the notice before anything read it. Both then
+confirmed the process state and passed. What the scenario measures now is that an agent
+which does not read its viewer's notice after a command cannot tell a close that worked
+from one that named a stale target. That is recorded here as an observation about the
+notice channel, not chased with a prompt change.
 
 ---
 
@@ -401,18 +494,14 @@ target, instead of on first mention.
 
 ## Ranked next steps
 
-1. **F1** — fix the partial-payload panic. A fux bug, deterministic, reachable by
-   accident, and it destroys running work.
-2. **F3** — document the `scroll` command and `Viewer.scrollback` semantics. No run
-   ever issued a valid `scroll`; the cheapest possible fix, aimed at the only scenario
-   that ever failed.
-3. **F5** — name the two hierarchy component paths in the README.
-4. **F8** — fire the `recovery` disruption on first action, not first mention, then
-   re-run that scenario.
-5. **F4** — keep as recorded demand for a bounded plain-text read; not a change to make
-   on this evidence alone.
-6. **F2** — do not quote a fabrication rate. Re-run `noisy` under revision 2 many more
-   times if the number matters.
+F1, F3, F5 and F8 are fixed on this branch and measured by campaign 04 above. What
+remains:
+
+1. **F4** — keep as recorded demand for a bounded plain-text read; not a change to make
+   on this evidence alone. After F3 the `noisy` runs still needed 4–5 repaints and 2–3
+   direct offset writes each to find one line.
+2. **F2** — do not quote a fabrication rate. 4 of 4 `noisy` runs under revision 2 have
+   answered correctly; re-run it many more times if the number matters.
 
 ## Reproduction
 
@@ -421,12 +510,12 @@ cargo build --release --locked
 
 cd fux-agent-exercises
 node run.ts preflight
-node --test --test-concurrency=1 "tests/*.test.ts"     # 29 tests, includes the F1 regression
+node --test --test-concurrency=1 "tests/*.test.ts"     # 30 tests, includes the F1 regression
 node run.ts dry-run --artifacts /tmp/fux-ex-dry        # no model calls
-node run.ts campaign --repetitions 2 --artifacts runs/campaign-04
-node run.ts report --artifacts runs/campaign-03
+node run.ts campaign --repetitions 2 --artifacts runs/campaign-05
+node run.ts report --artifacts runs/campaign-04
 
-./evidence/partial-component-panic.sh ../target/release/fux 17771   # F1, no agent
+./evidence/partial-component-panic.sh ../target/release/fux 17771   # F1, no agent; exit 1 if the server dies
 ```
 
 Agent runs are not deterministically replayable and entity ids differ between runs; the
