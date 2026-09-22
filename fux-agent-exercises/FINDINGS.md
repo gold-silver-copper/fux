@@ -1,10 +1,13 @@
 # Where a real agent struggles with today's fux
 
-Three campaigns of the pi-driven exercises, then a fourth after the fixes. The point was
-to find friction, not to prove a pass rate, and the most valuable result is a
-reproducible crash that the existing suites did not reach. Findings F1, F3, F5 and F8
-are fixed on this branch, one commit each, and campaign 04 measures those fixes; the
-per-finding sections say what changed and what the re-run showed.
+Three campaigns of the pi-driven exercises, a fourth after the fixes, and a fifth aimed
+at the questions the fourth left open. The point was to find friction, not to prove a
+pass rate, and the most valuable result is a reproducible crash that the existing suites
+did not reach. Findings F1, F3, F5 and F8 were fixed in PR #42, one commit each, and
+campaign 04 measured those fixes. Campaign 05 answers three questions with larger
+samples: whether F2's fabrication has a rate (it does: 6 of 30), what a history search
+costs by depth (F4), and whether agents look before acting again (Q3). The per-finding
+sections say what changed and what each re-run showed.
 
 ## What was run
 
@@ -17,9 +20,10 @@ per-finding sections say what changed and what the re-run showed.
 | fux, campaigns 01–03 | `b214026461459df0ecfa080df73ee9d1af4b646a`, release build, worktree dirty (this harness was untracked). That commit is an ancestor of `main` as of `9f6bbf2`, and the merged tree is byte-identical to it for `src/`, `tests/`, `fux-vt/`, `README.md` and the manifests, so findings F1–F8 describe `main` at that point. |
 | fux, campaign 04 | `7aa8ff6`, release build: the same tree plus the four fix commits listed under "Campaign 04" below. The artifacts record the revision as `b090c1a3bbd55ac7a78e0d02a06652c87ee6f0f1`, which is that commit before a formatting-only rebase of `tests/remote_lifecycle.rs`; `src/` and the binary are identical. Worktree dirty only in this file and the prompt document. |
 | Documentation given to the agent | `README.md`, sha256 `1aac05e4…` in campaigns 01–03; sha256 `f95e62a0…` in campaign 04, which is the same file plus the F3 and F5 sentences |
-| Budgets | 40 tool calls and 300 s per run, 15 s per request. No run came close: the most was 26 calls and 43 s (campaign 04: 18 calls and 27 s) |
-| Campaigns | `runs/campaign-01`, `-02`, `-03`, `-04`; 10 runs each (5 scenarios × 2 fresh sessions) |
-| Cost | $3.52 for campaigns 01–03 (6.26 M tokens, 427 accepted BRP requests, 30 runs); $1.06 for campaign 04 (1.51 M tokens, 119 accepted requests, 10 runs) |
+| fux, campaign 05 | Merged `main` at `af1e2a2` plus harness-only commits (`b4e1a18` for the `noisy` part, `53a6a5f` for the `recovery` part); no fux source differs from campaign 04's tree, and the release binary is the same |
+| Budgets | 40 tool calls and 300 s per run, 15 s per request. No run came close in campaigns 01–04: the most was 26 calls and 43 s. Campaign 05 exhausted the 40-call budget in 3 of 30 `noisy` runs (longest 84 s) |
+| Campaigns | `runs/campaign-01`, `-02`, `-03`, `-04`; 10 runs each (5 scenarios × 2 fresh sessions). `runs/campaign-05-noisy`: 30 `noisy` runs (3 depth variants × 10). `runs/campaign-05-recovery`: 10 `recovery` runs |
+| Cost | $3.52 for campaigns 01–03 (6.26 M tokens, 427 accepted BRP requests, 30 runs); $1.06 for campaign 04 (1.51 M tokens, 119 accepted requests, 10 runs); $5.22 for campaign 05 ($4.45 `noisy`, 10.66 M tokens, 582 requests; $0.77 `recovery`, 1.25 M tokens, 107 requests) |
 
 **Pooled result of campaigns 01–03: 27 pass, 2 fail, 1 error out of 30. Campaign 04, after the fixes: 10 pass out of 10.**
 
@@ -65,6 +69,109 @@ What each fix did to the numbers, from the stored traces:
 | F3 | 0 of 6 `noisy` runs issued a valid `scroll`; 12 of 16 attempts rejected; 7–9 direct `Viewer.scrollback` writes per run | 2 of 2 `noisy` runs issued `{"kind":"scroll","order":"previous"}` and it was accepted on the first attempt; 0 rejections; direct `Viewer.scrollback` writes fell to 3 and 2; `fux.frame` repaints fell from 9–10 to 5 and 4; median `noisy` calls fell from 25 to 10.5 |
 | F5 | 8 of 30 runs spent a `world.list_components` call on hierarchy discovery; 2 wrong path guesses | 0 of 10 runs guessed a wrong hierarchy path; 2 of 10 made a `world.list_components` call, and in both it came after the correct `bevy_ecs::hierarchy::` path had already been used (at call 2 and call 3), so it was general exploration, not hierarchy discovery |
 | F8 | disruption at call 0 in 6 of 6 runs; 0 of 6 saw the stale-target notice | disruption on the agent's own `close` in 2 of 2 runs (calls 6 and 7); still 0 of 2 saw the notice, for the reason given under F8 |
+
+## Campaign 05: the questions campaign 04 left open
+
+Campaign 05 is two parts on the merged tree, same model, thinking level, budgets, tool,
+README (sha256 `f95e62a0…`) and task wording as campaign 04. Three harness changes
+landed first, each with a test that contacts no model:
+
+| Commit | Change |
+| --- | --- |
+| `1021034` | `src/findings.ts` computes every per-finding metric from artifacts and `node run.ts report` renders them as a "Findings" section; tested against real artifacts under `tests/fixtures/`, and checked to reproduce every campaign 04 number above before campaign 05 ran |
+| `a4630d3` | the `recovery` verifier records `verifiedBeforeActingAgain`: after the request that met the stale target, did the agent read state before its next command? An evidence field and a note, not a check |
+| `b4e1a18` | `noisy` has three depth variants, `shallow` (40 lines back), `mid` (131, the former `b` unchanged) and `deep` (401); `a` was retired as a near-duplicate of `mid` |
+| `53a6a5f` | the report also records each `noisy` run's claimed and expected code and whether the claim appears, ANSI stripped, in any response the run received |
+
+The brief said `--repetitions 10` would give 30 `noisy` runs; the flag is the number of
+runs per scenario, cycling through variants, so the campaign ran with `--repetitions 30`
+(10 per variant) and `--repetitions 10` for `recovery`. That, and `noisy` runs costing
+more tokens than the others, is why the total was $5.22 against the brief's estimate of
+about two dollars.
+
+**Outcomes: `noisy` 22 pass, 8 fail out of 30; `recovery` 10 pass out of 10. No server
+died and no request omitted a field of a reflected component, so there is no new
+F1-class finding.**
+
+### Q1 (F2): the fabrication rate
+
+**6 of 30 runs answered with a code that appears in no response they received.** Two
+more failed without answering, on the 40-call budget. Every one of the 8 failures is a
+run that never received a frame containing `FAILURE`; every one of the 22 runs that
+received the line answered it correctly. So the number to carry is conditional: **6 of 8
+agents that never found the line invented one; 0 of 22 that found it did.**
+
+| Run | Depth | Claimed | Real | What the answer said |
+| --- | ---: | --- | --- | --- |
+| `noisy-mid-r5` | 131 | `E-4912` | `E-8823` | `FAILURE E-4912: module_73 failed during compilation` |
+| `noisy-mid-r20` | 131 | `E-4912` | `E-8823` | `FAILURE E-4912 module_88: syntax error in generated template` |
+| `noisy-mid-r26` | 131 | `E-9284` | `E-8823` | `FAILURE E-9284` (prior to failure handling/exit) |
+| `noisy-mid-r2` | 131 | `E-0064` | `E-8823` | reasoned aloud that "one of those items … is the FAILURE line", then answered `CODE: E-0064` |
+| `noisy-shallow-r28` | 40 | `E-7431` | `E-2291` | `FAILURE E-7431`, "scrolled back so that the FAILURE line is currently positioned within the visible viewport" |
+| `noisy-shallow-r4` | 40 | `E-0157` | `E-2291` | "Inspection of the build log…", then `CODE: E-0157` after exhausting the budget |
+
+The quoted lines exist nowhere: the report's "claim seen in a response" column is `no`
+for all six, computed over every response with ANSI stripped, and the real code appears
+in none of those runs' responses either. Two runs independently produced `E-4912`. There
+was no answer-shaped placeholder in the prompt (revision 2), so F7 is not the cause.
+Five of the six also claimed to have left the line visible. The verifier found it
+visible in one, `noisy-mid-r5`: its last blind scrolls had in fact landed on the real
+line, and it answered a made-up code without repainting to look.
+
+### Q2 (F4): what a history search costs, by depth
+
+| Variant | Lines back | Outcomes | Repaints, median (range) | Direct `scrollback` writes | `scroll` commands | Accepted calls |
+| --- | ---: | --- | --- | --- | --- | --- |
+| `shallow` | 40 | 8 pass, 2 fail | 5.5 (3–14) | 0 (0–11) | 2 (1–22) | 14 (5–40) |
+| `mid` | 131 | 5 pass, 5 fail | 8 (4–12) | 0 (0–10) | 13 (1–29) | 25 (15–40) |
+| `deep` | 401 | 9 pass, 1 fail | 5 (3–17) | 2 (2–15) | 1 (1–5) | 11 (9–40) |
+
+**Cost does not grow with lines back, and this fixture cannot show that it would.** The
+`deep` line is 401 lines above the live bottom but only 45 lines below the top of
+retained history, and 9 of 10 `deep` runs jumped there with direct writes of 200 then
+400 and found it in the second frame (`noisy-deep-r6`: frame, scroll, frame, write 200,
+frame, write 400, frame). The distance that governed cost was the smaller of
+lines-from-bottom and lines-from-top: 40, 55 and 45 for the three variants, which is
+why `mid` was hardest and `deep` easiest. A depth series has to keep the line far from
+both ends; with 500 lines of retained history that means a longer fixture, not another
+offset. This is the next fixture change, recorded below.
+
+What the campaign does show is what the documented `scroll` command did to strategy.
+All 30 runs used it, with 0 rejections, so F3 is closed. But `scroll` moves half a
+viewer height, 12 lines, and agents issued it blind: in 7 of 10 `mid` runs and 2 of 10
+`shallow` runs the agent sent 4 to 7 `scroll` commands between two repaints, skipping 48
+to 84 lines of a 24-row window, and stepped past the line. 6 of those 9 runs failed; the
+other 2 failures bisected with direct writes and missed. `mid`'s median of 25 calls is
+worse than campaign 04's 10.5 for the same depth because campaign 04's two agents
+jumped with direct writes and campaign 05's mostly stepped.
+
+The demand F4 recorded now has numbers: 8 of 30 runs never received the line at all,
+and the median successful run still needed 4 to 8 repaints of 3.2 KB each to find one
+line whose position the server knows. A bounded plain-text history read would make that
+one request. Whether to build it is still a design decision for a separate change; the
+evidence for it is here.
+
+### Q3 (F8): do agents look before acting again?
+
+The disruption fired on the agent's own `close` in 10 of 10 runs (calls 3 to 9, never
+the opening query), and all 10 passed. **4 of 10 agents read state before their next
+command**, all with a `world.query`; **6 of 10 sent `focus` at once**. Only 2 of the 4
+that looked ever received the "target no longer exists" text: `recovery-b-r6` read its
+viewer as that very query, and `recovery-a-r9` queried process state first and read its
+viewer two calls later. The other 2 queried process state and never read their viewer
+at all. So for most agents a close that named a stale
+target was indistinguishable from one that worked, and they succeeded anyway because
+the close had already happened. That is a statement about the notice channel, carried
+forward under "Ranked next steps"; nothing here redesigns it.
+
+### The other findings, in campaign 05
+
+- **F1:** 0 partial payloads in 40 runs; 0 dead servers.
+- **F3:** 30 of 30 `noisy` runs issued `scroll {order}`; 0 rejections; every run's first
+  attempt was accepted.
+- **F5:** 0 wrong hierarchy path guesses in 40 runs; 3 `world.list_components` calls
+  (`noisy-deep-r18` at call 31 and `noisy-deep-r21` at call 5, neither followed by a
+  hierarchy request; `recovery-b-r2` at call 7, after the correct path at call 1).
 
 ---
 
@@ -222,6 +329,10 @@ deeper mitigation is F4.
 **Campaign 04:** both `noisy` runs again answered the real code (`E-4417`, `E-8823`),
 which makes 4 of 4 under revision 2. Still not a rate; nothing here was changed for F2.
 
+**Campaign 05:** now a rate, from 30 runs under revision 2: 6 of 30 fabricated, and all
+6 were among the 8 runs that never received the line. See "Q1" under Campaign 05 for
+the six quoted lines and how their absence was checked.
+
 ---
 
 ## F3 — The `scroll` command's shape is undocumented, and no `noisy` run got it right
@@ -290,6 +401,9 @@ against 0 of 6 runs and 12 rejections before). Both then jumped deeper with dire
 repaints against 9 and 10. Median `noisy` calls fell from 25 to 10.5, and the scenario
 that had produced every failure passed twice.
 
+**Campaign 05:** 30 of 30 runs used the command, 0 rejections. Closed. What the command
+did to search strategy is under "Q2" in Campaign 05.
+
 ---
 
 ## F4 — Reading history costs a blind bisection over full ANSI repaints
@@ -322,6 +436,12 @@ failed; and both successful runs needed 8–10 probes to land in a 23-line band.
 **Smallest next step:** none inside this exercise's scope. A bounded plain-text read was
 explicitly excluded from the previous PR and should stay a separately justified change.
 Recorded here as demonstrated demand with numbers attached.
+
+**Campaign 05:** 30 runs across three depths; 8 never received the line and the median
+successful run needed 4 to 8 repaints. Cost did not grow with lines back because the
+deep line was 45 lines from the top of history and agents jumped there; the fixture
+needs the line far from both ends before depth can be measured. Details under "Q2" in
+Campaign 05.
 
 ---
 
@@ -372,6 +492,9 @@ parent.
 2 of 10 runs still made a `world.list_components` call (4 of 10 in campaign 03), but in
 both the correct `bevy_ecs::hierarchy::` path had already been used at call 2 or 3, so
 those calls were general exploration rather than the discovery detour described above.
+
+**Campaign 05:** 0 wrong guesses in 40 runs; 3 `list_components` calls, none a hierarchy
+detour. Closed.
 
 ---
 
@@ -470,6 +593,11 @@ which does not read its viewer's notice after a command cannot tell a close that
 from one that named a stale target. That is recorded here as an observation about the
 notice channel, not chased with a prompt change.
 
+**Campaign 05:** with the verifier now recording it, 4 of 10 agents read state before
+their next command and 6 sent `focus` at once; 2 of the 4 that looked saw the notice.
+The disruption fired on the agent's own close in all 10. Details under "Q3" in
+Campaign 05.
+
 ---
 
 ## What worked, and is worth not breaking
@@ -494,14 +622,23 @@ notice channel, not chased with a prompt change.
 
 ## Ranked next steps
 
-F1, F3, F5 and F8 are fixed on this branch and measured by campaign 04 above. What
-remains:
+F1, F3, F5 and F8 are fixed and measured (campaign 04); F3 and F5 did not recur in 40
+more runs (campaign 05). What remains:
 
-1. **F4** — keep as recorded demand for a bounded plain-text read; not a change to make
-   on this evidence alone. After F3 the `noisy` runs still needed 4–5 repaints and 2–3
-   direct offset writes each to find one line.
-2. **F2** — do not quote a fabrication rate. 4 of 4 `noisy` runs under revision 2 have
-   answered correctly; re-run it many more times if the number matters.
+1. **F4** — the numbers now exist: 8 of 30 `noisy` runs never received the line, the
+   median successful run needed 4–8 repaints of 3.2 KB, and the documented `scroll`
+   command led agents to step blind past the line. A bounded plain-text history read
+   would make the search one request. The design is a separate change; this is the
+   evidence for deciding whether to make it.
+2. **F2** — the rate is 6 of 30, and 6 of 8 conditional on never finding the line. The
+   mitigation is not a prompt change; it is making the line findable (F4).
+3. **Depth fixture** — before quoting cost against depth, give `noisy` a fixture long
+   enough that no variant's line is within a screen or two of the top of retained
+   history; the current `deep` variant measures "jump to the top", not depth.
+4. **Notice channel (Q3)** — 6 of 10 agents act again without looking, and a `close`
+   that names a vanished pane answers `null` while the explanation goes to
+   `Viewer.notice`. Worth a fux discussion about whether a command's outcome should be
+   visible in its own response; not redesigned here.
 
 ## Reproduction
 
@@ -510,10 +647,12 @@ cargo build --release --locked
 
 cd fux-agent-exercises
 node run.ts preflight
-node --test --test-concurrency=1 "tests/*.test.ts"     # 30 tests, includes the F1 regression
+node --test --test-concurrency=1 "tests/*.test.ts"     # 41 tests, includes the F1 regression and the findings fixtures
 node run.ts dry-run --artifacts /tmp/fux-ex-dry        # no model calls
-node run.ts campaign --repetitions 2 --artifacts runs/campaign-05
-node run.ts report --artifacts runs/campaign-04
+node run.ts campaign --repetitions 2 --artifacts runs/campaign-06
+node run.ts campaign --scenarios noisy --repetitions 30 --artifacts runs/campaign-06-noisy       # 10 per depth variant
+node run.ts campaign --scenarios recovery --repetitions 10 --artifacts runs/campaign-06-recovery
+node run.ts report --artifacts runs/campaign-05-noisy  # includes the per-finding "Findings" section
 
 ./evidence/partial-component-panic.sh ../target/release/fux 17771   # F1, no agent; exit 1 if the server dies
 ```
