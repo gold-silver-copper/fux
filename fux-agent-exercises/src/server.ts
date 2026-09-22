@@ -1,7 +1,7 @@
 /**
  * One disposable fux server per exercise run.
  *
- * Each run gets its own loopback port, temporary HOME/workspace and shell
+ * Each run gets its own Unix socket, temporary HOME/workspace and shell
  * configuration, so an exercise never touches a server the user is already
  * running. Only the process this fixture spawned is signalled during cleanup.
  *
@@ -10,8 +10,8 @@
  * runs with this user's privileges.
  */
 import { type ChildProcess, spawn } from "node:child_process";
-import { createServer } from "node:net";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BrpClient } from "./brp.ts";
 
@@ -31,8 +31,8 @@ export interface ServerOptions {
 
 export interface ServerHandle {
   readonly client: BrpClient;
-  readonly endpoint: string;
-  readonly port: number;
+  /** The server's Unix domain socket, in a private directory of its own. */
+  readonly socket: string;
   readonly directory: string;
   /** Working directory fixtures should use; distinct from the config/HOME dir. */
   readonly workDir: string;
@@ -50,21 +50,13 @@ export interface ServerHandle {
   stop(): Promise<{ graceful: boolean; exitCode: number | null; signal: string | null }>;
 }
 
-/** Reserves a loopback port by binding and releasing it. */
-async function reservePort(): Promise<number> {
-  return await new Promise<number>((resolve, reject) => {
-    const probe = createServer();
-    probe.on("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const address = probe.address();
-      if (typeof address === "object" && address) {
-        const { port } = address;
-        probe.close(() => resolve(port));
-      } else {
-        probe.close(() => reject(new Error("could not reserve a loopback port")));
-      }
-    });
-  });
+/**
+ * A fresh private (0700) directory for the server's socket. It lives under the
+ * system temporary directory rather than the run directory because a Unix
+ * socket path is limited to about 100 bytes.
+ */
+function socketDirectory(): string {
+  return mkdtempSync(join(tmpdir(), "fxa-"));
 }
 
 /**
@@ -110,11 +102,13 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     )}\n`,
   );
 
-  const port = await reservePort();
+  const socketDir = socketDirectory();
+  const socket = join(socketDir, "fux.sock");
+  const client = new BrpClient(socket);
   const logPath = join(directory, "server.log");
   const child: ChildProcess = spawn(
     binary,
-    ["server", "--port", String(port), "--config", configPath],
+    ["server", "--socket", socket, "--config", configPath],
     {
       cwd: workDir,
       env: fixtureEnvironment(directory),
@@ -141,10 +135,11 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   child.on("exit", (code, signal) => {
     exited = { code, signal };
     flushLog();
+    // The server removed its socket if it could; the directory and lockfile are ours.
+    client.close();
+    rmSync(socketDir, { recursive: true, force: true });
   });
 
-  const endpoint = `http://127.0.0.1:${port}`;
-  const client = new BrpClient(endpoint);
   const deadline = Date.now() + (options.startupTimeoutMs ?? 20_000);
   for (;;) {
     if (exited) {
@@ -206,8 +201,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 
   return {
     client,
-    endpoint,
-    port,
+    socket,
     directory,
     workDir,
     pid: child.pid,

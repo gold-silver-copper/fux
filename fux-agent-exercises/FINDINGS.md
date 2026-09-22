@@ -640,6 +640,19 @@ more runs (campaign 05). What remains:
    `Viewer.notice`. Worth a fux discussion about whether a command's outcome should be
    visible in its own response; not redesigned here.
 
+## After the Unix-socket transport change
+
+fux now serves BRP only on a Unix domain socket (hunt 5, finding 002): `--port`,
+`--address` and `FUX_ENDPOINT` are gone. The harness, the positive controls and the F1
+evidence script were migrated; the run records above were produced over TCP and keep
+their `server.endpoint`/`server.port` fields, while new records carry `server.socket`.
+
+The exercised agent's context is `README.md`, recorded by SHA-256 in every run. That
+change rewrote the README's transport sections, and fixing hunt 5's finding 001 added a
+sentence to its architecture section, so campaigns run after it measure a different
+document than campaigns 01 to 05. Compare across that boundary only with the hashes in
+view. No campaign was run to measure the difference.
+
 ## Reproduction
 
 ```sh
@@ -654,7 +667,7 @@ node run.ts campaign --scenarios noisy --repetitions 30 --artifacts runs/campaig
 node run.ts campaign --scenarios recovery --repetitions 10 --artifacts runs/campaign-06-recovery
 node run.ts report --artifacts runs/campaign-06-noisy  # includes the per-finding "Findings" section
 
-./evidence/partial-component-panic.sh ../target/release/fux 17771   # F1, no agent; exit 1 if the server dies
+./evidence/partial-component-panic.sh ../target/release/fux   # F1, no agent; exit 1 if the server dies
 ```
 
 Agent runs are not deterministically replayable and entity ids differ between runs; the

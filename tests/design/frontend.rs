@@ -26,7 +26,8 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
     let mut writer = pair.master.take_writer()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");
-    command.env("FUX_ENDPOINT", &s.endpoint);
+    command.env("FUX_SOCKET", &s.socket);
+    command.env_remove("FUX_ENDPOINT");
     let mut attached = Attached {
         child: {
             let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
