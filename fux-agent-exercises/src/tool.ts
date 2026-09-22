@@ -18,6 +18,12 @@ export interface ToolBudget {
 }
 
 export interface ToolHooks {
+  /**
+   * Called with a parsed request just before it is forwarded, so a scenario can
+   * change the world the request is about to act on. The request is sent
+   * regardless of what the hook does.
+   */
+  beforeCall?: (method: string, params: unknown, index: number) => void | Promise<void>;
   /** Called after every completed call, for milestone-triggered scenario events. */
   onCall?: (record: ToolCallRecord, outcome: BrpOutcome | null) => void | Promise<void>;
   /** Called when a budget is exhausted so the runner can stop the session. */
@@ -137,6 +143,11 @@ export function createFuxRpcTool(
       }
 
       used += 1;
+      try {
+        await hooks.beforeCall?.(params.method, parsed, index);
+      } catch (error) {
+        journal.note(`scenario pre-call hook failed on call ${index}: ${(error as Error).message}`);
+      }
       const outcome = await client.call(params.method, parsed, budget.requestTimeoutMs);
       const body = outcome.body ?? "";
       const visibleSource = outcome.transportError

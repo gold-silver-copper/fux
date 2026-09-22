@@ -34,6 +34,11 @@ export interface Verification {
 
 export interface ScenarioRun {
   setup(ctx: ScenarioContext): Promise<ScenarioSetup>;
+  /**
+   * Pre-forward hook: called with each parsed agent request before it is sent,
+   * so a disruption can land between the agent deciding and the server acting.
+   */
+  beforeToolCall?(ctx: ScenarioContext, method: string, params: unknown, index: number): Promise<void> | void;
   /** Milestone hook: called after each agent tool call completes. */
   onToolCall?(ctx: ScenarioContext, record: ToolCallRecord, outcome: BrpOutcome | null): Promise<void> | void;
   /** Read-only observation started before the agent runs and stopped after. */

@@ -90,7 +90,7 @@ Defaults: five scenarios, two fresh sessions each, 40 tool calls and 300 s per r
 | `launch` | Start a fixture with an exact argv and cwd, decide whether it succeeded, leave its output visible. Pass and fail variants. |
 | `noisy` | Find one diagnostic line that has scrolled out of view but is still in retained history, and report its code. |
 | `modal` | An overlay is already open. Complete a rename prompt, or decline a destructive close confirmation, without leaking keystrokes to the child. |
-| `recovery` | Close a named pane and focus another while a second viewer stays untouched — after the harness closes that pane first, on an observable milestone. |
+| `recovery` | Close a named pane and focus another while a second viewer stays untouched — the harness closes that pane first, just before the agent's own `close` or `focus` naming it is forwarded. |
 
 Each scenario has deterministic variants, an outcome-oriented prompt, and a verifier
 that never trusts the agent's account.
@@ -165,10 +165,11 @@ campaigns came to about 6 MB. The durable, committed record is
 - `noisy` is on prompt revision 2. Revision 1 ended with an answer-shaped placeholder
   (`CODE: E-1234`) that one run echoed verbatim; see F7. Results from the two revisions
   are reported separately and must not be pooled.
-- The `recovery` disruption fires as soon as the target's entity id appears in a
-  response the agent received. In practice that is the agent's first broad query, so
-  what gets tested is "the target vanished before I could act on it" rather than a
-  mid-operation failure.
+- The `recovery` disruption fires from a pre-forward hook, on the first `close` or
+  `focus` command that names the target. The agent's own request then meets the
+  "target no longer exists" notice. Campaigns 01 to 03 fired it on the first response
+  mentioning the target instead, which was always the opening query (F8); their
+  `recovery` results are not comparable with later campaigns.
 - Token accounting and cost come from pi. Budgets bound tool calls and wall-clock
   time per run; they are not an enforced spending cap.
 - Tested on macOS arm64 only.
