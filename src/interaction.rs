@@ -11,7 +11,7 @@ use crate::{
     protocol::{Direction, Input, Key, Modifiers, MouseAction},
 };
 use bevy_ecs::prelude::*;
-use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize, std_traits::ReflectDefault};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Reflect)]
@@ -43,8 +43,8 @@ pub enum Mode {
 }
 /// The open prefix command column and its selected action row. Present only
 /// while the column is open, like `Overlay` and `Selection`.
-#[derive(Component, Default, Reflect)]
-#[reflect(Component)]
+#[derive(Component, Default, Reflect, Serialize, Deserialize)]
+#[reflect(Component, Default, Serialize, Deserialize)]
 pub struct Prefix {
     pub scroll: usize,
 }
@@ -64,13 +64,33 @@ pub(crate) fn close_prefix(world: &mut World, id: Entity) {
     }
 }
 
+/// Its enum fields keep their reflect encoding, so instead of serde it
+/// registers a `Default` for the reflect insertion fallback: an empty list
+/// with a placeholder target, which execution validates like any capture.
 #[derive(Component, Clone, Reflect)]
-#[reflect(Component)]
+#[reflect(Component, Default)]
 #[component(on_insert = crate::paste::overlay_opened)]
 pub struct Overlay {
     pub serial: u64,
     pub target: Target,
     pub mode: Mode,
+}
+impl Default for Overlay {
+    fn default() -> Self {
+        Self {
+            serial: 0,
+            target: Target {
+                workspace: Entity::PLACEHOLDER,
+                tab: None,
+                leaf: None,
+            },
+            mode: Mode::List {
+                title: String::new(),
+                entries: Vec::new(),
+                selected: 0,
+            },
+        }
+    }
 }
 
 fn label(world: &World, entity: Entity) -> String {

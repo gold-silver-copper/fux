@@ -1095,6 +1095,39 @@ mod tests {
     #[reflect(Component)]
     struct Extra(u32);
 
+    /// A BRP insert builds the component through `from_reflect_with_fallback`,
+    /// which panics on a partial payload unless the registration carries a
+    /// serde `Deserialize` (rejects it), a `Default` or a `FromWorld`. Every
+    /// reflected component must carry one, or one request kills the server.
+    #[test]
+    fn every_reflected_component_survives_a_partial_payload() -> crate::testing::Outcome {
+        use bevy_ecs::reflect::{ReflectComponent, ReflectFromWorld};
+        use bevy_reflect::{ReflectDeserialize, std_traits::ReflectDefault};
+        let mut app = App::new();
+        app.insert_resource(Wake(std::thread::current()));
+        app.add_plugins((
+            bevy_app::TaskPoolPlugin::default(),
+            bevy_asset::AssetPlugin::default(),
+            ServerPlugin,
+        ));
+        let registry = app.world().resource::<AppTypeRegistry>().read();
+        let unguarded: Vec<&str> = registry
+            .iter()
+            .filter(|registration| registration.data::<ReflectComponent>().is_some())
+            .filter(|registration| {
+                registration.data::<ReflectDeserialize>().is_none()
+                    && registration.data::<ReflectDefault>().is_none()
+                    && registration.data::<ReflectFromWorld>().is_none()
+            })
+            .map(|registration| registration.type_info().type_path())
+            .collect();
+        assert!(
+            unguarded.is_empty(),
+            "reflected components without Deserialize, Default or FromWorld: {unguarded:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn execution_keeps_its_guard_order_and_settles_ui_before_failure() -> crate::testing::Outcome {
         let mut world = World::new();
