@@ -308,3 +308,423 @@ map to valid bits, but not 0. Both sites now use `try_from_bits`: the methods
 answer with an invalid-params error naming the id, and the bridge registers no
 detach for it. Covered by `frame_requests_for_impossible_entity_ids_are_refused`
 in `tests/remote_lifecycle.rs`, which fails against the previous source.
+
+---
+
+# Where fux breaks under hostile input (hunt 6)
+
+This run attacked what PR #45 made fux's own: the HTTP serving loop over a Unix
+socket, the socket's location and lifecycle, and the client that dials it. It
+also did the identifier audit the 2026-09-20 review asked for (finding 5) and
+hunt 5 sampled without covering, which is how hunt 5's `viewer: 0` abort was
+missed. It finds; it does not fix. `src/` is untouched.
+
+**Six distinct breaks, in three classes.** Class 1 (three root causes), class 2
+(one), class 5 (two). Classes 3, 4, 6 and 7 had no finding of their own; the
+class 6 and class 8 consequences of finding 003 are recorded inside it rather
+than as separate root causes. The counts per area are in the table at the end.
+
+Severity classes are hunt 5's, unchanged (`docs/fux-fuzz-hunt-prompt-5.md`).
+
+**A note on entity ids, because every class-1 finding here depends on it.**
+`Entity::to_bits` is an opaque encoding, not an index: `EntityIndex` is a
+`NonMaxU32` whose `to_bits` is a `transmute`, so the low 32 bits of an entity id
+are the *bitwise complement* of its index. Bits `0xFFFF_FFFF` therefore name
+entity index 0, `0xFFFF_FFFE` index 1, and so on. Bevy 0.19 stores resources as
+entities and allocates them first, so those first indices are resource entities.
+A caller does not have to guess them: they are a short fixed sequence counting
+down from `0xFFFF_FFFF`, and `world.query` never lists them.
+
+---
+
+## 003 — A watch request despawns any entity it names (class 1, and class 8, and class 6)
+
+**The break.** `fux.frame+watch` names the viewer to stream. fux registers the
+"this watcher went away, detach its viewer" bookkeeping straight from the
+request's params, and `server::disconnected` then despawns that entity when the
+response channel closes. Nothing checks that the entity is a viewer, so the id
+in a watch request is a despawn of the caller's choosing:
+
+| The id names | What happens |
+| --- | --- |
+| a tab | the tab and its panes are despawned |
+| a process entity | the child process is killed (pid confirmed gone) |
+| a resource entity (bits `0xFFFF_FFFF`, `0xFFFF_FFFE`, `0xFFFF_FFFD`) | the server aborts |
+
+The fatal case, verbatim:
+
+```
+WARN bevy_ecs::resource: Resource entities are not supposed to be despawned.
+thread 'main' panicked at bevy_ecs-0.19.1/src/error/handler.rs:130:1:
+Encountered an error in command `...remove_by_id...`: Entity despawned:
+The entity with ID 1v0 is invalid; its index now has generation 1.
+Encountered a panic in system `bevy_app::main_schedule::Main::run_main`!
+```
+
+**The request does not have to be accepted.** A batch body containing one watch
+is refused with the stock "Streaming can not be used in batch requests", and the
+detach still fires, because the registration happens before dispatch. That is
+one ordinary POST, refused, that despawns a tab or ends the server. A refused
+input leaving state changed is class 8; a tab or a child process disappearing
+with no close is class 6.
+
+**Where it goes wrong.** `src/main.rs:191-208`, in the runner's bridge:
+
+```rust
+if message.method == "fux.frame+watch"
+    && let Some(id) = message.params.as_ref()
+        .and_then(|p| p.get("viewer")).and_then(|v| v.as_u64())
+        .and_then(Entity::try_from_bits)
+{
+    // ... on response.closed(): closed.send(id)
+}
+```
+
+`try_from_bits` only proves the bits could be an entity; it says nothing about
+what that entity is. The other end, `src/server.rs:450-454`:
+
+```rust
+fn disconnected(mut commands: Commands, closed: Res<Disconnected>) {
+    while let Ok(entity) = closed.0.try_recv() {
+        commands.entity(entity).try_despawn();
+    }
+}
+```
+
+`try_despawn` is safe only against a *missing* entity. Against a live one of the
+wrong kind it does exactly what it is told.
+
+**Smallest input that does NOT break, to bound it.** `fux.frame` without
+`+watch` on the same id does nothing: the bridge matches the method name, so no
+detach is registered. `world.get_components+watch`, a stock watching method, is
+also inert here for the same reason. A watch naming an id that was never
+allocated is absorbed, because `try_despawn` finds nothing. Both halves are
+required: the method must be `fux.frame+watch`, and the id must name a live
+entity.
+
+**Class of inputs the fix must cover.** Any entity id a client can put in a
+watch request. The detach must apply to the entity only if it is a viewer, and
+the check belongs where the despawn happens, not only where it is registered,
+because the world can change in between. The same question applies to every
+other place a client-supplied id is turned into an action on an entity rather
+than a lookup.
+
+**Reproduction.** `fux-fuzz/repro/003-watch-close-despawns-any-entity.sh <fux>`
+(exit 0 reproduced, 1 verified not, 2 setup). `NEGATIVE_CONTROL=1` sends the
+same request without `+watch` and exits 1. Also the `identity` scenario and the
+trace `fux-fuzz/traces/open/003-identifier-surfaces.json`:
+
+```
+fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario identity
+```
+
+---
+
+## 004 — Despawning a resource entity through stock BRP aborts the server (class 1)
+
+**The break.** `world.despawn_entity` with bits `0xFFFF_FFFF` despawns entity
+index 0, which is a Bevy resource entity. The ECS is left inconsistent and the
+next command flush panics, ending the server and every session with it. The same
+holds for `0xFFFF_FFFE` and `0xFFFF_FFFD`. One accepted request does it.
+
+**Where it goes wrong.** Not in fux's own code: `bevy_remote`'s
+`process_remote_requests` despawns what it is asked to, and `bevy_ecs` panics
+afterwards. fux's part is the exposure decision recorded in `README.md` —
+"resource/schedule/event/schema methods are not filtered" — which the README
+frames as trusted low-level access that "can bypass normal transitions".
+Aborting the process is a different thing from bypassing a transition, and no
+ordinary caller can tell these ids apart from a viewer id, because `to_bits`
+hides the index.
+
+**Smallest input that does NOT break, to bound it.** `world.despawn_entity` on
+any ordinary entity, live or already despawned, is absorbed. Only the handful of
+resource-entity ids at the top of the index space abort. `world.get_components`
+and `world.list_components` on the same ids answer normally.
+
+**Class of inputs the fix must cover.** Every stock method that acts on an
+entity the caller names, against the ids of entities that are ECS bookkeeping
+rather than fux's model. Either those entities are out of reach of the exposed
+API, or the panic they cause is contained so one request cannot end the process.
+
+**Reproduction.** `fux-fuzz/repro/004-despawning-a-resource-entity-aborts.sh <fux>`.
+`NEGATIVE_CONTROL=1` despawns an ordinary entity and exits 1.
+
+---
+
+## 005 — `world.mutate_components` on a missing entity aborts the server (class 1)
+
+**The break.** `world.mutate_components` naming an entity that does not exist
+panics instead of returning an error:
+
+```
+thread 'main' panicked at bevy_remote-0.19.1/src/builtin_methods.rs:1194:28:
+Entity not yet spawned: The entity with ID 4294954950v0 is not spawned
+Encountered a panic in system `bevy_remote::process_remote_requests`!
+```
+
+Both a never-allocated id and a despawned one reach it. The despawned one is the
+ordinary case rather than an exotic one: a caller reads an id, the entity is
+closed underneath it, the caller writes back, and the server dies.
+
+**Where it goes wrong.** `bevy_remote-0.19.1/src/builtin_methods.rs:1194`
+resolves the component registration, then calls `world.entity_mut(entity)`
+without checking the entity first. The defect is upstream; fux reaches it
+because it serves the stock registry unfiltered. Its siblings do check:
+`world.get_components`, `world.insert_components` and `world.remove_components`
+all refuse the same id with a typed error, so this method is the odd one out.
+
+**Smallest input that does NOT break, to bound it.** The same request against a
+live entity is fine, and a bad *component* name or *path* on a live entity is a
+typed error. Only a missing entity reaches the panic.
+
+**Class of inputs the fix must cover.** Any stock BRP method that resolves a
+caller-named entity with a panicking accessor. Fixing it upstream and taking the
+patch version is the cleanest route; until then the panic must not be able to
+end the process.
+
+**Reproduction.** `fux-fuzz/repro/005-mutate-components-missing-entity-aborts.sh <fux>`.
+`NEGATIVE_CONTROL=1` mutates a live entity and exits 1.
+
+---
+
+## 006 — Descriptor pressure wedges the accept loop (class 2)
+
+**The break.** When `accept` fails with `EMFILE` or `ENFILE`, `transport::serve`
+classifies it as transient, logs a warning, sleeps 50 ms and loops. It never
+accepts-and-closes to drain the backlog and never sheds a connection. While the
+pressure lasts, **no new client can connect at all**: `fux attach`, `fux rpc`
+and `fux stop` each need a new connection, and each fails.
+
+Measured with the server under `ulimit -n 64` and one same-user process holding
+199 connections open: 39 connection attempts over 15 s, none succeeded, and 184
+`BRP socket accept: Too many open files` warnings were written to stderr in that
+window — roughly twenty a second, unbounded, on a server whose stderr is
+normally redirected to a file. The condition does not clear on its own; it
+cleared within 0.0 s of the holder closing its connections.
+
+**Where it goes wrong.** `src/transport.rs:390-440`:
+
+```rust
+Err(error) if transient(&error) => {
+    bevy_log::warn!("BRP socket accept: {error}");
+    Timer::after(Duration::from_millis(50)).await;
+}
+```
+
+`transient` lists `EMFILE` and `ENFILE` with `ECONNABORTED`, `EINTR` and
+`EAGAIN`, but those are not alike: an aborted peer is momentary, while a
+descriptor shortage persists until something releases descriptors, and retrying
+the same `accept` cannot release any.
+
+**Smallest input that does NOT break, to bound it.** The same connections opened
+and closed immediately never wedge anything: the negative control does exactly
+that and the server stays reachable throughout. A burst of connects that
+overflows the 128-deep listen backlog gets `ECONNREFUSED` per connection and
+also recovers by itself. The wedge needs descriptors to be *held*.
+
+The reachability depends on the server's descriptor limit, which this script
+supplies with `ulimit -n 64` so the case is quick and bounded. It is not
+artificial: macOS `launchctl limit maxfiles` is 256 by default, so a server
+started from a launchd context wedges at roughly two hundred connections, and
+`ENFILE` is machine-wide and needs no limit at all.
+
+**Class of inputs the fix must cover.** Any accept failure that persists rather
+than passes. A descriptor shortage needs a different response from a momentary
+error: drain the backlog so clients get a prompt refusal instead of silence,
+rate-limit the warning, and surface the condition rather than logging it twenty
+times a second.
+
+**Reproduction.** `fux-fuzz/repro/006-descriptor-pressure-wedges-the-accept-loop.sh <fux>`.
+`NEGATIVE_CONTROL=1` closes each connection immediately and exits 1. The
+`ulimit` change applies only to the subshell that execs the server.
+
+---
+
+## 007 — The request body has no size limit (class 5)
+
+**The break.** `transport::batch` reads the whole request body into memory
+before looking at it, with no limit in hyper's builder or in fux. One connection
+grew the server by **580 MB for a 256 MB body** — about 2.2x, because the bytes
+are collected, parsed into a `serde_json::Value`, and on the error path copied
+again into the JSON-RPC message that echoes the offending text.
+
+Time is strongly superlinear: 16 MB is answered in about 2 s, 32 MB in 7 s,
+128 MB in 237 s, 192 MB in 374 s. Other clients keep being served throughout and
+attached viewers keep painting, so this is growth and latency rather than a
+stall; the server does not refuse, does not stream and does not cap.
+
+**Where it goes wrong.** `src/transport.rs:525`:
+
+```rust
+let body = match request.into_body().collect().await {
+```
+
+The stock `bevy_remote` loop this was modelled on has the same shape, so the
+absence of a limit came across with it; the difference is that fux now owns the
+line and can bound it.
+
+**Smallest input that does NOT break, to bound it.** An ordinary request leaves
+RSS flat (the negative control sends 1 MB and measures under 64 MB of growth).
+Bodies up to a few megabytes are answered immediately. There is no threshold in
+the code: the cost is proportional to what the caller sends.
+
+**Class of inputs the fix must cover.** Any request whose size the caller
+chooses. A byte limit on the body, refused with a typed error, bounds this and
+the error-echo amplification together. The limit must stay above the largest
+legitimate request, which is a `load_layout` scene or a 64 KiB paste, not a
+megabyte.
+
+**Reproduction.** `fux-fuzz/repro/007-request-body-is-unbounded.sh <fux>`, which
+stops at 4 GB of RSS so it cannot pressure the machine. `NEGATIVE_CONTROL=1`
+sends a 1 MB body and exits 1.
+
+---
+
+## 008 — The frontend buffers an unterminated SSE line without bound (class 5)
+
+**The break.** `fux attach` reads the `fux.frame+watch` stream with
+`BufReader::read_line` into a `String`. Server-sent events are newline framed,
+so a peer that never sends a newline makes the frontend buffer the whole stream.
+Resident memory climbed at roughly 95 MB/s and reached **5.3 GB in 60 s** before
+the peer stopped; the repro script reaches 1.5 GB in about 15 s and stops there.
+The frontend is not painting during this: it is accumulating one line.
+
+**Where it goes wrong.** `src/viewer.rs:150-165`: the stream reader loops on
+`reader.read_line(&mut line)`, and nothing caps the line, the decoded frame, or
+`Frame.paint`.
+
+**Smallest input that does NOT break, to bound it.** The same byte volume sent
+as ordinary newline-terminated frames leaves the frontend flat: the negative
+control sends 1.6 GB that way and measures 0 MB of growth. So the volume is not
+the problem and the missing line bound is.
+
+**Reachability, stated plainly.** The peer here is a small socket server in the
+repro script, never fux. It is reached the way any peer is: `FUX_SOCKET` names a
+socket, and `transport::check_client_socket` is satisfied by any socket the user
+owns in a private directory, which any same-user process can create. That caller
+is already trusted with the whole API, so this is not a privilege finding. It is
+that the frontend has no defence against a stream that does not end, from a
+server that is wedged, buggy, or replaced.
+
+**Class of inputs the fix must cover.** Any stream the frontend reads: a line, a
+frame and a paint each need a bound, and passing it must end the attachment with
+a message rather than growing until the machine notices.
+
+**Reproduction.** `fux-fuzz/repro/008-frontend-sse-line-is-unbounded.sh <fux>`,
+bounded to 1500 MB and 25 s. `NEGATIVE_CONTROL=1` sends the same volume as
+proper frames and exits 1.
+
+---
+
+## What did not break (coverage, not findings)
+
+| Area | Inputs tried | Correctly refused / absorbed | Breaks |
+| --- | ---: | ---: | ---: |
+| 1 the owned HTTP transport: parsing, framing, pipelining | 32 | 32 | 0 |
+| 1 the transport under resource pressure | 15 | 13 | 2 (006, 007) |
+| 2 socket location, lock and lifecycle | 57 | 57 | 0 |
+| 2 the client against a hostile peer | 18 | 17 | 1 (008) |
+| 3 caller-chosen identifiers: 29 surfaces x 20 values, both builds | 1160 | 1140 | 3 (003, 004, 005) |
+| 4 panics the lints do not catch, both builds | 14 | 14 | 0 |
+| 5 the hunt 5 guards under pressure | 6 | 6 | 0 |
+
+The identifier row counts every (surface, value) pair: 20 of the 1160 pairs
+broke, and they fall into the three root causes above. The lifecycle row counts
+the thirty simultaneous-start rounds and the ten kill-window restarts
+individually, because each is a separate timing attempt.
+
+Highlights of the non-findings, because they bound the findings above:
+
+- **Transport parsing.** A GET and an OPTIONS with no body, HTTP/1.0, a path
+  that is not `/`, a missing `Host`, `Expect: 100-continue`, `Content-Length`
+  with `Transfer-Encoding` in both orders, a malformed chunk size, a
+  `Content-Length` longer and shorter than the body, a negative one, invalid
+  UTF-8 in the body, the target and a header value, NUL bytes in headers, bare
+  LF line endings, 2 KiB of binary garbage, 10 000 headers, a 1 MiB header, a
+  1 MiB target, an empty body, `null`, a number, `[]`, unparsable JSON, a
+  request with no method, an object id, a 1 MiB string id, a deeply nested id,
+  params nested 10 000 deep, a 1000-request batch and ten pipelined requests:
+  every one answered with a typed JSON-RPC error, answered normally, or was
+  refused by hyper before fux saw it, with the next request on a fresh
+  connection always succeeding. This is the `transport` scenario, now in the
+  default smoke.
+- **Socket lifecycle.** `FUX_SOCKET` as `/`, a relative path, a trailing slash,
+  `..` components, 205 bytes and empty; a lockfile replaced by a directory, a
+  FIFO or a symlink; the socket directory chmodded to 0755, renamed or removed
+  while the server ran; the socket file removed or replaced by a regular file;
+  the lockfile removed underneath a running server; a read-only parent. Every
+  one was refused with a message naming the cause, and nothing that already
+  existed was modified. A start while the owner was `SIGSTOP`ped was refused by
+  the lock, left the socket's inode unchanged, and the stopped server resumed
+  serving on `SIGCONT` — the stale-socket probe did not unlink a live socket.
+  Thirty rounds of two simultaneous starts left exactly one survivor every time.
+  A `SIGKILL` at ten different points across the bind/listen window was followed
+  by a successful restart on the same path, 10 for 10.
+- **The client against a hostile peer.** `fux rpc` against a peer that accepts
+  and never answers, answers garbage, sends an endless SSE line, sends a 100 MB
+  frame, closes mid-frame, or dribbles one byte per second: bounded every time,
+  either by the 10 s global timeout or by an immediate parse error, and never a
+  hang. `fux attach` against the same peers exits non-zero before entering raw
+  mode, so the outer terminal is never touched.
+- **Identifiers.** 29 surfaces — `fux.frame`, `fux.frame+watch`, the `Control`
+  and `UserInput` event targets, ten command subjects, both `load_layout`
+  mapping positions, five entity-typed component fields, `Children` with a
+  duplicated id, `Overlay.target`, and six stock methods — against 20 value
+  classes each, on debug and release. Everything except the three findings above
+  was refused with a typed error or absorbed with the world still consistent.
+  Notably, every reflected component field is safe: `Entity`'s `Deserialize`
+  goes through `try_from_bits`, so a bad id fails to deserialize rather than
+  reaching the world.
+- **Panics the lints do not catch.** An overlay open with its relationships
+  removed underneath and Enter pressed; a rename overlay whose target is
+  despawned mid-edit; copy mode with the viewer resized to 0x0 and then to
+  4096x4096 with `scrollback` at `u64::MAX`; `ProcessState` rows and cols at 0
+  and 65535; `Viewer.scrollback` near `u64::MAX` followed by scrolling both
+  ways; `Prefix.scroll` at `u64::MAX` followed by every arrow key;
+  `Overlay.mode.List.selected` at `u64::MAX` followed by Enter. All absorbed.
+  **No debug/release difference was observed anywhere in this hunt**, including
+  the arithmetic cases, which is the interesting part: debug builds panic on
+  overflow and release builds wrap, and neither happened.
+- **The hunt 5 guards.** A viewer carrying an open overlay and a live selection
+  was made a `Tab`, a `Workspace`, a `Split` and a `PaneView` in turn: the
+  layout role won each time and the server stayed healthy. One entity spawned
+  with every layout role and `Viewer` at once was normalized. 300 rounds of
+  relationship churn did not reach repair's sixteen-pass bound, so its warning
+  was not observed to be reachable from raw mutation alone.
+
+## Harness mistakes (not findings)
+
+- An early "the server stops accepting at 450 connections" was a measurement
+  artifact: connections were being opened faster than the accept loop drained
+  the 128-deep backlog, so the kernel refused the overflow. Opening them at a
+  slower rate accepts all of them. The real accept-loop finding (006) needs
+  descriptors to be exhausted, not the backlog.
+- Several early "no reply within the timeout" results were the harness's own
+  `Content-Length` arithmetic being two bytes longer than the body it sent, so
+  the server was correctly waiting for the rest of the request.
+- An early "`fux attach` never exits" was the harness reading the PTY to EOF and
+  then not reaping the child; and an early "the frontend never enters raw mode"
+  was the harness forgetting to set a window size on the PTY it allocated, so
+  `fux attach` exited with its documented ioctl message before touching the
+  terminal.
+
+## Ranked fixes for the hardening PR
+
+1. **Class 1 — a client-named id must not select an entity to destroy.**
+   Make the watch detach apply only to an entity that is a viewer, checked where
+   the despawn happens. This closes the whole of finding 003, including its
+   class 8 and class 6 halves. (Finding 003.)
+2. **Class 1 — one request must not be able to end the process.** Two doors are
+   open: despawning ECS bookkeeping entities through stock methods (004), and a
+   stock method that panics on a missing entity (005). Both are reached with a
+   single accepted request, and neither is distinguishable from ordinary use by
+   the caller. Fix 005 upstream and take the patch; decide deliberately whether
+   resource entities are in reach of the exposed API at all. (Findings 004, 005.)
+3. **Class 2 — an accept failure that persists needs a different response from
+   one that passes.** Drain the backlog under descriptor pressure so clients are
+   refused promptly instead of silently, and rate-limit the warning so stderr
+   does not grow without bound. (Finding 006.)
+4. **Class 5 — bound what a caller can make either side hold.** A byte limit on
+   the request body, refused with a typed error (007), and a bound on the
+   frontend's SSE line, frame and paint, which ends the attachment with a
+   message rather than growing (008). (Findings 007, 008.)
