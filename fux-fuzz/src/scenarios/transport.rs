@@ -288,6 +288,38 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         )?;
     }
 
+    // The transport's limits: a body and a batch past them are refused with a
+    // typed error rather than held (hunt 6 finding 007).
+    let over_body = "a".repeat((4 << 20) + 64);
+    let reply = exchange(
+        s,
+        &post(&format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"{over_body}","params":null}}"#
+        )),
+    )?
+    .ok_or("an oversized body got no reply")?;
+    ensure(
+        reply.contains("byte limit"),
+        &format!("application: an oversized body was not refused by its size: {reply:.200}"),
+    )?;
+    s.healthy()?;
+    let over_batch = format!(
+        "[{}]",
+        std::iter::repeat_n(discover, 4096)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let reply = exchange(s, &post(&over_batch))?.ok_or("an oversized batch got no reply")?;
+    ensure(
+        reply.contains("limit of"),
+        &format!("application: an oversized batch was not refused: {reply:.200}"),
+    )?;
+    ensure(
+        reply.len() < 1 << 20,
+        "application: refusing an oversized batch produced a large reply",
+    )?;
+    s.healthy()?;
+
     // A connection opened and left silent must not hold anything up.
     let idle = UnixStream::connect(s.socket())?;
     let start = Instant::now();

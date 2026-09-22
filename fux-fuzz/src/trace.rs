@@ -152,8 +152,8 @@ pub enum Action {
     /// Every case is correctly refused today, so this is coverage in `all`.
     Transport,
     /// Hunt 6, area 3: every surface that names an entity, against every value
-    /// class. Registered but excluded from `all`; it reproduces finding 003
-    /// and is expected to FAIL against a vulnerable binary.
+    /// class. Part of `all`; FAILS against a binary with any of findings 003,
+    /// 004 or 005. See fux-fuzz/BREAKS.md.
     Identity,
     SceneFuzz {
         seed: u64,
@@ -822,9 +822,7 @@ impl Plan {
             if matches!(scenario, "all" | "transport") {
                 actions.push(Action::Transport);
             }
-            // `identity` is excluded from `all`: it reproduces finding 003 and
-            // fails on purpose until that is fixed.
-            if scenario == "identity" {
+            if matches!(scenario, "all" | "identity") {
                 actions.push(Action::Identity);
             }
             if matches!(scenario, "all" | "scene_fuzz") {

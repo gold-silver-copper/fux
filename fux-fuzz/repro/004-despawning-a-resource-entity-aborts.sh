@@ -17,9 +17,15 @@
 # lists these entities, but the ids are a short fixed sequence from 0xFFFFFFFF
 # downwards.
 #
-# One accepted request ends the server. The README documents raw component
+# One accepted request ended the server. The README documents raw component
 # mutation as trusted low-level access that "can bypass normal transitions";
 # aborting the process is a different thing.
+#
+# Fixed in fux, against unmodified bevy: fux registers its own
+# `world.despawn_entity`, which refuses an entity carrying `IsResource` with a
+# typed error and otherwise hands the request to the stock handler. fux also
+# logs a failed command rather than panicking on it, which contains this class
+# on its own even without the guard.
 #
 # Usage: 004-despawning-a-resource-entity-aborts.sh /path/to/fux
 # Exit 0: reproduced (the server aborted).
