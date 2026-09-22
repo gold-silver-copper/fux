@@ -515,30 +515,90 @@ test("a scenario setup failure is reported as a harness error, not an agent verd
   }
 });
 
+/** The scenario, with the run's server handle captured for the test. */
+function capturingServer(scenario: Scenario, capture: (pid: number) => void): Scenario {
+  return {
+    ...scenario,
+    create(variant: string) {
+      const run = scenario.create(variant);
+      return {
+        ...run,
+        startMonitor(ctx) {
+          capture(ctx.server.pid);
+          run.startMonitor?.(ctx);
+        },
+      };
+    },
+  };
+}
+
 test("a fux server that dies mid-run is reported as a crash, not a harness defect", async () => {
-  const { result, artifactsRoot } = await driveScenario(requireScenario("discovery"), "a", async (rpc) => {
-    // A partial Viewer payload: every field except `notice`.
-    const viewers = jsonOf(await rpc("world.query", { data: { components: ["fux::model::Viewer"] } }))
-      .result as Array<{ entity: number; components: Record<string, any> }>;
-    const viewer = viewers[0];
-    const { notice, ...partial } = viewer.components["fux::model::Viewer"];
-    await rpc("world.insert_components", {
-      entity: viewer.entity,
-      components: { "fux::model::Viewer": partial },
-    });
-    await rpc("rpc.discover");
-    return "sent a partial component payload";
-  });
+  let serverPid = 0;
+  const { result, artifactsRoot } = await driveScenario(
+    capturingServer(requireScenario("discovery"), (pid) => (serverPid = pid)),
+    "a",
+    async (rpc) => {
+      assert.ok(serverPid > 0, "the server pid must be known before the agent runs");
+      await rpc("rpc.discover");
+      // Kill only this run's server, the way an external crash would take it.
+      process.kill(serverPid, "SIGKILL");
+      const after = await rpc("rpc.discover");
+      assert.match(after, /HARNESS: transport error/);
+      return "the server went away under me";
+    },
+  );
 
   try {
     assert.equal(result.serverCrashed, true, "the runner must notice the server is gone");
     const artifact = JSON.parse(readFileSync(result.artifactPath, "utf8"));
     assert.equal(artifact.serverCrashed, true);
-    assert.match(String(artifact.serverLogTail), /panicked at/);
     assert.ok(
-      artifact.journal.notes.some((note: string) => note.includes("panic")),
-      "the crash must be noted in the journal",
+      artifact.journal.notes.some((note: string) => note.includes("no longer running")),
+      `the crash must be noted in the journal: ${JSON.stringify(artifact.journal.notes)}`,
     );
+  } finally {
+    rmSync(artifactsRoot, { recursive: true, force: true });
+  }
+});
+
+test("a partial component payload is rejected and the server survives (F1 regression)", async () => {
+  const seen: string[] = [];
+  const { result, artifactsRoot } = await driveScenario(requireScenario("discovery"), "a", async (rpc) => {
+    const viewers = jsonOf(await rpc("world.query", { data: { components: ["fux::model::Viewer"] } }))
+      .result as Array<{ entity: number; components: Record<string, any> }>;
+    const viewer = viewers[0];
+    const { notice, rows, ...rest } = viewer.components["fux::model::Viewer"];
+    // The original F1 payload: every field except `notice`, which the
+    // published schema does not list as required. Accepted as null.
+    seen.push(
+      await rpc("world.insert_components", {
+        entity: viewer.entity,
+        components: { "fux::model::Viewer": { rows, ...rest } },
+      }),
+    );
+    // A required field missing is a typed rejection, not a dead server.
+    seen.push(
+      await rpc("world.insert_components", {
+        entity: viewer.entity,
+        components: { "fux::model::Viewer": { notice, ...rest } },
+      }),
+    );
+    seen.push(await rpc("world.spawn_entity", { components: { "fux::model::PaneView": {} } }));
+    seen.push(await rpc("world.insert_components", { entity: viewer.entity, components: { "fux::interaction::Prefix": {} } }));
+    seen.push(await rpc("rpc.discover"));
+    return "sent partial component payloads";
+  });
+
+  try {
+    assert.equal(result.serverCrashed, false, "the server must survive partial payloads");
+    assert.equal(seen.length, 5, "every scripted request must have been sent");
+    assert.equal(jsonOf(seen[0]).result, null, `viewer minus notice must be accepted: ${seen[0]}`);
+    assert.match(seen[1], /missing field `rows`/);
+    assert.match(seen[2], /missing field `pane`/);
+    assert.match(seen[3], /missing field `scroll`/);
+    assert.ok(jsonOf(seen[4]).result, "the server must still answer rpc.discover");
+    const artifact = JSON.parse(readFileSync(result.artifactPath, "utf8"));
+    assert.equal(artifact.serverCrashed, false);
   } finally {
     rmSync(artifactsRoot, { recursive: true, force: true });
   }

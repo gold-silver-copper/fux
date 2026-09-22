@@ -286,6 +286,134 @@ fn stock_launch_removal_settles_without_another_request() -> Outcome {
     Ok(())
 }
 
+/// F1 of the agent exercises: a `Viewer` written back without `notice` killed
+/// the server. A partial payload is now a typed rejection naming the missing
+/// field, or, for the one component that keeps its reflect encoding, its
+/// reflected default. An `Option` field the published schema does not list as
+/// required is accepted as null. Nothing here may end the server.
+#[test]
+fn partial_component_payloads_are_rejected_without_ending_the_server() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+    let insert = |entity: u64, component: &str, value: Value| {
+        server.rpc(
+            "world.insert_components",
+            json!({"entity":entity,"components":{component:value}}),
+        )
+    };
+    let rejected = |entity: u64, component: &str, value: Value, field: &str| -> Outcome {
+        let error = insert(entity, component, value).err().need()?;
+        assert!(
+            error.contains(&format!("missing field `{field}`")),
+            "{component}: {error}"
+        );
+        Ok(())
+    };
+    // The exact payload from `evidence/partial-component-panic.sh`.
+    insert(
+        viewer,
+        "fux::model::Viewer",
+        json!({"rows":24,"cols":80,"zoom":false,"scrollback":5}),
+    )?;
+    let state = server.relation(viewer, "fux::model::Viewer")?;
+    assert_eq!(state.at("scrollback"), 5, "{state}");
+    assert!(state.at("notice").is_null(), "{state}");
+    rejected(
+        viewer,
+        "fux::model::Viewer",
+        json!({"cols":80,"zoom":false,"scrollback":0,"notice":null}),
+        "rows",
+    )?;
+    rejected(viewer, "fux::interaction::Prefix", json!({}), "scroll")?;
+
+    let pid_file = server.directory.join("child.pid");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!("echo $$ > '{}'; exec sleep 60", pid_file.display())
+    ]);
+    let pane = server
+        .rpc(
+            "world.spawn_entity",
+            json!({"components":{
+                "fux::model::Launch":{"argv":argv,"cwd":server.directory,"history_lines":20}
+            }}),
+        )?
+        .at("entity")
+        .as_u64()
+        .need()?;
+    eventually(|| Ok(fs::read_to_string(&pid_file).is_ok_and(|text| !text.trim().is_empty())))?;
+    let pid: i32 = fs::read_to_string(&pid_file)?.trim().parse()?;
+    rejected(
+        pane,
+        "fux::model::Launch",
+        json!({"argv":["/bin/sh"]}),
+        "cwd",
+    )?;
+    // Writing the same recipe back replaces the recipe, not the process: a
+    // replaced component is a change, not an addition, so nothing respawns.
+    insert(
+        pane,
+        "fux::model::Launch",
+        json!({"argv":argv,"cwd":server.directory,"history_lines":20}),
+    )?;
+    let process = |pane: u64| -> Result<Value, String> {
+        Ok(server
+            .query("fux::model::ProcessState")?
+            .rows()
+            .find(|row| row.at("entity") == pane)
+            .map_or(Value::Null, |row| {
+                row.at("components").at("fux::model::ProcessState")
+            }))
+    };
+    for _ in 0..20 {
+        thread::sleep(Duration::from_millis(25));
+        let state = process(pane)?;
+        assert_eq!(state.at("status").at("kind"), "running", "{state}");
+        assert_eq!(state.at("status").at("pid"), pid, "{state}");
+    }
+    assert!(alive(pid));
+    assert_eq!(fs::read_to_string(&pid_file)?.trim().parse::<i32>()?, pid);
+
+    let view = server
+        .rpc(
+            "world.spawn_entity",
+            json!({"components":{"fux::model::PaneView":{"pane":pane}}}),
+        )?
+        .at("entity")
+        .as_u64()
+        .need()?;
+    rejected(view, "fux::model::PaneView", json!({}), "pane")?;
+    let error = server
+        .rpc(
+            "world.spawn_entity",
+            json!({"components":{"fux::model::PaneView":{}}}),
+        )
+        .err()
+        .need()?;
+    assert!(error.contains("missing field `pane`"), "{error}");
+
+    // `Overlay` keeps its reflect encoding and falls back to its default: an
+    // empty list whose placeholder target execution validates like a capture.
+    insert(viewer, "fux::interaction::Overlay", json!({}))?;
+    assert!(!server.screen(viewer)?.is_empty());
+    server.enter(viewer)?;
+    server.input(
+        viewer,
+        json!({"kind":"key","key":"escape","ctrl":false,"alt":false,"shift":false}),
+    )?;
+    eventually(|| {
+        Ok(server
+            .relation(viewer, "fux::interaction::Overlay")?
+            .is_null())
+    })?;
+
+    server.rpc("rpc.discover", Value::Null)?;
+    assert!(!server.screen(viewer)?.is_empty());
+    assert!(alive(pid));
+    Ok(())
+}
+
 #[test]
 fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
     let server = Server::start()?;
