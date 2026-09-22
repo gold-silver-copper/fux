@@ -148,6 +148,13 @@ pub enum Action {
     /// Hostile inputs from hunt 5 that once broke the server. Part of `all`;
     /// FAILS against a vulnerable binary. See fux-fuzz/BREAKS.md.
     Hostile,
+    /// Hunt 6, area 1: the owned HTTP transport spoken to with raw sockets.
+    /// Every case is correctly refused today, so this is coverage in `all`.
+    Transport,
+    /// Hunt 6, area 3: every surface that names an entity, against every value
+    /// class. Registered but excluded from `all`; it reproduces finding 003
+    /// and is expected to FAIL against a vulnerable binary.
+    Identity,
     SceneFuzz {
         seed: u64,
         cases: Vec<SceneCase>,
@@ -596,6 +603,8 @@ impl Plan {
                     | "raw"
                     | "scene_fuzz"
                     | "hostile"
+                    | "transport"
+                    | "identity"
             ),
             "unknown scenario",
         )?;
@@ -809,6 +818,14 @@ impl Plan {
             }
             if matches!(scenario, "all" | "hostile") {
                 actions.push(Action::Hostile);
+            }
+            if matches!(scenario, "all" | "transport") {
+                actions.push(Action::Transport);
+            }
+            // `identity` is excluded from `all`: it reproduces finding 003 and
+            // fails on purpose until that is fixed.
+            if scenario == "identity" {
+                actions.push(Action::Identity);
             }
             if matches!(scenario, "all" | "scene_fuzz") {
                 let cases = if count <= 6 { 40 } else { count.min(400) };
