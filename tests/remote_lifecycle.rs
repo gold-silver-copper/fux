@@ -15,6 +15,7 @@ static NEXT_PORT: AtomicU64 = AtomicU64::new(0);
 // Serialize reservation-to-ready with outer-PTY spawns, not the test scenarios.
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+mod brp;
 mod design;
 
 type Fail = Box<dyn std::error::Error>;
