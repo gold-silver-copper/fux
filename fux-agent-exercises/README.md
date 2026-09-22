@@ -71,7 +71,9 @@ node --test --test-concurrency=1 "tests/*.test.ts"
 # The measured campaign. Spends money.
 node run.ts campaign --repetitions 2 --artifacts runs/campaign-02
 
-# Re-render the measurement table from artifacts.
+# Re-render the measurement table from artifacts, including the per-finding
+# metrics (scroll attempts, hierarchy detours, partial payloads, when the
+# recovery disruption fired and whether the agent looked before acting again).
 node run.ts report --artifacts runs/campaign-02
 ```
 
