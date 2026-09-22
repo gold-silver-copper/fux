@@ -448,6 +448,55 @@ test("positive control: recovery verifier passes after the injected disruption",
       true,
       `the agent's own close must meet the stale-target notice; notice was ${JSON.stringify(noticeAfterClose)}`,
     );
+    // This scripted agent read its viewer right after the close, and that is what counts.
+    assert.deepEqual(artifact.verification.evidence.verifiedBeforeActingAgain, {
+      verified: true,
+      verificationRequest: { index: 3, method: "world.get_components" },
+      nextControlIndex: null,
+    });
+    assert.ok(
+      artifact.verification.notes.some((note: string) => note.includes("read state before acting again")),
+      JSON.stringify(artifact.verification.notes),
+    );
+  } finally {
+    rmSync(artifactsRoot, { recursive: true, force: true });
+  }
+});
+
+test("recovery records an agent that acts again without looking as not verifying, and still passes", async () => {
+  const { result, artifactsRoot } = await driveScenario(requireScenario("recovery"), "b", async (rpc, task) => {
+    const viewer = viewerFrom(task);
+    const byName = await processesByName(rpc);
+    const target = byName.get("target-a");
+    const keep = byName.get("target-b");
+    assert.ok(target && keep);
+    const view = await paneViewFor(rpc, target);
+    assert.ok(view !== undefined);
+    const keepView = await paneViewFor(rpc, keep);
+    assert.ok(keepView);
+    // Close, then focus at once: the notice is set and cleared with nobody looking.
+    await rpc("world.trigger_event", control(viewer, { kind: "close", subject: { pane: view } }));
+    await rpc("world.trigger_event", control(viewer, { kind: "focus", pane: keepView }));
+    return "Closed target-a and focused target-b.";
+  });
+
+  try {
+    assert.equal(result.outcome, "pass", JSON.stringify(result.checks.filter((c) => !c.ok), null, 2));
+    const artifact = JSON.parse(readFileSync(result.artifactPath, "utf8"));
+    const evidence = artifact.verification.evidence;
+    assert.equal(evidence.disruption.applied, true);
+    // Calls: processes query, target's pane view, keep's pane view, close, focus.
+    assert.equal(evidence.disruption.triggeredByCallIndex, 3);
+    assert.equal(evidence.sawStaleTargetNotice, false);
+    assert.deepEqual(evidence.verifiedBeforeActingAgain, {
+      verified: false,
+      verificationRequest: null,
+      nextControlIndex: 4,
+    });
+    assert.ok(
+      artifact.verification.notes.some((note: string) => note.includes("acted again (call 4) without reading state first")),
+      JSON.stringify(artifact.verification.notes),
+    );
   } finally {
     rmSync(artifactsRoot, { recursive: true, force: true });
   }
