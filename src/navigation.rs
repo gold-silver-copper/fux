@@ -280,10 +280,72 @@ pub(crate) fn repair_on_tab_unlinked(
     commands.queue(repair);
 }
 
+/// Repair's own scheduling state. While a pass runs, every request for repair,
+/// from a relationship hook or from a queued command flushed inside the pass,
+/// only marks `again` instead of queueing or recursing. When the pass ends,
+/// `repair` runs another if anything was marked; a pass over consistent viewers
+/// changes nothing and marks nothing, so a settled world costs one quiet pass.
+/// `MAX_PASSES` bounds the loop, so a viewer that can never become consistent
+/// costs a warning rather than the process.
+#[derive(Resource, Default)]
+pub(crate) struct Repairing {
+    running: bool,
+    again: bool,
+}
+
+const MAX_PASSES: usize = 16;
+
+/// Records a request made while `repair` runs. Returns whether it was absorbed.
+fn absorbed(world: &mut DeferredWorld) -> bool {
+    match world.get_resource_mut::<Repairing>() {
+        Some(mut state) if state.running => {
+            state.again = true;
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Insertion or removal of a viewer relationship, by any code path, repairs
 /// every viewer once the change has completed.
 pub(crate) fn repair_later(mut world: DeferredWorld, _: HookContext) {
-    world.commands().queue(repair);
+    if !absorbed(&mut world) {
+        world.commands().queue(repair);
+    }
+}
+
+/// A `Viewer` on a layout node makes that node look like a viewer to every
+/// pass over viewers: `repair` gives it relationships whose hooks queue repair
+/// again, and it never becomes consistent. Like a cyclic `ChildOf`, the state
+/// is removed where it is created, whichever of the two roles arrives second.
+/// The layout role wins; the node keeps its children, processes and layout,
+/// and loses the viewer-only state it gained: the relationships `repair` may
+/// have given it, the navigation memory and paste ownership `Viewer` requires,
+/// and any presentation, prefix, overlay or selection.
+pub(crate) fn reject_viewer_on_layout(
+    inserted: On<Insert, (Viewer, LayoutNode)>,
+    mixed: Query<(), (With<Viewer>, LayoutRole)>,
+    mut commands: Commands,
+) {
+    let entity = inserted.entity;
+    if !mixed.contains(entity) {
+        return;
+    }
+    bevy_log::warn!(
+        "Entity {entity} is a layout node and cannot also be a viewer. The Viewer component has been removed."
+    );
+    commands.entity(entity).try_remove::<(
+        Viewer,
+        Viewing,
+        OnTab,
+        Focused,
+        Memory,
+        crate::paste::Ownership,
+        crate::presentation::Presentation,
+        crate::interaction::Prefix,
+        crate::interaction::Overlay,
+        crate::selection::Selection,
+    )>();
 }
 
 /// A viewer that changes tab remembers it for the workspace it is looking at.
@@ -343,6 +405,7 @@ pub(crate) fn forget<C: Component>(
 
 /// Registers the observers that keep viewer relationships and memory valid.
 pub(crate) fn observe(world: &mut World) {
+    world.add_observer(reject_viewer_on_layout);
     world.add_observer(normalize_on_tab_removed);
     world.add_observer(normalize_on_child_added);
     world.add_observer(repair_on_tab_unlinked);
@@ -353,11 +416,39 @@ pub(crate) fn observe(world: &mut World) {
 
 /// Gives every viewer a workspace, a tab in it and a pane in that, filling
 /// what is missing from memory or the first available. Consistent viewers are
-/// left untouched, so the insertions here cannot trigger another repair.
+/// left untouched, and the insertions here queue no further repair (see
+/// `Repairing`), so one pass is all any change costs.
 pub fn repair(world: &mut World) {
+    let mut state = world.get_resource_or_insert_with(Repairing::default);
+    if state.running {
+        state.again = true;
+        return;
+    }
+    state.running = true;
+    let mut passes = 0;
+    loop {
+        world.get_resource_or_insert_with(Repairing::default).again = false;
+        repair_viewers(world);
+        passes += 1;
+        if !world.get_resource_or_insert_with(Repairing::default).again {
+            break;
+        }
+        if passes == MAX_PASSES {
+            bevy_log::warn!(
+                "Viewer repair did not settle after {MAX_PASSES} passes; the remaining inconsistency is left for the next change."
+            );
+            break;
+        }
+    }
+    let mut state = world.get_resource_or_insert_with(Repairing::default);
+    state.running = false;
+    state.again = false;
+}
+
+fn repair_viewers(world: &mut World) {
     let roots = workspaces(world);
     let viewers: Vec<_> = world
-        .query_filtered::<Entity, With<Viewer>>()
+        .query_filtered::<Entity, IsViewer>()
         .iter(world)
         .collect();
     for id in viewers {

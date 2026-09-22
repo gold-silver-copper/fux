@@ -21,7 +21,8 @@ impl Frontend {
         let writer = pair.master.take_writer()?;
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
         command.arg("attach");
-        command.env("FUX_ENDPOINT", &server.endpoint);
+        command.env("FUX_SOCKET", &server.socket);
+        command.env_remove("FUX_ENDPOINT");
         let child = {
             let _spawn = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
             pair.slave.spawn_command(command)?

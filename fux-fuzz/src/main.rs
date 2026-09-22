@@ -1,6 +1,8 @@
 mod runtime;
 mod scenarios;
 mod trace;
+#[path = "../../src/unix_http.rs"]
+mod unix_http;
 
 use runtime::{Budget, Server, tool_version};
 use serde_json::json;
@@ -160,7 +162,7 @@ fn run(options: Options) -> Result<()> {
             "rustc":tool_version("rustc", "-Vv", &budget)?,"cargo":tool_version("cargo", "-V", &budget)?,
             "seed":options.plan.seed,"deadline_seconds":options.seconds,"operation_seconds":5,
             "capture_tail_bytes":65536,"response_limit_bytes":1048576,"event_limit_bytes_per_case":4194304,
-            "environment":"children use env_clear; only PATH, HOME, SHELL, TERM, PS1, HISTFILE and frontend FUX_ENDPOINT are set"
+            "environment":"children use env_clear; only PATH, HOME, SHELL, TERM, PS1, HISTFILE and frontend FUX_SOCKET are set"
         }))?,
     )?;
     println!("Bundle: {}", directory.display());

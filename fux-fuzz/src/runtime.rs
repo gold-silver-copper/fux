@@ -1,6 +1,7 @@
 use crate::{
     Result, ensure,
     trace::{Config, Journal},
+    unix_http,
 };
 use nix::{
     fcntl::{FcntlArg, OFlag, fcntl},
@@ -13,16 +14,15 @@ use std::{
     collections::{BTreeSet, VecDeque},
     fs::{self, File},
     io::{Read, Write},
-    net::TcpListener,
     os::{
         fd::{AsFd, BorrowedFd},
-        unix::fs::PermissionsExt,
+        unix::fs::{DirBuilderExt, PermissionsExt},
     },
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdout, Command, Stdio},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -115,13 +115,7 @@ pub struct Frontend {
     original_termios: nix::sys::termios::Termios,
 }
 impl Frontend {
-    fn spawn(
-        binary: &Path,
-        directory: &Path,
-        endpoint: &str,
-        rows: u16,
-        cols: u16,
-    ) -> Result<Self> {
+    fn spawn(binary: &Path, directory: &Path, socket: &Path, rows: u16, cols: u16) -> Result<Self> {
         let pair = native_pty_system().openpty(size(rows, cols))?;
         // The master owns this FD for the duration of dup. The duplicate is owned
         // by File, and all subsequent I/O is safe, nonblocking, and single-threaded.
@@ -140,7 +134,7 @@ impl Frontend {
         command.env("PATH", "/usr/bin:/bin");
         command.env("HOME", directory);
         command.env("TERM", "xterm-256color");
-        command.env("FUX_ENDPOINT", endpoint);
+        command.env("FUX_SOCKET", socket);
         let child = pair.slave.spawn_command(command)?;
         drop(pair.slave);
         Ok(Self {
@@ -264,8 +258,12 @@ pub struct Server {
     out: Capture,
     err: Capture,
     pub directory: PathBuf,
-    endpoint: String,
-    endpoint_verified: bool,
+    /// The server's socket, in `socket_directory`: private to this fixture,
+    /// and short, because a Unix socket path is limited to about 100 bytes.
+    socket: PathBuf,
+    socket_directory: PathBuf,
+    /// Readiness was observed, so a final observation is worth attempting.
+    ready_seen: bool,
     binary: PathBuf,
     pub frontends: Vec<Frontend>,
     pub journal: Journal,
@@ -279,7 +277,7 @@ pub struct Server {
     /// their own compact summary per step and keep failures verbose.
     pub quiet: bool,
     /// One connection-pooling agent per server: a fresh connection per
-    /// request exhausts ephemeral ports within a few thousand requests.
+    /// request costs a connect per call and once exhausted ephemeral ports.
     agent: Option<(Duration, ureq::Agent)>,
 }
 impl Server {
@@ -317,20 +315,23 @@ impl Server {
             )?,
             Config::Missing => (),
         }
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
-        journal.record("spawn_server", json!({"binary":binary,"port":port,"config":config,"SHELL":default,
+        static SOCKETS: AtomicU64 = AtomicU64::new(0);
+        let socket_directory = std::env::temp_dir().join(format!(
+            "fxz-{}-{}",
+            std::process::id(),
+            SOCKETS.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&socket_directory)?;
+        fs::set_permissions(&socket_directory, fs::Permissions::from_mode(0o700))?;
+        let socket = socket_directory.join("fux.sock");
+        journal.record("spawn_server", json!({"binary":binary,"socket":socket,"config":config,"SHELL":default,
             "PATH":"/usr/bin:/bin","HOME":directory,"TERM":"xterm-256color","PS1":"$ ","environment":"cleared"}))?;
-        drop(listener); // inherently racy: classify bind failures, never retry a scenario
         let mut child = Command::new(binary)
-            .args([
-                "server",
-                "--address",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-                "--config",
-            ])
+            .args(["server", "--socket"])
+            .arg(&socket)
+            .arg("--config")
             .arg(directory.join("fux.json"))
             .current_dir(directory)
             .env_clear()
@@ -361,8 +362,9 @@ impl Server {
             out: Capture::default(),
             err: Capture::default(),
             directory: directory.to_owned(),
-            endpoint: format!("http://127.0.0.1:{port}"),
-            endpoint_verified: false,
+            socket,
+            socket_directory,
+            ready_seen: false,
             binary: binary.to_owned(),
             frontends: Vec::new(),
             journal,
@@ -391,12 +393,11 @@ impl Server {
         )?;
         if let Some(status) = self.child.try_wait()? {
             self.stopped = true;
-            let category = if self.err.text().contains("Address already in use") {
-                "setup: port collision"
-            } else {
-                "application: premature server exit"
-            };
-            return Err(format!("{category}: {status}; {}", self.err.text()).into());
+            return Err(format!(
+                "application: premature server exit: {status}; {}",
+                self.err.text()
+            )
+            .into());
         }
         Ok(())
     }
@@ -424,15 +425,11 @@ impl Server {
             .min(self.budget.end.saturating_duration_since(Instant::now()))
             .max(Duration::from_millis(50));
         if self.agent.as_ref().is_none_or(|(t, _)| *t != timeout) {
-            let agent: ureq::Agent = ureq::Agent::config_builder()
-                .timeout_global(Some(timeout))
-                .build()
-                .into();
-            self.agent = Some((timeout, agent));
+            self.agent = Some((timeout, unix_http::agent(&self.socket, Some(timeout))));
         }
         let agent = &self.agent.as_ref().ok_or("agent")?.1;
         let mut response = agent
-            .post(&self.endpoint)
+            .post(unix_http::URL)
             .send_json(json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}))?;
         let mut bytes = Vec::new();
         response
@@ -467,8 +464,8 @@ impl Server {
             if s.request("rpc.discover", Value::Null).is_err() {
                 return Ok(false);
             }
-            // Before any mutation, distinguish our initial pane from a foreign
-            // fux that won the unavoidable release-to-bind port race.
+            // The initial pane exists once the first workspace is built. The
+            // socket is private to this fixture, so the server answering is ours.
             let rows = s.request(
                 "world.query",
                 json!({"data":{"components":["fux::model::Launch"]}}),
@@ -479,13 +476,7 @@ impl Server {
             if rows.is_empty() {
                 return Ok(false);
             }
-            ensure(
-                rows.iter().all(|row| {
-                    row.pointer("/components/fux::model::Launch/cwd") == Some(&json!(s.directory))
-                }),
-                "setup: port collision (endpoint belongs to another server)",
-            )?;
-            s.endpoint_verified = true;
+            s.ready_seen = true;
             Ok(true)
         })
     }
@@ -574,7 +565,7 @@ impl Server {
         self.frontends.push(Frontend::spawn(
             &self.binary,
             &self.directory,
-            &self.endpoint,
+            &self.socket,
             rows,
             cols,
         )?);
@@ -689,7 +680,7 @@ impl Server {
         let mut errors = Vec::new();
         // Best-effort final observation before teardown; old observations remain
         // available if interruption or the overall deadline prevents requests.
-        if self.endpoint_verified
+        if self.ready_seen
             && !self.stopped
             && self.budget.check(self.budget.end).is_ok()
             && let Err(e) = self.query("fux::model::ProcessState")
@@ -744,6 +735,11 @@ impl Server {
                     errors.push("server could not be reaped".into());
                 }
             }
+        }
+        // The server removed its socket on shutdown; its lockfile and the
+        // private directory are this fixture's to remove.
+        if self.stopped {
+            let _ = fs::remove_dir_all(&self.socket_directory);
         }
         if let Ok(text) = fs::read_to_string(self.directory.join("initial.pid"))
             && let Ok(pid) = text.trim().parse::<i32>()
