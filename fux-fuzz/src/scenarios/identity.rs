@@ -3,9 +3,8 @@
 //! generated value classes, and after each one the server must still answer and
 //! the driver must still paint.
 //!
-//! This scenario asserts the fix, so a vulnerable binary FAILS here. It is
-//! registered but excluded from `all` until finding 003 is fixed; run it with
-//! `--scenario identity`. See fux-fuzz/BREAKS.md.
+//! This scenario asserts the fixes, so a binary carrying finding 003, 004 or
+//! 005 FAILS here. It runs in the default smoke. See fux-fuzz/BREAKS.md.
 //!
 //! `Entity::to_bits` is an opaque encoding: its low 32 bits are the bitwise
 //! complement of the entity index, so bits `0xFFFF_FFFF` is entity index 0,
@@ -60,10 +59,14 @@ struct World {
 }
 
 fn survey(s: &mut Server) -> Result<World> {
-    let viewer = {
-        let f = s.attach(24, 80)?;
-        s.frontend(f)?.viewer
-    };
+    // An API viewer, not a frontend: several surfaces here legitimately remove
+    // the viewer they name (a layout component inserted onto one wins the
+    // role, hunt 5 finding 001), and a real frontend would exit with it.
+    let viewer = s
+        .rpc("fux.attach", json!({"rows":24,"cols":80}))?
+        .get("viewer")
+        .and_then(Value::as_u64)
+        .ok_or("attach returned no viewer")?;
     s.wait("first shell output", |s| {
         Ok(s.frame(viewer, 24, 80)?.contains("DEFAULT-SHELL"))
     })?;
@@ -108,16 +111,20 @@ fn value(w: &World, id: Id) -> Value {
 }
 
 /// Sends one value at one surface, then proves the server is still there.
+///
+/// A viewer is not guaranteed to survive: inserting a layout component onto
+/// one removes the `Viewer`, because the layout role wins (hunt 5, finding
+/// 001). That is documented behaviour rather than a break, so a driver that
+/// goes away is replaced and the sweep carries on. What may never happen is
+/// the server dying, hanging, or being unable to paint for a live viewer.
 fn probe(
     s: &mut Server,
-    w: &World,
+    w: &mut World,
     surface: &str,
     label: &str,
     request: (&str, Value),
 ) -> Result<()> {
     let (method, params) = request;
-    // The request may be refused; that is fine. What may not happen is the
-    // server dying, hanging, or losing the driver's ability to paint.
     let _ = s.rpc(method, params);
     s.healthy().map_err(|e| {
         format!("application: {surface} <- {label}: the server did not survive: {e}")
@@ -125,35 +132,47 @@ fn probe(
     s.rpc("rpc.discover", Value::Null).map_err(|e| {
         format!("application: {surface} <- {label}: the server stopped answering: {e}")
     })?;
+    let live = s
+        .query("fux::model::Viewer")?
+        .iter()
+        .any(|row| runtime::id(row).ok() == Some(w.viewer));
+    if !live {
+        w.viewer = s
+            .rpc("fux.attach", json!({"rows":24,"cols":80}))?
+            .get("viewer")
+            .and_then(Value::as_u64)
+            .ok_or("attach returned no viewer")?;
+    }
     ensure(
         !s.frame(w.viewer, 24, 80)?.is_empty(),
-        &format!("application: {surface} <- {label}: the driver stopped painting"),
+        &format!("application: {surface} <- {label}: a live viewer stopped painting"),
     )?;
     Ok(())
 }
 
-fn control(w: &World, command: Value) -> (&'static str, Value) {
+fn control(viewer: u64, command: Value) -> (&'static str, Value) {
     (
         "world.trigger_event",
-        json!({"event":"fux::control::Control","value":{"viewer":w.viewer,"command":command}}),
+        json!({"event":"fux::control::Control","value":{"viewer":viewer,"command":command}}),
     )
 }
 
 pub(super) fn run(s: &mut Server) -> Result<()> {
-    let w = survey(s)?;
+    let mut w = survey(s)?;
     for (label, id) in VALUES {
         let v = value(&w, *id);
+        let (viewer, tab, workspace, leaf) = (w.viewer, w.tab, w.workspace, w.leaf);
         // 1. the fux.* methods, which parse "viewer" out of params by hand
         probe(
             s,
-            &w,
+            &mut w,
             "fux.frame",
             label,
             ("fux.frame", json!({ "viewer": v })),
         )?;
         probe(
             s,
-            &w,
+            &mut w,
             "fux.frame+watch",
             label,
             ("fux.frame+watch", json!({ "viewer": v })),
@@ -161,7 +180,7 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         // 2. the entity event targets
         probe(
             s,
-            &w,
+            &mut w,
             "Control .viewer",
             label,
             (
@@ -172,7 +191,7 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         )?;
         probe(
             s,
-            &w,
+            &mut w,
             "UserInput .viewer",
             label,
             (
@@ -210,11 +229,11 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
             ),
             (
                 "load_layout mapping",
-                json!({"kind":"load_layout","workspace":w.workspace,
-                       "path":"l.scn.ron","mapping":[[v, w.leaf]]}),
+                json!({"kind":"load_layout","workspace":workspace,
+                       "path":"l.scn.ron","mapping":[[v, leaf]]}),
             ),
         ] {
-            probe(s, &w, name, label, control(&w, command))?;
+            probe(s, &mut w, name, label, control(viewer, command))?;
         }
         // 4. entity-typed fields inside reflected components
         for (component, body) in [
@@ -226,36 +245,36 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         ] {
             probe(
                 s,
-                &w,
+                &mut w,
                 component,
                 label,
                 (
                     "world.insert_components",
-                    json!({"entity":w.viewer,"components":{component:body}}),
+                    json!({"entity":viewer,"components":{component:body}}),
                 ),
             )?;
         }
         probe(
             s,
-            &w,
+            &mut w,
             "Children with a duplicated id",
             label,
             (
                 "world.insert_components",
-                json!({"entity":w.tab,
+                json!({"entity":tab,
                        "components":{"bevy_ecs::hierarchy::Children":[v, v]}}),
             ),
         )?;
         probe(
             s,
-            &w,
+            &mut w,
             "Overlay.target.leaf",
             label,
             (
                 "world.insert_components",
-                json!({"entity":w.viewer,"components":{"fux::interaction::Overlay":{
+                json!({"entity":viewer,"components":{"fux::interaction::Overlay":{
                     "serial":1,
-                    "target":{"leaf":v,"tab":w.tab,"workspace":w.workspace},
+                    "target":{"leaf":v,"tab":tab,"workspace":workspace},
                     "mode":{"Confirm":{"command":{"kind":"zoom"}}}}}}),
             ),
         )?;
@@ -277,11 +296,55 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
             ),
             (
                 "world.reparent_entities",
-                json!({"entities":[w.leaf],"parent":v}),
+                json!({"entities":[leaf],"parent":v}),
             ),
         ] {
-            probe(s, &w, method, label, (method, params))?;
+            probe(s, &mut w, method, label, (method, params))?;
         }
+    }
+
+    // The ground finding 003 created: a watch names an entity, and closing it
+    // detaches a viewer -- and nothing else. Each of these is a live entity of
+    // the wrong kind, and each must still be there afterwards.
+    // Freshly made, because the sweep above legitimately closed the originals:
+    // `close tab` and `despawn_entity` were among the requests it sent.
+    s.control(w.viewer, json!({"kind":"tab_new","name":"watch-victim"}))?;
+    s.wait("a fresh tab to watch", |s| {
+        Ok(s.query("fux::model::Tab")?.len() >= 2)
+    })?;
+    let newest = |s: &mut Server, component: &str| -> Result<u64> {
+        s.query(component)?
+            .iter()
+            .filter_map(|row| runtime::id(row).ok())
+            .max()
+            .ok_or_else(|| format!("no {component} to watch").into())
+    };
+    let tab = newest(s, "fux::model::Tab")?;
+    let workspace = newest(s, "fux::model::Workspace")?;
+    let leaf = newest(s, "fux::model::PaneView")?;
+    for (kind, entity, component) in [
+        ("a tab", tab, "fux::model::Tab"),
+        ("a workspace", workspace, "fux::model::Workspace"),
+        ("a pane view", leaf, "fux::model::PaneView"),
+    ] {
+        // Both routes: a batch, which is refused outright, and a request that
+        // opens and closes a real stream.
+        let _ = s.rpc("fux.frame+watch", json!({ "viewer": entity }));
+        probe(
+            s,
+            &mut w,
+            "a closed watch",
+            kind,
+            ("fux.frame+watch", json!({ "viewer": entity })),
+        )?;
+        let survived = s
+            .query(component)?
+            .iter()
+            .any(|row| runtime::id(row).ok() == Some(entity));
+        ensure(
+            survived,
+            &format!("application: a closed watch naming {kind} despawned it (finding 003)"),
+        )?;
     }
     Ok(())
 }
