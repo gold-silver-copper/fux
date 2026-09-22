@@ -728,3 +728,77 @@ fn stock_methods_refuse_ids_that_used_to_end_the_server() -> Outcome {
     assert!(!server.screen(viewer)?.is_empty());
     Ok(())
 }
+
+/// Hunt 6 finding 006. `accept` failing with EMFILE is not like a peer that
+/// aborted: retrying cannot free a descriptor. fux used to warn and retry
+/// twenty times a second for as long as the pressure lasted, while clients
+/// waited in silence on a backlog that never drained.
+#[test]
+fn descriptor_pressure_is_reported_bounded_and_recovers() -> Outcome {
+    let (directory, socket) = fixture()?;
+    let server = Spawned::start(&directory, &socket, |command| {
+        // SAFETY: setrlimit is async-signal-safe and touches only the child.
+        unsafe {
+            command.pre_exec(|| {
+                let limit = nix::libc::rlimit {
+                    rlim_cur: 64,
+                    rlim_max: 64,
+                };
+                if nix::libc::setrlimit(nix::libc::RLIMIT_NOFILE, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    })?;
+    eventually(|| Ok(answers(&socket)))?;
+
+    // One client holds connections until the server runs out of descriptors.
+    let mut held = Vec::new();
+    for _ in 0..400 {
+        match UnixStream::connect(&socket) {
+            Ok(mut stream) => {
+                let _ = stream.write_all(b"GET /hold HTTP/1.1\r\nHost: fux\r\n");
+                held.push(stream);
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => break,
+        }
+    }
+    assert!(held.len() > 50, "only held {} connections", held.len());
+
+    // Every attempt must fail promptly rather than hang.
+    let mut slowest = Duration::ZERO;
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        let started = Instant::now();
+        let _ = answers(&socket);
+        slowest = slowest.max(started.elapsed());
+        thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        slowest < Duration::from_secs(5),
+        "a client waited {slowest:?} on a listener that could not answer"
+    );
+
+    // The condition is reported, and the log is bounded rather than a flood.
+    let log = server.log();
+    assert!(
+        log.contains("out of descriptors"),
+        "descriptor pressure was never reported: {log}"
+    );
+    let lines = log.matches("BRP socket accept").count();
+    assert!(lines <= 40, "the accept loop logged {lines} lines, a flood");
+
+    // Releasing the pressure brings the server back on its own.
+    drop(held);
+    eventually(|| Ok(answers(&socket)))?;
+    assert!(
+        server.log().contains("accept recovered"),
+        "recovery was not reported"
+    );
+    stop(&socket)?;
+    drop(server);
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}

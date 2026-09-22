@@ -46,7 +46,7 @@ use std::{
     sync::mpsc,
     task::{Context, Poll},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// The file name used inside a default socket directory.
@@ -386,23 +386,36 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
     Ok((endpoint, UnixListener::from(fd)))
 }
 
-/// Accept errors that pass (descriptor or memory pressure, an aborted peer);
-/// anything else ends the server.
-fn transient(error: &io::Error) -> bool {
+/// Accept errors that pass on their own: a peer that went away between its
+/// connect and this accept, or an interrupted call. Retrying is the answer.
+fn momentary(error: &io::Error) -> bool {
     use nix::libc;
     matches!(
         error.raw_os_error(),
-        Some(
-            libc::EMFILE
-                | libc::ENFILE
-                | libc::ENOBUFS
-                | libc::ENOMEM
-                | libc::ECONNABORTED
-                | libc::EINTR
-                | libc::EAGAIN
-        )
+        Some(libc::ECONNABORTED | libc::EINTR | libc::EAGAIN)
     )
 }
+
+/// Accept errors that persist until something frees a resource. Retrying the
+/// same accept cannot free one, so these need their own handling; anything
+/// that is neither this nor `momentary` ends the server.
+fn starved(error: &io::Error) -> bool {
+    use nix::libc;
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+    )
+}
+
+/// A descriptor held back so the accept loop has one to spend when it runs
+/// out. Without it a starved loop cannot accept, so it cannot close, so the
+/// listener's backlog stays full and clients wait in silence.
+fn reserve() -> Option<File> {
+    File::open("/dev/null").ok()
+}
+
+/// How long descriptor pressure may last before it is reported again.
+const PRESSURE_REPORT: Duration = Duration::from_secs(5);
 
 /// Serves BRP on `listener` until the returned task is dropped. A fatal accept
 /// error is passed to `failed`, which must make the server exit.
@@ -413,9 +426,18 @@ pub fn serve(
 ) -> Result<Task<()>, String> {
     let listener = Async::new(listener).map_err(|error| format!("socket: {error}"))?;
     Ok(IoTaskPool::get().spawn(async move {
+        let mut spare = reserve();
+        // When the pressure started, and when it was last reported.
+        let mut pressure: Option<(Instant, Instant)> = None;
         loop {
             match listener.accept().await {
                 Ok((client, _)) => {
+                    if let Some((since, _)) = pressure.take() {
+                        bevy_log::error!(
+                            "BRP socket accept recovered after {:.1?} of descriptor pressure.",
+                            since.elapsed()
+                        );
+                    }
                     let requests = requests.clone();
                     IoTaskPool::get()
                         .spawn(async move {
@@ -429,9 +451,45 @@ pub fn serve(
                         })
                         .detach();
                 }
-                Err(error) if transient(&error) => {
-                    bevy_log::warn!("BRP socket accept: {error}");
+                Err(error) if starved(&error) => {
+                    // Report once when it starts and at intervals afterwards.
+                    // The condition can last as long as whatever holds the
+                    // descriptors, and one line per attempt would be a flood.
+                    let now = Instant::now();
+                    match &mut pressure {
+                        None => {
+                            bevy_log::error!(
+                                "BRP socket accept is out of descriptors ({error}). \
+                                 New connections are being refused until this clears."
+                            );
+                            pressure = Some((now, now));
+                        }
+                        Some((since, reported)) if now.duration_since(*reported) >= PRESSURE_REPORT => {
+                            bevy_log::warn!(
+                                "BRP socket accept still out of descriptors after {:.1?} ({error}).",
+                                since.elapsed()
+                            );
+                            *reported = now;
+                        }
+                        Some(_) => {}
+                    }
+                    // Spend the reserve to accept one waiting connection and
+                    // close it at once. That drains the backlog, so a client
+                    // gets a prompt refusal instead of waiting on a listener
+                    // that cannot answer, and the loop keeps making progress.
+                    if let Some(held) = spare.take() {
+                        drop(held);
+                        // The listener is non-blocking, so this only takes a
+                        // connection that is already waiting.
+                        if let Ok((shed, _)) = listener.get_ref().accept() {
+                            drop(shed);
+                        }
+                        spare = reserve();
+                    }
                     Timer::after(Duration::from_millis(50)).await;
+                }
+                Err(error) if momentary(&error) => {
+                    bevy_log::debug!("BRP socket accept: {error}");
                 }
                 Err(error) => {
                     failed(format!("BRP socket accept failed: {error}"));

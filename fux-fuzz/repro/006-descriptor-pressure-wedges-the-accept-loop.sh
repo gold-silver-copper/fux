@@ -1,38 +1,41 @@
 #!/bin/sh
-# Hunt 6, finding 006 (class 2: a request never returns / the server stops
-# answering, and the condition does not clear on its own).
+# Hunt 6, finding 006 (class 2: the server stops answering, and the condition
+# does not clear on its own).
 #
-# When `accept` fails with EMFILE or ENFILE, `transport::serve` treats it as
-# transient (src/transport.rs ~390-440): it logs a warning, sleeps 50 ms and
-# loops. It never accepts-and-closes to drain the backlog and never sheds a
-# connection, so while the descriptor pressure lasts:
+# `transport::serve` used to treat EMFILE and ENFILE as transient, alongside
+# ECONNABORTED, EINTR and EAGAIN: warn, sleep 50 ms, loop. An aborted peer is
+# momentary and retrying is right; a descriptor shortage persists until
+# something frees a descriptor, and retrying the same accept cannot free one.
+# So while one same-user process held connections open, the server logged about
+# twenty warnings a second for as long as it lasted -- unbounded growth on a
+# server whose stderr is redirected to a file -- and every new client waited in
+# silence on a listener that never answered, because the backlog stayed full.
 #
-#   * no new client can connect at all -- `fux attach`, `fux rpc` and `fux stop`
-#     all fail, because every one of them needs a new connection;
-#   * the warning repeats about twenty times a second into stderr for as long
-#     as the pressure lasts, which is unbounded log growth on a server whose
-#     stderr is redirected to a file.
+# Fixed: the two kinds of error are now distinguished. Under descriptor
+# pressure fux reports the condition once at error level and then at most every
+# five seconds, spends a reserved descriptor to accept and immediately close one
+# waiting connection so the backlog drains, and reports recovery when accept
+# succeeds again.
 #
-# The pressure is supplied here by one same-user process holding connections
-# open, which is exactly the caller the README already trusts with the whole
-# API, so this is not a privilege question: it is that an ordinary client can
-# make the server unreachable to every other client, and that the server does
-# not recover on its own.
+# What that does and does not buy, stated plainly: a server with no descriptors
+# cannot serve a new client, and no change here alters that. What changed is
+# that a client now fails at once instead of hanging, the log is bounded, the
+# condition is visible, and the server recovers by itself the moment the
+# pressure clears.
 #
-# The server is run under `ulimit -n 64` so the case is bounded, quick and
-# cannot disturb the machine. The same wedge happens at any limit; the limit
-# only decides how many connections it takes. macOS `launchctl limit maxfiles`
-# is 256 by default, so a server started from a launchd context reaches it with
-# roughly two hundred connections.
+# This script therefore measures the fixed behaviour rather than mere
+# reachability. The server runs under `ulimit -n 64` so the case is bounded,
+# quick and cannot disturb the machine; the same handling applies at any limit.
 #
 # Usage: 006-descriptor-pressure-wedges-the-accept-loop.sh /path/to/fux
-# Exit 0: reproduced (no new client could connect for at least ten seconds
-#         while the pressure lasted).
-# Exit 1: verified not reproduced (a new client still connected).
+# Exit 0: reproduced -- the log flooded, or a client hung, or the server did
+#         not recover once the pressure cleared.
+# Exit 1: verified not reproduced -- bounded logging, prompt failures, the
+#         condition reported, and automatic recovery.
 # Exit 2: setup or infrastructure failure.
 #
 # NEGATIVE_CONTROL=1 opens and immediately closes the same connections instead
-# of holding them, which must leave the server reachable (exit 1).
+# of holding them, so no pressure ever builds; that must also exit 1.
 set -u
 FUX="${1:?usage: $0 /path/to/fux}"
 [ -x "$FUX" ] || { echo "not executable: $FUX" >&2; exit 2; }
@@ -121,53 +124,76 @@ for i in range(400):
             break
 print("opened %d connections (%d refusals), holding=%s" % (len(held) or i, refused, not CONTROL))
 
-# Can any new client connect now? Measure for fifteen seconds.
-start = time.time()
-ok_at = None
+# Under pressure: does a new client fail promptly, or hang?
+slowest = 0.0
 attempts = 0
-while time.time() - start < 15:
+answered = 0
+start = time.time()
+while time.time() - start < 12:
     attempts += 1
+    t0 = time.time()
     try:
-        if rpc("rpc.discover", timeout=1.0):
-            ok_at = time.time() - start
+        if rpc("rpc.discover", timeout=8.0):
+            answered += 1
+    except Exception:
+        pass
+    slowest = max(slowest, time.time() - t0)
+    time.sleep(0.25)
+
+def log_text():
+    try:
+        with open(ERR, "rb") as f:
+            return f.read().decode("utf8", "replace")
+    except Exception:
+        return ""
+
+text = log_text()
+reports = text.count("out of descriptors")
+lines = text.count("BRP socket accept")
+print("attempts=%d answered=%d slowest=%.2fs; log lines=%d, condition reports=%d"
+      % (attempts, answered, slowest, lines, reports))
+
+# Release the pressure: the server must come back on its own.
+for c in held:
+    c.close()
+recovered = None
+t0 = time.time()
+while time.time() - t0 < 20:
+    try:
+        if rpc("rpc.discover", timeout=2.0):
+            recovered = time.time() - t0
             break
     except Exception:
         pass
-    time.sleep(0.25)
-blocked = time.time() - start
+    time.sleep(0.1)
+text = log_text()
+print("recovered=%s, recovery reported=%d"
+      % (("%.1fs" % recovered) if recovered is not None else "no",
+         text.count("accept recovered")))
 
-warnings = 0
-try:
-    with open(ERR, "rb") as f:
-        warnings = f.read().decode("utf8", "replace").count("BRP socket accept")
-except Exception:
-    pass
-print("new-client attempts=%d, first success at %s, accept warnings in stderr=%d"
-      % (attempts, ("%.1fs" % ok_at) if ok_at is not None else "never", warnings))
-
-if ok_at is None:
-    # Does it clear once the pressure stops? That is the recovery half.
-    for c in held:
-        c.close()
-    time.sleep(1.0)
-    recovered = False
-    t0 = time.time()
-    while time.time() - t0 < 20:
-        try:
-            if rpc("rpc.discover", timeout=2.0):
-                recovered = True
-                break
-        except Exception:
-            time.sleep(0.2)
-    print("after releasing the connections, the server answered again: %s (%.1fs)"
-          % (recovered, time.time() - t0))
-    print("REPRODUCED: no new client could connect for %.0fs while one process held "
-          "connections open; %d accept warnings were logged" % (blocked, warnings))
+if CONTROL:
+    # No pressure was ever applied, so the server simply keeps working.
+    if answered > 0 and lines == 0:
+        print("NOT reproduced: no pressure, the server answered throughout")
+        sys.exit(20)
+    print("REPRODUCED: the server misbehaved with no pressure applied")
     sys.exit(10)
 
-for c in held:
-    c.close()
-print("a new client connected after %.1fs" % ok_at)
+if lines > 40:
+    print("REPRODUCED: the accept loop logged %d lines, a flood" % lines)
+    sys.exit(10)
+if slowest > 5.0:
+    print("REPRODUCED: a client waited %.1fs on a listener that could not answer" % slowest)
+    sys.exit(10)
+if reports == 0:
+    print("REPRODUCED: descriptor pressure was never reported")
+    sys.exit(10)
+if recovered is None:
+    print("REPRODUCED: the server did not recover after the pressure cleared")
+    sys.exit(10)
+print("NOT reproduced: %d log lines (not a flood), slowest client failure %.2fs "
+      "(prompt), pressure reported %d time(s), recovered in %.1fs"
+      % (lines, slowest, reports, recovered))
 sys.exit(20)
 PY
 RESULT=$?
@@ -178,6 +204,6 @@ if [ "$RESULT" -eq 2 ]; then
 fi
 case "$RESULT" in
   10) exit 0 ;;
-  20) echo "NOT reproduced: the server stayed reachable to new clients"; exit 1 ;;
+  20) exit 1 ;;
   *) echo "setup failure (client exit $RESULT); server stderr:"; tail -4 "$DIR/err"; exit 2 ;;
 esac
