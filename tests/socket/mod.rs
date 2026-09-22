@@ -109,6 +109,13 @@ fn internet_sockets(pid: u32, socket: &Path) -> Result<String, Fail> {
     Ok(String::from_utf8_lossy(&inet.stdout).into_owned())
 }
 
+/// Mirrors `transport::MAX_BODY`. An integration test cannot import from the
+/// binary crate, so this is a copy: change it with the constant. The test
+/// either side of the limit fails loudly if the two drift apart.
+fn fux_transport_max_body() -> usize {
+    4 << 20
+}
+
 fn mode(path: &Path) -> Result<u32, Fail> {
     Ok(fs::symlink_metadata(path)?.permissions().mode() & 0o7777)
 }
@@ -800,5 +807,112 @@ fn descriptor_pressure_is_reported_bounded_and_recovers() -> Outcome {
     stop(&socket)?;
     drop(server);
     fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+/// Hunt 6 finding 007. The body was read whole with no bound, so one
+/// connection could make the server hold whatever it sent (256 MB in grew it
+/// by 580 MB), and a batch amplified on the way out: 478 KiB holding 10 000
+/// requests was answered with 12.49 MB.
+#[test]
+fn request_bodies_and_batches_are_bounded() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+
+    // A body over the limit is refused by its size, with a typed error naming
+    // the limit, and the server is untouched.
+    let over = fux_transport_max_body() + 1;
+    let head = br#"{"jsonrpc":"2.0","id":1,"method":""#;
+    let tail = br#"","params":null}"#;
+    let filler = over - head.len() - tail.len();
+    let mut stream = UnixStream::connect(&server.socket)?;
+    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    write!(
+        stream,
+        "POST / HTTP/1.1\r\nHost: fux\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        over
+    )?;
+    stream.write_all(head)?;
+    let chunk = vec![b'a'; 1 << 16];
+    let mut sent = 0;
+    while sent < filler {
+        let n = chunk.len().min(filler - sent);
+        if stream.write_all(chunk.get(..n).need()?).is_err() {
+            break;
+        }
+        sent += n;
+    }
+    let _ = stream.write_all(tail);
+    let mut reply = String::new();
+    let _ = stream.read_to_string(&mut reply);
+    assert!(
+        reply.contains("byte limit"),
+        "an oversized body was not refused by its size: {reply:.200}"
+    );
+    assert!(server.rpc("rpc.discover", Value::Null).is_ok());
+
+    // A body just under the limit is still accepted, so the bound is a limit
+    // and not a smaller accident.
+    let under = fux_transport_max_body() - 1024;
+    let method = "a".repeat(under - head.len() - tail.len());
+    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":null}}"#);
+    let reply = post(&server.socket, &body)?;
+    assert!(
+        reply.contains("-32601"),
+        "a body under the limit was not answered on its merits: {reply:.200}"
+    );
+
+    // A batch over the count cap is refused, naming the cap.
+    let one = r#"{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}"#;
+    let huge = format!(
+        "[{}]",
+        std::iter::repeat_n(one, 10_000)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let reply = post(&server.socket, &huge)?;
+    assert!(
+        reply.contains("limit of"),
+        "a 10000-request batch was not refused: {reply:.200}"
+    );
+    assert!(
+        reply.len() < 4096,
+        "the refusal itself was large: {}",
+        reply.len()
+    );
+
+    // A batch at the harness's largest legitimate size still works.
+    let ordinary = format!(
+        "[{}]",
+        std::iter::repeat_n(one, 1000).collect::<Vec<_>>().join(",")
+    );
+    let reply = post(&server.socket, &ordinary)?;
+    assert!(
+        reply.contains("\"result\""),
+        "a 1000-request batch was refused"
+    );
+
+    // The reply is bounded even when every request answers with a lot.
+    let schema = r#"{"jsonrpc":"2.0","id":1,"method":"registry.schema"}"#;
+    let fat = format!(
+        "[{}]",
+        std::iter::repeat_n(schema, 1000)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let reply = post(&server.socket, &fat)?;
+    assert!(
+        reply.len() < 32 << 20,
+        "a batch reply reached {} bytes",
+        reply.len()
+    );
+    assert!(
+        reply.contains("byte limit"),
+        "the reply budget was never reported: {:.200}",
+        &reply[reply.len().saturating_sub(400)..]
+    );
+
+    assert_viewer_consistent(&server, viewer)?;
+    assert!(!server.screen(viewer)?.is_empty());
     Ok(())
 }
