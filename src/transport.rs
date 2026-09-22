@@ -300,6 +300,15 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
     let name = path
         .file_name()
         .ok_or_else(|| format!("{shown} names no file"))?;
+    let euid = geteuid().as_raw();
+    let foreign = |meta: &fs::Metadata| !meta.file_type().is_socket() || meta.uid() != euid;
+    let refused =
+        || format!("{shown} exists and is not a socket owned by you; fux will not replace it");
+    // Refuse what can never be ours before creating anything beside it; the
+    // same check is repeated under the lock.
+    if fs::symlink_metadata(path).is_ok_and(|meta| foreign(&meta)) {
+        return Err(refused());
+    }
     // Every server for this path locks the same file, which is never removed,
     // so two starts cannot both believe they own the path.
     let lock_path = directory.join(format!("{}.lock", name.to_string_lossy()));
@@ -319,15 +328,10 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
             format!("locking {}: {errno}", lock_path.display())
         }
     })?;
-    let euid = geteuid().as_raw();
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("{shown}: {error}")),
-        Ok(meta) if !meta.file_type().is_socket() || meta.uid() != euid => {
-            return Err(format!(
-                "{shown} exists and is not a socket owned by you; fux will not replace it"
-            ));
-        }
+        Ok(meta) if foreign(&meta) => return Err(refused()),
         Ok(meta) => match probe(path) {
             Ok(()) => {
                 return Err(format!(

@@ -114,6 +114,8 @@ fn unsafe_locations_are_refused_and_left_unchanged() -> Outcome {
     let error = bind_socket(&pointer).err().unwrap_or_default();
     assert!(error.contains("not a socket"), "{error}");
     assert!(fs::symlink_metadata(&pointer)?.file_type().is_symlink());
+    // Nothing was created beside them, not even a lockfile.
+    assert_eq!(fs::read_dir(&real)?.count(), 2);
     // A client refuses the same shapes rather than connecting.
     assert!(check_client_socket(&file).is_err());
     assert!(check_client_socket(&open.join("fux.sock")).is_err());
