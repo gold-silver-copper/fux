@@ -144,7 +144,13 @@ fn request_viewer(params: Option<Value>) -> Result<Entity, BrpError> {
     let id = params
         .and_then(|p| p.get("viewer").and_then(Value::as_u64))
         .ok_or_else(|| BrpError::internal("viewer entity required"))?;
-    Ok(Entity::from_bits(id))
+    // Any u64 arrives here; `from_bits` panics on one that no entity can
+    // have (0, for one), which would take down every session.
+    Entity::try_from_bits(id).ok_or_else(|| BrpError {
+        code: bevy_remote::error_codes::INVALID_PARAMS,
+        message: format!("{id} is not an entity id"),
+        data: None,
+    })
 }
 pub(crate) fn frame(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
     make_frame(world, request_viewer(params)?)

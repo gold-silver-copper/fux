@@ -163,6 +163,7 @@ fn run(mut app: App) -> AppExit {
                     .as_ref()
                     .and_then(|p| p.get("viewer"))
                     .and_then(|v| v.as_u64())
+                    .and_then(Entity::try_from_bits)
             {
                 let response = message.sender.clone();
                 let closed = closed_sender.clone();
@@ -170,7 +171,7 @@ fn run(mut app: App) -> AppExit {
                 IoTaskPool::get()
                     .spawn(async move {
                         response.closed().await;
-                        let _ = closed.send(Entity::from_bits(id)).await;
+                        let _ = closed.send(id).await;
                         wake.unpark();
                     })
                     .detach();

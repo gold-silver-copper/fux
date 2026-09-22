@@ -902,3 +902,32 @@ fn a_viewer_on_a_pane_view_is_removed_and_the_server_survives() -> Outcome {
 fn a_viewer_on_a_split_is_removed_and_the_server_survives() -> Outcome {
     viewer_on_layout_entity("fux::model::Split")
 }
+
+/// Entity ids arrive as any u64. Bits no entity can have (0 among them) made
+/// `Entity::from_bits` panic inside the ECS schedule, ending every session.
+#[test]
+fn frame_requests_for_impossible_entity_ids_are_refused() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+    for id in [0_u64, 0xFFFF_FFFF_0000_0000] {
+        let error = server
+            .rpc("fux.frame", json!({"viewer":id}))
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("not an entity id"), "{id}: {error}");
+        // The watch's error arrives as an event; what matters is that the
+        // request bridge survives to carry the next request.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(1)))
+            .build()
+            .into();
+        if let Ok(mut response) = agent.post(&server.endpoint).send_json(
+            json!({"jsonrpc":"2.0","id":1,"method":"fux.frame+watch","params":{"viewer":id}}),
+        ) {
+            let _ = response.body_mut().read_to_string();
+        }
+        assert!(server.rpc("rpc.discover", Value::Null).is_ok());
+    }
+    assert!(!server.screen(viewer)?.is_empty());
+    Ok(())
+}
