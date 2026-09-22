@@ -145,8 +145,8 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         "copy success not reported",
     )?;
 
-    // New output while a selection is anchored clears it with a notice, and
-    // the next copy asks for a new selection instead of copying stale text.
+    // Unrelated output and full-screen scrolling preserve selected retained
+    // text by row identity. The other viewer stays live, independently.
     let b = s.attach(24, 80)?;
     s.send(a, b"\x02c")?;
     s.wait("copy mode again", |s| {
@@ -157,20 +157,106 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     })?;
     s.send(a, b" ")?;
     s.send(a, b"\x1b[C")?;
+    s.wait("selection extent acknowledged", |s| {
+        let frame = s.rpc("fux.frame", json!({"viewer":va}))?;
+        let paint = frame
+            .get("paint")
+            .and_then(Value::as_str)
+            .ok_or("missing paint")?;
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(paint.as_bytes());
+        Ok(parser.screen().cell(0, 1).is_some_and(|c| c.inverse()))
+    })?;
     s.send(b, b"Z")?;
     s.wait("other viewer's key echoed", |s| {
         Ok(s.frame(va, 24, 80)?.contains("READYQZ"))
     })?;
+    let vb = s.frontend(b)?.viewer;
+    s.send(b, b"\r\nTAIL-1\r\nTAIL-2\r\nTAIL-3")?;
+    s.wait("live viewer sees appended rows", |s| {
+        Ok(s.frame(vb, 24, 80)?.contains("TAIL-3"))
+    })?;
+    expect_top(s, va, "anchored viewer retains its top row", first_visible)?;
+    let before = s.frontend(a)?.capture.total;
+    let wanted = format!("\x1b]52;c;{}\x07", base64(b"LI")).into_bytes();
     s.send(a, b"y")?;
-    let mut last = Value::Null;
-    let result = s.wait("stale selection refused", |s| {
-        last = notice(s, va)?;
-        let text = last.get("text").and_then(Value::as_str).unwrap_or_default();
-        Ok(text.starts_with("selection cleared") || text == "Space starts a selection")
-    });
-    s.journal
-        .record("stale_selection", json!({"notice":last}))?;
-    result.map_err(|e| {
-        format!("application: a selection anchored before new output must be cleared, not copied: notice {last}: {e}").into()
-    })
+    s.wait("unchanged retained selection copied", |s| {
+        let bytes = s.frontend(a)?.capture.bytes();
+        let new = usize::try_from(s.frontend(a)?.capture.total.saturating_sub(before))?;
+        Ok(bytes
+            .get(bytes.len().saturating_sub(new)..)
+            .unwrap_or_default()
+            .windows(wanted.len())
+            .any(|w| w == wanted))
+    })?;
+    ensure(
+        notice(s, va)?.get("text") == Some(&json!(COPIED)),
+        "retained selection not copied",
+    )?;
+    s.journal.record(
+        "retained_selection",
+        json!({"text":"LI","unrelated_output":true,"scrolled":true}),
+    )?;
+    widened_copy(s, a, va)
+}
+
+fn widened_copy(s: &mut Server, frontend: usize, viewer: u64) -> Result<()> {
+    s.control(
+        viewer,
+        json!({"kind":"tab_new","name":"history-copy-width"}),
+    )?;
+    child_command(
+        s,
+        frontend,
+        "stty raw -echo; : > copy-armed; while test ! -f copy-go; do sleep 0.01; done; stty size > copy-size; printf '\\033c%s%s\\r\\n%s' abcd efgh last; exec sleep 60",
+    )?;
+    s.wait("history-copy child armed", |s| {
+        Ok(s.directory.join("copy-armed").exists())
+    })?;
+    s.resize(frontend, 3, 5)?;
+    s.wait("narrow viewer acknowledged", |s| dims(s, viewer, 3, 5))?;
+    s.frame(viewer, 3, 5)?; // Negotiate before releasing the controlled child.
+    std::fs::write(s.directory.join("copy-go"), b"go")?;
+    s.wait("soft-wrapped source reached history", |s| {
+        Ok(s.frame(viewer, 3, 5)?
+            .lines()
+            .take(2)
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            == ["fgh", "last"])
+    })?;
+    ensure(
+        std::fs::read_to_string(s.directory.join("copy-size"))?.trim() == "2 5",
+        "history-copy child had wrong initial geometry",
+    )?;
+    s.resize(frontend, 3, 10)?;
+    s.wait("widened viewer acknowledged", |s| dims(s, viewer, 3, 10))?;
+    s.frame(viewer, 3, 10)?;
+    s.control(viewer, json!({"kind":"scroll","order":"previous"}))?;
+    s.wait("widened retained row visible", |s| {
+        Ok(s.frame(viewer, 3, 10)?
+            .lines()
+            .take(2)
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            == ["abcde", "fgh"])
+    })?;
+    let before = s.frontend(frontend)?.capture.total;
+    let text = [b"abcd".as_slice(), b"efgh"].concat();
+    let wanted = format!("\x1b]52;c;{}\x07", base64(&text)).into_bytes();
+    s.control(viewer, json!({"kind":"copy"}))?;
+    s.wait("widened history copied without display padding", |s| {
+        let bytes = s.frontend(frontend)?.capture.bytes();
+        let new = usize::try_from(s.frontend(frontend)?.capture.total.saturating_sub(before))?;
+        Ok(bytes
+            .get(bytes.len().saturating_sub(new)..)
+            .unwrap_or_default()
+            .windows(wanted.len())
+            .any(|w| w == wanted))
+    })?;
+    s.journal.record(
+        "widened_history_copy",
+        json!({"expected":"abcdefgh","initial":[2,5],"resized":[2,10]}),
+    )?;
+    Ok(())
 }

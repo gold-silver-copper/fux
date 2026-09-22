@@ -87,14 +87,24 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     // Growth is bounded by a flex floor, so the sibling settles above the
     // backing minimum rather than at it. Let the widths stop changing, then
     // judge the documented invariants.
+    // A frame request applies the queued layout changes and negotiates PTY
+    // sizes synchronously; the reflected ProcessState follows on a later
+    // update. Two equal 5 ms polls can straddle that publication, so require
+    // a bounded run of consecutive equal observations instead.
+    s.frame(v, 24, 80)?;
     let mut ma = (0, 0);
     let mut mb = (0, 0);
+    let mut stable_polls = 0;
     s.wait("widths settle after repeated grows", |s| {
         let now = (dims(s, a)?, dims(s, b)?);
-        let stable = now == (ma, mb);
-        ma = now.0;
-        mb = now.1;
-        Ok(stable)
+        if now == (ma, mb) {
+            stable_polls += 1;
+        } else {
+            stable_polls = 0;
+            ma = now.0;
+            mb = now.1;
+        }
+        Ok(stable_polls >= 20)
     })?;
     s.journal
         .record("after_many_grows", json!({"a":ma,"b":mb,"total":total}))?;

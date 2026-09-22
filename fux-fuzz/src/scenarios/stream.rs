@@ -35,6 +35,7 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         alive(hot) && alive(shell),
         "application: a paused frontend killed a process",
     )?;
+    let resumed = std::time::Instant::now();
     s.frontend(f)?.paused = false;
     s.journal.record(
         "resume_outer_pty",
@@ -53,6 +54,7 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
             .unwrap_or(0);
         Ok(counter > 0)
     })?;
+    let catch_up_ms = resumed.elapsed().as_millis();
     let first_seen = counter;
     s.wait("counter keeps advancing after the pause", |s| {
         let now = screen(s, f)?;
@@ -65,8 +67,10 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     })
     .map_err(|e| format!("application: after resuming reads the frontend's screen stopped advancing at HOT-{first_seen}: {e}"))?;
 
+    let advancing_ms = resumed.elapsed().as_millis();
     // Stop the hot process; once output ends, what the frontend shows must
     // equal a fresh server-side frame rendered the same way.
+    let convergence_started = std::time::Instant::now();
     s.control(v, json!({"kind":"terminate"}))?;
     s.wait("hot process terminated", |_| Ok(!alive(hot)))?;
     let mut server_view = String::new();
@@ -86,6 +90,11 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
             .unwrap_or_else(|| "line counts differ".into());
         format!("application: after output stopped the frontend did not converge with the server frame: {diff}: {e}")
     })?;
+    let timings = json!({"catch_up_ms":catch_up_ms,"advancing_ms":advancing_ms,
+        "convergence_ms":convergence_started.elapsed().as_millis(),
+        "first_counter":first_seen,"final_frame_equal":server_view == front_view});
+    s.journal.record("stream_timings", timings.clone())?;
+    println!("STREAM-TIMES {timings}");
     ensure(
         alive(shell),
         "application: the shell died during the stream test",

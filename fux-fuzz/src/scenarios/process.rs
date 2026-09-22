@@ -124,18 +124,40 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         100,
     )?;
     let pid_sizer = wait_pid(s, sizer)?;
-    let mut state = state_of(s, sizer)?;
-    let edited = state.as_object_mut().ok_or("state is not an object")?;
-    edited.insert("rows".into(), json!(10));
-    edited.insert("cols".into(), json!(40));
+    for (rows, cols) in [(10, 40), (1, 1), (1, 12), (12, 1)] {
+        let mut state = state_of(s, sizer)?;
+        let edited = state.as_object_mut().ok_or("state is not an object")?;
+        edited.insert("rows".into(), json!(rows));
+        edited.insert("cols".into(), json!(cols));
+        s.rpc(
+            "world.insert_components",
+            json!({"entity":sizer,"components":{STATE:state}}),
+        )?;
+        let wanted = format!("{rows} {cols}");
+        // Observe each intermediate resize through the child, not the decoder
+        // (upstream crashes on some one-row/one-column streams).
+        s.wait("reflected dimension edit resized the PTY", |s| {
+            Ok(fs::read_to_string(s.directory.join("size.txt")).is_ok_and(|t| t.trim() == wanted))
+        })
+        .map_err(|e| format!("application: child PTY did not resize to {wanted}: {e}"))?;
+        s.journal
+            .record("child_pty_geometry", json!({"rows":rows,"cols":cols}))?;
+    }
+    let tiny = s.rpc("world.spawn_entity", json!({"components":{
+        LAUNCH:{"argv":["/bin/sh","-c","stty size > initial-size.txt; printf '界ABCD'; exec sleep 60"],"cwd":s.directory,"history_lines":2},
+        STATE:{"status":{"kind":"starting"},"rows":1,"cols":1,"revision":0}
+    }}))?.get("entity").and_then(Value::as_u64).ok_or("tiny spawn returned no entity")?;
+    let tiny_pid = wait_pid(s, tiny)?;
+    s.wait("PTY starts at actual 1x1", |s| {
+        Ok(fs::read_to_string(s.directory.join("initial-size.txt"))
+            .is_ok_and(|t| t.trim() == "1 1"))
+    })?;
+    ensure(alive(tiny_pid), "tiny output killed its process")?;
     s.rpc(
-        "world.insert_components",
-        json!({"entity":sizer,"components":{STATE:state}}),
+        "world.remove_components",
+        json!({"entity":tiny,"components":[LAUNCH]}),
     )?;
-    s.wait("reflected dimension edit resized the PTY", |s| {
-        Ok(fs::read_to_string(s.directory.join("size.txt")).is_ok_and(|t| t.trim() == "10 40"))
-    })
-    .map_err(|e| format!("application: ProcessState edit did not resize the PTY: {e}"))?;
+    s.wait("tiny child terminated", |_| Ok(!alive(tiny_pid)))?;
     // Removing Launch terminates it and publishes a final status.
     s.rpc(
         "world.remove_components",

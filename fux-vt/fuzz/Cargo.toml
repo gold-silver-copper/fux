@@ -1,0 +1,23 @@
+[workspace]
+
+[package]
+name = "fux-vt-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fux-vt = { path = ".." }
+
+[[bin]]
+name = "terminal"
+path = "fuzz_targets/terminal.rs"
+test = false
+doc = false
+bench = false

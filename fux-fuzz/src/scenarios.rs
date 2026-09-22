@@ -247,7 +247,9 @@ fn resize(s: &mut Server, sizes: &[[u16; 4]], token: &str) -> Result<()> {
             Ok(dims(s, va, ar, ac)?
                 && dims(s, vb, br, bc)?
                 && match expected {
-                    Some((rows, cols)) => process_size(s, rows.max(2), cols.max(2))?,
+                    // The owned backing emulator now accepts the exact tiny
+                    // size. Only the independent frame decoder keeps 2x2.
+                    Some((rows, cols)) => process_size(s, rows, cols)?,
                     None => true, // All panes hidden: no new size is negotiated.
                 })
         })?;
