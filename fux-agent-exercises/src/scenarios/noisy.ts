@@ -4,6 +4,11 @@
  * A finished program left one diagnostic line that has already scrolled out of
  * the visible screen but is still inside retained history. The agent must find
  * it and report the code. The verifier knows the code independently.
+ *
+ * Variants differ only in how far back the line sits, so the cost of a
+ * history search can be read as a function of depth (FINDINGS F4). `mid` is
+ * campaigns 01–04's variant `b` unchanged; `a` (139 lines back) was retired
+ * as a near-duplicate of it.
  */
 import { attach, eventually, triggerControl } from "../brp.ts";
 import {
@@ -25,8 +30,12 @@ interface Variant {
 }
 
 const VARIANTS: Record<string, Variant> = {
-  a: { code: "E-4417", failureLine: 41, totalLines: 179 },
-  b: { code: "E-8823", failureLine: 55, totalLines: 185 },
+  /** 40 lines back: one or two screens above the live bottom. */
+  shallow: { code: "E-2291", failureLine: 140, totalLines: 179 },
+  /** 131 lines back: the former variant `b`. */
+  mid: { code: "E-8823", failureLine: 55, totalLines: 185 },
+  /** 401 lines back: deep in retained history, well past a blind bisection's first probes. */
+  deep: { code: "E-7106", failureLine: 45, totalLines: 445 },
 };
 
 /** Retained history must comfortably exceed the distance to the diagnostic. */
@@ -183,7 +192,7 @@ echo "build finished with errors"
 export const noisyScenario: Scenario = {
   id: "noisy",
   title: "Noisy-output investigation",
-  variants: ["a", "b"],
+  variants: ["shallow", "mid", "deep"],
   historyLines: HISTORY_LINES,
   create,
 };

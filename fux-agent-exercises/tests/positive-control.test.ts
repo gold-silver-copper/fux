@@ -269,39 +269,47 @@ test("positive control: launch verifier passes on an exact Launch recipe", async
   }
 });
 
-test("positive control: noisy verifier passes when history is actually searched", async () => {
-  const { result, artifactsRoot } = await driveScenario(requireScenario("noisy"), "a", async (rpc, task) => {
-    const viewer = viewerFrom(task);
-    const base = jsonOf(
-      await rpc("world.get_components", {
-        entity: viewer,
-        components: ["fux::model::Viewer"],
-        strict: true,
-      }),
-    ).result["fux::model::Viewer"];
+for (const variant of requireScenario("noisy").variants) {
+  test(`positive control: noisy verifier passes when history is actually searched (${variant})`, async () => {
+    let depth = 0;
+    const { result, artifactsRoot } = await driveScenario(requireScenario("noisy"), variant, async (rpc, task) => {
+      const viewer = viewerFrom(task);
+      const base = jsonOf(
+        await rpc("world.get_components", {
+          entity: viewer,
+          components: ["fux::model::Viewer"],
+          strict: true,
+        }),
+      ).result["fux::model::Viewer"];
 
-    // Walk back through history the way a client must: set an offset, repaint, read.
-    let found: { offset: number; code: string } | null = null;
-    for (let offset = 20; offset <= 200 && found === null; offset += 20) {
-      await rpc("world.insert_components", {
-        entity: viewer,
-        components: { "fux::model::Viewer": { ...base, scrollback: offset } },
-      });
-      const paint = jsonOf(await rpc("fux.frame", { viewer })).result.paint as string;
-      const plain = paint.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
-      const match = /FAILURE (E-\d+)/.exec(plain);
-      if (match) found = { offset, code: match[1] };
+      // Walk back through history the way a client must: set an offset, repaint, read.
+      let found: { offset: number; code: string } | null = null;
+      for (let offset = 20; offset <= 460 && found === null; offset += 20) {
+        await rpc("world.insert_components", {
+          entity: viewer,
+          components: { "fux::model::Viewer": { ...base, scrollback: offset } },
+        });
+        const paint = jsonOf(await rpc("fux.frame", { viewer })).result.paint as string;
+        const plain = paint.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+        const match = /FAILURE (E-\d+)/.exec(plain);
+        if (match) found = { offset, code: match[1] };
+      }
+      assert.ok(found, "the diagnostic must be reachable through history");
+      depth = found.offset;
+      return `Found it while scrolling back.\nCODE: ${found.code}`;
+    });
+
+    try {
+      assert.equal(result.outcome, "pass", JSON.stringify(result.checks.filter((c) => !c.ok), null, 2));
+      const artifact = JSON.parse(readFileSync(result.artifactPath, "utf8"));
+      const linesBack = artifact.baseline.linesBackFromBottom as number;
+      // The offset that first showed the line must be consistent with the recorded depth.
+      assert.ok(depth >= linesBack - 23 && depth <= linesBack + 20, `found at ${depth}, recorded depth ${linesBack}`);
+    } finally {
+      rmSync(artifactsRoot, { recursive: true, force: true });
     }
-    assert.ok(found, "the diagnostic must be reachable through history");
-    return `Found it while scrolling back.\nCODE: ${found.code}`;
   });
-
-  try {
-    assert.equal(result.outcome, "pass", JSON.stringify(result.checks.filter((c) => !c.ok), null, 2));
-  } finally {
-    rmSync(artifactsRoot, { recursive: true, force: true });
-  }
-});
+}
 
 test("positive control: modal rename verifier passes only via the open prompt", async () => {
   const { result, artifactsRoot } = await driveScenario(requireScenario("modal"), "rename", async (rpc, task) => {
