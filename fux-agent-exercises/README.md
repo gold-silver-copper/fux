@@ -71,7 +71,9 @@ node --test --test-concurrency=1 "tests/*.test.ts"
 # The measured campaign. Spends money.
 node run.ts campaign --repetitions 2 --artifacts runs/campaign-02
 
-# Re-render the measurement table from artifacts.
+# Re-render the measurement table from artifacts, including the per-finding
+# metrics (scroll attempts, hierarchy detours, partial payloads, when the
+# recovery disruption fired and whether the agent looked before acting again).
 node run.ts report --artifacts runs/campaign-02
 ```
 
@@ -88,7 +90,7 @@ Defaults: five scenarios, two fresh sessions each, 40 tool calls and 300 s per r
 | --- | --- |
 | `discovery` | Find a named process among several workspaces, move its pane to another workspace, rename it, focus it, disturb nothing else. |
 | `launch` | Start a fixture with an exact argv and cwd, decide whether it succeeded, leave its output visible. Pass and fail variants. |
-| `noisy` | Find one diagnostic line that has scrolled out of view but is still in retained history, and report its code. |
+| `noisy` | Find one diagnostic line that has scrolled out of view but is still in retained history, and report its code. Variants `shallow`, `mid` and `deep` put it about 40, 130 and 400 lines back. |
 | `modal` | An overlay is already open. Complete a rename prompt, or decline a destructive close confirmation, without leaking keystrokes to the child. |
 | `recovery` | Close a named pane and focus another while a second viewer stays untouched — the harness closes that pane first, just before the agent's own `close` or `focus` naming it is forwarded. |
 
