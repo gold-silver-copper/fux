@@ -457,8 +457,10 @@ pub fn extract_layout(world: &World, root: Entity) -> Result<DynamicWorld, Strin
             || world.get::<crate::model::Viewing>(entity).is_some()
             || world.get::<crate::model::OnTab>(entity).is_some()
             || world.get::<crate::model::Focused>(entity).is_some()
+            || world.get::<crate::interaction::Prefix>(entity).is_some()
+            || world.get::<crate::interaction::Overlay>(entity).is_some()
         {
-            return Err("viewers cannot belong to layout scenes".into());
+            return Err("viewers and interaction state cannot belong to layout scenes".into());
         }
         if world.get::<crate::model::Tab>(entity).is_some()
             && world
@@ -577,8 +579,10 @@ pub fn apply_layout(
             || component::<crate::model::Viewing>(entity)?.is_some()
             || component::<crate::model::OnTab>(entity)?.is_some()
             || component::<crate::model::Focused>(entity)?.is_some()
+            || component::<crate::interaction::Prefix>(entity)?.is_some()
+            || component::<crate::interaction::Overlay>(entity)?.is_some()
         {
-            return Err("viewers cannot belong to layout scenes".into());
+            return Err("viewers and interaction state cannot belong to layout scenes".into());
         }
         if component::<Launch>(entity)?.is_some() || component::<ProcessState>(entity)?.is_some() {
             return Err(

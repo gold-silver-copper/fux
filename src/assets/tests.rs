@@ -251,6 +251,67 @@ fn coherent_defaults_have_exact_unique_keys_and_action_pairs() -> crate::testing
 }
 
 #[test]
+fn reflected_interactions_stay_out_of_layout_scenes() -> Outcome {
+    use crate::{
+        actions::Target,
+        interaction::{Mode, Overlay, Prefix},
+    };
+    let mut app = app();
+    app.register_type::<Prefix>().register_type::<Overlay>();
+    let world = app.world_mut();
+    let root = world.spawn(Workspace).id();
+    let tab = world.spawn((Tab, ChildOf(root))).id();
+    let overlay = Overlay {
+        serial: 1,
+        target: Target {
+            workspace: root,
+            tab: Some(tab),
+            leaf: None,
+        },
+        mode: Mode::Text {
+            action: crate::actions::Action::RenameTab,
+            buffer: "draft".into(),
+        },
+    };
+    // Normal viewer-local interactions are not traversed by layout extraction.
+    world.spawn((Prefix::default(), overlay.clone()));
+    let text = serialize_layout(world, root)?;
+    assert!(!text.contains("Prefix"));
+    assert!(!text.contains("Overlay"));
+    for prefix in [true, false] {
+        if prefix {
+            world.entity_mut(tab).insert(Prefix::default());
+        } else {
+            world.entity_mut(tab).insert(overlay.clone());
+        }
+        assert!(
+            extract_layout(world, root)
+                .err()
+                .need()?
+                .contains("interaction state")
+        );
+        // A foreign/native scene can bypass fux's save validation. Reject it
+        // before spawning any entities, even when the component is on a tab.
+        let scene = {
+            let registry = world.resource::<AppTypeRegistry>().read();
+            DynamicWorldBuilder::from_world(world, &registry)
+                .extract_entities([root, tab].into_iter())
+                .build()
+        };
+        let before = world.entities().len();
+        assert!(
+            apply_layout(world, &scene, &[])
+                .err()
+                .need()?
+                .contains("interaction state")
+        );
+        assert_eq!(world.entities().len(), before);
+        world.entity_mut(tab).remove::<(Prefix, Overlay)>();
+    }
+    Ok(())
+}
+
+#[test]
 fn invalid_tab_placement_and_runtime_viewers_are_not_scene_content() -> crate::testing::Outcome {
     let mut app = app();
     let world = app.world_mut();
