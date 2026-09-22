@@ -235,45 +235,59 @@ fn scene_completions(mut pending: Query<(Entity, &mut PendingScene)>, mut comman
 pub struct ServerPlugin;
 impl Plugin for ServerPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<Workspace>()
-            .register_type::<Split>()
-            .register_type::<Tab>()
-            .register_type::<WorkspaceOrder>()
-            .register_type::<Launch>()
-            .register_type::<ProcessState>()
-            .register_type::<Status>()
-            .register_type::<Notice>()
-            .register_type::<PaneView>()
-            .register_type::<PaneViews>()
-            .register_type::<Viewer>()
-            .register_type::<Viewing>()
-            .register_type::<OnTab>()
-            .register_type::<Focused>()
-            .register_type::<Name>()
-            .register_type::<Action>()
-            .register_type::<crate::actions::Target>()
-            .register_type::<crate::interaction::Prefix>()
-            .register_type::<crate::interaction::Overlay>()
-            .register_type::<crate::interaction::Mode>()
-            .register_type::<crate::interaction::Entry>()
-            .register_type::<crate::interaction::Run>()
-            .register_type::<Command>()
-            .register_type::<Subject>()
-            .register_type::<Axis>()
-            .register_type::<Order>()
-            .register_type::<Chooser>()
-            .register_type::<Scope>()
-            .register_type::<crate::interaction::MoveTo>()
-            .register_type::<Control>()
-            .register_type::<UserInput>()
-            .register_type::<Shutdown>()
-            .register_type::<Input>()
-            .register_type::<crate::protocol::Key>()
-            .register_type::<crate::protocol::Modifiers>()
-            .register_type::<crate::protocol::MouseAction>()
-            .register_type::<crate::protocol::MouseButton>()
-            .register_type::<crate::protocol::Direction>()
-            .register_type::<crate::protocol::Token>();
+        // A command that fails reports it; it does not end the process. Bevy's
+        // default routes a failed command to `panic`, and this server owns real
+        // PTYs and other people's sessions behind an API that exposes the whole
+        // ECS to any same-user caller, so one bad request could end every
+        // session at once. That is the same reason this crate forbids `unwrap`,
+        // `expect` and `panic!` in its own code: fux degrades and says what went
+        // wrong rather than stopping. The error is logged, not swallowed.
+        //
+        // This covers errors that reach the handler. A direct `panic!` does not
+        // pass through it, which is why hunt 6's finding 005 had to be fixed
+        // where it was raised rather than contained here.
+        app.insert_resource(bevy_ecs::error::FallbackErrorHandler(
+            bevy_ecs::error::error,
+        ))
+        .register_type::<Workspace>()
+        .register_type::<Split>()
+        .register_type::<Tab>()
+        .register_type::<WorkspaceOrder>()
+        .register_type::<Launch>()
+        .register_type::<ProcessState>()
+        .register_type::<Status>()
+        .register_type::<Notice>()
+        .register_type::<PaneView>()
+        .register_type::<PaneViews>()
+        .register_type::<Viewer>()
+        .register_type::<Viewing>()
+        .register_type::<OnTab>()
+        .register_type::<Focused>()
+        .register_type::<Name>()
+        .register_type::<Action>()
+        .register_type::<crate::actions::Target>()
+        .register_type::<crate::interaction::Prefix>()
+        .register_type::<crate::interaction::Overlay>()
+        .register_type::<crate::interaction::Mode>()
+        .register_type::<crate::interaction::Entry>()
+        .register_type::<crate::interaction::Run>()
+        .register_type::<Command>()
+        .register_type::<Subject>()
+        .register_type::<Axis>()
+        .register_type::<Order>()
+        .register_type::<Chooser>()
+        .register_type::<Scope>()
+        .register_type::<crate::interaction::MoveTo>()
+        .register_type::<Control>()
+        .register_type::<UserInput>()
+        .register_type::<Shutdown>()
+        .register_type::<Input>()
+        .register_type::<crate::protocol::Key>()
+        .register_type::<crate::protocol::Modifiers>()
+        .register_type::<crate::protocol::MouseAction>()
+        .register_type::<crate::protocol::MouseButton>()
+        .register_type::<crate::protocol::Direction>()
+        .register_type::<crate::protocol::Token>();
         presentation::register_types(app);
         crate::navigation::observe(app.world_mut());
         app.add_plugins(TerminalPlugin)
@@ -320,10 +334,67 @@ impl Plugin for ServerPlugin {
 }
 
 pub fn remote() -> RemotePlugin {
+    use bevy_remote::builtin_methods::{
+        BRP_DESPAWN_COMPONENTS_METHOD, BRP_MUTATE_COMPONENTS_METHOD,
+    };
+    // Registered after the stock methods, so these two replace them by name.
+    // The registry stays unfiltered: each guard answers for the entity the
+    // request names and then hands the request to the stock handler.
     RemotePlugin::default()
+        .with_method_main(BRP_MUTATE_COMPONENTS_METHOD, mutate_components)
+        .with_method_main(BRP_DESPAWN_COMPONENTS_METHOD, despawn_entity)
         .with_method_main("fux.attach", frame::attach)
         .with_method_main("fux.frame", frame::frame)
         .with_watching_method_main("fux.frame+watch", frame::frame_watch)
+}
+
+/// The entity a stock request names in `params.entity`, if it parses as one.
+/// A request that does not parse is left to the stock handler, which answers
+/// it with its own error.
+fn named_entity(params: Option<&serde_json::Value>) -> Option<Entity> {
+    serde_json::from_value(params?.get("entity")?.clone()).ok()
+}
+
+/// Stock `world.mutate_components`, answering for the entity first. The stock
+/// handler resolves it with `World::entity_mut`, which panics on an entity
+/// that is not alive, so one request ended the server (hunt 6 finding 005). A
+/// despawned id is the ordinary way in: read an id, have it closed underneath
+/// you, write back. The siblings (`get_components`, `insert_components`,
+/// `remove_components`) already answer `entity_not_found`; so does this now.
+fn mutate_components(
+    In(params): In<Option<serde_json::Value>>,
+    world: &mut World,
+) -> bevy_remote::BrpResult {
+    if let Some(entity) = named_entity(params.as_ref())
+        && world.get_entity(entity).is_err()
+    {
+        return Err(bevy_remote::BrpError::entity_not_found(entity));
+    }
+    bevy_remote::builtin_methods::process_remote_mutate_components_request(In(params), world)
+}
+
+/// Stock `world.despawn_entity`, refusing an entity that holds a resource.
+/// Resources are entities in Bevy 0.20, and despawning one leaves the resource
+/// cache pointing at a dead entity, so the next command flush panicked far from
+/// the request (hunt 6 finding 004). A caller cannot tell these entities apart
+/// by id -- `Entity::to_bits` complements the index, so they sit at the top of
+/// the id space counting down -- and `world.query` never lists them.
+fn despawn_entity(
+    In(params): In<Option<serde_json::Value>>,
+    world: &mut World,
+) -> bevy_remote::BrpResult {
+    if let Some(entity) = named_entity(params.as_ref())
+        && world
+            .get_entity(entity)
+            .is_ok_and(|found| found.contains::<bevy_ecs::resource::IsResource>())
+    {
+        return Err(bevy_remote::BrpError {
+            code: bevy_remote::error_codes::RESOURCE_ERROR,
+            message: format!("Entity {entity} holds a resource and cannot be despawned"),
+            data: None,
+        });
+    }
+    bevy_remote::builtin_methods::process_remote_despawn_entity_request(In(params), world)
 }
 
 /// Creates the initial workspace, tab and configured shell. Runs once at
@@ -1106,6 +1177,40 @@ mod tests {
     #[derive(Component, bevy_reflect::Reflect)]
     #[reflect(Component)]
     struct Extra(u32);
+
+    /// A command that fails must report it and leave the server running.
+    /// Bevy's default routes a failed command to `panic`, which would let one
+    /// request end every session; `ServerPlugin` replaces that with logging.
+    #[test]
+    fn a_failing_command_is_reported_rather_than_fatal() -> crate::testing::Outcome {
+        let mut app = App::new();
+        app.insert_resource(Wake(std::thread::current()));
+        app.add_plugins((
+            bevy_app::TaskPoolPlugin::default(),
+            bevy_asset::AssetPlugin::default(),
+            ServerPlugin,
+        ));
+        let configured: bevy_ecs::error::ErrorHandler = app
+            .world()
+            .resource::<bevy_ecs::error::FallbackErrorHandler>()
+            .0;
+        assert!(
+            std::ptr::fn_addr_eq(
+                configured,
+                bevy_ecs::error::error as bevy_ecs::error::ErrorHandler
+            ),
+            "a failed command must be logged, not a panic"
+        );
+        // A command against an entity that is gone is the ordinary shape of
+        // this: it fails, it is reported, and the next update still runs.
+        let gone = app.world_mut().spawn_empty().id();
+        app.world_mut().despawn(gone);
+        app.world_mut().commands().entity(gone).insert(Extra(1));
+        app.update();
+        app.update();
+        assert!(app.world().get_entity(gone).is_err());
+        Ok(())
+    }
 
     /// A BRP insert builds the component through `from_reflect_with_fallback`,
     /// which panics on a partial payload unless the registration carries a

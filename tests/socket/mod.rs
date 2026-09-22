@@ -651,3 +651,80 @@ fn a_closed_watch_still_detaches_a_real_viewer() -> Outcome {
     );
     Ok(())
 }
+
+/// Hunt 6 findings 004 and 005. Both are `bevy_remote` defects that fux reaches
+/// because it serves the stock registry unfiltered, and both ended the server
+/// with one accepted request. fux replaces the two methods with guards that
+/// answer for the named entity and then hand the request to the stock handler;
+/// this pins that, against unmodified bevy.
+#[test]
+fn stock_methods_refuse_ids_that_used_to_end_the_server() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+
+    // 005: `world.mutate_components` reached `World::entity_mut`, which panics
+    // on an entity that is not alive. A despawned id is the ordinary way in.
+    let spawned = server
+        .rpc(
+            "world.spawn_entity",
+            json!({"components":{"bevy_ecs::name::Name":"probe"}}),
+        )?
+        .at("entity")
+        .as_u64()
+        .need()?;
+    server.rpc("world.despawn_entity", json!({ "entity": spawned }))?;
+    let never = 12_345_u64;
+    for id in [spawned, never] {
+        let error = server
+            .rpc(
+                "world.mutate_components",
+                json!({"entity":id,"component":"bevy_ecs::name::Name","path":"","value":"x"}),
+            )
+            .err()
+            .unwrap_or_default();
+        assert!(!error.is_empty(), "mutating entity {id} was not refused");
+        assert!(
+            server.rpc("rpc.discover", Value::Null).is_ok(),
+            "mutating entity {id} ended the server"
+        );
+    }
+
+    // 004: `world.despawn_entity` would despawn one of Bevy's resource
+    // entities, and the next command flush panicked inside the ECS.
+    for bits in [0xFFFF_FFFF_u64, 0xFFFF_FFFE, 0xFFFF_FFFD] {
+        let error = server
+            .rpc("world.despawn_entity", json!({ "entity": bits }))
+            .err()
+            .unwrap_or_default();
+        assert!(
+            !error.is_empty(),
+            "despawning entity bits {bits:#x} was not refused"
+        );
+        assert!(
+            server.rpc("rpc.discover", Value::Null).is_ok(),
+            "despawning entity bits {bits:#x} ended the server"
+        );
+    }
+
+    // Ordinary use of both methods is untouched.
+    let live = server
+        .rpc(
+            "world.spawn_entity",
+            json!({"components":{"bevy_ecs::name::Name":"live"}}),
+        )?
+        .at("entity")
+        .as_u64()
+        .need()?;
+    server.rpc(
+        "world.mutate_components",
+        json!({"entity":live,"component":"bevy_ecs::name::Name","path":"","value":"renamed"}),
+    )?;
+    assert_eq!(
+        components(&server, live, &["bevy_ecs::name::Name"])?.at("bevy_ecs::name::Name"),
+        json!("renamed")
+    );
+    server.rpc("world.despawn_entity", json!({ "entity": live }))?;
+    assert_viewer_consistent(&server, viewer)?;
+    assert!(!server.screen(viewer)?.is_empty());
+    Ok(())
+}
