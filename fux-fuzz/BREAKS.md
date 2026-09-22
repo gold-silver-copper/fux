@@ -553,6 +553,13 @@ Time is strongly superlinear: 16 MB is answered in about 2 s, 32 MB in 7 s,
 attached viewers keep painting, so this is growth and latency rather than a
 stall; the server does not refuse, does not stream and does not cap.
 
+**The same absence on the way out.** A batch is answered in full before
+anything is written, so a small request buys a large response: a 478 KiB body
+holding 10 000 `rpc.discover` requests was answered with **12.49 MB** in 2.7 s,
+and took the server from 46 MB to 278 MB. That is 26x amplification from a
+request that fits in a single write, and it needs no large body at all, so a
+body limit alone would not bound it.
+
 **Where it goes wrong.** `src/transport.rs:525`:
 
 ```rust
@@ -569,10 +576,12 @@ Bodies up to a few megabytes are answered immediately. There is no threshold in
 the code: the cost is proportional to what the caller sends.
 
 **Class of inputs the fix must cover.** Any request whose size the caller
-chooses. A byte limit on the body, refused with a typed error, bounds this and
-the error-echo amplification together. The limit must stay above the largest
-legitimate request, which is a `load_layout` scene or a 64 KiB paste, not a
-megabyte.
+chooses, and any response whose size follows from it. A byte limit on the body,
+refused with a typed error, bounds the body and the error-echo amplification
+together; the batch case additionally needs a cap on the number of requests in
+one batch, or a response that is written as it is produced. The limits must stay
+above the largest legitimate request, which is a `load_layout` scene or a 64 KiB
+paste, not a megabyte.
 
 **Reproduction.** `fux-fuzz/repro/007-request-body-is-unbounded.sh <fux>`, which
 stops at 4 GB of RSS so it cannot pressure the machine. `NEGATIVE_CONTROL=1`
@@ -621,12 +630,13 @@ proper frames and exits 1.
 | Area | Inputs tried | Correctly refused / absorbed | Breaks |
 | --- | ---: | ---: | ---: |
 | 1 the owned HTTP transport: parsing, framing, pipelining | 32 | 32 | 0 |
-| 1 the transport under resource pressure | 15 | 13 | 2 (006, 007) |
-| 2 socket location, lock and lifecycle | 57 | 57 | 0 |
+| 1 the transport under resource pressure | 23 | 21 | 2 (006, 007) |
+| 2 socket location, lock and lifecycle | 60 | 60 | 0 |
 | 2 the client against a hostile peer | 18 | 17 | 1 (008) |
 | 3 caller-chosen identifiers: 29 surfaces x 20 values, both builds | 1160 | 1140 | 3 (003, 004, 005) |
 | 4 panics the lints do not catch, both builds | 14 | 14 | 0 |
 | 5 the hunt 5 guards under pressure | 6 | 6 | 0 |
+| 5 memory scaling: viewers, and attach/detach churn | 2 | 2 | 0 |
 
 The identifier row counts every (surface, value) pair: 20 of the 1160 pairs
 broke, and they fall into the three root causes above. The lifecycle row counts
@@ -648,6 +658,26 @@ Highlights of the non-findings, because they bound the findings above:
   refused by hyper before fux saw it, with the next request on a fresh
   connection always succeeding. This is the `transport` scenario, now in the
   default smoke.
+- **Transport under pressure, beyond the two findings.** Headers dribbled one
+  byte per second were held open below hyper's 30 s header timeout and closed at
+  30.6 s above it, exactly as configured. A batch of 1000 watches was refused
+  with the stock streaming error in milliseconds. A watch on each of 331 viewers
+  (the client ran out of descriptors first) left the server healthy, and closing
+  them all returned every descriptor. A watch whose reader consumed one byte per
+  second while its viewer was resized 68 800 times held RSS flat at 822 MB and
+  fds at 16 for 45 s: the 8-slot result channel is real backpressure, and the
+  slow consumer neither grew the server nor blocked the others. `SIGSTOP` with
+  20 clients mid-request, then `SIGCONT`, answered 20 of 20. 100 000
+  connect/close cycles finished in 1.5 s with descriptors, threads and RSS flat
+  30 s later; 19 374 of them were refused by the 128-deep backlog, which is the
+  kernel's answer to a burst, not fux's.
+- **Memory scaling.** Each concurrent viewer costs about 1.58 MB, linearly and
+  with no cap on how many a caller may attach: 300 viewers took the server from
+  47 MB to 521 MB. Detaching all of them returned the viewer count to 0 but left
+  RSS at 522 MB, which is the allocator keeping the high-water mark rather than a
+  leak: 2190 attach/detach cycles over 90 s, never more than two viewers at once,
+  held RSS flat at 50 MB and returned to 50 MB after 20 s idle. Bounded input,
+  bounded memory, so this is coverage and not a finding.
 - **Socket lifecycle.** `FUX_SOCKET` as `/`, a relative path, a trailing slash,
   `..` components, 205 bytes and empty; a lockfile replaced by a directory, a
   FIFO or a symlink; the socket directory chmodded to 0755, renamed or removed
@@ -659,7 +689,12 @@ Highlights of the non-findings, because they bound the findings above:
   serving on `SIGCONT` — the stale-socket probe did not unlink a live socket.
   Thirty rounds of two simultaneous starts left exactly one survivor every time.
   A `SIGKILL` at ten different points across the bind/listen window was followed
-  by a successful restart on the same path, 10 for 10.
+  by a successful restart on the same path, 10 for 10. `$TMPDIR` changed between
+  starting the server and starting a client made the client say "no fux server
+  socket at ..." rather than connect to something else. A lockfile held by a
+  process that is not fux was refused (the message says "another fux server",
+  which is a wording nit rather than a break). A socket directory on a full
+  filesystem was refused with "No space left on device", naming the path.
 - **The client against a hostile peer.** `fux rpc` against a peer that accepts
   and never answers, answers garbage, sends an endless SSE line, sends a 100 MB
   frame, closes mid-frame, or dribbles one byte per second: bounded every time,
