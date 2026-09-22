@@ -14,19 +14,19 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone)]
+#[derive(Clone, Reflect)]
 pub struct Entry {
     pub label: String,
     pub run: Run,
 }
 /// A list row either names a bound action (menus, which may prompt again) or
 /// carries the exact command a chooser resolved (never prompts again).
-#[derive(Clone)]
+#[derive(Clone, Reflect)]
 pub enum Run {
     Action(Action),
     Command(Command),
 }
-#[derive(Clone)]
+#[derive(Clone, Reflect)]
 pub enum Mode {
     List {
         title: String,
@@ -43,7 +43,8 @@ pub enum Mode {
 }
 /// The open prefix command column and its selected action row. Present only
 /// while the column is open, like `Overlay` and `Selection`.
-#[derive(Component, Default)]
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct Prefix {
     pub scroll: usize,
 }
@@ -63,7 +64,8 @@ pub(crate) fn close_prefix(world: &mut World, id: Entity) {
     }
 }
 
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Reflect)]
+#[reflect(Component)]
 #[component(on_insert = crate::paste::overlay_opened)]
 pub struct Overlay {
     pub serial: u64,
@@ -662,10 +664,10 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                     *selected = selected.saturating_sub(1);
                 }
                 Key::Arrow(Direction::Down) | Key::Char('j') => {
-                    *selected = (*selected + 1).min(last);
+                    *selected = selected.saturating_add(1).min(last);
                 }
                 Key::PageUp => *selected = selected.saturating_sub(page),
-                Key::PageDown => *selected = (*selected + page).min(last),
+                Key::PageDown => *selected = selected.saturating_add(page).min(last),
                 Key::Home => *selected = 0,
                 Key::End => *selected = last,
                 Key::Enter => {
@@ -685,7 +687,9 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         ) => match action {
             MouseAction::ScrollUp => *selected = selected.saturating_sub(1),
             MouseAction::ScrollDown => {
-                *selected = (*selected + 1).min(entries.len().saturating_sub(1));
+                *selected = selected
+                    .saturating_add(1)
+                    .min(entries.len().saturating_sub(1));
             }
             _ => {}
         },
@@ -802,7 +806,7 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
                     },
                 ));
             }
-            if entries.len() > start + capacity && rows >= 5 {
+            if entries.len() > start.saturating_add(capacity) && rows >= 5 {
                 lines.push((
                     format!("▼ {} more", entries.len() - start - capacity),
                     "\x1b[2m",
