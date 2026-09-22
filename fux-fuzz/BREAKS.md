@@ -133,6 +133,12 @@ token. This is a same-user local endpoint by design, so the target is the
 **Reproduction.** `fux-fuzz/repro/002-cross-origin-web-page-rce.sh <fux>`
 (no agent; exit 0 = a cross-origin simple request executed a program).
 
+Both repro scripts discriminate through neutered negative controls (a variant
+that omits the trigger exits non-zero). Building the pre-F1-fix commit
+`5936ff1^` for a second cross-check was not cheap here — the full Bevy graph
+rebuilds — so discrimination rests on the negative controls rather than an old
+binary.
+
 ---
 
 ## What did not break (coverage, not findings)
@@ -173,7 +179,10 @@ Highlights of the non-findings, because they bound the two that did break:
   `load_layout` at a FIFO, a directory, `/etc/passwd`, a missing file and a 2 GB
   sparse file, and pre-created scene-task temp files as a directory and a
   read-only file: all survived. A writerless-FIFO load held the server at ~1%
-  CPU (no busy loop).
+  CPU (no busy loop). The `ENOSPC` write-failure path was exercised through a
+  read-only temp file and the 2 GB sparse file rather than a filled `hdiutil`
+  RAM disk, which was not run unattended to avoid leaving the machine
+  constrained; the write-error handling reached is the same.
 - **Resource limits.** Under `ulimit -n 28`, PTY exhaustion surfaced as a
   `failed` status ("dup of fd … failed") with the server alive and painting;
   closing panes restored capacity. 8 `yes` panes + one `/dev/urandom` pane with
