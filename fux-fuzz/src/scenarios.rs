@@ -8,6 +8,7 @@ mod config;
 mod copy;
 mod history;
 mod hostile;
+mod identity;
 mod invariant;
 mod keys;
 mod layout;
@@ -37,6 +38,7 @@ mod soak;
 mod stream;
 mod tabless;
 mod terminal_edge;
+mod transport;
 mod walk;
 mod zoom;
 
@@ -113,6 +115,8 @@ pub fn execute(server: &mut Server, action: &Action) -> Result<()> {
         Action::Raw { seed, steps } => raw::run(server, *seed, steps),
         Action::SceneFuzz { seed, cases } => scene_fuzz::run(server, *seed, cases),
         Action::Hostile => hostile::run(server),
+        Action::Transport => transport::run(server),
+        Action::Identity => identity::run(server),
         Action::Shutdown {
             mode: Shutdown::Lifecycle,
         } => lifecycle(server),
