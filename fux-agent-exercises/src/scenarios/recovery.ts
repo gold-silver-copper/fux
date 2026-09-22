@@ -14,6 +14,7 @@
  * run ever met the stale-target error; see FINDINGS F8).
  */
 import { attach, eventually, triggerControl } from "../brp.ts";
+import { verificationBeforeActing } from "../findings.ts";
 import {
   addProcessPane,
   addTab,
@@ -289,6 +290,27 @@ function create(variant: string): ScenarioRun {
           ? "the agent received a 'target no longer exists' notice at least once"
           : "the agent never saw a 'target no longer exists' notice",
       );
+      // Whether the agent looked at state after the request that met the
+      // stale target, before its next command. An observation, not a check:
+      // the task is to close and focus, and an agent that succeeds without
+      // looking has still succeeded.
+      const verifiedBeforeActingAgain = verificationBeforeActing(
+        ctx.journal.toolCalls,
+        disruption.applied ? disruption.triggeredByCallIndex : null,
+        state.agentViewer,
+      );
+      if (verifiedBeforeActingAgain.verified === true) {
+        const request = verifiedBeforeActingAgain.verificationRequest;
+        notes.push(
+          `after the disrupted request the agent read state before acting again (call ${String(request?.index)}, ${String(request?.method)})`,
+        );
+      } else if (verifiedBeforeActingAgain.verified === false) {
+        notes.push(
+          verifiedBeforeActingAgain.nextControlIndex === null
+            ? "after the disrupted request the agent never read state again"
+            : `after the disrupted request the agent acted again (call ${verifiedBeforeActingAgain.nextControlIndex}) without reading state first`,
+        );
+      }
       if (agent.notice) notes.push(`agent viewer notice at verification: ${JSON.stringify(agent.notice)}`);
 
       return summarize(checks, notes, {
@@ -300,6 +322,7 @@ function create(variant: string): ScenarioRun {
         observerViewer: observer,
         operatorViewer: await viewerSnapshot(client, state.operatorViewer),
         sawStaleTargetNotice: sawStaleTarget,
+        verifiedBeforeActingAgain,
       });
     },
   };
