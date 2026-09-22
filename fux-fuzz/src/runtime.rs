@@ -377,6 +377,10 @@ impl Server {
             agent: None,
         })
     }
+    /// The server's Unix socket. Raw-socket scenarios dial it directly.
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
     pub fn pump(&mut self) -> Result<()> {
         drain(&mut self.stdout, &mut self.out, |_| {})?;
         drain(&mut self.stderr, &mut self.err, |_| {})?;
