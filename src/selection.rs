@@ -10,34 +10,35 @@ use crate::{
 use bevy_ecs::prelude::*;
 
 pub const MAX_COPY_BYTES: usize = 1024 * 1024 / 4 * 3;
-const MAX_CELLS: usize = 262_144;
+pub const MAX_CELLS: usize = 262_144;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Grid {
     pub offset: usize,
     pub size: (u16, u16),
-    pub cells: Vec<Vec<vt100::Cell>>,
+    pub cells: Vec<Vec<fux_vt::Cell>>,
     pub wrapped: Vec<bool>,
+    ids: Vec<fux_vt::RowId>,
+    versions: Vec<u64>,
+    backing_size: (u16, u16),
 }
 impl Grid {
-    pub fn capture(screen: &mut vt100::Screen, offset: usize) -> Result<Self, String> {
+    pub fn capture(screen: &fux_vt::Screen, offset: usize) -> Result<Self, String> {
         let (rows, cols) = screen.size();
         if usize::from(rows) * usize::from(cols) > MAX_CELLS {
             return Err("copy viewport exceeds 262144 cells".into());
         }
-        screen.set_scrollback(offset);
-        // Every in-range cell exists; the emulator does not expose a cell-less row.
-        let cells: Option<Vec<Vec<vt100::Cell>>> = (0..rows)
-            .map(|y| (0..cols).map(|x| screen.cell(y, x).cloned()).collect())
-            .collect();
-        let grid = cells.map(|cells| Self {
-            offset: screen.scrollback(),
-            size: (rows, cols),
-            cells,
-            wrapped: (0..rows).map(|y| screen.row_wrapped(y)).collect(),
-        });
-        screen.set_scrollback(0);
-        grid.ok_or_else(|| "copy viewport has no cells".into())
+        let window = screen.window(offset, rows, cols);
+        let rows: Vec<_> = (0..rows).filter_map(|y| window.row(y)).collect();
+        Ok(Self {
+            offset: window.offset,
+            size: screen.size(),
+            backing_size: screen.size(),
+            cells: rows.iter().map(|r| r.cells.to_vec()).collect(),
+            wrapped: rows.iter().map(|r| r.wrapped).collect(),
+            ids: rows.iter().map(|r| r.id).collect(),
+            versions: rows.iter().map(|r| r.version).collect(),
+        })
     }
     fn clip(mut self, visible: (u16, u16)) -> Result<Self, String> {
         let size = (self.size.0.min(visible.0), self.size.1.min(visible.1));
@@ -50,13 +51,15 @@ impl Grid {
         self.size = size;
         self.cells.truncate(usize::from(size.0));
         self.wrapped.truncate(usize::from(size.0));
+        self.ids.truncate(usize::from(size.0));
+        self.versions.truncate(usize::from(size.0));
         for row in &mut self.cells {
             row.truncate(usize::from(size.1));
         }
         Ok(self)
     }
 
-    fn cell(&self, (y, x): (u16, u16)) -> Option<&vt100::Cell> {
+    fn cell(&self, (y, x): (u16, u16)) -> Option<&fux_vt::Cell> {
         self.cells.get(usize::from(y))?.get(usize::from(x))
     }
     fn point(&self, (y, x): (u16, u16)) -> (u16, u16) {
@@ -64,13 +67,57 @@ impl Grid {
         let mut x = x.min(self.size.1.saturating_sub(1));
         if self
             .cell((y, x))
-            .is_some_and(vt100::Cell::is_wide_continuation)
+            .is_some_and(fux_vt::Cell::is_wide_continuation)
         {
             x = x.saturating_sub(1);
         }
         (y, x)
     }
-    pub fn text(&self, a: (u16, u16), b: (u16, u16)) -> String {
+    fn identity(&self, (y, x): (u16, u16)) -> Option<(fux_vt::RowId, u16)> {
+        Some((*self.ids.get(usize::from(y))?, x))
+    }
+    fn position(&self, (id, col): (fux_vt::RowId, u16)) -> Option<(u16, u16)> {
+        Some((
+            u16::try_from(self.ids.iter().position(|&row| row == id)?).ok()?,
+            col,
+        ))
+    }
+    /// Compare every required row and selected span, not just endpoint IDs.
+    /// Versions skip untouched rows; an unrelated write or SGR change is safe.
+    fn retains(&self, screen: &fux_vt::Screen, a: (u16, u16), b: (u16, u16)) -> bool {
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        (start.0..=end.0).all(|y| {
+            let index = usize::from(y);
+            let Some(row) = self.ids.get(index).and_then(|&id| screen.row_by_id(id)) else {
+                return false;
+            };
+            if self.versions.get(index) == Some(&row.version) {
+                return true;
+            }
+            if y < end.0
+                && self.wrapped.get(index).copied()
+                    != Some(row.wrapped && self.size.1 == self.backing_size.1)
+            {
+                return false;
+            }
+            let left = if y == start.0 { start.1 } else { 0 };
+            let mut right = if y == end.0 { end.1 } else { self.size.1 - 1 };
+            if self.cell((y, right)).is_some_and(fux_vt::Cell::is_wide) {
+                right = right.saturating_add(1).min(self.size.1 - 1);
+            }
+            (left..=right).all(
+                |x| match (self.cell((y, x)), row.cells.get(usize::from(x))) {
+                    (Some(a), Some(b)) => {
+                        a.contents() == b.contents()
+                            && a.is_wide() == b.is_wide()
+                            && a.is_wide_continuation() == b.is_wide_continuation()
+                    }
+                    _ => false,
+                },
+            )
+        })
+    }
+    pub fn text(&self, a: (u16, u16), b: (u16, u16)) -> Result<String, String> {
         let (a, b) = (self.point(a), self.point(b));
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
         let mut text = String::new();
@@ -85,22 +132,29 @@ impl Grid {
                 if cell.is_wide_continuation() || cell.is_wide() && x + 1 >= self.size.1 {
                     continue;
                 }
-                if cell.has_contents() {
-                    line.push_str(cell.contents());
+                let contents = if cell.has_contents() {
+                    cell.contents()
                 } else {
-                    line.push(' ');
+                    " "
+                };
+                if text.len() + line.len() + contents.len() > MAX_COPY_BYTES {
+                    return Err("copy exceeds 1 MiB encoded clipboard limit".into());
                 }
+                line.push_str(contents);
             }
             if y < end.0 && self.wrapped.get(usize::from(y)).copied().unwrap_or(false) {
                 text.push_str(&line);
             } else {
                 text.push_str(line.trim_end_matches(' '));
                 if y < end.0 {
+                    if text.len() == MAX_COPY_BYTES {
+                        return Err("copy exceeds 1 MiB encoded clipboard limit".into());
+                    }
                     text.push('\n');
                 }
             }
         }
-        text
+        Ok(text)
     }
 }
 
@@ -108,11 +162,81 @@ impl Grid {
 pub struct Selection {
     pub leaf: Entity,
     pub cursor: (u16, u16),
-    pub anchor: Option<(u16, u16)>,
+    pub anchor: Option<(fux_vt::RowId, u16)>,
     pub grid: Grid,
     pub revision: u64,
+    /// The terminal instance whose row IDs this selection refers to.
+    pub instance: u64,
     pub dragging: bool,
     pub mouse_origin: bool,
+}
+
+impl Selection {
+    fn renew(
+        &self,
+        screen: &fux_vt::Screen,
+        offset: usize,
+        visible: (u16, u16),
+    ) -> Result<(Grid, (u16, u16), bool), String> {
+        let capture = |offset| Grid::capture(screen, offset)?.clip(visible);
+        let fallback = || {
+            let grid = capture(offset)?;
+            let cursor = grid.point(self.cursor);
+            Ok((grid, cursor, self.anchor.is_some()))
+        };
+        let Some(anchor) = self.anchor.and_then(|a| self.grid.position(a)) else {
+            return fallback();
+        };
+        if offset != self.grid.offset
+            || screen.size() != self.grid.backing_size
+            || self.grid.size
+                != (
+                    visible.0.min(screen.size().0),
+                    visible.1.min(screen.size().1),
+                )
+            || !self.grid.retains(screen, anchor, self.cursor)
+        {
+            return fallback();
+        }
+        let (start, end) = if anchor <= self.cursor {
+            (anchor, self.cursor)
+        } else {
+            (self.cursor, anchor)
+        };
+        let required = self
+            .grid
+            .ids
+            .get(usize::from(start.0)..=usize::from(end.0))
+            .ok_or("selection rows missing")?;
+        let first = *required.first().ok_or("selection has no rows")?;
+        let preferred = self
+            .grid
+            .ids
+            .first()
+            .and_then(|&id| screen.offset_for_row(id))
+            .or_else(|| screen.offset_for_row(first))
+            .unwrap_or(0);
+        let mut grid = capture(preferred)?;
+        let fits = |grid: &Grid| {
+            grid.ids
+                .iter()
+                .position(|&id| id == first)
+                .and_then(|i| grid.ids.get(i..i + required.len()))
+                == Some(required)
+        };
+        if !fits(&grid) {
+            grid = capture(screen.offset_for_row(first).unwrap_or(0))?;
+        }
+        if !fits(&grid) {
+            return fallback();
+        }
+        let cursor = self
+            .grid
+            .identity(self.cursor)
+            .and_then(|id| grid.position(id))
+            .ok_or("selection cursor row lost")?;
+        Ok((grid, cursor, false))
+    }
 }
 
 pub fn validate_clipboard(settings: &Settings, text: &str) -> Result<(), &'static str> {
@@ -135,10 +259,9 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
     };
     let visible =
         crate::frame::content_size(world, id, leaf).ok_or("no visible content to select")?;
-    let mut terminal = world
-        .get_mut::<Terminal>(pane)
-        .ok_or("terminal not found")?;
+    let terminal = world.get::<Terminal>(pane).ok_or("terminal not found")?;
     let revision = terminal.revision();
+    let instance = terminal.instance();
     let grid = terminal.selection_grid(offset)?.clip(visible)?;
     let offset = grid.offset;
     world.entity_mut(id).insert(Selection {
@@ -147,6 +270,7 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
         anchor: None,
         grid,
         revision,
+        instance,
         dragging: false,
         mouse_origin: false,
     });
@@ -161,8 +285,7 @@ pub fn start(world: &mut World, id: Entity, leaf: Entity) -> Result<(), String> 
     Ok(())
 }
 
-/// Conservative row validation: vt100 exposes offsets, not stable history row IDs.
-/// Never silently reuse an anchor after its displayed cells change.
+/// Follow retained row identities while validating the selected text spans.
 pub fn refresh(world: &mut World, id: Entity) {
     let visible = world
         .get::<Selection>(id)
@@ -179,45 +302,56 @@ pub fn refresh_visible(world: &mut World, id: Entity, visible: (u16, u16)) {
         return;
     };
     let leaf = selection.leaf;
+    let Some(pane) = world.get::<PaneView>(leaf).map(|p| p.pane) else {
+        world.entity_mut(id).remove::<Selection>();
+        notify(world, id, Notice::error("selection cleared: pane removed"));
+        return;
+    };
     if focused(world, id) != Some(leaf) {
         world.entity_mut(id).remove::<Selection>();
         return;
     }
-    let Some(pane) = world.get::<PaneView>(leaf).map(|p| p.pane) else {
-        world.entity_mut(id).remove::<Selection>();
-        return;
-    };
     let offset = v.scrollback;
     let old_size = selection.grid.size;
     let revision = selection.revision;
     let old_offset = selection.grid.offset;
-    let result = if let Some(mut terminal) = world.get_mut::<Terminal>(pane) {
+    let result = if let Some(terminal) = world.get::<Terminal>(pane) {
         let size = terminal.screen().size();
+        if terminal.instance() != selection.instance {
+            // A replaced process has its own parser; its row IDs are unrelated
+            // even where the numbers coincide.
+            world.entity_mut(id).remove::<Selection>();
+            notify(
+                world,
+                id,
+                Notice::error("selection cleared: terminal replaced"),
+            );
+            return;
+        }
         if revision == terminal.revision()
             && offset == old_offset
             && old_size == (visible.0.min(size.0), visible.1.min(size.1))
+            && selection.grid.backing_size == size
         {
             return;
         }
         let revision = terminal.revision();
-        terminal
-            .selection_grid(offset)
-            .and_then(|grid| grid.clip(visible))
-            .map(|grid| (revision, grid))
+        selection
+            .renew(terminal.screen(), offset, visible)
+            .map(|(grid, cursor, invalidated)| (revision, grid, cursor, invalidated))
     } else {
         Err("terminal removed; copy mode ended".into())
     };
     match result {
-        Ok((revision, grid)) => {
+        Ok((revision, grid, cursor, invalidated)) => {
             let Some(mut selection) = world.get_mut::<Selection>(id) else {
                 return;
             };
-            let invalidated = selection.anchor.is_some() && grid != selection.grid;
             if invalidated {
                 selection.anchor = None;
                 selection.dragging = false;
             }
-            selection.cursor = grid.point(selection.cursor);
+            selection.cursor = cursor;
             let actual = grid.offset;
             selection.grid = grid;
             selection.revision = revision;
@@ -246,7 +380,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
         return false;
     };
     if selection.mouse_origin
-        && selection.anchor == Some(selection.cursor)
+        && selection.anchor == selection.grid.identity(selection.cursor)
         && matches!(input, Input::Key { .. } | Input::Paste { .. })
     {
         world.entity_mut(id).remove::<Selection>();
@@ -290,15 +424,17 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
             }
             Key::Char(' ') => {
                 if let Some(mut selection) = world.get_mut::<Selection>(id) {
-                    selection.anchor = Some(cursor);
+                    selection.anchor = selection.grid.identity(cursor);
                 }
                 return true;
             }
             Key::Char('y') | Key::Enter => {
                 let text = selection
                     .anchor
+                    .and_then(|anchor| selection.grid.position(anchor))
                     .map(|anchor| selection.grid.text(anchor, cursor));
-                let copied = text.map(|text| crate::frame::clipboard(world, id, text));
+                let copied =
+                    text.map(|text| text.and_then(|text| crate::frame::clipboard(world, id, text)));
                 if matches!(copied, Some(Ok(()))) {
                     world.entity_mut(id).remove::<Selection>();
                 }
@@ -318,7 +454,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
                 let wide = selection
                     .grid
                     .cell(cursor)
-                    .is_some_and(vt100::Cell::is_wide);
+                    .is_some_and(fux_vt::Cell::is_wide);
                 position.1 = (position.1 + if wide { 2 } else { 1 }).min(size.1.saturating_sub(1));
             }
             Key::Arrow(Direction::Up) | Key::Char('k') => {
@@ -389,7 +525,7 @@ pub fn mouse(
     match action {
         MouseAction::Press => {
             selection.cursor = point;
-            selection.anchor = Some(point);
+            selection.anchor = selection.grid.identity(point);
             selection.dragging = true;
             selection.mouse_origin = true;
         }
@@ -416,6 +552,7 @@ pub fn mouse(
 pub fn paint(out: &mut String, selection: &Selection, rect: &crate::protocol::PaneRect) {
     let (a, b) = selection
         .anchor
+        .and_then(|anchor| selection.grid.position(anchor))
         .map_or((selection.cursor, selection.cursor), |a| {
             (a, selection.cursor)
         });

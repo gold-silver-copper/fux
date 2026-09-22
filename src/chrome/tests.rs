@@ -40,8 +40,8 @@ fn every_binding_is_reachable_at_every_short_height() -> crate::testing::Outcome
             let bounds = panel(&mut out, &v, &settings, offset).need()?;
             assert_eq!(bounds.max.y, u32::from(rows - 1));
             assert_eq!(bounds.max.x, 80);
-            let mut parser = vt100::Parser::new(rows, 80, 0);
-            parser.process(out.as_bytes());
+            let mut parser = fux_vt::Parser::new(rows, 80, 0)?;
+            parser.process(out.as_bytes())?;
             let contents = parser.screen().contents();
             for binding in &settings.bindings {
                 let label = match &binding.action {
@@ -54,7 +54,7 @@ fn every_binding_is_reachable_at_every_short_height() -> crate::testing::Outcome
             }
             assert_eq!(
                 parser.screen().cell(rows - 1, 79).need()?.bgcolor(),
-                vt100::Color::Default
+                fux_vt::Color::Default
             );
         }
         assert_eq!(seen.len(), settings.bindings.len(), "{rows} rows: {seen:?}");
@@ -88,8 +88,8 @@ fn tiny_unicode_command_selection_is_visible_even_when_disabled() -> crate::test
                     assert!(out.is_empty());
                     continue;
                 }
-                let mut parser = vt100::Parser::new(rows.max(2), cols.max(2), 0);
-                parser.process(out.as_bytes());
+                let mut parser = fux_vt::Parser::new(rows.max(1), cols.max(1), 0)?;
+                parser.process(out.as_bytes())?;
                 assert!((0..rows - 1).any(|y| (0..cols).any(|x| {
                     parser
                         .screen()
@@ -123,11 +123,11 @@ fn panel_is_content_sized_above_a_full_width_bar_and_resets_styles() -> crate::t
     let bounds = panel(&mut out, &v, &settings, 0).need()?;
     assert_eq!(bounds.height(), 3);
     assert_eq!(bounds.width(), u32::from(width("k  known action") + 2));
-    let mut parser = vt100::Parser::new(12, 40, 0);
-    parser.process(out.as_bytes());
+    let mut parser = fux_vt::Parser::new(12, 40, 0)?;
+    parser.process(out.as_bytes())?;
     let screen = parser.screen();
     for x in 0..40 {
-        assert_eq!(screen.cell(11, x).need()?.bgcolor(), vt100::Color::Idx(8));
+        assert_eq!(screen.cell(11, x).need()?.bgcolor(), fux_vt::Color::Idx(8));
         assert!(!screen.cell(11, x).need()?.inverse());
     }
     let (x, y) = (bounds.min.x as u16, bounds.min.y as u16);
@@ -136,9 +136,9 @@ fn panel_is_content_sized_above_a_full_width_bar_and_resets_styles() -> crate::t
     assert!(!screen.cell(y + 2, x + 1).need()?.bold());
     assert_eq!(
         screen.cell(y, x - 1).need()?.bgcolor(),
-        vt100::Color::Default
+        fux_vt::Color::Default
     );
-    assert_eq!(screen.bgcolor(), vt100::Color::Default);
+    assert_eq!(screen.bgcolor(), fux_vt::Color::Default);
     assert!(!screen.inverse());
     Ok(())
 }
@@ -177,8 +177,8 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
                 assert_eq!(bounds.height(), 1);
                 assert_eq!(bounds.min.y, u32::from(rows - 1));
             }
-            let mut parser = vt100::Parser::new(rows.max(2), cols.max(2), 0);
-            parser.process(out.as_bytes());
+            let mut parser = fux_vt::Parser::new(rows.max(1), cols.max(1), 0)?;
+            parser.process(out.as_bytes())?;
             let active = hits.iter().find(|(id, _)| Some(*id) == tab).need()?.1;
             assert!(
                 parser
@@ -188,7 +188,7 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
                     .inverse()
             );
             for x in 0..cols {
-                // vt100 stores a wide glyph's attributes on its leading cell.
+                // A wide glyph's attributes belong to its leading cell.
                 if parser
                     .screen()
                     .cell(rows - 1, x)
@@ -199,7 +199,7 @@ fn overflowing_unicode_tab_bar_keeps_active_cells_and_pick_bounds_inside_viewpor
                 }
                 assert_eq!(
                     parser.screen().cell(rows - 1, x).need()?.bgcolor(),
-                    vt100::Color::Idx(8),
+                    fux_vt::Color::Idx(8),
                     "{rows}x{cols} cell {x}: {out:?}"
                 );
             }
@@ -221,8 +221,8 @@ fn squeezed_labels_keep_their_first_glyph_even_when_it_is_wide() -> crate::testi
             (Some(Entity::from_bits(1)), &tabs),
             "process",
         );
-        let mut parser = vt100::Parser::new(3, cols, 0);
-        parser.process(out.as_bytes());
+        let mut parser = fux_vt::Parser::new(3, cols, 0)?;
+        parser.process(out.as_bytes())?;
         let bar = parser.screen().contents();
         let bar = bar.lines().last().need()?.to_owned();
         // Three cells hold a wide glyph and an ellipsis; padding must not

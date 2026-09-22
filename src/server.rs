@@ -120,7 +120,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                                 .get::<crate::selection::Selection>(event.viewer)
                                 .is_some()
                             || world.get::<Terminal>(p.pane).is_none_or(|t| {
-                                t.screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None
+                                t.screen().mouse_protocol_mode() == fux_vt::MouseProtocolMode::None
                             })
                     })
                 {
@@ -158,7 +158,7 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
                         .get::<crate::selection::Selection>(event.viewer)
                         .is_some()
                     || world.get::<Terminal>(pane).is_some_and(|t| {
-                        t.screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None
+                        t.screen().mouse_protocol_mode() == fux_vt::MouseProtocolMode::None
                     }))
             {
                 let rect = frame::rect(world, event.viewer, hit);
@@ -721,7 +721,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             // Clamp to retained history so scrolling back toward live output
             // moves immediately instead of first unwinding an invisible excess.
             let offset = match world.get_mut::<Terminal>(pane) {
-                Some(mut terminal) => terminal.clamp_scrollback(requested),
+                Some(terminal) => terminal.clamp_scrollback(requested),
                 None => 0,
             };
             world.get_mut::<Viewer>(id).ok_or(DETACHED)?.scrollback = offset;
@@ -744,7 +744,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             let text = world
                 .get_mut::<Terminal>(pane)
                 .ok_or("terminal not found")?
-                .copy_text(scrollback);
+                .copy_text(scrollback)?;
             crate::selection::validate_clipboard(world.resource::<Settings>(), &text)?;
             if let Some(mut view) = world.get_mut::<Presentation>(id) {
                 view.clipboard.push(text);
@@ -1050,7 +1050,7 @@ fn terminal_input(world: &mut World, id: Entity, input: &Input) -> Result<(), St
                 .ok_or("terminal not found")?;
             let screen = terminal.screen();
             let mode = screen.mouse_protocol_mode();
-            use vt100::MouseProtocolMode as MouseMode;
+            use fux_vt::MouseProtocolMode as MouseMode;
             if mode == MouseMode::None || modifiers.shift {
                 if matches!(action, MouseAction::ScrollUp | MouseAction::ScrollDown) {
                     let order = if *action == MouseAction::ScrollUp {

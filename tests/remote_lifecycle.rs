@@ -18,28 +18,9 @@ static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 mod design;
 
 type Fail = Box<dyn std::error::Error>;
-type Outcome = Result<(), Fail>;
-
-/// `need()` replaces `unwrap()`: the error names the call site, as a panic would.
-/// This duplicates `src/testing.rs`: integration tests cannot see a binary's
-/// modules, and the crate has no library target to share it through.
-trait Need<T> {
-    fn need(self) -> Result<T, String>;
-}
-impl<T> Need<T> for Option<T> {
-    #[track_caller]
-    fn need(self) -> Result<T, String> {
-        let location = std::panic::Location::caller();
-        self.ok_or_else(|| format!("missing value at {location}"))
-    }
-}
-impl<T, E: std::fmt::Display> Need<T> for Result<T, E> {
-    #[track_caller]
-    fn need(self) -> Result<T, String> {
-        let location = std::panic::Location::caller();
-        self.map_err(|error| format!("{error} at {location}"))
-    }
-}
+#[path = "../src/testing.rs"]
+mod testing;
+use testing::{Need, Outcome, ScreenText};
 
 /// JSON lookup with `Value`'s own null-on-miss semantics, without the index lint.
 trait At {
@@ -224,8 +205,10 @@ impl Server {
     fn screen(&self, viewer: u64) -> Result<String, String> {
         let frame = self.rpc("fux.frame", json!({"viewer":viewer}))?;
         let paint = frame.at("paint");
-        let mut parser = vt100::Parser::new(24, 80, 0);
-        parser.process(paint.as_str().ok_or("frame has no paint")?.as_bytes());
+        let mut parser = fux_vt::Parser::new(24, 80, 0).need()?;
+        parser
+            .process(paint.as_str().ok_or("frame has no paint")?.as_bytes())
+            .need()?;
         Ok(parser.screen().contents())
     }
 }
