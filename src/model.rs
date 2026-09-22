@@ -151,8 +151,10 @@ pub struct Memory {
     pub previous: bevy_ecs::entity::EntityHashMap<Entity>,
 }
 
-#[derive(Component, Reflect, Clone)]
-#[reflect(Component)]
+/// Reflected through serde so a partial BRP payload is a typed rejection
+/// (`missing field`) rather than a reflect fallback; see `registry_audit`.
+#[derive(Component, Reflect, Clone, Serialize, Deserialize)]
+#[reflect(Component, Serialize, Deserialize)]
 #[require(ProcessState)]
 pub struct Launch {
     pub argv: Vec<String>,
@@ -201,8 +203,8 @@ impl Default for ProcessState {
 }
 
 /// A layout leaf refers to a live process, not a serialized process recipe.
-#[derive(Component, Reflect, Clone, MapEntities)]
-#[reflect(Component, MapEntities)]
+#[derive(Component, Reflect, Clone, MapEntities, Serialize, Deserialize)]
+#[reflect(Component, MapEntities, Serialize, Deserialize)]
 #[require(Node = pane_node())]
 #[relationship(relationship_target = PaneViews)]
 pub struct PaneView {
@@ -216,8 +218,8 @@ pub struct PaneView {
 #[relationship_target(relationship = PaneView)]
 pub struct PaneViews(Vec<Entity>);
 
-#[derive(Component, Reflect, Clone)]
-#[reflect(Component)]
+#[derive(Component, Reflect, Clone, Serialize, Deserialize)]
+#[reflect(Component, Serialize, Deserialize)]
 #[require(Memory, crate::paste::Ownership)]
 pub struct Viewer {
     pub rows: u16,

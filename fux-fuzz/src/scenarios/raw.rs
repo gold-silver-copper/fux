@@ -10,6 +10,8 @@ use super::walk::{self, Oracle, Walker};
 use super::*;
 use crate::trace::Step;
 
+/// Distinct raw mutations; `Step::Raw { kind }` selects one modulo this.
+const KINDS: u8 = 23;
 const VIEWING: &str = "fux::model::Viewing";
 const ON_TAB: &str = "fux::model::OnTab";
 const FOCUSED: &str = "fux::model::Focused";
@@ -113,6 +115,81 @@ fn wait_repaired(s: &mut Server, walker: &mut Walker, what: &str, repair: Repair
     Ok(())
 }
 
+/// A partial payload for a reflected component, the read-modify-write that
+/// once panicked the whole server (agent exercises, F1). Every one must be a
+/// JSON-RPC rejection naming the missing field, and change nothing.
+fn partial(
+    s: &mut Server,
+    walker: &mut Walker,
+    index: u8,
+    w: &World,
+) -> Result<(&'static str, Value)> {
+    let driver = walker.driver;
+    let processes: Vec<u64> = w.states.iter().map(|(e, _)| *e).collect();
+    let leaves = w.leaves();
+    let (what, entity, component, value, field): (&str, u64, &str, Value, &str) = match index % 4 {
+        0 => (
+            "insert a Viewer without rows",
+            driver,
+            VIEWER,
+            json!({"cols":60,"zoom":false,"scrollback":0,"notice":null}),
+            "rows",
+        ),
+        1 => {
+            let Some(pane) = pick(&processes, index) else {
+                return Ok(("skip", json!("no process")));
+            };
+            (
+                "insert a Launch with argv only",
+                pane,
+                LAUNCH,
+                json!({"argv":["/bin/sh"]}),
+                "cwd",
+            )
+        }
+        2 => {
+            let Some(leaf) = pick(&leaves, index) else {
+                return Ok(("skip", json!("no pane view")));
+            };
+            (
+                "insert an empty PaneView",
+                leaf,
+                invariant::PANE_VIEW,
+                json!({}),
+                "pane",
+            )
+        }
+        _ => (
+            "insert an empty Prefix",
+            driver,
+            "fux::interaction::Prefix",
+            json!({}),
+            "scroll",
+        ),
+    };
+    let before = states(s)?;
+    let outcome = insert(s, entity, component, value);
+    let error = match outcome {
+        Ok(()) => {
+            return Err(format!("application: {what} was accepted instead of rejected").into());
+        }
+        Err(error) => error.to_string(),
+    };
+    ensure(
+        error.contains(&format!("missing field `{field}`")),
+        &format!("application: {what} was rejected without naming `{field}`: {error}"),
+    )?;
+    ensure(
+        states(s)? == before,
+        &format!("application: {what} changed a process state"),
+    )?;
+    ensure(
+        !walk::raw_paint(s, driver)?.is_empty(),
+        &format!("application: the driver painted nothing after {what}"),
+    )?;
+    Ok((what, json!({"entity":entity,"field":field})))
+}
+
 /// Applies one raw mutation and its per-mutation oracle. Laying out a
 /// 4096x4096 viewer takes a debug build well over the ordinary request
 /// timeout, so mutations run with a generous one.
@@ -146,7 +223,7 @@ fn mutate_with(
         .filter(|e| !w.tabs.contains(e) && !w.workspaces.contains(e))
         .collect();
     let leaves = w.leaves();
-    let (what, detail): (&str, Value) = match kind % 22 {
+    let (what, detail): (&str, Value) = match kind % KINDS {
         0 => {
             let id = victim(s, walker)?;
             despawn(s, id)?;
@@ -247,7 +324,7 @@ fn mutate_with(
         }
         12 | 13 => {
             let id = victim(s, walker)?;
-            let (rows, cols) = if kind % 22 == 12 {
+            let (rows, cols) = if kind % KINDS == 12 {
                 (0, 0)
             } else {
                 (4096, 4096)
@@ -356,6 +433,7 @@ fn mutate_with(
             wait_repaired(s, walker, "focusing a tab", Repair::Full)?;
             ("insert Focused at a tab", json!(tab))
         }
+        22 => partial(s, walker, index, w)?,
         _ => {
             let Some(tab) = pick(&w.tabs, index) else {
                 return Ok(("skip".into(), json!("no tab")));
@@ -382,7 +460,7 @@ pub(super) fn run(s: &mut Server, seed: u64, steps: &[Step]) -> Result<()> {
         walk::step(s, &mut walker, i, st, &[])?;
         if let Step::Raw { kind, .. } = st {
             mutations += 1;
-            tried.insert(kind % 22);
+            tried.insert(kind % KINDS);
         }
     }
     s.journal.record(
