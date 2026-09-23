@@ -21,8 +21,8 @@ use bevy_tasks::{
 use nix::{
     errno::Errno,
     libc,
-    sys::signal::{Signal, killpg},
-    unistd::{Pid, dup},
+    sys::signal::{Signal, kill, killpg},
+    unistd::{Pid, dup, getsid},
 };
 use parking_lot::Mutex;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -501,6 +501,13 @@ impl Job {
             // Let an interactive shell hang up its job-control groups before the
             // hard kill. Killing the shell first strands ordinary background jobs.
             let _ = killpg(Pid::from_raw(self.pid as i32), Signal::SIGHUP);
+            // Deliver the hangup a closed terminal means to every job in the
+            // session, whichever shell started it. bash and zsh forward it to
+            // their jobs themselves; dash, which is /bin/sh on Debian, does
+            // not, and its jobs sit in their own groups, out of reach of the
+            // group signal above. A job that ignores the hangup (`nohup`)
+            // survives, as it would a closed terminal.
+            signal_session(self.pid, Signal::SIGHUP);
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
             while std::time::Instant::now() < deadline {
                 match wait_unreaped(self.pid, true) {
@@ -566,6 +573,70 @@ impl Drop for Job {
             let _ = self.finish();
         }
     }
+}
+
+/// Signals every process in the session `leader` leads, other than the leader
+/// (hunt 7 finding 013). Used for the hangup only: a job that ignores it, as
+/// `nohup` arranges, has asked to outlive its terminal. Job control puts each background job in its own
+/// process group, so signalling the leader's group never reaches it, but the
+/// job stays in the leader's session unless it leaves with `setsid`.
+///
+/// The session ID is the leader's pid, and the leader is held unreaped for the
+/// whole kill, so the ID cannot have been reused by another session. A member
+/// is re-checked immediately before it is signalled; a process that left the
+/// session in between is skipped. A process that called `setsid` itself has
+/// left on purpose and is not chased.
+fn signal_session(leader: u32, signal: Signal) {
+    let Ok(leader) = i32::try_from(leader).map(Pid::from_raw) else {
+        return;
+    };
+    let in_session = |pid: Pid| pid != leader && getsid(Some(pid)) == Ok(leader);
+    for pid in processes().into_iter().filter(|pid| in_session(*pid)) {
+        if in_session(pid) {
+            let _ = kill(pid, signal);
+        }
+    }
+}
+
+/// Every process id the system lists, as candidates for `signal_session`.
+#[cfg(target_os = "linux")]
+fn processes() -> Vec<Pid> {
+    std::fs::read_dir("/proc")
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+                .map(Pid::from_raw)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every process id the system lists, as candidates for `signal_session`.
+#[cfg(target_os = "macos")]
+fn processes() -> Vec<Pid> {
+    // The count can grow between the two calls; the headroom covers that, and
+    // a process created after the listing cannot have been a background job
+    // of a shell that is already being hung up.
+    // SAFETY: a null buffer asks only for the count.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let Ok(count) = usize::try_from(count) else {
+        return Vec::new();
+    };
+    let mut pids: Vec<libc::pid_t> = vec![0; count + 64];
+    let bytes = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())).unwrap_or(0);
+    // SAFETY: the buffer is `bytes` long and writable.
+    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    pids.truncate(usize::try_from(listed).unwrap_or(0));
+    pids.into_iter()
+        .filter(|pid| *pid > 0)
+        .map(Pid::from_raw)
+        .collect()
+}
+
+/// Other platforms have no listing here; the process group kill still runs.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn processes() -> Vec<Pid> {
+    Vec::new()
 }
 
 /// -1 denotes a live child only in the nonblocking probe.

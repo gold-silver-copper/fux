@@ -85,12 +85,20 @@ fn server_command(directory: &Path, args: &[&std::ffi::OsStr]) -> Command {
 
 impl Server {
     fn start() -> Result<Self, Fail> {
+        Self::start_with_shell("/bin/sh")
+    }
+
+    /// A server whose panes run `shell`, for behaviour that differs between
+    /// shells: `/bin/sh` is bash on macOS and dash on Debian and Ubuntu.
+    fn start_with_shell(shell: &str) -> Result<Self, Fail> {
         let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
         let (directory, socket) = fixture()?;
         let config = directory.join("fux.json");
         fs::write(
             &config,
-            r#"{"shell":["/bin/sh"],"history_lines":100,"clipboard":"write-only"}"#,
+            serde_json::to_vec(&json!({
+                "shell": [shell], "history_lines": 100, "clipboard": "write-only"
+            }))?,
         )?;
         let child = server_command(
             &directory,
@@ -462,6 +470,84 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
     assert!(state.at("status").at("pid").is_null());
     assert_eq!(state.at("status").at("kind"), "exited", "{state}");
     assert!(state.at("status").at("code").is_number(), "{state}");
+    Ok(())
+}
+
+/// Hunt 7 finding 013: a background job lives in its own process group, so
+/// hanging up and killing the pane's group never reaches it; it died only if
+/// the shell forwarded the hangup, which bash and zsh do and dash does not.
+/// Ending a pane is a terminal hanging up: every job in its session gets the
+/// hangup, whichever shell started it, whether the pane is terminated or
+/// closed. A job that ignores the hangup, as `nohup` arranges, has asked to
+/// outlive its terminal and does.
+#[test]
+fn a_panes_background_jobs_end_with_it_under_any_shell() -> Outcome {
+    for (shell, how) in [("/bin/dash", "terminate"), ("/bin/dash", "close")] {
+        if !Path::new(shell).exists() {
+            continue;
+        }
+        let server = Server::start_with_shell(shell)?;
+        let viewer = server.attach()?;
+        let state = server.query("fux::model::ProcessState")?;
+        let shell_pid = state
+            .at(0)
+            .at("components")
+            .at("fux::model::ProcessState")
+            .at("status")
+            .at("pid")
+            .as_i64()
+            .need()? as i32;
+        let pid_file = server.directory.join("background.pid");
+        // Two jobs: an ordinary one, and one that ignores the hangup.
+        server.input(
+            viewer,
+            json!({"kind":"paste","text":format!(
+                "sleep 600 & echo $! > '{}'; (trap '' HUP; exec sleep 601) & echo $! >> '{}'",
+                pid_file.display(),
+                pid_file.display()
+            )}),
+        )?;
+        server.enter(viewer)?;
+        eventually(|| {
+            Ok(fs::read_to_string(&pid_file).is_ok_and(|text| text.lines().count() == 2))
+        })?;
+        let jobs: Vec<i32> = fs::read_to_string(&pid_file)?
+            .lines()
+            .map(str::parse)
+            .collect::<Result<_, _>>()?;
+        for job in &jobs {
+            assert_ne!(
+                nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(*job)))?.as_raw(),
+                shell_pid,
+                "{shell}: the job must be in its own group for this to test anything"
+            );
+        }
+        if how == "terminate" {
+            server.command(viewer, "terminate")?;
+        } else {
+            let pane = server
+                .query("fux::model::PaneView")?
+                .at(0)
+                .at("entity")
+                .as_u64()
+                .need()?;
+            server.control(viewer, json!({"kind":"close","subject":{"pane":pane}}))?;
+        }
+        let (ordinary, nohup) = (jobs.first().copied().need()?, jobs.get(1).copied().need()?);
+        let outcome = eventually(|| Ok(!alive(shell_pid) && !alive(ordinary)));
+        let kept = alive(nohup);
+        for job in &jobs {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(*job),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+        outcome.map_err(|error| format!("{shell} {how}: {error}"))?;
+        assert!(
+            kept,
+            "{shell} {how}: a job that ignores the hangup outlives the pane"
+        );
+    }
     Ok(())
 }
 
