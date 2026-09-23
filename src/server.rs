@@ -4,20 +4,15 @@ use crate::{
     control::{Axis, Chooser, Command, Control, Order, Scope, Shutdown, Subject, UserInput},
     frame::{self, sync_view},
     interaction::Prefix,
+    layout::{collapse_layout, invalidate_layouts, reload_layouts, scene_completions, scene_io},
     model::*,
     presentation::{self, Presentation},
     protocol::{Input, MouseAction, MouseButton, Token},
     terminal::{Terminal, TerminalPlugin},
 };
 use bevy_app::{App, AppExit, Plugin, PostUpdate, Update};
-use bevy_ecs::{
-    prelude::*,
-    system::SystemChangeTick,
-    world::{CommandQueue, EntityRefExcept},
-};
+use bevy_ecs::prelude::*;
 use bevy_ui::{FlexDirection, Node};
-use bevy_world_serialization::DynamicWorld;
-use std::sync::Arc;
 
 fn route_control(event: On<Control>, mut commands: Commands) {
     let (viewer, command) = (event.event_target(), event.command.clone());
@@ -207,30 +202,6 @@ fn route_input(event: On<UserInput>, mut commands: Commands) {
 #[derive(Resource)]
 pub struct Disconnected(pub async_channel::Receiver<Entity>);
 
-/// A scene save or load in flight for the viewer that asked. Detaching the
-/// viewer drops the task with it; the file operation still completes.
-#[derive(Component)]
-struct PendingScene(bevy_tasks::Task<CommandQueue>);
-
-/// While a scene task runs, the runner polls on a deadline instead of parking:
-/// a task cannot wake the runner after its own result is stored.
-pub(crate) fn pending_scenes(world: &mut World) -> bool {
-    world
-        .query_filtered::<(), With<PendingScene>>()
-        .iter(world)
-        .next()
-        .is_some()
-}
-
-fn scene_completions(mut pending: Query<(Entity, &mut PendingScene)>, mut commands: Commands) {
-    for (viewer, mut task) in &mut pending {
-        if let Some(mut queue) = bevy_tasks::futures::check_ready(&mut task.0) {
-            commands.entity(viewer).remove::<PendingScene>();
-            commands.append(&mut queue);
-        }
-    }
-}
-
 pub struct ServerPlugin;
 impl Plugin for ServerPlugin {
     fn build(&self, app: &mut App) {
@@ -397,62 +368,6 @@ fn settle_remote_requests(receiver: Res<bevy_remote::BrpReceiver>, wake: Res<Wak
     }
 }
 
-#[expect(
-    clippy::type_complexity,
-    reason = "the exception list is the point of this query"
-)]
-pub(crate) fn invalidate_layouts(
-    mut layouts: Query<(Entity, &mut LayoutCache), With<Workspace>>,
-    // Every layout entity without the cache itself and without viewer bookkeeping.
-    entities: Query<
-        EntityRefExcept<(LayoutCache, Viewers, TabViewers, FocusedBy)>,
-        Without<bevy_ecs::resource::IsResource>,
-    >,
-    children: Query<&Children>,
-    ticks: SystemChangeTick,
-    components: &bevy_ecs::component::Components,
-) {
-    let ignored = [
-        components.component_id::<Viewers>(),
-        components.component_id::<TabViewers>(),
-        components.component_id::<FocusedBy>(),
-    ];
-    for (root, mut cache) in &mut layouts {
-        if cache.scene.is_none() {
-            continue;
-        }
-        let mut count = 0;
-        // Unrestricted reflection requires checking every component, not just Node.
-        // Stop at the first change; uncached workspaces need no scan at all.
-        let dirty = std::iter::once(root)
-            .chain(children.iter_descendants(root))
-            .any(|id| {
-                let Ok(entity) = entities.get(id) else {
-                    return false;
-                };
-                count += 1;
-                let entity = entity.into_filtered();
-                let archetype = entity.archetype();
-                let mut shape: Vec<_> = archetype
-                    .components()
-                    .iter()
-                    .copied()
-                    .filter(|id| !ignored.contains(&Some(*id)))
-                    .collect();
-                shape.sort();
-                cache.members.get(&id).is_none_or(|known| **known != *shape)
-                    || shape.iter().any(|id| {
-                        entity.get_change_ticks_by_id(*id).is_some_and(|change| {
-                            change.is_changed(cache.built_at, ticks.this_run())
-                        })
-                    })
-            });
-        // Missing members cover removal/despawn/reparent out of the old root.
-        if dirty || count != cache.members.len() {
-            cache.scene = None;
-        }
-    }
-}
 /// A closed `fux.frame+watch` connection detaches the viewer it was streaming.
 /// The entity came from that request's params, so it names whatever the caller
 /// chose; this despawns it only if it is in fact a viewer. The check belongs
@@ -469,99 +384,6 @@ fn disconnected(mut commands: Commands, closed: Res<Disconnected>, viewers: Quer
             );
         }
     }
-}
-fn reload_layouts(mut reloads: MessageReader<assets::LayoutReload>, mut commands: Commands) {
-    for reload in reloads.read() {
-        let handle = reload.handle.clone();
-        commands.queue(move |world: &mut World| {
-            world.resource_scope(|world, collection: Mut<bevy_asset::Assets<DynamicWorld>>| {
-                if let Some(scene) = collection.get(&handle) {
-                    match assets::apply_layout(world, scene, &[]) {
-                        Ok(root) => {
-                            let scene_name = world.get::<Name>(root).cloned();
-                            let old = world
-                                .query_filtered::<(Entity, &Name), With<Workspace>>()
-                                .iter(world)
-                                .find(|(entity, name)| {
-                                    *entity != root && scene_name.as_ref() == Some(*name)
-                                })
-                                .map(|(entity, _)| entity);
-                            if let Some(old) = old {
-                                replace_workspace(world, old, root);
-                            } else {
-                                // Added beside the existing workspaces: the
-                                // file's saved order is meaningless here and
-                                // may collide with a live one.
-                                let order = crate::navigation::workspaces(world)
-                                    .into_iter()
-                                    .filter(|e| *e != root)
-                                    .filter_map(|e| world.get::<WorkspaceOrder>(e).map(|o| o.0))
-                                    .max()
-                                    .unwrap_or(-1)
-                                    .saturating_add(1);
-                                world.entity_mut(root).insert(WorkspaceOrder(order));
-                            }
-                        }
-                        Err(error) => bevy_log::error!("layout reload: {error}"),
-                    }
-                }
-            });
-        });
-    }
-}
-fn replace_workspace(world: &mut World, old: Entity, new: Entity) {
-    // The new workspace takes the replaced one's place in the order. The
-    // order saved in the file belongs to the session that saved it and can
-    // collide with a workspace created or reordered since.
-    if let Some(order) = world.get::<WorkspaceOrder>(old).copied() {
-        world.entity_mut(new).insert(order);
-    }
-    let first = first_leaf(world, new);
-    let viewers: Vec<Entity> = world
-        .get::<Viewers>(old)
-        .map(|viewers| viewers.iter().collect())
-        .unwrap_or_default();
-    for id in viewers {
-        let mut viewer = world.entity_mut(id);
-        viewer.remove::<(OnTab, Focused)>().insert(Viewing(new));
-        if let Some(first) = first {
-            viewer.insert(Focused(first));
-        }
-        if let Some(mut v) = world.get_mut::<Viewer>(id) {
-            v.zoom = false;
-        }
-    }
-    // Replacing is a close: the old hierarchy goes, and any process it alone
-    // referenced is terminated rather than left running with no view.
-    crate::interaction::close(world, old);
-}
-pub(crate) fn scene(world: &mut World, root: Entity) -> Result<(u32, Arc<DynamicWorld>), String> {
-    if world.get::<Workspace>(root).is_none() {
-        return Err("layout root is not a workspace".into());
-    }
-    let cache = world
-        .entity(root)
-        .get_ref::<LayoutCache>()
-        .ok_or("layout cache is missing")?;
-    if let Some(scene) = &cache.scene {
-        return Ok((cache.last_changed().get(), Arc::clone(scene)));
-    }
-    // Advance the native tick at extraction: later mutations in this same
-    // exclusive transaction must be distinguishable from the captured scene.
-    let built_at = world.increment_change_tick();
-    let scene = Arc::new(assets::extract_layout(world, root)?);
-    let members = scene
-        .entities
-        .iter()
-        .map(|entity| (entity.entity, shape(world, entity.entity)))
-        .collect();
-    let mut cache = world
-        .get_mut::<LayoutCache>(root)
-        .ok_or("layout cache is missing")?;
-    cache.built_at = built_at;
-    cache.scene = Some(Arc::clone(&scene));
-    cache.members = members;
-    Ok((cache.last_changed().get(), scene))
 }
 /// Runs one command for a viewer. Every arm either changes the world here or
 /// hands off to the module that owns that part of the model.
@@ -874,105 +696,6 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
     Ok(())
 }
 
-/// Serializes on the World (only native scene serialization needs it), then
-/// reads or writes the file on the task pool and returns through ECS.
-fn scene_io(
-    world: &mut World,
-    id: Entity,
-    root: Entity,
-    path: String,
-    load: Option<Vec<(Entity, Entity)>>,
-) {
-    let serialized = match &load {
-        Some(_) => Ok(None),
-        None => assets::serialize_layout(world, root).map(Some),
-    };
-    let mapping = load.unwrap_or_default();
-    let wake = world.resource::<Wake>().clone();
-    let task = bevy_tasks::IoTaskPool::get().spawn(async move {
-        let result = serialized.and_then(|text| match text {
-            Some(text) => std::fs::write(&path, text)
-                .map(|_| None)
-                .map_err(|e| e.to_string()),
-            None => std::fs::read_to_string(&path)
-                .map(Some)
-                .map_err(|e| e.to_string()),
-        });
-        let mut queue = CommandQueue::default();
-        queue.push(move |world: &mut World| {
-            let result = match result {
-                // The workspace was checked when the request arrived, but the
-                // file read happened off-thread: a close in between must fail
-                // the load, not add a workspace nobody asked for.
-                Ok(Some(_)) if world.get::<Workspace>(root).is_none() => {
-                    Err("target no longer exists".to_owned())
-                }
-                Ok(Some(text)) => assets::deserialize_layout(world, &text, &mapping).map(|new| {
-                    replace_workspace(world, root, new);
-                    format!("loaded {path}")
-                }),
-                Ok(None) => Ok(format!("saved {path}")),
-                Err(error) => Err(error),
-            };
-            notify(
-                world,
-                id,
-                match result {
-                    Ok(text) => Notice::info(text),
-                    Err(error) => Notice::error(error),
-                },
-            );
-        });
-        // Wakes the runner for the common case; `pending_scenes` covers the rest.
-        wake.notify();
-        queue
-    });
-    if let Ok(mut viewer) = world.get_entity_mut(id) {
-        viewer.insert(PendingScene(task));
-    }
-}
-
-type Collapsible = (With<Split>, Without<Tab>, Without<Workspace>);
-fn collapse_layout(
-    mut commands: Commands,
-    containers: Query<(Entity, &ChildOf, Option<&Children>), Collapsible>,
-    children: Query<&Children>,
-    wake: Res<Wake>,
-) {
-    for (entity, parent, descendants) in &containers {
-        let count = descendants.map_or(0, Children::len);
-        if count > 1 {
-            continue;
-        }
-        // Collapse bottom-up so two deferred operations never destroy each
-        // other's still-parented children.
-        let child = descendants.and_then(|children| children.first()).copied();
-        // Defer only to a child container that will itself collapse this
-        // frame. A healthy child split is hoisted like a leaf; otherwise a
-        // single-child wrapper would survive every later frame.
-        if child.is_some_and(|child| {
-            containers
-                .get(child)
-                .is_ok_and(|(_, _, kids)| kids.map_or(0, Children::len) <= 1)
-        }) {
-            continue;
-        }
-        if let Some(child) = child {
-            let Ok(siblings) = children.get(parent.parent()) else {
-                continue;
-            };
-            let Some(index) = siblings.iter().position(|e| e == entity) else {
-                continue;
-            };
-            commands
-                .entity(parent.parent())
-                .insert_children(index, &[child]);
-        }
-        commands.entity(entity).despawn();
-        wake.notify();
-    }
-}
-
 /// Ordinary input for the focused pane: keys and pastes become PTY bytes,
 /// mouse events are picked against the painted layout, and the prefix key
 /// opens or literally forwards itself.
@@ -1234,108 +957,6 @@ mod tests {
     }
 
     #[test]
-    fn scene_tasks_complete_on_deadline_and_report_io_failures() -> crate::testing::Outcome {
-        fn settle(world: &mut World) -> crate::testing::Outcome {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while pending_scenes(world) {
-                if std::time::Instant::now() >= deadline {
-                    return Err("scene task did not complete".into());
-                }
-                world.run_system_cached(scene_completions)?;
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            Ok(())
-        }
-        let mut app = App::new();
-        app.insert_resource(Wake(std::thread::current()));
-        app.add_plugins((
-            bevy_app::TaskPoolPlugin::default(),
-            bevy_asset::AssetPlugin::default(),
-            ServerPlugin,
-        ));
-        let world = app.world_mut();
-        let root = world.spawn(Workspace).id();
-        world.spawn((Tab, ChildOf(root)));
-        let id = world
-            .spawn((
-                Viewer {
-                    rows: 24,
-                    cols: 80,
-                    zoom: false,
-                    scrollback: 0,
-                    notice: None,
-                },
-                Viewing(root),
-            ))
-            .id();
-        let path = std::env::temp_dir().join(format!("fux-scene-task-{}.ron", std::process::id()));
-        let path = path.to_str().need()?.to_owned();
-        scene_io(world, id, root, path.clone(), None);
-        settle(world)?;
-        assert_eq!(
-            world.get::<Viewer>(id).need()?.notice,
-            Notice::info(format!("saved {path}"))
-        );
-        scene_io(world, id, root, path.clone(), Some(Vec::new()));
-        settle(world)?;
-        assert_eq!(
-            world.get::<Viewer>(id).need()?.notice,
-            Notice::info(format!("loaded {path}"))
-        );
-        let root = viewing(world, id).need()?;
-        std::fs::remove_file(&path)?;
-        let expected = std::fs::read_to_string(&path).err().need()?.to_string();
-        scene_io(world, id, root, path, Some(Vec::new()));
-        settle(world)?;
-        assert_eq!(
-            world.get::<Viewer>(id).need()?.notice,
-            Notice::error(expected)
-        );
-        // Completion commands see the pending marker already removed.
-        let task = bevy_tasks::IoTaskPool::get().spawn(async move {
-            let mut queue = CommandQueue::default();
-            queue.push(move |world: &mut World| {
-                assert!(world.get::<PendingScene>(id).is_none());
-                world.entity_mut(id).insert(Name::new("completed once"));
-            });
-            queue
-        });
-        world.entity_mut(id).insert(PendingScene(task));
-        settle(world)?;
-        assert_eq!(world.get::<Name>(id).need()?.as_str(), "completed once");
-        world.run_system_cached(scene_completions)?;
-        Ok(())
-    }
-
-    #[test]
-    fn detaching_during_synchronous_scene_io_finishes_the_operation() -> crate::testing::Outcome {
-        let mut app = App::new();
-        app.add_plugins(bevy_app::TaskPoolPlugin::default());
-        let (started, ready) = std::sync::mpsc::channel();
-        let (release, wait) = std::sync::mpsc::channel();
-        let (done, completed) = std::sync::mpsc::channel();
-        let path =
-            std::env::temp_dir().join(format!("fux-detached-scene-{}.ron", std::process::id()));
-        let destination = path.clone();
-        let task = bevy_tasks::IoTaskPool::get().spawn(async move {
-            let _ = started.send(());
-            // Like scene_io's filesystem call, this interval has no await point.
-            let _ = wait.recv();
-            let _ = done.send(std::fs::write(destination, "completed"));
-            CommandQueue::default()
-        });
-        let id = app.world_mut().spawn(PendingScene(task)).id();
-        ready.recv_timeout(std::time::Duration::from_secs(5))?;
-        app.world_mut().despawn(id);
-        release.send(())?;
-        completed.recv_timeout(std::time::Duration::from_secs(5))??;
-        assert_eq!(std::fs::read_to_string(&path)?, "completed");
-        std::fs::remove_file(path)?;
-        assert!(!pending_scenes(app.world_mut()));
-        Ok(())
-    }
-
-    #[test]
     fn removing_viewer_drops_presentation_without_despawning_entity() -> crate::testing::Outcome {
         let mut app = App::new();
         app.insert_resource(Wake(std::thread::current()));
@@ -1359,72 +980,6 @@ mod tests {
         assert!(app.world().get_entity(viewer).is_ok());
         assert!(app.world().get::<Presentation>(viewer).is_none());
         app.world_mut().despawn(viewer);
-        Ok(())
-    }
-
-    #[test]
-    fn arbitrary_layout_changes_invalidate_only_the_owning_workspace() -> crate::testing::Outcome {
-        let mut app = App::new();
-        app.register_type::<Workspace>()
-            .register_type::<Name>()
-            .register_type::<Node>()
-            .register_type::<ChildOf>()
-            .register_type::<Children>()
-            .register_type::<Extra>()
-            .add_systems(Update, invalidate_layouts);
-        let left = app.world_mut().spawn(Workspace).id();
-        let right = app.world_mut().spawn(Workspace).id();
-        let nested = app.world_mut().spawn((Node::default(), ChildOf(left))).id();
-        let leaf = app
-            .world_mut()
-            .spawn((Name::new("before"), ChildOf(nested)))
-            .id();
-        app.update();
-        let untouched = scene(app.world_mut(), right)?.1;
-        let initial = scene(app.world_mut(), left)?.1;
-        app.update();
-        assert!(Arc::ptr_eq(&initial, &scene(app.world_mut(), left)?.1));
-        // The descendant deliberately has no Node. Newly inserted, previously
-        // absent types and ordinary in-place writes must still reach the scene.
-        app.world_mut().entity_mut(leaf).insert(Extra(7));
-        // A synchronous control can observe this mutation before another Update.
-        app.world_mut().run_system_cached(invalidate_layouts)?;
-        let inserted = scene(app.world_mut(), left)?.1;
-        assert!(!Arc::ptr_eq(&initial, &inserted));
-        assert!(Arc::ptr_eq(&untouched, &scene(app.world_mut(), right)?.1));
-        app.world_mut().get_mut::<Extra>(leaf).need()?.0 = 9;
-        app.update();
-        let modified = scene(app.world_mut(), left)?.1;
-        assert!(!Arc::ptr_eq(&inserted, &modified));
-        app.world_mut().entity_mut(leaf).remove::<Extra>();
-        app.update();
-        let removed = scene(app.world_mut(), left)?.1;
-        assert!(!Arc::ptr_eq(&modified, &removed));
-        assert!(Arc::ptr_eq(&untouched, &scene(app.world_mut(), right)?.1));
-        app.world_mut().entity_mut(nested).insert(ChildOf(right));
-        app.update();
-        let emptied = scene(app.world_mut(), left)?.1;
-        let moved = scene(app.world_mut(), right)?.1;
-        assert!(!Arc::ptr_eq(&removed, &emptied));
-        assert!(!Arc::ptr_eq(&untouched, &moved));
-        assert!(!emptied.entities.iter().any(|entity| entity.entity == leaf));
-        assert!(moved.entities.iter().any(|entity| entity.entity == leaf));
-        app.world_mut().despawn(nested);
-        app.update();
-        let despawned = scene(app.world_mut(), right)?.1;
-        assert!(
-            !despawned
-                .entities
-                .iter()
-                .any(|entity| entity.entity == leaf)
-        );
-        assert!(Arc::ptr_eq(&emptied, &scene(app.world_mut(), left)?.1));
-        app.world_mut().entity_mut(right).remove::<Workspace>();
-        assert!(scene(app.world_mut(), right).is_err());
-        app.world_mut().despawn(right);
-        let replacement = app.world_mut().spawn(Workspace).id();
-        app.update();
-        assert_eq!(scene(app.world_mut(), replacement)?.1.entities.len(), 1);
         Ok(())
     }
 }

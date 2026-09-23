@@ -5,10 +5,10 @@ use crate::{
     actions,
     assets::{BindingAction, Settings},
     chrome::{self, at, fit},
+    layout::{invalidate_layouts, scene},
     model::*,
     presentation::Presentation,
     protocol::{Direction, Frame},
-    server::{invalidate_layouts, scene},
     terminal::Terminal,
 };
 use base64::Engine;
