@@ -48,10 +48,60 @@ impl Target {
     }
 }
 
+/// What an action needs of its target before it can run. `unavailable`
+/// checks these in one fixed order, and the first one unmet is the reason
+/// reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Needs {
+    /// Only a target that still exists.
+    Nothing,
+    /// A focused pane.
+    Pane,
+    /// A focused pane with at least one other pane in its tab.
+    TwoPanes,
+    /// A focused pane whose process is running.
+    RunningProcess,
+    /// A clipboard the configuration allows writing, then a focused pane.
+    Clipboard,
+    /// A tab.
+    Tab,
+    /// A tab with at least one other tab in its workspace.
+    TwoTabs,
+}
+
+impl Needs {
+    /// Pane and focus actions act on a pane, except splits, which can seed
+    /// an empty tab.
+    fn pane(self) -> bool {
+        matches!(
+            self,
+            Self::Pane | Self::TwoPanes | Self::RunningProcess | Self::Clipboard
+        )
+    }
+    fn tab(self) -> bool {
+        matches!(self, Self::Tab | Self::TwoTabs)
+    }
+}
+
 macro_rules! actions {
     (
-        $($group:literal: [$($variant:ident $id:literal => $label:literal),* $(,)?]),* $(,)?
+        $($group:ident: [$($variant:ident $id:literal => $label:literal needs $needs:ident),* $(,)?]),* $(,)?
     ) => {
+        /// The heading an action is listed under in help and menus. Behaviour
+        /// that depends on a group matches on this, never on its label.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Group {
+            $($group,)*
+        }
+        impl Group {
+            /// Groups in help order.
+            pub const ALL: &[Group] = &[$(Group::$group,)*];
+            pub const fn label(self) -> &'static str {
+                match self {
+                    $(Self::$group => stringify!($group),)*
+                }
+            }
+        }
         /// The wire form is the snake_case identifier, unchanged from the string API.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
         #[serde(rename_all = "snake_case")]
@@ -67,9 +117,9 @@ macro_rules! actions {
                     $($(Self::$variant => $id,)*)*
                 }
             }
-            pub fn group(self) -> &'static str {
+            pub const fn group(self) -> Group {
                 match self {
-                    $($(Self::$variant => $group,)*)*
+                    $($(Self::$variant => Group::$group,)*)*
                 }
             }
             pub fn label(self) -> &'static str {
@@ -77,35 +127,41 @@ macro_rules! actions {
                     $($(Self::$variant => $label,)*)*
                 }
             }
+            /// What the action needs of its target; every row states it.
+            pub const fn needs(self) -> Needs {
+                match self {
+                    $($(Self::$variant => Needs::$needs,)*)*
+                }
+            }
         }
     }
 }
 actions! {
-    "Panes": [
-        SplitHorizontal "split_horizontal" => "split side by side", SplitVertical "split_vertical" => "split stacked",
-        PaneMenu "pane_menu" => "pane actions", RenamePane "rename_pane" => "rename pane", Close "close" => "close pane",
-        Terminate "terminate" => "terminate process", Zoom "zoom" => "zoom or restore",
-        GrowWidth "grow_width" => "grow width", ShrinkWidth "shrink_width" => "shrink width",
-        GrowHeight "grow_height" => "grow height", ShrinkHeight "shrink_height" => "shrink height",
-        ReorderPrev "reorder_prev" => "reorder previous", ReorderNext "reorder_next" => "reorder next",
-        SwapChoose "swap_choose" => "swap with pane", SwapLeft "swap_left" => "swap left", SwapRight "swap_right" => "swap right",
-        SwapUp "swap_up" => "swap up", SwapDown "swap_down" => "swap down",
-        MoveLeft "move_left" => "move left", MoveRight "move_right" => "move right", MoveUp "move_up" => "move up", MoveDown "move_down" => "move down",
-        MoveTab "move_tab" => "move to tab", MoveNewTab "move_new_tab" => "move to new tab",
-        MoveWorkspace "move_workspace" => "move to workspace", MoveNewWorkspace "move_new_workspace" => "move to new workspace",
-        CopyMode "copy_mode" => "history and selection", ScrollUp "scroll_up" => "scroll older output",
-        ScrollDown "scroll_down" => "scroll newer output", Copy "copy" => "copy visible text"
+    Panes: [
+        SplitHorizontal "split_horizontal" => "split side by side" needs Nothing, SplitVertical "split_vertical" => "split stacked" needs Nothing,
+        PaneMenu "pane_menu" => "pane actions" needs Pane, RenamePane "rename_pane" => "rename pane" needs Pane, Close "close" => "close pane" needs Pane,
+        Terminate "terminate" => "terminate process" needs RunningProcess, Zoom "zoom" => "zoom or restore" needs Pane,
+        GrowWidth "grow_width" => "grow width" needs Pane, ShrinkWidth "shrink_width" => "shrink width" needs Pane,
+        GrowHeight "grow_height" => "grow height" needs Pane, ShrinkHeight "shrink_height" => "shrink height" needs Pane,
+        ReorderPrev "reorder_prev" => "reorder previous" needs TwoPanes, ReorderNext "reorder_next" => "reorder next" needs TwoPanes,
+        SwapChoose "swap_choose" => "swap with pane" needs TwoPanes, SwapLeft "swap_left" => "swap left" needs TwoPanes, SwapRight "swap_right" => "swap right" needs TwoPanes,
+        SwapUp "swap_up" => "swap up" needs TwoPanes, SwapDown "swap_down" => "swap down" needs TwoPanes,
+        MoveLeft "move_left" => "move left" needs TwoPanes, MoveRight "move_right" => "move right" needs TwoPanes, MoveUp "move_up" => "move up" needs TwoPanes, MoveDown "move_down" => "move down" needs TwoPanes,
+        MoveTab "move_tab" => "move to tab" needs Pane, MoveNewTab "move_new_tab" => "move to new tab" needs Pane,
+        MoveWorkspace "move_workspace" => "move to workspace" needs Pane, MoveNewWorkspace "move_new_workspace" => "move to new workspace" needs Pane,
+        CopyMode "copy_mode" => "history and selection" needs Pane, ScrollUp "scroll_up" => "scroll older output" needs Pane,
+        ScrollDown "scroll_down" => "scroll newer output" needs Pane, Copy "copy" => "copy visible text" needs Clipboard
     ],
-    "Focus": [FocusNext "focus_next" => "next pane", FocusPrevious "focus_previous" => "previous pane", FocusLast "focus_last" => "last pane",
-        FocusLeft "focus_left" => "focus left", FocusRight "focus_right" => "focus right", FocusUp "focus_up" => "focus up", FocusDown "focus_down" => "focus down"],
-    "Tabs": [TabNew "tab_new" => "new tab", TabNext "tab_next" => "next tab", TabPrevious "tab_previous" => "previous tab",
-        TabChoose "tab_choose" => "choose tab", RenameTab "rename_tab" => "rename tab", TabClose "tab_close" => "close tab",
-        TabMenu "tab_menu" => "tab actions", TabReorderPrevious "tab_reorder_previous" => "reorder tab previous", TabReorderNext "tab_reorder_next" => "reorder tab next"],
-    "Workspaces": [WorkspaceNew "workspace_new" => "new workspace", WorkspaceNext "workspace_next" => "next workspace",
-        WorkspacePrevious "workspace_previous" => "previous workspace", WorkspaceChoose "workspace_choose" => "choose workspace",
-        RenameWorkspace "rename_workspace" => "rename workspace", WorkspaceClose "workspace_close" => "close workspace", WorkspaceMenu "workspace_menu" => "workspace actions",
-        WorkspaceReorderPrevious "workspace_reorder_previous" => "reorder workspace previous", WorkspaceReorderNext "workspace_reorder_next" => "reorder workspace next"],
-    "Session": [SaveLayout "save_layout" => "save layout", LoadLayout "load_layout" => "load layout", Help "help" => "command help", Detach "detach" => "detach"]
+    Focus: [FocusNext "focus_next" => "next pane" needs TwoPanes, FocusPrevious "focus_previous" => "previous pane" needs TwoPanes, FocusLast "focus_last" => "last pane" needs TwoPanes,
+        FocusLeft "focus_left" => "focus left" needs Pane, FocusRight "focus_right" => "focus right" needs Pane, FocusUp "focus_up" => "focus up" needs Pane, FocusDown "focus_down" => "focus down" needs Pane],
+    Tabs: [TabNew "tab_new" => "new tab" needs Tab, TabNext "tab_next" => "next tab" needs TwoTabs, TabPrevious "tab_previous" => "previous tab" needs TwoTabs,
+        TabChoose "tab_choose" => "choose tab" needs Tab, RenameTab "rename_tab" => "rename tab" needs Tab, TabClose "tab_close" => "close tab" needs Tab,
+        TabMenu "tab_menu" => "tab actions" needs Tab, TabReorderPrevious "tab_reorder_previous" => "reorder tab previous" needs TwoTabs, TabReorderNext "tab_reorder_next" => "reorder tab next" needs TwoTabs],
+    Workspaces: [WorkspaceNew "workspace_new" => "new workspace" needs Nothing, WorkspaceNext "workspace_next" => "next workspace" needs Nothing,
+        WorkspacePrevious "workspace_previous" => "previous workspace" needs Nothing, WorkspaceChoose "workspace_choose" => "choose workspace" needs Nothing,
+        RenameWorkspace "rename_workspace" => "rename workspace" needs Nothing, WorkspaceClose "workspace_close" => "close workspace" needs Nothing, WorkspaceMenu "workspace_menu" => "workspace actions" needs Nothing,
+        WorkspaceReorderPrevious "workspace_reorder_previous" => "reorder workspace previous" needs Nothing, WorkspaceReorderNext "workspace_reorder_next" => "reorder workspace next" needs Nothing],
+    Session: [SaveLayout "save_layout" => "save layout" needs Nothing, LoadLayout "load_layout" => "load layout" needs Nothing, Help "help" => "command help" needs Nothing, Detach "detach" => "detach" needs Nothing]
 }
 
 impl std::fmt::Display for Action {
@@ -115,11 +171,6 @@ impl std::fmt::Display for Action {
 }
 
 impl Action {
-    /// Pane and focus actions act on a pane, except splits, which can seed an empty tab.
-    pub fn needs_pane(self) -> bool {
-        matches!(self.group(), "Panes" | "Focus")
-            && !matches!(self, Self::SplitHorizontal | Self::SplitVertical)
-    }
     /// The command a bound action means for this viewer state, or `None` for
     /// actions that first need a prompt or a confirmation.
     pub fn command(self, target: Target) -> Option<Command> {
@@ -260,57 +311,33 @@ impl Action {
 pub const TARGET_GONE: &str = "target no longer exists here";
 
 pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'static str> {
-    use Action::*;
     if !target.valid(world) {
         return Some(TARGET_GONE);
     }
-    if action == Copy
+    let needs = action.needs();
+    if needs == Needs::Clipboard
         && let Some(reason) = world
             .get_resource::<crate::assets::Settings>()
             .and_then(|s| crate::selection::validate_clipboard(s, "").err())
     {
         return Some(reason);
     }
-    if action.needs_pane() && target.leaf.is_none() {
+    if needs.pane() && target.leaf.is_none() {
         return Some("no pane");
     }
-    if action.group() == "Tabs" && target.tab.is_none() {
+    if needs.tab() && target.tab.is_none() {
         return Some("no tab");
     }
-    if matches!(
-        action,
-        TabNext | TabPrevious | TabReorderPrevious | TabReorderNext
-    ) {
-        return target.multiple_tabs(world).err();
-    }
-    if matches!(
-        action,
-        SwapChoose
-            | SwapLeft
-            | SwapRight
-            | SwapUp
-            | SwapDown
-            | MoveLeft
-            | MoveRight
-            | MoveUp
-            | MoveDown
-            | FocusNext
-            | FocusPrevious
-            | FocusLast
-            | ReorderPrev
-            | ReorderNext
-    ) {
-        return target.multiple_panes(world).err();
-    }
-    if action == Terminate
-        && target
+    match needs {
+        Needs::TwoTabs => target.multiple_tabs(world).err(),
+        Needs::TwoPanes => target.multiple_panes(world).err(),
+        Needs::RunningProcess => target
             .leaf
             .and_then(|leaf| world.get::<PaneView>(leaf))
             .is_none_or(|view| world.get::<crate::terminal::Terminal>(view.pane).is_none())
-    {
-        return Some("process is not running");
+            .then_some("process is not running"),
+        Needs::Nothing | Needs::Pane | Needs::Clipboard | Needs::Tab => None,
     }
-    None
 }
 
 #[cfg(test)]
@@ -368,7 +395,7 @@ mod tests {
             };
             let expected_empty = if action == Copy {
                 expected
-            } else if matches!(action.group(), "Panes" | "Focus")
+            } else if matches!(action.group(), Group::Panes | Group::Focus)
                 && !matches!(action, SplitHorizontal | SplitVertical)
             {
                 Some("no pane")
@@ -378,6 +405,37 @@ mod tests {
             assert_eq!(
                 unavailable(&world, empty, action),
                 expected_empty,
+                "{action}"
+            );
+            // Only raw edits leave a viewer without a tab, but a captured
+            // target can still say so, and the reason must not depend on
+            // which list an action was written in.
+            let tabless = Target {
+                tab: None,
+                leaf: None,
+                ..target
+            };
+            let expected_tabless = if action == Copy || expected_empty == Some("no pane") {
+                expected_empty
+            } else if matches!(
+                action,
+                TabNew
+                    | TabNext
+                    | TabPrevious
+                    | TabChoose
+                    | RenameTab
+                    | TabClose
+                    | TabMenu
+                    | TabReorderPrevious
+                    | TabReorderNext
+            ) {
+                Some("no tab")
+            } else {
+                expected
+            };
+            assert_eq!(
+                unavailable(&world, tabless, action),
+                expected_tabless,
                 "{action}"
             );
         }
@@ -404,6 +462,151 @@ mod tests {
     }
 
     #[test]
+    fn every_requirement_matches_the_rules_it_replaced() {
+        use Action::*;
+        // Before requirements were a column of the table, `unavailable`
+        // derived them from the group and two hand-written lists. Each
+        // action's stated requirement must mean exactly what those did.
+        let two_tabs = [TabNext, TabPrevious, TabReorderPrevious, TabReorderNext];
+        let two_panes = [
+            SwapChoose,
+            SwapLeft,
+            SwapRight,
+            SwapUp,
+            SwapDown,
+            MoveLeft,
+            MoveRight,
+            MoveUp,
+            MoveDown,
+            FocusNext,
+            FocusPrevious,
+            FocusLast,
+            ReorderPrev,
+            ReorderNext,
+        ];
+        for action in ALL.iter().copied() {
+            let needs = action.needs();
+            let pane = matches!(action.group(), Group::Panes | Group::Focus)
+                && !matches!(action, SplitHorizontal | SplitVertical);
+            assert_eq!(needs.pane(), pane, "{action}");
+            assert_eq!(needs.tab(), action.group() == Group::Tabs, "{action}");
+            assert_eq!(
+                needs == Needs::TwoTabs,
+                two_tabs.contains(&action),
+                "{action}"
+            );
+            assert_eq!(
+                needs == Needs::TwoPanes,
+                two_panes.contains(&action),
+                "{action}"
+            );
+            assert_eq!(needs == Needs::Clipboard, action == Copy, "{action}");
+            assert_eq!(
+                needs == Needs::RunningProcess,
+                action == Terminate,
+                "{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn groups_keep_their_members_labels_and_order() {
+        use Action::*;
+        // The literal help and menu order before the table carried groups as
+        // types; a regrouping or a reordering is a visible change.
+        let expected: [(&str, &[Action]); 5] = [
+            (
+                "Panes",
+                &[
+                    SplitHorizontal,
+                    SplitVertical,
+                    PaneMenu,
+                    RenamePane,
+                    Close,
+                    Terminate,
+                    Zoom,
+                    GrowWidth,
+                    ShrinkWidth,
+                    GrowHeight,
+                    ShrinkHeight,
+                    ReorderPrev,
+                    ReorderNext,
+                    SwapChoose,
+                    SwapLeft,
+                    SwapRight,
+                    SwapUp,
+                    SwapDown,
+                    MoveLeft,
+                    MoveRight,
+                    MoveUp,
+                    MoveDown,
+                    MoveTab,
+                    MoveNewTab,
+                    MoveWorkspace,
+                    MoveNewWorkspace,
+                    CopyMode,
+                    ScrollUp,
+                    ScrollDown,
+                    Copy,
+                ],
+            ),
+            (
+                "Focus",
+                &[
+                    FocusNext,
+                    FocusPrevious,
+                    FocusLast,
+                    FocusLeft,
+                    FocusRight,
+                    FocusUp,
+                    FocusDown,
+                ],
+            ),
+            (
+                "Tabs",
+                &[
+                    TabNew,
+                    TabNext,
+                    TabPrevious,
+                    TabChoose,
+                    RenameTab,
+                    TabClose,
+                    TabMenu,
+                    TabReorderPrevious,
+                    TabReorderNext,
+                ],
+            ),
+            (
+                "Workspaces",
+                &[
+                    WorkspaceNew,
+                    WorkspaceNext,
+                    WorkspacePrevious,
+                    WorkspaceChoose,
+                    RenameWorkspace,
+                    WorkspaceClose,
+                    WorkspaceMenu,
+                    WorkspaceReorderPrevious,
+                    WorkspaceReorderNext,
+                ],
+            ),
+            ("Session", &[SaveLayout, LoadLayout, Help, Detach]),
+        ];
+        let flattened: Vec<Action> = expected
+            .iter()
+            .flat_map(|(_, a)| a.iter().copied())
+            .collect();
+        assert_eq!(ALL, flattened.as_slice());
+        for (group, actions) in expected {
+            for action in actions {
+                assert_eq!(action.group().label(), group, "{action}");
+            }
+        }
+        let labels: Vec<_> = Group::ALL.iter().map(|g| g.label()).collect();
+        assert_eq!(labels, expected.map(|(label, _)| label));
+    }
+
+    #[test]
     fn wire_names_round_trip_and_unknown_names_are_rejected() -> crate::testing::Outcome {
         for action in ALL.iter().copied() {
             let id = action.to_string();
@@ -419,8 +622,8 @@ mod tests {
         assert!(
             serde_json::from_value::<Action>(serde_json::Value::String("nope".into())).is_err()
         );
-        assert!(Action::FocusLeft.needs_pane());
-        assert!(!Action::SplitVertical.needs_pane());
+        assert!(Action::FocusLeft.needs().pane());
+        assert!(!Action::SplitVertical.needs().pane());
         assert_eq!(Action::MoveDown.direction(), Some(Direction::Down));
         Ok(())
     }

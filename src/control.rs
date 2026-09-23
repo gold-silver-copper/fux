@@ -138,6 +138,8 @@ impl Subject {
             Self::Pane(entity) | Self::Tab(entity) | Self::Workspace(entity) => entity,
         }
     }
+    /// The word for this subject in messages. Behaviour matches on the
+    /// variant, never on this.
     pub fn kind(self) -> &'static str {
         match self {
             Self::Pane(_) => "pane",
