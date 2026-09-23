@@ -87,18 +87,7 @@ pub fn socket_path(flag: Option<&str>) -> Result<PathBuf, String> {
             let value = value
                 .into_string()
                 .map_err(|_| format!("{base} is not valid UTF-8"))?;
-            if value.is_empty() {
-                return Err(format!(
-                    "{base} is set but empty; set it to a directory or set FUX_SOCKET"
-                ));
-            }
-            if !Path::new(&value).is_absolute() {
-                return Err(format!(
-                    "{base} is {value:?}, not an absolute path; fix it or set FUX_SOCKET"
-                ));
-            }
-            let path = Path::new(&value).join("fux").join(DEFAULT_NAME);
-            return checked(&path.to_string_lossy(), base);
+            return socket_path_from(base, &value);
         }
     }
     Err(
@@ -114,6 +103,25 @@ pub fn max_path_bytes() -> usize {
     // SAFETY: sockaddr_un is a plain C struct; all-zero is a valid value.
     let address: nix::libc::sockaddr_un = unsafe { std::mem::zeroed() };
     std::mem::size_of_val(&address.sun_path) - 1
+}
+
+/// The socket path under a directory variable such as `XDG_RUNTIME_DIR`, and
+/// its validation. Split out so a test can drive it without setting the
+/// environment, and so the length error counts the socket path rather than the
+/// directory it was built from.
+fn socket_path_from(base: &str, value: &str) -> Result<PathBuf, String> {
+    if value.is_empty() {
+        return Err(format!(
+            "{base} is set but empty; set it to a directory or set FUX_SOCKET"
+        ));
+    }
+    if !Path::new(value).is_absolute() {
+        return Err(format!(
+            "{base} is {value:?}, not an absolute path; fix it or set FUX_SOCKET"
+        ));
+    }
+    let path = Path::new(value).join("fux").join(DEFAULT_NAME);
+    checked(&path.to_string_lossy(), base)
 }
 
 fn checked(value: &str, source: &str) -> Result<PathBuf, String> {
@@ -143,8 +151,8 @@ fn checked(value: &str, source: &str) -> Result<PathBuf, String> {
     let limit = max_path_bytes();
     if value.len() > limit {
         return Err(format!(
-            "{source} is {} bytes, longer than the {limit}-byte limit for a Unix socket \
-             path on this platform: {value}",
+            "the socket path is {} bytes, longer than the {limit}-byte limit for a Unix \
+             domain socket on this platform (from {source}): {value}",
             value.len()
         ));
     }

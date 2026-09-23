@@ -1409,4 +1409,3 @@ numbers; it exits 2 where none is available. Locally,
 `FUX_LINUX_TMP=ext4 fux-fuzz/linux/run.sh` gives the container an ext4
 `TMPDIR` like the runner's, which is new in this run for exactly this reason.
 `NEGATIVE_CONTROL=1` runs it on `/dev/shm`, a tmpfs, where it passes.
-
