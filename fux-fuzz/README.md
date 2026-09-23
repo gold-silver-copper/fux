@@ -188,6 +188,12 @@ per architecture, so repeated runs are incremental. The binaries are
 `/target/debug/fux` and `/target/debug/fux-fuzz`. Remove the volumes with
 `docker volume rm fux-linux-target-ARCH fux-linux-cargo-ARCH`.
 
+`FUX_LINUX_TMP=ext4` runs the command with `TMPDIR` on a fresh ext4 filesystem,
+as GitHub's ubuntu runner has in `/tmp`. ext4 reuses a freed inode number at
+once, which the container's own overlayfs never does; that difference hid hunt
+8 finding 014. It needs a privileged container for the loop mount, so it is
+opt-in, and the command itself still runs as the ordinary user.
+
 `linux/Dockerfile` installs `libasound2-dev` only because fux does not build
 on Linux without it; see hunt 7 finding 011 in `BREAKS.md`. Remove the package
 when that is fixed, and the build here is the check.
@@ -207,6 +213,12 @@ python3 fux-fuzz/tools/wire-capture.py /path/to/old-fux /tmp/old.json
 python3 fux-fuzz/tools/wire-capture.py target/debug/fux /tmp/new.json
 diff /tmp/old.json /tmp/new.json && echo identical
 ```
+
+`repro/check.sh PATH` runs every `repro/NNN-*.sh` script three ways -- as
+written, with `NEGATIVE_CONTROL=1`, and against a missing binary -- and
+compares each exit code with `repro/expected.tsv`, which records the verdict
+each script must give per platform. A fix changes a `0` to a `1` there in the
+same commit, and CI runs it so a fixed finding that regresses turns red.
 
 ## Harness checks
 
