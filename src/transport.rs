@@ -544,15 +544,20 @@ pub fn serve(
                         }
                         Some(_) => {}
                     }
-                    // Spend the reserve to accept one waiting connection and
-                    // close it at once. That drains the backlog, so a client
-                    // gets a prompt refusal instead of waiting on a listener
-                    // that cannot answer, and the loop keeps making progress.
+                    // Spend the reserve to drain every connection already
+                    // waiting, closing each at once. Accepting one per tick
+                    // left a client behind up to a backlog (128) of others,
+                    // one shed every 50 ms, so on Linux the first client under
+                    // pressure waited about six seconds; the whole backlog is
+                    // waiting now, so drain it now (hunt 7 finding 012). Each
+                    // shed frees the descriptor again, so this is bounded by
+                    // the listener's backlog and ends when nothing waits.
                     if let Some(held) = spare.take() {
                         drop(held);
-                        // The listener is non-blocking, so this only takes a
-                        // connection that is already waiting.
-                        if let Ok((shed, _)) = listener.get_ref().accept() {
+                        // The listener is non-blocking, so accept takes only a
+                        // connection already waiting and returns WouldBlock
+                        // once the backlog is empty.
+                        while let Ok((shed, _)) = listener.get_ref().accept() {
                             drop(shed);
                         }
                         spare = reserve();
