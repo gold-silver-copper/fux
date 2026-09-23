@@ -192,7 +192,7 @@ pub fn select(world: &mut World, id: Entity, scope: Scope, pick: Pick) -> Result
 
 /// Every workspace keeps at least one tab, whichever code path emptied it.
 pub(crate) fn normalize_on_tab_removed(
-    removed: On<Remove, Tab>,
+    removed: On<Remove<Tab>>,
     parents: Query<&ChildOf>,
     in_progress: Option<Res<ApplyingLayout>>,
     mut commands: Commands,
@@ -212,7 +212,7 @@ pub(crate) fn normalize_on_tab_removed(
 
 /// A child placed directly under a workspace by any caller is wrapped into a tab.
 pub(crate) fn normalize_on_child_added(
-    added: On<Insert, ChildOf>,
+    added: On<Insert<ChildOf>>,
     parents: Query<&ChildOf>,
     workspaces: Query<(), With<Workspace>>,
     tabs: Query<(), With<Tab>>,
@@ -269,7 +269,7 @@ pub(crate) fn normalize_on_child_added(
 /// A tab unlinked from its workspace by a raw edit stays where it is, but
 /// the viewers on it must not: they are repaired onto a listed tab.
 pub(crate) fn repair_on_tab_unlinked(
-    removed: On<Remove, ChildOf>,
+    removed: On<Remove<ChildOf>>,
     tabs: Query<(), With<Tab>>,
     in_progress: Option<Res<ApplyingLayout>>,
     mut commands: Commands,
@@ -323,7 +323,7 @@ pub(crate) fn repair_later(mut world: DeferredWorld, _: HookContext) {
 /// have given it, the navigation memory and paste ownership `Viewer` requires,
 /// and any presentation, prefix, overlay or selection.
 pub(crate) fn reject_viewer_on_layout(
-    inserted: On<Insert, (Viewer, LayoutNode)>,
+    inserted: On<Insert<(Viewer, LayoutNode)>>,
     mixed: Query<(), (With<Viewer>, LayoutRole)>,
     mut commands: Commands,
 ) {
@@ -384,7 +384,7 @@ pub(crate) fn remember_focus(mut world: DeferredWorld, context: HookContext) {
 /// Memory entries die with the entities they name, and viewers that relied
 /// on the removed component are repaired.
 pub(crate) fn forget<C: Component>(
-    removed: On<Remove, C>,
+    removed: On<Remove<C>>,
     mut viewers: Query<&mut Memory>,
     mut commands: Commands,
 ) {

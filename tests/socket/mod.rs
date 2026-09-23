@@ -4,6 +4,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt},
     process::Output,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 /// A server started with arbitrary arguments and environment, for cases the
@@ -107,6 +108,13 @@ fn internet_sockets(pid: u32, socket: &Path) -> Result<String, Fail> {
         return Err(format!("lsof -i failed: {inet:?}").into());
     }
     Ok(String::from_utf8_lossy(&inet.stdout).into_owned())
+}
+
+/// Mirrors `transport::MAX_BODY`. An integration test cannot import from the
+/// binary crate, so this is a copy: change it with the constant. The test
+/// either side of the limit fails loudly if the two drift apart.
+fn fux_transport_max_body() -> usize {
+    4 << 20
 }
 
 fn mode(path: &Path) -> Result<u32, Fail> {
@@ -514,5 +522,684 @@ fn watches_stream_over_the_socket_and_closing_one_detaches_its_viewer() -> Outco
     drop(reader);
     drop(stream);
     eventually(|| Ok(!viewer_exists(&server, idle)?))?;
+    Ok(())
+}
+
+/// Hunt 6 finding 003. A `fux.frame+watch` request names the viewer to stream,
+/// and fux used to despawn whatever that id named when the connection closed:
+/// a tab, a process entity and its child, or one of Bevy's resource entities,
+/// which ended the server. The detach applies to viewers only.
+fn entities_with(server: &Server, component: &str) -> Result<Vec<u64>, String> {
+    Ok(server
+        .query(component)?
+        .rows()
+        .filter_map(|row| row.at("entity").as_u64())
+        .collect())
+}
+
+/// Opens a watch for `id`, lets the request be dispatched, then closes it.
+fn watch_then_close(server: &Server, id: u64) -> Result<(), Fail> {
+    let (stream, mut reader) = watch(&server.socket, id)?;
+    let mut line = String::new();
+    // Read whatever arrives, if anything: an id that is not a viewer is
+    // answered with an error rather than a stream.
+    let _ = reader.read_line(&mut line);
+    drop(reader);
+    drop(stream);
+    thread::sleep(Duration::from_millis(400));
+    Ok(())
+}
+
+#[test]
+fn a_closed_watch_detaches_only_a_viewer() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+    server.tab_new(viewer, Some("victim"))?;
+    server.split(viewer, "horizontal", Some("exec sleep 600"))?;
+    eventually(|| Ok(entities_with(&server, "fux::model::ProcessState")?.len() >= 2))?;
+
+    let tabs = entities_with(&server, "fux::model::Tab")?;
+    let victim_tab = tabs.iter().copied().max().need()?;
+    let processes = server.query("fux::model::ProcessState")?;
+    let (process_entity, pid) = processes
+        .rows()
+        .find_map(|row| {
+            let pid = row
+                .at("components")
+                .at("fux::model::ProcessState")
+                .at("status")
+                .at("pid")
+                .as_i64()?;
+            Some((row.at("entity").as_u64()?, pid as i32))
+        })
+        .need()?;
+    assert!(alive(pid));
+
+    // A tab, by the streaming route and by the refused-batch route.
+    watch_then_close(&server, victim_tab)?;
+    let batch = post(
+        &server.socket,
+        &format!(
+            r#"[{{"jsonrpc":"2.0","id":1,"method":"fux.frame+watch","params":{{"viewer":{victim_tab}}}}}]"#
+        ),
+    )?;
+    assert!(
+        batch.contains("Streaming can not be used in batch requests"),
+        "{batch}"
+    );
+    thread::sleep(Duration::from_millis(400));
+    assert!(
+        entities_with(&server, "fux::model::Tab")?.contains(&victim_tab),
+        "a closed watch despawned a tab"
+    );
+
+    // A process entity: its child must keep running.
+    watch_then_close(&server, process_entity)?;
+    assert!(alive(pid), "a closed watch killed a child process");
+    assert!(entities_with(&server, "fux::model::ProcessState")?.contains(&process_entity));
+
+    // Bevy's resource entities sit at the top of the id space, because
+    // `Entity::to_bits` complements the index. Despawning one aborted the server.
+    for bits in [0xFFFF_FFFF_u64, 0xFFFF_FFFE, 0xFFFF_FFFD] {
+        watch_then_close(&server, bits)?;
+        assert!(
+            server.rpc("rpc.discover", Value::Null).is_ok(),
+            "watching entity bits {bits:#x} ended the server"
+        );
+    }
+
+    // A workspace, and the viewer's own focused pane view.
+    let workspace = server.workspace_of(viewer)?;
+    let focused = server.focused(viewer)?.as_u64().need()?;
+    for id in [workspace, focused] {
+        watch_then_close(&server, id)?;
+    }
+    assert!(entities_with(&server, "fux::model::Workspace")?.contains(&workspace));
+    assert!(entities_with(&server, "fux::model::PaneView")?.contains(&focused));
+
+    // Everything the viewer needs is still there, and it still paints.
+    assert_viewer_consistent(&server, viewer)?;
+    assert!(!server.screen(viewer)?.is_empty());
+    Ok(())
+}
+
+/// The documented behaviour is unchanged: closing a watch on a real viewer
+/// detaches that viewer, whether or not frames were flowing.
+#[test]
+fn a_closed_watch_still_detaches_a_real_viewer() -> Outcome {
+    let server = Server::start()?;
+    let busy = server.attach()?;
+    let (stream, mut reader) = watch(&server.socket, busy)?;
+    let mut headers = String::new();
+    while reader.read_line(&mut headers)? > 2 && !headers.ends_with("\r\n\r\n") {}
+    next_event(&mut reader)?;
+    server.split(busy, "horizontal", Some("exec yes stream"))?;
+    next_event(&mut reader)?;
+    drop(reader);
+    drop(stream);
+    eventually(|| Ok(!viewer_exists(&server, busy)?))?;
+
+    // A refused batch, by contrast, must leave the viewer attached: a refused
+    // request may not change the world.
+    let idle = server.attach()?;
+    let batch = post(
+        &server.socket,
+        &format!(
+            r#"[{{"jsonrpc":"2.0","id":1,"method":"fux.frame+watch","params":{{"viewer":{idle}}}}}]"#
+        ),
+    )?;
+    assert!(
+        batch.contains("Streaming can not be used in batch requests"),
+        "{batch}"
+    );
+    thread::sleep(Duration::from_millis(500));
+    assert!(
+        viewer_exists(&server, idle)?,
+        "a refused batch detached the viewer it named"
+    );
+    Ok(())
+}
+
+/// Hunt 6 findings 004 and 005. Both are `bevy_remote` defects that fux reaches
+/// because it serves the stock registry unfiltered, and both ended the server
+/// with one accepted request. fux replaces the two methods with guards that
+/// answer for the named entity and then hand the request to the stock handler;
+/// this pins that, against unmodified bevy.
+#[test]
+fn stock_methods_refuse_ids_that_used_to_end_the_server() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+
+    // 005: `world.mutate_components` reached `World::entity_mut`, which panics
+    // on an entity that is not alive. A despawned id is the ordinary way in.
+    let spawned = server
+        .rpc(
+            "world.spawn_entity",
+            json!({"components":{"bevy_ecs::name::Name":"probe"}}),
+        )?
+        .at("entity")
+        .as_u64()
+        .need()?;
+    server.rpc("world.despawn_entity", json!({ "entity": spawned }))?;
+    let never = 12_345_u64;
+    for id in [spawned, never] {
+        let error = server
+            .rpc(
+                "world.mutate_components",
+                json!({"entity":id,"component":"bevy_ecs::name::Name","path":"","value":"x"}),
+            )
+            .err()
+            .unwrap_or_default();
+        assert!(!error.is_empty(), "mutating entity {id} was not refused");
+        assert!(
+            server.rpc("rpc.discover", Value::Null).is_ok(),
+            "mutating entity {id} ended the server"
+        );
+    }
+
+    // 004: `world.despawn_entity` would despawn one of Bevy's resource
+    // entities, and the next command flush panicked inside the ECS.
+    for bits in [0xFFFF_FFFF_u64, 0xFFFF_FFFE, 0xFFFF_FFFD] {
+        let error = server
+            .rpc("world.despawn_entity", json!({ "entity": bits }))
+            .err()
+            .unwrap_or_default();
+        assert!(
+            !error.is_empty(),
+            "despawning entity bits {bits:#x} was not refused"
+        );
+        assert!(
+            server.rpc("rpc.discover", Value::Null).is_ok(),
+            "despawning entity bits {bits:#x} ended the server"
+        );
+    }
+
+    // Ordinary use of both methods is untouched.
+    let live = server
+        .rpc(
+            "world.spawn_entity",
+            json!({"components":{"bevy_ecs::name::Name":"live"}}),
+        )?
+        .at("entity")
+        .as_u64()
+        .need()?;
+    server.rpc(
+        "world.mutate_components",
+        json!({"entity":live,"component":"bevy_ecs::name::Name","path":"","value":"renamed"}),
+    )?;
+    assert_eq!(
+        components(&server, live, &["bevy_ecs::name::Name"])?.at("bevy_ecs::name::Name"),
+        json!("renamed")
+    );
+    server.rpc("world.despawn_entity", json!({ "entity": live }))?;
+    assert_viewer_consistent(&server, viewer)?;
+    assert!(!server.screen(viewer)?.is_empty());
+    Ok(())
+}
+
+/// Hunt 6 finding 006. `accept` failing with EMFILE is not like a peer that
+/// aborted: retrying cannot free a descriptor. fux used to warn and retry
+/// twenty times a second for as long as the pressure lasted, while clients
+/// waited in silence on a backlog that never drained.
+#[test]
+fn descriptor_pressure_is_reported_bounded_and_recovers() -> Outcome {
+    let (directory, socket) = fixture()?;
+    let server = Spawned::start(&directory, &socket, |command| {
+        // SAFETY: setrlimit is async-signal-safe and touches only the child.
+        unsafe {
+            command.pre_exec(|| {
+                let limit = nix::libc::rlimit {
+                    rlim_cur: 64,
+                    rlim_max: 64,
+                };
+                if nix::libc::setrlimit(nix::libc::RLIMIT_NOFILE, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    })?;
+    eventually(|| Ok(answers(&socket)))?;
+
+    // One client holds connections until the server runs out of descriptors.
+    let mut held = Vec::new();
+    for _ in 0..400 {
+        match UnixStream::connect(&socket) {
+            Ok(mut stream) => {
+                let _ = stream.write_all(b"GET /hold HTTP/1.1\r\nHost: fux\r\n");
+                held.push(stream);
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => break,
+        }
+    }
+    assert!(held.len() > 50, "only held {} connections", held.len());
+
+    // Every attempt must fail promptly rather than hang.
+    let mut slowest = Duration::ZERO;
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        let started = Instant::now();
+        let _ = answers(&socket);
+        slowest = slowest.max(started.elapsed());
+        thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        slowest < Duration::from_secs(5),
+        "a client waited {slowest:?} on a listener that could not answer"
+    );
+
+    // The condition is reported, and the log is bounded rather than a flood.
+    let log = server.log();
+    assert!(
+        log.contains("out of descriptors"),
+        "descriptor pressure was never reported: {log}"
+    );
+    let lines = log.matches("BRP socket accept").count();
+    assert!(lines <= 40, "the accept loop logged {lines} lines, a flood");
+
+    // Releasing the pressure brings the server back on its own.
+    drop(held);
+    eventually(|| Ok(answers(&socket)))?;
+    assert!(
+        server.log().contains("accept recovered"),
+        "recovery was not reported"
+    );
+    stop(&socket)?;
+    drop(server);
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+/// Hunt 6 finding 007. The body was read whole with no bound, so one
+/// connection could make the server hold whatever it sent (256 MB in grew it
+/// by 580 MB), and a batch amplified on the way out: 478 KiB holding 10 000
+/// requests was answered with 12.49 MB.
+#[test]
+fn request_bodies_and_batches_are_bounded() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+
+    // A body over the limit is refused by its size, with a typed error naming
+    // the limit, and the server is untouched.
+    let over = fux_transport_max_body() + 1;
+    let head = br#"{"jsonrpc":"2.0","id":1,"method":""#;
+    let tail = br#"","params":null}"#;
+    let filler = over - head.len() - tail.len();
+    let mut stream = UnixStream::connect(&server.socket)?;
+    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    write!(
+        stream,
+        "POST / HTTP/1.1\r\nHost: fux\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        over
+    )?;
+    stream.write_all(head)?;
+    let chunk = vec![b'a'; 1 << 16];
+    let mut sent = 0;
+    while sent < filler {
+        let n = chunk.len().min(filler - sent);
+        if stream.write_all(chunk.get(..n).need()?).is_err() {
+            break;
+        }
+        sent += n;
+    }
+    let _ = stream.write_all(tail);
+    let mut reply = String::new();
+    let _ = stream.read_to_string(&mut reply);
+    assert!(
+        reply.contains("byte limit"),
+        "an oversized body was not refused by its size: {reply:.200}"
+    );
+    assert!(server.rpc("rpc.discover", Value::Null).is_ok());
+
+    // A body just under the limit is still accepted, so the bound is a limit
+    // and not a smaller accident.
+    let under = fux_transport_max_body() - 1024;
+    let method = "a".repeat(under - head.len() - tail.len());
+    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":null}}"#);
+    let reply = post(&server.socket, &body)?;
+    assert!(
+        reply.contains("-32601"),
+        "a body under the limit was not answered on its merits: {reply:.200}"
+    );
+
+    // A batch over the count cap is refused, naming the cap.
+    let one = r#"{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}"#;
+    let huge = format!(
+        "[{}]",
+        std::iter::repeat_n(one, 10_000)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let reply = post(&server.socket, &huge)?;
+    assert!(
+        reply.contains("limit of"),
+        "a 10000-request batch was not refused: {reply:.200}"
+    );
+    assert!(
+        reply.len() < 4096,
+        "the refusal itself was large: {}",
+        reply.len()
+    );
+
+    // A batch at the harness's largest legitimate size still works.
+    let ordinary = format!(
+        "[{}]",
+        std::iter::repeat_n(one, 1000).collect::<Vec<_>>().join(",")
+    );
+    let reply = post(&server.socket, &ordinary)?;
+    assert!(
+        reply.contains("\"result\""),
+        "a 1000-request batch was refused"
+    );
+
+    // The reply is bounded even when every request answers with a lot.
+    let schema = r#"{"jsonrpc":"2.0","id":1,"method":"registry.schema"}"#;
+    let fat = format!(
+        "[{}]",
+        std::iter::repeat_n(schema, 1000)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let reply = post(&server.socket, &fat)?;
+    assert!(
+        reply.len() < 32 << 20,
+        "a batch reply reached {} bytes",
+        reply.len()
+    );
+    assert!(
+        reply.contains("byte limit"),
+        "the reply budget was never reported: {:.200}",
+        &reply[reply.len().saturating_sub(400)..]
+    );
+
+    assert_viewer_consistent(&server, viewer)?;
+    assert!(!server.screen(viewer)?.is_empty());
+    Ok(())
+}
+
+/// A peer that completes `fux.attach` and then streams an event that never
+/// ends. It is deliberately not fux: `FUX_SOCKET` names a socket, and any
+/// same-user process can create one, so the frontend has to defend itself
+/// against a server that is wedged, buggy or replaced.
+struct EndlessPeer {
+    directory: PathBuf,
+    socket: PathBuf,
+    stop: Arc<AtomicBool>,
+    sent: Arc<AtomicU64>,
+}
+
+impl EndlessPeer {
+    fn start(terminated: bool) -> Result<Self, Fail> {
+        let directory = std::env::temp_dir().join(format!(
+            "fux-peer-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory)?;
+        let inner = directory.join("s");
+        fs::create_dir(&inner)?;
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o700))?;
+        let socket = inner.join("fux.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let sent = Arc::new(AtomicU64::new(0));
+        let (flag, counter) = (Arc::clone(&stop), Arc::clone(&sent));
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                if flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                let Ok(stream) = stream else { return };
+                // One thread per connection, and every connection serves
+                // requests until it is closed: the frontend pools them.
+                let (flag, counter) = (Arc::clone(&flag), Arc::clone(&counter));
+                thread::spawn(move || serve_peer(stream, terminated, &flag, &counter));
+            }
+        });
+        Ok(Self {
+            directory,
+            socket,
+            stop,
+            sent,
+        })
+    }
+}
+
+impl Drop for EndlessPeer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = std::os::unix::net::UnixStream::connect(&self.socket);
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Answers every request on one connection, and streams once asked to watch.
+fn serve_peer(
+    mut stream: std::os::unix::net::UnixStream,
+    terminated: bool,
+    flag: &Arc<AtomicBool>,
+    counter: &Arc<AtomicU64>,
+) {
+    loop {
+        let mut request = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            match stream.read(&mut byte) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => request.extend_from_slice(&byte),
+            }
+        }
+        let length = String::from_utf8_lossy(&request)
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        let mut body = vec![0_u8; length];
+        if stream.read_exact(&mut body).is_err() {
+            return;
+        }
+        if !String::from_utf8_lossy(&body).contains("fux.frame+watch") {
+            // Anything else: a result the frontend can parse, connection kept.
+            let reply = br#"{"jsonrpc":"2.0","id":1,"result":{"viewer":4294967295}}"#;
+            if write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                reply.len()
+            )
+            .is_err()
+                || stream.write_all(reply).is_err()
+            {
+                return;
+            }
+            continue;
+        }
+        if stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                  transfer-encoding: chunked\r\n\r\n",
+            )
+            .is_err()
+        {
+            return;
+        }
+        let blob = vec![b'a'; 1 << 20];
+        while !flag.load(Ordering::Relaxed) {
+            // Terminated: ordinary frames. Otherwise: one endless line.
+            let payload: Vec<u8> = if terminated {
+                format!(
+                    "data: {{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":\
+                     {{\"paint\":\"{}\",\"detach\":false}}}}\n\n",
+                    "x".repeat(4096)
+                )
+                .into_bytes()
+            } else {
+                blob.clone()
+            };
+            if write!(stream, "{:x}\r\n", payload.len()).is_err()
+                || stream.write_all(&payload).is_err()
+                || stream.write_all(b"\r\n").is_err()
+            {
+                return;
+            }
+            counter.fetch_add(payload.len() as u64, Ordering::Relaxed);
+        }
+        return;
+    }
+}
+
+/// Hunt 6 finding 008. `fux attach` read the watch stream with
+/// `read_line` into a `String`, so a peer that never sent a newline was
+/// buffered without bound: 5.3 GB in sixty seconds, climbing at 95 MB/s.
+#[test]
+fn an_endless_event_ends_the_attachment_and_restores_the_terminal() -> Outcome {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    let peer = EndlessPeer::start(false)?;
+    let pair = native_pty_system().openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut reader = pair.master.try_clone_reader()?;
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
+    command.arg("attach");
+    command.env("FUX_SOCKET", &peer.socket);
+    command.env("TERM", "xterm-256color");
+    command.env_remove("FUX_ENDPOINT");
+    let mut child = {
+        let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
+        pair.slave.spawn_command(command)?
+    };
+    drop(pair.slave);
+    let collected = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        while let Ok(n) = reader.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(chunk.get(..n).unwrap_or_default());
+        }
+        bytes
+    });
+
+    // It must end on its own, from the bound rather than from a signal.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            return Err("the frontend never stopped reading an endless event".into());
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    assert!(!status.success(), "the frontend exited successfully");
+
+    // The outer terminal is left as it was found: the real PTY's termios is
+    // cooked again, and the frontend wrote the resets on its way out.
+    let master = pair.master;
+    let fd = master.as_raw_fd().need()?;
+    // SAFETY: `fd` is the live PTY master owned by `master`, and `attributes`
+    // is a plain C struct that tcgetattr fills.
+    let cooked = unsafe {
+        let mut attributes: nix::libc::termios = std::mem::zeroed();
+        assert_eq!(
+            nix::libc::tcgetattr(fd, &mut attributes),
+            0,
+            "could not read the outer terminal's attributes"
+        );
+        attributes.c_lflag & (nix::libc::ICANON | nix::libc::ECHO)
+    };
+    assert_eq!(
+        cooked,
+        nix::libc::ICANON | nix::libc::ECHO,
+        "the outer terminal was left in raw mode"
+    );
+    drop(master);
+    let written = collected.join().map_err(|_| "capture thread panicked")?;
+    let text = String::from_utf8_lossy(&written);
+    for reset in ["\x1b[?1049l", "\x1b[?1003l", "\x1b[?2004l", "\x1b[?25h"] {
+        assert!(
+            text.contains(reset),
+            "the frontend did not write {reset:?} on its way out"
+        );
+    }
+    assert!(
+        text.contains("without ending it"),
+        "the frontend did not name the bound it hit: {:.400}",
+        &text[text.len().saturating_sub(600)..]
+    );
+    // The peer had to send more than a legitimate frame before this happened.
+    assert!(peer.sent.load(Ordering::Relaxed) > 16 << 20);
+    Ok(())
+}
+
+/// The control for the case above: the same peer sending the same volume as
+/// ordinary newline-terminated frames must keep working, so the bound is a
+/// bound on one unending event and not on how much a server may send.
+#[test]
+fn a_stream_of_ordinary_frames_is_not_bounded_away() -> Outcome {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    let peer = EndlessPeer::start(true)?;
+    let pair = native_pty_system().openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut reader = pair.master.try_clone_reader()?;
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
+    command.arg("attach");
+    command.env("FUX_SOCKET", &peer.socket);
+    command.env("TERM", "xterm-256color");
+    command.env_remove("FUX_ENDPOINT");
+    let mut child = {
+        let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
+        pair.slave.spawn_command(command)?
+    };
+    drop(pair.slave);
+    let drain = thread::spawn(move || {
+        let mut chunk = [0_u8; 1 << 16];
+        while let Ok(n) = reader.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+        }
+    });
+
+    // Well past the volume that ends the unbounded case, the frontend is still
+    // attached and painting.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while peer.sent.load(Ordering::Relaxed) < (96 << 20) {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("the frontend exited early with {status:?}").into());
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let sent = peer.sent.load(Ordering::Relaxed);
+    assert!(
+        sent > 64 << 20,
+        "the peer only sent {sent} bytes, less than the bound being tested"
+    );
+    assert!(
+        child.try_wait()?.is_none(),
+        "the frontend stopped on a stream of ordinary frames"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(pair.master);
+    let _ = drain.join();
     Ok(())
 }

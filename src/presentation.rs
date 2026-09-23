@@ -3,6 +3,7 @@ mod tests;
 
 use bevy_app::{App, TaskPoolPlugin};
 use bevy_asset::{AssetApp, AssetPlugin};
+use bevy_camera::NormalizedRenderTarget;
 use bevy_camera::{
     Camera, ComputedCameraValues, RenderTargetInfo,
     visibility::{InheritedVisibility, Visibility, VisibilityPlugin},
@@ -17,13 +18,16 @@ use bevy_input_focus::{
 use bevy_math::{URect, UVec2, Vec2};
 use bevy_mesh::{Mesh, skinning::SkinnedMeshInverseBindposes};
 use bevy_picking::{
-    backend::PointerHits, events::PointerState, hover::HoverMap, pointer::PointerInput,
+    backend::PointerHits,
+    events::PointerState,
+    hover::HoverMap,
+    pointer::{Location, PointerId, PointerInput, PointerLocation, PointerMap},
 };
 use bevy_reflect::FromReflect;
 use bevy_text::TextPlugin;
 use bevy_time::{Real, Time};
-use bevy_ui::{FocusPolicy, UiPlugin, UiStack, prelude::*, ui_focus_system};
-use bevy_window::{PrimaryWindow, Window};
+use bevy_ui::{FocusPolicy, UiPlugin, UiStack, picking_backend::ui_picking, prelude::*};
+use bevy_window::{PrimaryWindow, Window, WindowRef};
 use bevy_world_serialization::DynamicWorld;
 
 use crate::{
@@ -50,7 +54,6 @@ pub fn register_types(app: &mut App) {
         .register_type::<ZIndex>()
         .register_type::<GlobalZIndex>()
         .register_type::<FocusPolicy>()
-        .register_type::<Interaction>()
         .register_type::<LayoutConfig>()
         .register_type::<TabIndex>()
         .register_type::<TabGroup>()
@@ -76,6 +79,9 @@ pub struct Presentation {
     window: Entity,
     camera: Entity,
     container: Entity,
+    /// One synthetic mouse pointer, moved to the requested cell before the UI
+    /// picking backend is run on demand.
+    pointer: Entity,
     source_to_local: EntityHashMap<Entity>,
     local_to_source: EntityHashMap<Entity>,
     scene_key: Option<(u32, Entity, Option<Entity>, Option<Entity>)>,
@@ -87,7 +93,7 @@ pub struct Presentation {
 }
 
 impl Presentation {
-    fn build(registry: AppTypeRegistry) -> (App, Entity, Entity, Entity) {
+    fn build(registry: AppTypeRegistry) -> (App, Entity, Entity, Entity, Entity) {
         let mut app = App::new();
         app.insert_resource(registry);
         register_types(&mut app);
@@ -103,10 +109,12 @@ impl Presentation {
             .init_resource::<Touches>()
             .init_resource::<Time<Real>>()
             // UiPlugin includes its picking backend and viewport forwarding systems.
-            // This adapter uses ui_focus_system/Interaction, so no pointer event
-            // synthesizer or redundant picking pipeline is necessary.
+            // This adapter runs that backend on demand for one synthetic pointer,
+            // so no continuous picking pipeline or event synthesizer is necessary.
             .init_resource::<HoverMap>()
             .init_resource::<PointerState>()
+            // `PointerId`'s insert hook records the pointer in `PointerMap`.
+            .init_resource::<PointerMap>()
             .add_message::<PointerInput>()
             .add_message::<PointerHits>()
             .add_plugins((
@@ -133,6 +141,10 @@ impl Presentation {
                 IsDefaultUiCamera,
             ))
             .id();
+        let pointer = app
+            .world_mut()
+            .spawn((PointerId::Mouse, PointerLocation::default()))
+            .id();
         let container = app
             .world_mut()
             .spawn((
@@ -148,11 +160,11 @@ impl Presentation {
         app.finish();
         app.cleanup();
         app.update();
-        (app, window, camera, container)
+        (app, window, camera, container, pointer)
     }
 
     pub fn new(registry: AppTypeRegistry) -> Self {
-        let (mut app, window, camera, container) = Self::build(registry);
+        let (mut app, window, camera, container, pointer) = Self::build(registry);
         Self {
             world: std::mem::take(app.world_mut()),
             last: String::new(),
@@ -162,6 +174,7 @@ impl Presentation {
             window,
             camera,
             container,
+            pointer,
             source_to_local: EntityHashMap::default(),
             local_to_source: EntityHashMap::default(),
             scene_key: None,
@@ -230,7 +243,7 @@ impl Presentation {
             for leaf in leaves {
                 world
                     .entity_mut(leaf)
-                    .insert((Interaction::None, FocusPolicy::Block))
+                    .insert(FocusPolicy::Block)
                     .insert_if_new(TabIndex(0));
             }
             // Hide inactive branches in this inert projection only. Native focus
@@ -356,7 +369,6 @@ impl Presentation {
                         ..Default::default()
                     },
                     ChromeTarget(target),
-                    Interaction::None,
                     FocusPolicy::Block,
                     UiTargetCamera(self.camera),
                 ))
@@ -675,12 +687,30 @@ impl Presentation {
                 buttons.press(MouseButton::Left);
             }
         }
-        world.run_system_cached(ui_focus_system).ok()?;
-        let mut query = world
-            .query_filtered::<(Entity, &Interaction), Or<(With<PaneView>, With<ChromeTarget>)>>();
-        let local = query.iter(world).find_map(|(entity, interaction)| {
-            (*interaction != Interaction::None).then_some(entity)
+        // `ui_picking` reads the pointer's own location rather than the window's
+        // cursor, and writes its hits as messages. It walks `UiStack` from the
+        // top down and stops at the first node that blocks, which is every node
+        // here, so the first pick is the topmost one.
+        let target =
+            NormalizedRenderTarget::Window(WindowRef::Primary.normalize(Some(self.window))?);
+        let position = Vec2::new(f32::from(x) + 0.5, f32::from(y) + 0.5);
+        let inside = u32::from(x) < self.viewport.x && u32::from(y) <= self.viewport.y;
+        world.entity_mut(self.pointer).insert(PointerLocation {
+            location: inside.then(|| Location { target, position }),
         });
+        world.run_system_cached(ui_picking).ok()?;
+        let hits: Vec<PointerHits> = world
+            .resource_mut::<Messages<PointerHits>>()
+            .drain()
+            .collect();
+        let local = hits
+            .iter()
+            .flat_map(|hit| hit.picks.iter())
+            .map(|(entity, _)| *entity)
+            .find(|entity| {
+                world.get::<PaneView>(*entity).is_some()
+                    || world.get::<ChromeTarget>(*entity).is_some()
+            });
         if pressed
             && let Some(local) = local
             && world.get::<PaneView>(local).is_some()

@@ -18,7 +18,7 @@ use bevy_remote::{
     BrpBatch, BrpError, BrpMessage, BrpRequest, BrpResponse, BrpResult, error_codes,
 };
 use bevy_tasks::{IoTaskPool, Task, futures_lite::Stream};
-use http_body_util::{BodyExt as _, Full};
+use http_body_util::{BodyExt as _, Full, LengthLimitError, Limited};
 use hyper::{
     Request, Response,
     body::{Body, Bytes, Frame, Incoming},
@@ -46,7 +46,7 @@ use std::{
     sync::mpsc,
     task::{Context, Poll},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// The file name used inside a default socket directory.
@@ -386,23 +386,60 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
     Ok((endpoint, UnixListener::from(fd)))
 }
 
-/// Accept errors that pass (descriptor or memory pressure, an aborted peer);
-/// anything else ends the server.
-fn transient(error: &io::Error) -> bool {
+/// Accept errors that pass on their own: a peer that went away between its
+/// connect and this accept, or an interrupted call. Retrying is the answer.
+fn momentary(error: &io::Error) -> bool {
     use nix::libc;
     matches!(
         error.raw_os_error(),
-        Some(
-            libc::EMFILE
-                | libc::ENFILE
-                | libc::ENOBUFS
-                | libc::ENOMEM
-                | libc::ECONNABORTED
-                | libc::EINTR
-                | libc::EAGAIN
-        )
+        Some(libc::ECONNABORTED | libc::EINTR | libc::EAGAIN)
     )
 }
+
+/// Accept errors that persist until something frees a resource. Retrying the
+/// same accept cannot free one, so these need their own handling; anything
+/// that is neither this nor `momentary` ends the server.
+fn starved(error: &io::Error) -> bool {
+    use nix::libc;
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+    )
+}
+
+/// A descriptor held back so the accept loop has one to spend when it runs
+/// out. Without it a starved loop cannot accept, so it cannot close, so the
+/// listener's backlog stays full and clients wait in silence.
+fn reserve() -> Option<File> {
+    File::open("/dev/null").ok()
+}
+
+/// How long descriptor pressure may last before it is reported again.
+const PRESSURE_REPORT: Duration = Duration::from_secs(5);
+
+/// The largest request body that is read. A caller chooses the size, and the
+/// body is held whole before it can be looked at, so without a bound one
+/// connection can make the server hold whatever it likes.
+///
+/// The largest legitimate request is far below this. The biggest fux itself
+/// sends is a paste, bounded by `paste::LIMIT` at 64 KiB, which reaches about
+/// 400 KiB if every byte needs a six-character JSON escape. A one-megabyte
+/// name through `rename` or a raw `Name` insert, which the harness exercises,
+/// is about 1 MiB. Four leaves room for both and still bounds the 256 MB body
+/// hunt 6 sent by a factor of sixty-four.
+pub const MAX_BODY: usize = 4 << 20;
+
+/// The most requests one batch may hold. A body limit alone does not bound the
+/// reply, because a small body holds many requests: 10 000 `rpc.discover`
+/// calls fit in 478 KiB and were answered with 12.49 MB. fux's own clients
+/// send no batches at all, and the harness's largest is 1000.
+pub const MAX_BATCH: usize = 1024;
+
+/// The most a batch reply may serialize to. The count cap alone does not bound
+/// it either, because a single method can answer with a lot: `registry.schema`
+/// alone is about 120 KiB. Requests past this point are answered with an error
+/// instead of a result, so the reply keeps its shape.
+pub const MAX_BATCH_RESPONSE: usize = 8 << 20;
 
 /// Serves BRP on `listener` until the returned task is dropped. A fatal accept
 /// error is passed to `failed`, which must make the server exit.
@@ -413,9 +450,18 @@ pub fn serve(
 ) -> Result<Task<()>, String> {
     let listener = Async::new(listener).map_err(|error| format!("socket: {error}"))?;
     Ok(IoTaskPool::get().spawn(async move {
+        let mut spare = reserve();
+        // When the pressure started, and when it was last reported.
+        let mut pressure: Option<(Instant, Instant)> = None;
         loop {
             match listener.accept().await {
                 Ok((client, _)) => {
+                    if let Some((since, _)) = pressure.take() {
+                        bevy_log::error!(
+                            "BRP socket accept recovered after {:.1?} of descriptor pressure.",
+                            since.elapsed()
+                        );
+                    }
                     let requests = requests.clone();
                     IoTaskPool::get()
                         .spawn(async move {
@@ -429,9 +475,45 @@ pub fn serve(
                         })
                         .detach();
                 }
-                Err(error) if transient(&error) => {
-                    bevy_log::warn!("BRP socket accept: {error}");
+                Err(error) if starved(&error) => {
+                    // Report once when it starts and at intervals afterwards.
+                    // The condition can last as long as whatever holds the
+                    // descriptors, and one line per attempt would be a flood.
+                    let now = Instant::now();
+                    match &mut pressure {
+                        None => {
+                            bevy_log::error!(
+                                "BRP socket accept is out of descriptors ({error}). \
+                                 New connections are being refused until this clears."
+                            );
+                            pressure = Some((now, now));
+                        }
+                        Some((since, reported)) if now.duration_since(*reported) >= PRESSURE_REPORT => {
+                            bevy_log::warn!(
+                                "BRP socket accept still out of descriptors after {:.1?} ({error}).",
+                                since.elapsed()
+                            );
+                            *reported = now;
+                        }
+                        Some(_) => {}
+                    }
+                    // Spend the reserve to accept one waiting connection and
+                    // close it at once. That drains the backlog, so a client
+                    // gets a prompt refusal instead of waiting on a listener
+                    // that cannot answer, and the loop keeps making progress.
+                    if let Some(held) = spare.take() {
+                        drop(held);
+                        // The listener is non-blocking, so this only takes a
+                        // connection that is already waiting.
+                        if let Ok((shed, _)) = listener.get_ref().accept() {
+                            drop(shed);
+                        }
+                        spare = reserve();
+                    }
                     Timer::after(Duration::from_millis(50)).await;
+                }
+                Err(error) if momentary(&error) => {
+                    bevy_log::debug!("BRP socket accept: {error}");
                 }
                 Err(error) => {
                     failed(format!("BRP socket accept failed: {error}"));
@@ -524,10 +606,17 @@ async fn batch(
     request: Request<Incoming>,
     requests: Sender<BrpMessage>,
 ) -> Result<Response<Payload>, Infallible> {
-    let body = match request.into_body().collect().await {
+    let body = match Limited::new(request.into_body(), MAX_BODY).collect().await {
         Ok(body) => body.to_bytes(),
         Err(error) => {
-            return Ok(complete(json(&invalid(None, error.to_string()))));
+            // `Limited` reports the cap through its own error type; anything
+            // else is an ordinary read failure.
+            let message = if error.downcast_ref::<LengthLimitError>().is_some() {
+                format!("Request body exceeds the {MAX_BODY} byte limit")
+            } else {
+                error.to_string()
+            };
+            return Ok(complete(json(&invalid(None, message))));
         }
     };
     let response = match serde_json::from_slice::<BrpBatch>(&body) {
@@ -542,17 +631,54 @@ async fn batch(
             }
         },
         Ok(BrpBatch::Batch(batch)) => {
-            let mut responses = Vec::new();
-            for request in batch {
-                responses.push(match single(request, &requests).await {
-                    Reply::Complete(response) => response,
-                    Reply::Stream(Watch { id, .. }) => invalid(
-                        id,
-                        "Streaming can not be used in batch requests".to_string(),
+            if batch.len() > MAX_BATCH {
+                complete(json(&invalid(
+                    None,
+                    format!(
+                        "Batch holds {} requests, more than the limit of {MAX_BATCH}",
+                        batch.len()
                     ),
-                });
+                )))
+            } else {
+                // Serialized as they are produced, so the reply can be bounded
+                // without serializing any response twice.
+                let mut responses: Vec<String> = Vec::with_capacity(batch.len());
+                let mut budget = MAX_BATCH_RESPONSE;
+                for request in batch {
+                    let id = request.as_object().and_then(|map| map.get("id")).cloned();
+                    let response = if budget == 0 {
+                        invalid(
+                            id,
+                            format!(
+                                "Batch reply exceeds the {MAX_BATCH_RESPONSE} byte limit; \
+                                 this request was not run"
+                            ),
+                        )
+                    } else if streaming(&request) {
+                        // Refused here rather than dispatched and then refused.
+                        // Dispatching opens a response channel that is dropped
+                        // at once, and the runner reads that as a watcher going
+                        // away, which detaches a viewer; a refused request must
+                        // leave the world alone. The reply is unchanged.
+                        invalid(
+                            id,
+                            "Streaming can not be used in batch requests".to_string(),
+                        )
+                    } else {
+                        match single(request, &requests).await {
+                            Reply::Complete(response) => response,
+                            Reply::Stream(Watch { id, .. }) => invalid(
+                                id,
+                                "Streaming can not be used in batch requests".to_string(),
+                            ),
+                        }
+                    };
+                    let serialized = json(&response);
+                    budget = budget.saturating_sub(serialized.len());
+                    responses.push(serialized);
+                }
+                complete(format!("[{}]", responses.join(",")))
             }
-            complete(json(&responses))
         }
         Err(error) => complete(json(&invalid(None, error.to_string()))),
     };
@@ -565,6 +691,15 @@ fn complete(serialized: String) -> Response<Payload> {
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     response
+}
+
+/// Whether a request in a batch names a watching method, read before the
+/// request is dispatched.
+fn streaming(request: &Value) -> bool {
+    request
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| method.contains("+watch"))
 }
 
 async fn single(request: Value, requests: &Sender<BrpMessage>) -> Reply {

@@ -18,6 +18,11 @@
 # same shape would arrive from a fux server that ever emitted a frame larger
 # than the frontend can hold, so the missing bound is the finding, not the peer.
 #
+# Fixed: the frontend reads each event through a bound, and passing it ends
+# the attachment with a message naming the bound and the terminal restored.
+# The bound is 64 MiB, about five times the densest legitimate frame measured
+# (a 4096x4096 viewer changing colour every cell serializes to 11.6 MB).
+#
 # This script stops at 1500 MB or 25 seconds, whichever comes first, so it
 # cannot pressure the machine.
 #
