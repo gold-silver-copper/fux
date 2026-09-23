@@ -253,12 +253,57 @@ fn identity(meta: &fs::Metadata) -> (u64, u64) {
     (meta.dev(), meta.ino())
 }
 
+/// A socket file's identity, held so that it keeps meaning that file.
+///
+/// `(device, inode)` names a file only while its inode is allocated. ext4
+/// hands a freed inode number to the next file created, 200 times out of 200
+/// in a socket's case, so once the listener closes, a socket another program
+/// binds at the same path can carry the same pair, and a check by identity
+/// would remove it (hunt 8 finding 014). On Linux an `O_PATH` descriptor keeps
+/// the inode allocated for as long as this is held, so its number cannot be
+/// reused. APFS numbers files from a 64-bit counter and does not reuse them,
+/// and macOS has no `O_PATH`; there the identity alone is sound.
+struct Pinned {
+    identity: (u64, u64),
+    #[cfg(target_os = "linux")]
+    _inode: std::os::fd::OwnedFd,
+}
+
+impl Pinned {
+    #[cfg(target_os = "linux")]
+    fn new(path: &Path) -> io::Result<Self> {
+        use nix::fcntl::{OFlag, open};
+        let inode = open(
+            path,
+            OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            nix::sys::stat::Mode::empty(),
+        )?;
+        let stat = nix::sys::stat::fstat(&inode)?;
+        Ok(Self {
+            identity: (stat.st_dev, stat.st_ino),
+            _inode: inode,
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn new(path: &Path) -> io::Result<Self> {
+        fs::symlink_metadata(path).map(|meta| Self {
+            identity: identity(&meta),
+        })
+    }
+
+    /// Whether the file at `path` is still the one pinned.
+    fn still_at(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok_and(|meta| identity(&meta) == self.identity)
+    }
+}
+
 /// The bound socket. Owns the lock that makes this server the socket's only
 /// owner for its whole life. Dropping it removes the socket, if the file at
 /// the path is still the one this server bound, then releases the lock.
 pub struct Endpoint {
     path: PathBuf,
-    socket: (u64, u64),
+    socket: Pinned,
     _lock: Flock<File>,
 }
 
@@ -270,7 +315,7 @@ impl Endpoint {
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
-        if fs::symlink_metadata(&self.path).is_ok_and(|meta| identity(&meta) == self.socket) {
+        if self.socket.still_at(&self.path) {
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -328,11 +373,14 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
             format!("locking {}: {errno}", lock_path.display())
         }
     })?;
+    // Pinned before the probe, so the file the probe found dead is the one
+    // removed, even where inode numbers are reused.
+    let stale = Pinned::new(path);
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("{shown}: {error}")),
         Ok(meta) if foreign(&meta) => return Err(refused()),
-        Ok(meta) => match probe(path) {
+        Ok(_) => match probe(path) {
             Ok(()) => {
                 return Err(format!(
                     "another fux server is already listening on {shown}"
@@ -342,7 +390,7 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
                 // Nothing listens: a server that died without cleanup left it.
                 // The lock excludes every fux starting on this path, and the
                 // private directory every other user, so it is still ours.
-                if fs::symlink_metadata(path).is_ok_and(|now| identity(&now) == identity(&meta)) {
+                if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
                     fs::remove_file(path)
                         .map_err(|error| format!("removing stale socket {shown}: {error}"))?;
                 }
@@ -370,10 +418,9 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
     let address = UnixAddr::new(path).map_err(|error| format!("{shown}: {error}"))?;
     bind(std::os::fd::AsRawFd::as_raw_fd(&fd), &address)
         .map_err(|error| format!("binding {shown}: {error}"))?;
-    let created = fs::symlink_metadata(path).map_err(|error| format!("{shown}: {error}"))?;
     let endpoint = Endpoint {
         path: path.to_owned(),
-        socket: identity(&created),
+        socket: Pinned::new(path).map_err(|error| format!("{shown}: {error}"))?,
         _lock: lock,
     };
     // From here a failure drops `endpoint`, which removes the bound socket.
