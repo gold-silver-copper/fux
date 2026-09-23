@@ -944,10 +944,11 @@ the specific places where the result should be expected to differ:
 
 # Where fux breaks under hostile input (hunt 7)
 
-> **Status: five findings, none fixed.** This run finds and records; the fixes
-> are a later PR, ranked at the end. 009 is class 1 and the one to fix first on
-> merits; 010 is the one to fix first if CI is going to run on Linux.
-> Reproduced on macOS arm64 and Linux arm64/x86_64 as each finding states.
+> **Status: fixed in the hunt 8 branch, except 011.** Each finding's "Fixed"
+> line names what closed it; 009, 010, 012 and 013 are closed with tests that
+> failed first, and 011 is the documented exception (the ALSA chain is
+> `bevy_remote`'s, not fux's to cut). The analysis below is the state when the
+> findings were made.
 
 This hunt attacked what changed after hunt 6: the guards that replaced two
 stock BRP methods, the UI hit test rebuilt on `bevy_picking` when
@@ -1020,6 +1021,11 @@ process running where it would otherwise abort. It does not stop the world
 from being wrong: the resource is gone either way, and what follows is a
 server that cannot run its main schedule.
 
+**Fixed** in the hunt 8 branch, as the class: `reject_viewer_on_layout` strips
+fux components off a resource entity as off a layout node, `IsViewer` excludes
+`IsResource`, and `navigation::detach_if_viewer` is the one checked path both
+`disconnected` and `Detach` despawn through. Repro now exits 1 on both.
+
 **Reproduction.**
 `fux-fuzz/repro/009-viewer-on-a-resource-entity-ends-the-server.sh`, exit 0
 reproduced, exit 1 verified not reproduced, exit 2 setup failure;
@@ -1076,6 +1082,10 @@ tests use as their client. macOS survived 7278 rounds of the same script and
 This is not a regression from this PR: `origin/main` fails the same way on
 Linux `x86_64`, with the same error on the same methods.
 
+**Fixed** in the hunt 8 branch: `uninterrupted` in `src/unix_http.rs` retries
+a read the signal interrupted; the integration tests pass on emulated x86_64
+and the repro exits 1 on Linux.
+
 **Reproduction.**
 `fux-fuzz/repro/010-a-signal-ends-a-request-and-the-attachment.sh`, which
 drives a real `fux attach` in a pty and resizes it. Exit 0 reproduced, 1
@@ -1128,11 +1138,12 @@ already installed. The released binary links `libasound.so.2`, a sound library
 a terminal multiplexer has no use for. On Bevy 0.19.1 the chain did not exist:
 `e794df0`'s lockfile has no `alsa-sys`, and `0286346`'s does.
 
-**Not fux's to fix in fux.** The options are upstream (`bevy_dev_tools`
-gaining a feature that does not pull `bevy_audio`, or `bevy_remote` depending
-on it more narrowly) or dropping `bevy_remote`'s schedule methods. What fux
-can do now is say so in the README, where the dependency boundary is already
-described, and list the two packages a Linux build needs.
+**Not fux's to fix in fux, confirmed.** `bevy_dev_tools` is an unconditional
+dependency of `bevy_remote`, and `bevy_audio` an unconditional dependency of
+`bevy_dev_tools`, so no feature selection in fux's manifest removes the chain.
+This is the run's one open finding: the README states the two packages a Linux
+build needs, CI installs them, and the upstream issue text is in the PR. Repro
+011 stays at exit 0.
 
 **Reproduction.** `fux-fuzz/repro/011-a-linux-build-needs-alsa.sh`, which asks
 the resolved dependency graph for a Linux target rather than building, so it
@@ -1179,6 +1190,9 @@ time, so the queue the new client joins is shorter and it waits about 3.0 s.
 connection, bounded by the number waiting, so the wait is one tick rather than
 one tick per queued connection. The reserved descriptor already makes this
 possible; it is only spent once per tick.
+
+**Fixed** in the hunt 8 branch: the loop drains the whole waiting backlog per
+tick, so the slowest wait fell to about 0.02 s on Linux and the repro exits 1.
 
 **Reproduction.**
 `fux-fuzz/repro/012-descriptor-shedding-drains-one-connection-a-tick.sh`,
@@ -1232,6 +1246,11 @@ why this has never been visible.
 **What it is not.** Not a leak of fux's own making: the process is reparented
 to init and reachable by the user. The README says a pane's process is
 terminated with the pane, and under `dash` a job it started is not.
+
+**Fixed** in the hunt 8 branch: ending a pane hangs up every process in the
+pane's session, whichever shell started it; a `nohup` or `setsid` job survives
+as it would a closed terminal. The repro exits 1 on both platforms and the
+integration test passes on Linux.
 
 **Reproduction.**
 `fux-fuzz/repro/013-terminate-leaves-a-dash-background-job.sh`, which names
