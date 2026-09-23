@@ -33,6 +33,7 @@ pub struct Screen {
     saved_attributes: Attributes,
     autowrap: bool,
     application_cursor: bool,
+    application_keypad: bool,
     hide_cursor: bool,
     bracketed_paste: bool,
     mouse: MouseProtocolMode,
@@ -56,6 +57,7 @@ impl Screen {
             saved_attributes: Attributes::default(),
             autowrap: true,
             application_cursor: false,
+            application_keypad: false,
             hide_cursor: false,
             bracketed_paste: false,
             mouse: MouseProtocolMode::None,
@@ -104,6 +106,11 @@ impl Screen {
     }
     pub fn application_cursor(&self) -> bool {
         self.application_cursor
+    }
+    /// DECKPAM (`ESC =`) / DECKPNM (`ESC >`) state. Tracked for consumers that
+    /// mirror it to another terminal; fux-vt itself encodes no keypad input.
+    pub fn application_keypad(&self) -> bool {
+        self.application_keypad
     }
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
@@ -409,6 +416,8 @@ impl Screen {
         match byte {
             b'7' => self.save(),
             b'8' => self.restore(),
+            b'=' => self.application_keypad = true,
+            b'>' => self.application_keypad = false,
             b'M' => self.reverse_index()?,
             b'c' => {
                 let (rows, cols) = self.size();
@@ -424,6 +433,7 @@ impl Screen {
                 self.saved_attributes = Attributes::default();
                 self.autowrap = true;
                 self.application_cursor = false;
+                self.application_keypad = false;
                 self.hide_cursor = false;
                 self.bracketed_paste = false;
                 self.mouse = MouseProtocolMode::None;
@@ -433,6 +443,26 @@ impl Screen {
             _ => {}
         }
         Ok(())
+    }
+
+    /// DECRQM status for a DEC private mode: 1 set, 2 reset, 0 not recognized.
+    pub(crate) fn private_mode_status(&self, n: u16) -> u8 {
+        let set = match n {
+            1 => self.application_cursor,
+            6 => self.grid().origin,
+            7 => self.autowrap,
+            25 => !self.hide_cursor,
+            47 | 1049 => self.alternate_active,
+            9 => self.mouse == MouseProtocolMode::Press,
+            1000 => self.mouse == MouseProtocolMode::PressRelease,
+            1002 => self.mouse == MouseProtocolMode::ButtonMotion,
+            1003 => self.mouse == MouseProtocolMode::AnyMotion,
+            1005 => self.encoding == MouseProtocolEncoding::Utf8,
+            1006 => self.encoding == MouseProtocolEncoding::Sgr,
+            2004 => self.bracketed_paste,
+            _ => return 0,
+        };
+        if set { 1 } else { 2 }
     }
 
     fn mode(&mut self, n: u16, set: bool) -> Result<(), Error> {
