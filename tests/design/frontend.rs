@@ -81,7 +81,22 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
     drop(writer);
     attached.master.take();
     let bytes = capture.join().map_err(|_| "capture thread panicked")??;
-    assert!(bytes.ends_with(b"\x1b[?1049l"));
+    // The frontend's last output is the terminal-restore sequence, which ends
+    // by leaving the alternate screen. The PTY line discipline may append a
+    // bare CR/LF after it once cooked mode is restored -- benign, and captured
+    // only when it flushes before EOF, which is why a strict `ends_with` on the
+    // raw bytes flaked under load. Ignore a trailing newline; require the
+    // restore to be the last escape sequence the frontend emits.
+    let trimmed = bytes
+        .iter()
+        .rposition(|&b| b != b'\r' && b != b'\n')
+        .map_or(0, |i| i + 1);
+    let last = bytes.get(..trimmed).unwrap_or(&bytes);
+    assert!(
+        last.ends_with(b"\x1b[?1049l"),
+        "frontend did not end by leaving the alternate screen: {:?}",
+        last.get(last.len().saturating_sub(24)..).unwrap_or(last)
+    );
     if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
         fs::write(PathBuf::from(&directory).join("frontend.ansi"), bytes)?;
         fs::write(
