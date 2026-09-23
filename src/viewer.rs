@@ -317,7 +317,11 @@ fn read_input(
         if ready == 0 {
             decoder.timeout(&mut emit);
         } else {
-            let n = file.read(&mut bytes)?;
+            // `poll` said readable; a signal can still interrupt the read.
+            let n = match file.read(&mut bytes) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
             if n == 0 {
                 let _ = sender.send(Incoming::Stop);
                 break;
