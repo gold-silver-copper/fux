@@ -620,6 +620,86 @@ Campaign 05.
   changed nothing. The failure mode in F3 is discoverability, not danger — which makes
   F1 stand out as the one place a bad request is not handled this way.
 
+## Campaign 06: re-baseline after 0.12.0
+
+Campaigns 01–05 measured fux as it was on 2026-09-21. Three things changed under an
+agent before fux 0.12.0 was published: the README (24 lines added, 11 removed since
+`e08c841`), BRP served only on a Unix socket, and Bevy 0.20, where **resources are
+entities**. Campaign 06 asks one question: do agents still succeed at the rates
+campaigns 04 and 05 measured?
+
+| | |
+| --- | --- |
+| Ran | 30 runs, 6 per scenario, all five scenarios, `--repetitions 6` |
+| fux | `d12d7dc`, worktree clean |
+| README given to the agent | sha256 `049b0921…` (campaign 05 used `f95e62a0…`) |
+| Engine | Bevy `0.20.0-rc.1`, recorded per run for the first time |
+| Model | `google/gemini-3.8-flash`, thinking `low`, as in campaigns 01–05 |
+| Cost | **$3.53** |
+
+**Outcome: 28 pass, 0 partial, 2 fail, 0 error.** No server died, and no request
+omitted a required field of a reflected component, so there is no new F1-class
+finding. Task wording, budgets, thinking level, tool semantics, verifiers and model
+resolution are unchanged from campaign 05.
+
+### Per scenario, against campaigns 04 and 05
+
+| Scenario | Campaign 06 | Campaign 04/05 | Change the sample can detect |
+| --- | --- | --- | --- |
+| `discovery` | 6 pass | 2 pass (04) | none |
+| `launch` | 6 pass | 2 pass (04) | none |
+| `modal` | 6 pass | 2 pass (04) | none |
+| `recovery` | 6 pass | 10 pass (05) | none |
+| `noisy` | 4 pass, 2 fail | 22 pass, 8 fail (05) | none: 67% against 73%, on 6 runs |
+
+Six runs per scenario cannot detect anything short of a collapse. What it can say is
+that nothing collapsed: every scenario that passed before still passes, and the only
+failures are the `noisy` variant that failed most in campaign 05 as well (`mid`: 5
+pass, 5 fail there).
+
+### Did the three changes cost anything?
+
+**The engine, no.** An unfiltered `world.query` on today's fux answers with 99
+entities, 53 of them resource entities, against 4 the session owns. But **no agent
+issued an unfiltered query**, in campaign 06 or in campaign 05's 81 `world.query`
+calls. Every one filtered by component, the way the README shows. Resource entities
+did reach 15 of 30 runs, through `world.list_components` responses, and **0 of 30
+runs sent a request naming one**. The exposure is real and unused.
+
+**The socket, no.** 694 tool calls in campaign 05 and 700 in campaign 06, no
+transport error in either.
+
+**The README, no.** The two failures are the F2 class, not a comprehension failure:
+`noisy-mid-r2` answered `E-1049` when the line said `E-8823`, and that code appears
+in no response the run received; `noisy-mid-r5` exhausted its budget without
+answering. Both ran past the line rather than misreading the documentation.
+
+### The open findings
+
+- **F2** (fabrication): 1 fabricated answer of 5 answered. Campaign 05 measured 6 of
+  30. Nothing here contradicts that rate; 5 answers cannot refine it.
+- **F4** (history-search cost): the `mid` variant again cost the most — 9 and 13
+  direct `scrollback` writes and 10 and 17 repaints in the two failures, against 3
+  repaints for both `deep` runs that passed. Campaign 05's conclusion stands.
+- **Q3** (notice channel): all 6 `recovery` runs passed, as the 10 in campaign 05 did.
+
+### One recommendation, for a later PR
+
+The README does not mention that Bevy stores resources as entities. An agent that
+asks `world.query` with no component filter gets 99 rows where it owns 4, and
+`world.list_components` on an id it did not choose can answer with
+`bevy_ecs::resource::IsResource`. No agent has been misled yet, so this is a
+sentence's worth of prevention, not a fix:
+
+> Bevy stores its resources as entities, so a query with no component filter answers
+> with far more than the session's own entities, and an id you did not get from a
+> filtered query may be a resource rather than a viewer, pane or tab. Filter by
+> component.
+
+Worth pairing with hunt 7 finding 009, where a `Viewer` inserted onto a resource
+entity ends the server: the README sentence tells an agent to stay away, and the fix
+makes it harmless.
+
 ## Ranked next steps
 
 F1, F3, F5 and F8 are fixed and measured (campaign 04); F3 and F5 did not recur in 40
@@ -639,6 +719,9 @@ more runs (campaign 05). What remains:
    that names a vanished pane answers `null` while the explanation goes to
    `Viewer.notice`. Worth a fux discussion about whether a command's outcome should be
    visible in its own response; not redesigned here.
+5. **Resource entities in the README** — campaign 06 measured the exposure (53 of 99
+   entities in an unfiltered query) and found no agent using it. One documentation
+   sentence, and hunt 7 finding 009's fix, close it before an agent does.
 
 ## After the Unix-socket transport change
 
