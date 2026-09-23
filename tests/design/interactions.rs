@@ -22,7 +22,10 @@ fn hidden_tabs_stop_constraining_pty_size_even_before_the_switching_viewer_paint
             state.at("cols").as_u64().need()?,
         ))
     };
-    assert_eq!(dimensions()?, (7, 25));
+    // The pane's PTY is resized when the small viewer paints, but the
+    // reflected ProcessState the query reads is republished by the sync system
+    // on the next update, so wait for it rather than race it.
+    eventually(|| Ok(dimensions()? == (7, 25)))?;
     s.tab_new(small, Some("hidden-from-large"))?;
     s.screen(large)?;
     eventually(|| Ok(dimensions()? == (23, 80)))?;
