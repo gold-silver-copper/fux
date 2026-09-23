@@ -1198,6 +1198,13 @@ runs out of 4, and on `origin/main` equally: the test configures `/bin/sh`,
 which is `dash` there and `bash` on macOS. It is the test noticing a real
 difference, not a flake.
 
+**Already known, in one place.** `fux-fuzz/README.md` says under "Bounds and
+cleanup" that "Ubuntu's dash `/bin/sh` does not provide bash's background-job
+SIGHUP propagation", and the harness fixture execs `/bin/bash --noprofile
+--norc -i` to avoid it. So the harness knows; fux's integration test does not,
+and configures `/bin/sh`. On macOS that is bash and the test passes, which is
+why this has never been visible.
+
 **What it is not.** Not a leak of fux's own making: the process is reparented
 to init and reachable by the user. The README says a pane's process is
 terminated with the pane, and under `dash` a job it started is not.
