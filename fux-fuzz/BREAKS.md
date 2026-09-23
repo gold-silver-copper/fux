@@ -1493,6 +1493,33 @@ the round-trip save and load test is unaffected.
 `/dev/zero` and watches the server's RSS pass 1 GB. Exit 0 reproduced, 1 not,
 2 setup; `NEGATIVE_CONTROL=1` loads a small missing file, refused at once.
 
+## 018 — A blocking scene read stalls the whole server (class 2)
+
+**The break.** `load_layout` reads its scene file with a blocking
+`std::fs::read_to_string` (`read_scene`) inside a task on Bevy's `IoTaskPool`.
+That pool is one thread on a two-core machine and at most four on any, and it
+also runs the BRP serving loop and every pane's PTY I/O. A load whose file is
+slow to produce bytes -- a named pipe, or a large scene -- blocks a pool
+thread; enough concurrent such loads block every pool thread; and then the
+server answers nothing until the reads finish.
+
+**Found by** the nightly smoke, on a two-core runner: the `race`, `churn` and
+`scene_refs` scenarios, which use named pipes to hold a load in flight, timed
+out with `timeout: global` on both `ubuntu-24.04` and `macos-15`. Reproduced
+under `docker run --cpus 2`, on `origin/main` too: it is pre-existing, from
+before the finding-016 bound, which kept the read blocking.
+
+**Fixed** in the 018 commit: `scene_io`'s task runs the blocking read or write
+on a dedicated `std::thread` and awaits the result over a channel, so it holds
+no pool thread while the file is slow. The serving loop and PTY I/O keep
+running. The `race`, `churn` and `scene_refs` scenarios pass under `--cpus 2`.
+
+**Reproduction.**
+`fux-fuzz/repro/018-a-blocking-scene-read-stalls-the-server.sh` opens eight
+concurrent `load_layout` requests, each naming a FIFO nothing writes -- more
+than the pool's ceiling -- then asks `rpc.discover`. Exit 0 reproduced, 1 not,
+2 setup; `NEGATIVE_CONTROL=1` sends harmless requests instead.
+
 ## Passes, and what each attacked
 
 **Pass 1** attacked every area; three findings.
