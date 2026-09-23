@@ -1099,15 +1099,25 @@ resizing", and `origin/main` fails the same two scenarios on the same
 platform. The harness drives real frontends and resizes them, which is exactly
 the collision above.
 
-The third is not this, and not a finding either: the `history` scenario, and
-the `owned-terminal-tiny-child-geometry` trace that replays it, fail on Linux
-about a third of the time with "short-history pane painted: observation
-deadline exceeded". It is the harness's five-second observation bound, not a
-fux defect: `origin/main` fails it too, 1 run in 6 against this branch's 2 in
-4, both small samples of the same flake. It does not reproduce on macOS. A
-later run should either widen that bound on Linux or find what makes a short
-history slow to paint there; this hunt only establishes that it predates the
-branch.
+The third is a settling race, not the signal finding, and hunt 8 ran it down.
+The `history` scenario, and the `owned-terminal-tiny-child-geometry` trace that
+replays it, wait up to five seconds for a freshly split pane -- running a
+program that prints more lines than the pane is tall and ends without a
+trailing newline -- to paint its last line. After a split, `make_frame` sizes
+the pane's PTY to its rect and snapshots in the same call, but the emulator's
+reflow to the new size is not yet reflected in that snapshot, so the first
+frame shows the pane one row short; the next frame, once the reader thread has
+caught up, is correct. Polling converges in about 0.13 s on macOS, but on slow
+Linux it can exceed the harness's five-second bound about half the time.
+
+It converges correctly -- it is a settling delay, not a permanent clip -- so
+it is a timing flake rather than a numbered finding, and `origin/main` has it
+identically. A clean fix is a real change to the resize/reflow/snapshot
+ordering (or making a split's first snapshot wait for the reflow), which
+touches the geometry the 24 traces and the frame tests pin and the `Screen`
+window path that `fux-vt` shares with koh; hunt 8 left it rather than rush a
+change with that blast radius. It affects only the nightly Linux traces and
+smoke, never the blocking verify job.
 
 ## 011 — fux does not build on Linux without ALSA headers (class: platform)
 
