@@ -144,7 +144,7 @@ pub fn bound(world: &mut World, id: Entity, target: Target, action: Action) -> R
             );
             Ok(())
         }
-        _ => crate::server::execute(world, id, action.command(target).ok_or("no pane")?),
+        _ => crate::execute::execute(world, id, action.command(target).ok_or("no pane")?),
     }
 }
 
@@ -724,7 +724,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     if let Some(run) = execute {
         let result = match run {
             Run::Action(action) => bound(world, id, overlay.target, action),
-            Run::Command(command) => crate::server::execute(world, id, command),
+            Run::Command(command) => crate::execute::execute(world, id, command),
         };
         if let Err(message) = result {
             notify_error(world, id, message);

@@ -185,7 +185,7 @@ fn removed_confirmation_target_cancels_without_retargeting() -> crate::testing::
 fn tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers()
 -> crate::testing::Outcome {
     let (mut world, id, target, _) = setup();
-    crate::server::execute(
+    crate::execute::execute(
         &mut world,
         id,
         Command::Close {
@@ -197,7 +197,7 @@ fn tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers()
     assert!(on_tab(&world, id).is_some());
     let target = Target::of(&world, id).need()?;
     let replacement = world.spawn(Workspace).id();
-    crate::server::execute(
+    crate::execute::execute(
         &mut world,
         id,
         Command::Close {
@@ -206,7 +206,7 @@ fn tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers()
     )?;
     assert_eq!(viewing(&world, id), Some(replacement));
     let target = Target::of(&world, id).need()?;
-    crate::server::execute(
+    crate::execute::execute(
         &mut world,
         id,
         Command::Close {
@@ -237,7 +237,7 @@ fn rearrangement_keeps_entity_identity_and_native_child_order() -> crate::testin
             .collect::<Vec<_>>(),
         vec![source, other]
     );
-    crate::server::execute(
+    crate::execute::execute(
         &mut world,
         id,
         Command::Move {

@@ -3,6 +3,7 @@ mod assets;
 mod chrome;
 mod control;
 mod encode;
+mod execute;
 mod frame;
 mod interaction;
 mod layout;
