@@ -421,6 +421,20 @@ impl Terminal {
         Ok(())
     }
 
+    /// The reflected state this terminal publishes. The sync system copies it
+    /// every update; `terminate` also publishes it in the step that ends the
+    /// process, as Launch removal does, so a caller never reads a process that
+    /// is already reaped as running.
+    pub(crate) fn state(&self) -> ProcessState {
+        let (rows, cols) = self.published_size;
+        ProcessState {
+            rows,
+            cols,
+            status: self.status.clone(),
+            revision: self.revision,
+        }
+    }
+
     /// Terminates the owned process group, reaps its leader, and retains the screen.
     pub fn stop(&mut self) -> Result<(), String> {
         let Runtime::Live(live) = std::mem::replace(&mut self.runtime, Runtime::Stopped) else {
@@ -759,15 +773,9 @@ fn update_terminals(
             let _ = terminal.finish(live, Some(observed));
             terminal.revision = terminal.revision.wrapping_add(1);
         }
-        let (rows, cols) = terminal.parser.screen().size();
-        terminal.published_size = (rows, cols);
+        terminal.published_size = terminal.parser.screen().size();
         let Some(state) = &mut state else { continue };
-        state.set_if_neq(ProcessState {
-            rows,
-            cols,
-            status: terminal.status.clone(),
-            revision: terminal.revision,
-        });
+        state.set_if_neq(terminal.state());
     }
     if remaining_output {
         notify.wake.notify();
