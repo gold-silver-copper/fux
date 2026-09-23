@@ -356,16 +356,12 @@ pub(super) fn run(s: &mut Server, seed: u64, cases: &[SceneCase]) -> Result<()> 
         s.control(v, json!({"kind":"split","axis":axis,"program":format!("stty raw -echo; W=SF; printf \"\\033[2J\\033[H${{W}}{i}\"; exec cat > /dev/null")}))?;
         markers.insert(s.relation(v, "fux::model::Focused")?, format!("SF{i}"));
     }
+    // The tab holding the three panes, named before a second one exists.
+    // `world.query` returns archetype order, not creation order, so picking
+    // the first row would be picking whichever tab the ECS happens to list.
+    let first_tab = s.relation(v, "fux::model::OnTab")?;
     s.control(v, json!({"kind":"tab_new","name":"second"}))?;
-    let first_tab = s
-        .query(invariant::TAB)?
-        .iter()
-        .map(id)
-        .collect::<Result<Vec<_>>>()?;
-    s.control(
-        v,
-        json!({"kind":"select","scope":"tab","entity":first_tab.first().copied().ok_or("tab")?}),
-    )?;
+    s.control(v, json!({"kind":"select","scope":"tab","entity":first_tab}))?;
     s.wait("base layout painted", |s| {
         let frame = s.frame(v, 24, 80)?;
         Ok(frame.contains("SF0") && frame.contains("SF1"))
