@@ -1099,25 +1099,13 @@ resizing", and `origin/main` fails the same two scenarios on the same
 platform. The harness drives real frontends and resizes them, which is exactly
 the collision above.
 
-The third is a settling race, not the signal finding, and hunt 8 ran it down.
-The `history` scenario, and the `owned-terminal-tiny-child-geometry` trace that
-replays it, wait up to five seconds for a freshly split pane -- running a
-program that prints more lines than the pane is tall and ends without a
-trailing newline -- to paint its last line. After a split, `make_frame` sizes
-the pane's PTY to its rect and snapshots in the same call, but the emulator's
-reflow to the new size is not yet reflected in that snapshot, so the first
-frame shows the pane one row short; the next frame, once the reader thread has
-caught up, is correct. Polling converges in about 0.13 s on macOS, but on slow
-Linux it can exceed the harness's five-second bound about half the time.
-
-It converges correctly -- it is a settling delay, not a permanent clip -- so
-it is a timing flake rather than a numbered finding, and `origin/main` has it
-identically. A clean fix is a real change to the resize/reflow/snapshot
-ordering (or making a split's first snapshot wait for the reflow), which
-touches the geometry the 24 traces and the frame tests pin and the `Screen`
-window path that `fux-vt` shares with koh; hunt 8 left it rather than rush a
-change with that blast radius. It affects only the nightly Linux traces and
-smoke, never the blocking verify job.
+The third was not the signal finding and not a flake. The `history` scenario,
+and the `owned-terminal-tiny-child-geometry` trace that replays it, wait for a
+freshly split pane -- running a program that prints more lines than the pane
+is tall and ends without a trailing newline -- to paint its last line. Hunt 7
+recorded it as a settling race that polling converged on; hunt 8 first called
+it that too. It is finding 017 below: the emulator's resize cut the bottom row,
+and one frame taken after a fixed wait shows it every time, on both platforms.
 
 ## 011 — fux does not build on Linux without ALSA headers (class: platform)
 
@@ -1492,6 +1480,62 @@ the round-trip save and load test is unaffected.
 **Reproduction.** `fux-fuzz/repro/016-scene-file-read-is-unbounded.sh` loads
 `/dev/zero` and watches the server's RSS pass 1 GB. Exit 0 reproduced, 1 not,
 2 setup; `NEGATIVE_CONTROL=1` loads a small missing file, refused at once.
+
+## 017 — A resized pane loses its bottom line (class 6)
+
+**The break.** A pane whose output overflows its height and whose last line has
+no trailing newline lost that line when the pane was resized smaller. Every new
+pane is: its PTY starts at one size and the first frame's `size_terminals`
+resizes it to the pane's rectangle. The frame then showed the row above, so the
+newest output -- a prompt, a program's final line -- was missing, and no later
+frame brought it back, because the row was gone from the emulator.
+
+**Found by** the nightly smoke and traces: the `history` scenario and the
+`owned-terminal-tiny-child-geometry` trace wait for a split pane to paint its
+last line, and timed out on Linux. Hunts 7 and 8 first recorded it as a
+settling race, because frames requested in a polling loop seemed to converge.
+One `fux.frame` taken after a fixed wait shows it deterministically: 3 of 3 on
+macOS against `origin/main`, and the same on Linux.
+
+**Root cause.** `fux_vt::grid::Grid::resized` kept the first `history + rows`
+rows, so a shrink dropped rows off the *bottom* of the live area -- the cursor
+line -- instead of scrolling the top into history. `Screen::window`,
+`terminal::rows::snapshot` and the frame path were correct: before the resize
+the window's last row is the newline-less line, after it the row above.
+
+**Fixed** in `fux-vt`: `resized` reflows around the cursor. A shrink drops rows
+below the cursor first and only then scrolls rows above it into history, so a
+screen whose content is at the top keeps it and a full screen keeps its bottom
+line; a grow pulls rows back from history, as xterm does, so shrinking and
+growing again restores the screen. Both cursors move with their rows. The
+storage stride covers exactly the rows that become history.
+
+Two wrong versions came first, and each is now pinned by a test. Keeping the
+bottom rows regardless of the cursor pushed every new pane's first line into
+history -- the shell's banner vanished and 38 smoke cases failed under a CPU
+limit -- and taking the stride over every old row kept a narrowed pane's
+widest width forever, which doubled the 200-pane `scale` scenario's time.
+
+`fux-vt`'s public API is unchanged, so it stays 0.1.1; the change is to its
+resize behaviour. One `fux-vt` test, `resize_rejects_bad_capacity_without_mutating_state`,
+had asserted the old behaviour -- after `resize(2, 3)` it expected the upper
+two rows, with the cursor's row dropped -- and now expects the cursor's row and
+the one above it. koh's 220 library tests pass against the fixed `fux-vt`.
+
+**Tests.** `fux-vt`: `shrink_keeps_the_newline_less_bottom_line`,
+`shrink_drops_blank_rows_below_the_cursor_first`,
+`grow_restores_rows_a_shrink_scrolled_away` and the grid unit test
+`narrowing_live_rows_uses_the_new_width_as_stride`. fux:
+`terminal::rows::tests::a_resized_pane_paints_its_newline_less_last_line`
+(the `Terminal` and `rows` level) and
+`design::a_split_pane_paints_its_newline_less_last_line` (one frame over the
+socket). Each failed before its fix.
+
+**Reproduction.** `fux-fuzz/repro/017-a-split-pane-hides-its-last-line.sh`
+splits with a program that prints forty lines and then `ENDMARK` without a
+newline, waits two seconds, and takes one `fux.frame`. Exit 0 reproduced (no
+`ENDMARK`), 1 not, 2 setup; `NEGATIVE_CONTROL=1` ends the output with a
+newline and exits 1.
 
 ## 018 — A blocking scene read stalls the whole server (class 2)
 

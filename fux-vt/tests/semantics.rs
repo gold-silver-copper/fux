@@ -253,15 +253,22 @@ fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
     assert!(!p.screen().changed_since(mark));
     assert_eq!(p.resize(u16::MAX, u16::MAX), Err(Error::Capacity));
     assert_eq!(p.screen().size(), (3, 5));
+    // Shrinking keeps the cursor line visible: the cursor is on `pqrst`, so
+    // that line stays and the top of the live area (`fghij`) joins history.
+    // (Before hunt 8 finding 017 the shrink dropped `pqrst`, the very line the
+    // cursor was on, and kept `fgh`/`klm`; koh's 220 tests pass with this fix.)
     p.resize(2, 3)?;
-    assert_eq!(lines(&p), ["fgh", "klm"]);
+    assert_eq!(lines(&p), ["klm", "pqr"]);
     assert_eq!(p.screen().cursor_position(), (1, 2));
     assert_eq!(
         p.screen().window(1, 2, 3).text((0, 0), (0, 2), 100, 100)?,
-        "abc"
+        "fgh"
     );
+    // Growing pulls rows back from history so the space shows older output,
+    // as xterm does: `fghij` returns at full width, while `klm`/`pqr` keep the
+    // three columns they were truncated to while the grid was narrow.
     p.resize(3, 5)?;
-    assert_eq!(lines(&p), ["fgh", "klm", ""]);
+    assert_eq!(lines(&p), ["fghij", "klm", "pqr"]);
     assert_eq!(
         p.screen().window(1, 3, 5).text((0, 0), (0, 4), 100, 100)?,
         "abcde"
@@ -429,5 +436,57 @@ fn all_chunk_boundaries_preserve_utf8_escapes_and_ascii_fast_path_results() -> R
     assert_eq!(lines(&p), lines(&whole));
     p.process(&[0xf0, 0x9f, 0x1b, b'[', b'H', b'Z'])?;
     assert_eq!(cell(&p, 0, 0)?.contents(), "Z");
+    Ok(())
+}
+
+/// Hunt 8 finding 017: shrinking a grid whose bottom line has no trailing
+/// newline must keep that line -- the cursor is on it -- rather than drop it.
+#[test]
+fn shrink_keeps_the_newline_less_bottom_line() -> Result {
+    let mut p = Parser::new(24, 80, 100)?;
+    let mut out = String::new();
+    for i in 1..=40 {
+        out.push_str(&format!("ROW-{i:02}\r\n"));
+    }
+    out.push_str("TAIL");
+    p.process(out.as_bytes())?;
+    p.resize(23, 80)?;
+    let s = p.screen();
+    let w = s.window(0, 23, 80);
+    let bottom: String = (0..80)
+        .filter_map(|c| w.cell(22, c))
+        .flat_map(|c| c.contents().chars())
+        .collect();
+    assert_eq!(bottom.trim_end(), "TAIL");
+    Ok(())
+}
+
+// A shrink takes blank rows below the cursor first: a shell that has printed a
+// banner and a prompt at the top must keep both, and its cursor, when the pane
+// loses a row. Taking the top row instead hid every new pane's first line.
+#[test]
+fn shrink_drops_blank_rows_below_the_cursor_first() -> Result {
+    let mut p = Parser::new(24, 80, 100)?;
+    p.process(b"BANNER\r\n$ ")?;
+    p.resize(23, 80)?;
+    assert_eq!(lines(&p).first().map(String::as_str), Some("BANNER"));
+    assert_eq!(p.screen().cursor_position(), (1, 2));
+    assert_eq!(p.screen().history_len(), 0);
+    p.process(b"typed")?;
+    assert_eq!(lines(&p).get(1).map(String::as_str), Some("$ typed"));
+    Ok(())
+}
+
+// Growing back pulls the rows a shrink scrolled into history, and the cursor
+// moves with its row.
+#[test]
+fn grow_restores_rows_a_shrink_scrolled_away() -> Result {
+    let mut p = Parser::new(4, 10, 100)?;
+    p.process(b"a\r\nb\r\nc\r\nd")?;
+    p.resize(2, 10)?;
+    assert_eq!(lines(&p), ["c", "d"]);
+    p.resize(4, 10)?;
+    assert_eq!(lines(&p), ["a", "b", "c", "d"]);
+    assert_eq!(p.screen().cursor_position(), (3, 1));
     Ok(())
 }
