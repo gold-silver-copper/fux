@@ -10,6 +10,7 @@ use bevy_ecs::{
     world::{CommandQueue, EntityRefExcept},
 };
 use bevy_world_serialization::DynamicWorld;
+use std::io::Read;
 use std::sync::Arc;
 
 /// A scene save or load in flight for the viewer that asked. Detaching the
@@ -197,6 +198,43 @@ pub(crate) fn scene(world: &mut World, root: Entity) -> Result<(u32, Arc<Dynamic
 
 /// Serializes on the World (only native scene serialization needs it), then
 /// reads or writes the file on the task pool and returns through ECS.
+/// The largest scene file `load_layout` will read. A saved layout is a
+/// hierarchy of nodes, not history or output, so even a workspace of a
+/// thousand panes is far below this; the bound exists because the path is a
+/// caller's choice and `read_to_string` had none, so pointing it at `/dev/zero`
+/// or a huge file grew the server without limit and parsing a huge one blocked
+/// every session (hunt 8 finding 016). It matches the transport's other reply
+/// bound rather than being tuned to a measured maximum, because no legitimate
+/// layout comes close.
+pub const MAX_SCENE: u64 = 8 << 20;
+
+/// Reads a scene file, refusing one larger than `MAX_SCENE` before holding it
+/// whole, and reading at most that many bytes so an endless file such as
+/// `/dev/zero` cannot grow the buffer without bound.
+fn read_scene(path: &str) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    if let Ok(meta) = file.metadata()
+        && meta.is_file()
+        && meta.len() > MAX_SCENE
+    {
+        return Err(format!(
+            "scene file is {} bytes, over the {MAX_SCENE}-byte limit",
+            meta.len()
+        ));
+    }
+    // A non-regular file (a pipe, /dev/zero) reports no length, so cap the read
+    // itself: one byte past the limit is enough to tell it was exceeded.
+    let mut text = String::new();
+    let read = file
+        .take(MAX_SCENE + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| error.to_string())?;
+    if read as u64 > MAX_SCENE {
+        return Err(format!("scene file exceeds the {MAX_SCENE}-byte limit"));
+    }
+    Ok(text)
+}
+
 pub(crate) fn scene_io(
     world: &mut World,
     id: Entity,
@@ -215,9 +253,7 @@ pub(crate) fn scene_io(
             Some(text) => std::fs::write(&path, text)
                 .map(|_| None)
                 .map_err(|e| e.to_string()),
-            None => std::fs::read_to_string(&path)
-                .map(Some)
-                .map_err(|e| e.to_string()),
+            None => read_scene(&path).map(Some),
         });
         let mut queue = CommandQueue::default();
         queue.push(move |world: &mut World| {
