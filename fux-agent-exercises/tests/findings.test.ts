@@ -9,6 +9,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   hierarchyMetrics,
+  resourceEntityMetrics,
   noisyMetrics,
   partialPayloads,
   recoveryMetrics,
@@ -177,4 +178,48 @@ test("the findings section renders every table from the fixtures", () => {
   assert.match(text, /\| `noisy-b-r2` \| 20 \| world\.insert_components \| `fux::model::Viewer` \| notice \| none \| transport error: fetch failed \|/);
   assert.match(text, /\| `recovery-a-r1` \| yes \| 6 \| world\.trigger_event \| no \| no \| — \| 7 \|/);
   assert.match(text, /Agents that read state before acting again: 0 of 1\./);
+});
+
+test("resource entity metrics count what Bevy 0.20 made visible", () => {
+  // Campaign 05 predates the move to Bevy 0.20, so its agents met resource
+  // entities only where a component listing named one, and never queried
+  // unfiltered. These numbers are the before side of campaign 06's comparison.
+  const noisy = fixture("campaign-04-noisy-a-r1");
+  const metrics = resourceEntityMetrics(noisy);
+  assert.deepEqual(metrics.unfilteredQueries, []);
+  assert.deepEqual(metrics.requestsNamingResourceEntity, []);
+
+  // A synthetic run: one unfiltered query, one response carrying IsResource,
+  // and one request naming an id in the resource range.
+  const synthetic = {
+    ...noisy,
+    journal: {
+      ...noisy.journal,
+      toolCalls: [
+        { ...noisy.journal.toolCalls[0], index: 0, method: "world.query", paramsJson: JSON.stringify({ data: {} }), response: "{}" },
+        {
+          ...noisy.journal.toolCalls[0],
+          index: 1,
+          method: "world.list_components",
+          paramsJson: JSON.stringify({ entity: 4294967295 }),
+          response: JSON.stringify({ result: ["bevy_ecs::resource::IsResource"] }),
+        },
+        {
+          ...noisy.journal.toolCalls[0],
+          index: 2,
+          method: "world.query",
+          paramsJson: JSON.stringify({ data: { components: ["fux::model::Viewer"] } }),
+          response: "{}",
+        },
+      ],
+    },
+  };
+  const found = resourceEntityMetrics(synthetic as typeof noisy);
+  assert.deepEqual(found.unfilteredQueries, [0]);
+  assert.deepEqual(found.responsesShowingResourceEntities, [1]);
+  assert.deepEqual(found.requestsNamingResourceEntity, [1]);
+
+  const text = renderFindings([synthetic as typeof noisy]).join("\n");
+  assert.match(text, /resource entities in what the agent sees/);
+  assert.match(text, /Runs that sent a request naming one: 1 of 1/);
 });

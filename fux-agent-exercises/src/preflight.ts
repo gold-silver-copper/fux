@@ -6,7 +6,8 @@
  * prints a credential; only whether one resolved.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { resolveFlashModel, type ResolvedModel } from "./model.ts";
 import { loadPiSdk, type PiSdk } from "./pi-sdk.ts";
 
@@ -22,12 +23,33 @@ export interface PreflightOptions {
 export interface PreflightResult {
   ok: boolean;
   problems: string[];
-  fux: { path: string; version: string | null; gitRevision: string | null; gitDirty: boolean | null };
+  fux: {
+    path: string;
+    version: string | null;
+    gitRevision: string | null;
+    gitDirty: boolean | null;
+    /** The Bevy version in the lockfile, which decides what an agent sees. */
+    bevy: string | null;
+  };
   pi: { version: string; root: string };
   provider: { id: string; authenticated: boolean; method: string | null; availableModels: number } | null;
   model: ResolvedModel | null;
   sdk: PiSdk;
   modelRuntime: unknown;
+}
+
+/** The Bevy version fux is built against, from the workspace lockfile. The
+ * engine decides things an agent can see -- 0.20 stores resources as entities,
+ * so an unfiltered query answers with more than the session's own entities --
+ * so a campaign records it beside the fux revision. */
+function bevyVersion(cwd: string): string | null {
+  try {
+    const lock = readFileSync(join(cwd, "Cargo.lock"), "utf8");
+    const match = lock.match(/\[\[package\]\]\nname = "bevy_ecs"\nversion = "([^"]+)"/);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function fuxVersion(binary: string): string | null {
@@ -138,6 +160,7 @@ export async function preflight(options: PreflightOptions, repoRoot: string): Pr
       version: existsSync(options.fuxBinary) ? fuxVersion(options.fuxBinary) : null,
       gitRevision: git.revision,
       gitDirty: git.dirty,
+      bevy: bevyVersion(repoRoot),
     },
     pi: { version: sdk.version, root: sdk.root },
     provider,
