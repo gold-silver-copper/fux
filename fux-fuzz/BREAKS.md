@@ -963,3 +963,72 @@ Linux runs are in a container built by `fux-fuzz/linux/Dockerfile`, driven by
 (OrbStack), `aarch64` and `x86_64`, as an ordinary user (uid 1000), because
 root ignores the socket permissions that are fux's access control.
 
+## 009 — A `Viewer` on a resource entity ends the server, around both guards (class 1)
+
+**The break.** Two accepted requests and a closed connection stop the server,
+taking every attached session and child process with it. No guarded method is
+called:
+
+1. `world.insert_components` puts a `fux::model::Viewer` on a **resource
+   entity**. Nothing refuses it.
+2. `fux.frame+watch` on that id, then close the connection. `disconnected`
+   despawns it, because by now it really is a viewer.
+
+The despawn lands on a resource entity, which is exactly what hunt 6's finding
+004 guard exists to prevent:
+
+```
+WARN bevy_ecs::resource: Resource entities are not supposed to be despawned.
+ERROR bevy_ecs::error::handler: Encountered an error in system
+  `bevy_app::main_schedule::Main::run_main`: System panicked
+resource does not exist: bevy_app::main_schedule::MainScheduleOrder
+```
+
+**Why the guards do not cover it.** The guard is on the *method*:
+`remote::despawn_entity` refuses an entity carrying `IsResource`. fux despawns
+viewers in its own code, and those paths never ask:
+
+- `layout`/`server::disconnected` despawns the entity a closed watch named,
+  after checking `IsViewer`, which is `(With<Viewer>, NotLayout)`;
+- `execute`'s `Detach` despawns the viewer the command named.
+
+Both check that the entity is a viewer. Neither checks that it is not a
+resource, and step 1 makes a resource entity pass the viewer check. The hunt 5
+finding 001 normalization that strips a `Viewer` off a layout node knows about
+`Workspace`, `Tab`, `Split` and `PaneView`; a resource entity is none of them.
+
+**Which resource decides what happens.** `Entity::to_bits` complements the
+index, so resource entities are a short fixed sequence from `0xFFFFFFFF`
+downwards and a caller needs no guesswork. On this build:
+
+| Bits | Index | Resource | Result |
+| --- | --- | --- | --- |
+| `0xFFFFFFFF` | 0 | `DefaultQueryFilters` | survives; no visible damage |
+| `0xFFFFFFFE` | 1 | `Schedules` | **stops answering** |
+| `0xFFFFFFFD` | 2 | `AppTypeRegistry` | **answers every request with an error**: alive, useless, still holding every session's PTYs |
+| `0xFFFFFFFC` | 3 | `MainScheduleOrder` | **stops answering** |
+| `0xFFFFFFFB` | 4 | `FixedMainScheduleOrder` | survives |
+| `0xFFFFFFFA` | 5 | `Messages<AppExit>` | survives |
+
+Index 2 is worth its own line: the server neither exits nor serves. A liveness
+check that only asks whether the socket answers would call it healthy.
+
+**What the error handler does and does not buy.** `ServerPlugin` logs rather
+than panicking on a failed command, which is why the `Detach` route leaves the
+process running where it would otherwise abort. It does not stop the world
+from being wrong: the resource is gone either way, and what follows is a
+server that cannot run its main schedule.
+
+**Reproduction.**
+`fux-fuzz/repro/009-viewer-on-a-resource-entity-ends-the-server.sh`, exit 0
+reproduced, exit 1 verified not reproduced, exit 2 setup failure;
+`NEGATIVE_CONTROL=1` puts the same `Viewer` on an ordinary spawned entity and
+watches that, which must leave the server serving. Reproduced on macOS arm64
+and Linux arm64.
+
+**The class, not the instance.** The guard on the method is not where this
+belongs. Every despawn of a caller-named entity needs the check, including
+fux's own: `disconnected`, `Detach`, and anything later that despawns what a
+request named. A fix that only adds `IsResource` to `IsViewer` closes this
+script and leaves the class open.
+
