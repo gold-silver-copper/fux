@@ -261,7 +261,7 @@ fn repair_absorbs_requests_made_during_a_pass_and_is_bounded() -> Outcome {
     let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let once = fired.clone();
     world.add_observer(
-        move |inserted: On<Insert, Focused>, mut commands: Commands| {
+        move |inserted: On<Insert<Focused>>, mut commands: Commands| {
             if inserted.entity == a && !once.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 commands.entity(b).remove::<Focused>();
             }
@@ -278,7 +278,7 @@ fn repair_absorbs_requests_made_during_a_pass_and_is_bounded() -> Outcome {
     // the process: every tab repair gives it is taken away again.
     let passes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = passes.clone();
-    world.add_observer(move |inserted: On<Insert, OnTab>, mut commands: Commands| {
+    world.add_observer(move |inserted: On<Insert<OnTab>>, mut commands: Commands| {
         if inserted.entity == a {
             counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             commands.entity(a).remove::<OnTab>();

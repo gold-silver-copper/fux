@@ -279,7 +279,7 @@ impl Plugin for ServerPlugin {
         app.add_plugins(TerminalPlugin)
             .add_observer(route_control)
             .add_observer(route_input)
-            .add_observer(|removed: On<Remove, Viewer>, mut commands: Commands| {
+            .add_observer(|removed: On<Remove<Viewer>>, mut commands: Commands| {
                 commands.entity(removed.entity).try_remove::<Presentation>();
             })
             .add_observer(|_: On<Shutdown>, mut exits: MessageWriter<AppExit>| {
