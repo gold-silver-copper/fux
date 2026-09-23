@@ -1126,10 +1126,15 @@ on it more narrowly) or dropping `bevy_remote`'s schedule methods. What fux
 can do now is say so in the README, where the dependency boundary is already
 described, and list the two packages a Linux build needs.
 
-**Reproduction.** `fux-fuzz/linux/run.sh arm64 cargo build --locked` with the
-`libasound2-dev` line removed from `fux-fuzz/linux/Dockerfile`. The Dockerfile
-carries that line with a comment pointing here, so the workaround is visible
-rather than silent.
+**Reproduction.** `fux-fuzz/repro/011-a-linux-build-needs-alsa.sh`, which asks
+the resolved dependency graph for a Linux target rather than building, so it
+runs anywhere in a second and prints the whole chain. Exit 0 reproduced, 1
+verified not reproduced, 2 setup failure; `NEGATIVE_CONTROL=1` resolves the
+same graph for a macOS target, where the chain is absent. The consequence, a
+build that fails without the headers, is `fux-fuzz/linux/run.sh arm64 cargo
+build --locked` with the `libasound2-dev` line removed from
+`fux-fuzz/linux/Dockerfile`; the Dockerfile carries that line with a comment
+pointing here, so the workaround is visible rather than silent.
 
 ## 012 — Descriptor pressure makes a Linux client wait 6.5 s, not 3.0 (class 2)
 
@@ -1168,10 +1173,20 @@ one tick per queued connection. The reserved descriptor already makes this
 possible; it is only spent once per tick.
 
 **Reproduction.**
-`fux-fuzz/repro/006-descriptor-pressure-wedges-the-accept-loop.sh`, unchanged,
-on Linux: exit 0. On macOS it still exits 1. The default soft `ulimit -n` in
-the container is 20480; the script sets 64 for the server's own subshell, so
-the limit under test is fux's, not the machine's.
+`fux-fuzz/repro/012-descriptor-shedding-drains-one-connection-a-tick.sh`,
+which samples fresh clients over a window and reports the worst wait: 6.9 s
+in the run recorded here, with 1 of 26 samples over a second and the rest
+resolving in about 10 ms. A client that arrives when the backlog is completely
+full is refused at `connect` at once; the slow case is the one that gets into
+the queue and then waits its turn, which is why it has to be sampled rather
+than measured once. Exit 0 reproduced, 1 verified not reproduced, 2 setup
+failure or not Linux; `NEGATIVE_CONTROL=1` opens and closes the same
+connections, leaving no pressure.
+
+Hunt 6's `006` script, unchanged, also exits 0 on Linux and 1 on macOS. The
+default soft `ulimit -n` in the container is 20480; both scripts set 64 for
+the server's own subshell, so the limit under test is fux's, not the
+machine's.
 
 ## 013 — `terminate` leaves background jobs alive under `dash` (class 3)
 
@@ -1210,10 +1225,19 @@ why this has never been visible.
 to init and reachable by the user. The README says a pane's process is
 terminated with the pane, and under `dash` a job it started is not.
 
-**Reproduction.** Configure `shell: ["/bin/dash"]` (present on macOS too),
-run `sleep 60 &` in the pane, then `terminate`, and check the job. On macOS
-`/bin/dash` behaves exactly as Linux's `/bin/sh`, so this is a shell
-difference rather than a platform one, and it reproduces on both.
+**Reproduction.**
+`fux-fuzz/repro/013-terminate-leaves-a-dash-background-job.sh`, which names
+`/bin/dash` explicitly rather than `/bin/sh`, so it tests the shell rather
+than the platform's choice of shell. macOS ships `/bin/dash` too and the
+finding reproduces on both, which is what makes it a shell difference rather
+than a platform one. Exit 0 reproduced, 1 verified not reproduced, 2 setup
+failure; `NEGATIVE_CONTROL=1` runs the same pane under `bash`, which forwards
+the hangup, so the job dies with its pane.
+
+Writing that control turned up one more difference worth knowing: bash 5.1 and
+later enable bracketed paste, where a newline inside pasted text goes into the
+line buffer instead of running it, so the script presses Enter as a key. macOS
+ships bash 3.2, which does not, and `dash` does not either.
 
 ## What did not break (coverage, not findings)
 
