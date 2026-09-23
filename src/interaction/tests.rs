@@ -394,3 +394,97 @@ fn pasted_text_cannot_cross_a_cancelled_or_reopened_prompt() -> crate::testing::
     assert!(buffer.is_empty());
     Ok(())
 }
+
+#[test]
+fn menu_titles_and_entries_keep_their_order() -> crate::testing::Outcome {
+    use Action::*;
+    let (mut world, id, target, _) = setup();
+    for (menu, title, expected) in [
+        (
+            PaneMenu,
+            "Panes: ",
+            vec![
+                SplitHorizontal,
+                SplitVertical,
+                RenamePane,
+                Close,
+                Terminate,
+                Zoom,
+                GrowWidth,
+                ShrinkWidth,
+                GrowHeight,
+                ShrinkHeight,
+                ReorderPrev,
+                ReorderNext,
+                SwapChoose,
+                SwapLeft,
+                SwapRight,
+                SwapUp,
+                SwapDown,
+                MoveLeft,
+                MoveRight,
+                MoveUp,
+                MoveDown,
+                MoveTab,
+                MoveNewTab,
+                MoveWorkspace,
+                MoveNewWorkspace,
+                CopyMode,
+                ScrollUp,
+                ScrollDown,
+                Copy,
+            ],
+        ),
+        (
+            TabMenu,
+            "Tabs: ",
+            vec![
+                TabNew,
+                RenameTab,
+                TabClose,
+                TabReorderPrevious,
+                TabReorderNext,
+            ],
+        ),
+        (
+            WorkspaceMenu,
+            "Workspaces: ",
+            vec![
+                WorkspaceNew,
+                WorkspaceChoose,
+                RenameWorkspace,
+                WorkspaceClose,
+                WorkspaceReorderPrevious,
+                WorkspaceReorderNext,
+                SaveLayout,
+                LoadLayout,
+            ],
+        ),
+    ] {
+        bound(&mut world, id, target, menu)?;
+        let Mode::List {
+            title: t, entries, ..
+        } = &world.get::<Overlay>(id).need()?.mode
+        else {
+            return Err("unexpected overlay mode".into());
+        };
+        assert!(t.starts_with(title), "{menu:?}: {t}");
+        let actions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match e.run {
+                Run::Action(a) => Some(a),
+                Run::Command(_) => None,
+            })
+            .collect();
+        assert_eq!(actions, expected, "{menu:?}");
+        assert!(
+            entries
+                .iter()
+                .zip(&expected)
+                .all(|(e, a)| e.label == a.label()),
+            "{menu:?}"
+        );
+        input(&mut world, id, &key("escape"));
+    }
+    Ok(())
+}

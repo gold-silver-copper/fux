@@ -380,6 +380,37 @@ mod tests {
                 expected_empty,
                 "{action}"
             );
+            // Only raw edits leave a viewer without a tab, but a captured
+            // target can still say so, and the reason must not depend on
+            // which list an action was written in.
+            let tabless = Target {
+                tab: None,
+                leaf: None,
+                ..target
+            };
+            let expected_tabless = if action == Copy || expected_empty == Some("no pane") {
+                expected_empty
+            } else if matches!(
+                action,
+                TabNew
+                    | TabNext
+                    | TabPrevious
+                    | TabChoose
+                    | RenameTab
+                    | TabClose
+                    | TabMenu
+                    | TabReorderPrevious
+                    | TabReorderNext
+            ) {
+                Some("no tab")
+            } else {
+                expected
+            };
+            assert_eq!(
+                unavailable(&world, tabless, action),
+                expected_tabless,
+                "{action}"
+            );
         }
         // Extra tabs/panes in another workspace cannot enable this captured menu.
         let other = world.spawn(Workspace).id();
@@ -401,6 +432,101 @@ mod tests {
             assert_eq!(unavailable(&world, target, action), Some(TARGET_GONE));
         }
         Ok(())
+    }
+
+    #[test]
+    fn groups_keep_their_members_labels_and_order() {
+        use Action::*;
+        // The literal help and menu order before the table carried groups as
+        // types; a regrouping or a reordering is a visible change.
+        let expected: [(&str, &[Action]); 5] = [
+            (
+                "Panes",
+                &[
+                    SplitHorizontal,
+                    SplitVertical,
+                    PaneMenu,
+                    RenamePane,
+                    Close,
+                    Terminate,
+                    Zoom,
+                    GrowWidth,
+                    ShrinkWidth,
+                    GrowHeight,
+                    ShrinkHeight,
+                    ReorderPrev,
+                    ReorderNext,
+                    SwapChoose,
+                    SwapLeft,
+                    SwapRight,
+                    SwapUp,
+                    SwapDown,
+                    MoveLeft,
+                    MoveRight,
+                    MoveUp,
+                    MoveDown,
+                    MoveTab,
+                    MoveNewTab,
+                    MoveWorkspace,
+                    MoveNewWorkspace,
+                    CopyMode,
+                    ScrollUp,
+                    ScrollDown,
+                    Copy,
+                ],
+            ),
+            (
+                "Focus",
+                &[
+                    FocusNext,
+                    FocusPrevious,
+                    FocusLast,
+                    FocusLeft,
+                    FocusRight,
+                    FocusUp,
+                    FocusDown,
+                ],
+            ),
+            (
+                "Tabs",
+                &[
+                    TabNew,
+                    TabNext,
+                    TabPrevious,
+                    TabChoose,
+                    RenameTab,
+                    TabClose,
+                    TabMenu,
+                    TabReorderPrevious,
+                    TabReorderNext,
+                ],
+            ),
+            (
+                "Workspaces",
+                &[
+                    WorkspaceNew,
+                    WorkspaceNext,
+                    WorkspacePrevious,
+                    WorkspaceChoose,
+                    RenameWorkspace,
+                    WorkspaceClose,
+                    WorkspaceMenu,
+                    WorkspaceReorderPrevious,
+                    WorkspaceReorderNext,
+                ],
+            ),
+            ("Session", &[SaveLayout, LoadLayout, Help, Detach]),
+        ];
+        let flattened: Vec<Action> = expected
+            .iter()
+            .flat_map(|(_, a)| a.iter().copied())
+            .collect();
+        assert_eq!(ALL, flattened.as_slice());
+        for (group, actions) in expected {
+            for action in actions {
+                assert_eq!(action.group(), group, "{action}");
+            }
+        }
     }
 
     #[test]
