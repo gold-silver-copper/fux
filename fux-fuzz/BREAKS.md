@@ -1358,3 +1358,55 @@ macOS number.
 - Probe scripts were first written under `target/`, which something on the
   machine cleans; they were rewritten outside it. The tools meant to last are
   in `fux-fuzz/tools/` and `fux-fuzz/linux/`.
+
+---
+
+# Hunt 8: every known defect fixed, then everything hunted until a pass finds nothing
+
+> **Status:** in progress. Findings are numbered from 014, each recorded, given
+> a repro script at exit 0, then fixed with a test that failed first; the
+> script then exits 1 and `fux-fuzz/repro/expected.tsv` says so.
+
+Hunt 8 runs with CI for the first time (`.github/workflows/ci.yml`:
+`ubuntu-24.04` and `macos-15`), and the fixes to hunt 7's findings 009–013 land
+in the same branch. The ranked list at the end of hunt 7 is the order they
+were taken in.
+
+## 014 — Socket cleanup trusts a reused inode number (class 6), Linux on ext4
+
+**Found by** the first run of CI, before any hunting: fux's own unit test
+`transport::tests::cleanup_leaves_a_socket_that_replaced_its_own` failed on
+`ubuntu-24.04` with `NotFound`, where it had passed on macOS, in the Linux
+container, and on every earlier run.
+
+**The break.** A fux server removes its socket at shutdown only if the file at
+the path is still the one it bound, because another program may have replaced
+it. It decided that by comparing `(device, inode)` with the pair recorded at
+bind. That pair names a file only while its inode is allocated: once the
+listener closes, the inode is freed, and ext4 gives a freed inode number to
+the next file created. Bound, unlinked and rebound at one path:
+
+| Filesystem | Inode number reused |
+| --- | --- |
+| ext4 (loop mount, and GitHub's `/tmp`) | 200 of 200 |
+| APFS (macOS) | 0 of 200 |
+| tmpfs, btrfs, overlayfs (the Linux container) | 0 of 200 each |
+
+So on ext4 a socket bound at fux's path after fux's listener closed carries
+fux's old pair, and fux removes it. The stale-socket path in `bind_socket` had
+the same weakness between its probe and its removal.
+
+**Reach.** Through the binary it needs a race: the replacement has to land
+between the listener closing and the endpoint being dropped during shutdown,
+and the lock excludes another fux, so it takes a different program. Rare. But
+the unit test states the guarantee, and on the most common Linux filesystem
+the guarantee did not hold.
+
+**Reproduction.**
+`fux-fuzz/repro/014-socket-cleanup-trusts-a-reused-inode-number.sh` runs that
+unit test with `TMPDIR` on a filesystem it has first checked reuses inode
+numbers; it exits 2 where none is available. Locally,
+`FUX_LINUX_TMP=ext4 fux-fuzz/linux/run.sh` gives the container an ext4
+`TMPDIR` like the runner's, which is new in this run for exactly this reason.
+`NEGATIVE_CONTROL=1` runs it on `/dev/shm`, a tmpfs, where it passes.
+
