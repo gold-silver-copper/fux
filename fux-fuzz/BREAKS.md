@@ -1087,9 +1087,17 @@ must survive, which it does: 6347 rounds.
 `adversarial` fail with "premature frontend exit" or "viewer disappeared while
 resizing", and `origin/main` fails the same two scenarios on the same
 platform. The harness drives real frontends and resizes them, which is exactly
-the collision above. The third, `history`, passes when run alone and failed
-once in a full smoke on an observation deadline; that one is timing under
-load, not this.
+the collision above.
+
+The third is not this, and not a finding either: the `history` scenario, and
+the `owned-terminal-tiny-child-geometry` trace that replays it, fail on Linux
+about a third of the time with "short-history pane painted: observation
+deadline exceeded". It is the harness's five-second observation bound, not a
+fux defect: `origin/main` fails it too, 1 run in 6 against this branch's 2 in
+4, both small samples of the same flake. It does not reproduce on macOS. A
+later run should either widen that bound on Linux or find what makes a short
+history slow to paint there; this hunt only establishes that it predates the
+branch.
 
 ## 011 — fux does not build on Linux without ALSA headers (class: platform)
 
