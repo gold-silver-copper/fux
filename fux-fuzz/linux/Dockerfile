@@ -8,6 +8,7 @@
 FROM rust:1.95-bookworm
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 lsof procps psmisc perl bash util-linux \
+      e2fsprogs \
       pkg-config libasound2-dev \
  && rm -rf /var/lib/apt/lists/*
 # The repository's rust-toolchain.toml pins the toolchain; install it once in
