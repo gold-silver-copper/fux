@@ -1382,9 +1382,11 @@ macOS number.
 
 # Hunt 8: every known defect fixed, then everything hunted until a pass finds nothing
 
-> **Status:** in progress. Findings are numbered from 014, each recorded, given
-> a repro script at exit 0, then fixed with a test that failed first; the
-> script then exits 1 and `fux-fuzz/repro/expected.tsv` says so.
+> **Status: complete. Three findings, all fixed.** 014 (found by CI's first
+> run), 015 and 016 (pass 1), each with a repro that reproduced on the
+> unfixed code and a test that failed first. Pass 2 re-attacked every area and
+> the new code and found nothing, so the run stopped after two passes. Each
+> finding's repro exits 1 and `fux-fuzz/repro/expected.tsv` records it.
 
 Hunt 8 runs with CI for the first time (`.github/workflows/ci.yml`:
 `ubuntu-24.04` and `macos-15`), and the fixes to hunt 7's findings 009–013 land
@@ -1480,3 +1482,41 @@ the round-trip save and load test is unaffected.
 **Reproduction.** `fux-fuzz/repro/016-scene-file-read-is-unbounded.sh` loads
 `/dev/zero` and watches the server's RSS pass 1 GB. Exit 0 reproduced, 1 not,
 2 setup; `NEGATIVE_CONTROL=1` loads a small missing file, refused at once.
+
+## Passes, and what each attacked
+
+**Pass 1** attacked every area; three findings.
+
+- **The phase 2 fixes** (009, 010, 012, 013): other routes to a resource-entity
+  despawn, other signals, backlog fills, jobs leaving the session. Solid.
+- **Entity-taking BRP methods** (eight of them) x sixteen id classes, single
+  and batched, 256 requests: no death.
+- **Configuration**: empty, non-JSON, million-byte prefix, empty keys, huge
+  history, deeply nested, a thousand bindings, unknown fields. Each fell back
+  to a usable configuration; the server answered every time.
+- **The transport**: partial headers, no content-length, a 200 KB header, a
+  bad method, HTTP/0.9, a slow drip, a negative content-length, ten thousand
+  newlines, twenty unread connections. Robust.
+- **Scenes**: malformed, empty, deeply nested, binary, and huge files.
+  **Finding 016**: an unbounded read. Fixed.
+- **Resource growth**: 120 panes with real PTYs (+20 MB), 5000 spawned
+  entities (no leak), three unread watches against a flooding pane (bounded).
+- **`fux-vt` in both modes** (fux's and koh's `events`/`extended_replies`):
+  99,511 `cargo-fuzz` runs, no crash.
+- **Resource methods and every `Input` kind at its bounds**: a partial
+  `Settings`, a huge `history_lines`, `resize` to 65535 and to 0, `mouse` at
+  65535, a 700 KB paste, an unpaired surrogate key. No death; a 0x0 viewer
+  paints empty and recovers when resized back.
+- **`Settings` removal** (carried from hunt 7's clean-areas note): **finding
+  015**. Fixed.
+
+**Pass 2** re-attacked every area and the code the fixes added -- a symlink to
+`/dev/zero` past the scene bound, mutating `Settings` to break painting, a
+`Focused` relationship pointing at a resource entity, and the entity, config,
+transport and scene sweeps again. Nothing new. The run stopped.
+
+## Ranked, for reference
+
+All three hunt 8 findings are fixed in this branch. The one finding still open
+across all hunts is 011 (the ALSA build chain), documented above as
+`bevy_remote`'s to cut, not fux's.
