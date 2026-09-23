@@ -23,6 +23,13 @@
 # complement of the index, so bits 0xFFFFFFFF is entity index 0, 0xFFFFFFFE is
 # index 1, and so on: the first entities Bevy allocates, which are resources.
 #
+# Fixed: `server::disconnected` despawns the entity only if it is a viewer,
+# checked where the despawn happens rather than only where the watch was
+# registered, because the world can change in between. The batch path also
+# refuses a streaming request before dispatching it, so a refused request no
+# longer detaches the viewer it named. Closing a watch on a real viewer still
+# detaches it, which is the documented behaviour.
+#
 # This script drives the fatal variant: one batch POST naming entity index 0.
 #
 # Usage: 003-watch-close-despawns-any-entity.sh /path/to/fux

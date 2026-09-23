@@ -15,6 +15,13 @@
 # this is growth and latency, not a stall: the server does not refuse, does not
 # stream, and does not cap.
 #
+# Fixed: the body is read through `http_body_util::Limited` with a 4 MiB cap
+# and refused with a typed error naming it, which is far above the largest
+# legitimate request (a 64 KiB paste is about 400 KiB once escaped; a
+# one-megabyte name is about 1 MiB). A batch is capped at 1024 requests and
+# its reply at 8 MiB, because a small body holding many requests amplifies on
+# the way out.
+#
 # This script sends a 256 MB body and reports the server's peak RSS. It stops
 # early if RSS passes 4 GB, so it cannot pressure the machine.
 #

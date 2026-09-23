@@ -14,10 +14,16 @@
 # despawned one is the ordinary case: a caller that reads an id, has it closed
 # underneath, and writes back kills the session.
 #
-# The defect is upstream, but fux serves the stock registry unfiltered, so it
-# is reachable through fux with one accepted request. Every sibling method
+# The defect was upstream, but fux serves the stock registry unfiltered, so it
+# was reachable through fux with one accepted request. Every sibling method
 # (`world.get_components`, `world.insert_components`, `world.remove_components`)
-# refuses the same id with a typed error, so this is the odd one out.
+# refuses the same id with a typed error, so this was the odd one out.
+#
+# Fixed in fux, against unmodified bevy: fux registers its own
+# `world.mutate_components`, which answers `entity_not_found` for an entity that
+# is not alive, as the method's siblings already do, and otherwise hands the
+# request to the stock handler. The panic is direct, so the fallback error
+# handler cannot contain it; the guard is what closes it.
 #
 # Usage: 005-mutate-components-missing-entity-aborts.sh /path/to/fux
 # Exit 0: reproduced (the server aborted).

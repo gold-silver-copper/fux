@@ -313,6 +313,13 @@ in `tests/remote_lifecycle.rs`, which fails against the previous source.
 
 # Where fux breaks under hostile input (hunt 6)
 
+> **Status: all six findings are fixed**, in fux and against unmodified bevy.
+> 003 in `b698ef0`, 004 and 005 in `9ad3c84`, 006 in `84202fb`, 007 in `df88f51`,
+> 008 in `47bcc88`; the harness and documentation in `920efcf` and `f608724`, on
+> top of the move to bevy 0.20.0-rc.1 in `61bc319`. See "Fixed" under each
+> finding. The analysis below is the state before those commits and is kept as
+> it was found.
+
 This run attacked what PR #45 made fux's own: the HTTP serving loop over a Unix
 socket, the socket's location and lifecycle, and the client that dials it. It
 also did the identifier audit the 2026-09-20 review asked for (finding 5) and
@@ -409,10 +416,24 @@ because the world can change in between. The same question applies to every
 other place a client-supplied id is turned into an action on an entity rather
 than a lookup.
 
+**Fixed in `b698ef0`.** `server::disconnected` despawns the entity only if it
+is a viewer, checked where the despawn happens rather than only where the watch
+was registered, because the world can change in between: an id can be despawned
+and its index reused by an entity of another kind before the connection closes.
+
+The registration had a second problem, fixed at its source: a batch containing
+a watch was dispatched and then refused, which opened a response channel that
+was dropped at once, which reads as a watcher going away. So one refused POST
+detached a real viewer -- a refused request changing the world, the class 8
+half. The batch path now refuses a streaming request before dispatching it, and
+the reply is byte-for-byte what it was. Closing a watch on a real viewer still
+detaches it, which is documented, and is pinned by its own test.
+
 **Reproduction.** `fux-fuzz/repro/003-watch-close-despawns-any-entity.sh <fux>`
-(exit 0 reproduced, 1 verified not, 2 setup). `NEGATIVE_CONTROL=1` sends the
-same request without `+watch` and exits 1. Also the `identity` scenario and the
-trace `fux-fuzz/traces/open/003-identifier-surfaces.json`:
+(exit 0 reproduced, 1 verified not, 2 setup). Exit 1 against this build;
+`NEGATIVE_CONTROL=1` also exits 1. The `identity` scenario now passes and runs
+in the default smoke, and its trace moved to
+`fux-fuzz/traces/identifier-surfaces.json`:
 
 ```
 fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --scenario identity
@@ -445,6 +466,23 @@ and `world.list_components` on the same ids answer normally.
 entity the caller names, against the ids of entities that are ECS bookkeeping
 rather than fux's model. Either those entities are out of reach of the exposed
 API, or the panic they cause is contained so one request cannot end the process.
+
+**Fixed in `9ad3c84`, in two layers.** fux registers its own
+`world.despawn_entity` after the stock methods, so it replaces the stock one by
+name; it refuses an entity carrying `IsResource` with a typed error, leaves the
+world untouched, and otherwise hands the request to the stock handler.
+Separately, `ServerPlugin` sets Bevy's `FallbackErrorHandler` to log rather
+than panic, so a command that fails reports it instead of ending the process.
+Each layer closes this finding on its own: with the guard removed the handler
+still contains it, and with the handler removed the guard still refuses it.
+
+Rejected: filtering the method out of the registry, because the README's
+promise is that the stock registry is served, and the problem was never that
+the method exists but that one request could end the process. Also rejected:
+carrying the fix in a fork of bevy, which would pin fux to a git branch of a
+pre-release engine for a check fux can make itself. The fix is right upstream
+too, and a branch with it exists in gold-silver-copper/bevy, but fux does not
+depend on it.
 
 **Reproduction.** `fux-fuzz/repro/004-despawning-a-resource-entity-aborts.sh <fux>`.
 `NEGATIVE_CONTROL=1` despawns an ordinary entity and exits 1.
@@ -481,6 +519,13 @@ typed error. Only a missing entity reaches the panic.
 caller-named entity with a panicking accessor. Fixing it upstream and taking the
 patch version is the cleanest route; until then the panic must not be able to
 end the process.
+
+**Fixed in `9ad3c84`.** fux registers its own `world.mutate_components`,
+which answers `entity_not_found` for an entity that is not alive -- as the
+method's siblings already do -- and otherwise hands the request to the stock
+handler. This one needs the guard: the panic is a direct one, so the fallback
+error handler never sees it, and with the guard removed the repro script
+reproduces again even with the handler in place.
 
 **Reproduction.** `fux-fuzz/repro/005-mutate-components-missing-entity-aborts.sh <fux>`.
 `NEGATIVE_CONTROL=1` mutates a live entity and exits 1.
@@ -534,6 +579,22 @@ error: drain the backlog so clients get a prompt refusal instead of silence,
 rate-limit the warning, and surface the condition rather than logging it twenty
 times a second.
 
+**Fixed in `84202fb`.** `EMFILE` and `ENFILE` are no longer classed with
+`ECONNABORTED`, `EINTR` and `EAGAIN`. A momentary error is logged at debug and
+retried. A shortage is reported once at error level and then at most every five
+seconds, and the loop spends a descriptor reserved at startup to accept and
+immediately close one waiting connection, so the backlog drains, a client fails
+promptly instead of waiting on a listener that cannot answer, and the loop makes
+progress rather than spinning. Recovery is reported when accept succeeds again.
+
+What it does not do: a server with no descriptors cannot serve a new client, and
+nothing here changes that. The README says so. Measured under `ulimit -n 64`
+with one process holding 221 connections: before, 168 log lines and a client
+waiting 6.3 s; after, 3 log lines, the slowest client failure 3.0 s, the
+condition reported, and recovery in 0.0 s once the connections were released.
+The repro script now measures that behaviour rather than mere reachability, and
+still reports the old loop as reproduced.
+
 **Reproduction.** `fux-fuzz/repro/006-descriptor-pressure-wedges-the-accept-loop.sh <fux>`.
 `NEGATIVE_CONTROL=1` closes each connection immediately and exits 1. The
 `ulimit` change applies only to the subshell that execs the server.
@@ -585,6 +646,25 @@ one batch, or a response that is written as it is produced. The limits must stay
 above the largest legitimate request, which is a `load_layout` scene or a 64 KiB
 paste, not a megabyte.
 
+**Fixed in `df88f51`, with three bounds, because they catch three different
+things.** `MAX_BODY` (4 MiB) applied with `http_body_util::Limited` and refused
+with a typed error naming it; `MAX_BATCH` (1024 requests); and
+`MAX_BATCH_RESPONSE` (8 MiB), after which the remaining requests in that batch
+are answered with an error instead of being run, since a thousand
+`registry.schema` calls would otherwise answer with 120 MB. Responses are
+serialized as they are produced, so the reply can be counted without serializing
+anything twice.
+
+The numbers are measured against the largest legitimate request rather than
+picked: a paste is bounded by `paste::LIMIT` at 64 KiB, about 400 KiB once every
+byte needs a six-character JSON escape; a one-megabyte name through `rename` or
+a raw `Name` insert is about 1 MiB; a `load_layout` names a path rather than
+carrying the scene, and the largest scene here is 62 KiB on disk; fux's own
+clients send no batches, and the harness's largest is 1000 requests.
+
+Measured after: a 256 MB body grows the server by 0 MB and is refused by its
+size, where before it grew it by 580 MB.
+
 **Reproduction.** `fux-fuzz/repro/007-request-body-is-unbounded.sh <fux>`, which
 stops at 4 GB of RSS so it cannot pressure the machine. `NEGATIVE_CONTROL=1`
 sends a 1 MB body and exits 1.
@@ -620,6 +700,19 @@ server that is wedged, buggy, or replaced.
 **Class of inputs the fix must cover.** Any stream the frontend reads: a line, a
 frame and a paint each need a bound, and passing it must end the attachment with
 a message rather than growing until the machine notices.
+
+**Fixed in `47bcc88`.** Each event is read through `MAX_EVENT` (64 MiB), and
+passing it ends the attachment with a message naming the bound and the terminal
+restored. Because an event is one line of JSON, bounding the line bounds the
+frame and the paint inside it.
+
+The bound is measured: an idle 4096x4096 viewer paints about 9 KB, because a
+frame carries content rather than every cell, and the worst legitimate case -- a
+4096x4096 viewer showing a pane that changes colour every cell -- serializes to
+11.6 MB. 64 MiB is about five times that.
+
+Measured after: the same peer that reached 5.3 GB now takes the frontend to 39
+MB before it stops on its own.
 
 **Reproduction.** `fux-fuzz/repro/008-frontend-sse-line-is-unbounded.sh <fux>`,
 bounded to 1500 MB and 25 s. `NEGATIVE_CONTROL=1` sends the same volume as
@@ -816,6 +909,17 @@ the specific places where the result should be expected to differ:
   terminal.
 
 ## Ranked fixes for the hardening PR
+
+> Superseded: all four were made, as described under "Fixed" in each finding.
+> Two landed differently from the sketch below. The stock-method aborts (2) are
+> guarded in fux rather than fixed in bevy: fux replaces the two methods by name
+> with checks that then call the stock handlers, and additionally logs a failed
+> command rather than panicking on it, which contains that class whether or not
+> a given method is guarded. The
+> descriptor-pressure work (3) added the reserved descriptor the sketch treated
+> as optional, and the repro script's criteria were rewritten around what the fix
+> can actually guarantee, because a server with no descriptors cannot serve a
+> client however it is written.
 
 1. **Class 1 — a client-named id must not select an entity to destroy.**
    Make the watch detach apply only to an entity that is a viewer, checked where
