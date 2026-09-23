@@ -1279,3 +1279,42 @@ neighbour, harmless but surprising under `su`, `cron` and containers), and the
 socket path limit is 107 bytes rather than 103. The README names only the
 macOS number.
 
+## Ranked fixes for the next hardening PR
+
+1. **009, and the class under it.** A caller-named entity is despawned by
+   fux's own code in at least two places, and neither asks what it is
+   despawning. The narrow fix is `IsResource` in `IsViewer`; the fix worth
+   making is that every internal despawn of an entity a request named goes
+   through one checked path, the way the BRP method already does. The
+   normalization that strips a `Viewer` off a layout node is the natural place
+   to also strip it off a resource entity.
+2. **010.** Retry the read on `EINTR` in `src/unix_http.rs`. It is a read to
+   repeat, not a failed request. This is three lines, it unbreaks 25 to 27
+   integration tests on Linux `x86_64`, and it stops a window resize from
+   ending a session. Do this before anything else if CI is going to run on
+   Linux.
+3. **012.** Drain the waiting backlog per tick rather than one connection, so
+   a first client under descriptor pressure waits one tick instead of one tick
+   per queued connection.
+4. **011.** Say in the README that a Linux build needs `pkg-config` and
+   `libasound2-dev`, and raise the `bevy_dev_tools` to `bevy_audio` dependency
+   upstream. fux cannot cut the chain from here.
+5. **013.** Decide what fux promises about a pane's background jobs, then
+   either make `terminate` reach the whole session (a wider kill, with its own
+   risks) or say that a job a shell does not hang up survives its pane.
+6. **Documentation**, together: the two Linux differences above, the resource
+   entities an agent can see (campaign 06 measured this), and the `dash`
+   behaviour from 013.
+
+## Harness mistakes (not findings)
+
+- The first `world.query` probe classified an entity as a resource by its id
+  being near the top of the 32-bit space. Every fux entity is near the top:
+  `Entity::to_bits` complements the index for all of them. The metric now
+  takes its evidence from what the run itself saw carrying `IsResource`.
+- The first version of repro 009 sent requests without `Connection: close` and
+  read until EOF, so every request timed out against a keep-alive server and
+  the script reported a setup failure. The other repro scripts had it right.
+- Probe scripts were first written under `target/`, which something on the
+  machine cleans; they were rewritten outside it. The tools meant to last are
+  in `fux-fuzz/tools/` and `fux-fuzz/linux/`.
