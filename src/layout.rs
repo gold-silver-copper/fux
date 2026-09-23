@@ -249,12 +249,26 @@ pub(crate) fn scene_io(
     let mapping = load.unwrap_or_default();
     let wake = world.resource::<Wake>().clone();
     let task = bevy_tasks::IoTaskPool::get().spawn(async move {
-        let result = serialized.and_then(|text| match text {
-            Some(text) => std::fs::write(&path, text)
-                .map(|_| None)
-                .map_err(|e| e.to_string()),
-            None => read_scene(&path).map(Some),
+        // The file work runs on its own thread, not an IoTaskPool thread. That
+        // pool is one thread on a two-core machine, at most four, and also runs
+        // the BRP serving loop and every pane's PTY I/O; a blocking read of a
+        // slow file -- a named pipe, a huge scene -- would otherwise stall the
+        // whole server (hunt 8 finding 018). The task awaits the result, so it
+        // holds no pool thread while the read blocks.
+        let (done, ready) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let result = serialized.and_then(|text| match text {
+                Some(text) => std::fs::write(&path, text)
+                    .map(|_| None)
+                    .map_err(|e| e.to_string()),
+                None => read_scene(&path).map(Some),
+            });
+            let _ = done.send_blocking((path, result));
         });
+        let (path, result) = match ready.recv().await {
+            Ok(pair) => pair,
+            Err(_) => (String::new(), Err("scene I/O thread stopped".to_owned())),
+        };
         let mut queue = CommandQueue::default();
         queue.push(move |world: &mut World| {
             let result = match result {
