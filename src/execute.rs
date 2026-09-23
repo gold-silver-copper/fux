@@ -328,7 +328,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             world.entity_mut(id).insert(Prefix::default());
         }
         Detach => {
-            world.despawn(id);
+            crate::navigation::detach_if_viewer(world, id);
         }
         Menu { subject } => interaction::menu(world, id, target, subject)?,
         Choose { chooser } => interaction::choose(world, id, target, chooser)?,
