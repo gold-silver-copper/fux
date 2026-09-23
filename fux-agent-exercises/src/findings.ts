@@ -172,6 +172,54 @@ export function hierarchyMetrics(artifact: RunArtifact): HierarchyMetrics {
   return { listComponentsCalls, wrongPathGuesses, firstCorrectHierarchyUse };
 }
 
+/** Bevy 0.20 stores resources as entities, so an unfiltered query or a
+ * component listing can now answer with entities that are resources rather
+ * than viewers, panes or tabs. */
+export interface ResourceEntityMetrics {
+  /** Responses that carried `IsResource`, by call index. */
+  responsesShowingResourceEntities: number[];
+  /** `world.query` calls with no component filter, which is how an agent
+   * would meet resource entities in bulk. */
+  unfilteredQueries: number[];
+  /** Calls naming an id that a response in the same run showed carrying
+   * `IsResource`. Ordinary fux entities sit at the top of the id space too --
+   * `Entity::to_bits` complements the index for every entity -- so an id
+   * cannot be classified by its value; this counts only ids the run itself
+   * has evidence for. */
+  requestsNamingResourceEntity: number[];
+}
+
+export function resourceEntityMetrics(artifact: RunArtifact): ResourceEntityMetrics {
+  const responsesShowingResourceEntities: number[] = [];
+  const unfilteredQueries: number[] = [];
+  const requestsNamingResourceEntity: number[] = [];
+  // First pass: which ids has this run seen carrying IsResource?
+  const known = new Set<string>();
+  for (const call of artifact.journal.toolCalls) {
+    if (!(call.response ?? "").includes("bevy_ecs::resource::IsResource")) continue;
+    responsesShowingResourceEntities.push(call.index);
+    const named = (params(call) as { entity?: unknown } | null)?.entity;
+    if (typeof named === "number") known.add(String(named));
+    // A query answers with a row per entity, each carrying its own id.
+    for (const match of (call.response ?? "").matchAll(/"entity"\s*:\s*(\d+)/g)) known.add(match[1]);
+  }
+  for (const call of artifact.journal.toolCalls) {
+    const body = call.paramsJson ?? "";
+    if (call.method === "world.query") {
+      const data = (params(call) as { data?: { components?: unknown[] } } | null)?.data;
+      const components = Array.isArray(data?.components) ? data?.components : [];
+      if (components.length === 0) unfilteredQueries.push(call.index);
+    }
+    for (const match of body.matchAll(/\d+/g)) {
+      if (known.has(match[0])) {
+        requestsNamingResourceEntity.push(call.index);
+        break;
+      }
+    }
+  }
+  return { responsesShowingResourceEntities, unfilteredQueries, requestsNamingResourceEntity };
+}
+
 // F1: partial payloads for reflected fux components.
 
 /** Every field of each reflected fux component, and which of them are required. */
@@ -342,6 +390,28 @@ export function renderFindings(artifacts: RunArtifact[]): string[] {
       `Answers whose claimed code appears in no response the run received (F2, fabricated): ${fabricated} of ${answered} answered.`,
     );
   }
+  lines.push("");
+
+  lines.push("### Bevy 0.20: resource entities in what the agent sees");
+  lines.push("");
+  lines.push(
+    "| Run | Responses showing `IsResource` | Unfiltered `world.query` | Requests naming a resource entity |",
+  );
+  lines.push("| --- | --- | --- | --- |");
+  let sawResources = 0;
+  let namedResources = 0;
+  for (const artifact of artifacts) {
+    const m = resourceEntityMetrics(artifact);
+    if (m.responsesShowingResourceEntities.length > 0) sawResources += 1;
+    if (m.requestsNamingResourceEntity.length > 0) namedResources += 1;
+    lines.push(
+      `| \`${artifact.identity.runId}\` | ${m.responsesShowingResourceEntities.join(", ") || "—"} | ${m.unfilteredQueries.join(", ") || "—"} | ${m.requestsNamingResourceEntity.join(", ") || "—"} |`,
+    );
+  }
+  lines.push("");
+  lines.push(
+    `Runs that saw a resource entity in a response: ${sawResources} of ${artifacts.length}. Runs that sent a request naming one: ${namedResources} of ${artifacts.length}.`,
+  );
   lines.push("");
 
   lines.push("### F5: hierarchy component path discovery");

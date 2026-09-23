@@ -215,3 +215,23 @@ test("a transport failure is surfaced as a tool error, not a silent retry", asyn
   assert.equal(journal.toolCalls.length, 1);
   assert.ok(journal.toolCalls[0].transportError);
 });
+
+test("preflight records the Bevy version a campaign ran against", async () => {
+  // The engine decides what an agent sees: 0.20 stores resources as entities,
+  // so an unfiltered query answers with more than the session's own entities.
+  // A campaign that cannot say which engine it measured cannot be compared
+  // with one that ran on another.
+  const { preflight } = await import("../src/preflight.ts");
+  const repoRoot = join(import.meta.dirname, "..", "..");
+  const result = await preflight(
+    { fuxBinary: join(repoRoot, "target", "release", "fux"), providerId: "google", skipModelVerification: true, offline: true },
+    repoRoot,
+  );
+  assert.match(result.fux.bevy ?? "", /^0\.\d+/);
+
+  const elsewhere = await preflight(
+    { fuxBinary: "/nonexistent", providerId: "google", skipModelVerification: true, offline: true },
+    tmpdir(),
+  );
+  assert.equal(elsewhere.fux.bevy, null);
+});
