@@ -2,7 +2,7 @@
 #[cfg(test)]
 mod tests;
 use crate::{
-    actions::{self, Action, Target},
+    actions::{self, Action, Group, Target},
     assets::BindingAction,
     chrome,
     control::{Chooser, Command, Order, Scope, Subject},
@@ -231,12 +231,12 @@ pub(crate) fn menu(
     let (action, group, entity) = match subject {
         Subject::Pane(pane) => {
             target.leaf = Some(pane);
-            (PaneMenu, "Panes", pane)
+            (PaneMenu, Group::Panes, pane)
         }
         Subject::Tab(tab) => {
             target.tab = Some(tab);
             target.leaf = None;
-            (TabMenu, "Tabs", tab)
+            (TabMenu, Group::Tabs, tab)
         }
         Subject::Workspace(workspace) => {
             target = Target {
@@ -244,7 +244,7 @@ pub(crate) fn menu(
                 tab: None,
                 leaf: None,
             };
-            (WorkspaceMenu, "Workspaces", workspace)
+            (WorkspaceMenu, Group::Workspaces, workspace)
         }
     };
     if let Some(reason) = actions::unavailable(world, target, action) {
@@ -254,7 +254,8 @@ pub(crate) fn menu(
         .iter()
         .copied()
         .filter(|a| {
-            (a.group() == group || group == "Workspaces" && matches!(a, SaveLayout | LoadLayout))
+            (a.group() == group
+                || group == Group::Workspaces && matches!(a, SaveLayout | LoadLayout))
                 && !matches!(a, PaneMenu | TabMenu | WorkspaceMenu)
                 && !matches!(
                     a,
@@ -272,7 +273,7 @@ pub(crate) fn menu(
         id,
         target,
         Mode::List {
-            title: format!("{group}: {}", label(world, entity)),
+            title: format!("{}: {}", group.label(), label(world, entity)),
             entries,
             selected: 0,
         },

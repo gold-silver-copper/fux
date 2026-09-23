@@ -2,6 +2,7 @@
 #[cfg(test)]
 mod tests;
 use crate::{
+    actions::Group,
     assets::{Binding, BindingAction, Settings},
     model::Viewer,
 };
@@ -242,11 +243,12 @@ fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&BindingA
         .unwrap_or(0)
         .min((cols.saturating_sub(4) / 3).max(1));
     let mut lines = Vec::new();
+    // A custom binding names no known action and is listed under "Other".
     let group_of = |binding: &Binding| match &binding.action {
-        BindingAction::Known(action) => action.group(),
-        BindingAction::Custom(_) => "Other",
+        BindingAction::Known(action) => Some(action.group()),
+        BindingAction::Custom(_) => None,
     };
-    for group in ["Panes", "Focus", "Tabs", "Workspaces", "Session", "Other"] {
+    for group in Group::ALL.iter().copied().map(Some).chain([None]) {
         let bindings: Vec<_> = settings
             .bindings
             .iter()
@@ -255,7 +257,7 @@ fn help_entries(settings: &Settings, cols: u16) -> Vec<(String, Option<&BindingA
         if bindings.is_empty() {
             continue;
         }
-        lines.push((group.into(), None));
+        lines.push((group.map_or("Other", Group::label).into(), None));
         for binding in bindings {
             let key = fit(binding.key.as_str(), key_width, false);
             let padding = " ".repeat(usize::from(key_width.saturating_sub(width(&key))));

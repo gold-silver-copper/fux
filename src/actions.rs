@@ -50,8 +50,23 @@ impl Target {
 
 macro_rules! actions {
     (
-        $($group:literal: [$($variant:ident $id:literal => $label:literal),* $(,)?]),* $(,)?
+        $($group:ident: [$($variant:ident $id:literal => $label:literal),* $(,)?]),* $(,)?
     ) => {
+        /// The heading an action is listed under in help and menus. Behaviour
+        /// that depends on a group matches on this, never on its label.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Group {
+            $($group,)*
+        }
+        impl Group {
+            /// Groups in help order.
+            pub const ALL: &[Group] = &[$(Group::$group,)*];
+            pub const fn label(self) -> &'static str {
+                match self {
+                    $(Self::$group => stringify!($group),)*
+                }
+            }
+        }
         /// The wire form is the snake_case identifier, unchanged from the string API.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
         #[serde(rename_all = "snake_case")]
@@ -67,9 +82,9 @@ macro_rules! actions {
                     $($(Self::$variant => $id,)*)*
                 }
             }
-            pub fn group(self) -> &'static str {
+            pub const fn group(self) -> Group {
                 match self {
-                    $($(Self::$variant => $group,)*)*
+                    $($(Self::$variant => Group::$group,)*)*
                 }
             }
             pub fn label(self) -> &'static str {
@@ -81,7 +96,7 @@ macro_rules! actions {
     }
 }
 actions! {
-    "Panes": [
+    Panes: [
         SplitHorizontal "split_horizontal" => "split side by side", SplitVertical "split_vertical" => "split stacked",
         PaneMenu "pane_menu" => "pane actions", RenamePane "rename_pane" => "rename pane", Close "close" => "close pane",
         Terminate "terminate" => "terminate process", Zoom "zoom" => "zoom or restore",
@@ -96,16 +111,16 @@ actions! {
         CopyMode "copy_mode" => "history and selection", ScrollUp "scroll_up" => "scroll older output",
         ScrollDown "scroll_down" => "scroll newer output", Copy "copy" => "copy visible text"
     ],
-    "Focus": [FocusNext "focus_next" => "next pane", FocusPrevious "focus_previous" => "previous pane", FocusLast "focus_last" => "last pane",
+    Focus: [FocusNext "focus_next" => "next pane", FocusPrevious "focus_previous" => "previous pane", FocusLast "focus_last" => "last pane",
         FocusLeft "focus_left" => "focus left", FocusRight "focus_right" => "focus right", FocusUp "focus_up" => "focus up", FocusDown "focus_down" => "focus down"],
-    "Tabs": [TabNew "tab_new" => "new tab", TabNext "tab_next" => "next tab", TabPrevious "tab_previous" => "previous tab",
+    Tabs: [TabNew "tab_new" => "new tab", TabNext "tab_next" => "next tab", TabPrevious "tab_previous" => "previous tab",
         TabChoose "tab_choose" => "choose tab", RenameTab "rename_tab" => "rename tab", TabClose "tab_close" => "close tab",
         TabMenu "tab_menu" => "tab actions", TabReorderPrevious "tab_reorder_previous" => "reorder tab previous", TabReorderNext "tab_reorder_next" => "reorder tab next"],
-    "Workspaces": [WorkspaceNew "workspace_new" => "new workspace", WorkspaceNext "workspace_next" => "next workspace",
+    Workspaces: [WorkspaceNew "workspace_new" => "new workspace", WorkspaceNext "workspace_next" => "next workspace",
         WorkspacePrevious "workspace_previous" => "previous workspace", WorkspaceChoose "workspace_choose" => "choose workspace",
         RenameWorkspace "rename_workspace" => "rename workspace", WorkspaceClose "workspace_close" => "close workspace", WorkspaceMenu "workspace_menu" => "workspace actions",
         WorkspaceReorderPrevious "workspace_reorder_previous" => "reorder workspace previous", WorkspaceReorderNext "workspace_reorder_next" => "reorder workspace next"],
-    "Session": [SaveLayout "save_layout" => "save layout", LoadLayout "load_layout" => "load layout", Help "help" => "command help", Detach "detach" => "detach"]
+    Session: [SaveLayout "save_layout" => "save layout", LoadLayout "load_layout" => "load layout", Help "help" => "command help", Detach "detach" => "detach"]
 }
 
 impl std::fmt::Display for Action {
@@ -117,7 +132,7 @@ impl std::fmt::Display for Action {
 impl Action {
     /// Pane and focus actions act on a pane, except splits, which can seed an empty tab.
     pub fn needs_pane(self) -> bool {
-        matches!(self.group(), "Panes" | "Focus")
+        matches!(self.group(), Group::Panes | Group::Focus)
             && !matches!(self, Self::SplitHorizontal | Self::SplitVertical)
     }
     /// The command a bound action means for this viewer state, or `None` for
@@ -274,7 +289,7 @@ pub fn unavailable(world: &World, target: Target, action: Action) -> Option<&'st
     if action.needs_pane() && target.leaf.is_none() {
         return Some("no pane");
     }
-    if action.group() == "Tabs" && target.tab.is_none() {
+    if action.group() == Group::Tabs && target.tab.is_none() {
         return Some("no tab");
     }
     if matches!(
@@ -368,7 +383,7 @@ mod tests {
             };
             let expected_empty = if action == Copy {
                 expected
-            } else if matches!(action.group(), "Panes" | "Focus")
+            } else if matches!(action.group(), Group::Panes | Group::Focus)
                 && !matches!(action, SplitHorizontal | SplitVertical)
             {
                 Some("no pane")
@@ -524,9 +539,11 @@ mod tests {
         assert_eq!(ALL, flattened.as_slice());
         for (group, actions) in expected {
             for action in actions {
-                assert_eq!(action.group(), group, "{action}");
+                assert_eq!(action.group().label(), group, "{action}");
             }
         }
+        let labels: Vec<_> = Group::ALL.iter().map(|g| g.label()).collect();
+        assert_eq!(labels, expected.map(|(label, _)| label));
     }
 
     #[test]
