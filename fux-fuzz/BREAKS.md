@@ -1082,3 +1082,120 @@ verified not reproduced, 2 setup failure or not Linux;
 `NEGATIVE_CONTROL=1` types for the same twenty seconds without resizing and
 must survive, which it does: 6347 rounds.
 
+## 011 — fux does not build on Linux without ALSA headers (class: platform)
+
+**The break.** `cargo build` fails on a clean Debian 12 with only a Rust
+toolchain:
+
+```
+error: failed to run custom build command for `alsa-sys v0.4.0`
+  pkg-config has not been configured to support cross-compilation...
+  Could not run `PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 pkg-config --libs --cflags alsa`
+```
+
+The chain is entirely transitive:
+
+```
+fux -> bevy_remote 0.20.0-rc.1 -> bevy_dev_tools -> bevy_audio -> rodio -> cpal -> alsa-sys
+```
+
+`bevy_remote` depends on `bevy_dev_tools` for `schedule_data`, which is what
+answers `schedule.list` and `schedule.graph`, and `bevy_dev_tools` pulls
+`bevy_audio` unconditionally. fux already sets `default-features = false` on
+`bevy_remote` and takes only `bevy_asset`; there is no feature to turn this
+off from here.
+
+**Why it matters now.** fux 0.12.0 is published, so `cargo install fux` on
+Linux fails at this build script unless `libasound2-dev` and `pkg-config` are
+already installed. The released binary links `libasound.so.2`, a sound library
+a terminal multiplexer has no use for. On Bevy 0.19.1 the chain did not exist:
+`e794df0`'s lockfile has no `alsa-sys`, and `0286346`'s does.
+
+**Not fux's to fix in fux.** The options are upstream (`bevy_dev_tools`
+gaining a feature that does not pull `bevy_audio`, or `bevy_remote` depending
+on it more narrowly) or dropping `bevy_remote`'s schedule methods. What fux
+can do now is say so in the README, where the dependency boundary is already
+described, and list the two packages a Linux build needs.
+
+**Reproduction.** `fux-fuzz/linux/run.sh arm64 cargo build --locked` with the
+`libasound2-dev` line removed from `fux-fuzz/linux/Dockerfile`. The Dockerfile
+carries that line with a comment pointing here, so the workaround is visible
+rather than silent.
+
+## 012 — Descriptor pressure makes a Linux client wait 6.5 s, not 3.0 (class 2)
+
+**The break.** Hunt 6's finding 006 repro, run on Linux, reproduces:
+
+```
+attempts=21 answered=0 slowest=6.54s; log lines=3, condition reports=3
+REPRODUCED: a client waited 6.5s on a listener that could not answer
+```
+
+The 006 fix is intact and doing its job: 3 log lines rather than 168, the
+condition reported once and then at intervals, recovery reported, and every
+client after the first failing in 0.01 s. Only the first client is slow, and
+on Linux it is slow enough to cross the repro's 5 s threshold.
+
+**Why Linux is worse.** The accept loop spends its reserved descriptor to
+accept and close exactly one waiting connection per 50 ms tick:
+
+```rust
+if let Some(held) = spare.take() {
+    drop(held);
+    if let Ok((shed, _)) = listener.get_ref().accept() { drop(shed); }
+    spare = reserve();
+}
+Timer::after(Duration::from_millis(50)).await;
+```
+
+Linux holds the backlog (128 by default) and hands connections out in order,
+so a new client is behind up to 128 others, each shed one per tick: about
+6.4 s, which is what was measured. macOS refuses more of them at `connect`
+time, so the queue the new client joins is shorter and it waits about 3.0 s.
+
+**What a fix looks like.** Drain the backlog on each tick rather than one
+connection, bounded by the number waiting, so the wait is one tick rather than
+one tick per queued connection. The reserved descriptor already makes this
+possible; it is only spent once per tick.
+
+**Reproduction.**
+`fux-fuzz/repro/006-descriptor-pressure-wedges-the-accept-loop.sh`, unchanged,
+on Linux: exit 0. On macOS it still exits 1. The default soft `ulimit -n` in
+the container is 20480; the script sets 64 for the server's own subshell, so
+the limit under test is fux's, not the machine's.
+
+## 013 — `terminate` leaves background jobs alive under `dash` (class 3)
+
+**The break.** With `/bin/sh` as the pane program, a background job survives
+the pane that owns it:
+
+```
+shell 27 bg 29 shell pgid 27 bg pgid 29
+after terminate: shell alive False background alive True
+```
+
+`sleep 60 &` started from the pane's shell is still running after the pane is
+terminated, in its own process group, with no terminal.
+
+**Why.** `Job::finish` sends `SIGHUP` to the pane's process group, waits up to
+100 ms for the shell to hang up its own jobs, then `SIGKILL`s that group. A
+background job started by an interactive shell is in a *different* process
+group, so neither signal reaches it; it dies only if the shell forwards the
+hangup. `bash` and `zsh` do. `dash` does not, and `/bin/sh` is `dash` on
+Debian and Ubuntu, where it is also the default for `sh`-based configurations.
+
+**How it shows up.** fux's own integration test
+`interactive_background_jobs_hang_up_when_pane_terminates` fails on Linux, 4
+runs out of 4, and on `origin/main` equally: the test configures `/bin/sh`,
+which is `dash` there and `bash` on macOS. It is the test noticing a real
+difference, not a flake.
+
+**What it is not.** Not a leak of fux's own making: the process is reparented
+to init and reachable by the user. The README says a pane's process is
+terminated with the pane, and under `dash` a job it started is not.
+
+**Reproduction.** Configure `shell: ["/bin/dash"]` (present on macOS too),
+run `sleep 60 &` in the pane, then `terminate`, and check the job. On macOS
+`/bin/dash` behaves exactly as Linux's `/bin/sh`, so this is a shell
+difference rather than a platform one, and it reproduces on both.
+
