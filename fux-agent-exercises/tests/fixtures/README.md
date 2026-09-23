@@ -10,6 +10,7 @@ metrics in `src/findings.ts` are tested against traces that actually happened:
 | `campaign-03-discovery-b-r2` | a wrong hierarchy path guess, then a `world.list_components` detour (F5) |
 | `campaign-01-noisy-b-r2` | the partial `Viewer` payload that killed the server (F1) |
 | `campaign-02-noisy-a-r1` | the fabricated diagnostic `E-9412`, which appears in no frame the run received (F2) |
+| `campaign-06-noisy-mid-r2` | the first run on Bevy 0.20: resource entities in a response, and a claimed code that appears in none (F2) |
 
 Each was stripped of the system prompt (`prompts.system`) and every tool
 response other than `fux.frame` was truncated to 600 characters, so frame

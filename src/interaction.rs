@@ -2,7 +2,7 @@
 #[cfg(test)]
 mod tests;
 use crate::{
-    actions::{self, Action, Target},
+    actions::{self, Action, Group, Target},
     assets::BindingAction,
     chrome,
     control::{Chooser, Command, Order, Scope, Subject},
@@ -144,7 +144,7 @@ pub fn bound(world: &mut World, id: Entity, target: Target, action: Action) -> R
             );
             Ok(())
         }
-        _ => crate::server::execute(world, id, action.command(target).ok_or("no pane")?),
+        _ => crate::execute::execute(world, id, action.command(target).ok_or("no pane")?),
     }
 }
 
@@ -231,12 +231,12 @@ pub(crate) fn menu(
     let (action, group, entity) = match subject {
         Subject::Pane(pane) => {
             target.leaf = Some(pane);
-            (PaneMenu, "Panes", pane)
+            (PaneMenu, Group::Panes, pane)
         }
         Subject::Tab(tab) => {
             target.tab = Some(tab);
             target.leaf = None;
-            (TabMenu, "Tabs", tab)
+            (TabMenu, Group::Tabs, tab)
         }
         Subject::Workspace(workspace) => {
             target = Target {
@@ -244,7 +244,7 @@ pub(crate) fn menu(
                 tab: None,
                 leaf: None,
             };
-            (WorkspaceMenu, "Workspaces", workspace)
+            (WorkspaceMenu, Group::Workspaces, workspace)
         }
     };
     if let Some(reason) = actions::unavailable(world, target, action) {
@@ -254,7 +254,8 @@ pub(crate) fn menu(
         .iter()
         .copied()
         .filter(|a| {
-            (a.group() == group || group == "Workspaces" && matches!(a, SaveLayout | LoadLayout))
+            (a.group() == group
+                || group == Group::Workspaces && matches!(a, SaveLayout | LoadLayout))
                 && !matches!(a, PaneMenu | TabMenu | WorkspaceMenu)
                 && !matches!(
                     a,
@@ -272,7 +273,7 @@ pub(crate) fn menu(
         id,
         target,
         Mode::List {
-            title: format!("{group}: {}", label(world, entity)),
+            title: format!("{}: {}", group.label(), label(world, entity)),
             entries,
             selected: 0,
         },
@@ -723,7 +724,7 @@ pub fn input(world: &mut World, id: Entity, input: &Input) -> bool {
     if let Some(run) = execute {
         let result = match run {
             Run::Action(action) => bound(world, id, overlay.target, action),
-            Run::Command(command) => crate::server::execute(world, id, command),
+            Run::Command(command) => crate::execute::execute(world, id, command),
         };
         if let Err(message) = result {
             notify_error(world, id, message);
@@ -763,18 +764,20 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
     let mut lines = Vec::new();
     match &overlay.mode {
         Mode::Confirm { command } => {
-            let (kind, entity) = match command {
-                Command::Close { subject } => (subject.kind(), subject.entity()),
-                _ => ("target", Entity::PLACEHOLDER),
+            let subject = match command {
+                Command::Close { subject } => Some(*subject),
+                _ => None,
             };
+            let entity = subject.map_or(Entity::PLACEHOLDER, Subject::entity);
             let named = if world.get_entity(entity).is_ok() {
                 format!("{} #{}", label(world, entity), entity.to_bits())
             } else {
                 "removed target".into()
             };
+            let kind = subject.map_or("target", Subject::kind);
             lines.push((format!("Close {kind} {named}?"), "\x1b[1m"));
             lines.push((
-                if kind == "pane" {
+                if matches!(subject, Some(Subject::Pane(_))) {
                     "Remove pane; stop if last view"
                 } else {
                     "Remove all contained pane views"

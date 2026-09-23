@@ -3,13 +3,17 @@ mod assets;
 mod chrome;
 mod control;
 mod encode;
+mod execute;
 mod frame;
 mod interaction;
+mod layout;
 mod model;
 mod navigation;
 mod paste;
 mod presentation;
 mod protocol;
+mod remote;
+mod routing;
 mod selection;
 mod server;
 mod terminal;
@@ -113,7 +117,7 @@ fn serve(socket: &Path, config: &str) -> Result<(), String> {
     ))
     .insert_resource(model::Wake(thread::current()));
     assets::install(&mut app, Path::new(config))?;
-    app.add_plugins((server::ServerPlugin, server::remote()));
+    app.add_plugins((server::ServerPlugin, remote::remote()));
     app.set_runner(move |app| run(app, listener));
     eprintln!(
         "fux trusted BRP unix:{} — unrestricted same-user command execution",
@@ -224,7 +228,7 @@ fn run(mut app: App, listener: UnixListener) -> AppExit {
         if let Some(exit) = app.should_exit() {
             break exit;
         }
-        if assets::pending(app.world()) || server::pending_scenes(app.world_mut()) {
+        if assets::pending(app.world()) || layout::pending_scenes(app.world_mut()) {
             thread::park_timeout(Duration::from_millis(25));
         } else {
             thread::park();

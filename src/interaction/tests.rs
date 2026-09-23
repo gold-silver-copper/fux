@@ -185,7 +185,7 @@ fn removed_confirmation_target_cancels_without_retargeting() -> crate::testing::
 fn tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers()
 -> crate::testing::Outcome {
     let (mut world, id, target, _) = setup();
-    crate::server::execute(
+    crate::execute::execute(
         &mut world,
         id,
         Command::Close {
@@ -197,7 +197,7 @@ fn tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers()
     assert!(on_tab(&world, id).is_some());
     let target = Target::of(&world, id).need()?;
     let replacement = world.spawn(Workspace).id();
-    crate::server::execute(
+    crate::execute::execute(
         &mut world,
         id,
         Command::Close {
@@ -206,7 +206,7 @@ fn tab_close_keeps_an_empty_tab_and_workspace_close_repairs_other_viewers()
     )?;
     assert_eq!(viewing(&world, id), Some(replacement));
     let target = Target::of(&world, id).need()?;
-    crate::server::execute(
+    crate::execute::execute(
         &mut world,
         id,
         Command::Close {
@@ -237,7 +237,7 @@ fn rearrangement_keeps_entity_identity_and_native_child_order() -> crate::testin
             .collect::<Vec<_>>(),
         vec![source, other]
     );
-    crate::server::execute(
+    crate::execute::execute(
         &mut world,
         id,
         Command::Move {
@@ -392,5 +392,148 @@ fn pasted_text_cannot_cross_a_cancelled_or_reopened_prompt() -> crate::testing::
         return Err("unexpected overlay mode".into());
     };
     assert!(buffer.is_empty());
+    Ok(())
+}
+
+#[test]
+fn menu_titles_and_entries_keep_their_order() -> crate::testing::Outcome {
+    use Action::*;
+    let (mut world, id, target, _) = setup();
+    for (menu, title, expected) in [
+        (
+            PaneMenu,
+            "Panes: ",
+            vec![
+                SplitHorizontal,
+                SplitVertical,
+                RenamePane,
+                Close,
+                Terminate,
+                Zoom,
+                GrowWidth,
+                ShrinkWidth,
+                GrowHeight,
+                ShrinkHeight,
+                ReorderPrev,
+                ReorderNext,
+                SwapChoose,
+                SwapLeft,
+                SwapRight,
+                SwapUp,
+                SwapDown,
+                MoveLeft,
+                MoveRight,
+                MoveUp,
+                MoveDown,
+                MoveTab,
+                MoveNewTab,
+                MoveWorkspace,
+                MoveNewWorkspace,
+                CopyMode,
+                ScrollUp,
+                ScrollDown,
+                Copy,
+            ],
+        ),
+        (
+            TabMenu,
+            "Tabs: ",
+            vec![
+                TabNew,
+                RenameTab,
+                TabClose,
+                TabReorderPrevious,
+                TabReorderNext,
+            ],
+        ),
+        (
+            WorkspaceMenu,
+            "Workspaces: ",
+            vec![
+                WorkspaceNew,
+                WorkspaceChoose,
+                RenameWorkspace,
+                WorkspaceClose,
+                WorkspaceReorderPrevious,
+                WorkspaceReorderNext,
+                SaveLayout,
+                LoadLayout,
+            ],
+        ),
+    ] {
+        bound(&mut world, id, target, menu)?;
+        let Mode::List {
+            title: t, entries, ..
+        } = &world.get::<Overlay>(id).need()?.mode
+        else {
+            return Err("unexpected overlay mode".into());
+        };
+        assert!(t.starts_with(title), "{menu:?}: {t}");
+        let actions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| match e.run {
+                Run::Action(a) => Some(a),
+                Run::Command(_) => None,
+            })
+            .collect();
+        assert_eq!(actions, expected, "{menu:?}");
+        assert!(
+            entries
+                .iter()
+                .zip(&expected)
+                .all(|(e, a)| e.label == a.label()),
+            "{menu:?}"
+        );
+        input(&mut world, id, &key("escape"));
+    }
+    Ok(())
+}
+
+#[test]
+fn close_confirmation_names_the_subject_and_what_it_removes() -> crate::testing::Outcome {
+    let (world, _, target, _) = setup();
+    let tab = target.tab.need()?;
+    let leaf = target.leaf.need()?;
+    for (subject, heading, consequence) in [
+        (
+            Subject::Pane(leaf),
+            "Close pane ",
+            "Remove pane; stop if last view",
+        ),
+        (
+            Subject::Tab(tab),
+            "Close tab ",
+            "Remove all contained pane views",
+        ),
+        (
+            Subject::Workspace(target.workspace),
+            "Close workspace ",
+            "Remove all contained pane views",
+        ),
+    ] {
+        let overlay = Overlay {
+            serial: 0,
+            target,
+            mode: Mode::Confirm {
+                command: Command::Close { subject },
+            },
+        };
+        let rendered = lines(&world, &overlay, 24);
+        let text: Vec<&str> = rendered.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(text.first().need()?.starts_with(heading), "{subject:?}");
+        assert_eq!(text.get(1), Some(&consequence), "{subject:?}");
+    }
+    // A confirmation of anything that is not a close keeps the neutral wording.
+    let other = Overlay {
+        serial: 0,
+        target,
+        mode: Mode::Confirm {
+            command: Command::Zoom,
+        },
+    };
+    let rendered = lines(&world, &other, 24);
+    let text: Vec<&str> = rendered.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(text.first().need()?.starts_with("Close target "));
+    assert_eq!(text.get(1), Some(&"Remove all contained pane views"));
     Ok(())
 }

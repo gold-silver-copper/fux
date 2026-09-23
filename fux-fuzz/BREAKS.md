@@ -939,3 +939,422 @@ the specific places where the result should be expected to differ:
    the request body, refused with a typed error (007), and a bound on the
    frontend's SSE line, frame and paint, which ends the attachment with a
    message rather than growing (008). (Findings 007, 008.)
+
+---
+
+# Where fux breaks under hostile input (hunt 7)
+
+> **Status: five findings, none fixed.** This run finds and records; the fixes
+> are a later PR, ranked at the end. 009 is class 1 and the one to fix first on
+> merits; 010 is the one to fix first if CI is going to run on Linux.
+> Reproduced on macOS arm64 and Linux arm64/x86_64 as each finding states.
+
+This hunt attacked what changed after hunt 6: the guards that replaced two
+stock BRP methods, the UI hit test rebuilt on `bevy_picking` when
+`bevy_ui::Interaction` became unusable in Bevy 0.20, the four new size limits,
+and Linux, which no hunt had run on and which fux 0.12.0 is nonetheless
+published for.
+
+Severity classes are hunt 5's, unchanged. Two additions for this run: a
+behaviour difference between macOS and Linux that the README does not state,
+and a limit that refuses a legitimate workload.
+
+Linux runs are in a container built by `fux-fuzz/linux/Dockerfile`, driven by
+`fux-fuzz/linux/run.sh`: Debian 12, glibc 2.36, Rust 1.98.1, kernel 7.0.14
+(OrbStack), `aarch64` and `x86_64`, as an ordinary user (uid 1000), because
+root ignores the socket permissions that are fux's access control.
+
+## 009 — A `Viewer` on a resource entity ends the server, around both guards (class 1)
+
+**The break.** Two accepted requests and a closed connection stop the server,
+taking every attached session and child process with it. No guarded method is
+called:
+
+1. `world.insert_components` puts a `fux::model::Viewer` on a **resource
+   entity**. Nothing refuses it.
+2. `fux.frame+watch` on that id, then close the connection. `disconnected`
+   despawns it, because by now it really is a viewer.
+
+The despawn lands on a resource entity, which is exactly what hunt 6's finding
+004 guard exists to prevent:
+
+```
+WARN bevy_ecs::resource: Resource entities are not supposed to be despawned.
+ERROR bevy_ecs::error::handler: Encountered an error in system
+  `bevy_app::main_schedule::Main::run_main`: System panicked
+resource does not exist: bevy_app::main_schedule::MainScheduleOrder
+```
+
+**Why the guards do not cover it.** The guard is on the *method*:
+`remote::despawn_entity` refuses an entity carrying `IsResource`. fux despawns
+viewers in its own code, and those paths never ask:
+
+- `layout`/`server::disconnected` despawns the entity a closed watch named,
+  after checking `IsViewer`, which is `(With<Viewer>, NotLayout)`;
+- `execute`'s `Detach` despawns the viewer the command named.
+
+Both check that the entity is a viewer. Neither checks that it is not a
+resource, and step 1 makes a resource entity pass the viewer check. The hunt 5
+finding 001 normalization that strips a `Viewer` off a layout node knows about
+`Workspace`, `Tab`, `Split` and `PaneView`; a resource entity is none of them.
+
+**Which resource decides what happens.** `Entity::to_bits` complements the
+index, so resource entities are a short fixed sequence from `0xFFFFFFFF`
+downwards and a caller needs no guesswork. On this build:
+
+| Bits | Index | Resource | Result |
+| --- | --- | --- | --- |
+| `0xFFFFFFFF` | 0 | `DefaultQueryFilters` | survives; no visible damage |
+| `0xFFFFFFFE` | 1 | `Schedules` | **stops answering** |
+| `0xFFFFFFFD` | 2 | `AppTypeRegistry` | **answers every request with an error**: alive, useless, still holding every session's PTYs |
+| `0xFFFFFFFC` | 3 | `MainScheduleOrder` | **stops answering** |
+| `0xFFFFFFFB` | 4 | `FixedMainScheduleOrder` | survives |
+| `0xFFFFFFFA` | 5 | `Messages<AppExit>` | survives |
+
+Index 2 is worth its own line: the server neither exits nor serves. A liveness
+check that only asks whether the socket answers would call it healthy.
+
+**What the error handler does and does not buy.** `ServerPlugin` logs rather
+than panicking on a failed command, which is why the `Detach` route leaves the
+process running where it would otherwise abort. It does not stop the world
+from being wrong: the resource is gone either way, and what follows is a
+server that cannot run its main schedule.
+
+**Reproduction.**
+`fux-fuzz/repro/009-viewer-on-a-resource-entity-ends-the-server.sh`, exit 0
+reproduced, exit 1 verified not reproduced, exit 2 setup failure;
+`NEGATIVE_CONTROL=1` puts the same `Viewer` on an ordinary spawned entity and
+watches that, which must leave the server serving. Reproduced on macOS arm64
+and Linux arm64.
+
+**The class, not the instance.** The guard on the method is not where this
+belongs. Every despawn of a caller-named entity needs the check, including
+fux's own: `disconnected`, `Detach`, and anything later that despawns what a
+request named. A fix that only adds `IsResource` to `IsViewer` closes this
+script and leaves the class open.
+
+## 010 — A signal ends a request, and the attachment with it (class 2, Linux)
+
+**The break.** Resizing the terminal window while a key is in flight ends the
+attachment:
+
+```
+fux: io: Interrupted system call (os error 4)
+```
+
+The user is returned to their shell mid-session. The server is fine and the
+panes keep running, so nothing is lost but the session; the point is that
+resizing a window is not a hostile act, and it is the one interaction
+guaranteed to raise a signal.
+
+**Where it comes from.** `UnixTransport::await_input` in `src/unix_http.rs`
+does one `read` and treats anything that is not `WouldBlock` or `TimedOut` as
+a transport error:
+
+```rust
+let amount = timed(self.stream.read(input), &timeout)?;
+```
+
+A read on a socket with `SO_RCVTIMEO` set is not restarted after a signal
+handler runs: it fails with `EINTR` (signal(7), under "Interruption of system
+calls and library functions by signal handlers"). fux sets a read timeout on
+every request, because `agent()` takes a whole-call budget. The frontend
+installs a `SIGWINCH` handler through `signal-hook` and sends every key, paste
+and resize through that transport on its main thread, so the two meet.
+
+macOS restarts the read, so nothing happens there. Neither behaviour is in the
+README, and the retry that would fix it is three lines: `EINTR` is not a
+failed request, it is a read to repeat.
+
+**How wide the window is.** On Linux `aarch64`, a frontend being resized while
+typing lasted 3 to 13 rounds before it died, over three runs. On Linux
+`x86_64`, where emulation widens the window, **25 to 27 of fux's 56 integration
+tests fail**, every one of them on `EINTR` from this transport, which fux's own
+tests use as their client. macOS survived 7278 rounds of the same script and
+8104 of an earlier variant.
+
+This is not a regression from this PR: `origin/main` fails the same way on
+Linux `x86_64`, with the same error on the same methods.
+
+**Reproduction.**
+`fux-fuzz/repro/010-a-signal-ends-a-request-and-the-attachment.sh`, which
+drives a real `fux attach` in a pty and resizes it. Exit 0 reproduced, 1
+verified not reproduced, 2 setup failure or not Linux;
+`NEGATIVE_CONTROL=1` types for the same twenty seconds without resizing and
+must survive, which it does: 6347 rounds.
+
+**It is also why the Linux smoke has three failures.** `resize` and
+`adversarial` fail with "premature frontend exit" or "viewer disappeared while
+resizing", and `origin/main` fails the same two scenarios on the same
+platform. The harness drives real frontends and resizes them, which is exactly
+the collision above.
+
+The third is not this, and not a finding either: the `history` scenario, and
+the `owned-terminal-tiny-child-geometry` trace that replays it, fail on Linux
+about a third of the time with "short-history pane painted: observation
+deadline exceeded". It is the harness's five-second observation bound, not a
+fux defect: `origin/main` fails it too, 1 run in 6 against this branch's 2 in
+4, both small samples of the same flake. It does not reproduce on macOS. A
+later run should either widen that bound on Linux or find what makes a short
+history slow to paint there; this hunt only establishes that it predates the
+branch.
+
+## 011 — fux does not build on Linux without ALSA headers (class: platform)
+
+**The break.** `cargo build` fails on a clean Debian 12 with only a Rust
+toolchain:
+
+```
+error: failed to run custom build command for `alsa-sys v0.4.0`
+  pkg-config has not been configured to support cross-compilation...
+  Could not run `PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 pkg-config --libs --cflags alsa`
+```
+
+The chain is entirely transitive:
+
+```
+fux -> bevy_remote 0.20.0-rc.1 -> bevy_dev_tools -> bevy_audio -> rodio -> cpal -> alsa-sys
+```
+
+`bevy_remote` depends on `bevy_dev_tools` for `schedule_data`, which is what
+answers `schedule.list` and `schedule.graph`, and `bevy_dev_tools` pulls
+`bevy_audio` unconditionally. fux already sets `default-features = false` on
+`bevy_remote` and takes only `bevy_asset`; there is no feature to turn this
+off from here.
+
+**Why it matters now.** fux 0.12.0 is published, so `cargo install fux` on
+Linux fails at this build script unless `libasound2-dev` and `pkg-config` are
+already installed. The released binary links `libasound.so.2`, a sound library
+a terminal multiplexer has no use for. On Bevy 0.19.1 the chain did not exist:
+`e794df0`'s lockfile has no `alsa-sys`, and `0286346`'s does.
+
+**Not fux's to fix in fux.** The options are upstream (`bevy_dev_tools`
+gaining a feature that does not pull `bevy_audio`, or `bevy_remote` depending
+on it more narrowly) or dropping `bevy_remote`'s schedule methods. What fux
+can do now is say so in the README, where the dependency boundary is already
+described, and list the two packages a Linux build needs.
+
+**Reproduction.** `fux-fuzz/repro/011-a-linux-build-needs-alsa.sh`, which asks
+the resolved dependency graph for a Linux target rather than building, so it
+runs anywhere in a second and prints the whole chain. Exit 0 reproduced, 1
+verified not reproduced, 2 setup failure; `NEGATIVE_CONTROL=1` resolves the
+same graph for a macOS target, where the chain is absent. The consequence, a
+build that fails without the headers, is `fux-fuzz/linux/run.sh arm64 cargo
+build --locked` with the `libasound2-dev` line removed from
+`fux-fuzz/linux/Dockerfile`; the Dockerfile carries that line with a comment
+pointing here, so the workaround is visible rather than silent.
+
+## 012 — Descriptor pressure makes a Linux client wait 6.5 s, not 3.0 (class 2)
+
+**The break.** Hunt 6's finding 006 repro, run on Linux, reproduces:
+
+```
+attempts=21 answered=0 slowest=6.54s; log lines=3, condition reports=3
+REPRODUCED: a client waited 6.5s on a listener that could not answer
+```
+
+The 006 fix is intact and doing its job: 3 log lines rather than 168, the
+condition reported once and then at intervals, recovery reported, and every
+client after the first failing in 0.01 s. Only the first client is slow, and
+on Linux it is slow enough to cross the repro's 5 s threshold.
+
+**Why Linux is worse.** The accept loop spends its reserved descriptor to
+accept and close exactly one waiting connection per 50 ms tick:
+
+```rust
+if let Some(held) = spare.take() {
+    drop(held);
+    if let Ok((shed, _)) = listener.get_ref().accept() { drop(shed); }
+    spare = reserve();
+}
+Timer::after(Duration::from_millis(50)).await;
+```
+
+Linux holds the backlog (128 by default) and hands connections out in order,
+so a new client is behind up to 128 others, each shed one per tick: about
+6.4 s, which is what was measured. macOS refuses more of them at `connect`
+time, so the queue the new client joins is shorter and it waits about 3.0 s.
+
+**What a fix looks like.** Drain the backlog on each tick rather than one
+connection, bounded by the number waiting, so the wait is one tick rather than
+one tick per queued connection. The reserved descriptor already makes this
+possible; it is only spent once per tick.
+
+**Reproduction.**
+`fux-fuzz/repro/012-descriptor-shedding-drains-one-connection-a-tick.sh`,
+which samples fresh clients over a window and reports the worst wait: 6.9 s
+in the run recorded here, with 1 of 26 samples over a second and the rest
+resolving in about 10 ms. A client that arrives when the backlog is completely
+full is refused at `connect` at once; the slow case is the one that gets into
+the queue and then waits its turn, which is why it has to be sampled rather
+than measured once. Exit 0 reproduced, 1 verified not reproduced, 2 setup
+failure or not Linux; `NEGATIVE_CONTROL=1` opens and closes the same
+connections, leaving no pressure.
+
+Hunt 6's `006` script, unchanged, also exits 0 on Linux and 1 on macOS. The
+default soft `ulimit -n` in the container is 20480; both scripts set 64 for
+the server's own subshell, so the limit under test is fux's, not the
+machine's.
+
+## 013 — `terminate` leaves background jobs alive under `dash` (class 3)
+
+**The break.** With `/bin/sh` as the pane program, a background job survives
+the pane that owns it:
+
+```
+shell 27 bg 29 shell pgid 27 bg pgid 29
+after terminate: shell alive False background alive True
+```
+
+`sleep 60 &` started from the pane's shell is still running after the pane is
+terminated, in its own process group, with no terminal.
+
+**Why.** `Job::finish` sends `SIGHUP` to the pane's process group, waits up to
+100 ms for the shell to hang up its own jobs, then `SIGKILL`s that group. A
+background job started by an interactive shell is in a *different* process
+group, so neither signal reaches it; it dies only if the shell forwards the
+hangup. `bash` and `zsh` do. `dash` does not, and `/bin/sh` is `dash` on
+Debian and Ubuntu, where it is also the default for `sh`-based configurations.
+
+**How it shows up.** fux's own integration test
+`interactive_background_jobs_hang_up_when_pane_terminates` fails on Linux, 4
+runs out of 4, and on `origin/main` equally: the test configures `/bin/sh`,
+which is `dash` there and `bash` on macOS. It is the test noticing a real
+difference, not a flake.
+
+**Already known, in one place.** `fux-fuzz/README.md` says under "Bounds and
+cleanup" that "Ubuntu's dash `/bin/sh` does not provide bash's background-job
+SIGHUP propagation", and the harness fixture execs `/bin/bash --noprofile
+--norc -i` to avoid it. So the harness knows; fux's integration test does not,
+and configures `/bin/sh`. On macOS that is bash and the test passes, which is
+why this has never been visible.
+
+**What it is not.** Not a leak of fux's own making: the process is reparented
+to init and reachable by the user. The README says a pane's process is
+terminated with the pane, and under `dash` a job it started is not.
+
+**Reproduction.**
+`fux-fuzz/repro/013-terminate-leaves-a-dash-background-job.sh`, which names
+`/bin/dash` explicitly rather than `/bin/sh`, so it tests the shell rather
+than the platform's choice of shell. macOS ships `/bin/dash` too and the
+finding reproduces on both, which is what makes it a shell difference rather
+than a platform one. Exit 0 reproduced, 1 verified not reproduced, 2 setup
+failure; `NEGATIVE_CONTROL=1` runs the same pane under `bash`, which forwards
+the hangup, so the job dies with its pane.
+
+Writing that control turned up one more difference worth knowing: bash 5.1 and
+later enable bracketed paste, where a newline inside pasted text goes into the
+line buffer instead of running it, so the script presses Enter as a key. macOS
+ships bash 3.2, which does not, and `dash` does not either.
+
+## What did not break (coverage, not findings)
+
+Clean areas matter as much as breaks: they say where the next hunt need not
+look. Everything here was attacked and behaved.
+
+### The picking migration (area 2)
+
+`bevy_ui::Interaction` became unusable in 0.20 and the hit test was rebuilt on
+the stock picking backend over one synthetic `PointerId::Mouse`. Nothing found:
+
+| Attacked | Result |
+| --- | --- |
+| Click position against painted content, swept over a grid | 201 cells across two split layouts, every one focused the pane the frame painted |
+| An overlay over a pane | A click under an open menu changed no focus and left the overlay open |
+| Two viewers of different sizes, clicking alternately | 6 rounds, neither viewer's focus moved when the other clicked; the shared pointer leaked nothing |
+| A zoomed pane | A click anywhere kept the zoomed pane focused |
+| Coordinates at and past the edge: `(79,22)`, `(80,23)`, `(200,200)`, `u16::MAX`, `(0,0)` | All answered without error, no state change |
+| One-cell and tiny viewers: 1x1, 2x2, 1x80 | Clicks accepted, frames painted, server fine |
+| A viewer detaching mid-drag | The other viewer kept focusing and painting |
+| A resize between press and release | The release outside the shrunken viewer was absorbed |
+| A layout save and load between press and release | Focus and painting intact |
+| 12 rounds of split, click, close, click with no settling | No death, frames still painted |
+
+### The guards and the entity surface (area 3)
+
+| Attacked | Result |
+| --- | --- |
+| 9 entity-taking methods x 17 id classes, singly and in batches | 306 requests; the server survived every one |
+| `world.despawn_entity` on a resource entity, alone and in a batch | Refused, `-23501`, world untouched |
+| `world.mutate_components` on a despawned id | `entity_not_found`, as its siblings answer |
+| Inserting a component onto a resource entity | Accepted (this is finding 009's first step) |
+| Reparenting a resource entity under a tab, and a pane view under a resource entity | Accepted, no visible damage, server fine |
+| `ChildOf` naming a resource entity at spawn | Accepted, server fine |
+| Mutating `Settings` through `world.mutate_resources` | Accepted, server fine |
+| Removing the `Settings` resource | Server survives; frames stop painting. Raw resource removal is trusted low-level access, and this is what the README means by it |
+| Check-then-act between a guard and the stock handler | No window found: the guards resolve the entity and hand over inside one exclusive world access |
+
+### The limits (area 4)
+
+| Limit | At the boundary | Bypass attempted | Legitimate workload |
+| --- | --- | --- | --- |
+| `MAX_BODY` 4 MiB | 4194303 and 4194304 accepted, 4194305 refused with the limit named | Chunked transfer: cut off at exactly the limit, connection closed | A 1 MiB name and a 400 KiB escaped paste both fit |
+| `MAX_BATCH` 1024 | 1024 accepted, 1025 refused naming the count | Pipelining 50 requests on one connection: each answered separately, none pooled into one reply | 200 `world.query` in a batch: 23 KB |
+| `MAX_BATCH_RESPONSE` 8 MiB | 70 `registry.schema` = 7.84 MB accepted; at 100 the reply stops at 8.40 MB | — | An agent's plausible batches are three orders of magnitude below it |
+| `MAX_EVENT` 64 MiB | Not re-measured this hunt; hunt 6's measurement stands | — | — |
+
+A single large reply is not capped by `MAX_BATCH_RESPONSE`, by design: a
+4096x4096 `fux.frame` is answered whole, inside a batch or not.
+
+### Linux, beyond the findings (area 1)
+
+| Attacked | Result |
+| --- | --- |
+| Socket path length | 107 bytes accepted, 108 refused naming the limit; fux takes it from `libc` rather than assuming macOS's 104 |
+| `$XDG_RUNTIME_DIR` missing, root-owned 0755, another user's 0700, world-writable 0777, world-writable parent | Each refused with the reason; none served |
+| `$XDG_RUNTIME_DIR` on `/tmp` (1777 sticky), `/dev/shm`, `/run/user/1000` | Served |
+| `--socket /proc/self/fd/0` | Refused: not a socket owned by you |
+| A socket on a virtiofs host mount | Served |
+| Neither `$XDG_RUNTIME_DIR` nor `$TMPDIR` set | Refused with a clear message, which is right but undocumented |
+| Terminal restore after the EINTR exit and after the server was `SIGKILL`ed | Reset emitted, PTY back to cooked mode, both platforms |
+| A `sudo` pane terminated | `sudo` relayed the hangup, everything exited, status `exited 129`, server fine |
+| Repro scripts 001-008 and 009 | Same verdicts as macOS, except 006 (finding 012) |
+| Unit tests, `fmt`, clippy, fux-fuzz's own tests | Green on `aarch64` and `x86_64` |
+
+### The Linux difference the README should state
+
+Two behaviours differ from macOS and neither is documented: a server with
+neither `$XDG_RUNTIME_DIR` nor `$TMPDIR` refuses to start (finding 010's
+neighbour, harmless but surprising under `su`, `cron` and containers), and the
+socket path limit is 107 bytes rather than 103. The README names only the
+macOS number.
+
+## Ranked fixes for the next hardening PR
+
+1. **009, and the class under it.** A caller-named entity is despawned by
+   fux's own code in at least two places, and neither asks what it is
+   despawning. The narrow fix is `IsResource` in `IsViewer`; the fix worth
+   making is that every internal despawn of an entity a request named goes
+   through one checked path, the way the BRP method already does. The
+   normalization that strips a `Viewer` off a layout node is the natural place
+   to also strip it off a resource entity.
+2. **010.** Retry the read on `EINTR` in `src/unix_http.rs`. It is a read to
+   repeat, not a failed request. This is three lines, it unbreaks 25 to 27
+   integration tests on Linux `x86_64`, and it stops a window resize from
+   ending a session. Do this before anything else if CI is going to run on
+   Linux.
+3. **012.** Drain the waiting backlog per tick rather than one connection, so
+   a first client under descriptor pressure waits one tick instead of one tick
+   per queued connection.
+4. **011.** Say in the README that a Linux build needs `pkg-config` and
+   `libasound2-dev`, and raise the `bevy_dev_tools` to `bevy_audio` dependency
+   upstream. fux cannot cut the chain from here.
+5. **013.** Decide what fux promises about a pane's background jobs, then
+   either make `terminate` reach the whole session (a wider kill, with its own
+   risks) or say that a job a shell does not hang up survives its pane.
+6. **Documentation**, together: the two Linux differences above, the resource
+   entities an agent can see (campaign 06 measured this), and the `dash`
+   behaviour from 013.
+
+## Harness mistakes (not findings)
+
+- The first `world.query` probe classified an entity as a resource by its id
+  being near the top of the 32-bit space. Every fux entity is near the top:
+  `Entity::to_bits` complements the index for all of them. The metric now
+  takes its evidence from what the run itself saw carrying `IsResource`.
+- The first version of repro 009 sent requests without `Connection: close` and
+  read until EOF, so every request timed out against a keep-alive server and
+  the script reported a setup failure. The other repro scripts had it right.
+- Probe scripts were first written under `target/`, which something on the
+  machine cleans; they were rewritten outside it. The tools meant to last are
+  in `fux-fuzz/tools/` and `fux-fuzz/linux/`.

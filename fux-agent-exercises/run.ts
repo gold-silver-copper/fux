@@ -212,6 +212,7 @@ const environment = {
   fuxVersion: result.fux.version,
   fuxGitRevision: result.fux.gitRevision,
   fuxGitDirty: result.fux.gitDirty,
+  bevy: result.fux.bevy,
   node: process.version,
   platform: `${process.platform} ${process.arch}`,
   dryRun: isDryRun,
