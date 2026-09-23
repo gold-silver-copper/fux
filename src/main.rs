@@ -10,6 +10,7 @@ mod navigation;
 mod paste;
 mod presentation;
 mod protocol;
+mod remote;
 mod selection;
 mod server;
 mod terminal;
@@ -113,7 +114,7 @@ fn serve(socket: &Path, config: &str) -> Result<(), String> {
     ))
     .insert_resource(model::Wake(thread::current()));
     assets::install(&mut app, Path::new(config))?;
-    app.add_plugins((server::ServerPlugin, server::remote()));
+    app.add_plugins((server::ServerPlugin, remote::remote()));
     app.set_runner(move |app| run(app, listener));
     eprintln!(
         "fux trusted BRP unix:{} — unrestricted same-user command execution",
