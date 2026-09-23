@@ -944,9 +944,10 @@ the specific places where the result should be expected to differ:
 
 # Where fux breaks under hostile input (hunt 7)
 
-> **Status: findings, not fixes.** This run finds and records; the fixes are a
-> later PR. Everything below is reproducible on the commit this section was
-> added in.
+> **Status: five findings, none fixed.** This run finds and records; the fixes
+> are a later PR, ranked at the end. 009 is class 1 and the one to fix first on
+> merits; 010 is the one to fix first if CI is going to run on Linux.
+> Reproduced on macOS arm64 and Linux arm64/x86_64 as each finding states.
 
 This hunt attacked what changed after hunt 6: the guards that replaced two
 stock BRP methods, the UI hit test rebuilt on `bevy_picking` when
