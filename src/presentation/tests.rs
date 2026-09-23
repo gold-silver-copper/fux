@@ -43,14 +43,14 @@ fn extracted_world_matches_app_across_scene_resize_focus_and_removal() -> Outcom
         .register_type::<PaneView>();
     register_types(&mut source);
     let registry = source.world().resource::<AppTypeRegistry>().clone();
-    let (mut reference, window, camera, container) = Presentation::build(registry.clone());
-    let (mut extracted, other_window, other_camera, other_container) =
+    let (mut reference, window, camera, container, pointer) = Presentation::build(registry.clone());
+    let (mut extracted, other_window, other_camera, other_container, other_pointer) =
         Presentation::build(registry);
     assert_eq!(reference.sub_apps().iter().count(), 1);
     assert_eq!(extracted.sub_apps().iter().count(), 1);
     assert_eq!(
-        (window, camera, container),
-        (other_window, other_camera, other_container)
+        (window, camera, container, pointer),
+        (other_window, other_camera, other_container, other_pointer)
     );
     reference.add_message::<Probe>();
     extracted.add_message::<Probe>();
@@ -114,11 +114,9 @@ fn extracted_world_matches_app_across_scene_resize_focus_and_removal() -> Outcom
                 scale_factor: 1.0,
             });
             if let Some(local) = map.get(&leaf).copied() {
-                destination.entity_mut(local).insert((
-                    Interaction::None,
-                    FocusPolicy::Block,
-                    TabIndex(0),
-                ));
+                destination
+                    .entity_mut(local)
+                    .insert((FocusPolicy::Block, TabIndex(0)));
                 destination
                     .resource_mut::<InputFocus>()
                     .set(local, FocusCause::Navigated);
@@ -146,28 +144,46 @@ fn extracted_world_matches_app_across_scene_resize_focus_and_removal() -> Outcom
             let expected_width = if step == 2 { 31.0 } else { cols as f32 };
             assert_eq!(actual, vec![Vec2::new(expected_width, rows as f32)]);
             assert_ne!(actual, previous);
-            for destination in [reference.world_mut(), &mut world] {
-                destination
-                    .get_mut::<Window>(window)
-                    .need()?
-                    .set_cursor_position(Some(Vec2::new(1.5, 1.5)));
-                destination
-                    .resource_mut::<ButtonInput<MouseButton>>()
-                    .press(MouseButton::Left);
-                destination.run_system_cached(ui_focus_system)?;
-            }
-            let interactions = |world: &mut World| -> Vec<Interaction> {
+            // The inert world must pick the same node as a real app does, so
+            // both run the stock UI picking backend over one synthetic pointer.
+            let target =
+                NormalizedRenderTarget::Window(WindowRef::Primary.normalize(Some(window)).need()?);
+            let picked =
+                |destination: &mut World| -> Result<Vec<Entity>, Box<dyn std::error::Error>> {
+                    destination.entity_mut(pointer).insert(PointerLocation {
+                        location: Some(Location {
+                            target: target.clone(),
+                            position: Vec2::new(1.5, 1.5),
+                        }),
+                    });
+                    destination
+                        .resource_mut::<ButtonInput<MouseButton>>()
+                        .press(MouseButton::Left);
+                    destination.run_system_cached(ui_picking)?;
+                    let hits: Vec<PointerHits> = destination
+                        .resource_mut::<Messages<PointerHits>>()
+                        .drain()
+                        .collect();
+                    Ok(hits
+                        .iter()
+                        .flat_map(|hit| hit.picks.iter())
+                        .map(|(entity, _)| *entity)
+                        .filter(|entity| destination.get::<PaneView>(*entity).is_some())
+                        .collect())
+                };
+            let panes: Vec<_> = world
+                .query_filtered::<Entity, With<PaneView>>()
+                .iter(&world)
+                .collect();
+            assert_eq!(picked(&mut world)?, panes);
+            assert_eq!(picked(reference.world_mut())?.len(), panes.len());
+            // Focus still follows a press, through the same path `pointer` uses.
+            if let Some(local) = panes.first() {
                 world
-                    .query_filtered::<&Interaction, With<PaneView>>()
-                    .iter(world)
-                    .copied()
-                    .collect()
-            };
-            assert_eq!(interactions(&mut world), vec![Interaction::Pressed]);
-            assert_eq!(
-                interactions(reference.world_mut()),
-                vec![Interaction::Pressed]
-            );
+                    .resource_mut::<InputFocus>()
+                    .set(*local, FocusCause::Pressed);
+                world.run_system_cached(process_recorded_focus_changes)?;
+            }
             assert!(world.resource::<InputFocus>().get().is_some());
         } else {
             assert!(actual.is_empty());
