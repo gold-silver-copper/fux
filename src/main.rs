@@ -5,6 +5,7 @@ mod control;
 mod encode;
 mod frame;
 mod interaction;
+mod layout;
 mod model;
 mod navigation;
 mod paste;
@@ -225,7 +226,7 @@ fn run(mut app: App, listener: UnixListener) -> AppExit {
         if let Some(exit) = app.should_exit() {
             break exit;
         }
-        if assets::pending(app.world()) || server::pending_scenes(app.world_mut()) {
+        if assets::pending(app.world()) || layout::pending_scenes(app.world_mut()) {
             thread::park_timeout(Duration::from_millis(25));
         } else {
             thread::park();
