@@ -37,7 +37,7 @@ FUX="${1:?usage: $0 /path/to/fux}"
 [ -x "$FUX" ] || { echo "not executable: $FUX" >&2; exit 2; }
 command -v cargo >/dev/null 2>&1 || { echo "cargo is required" >&2; exit 2; }
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+ROOT="$(CDPATH="" cd -- "$(dirname -- "$0")/../.." && pwd)"
 [ -f "$ROOT/Cargo.toml" ] || { echo "no Cargo.toml at $ROOT" >&2; exit 2; }
 
 if [ "${NEGATIVE_CONTROL:-0}" = "1" ]; then

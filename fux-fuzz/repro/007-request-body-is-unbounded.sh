@@ -75,15 +75,12 @@ CEILING = 4096            # MB: stop before pressuring the machine
 THRESHOLD = 64            # MB of growth that proves there is no cap
 
 def rss_mb(pid):
-    # The server runs in its own session; find the fux process in that group.
-    out = subprocess.run(["ps", "-o", "rss=,pid=,comm=", "-g", str(pid)],
-                         capture_output=True, text=True).stdout
-    best = 0
-    for line in out.strip().splitlines():
-        parts = line.split(None, 2)
-        if len(parts) == 3 and parts[2].endswith("fux"):
-            best = max(best, int(parts[0]))
-    return best // 1024
+    # The subshell execs perl, which execs env, which execs the server, so the
+    # server keeps the subshell's pid. Match on that rather than on the
+    # process name: the binary under test need not be called `fux`.
+    out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)],
+                         capture_output=True, text=True).stdout.strip()
+    return int(out) // 1024 if out.isdigit() else 0
 
 def rpc(method, timeout=5.0):
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method}).encode()
