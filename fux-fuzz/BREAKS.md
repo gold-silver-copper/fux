@@ -1207,3 +1207,75 @@ run `sleep 60 &` in the pane, then `terminate`, and check the job. On macOS
 `/bin/dash` behaves exactly as Linux's `/bin/sh`, so this is a shell
 difference rather than a platform one, and it reproduces on both.
 
+## What did not break (coverage, not findings)
+
+Clean areas matter as much as breaks: they say where the next hunt need not
+look. Everything here was attacked and behaved.
+
+### The picking migration (area 2)
+
+`bevy_ui::Interaction` became unusable in 0.20 and the hit test was rebuilt on
+the stock picking backend over one synthetic `PointerId::Mouse`. Nothing found:
+
+| Attacked | Result |
+| --- | --- |
+| Click position against painted content, swept over a grid | 201 cells across two split layouts, every one focused the pane the frame painted |
+| An overlay over a pane | A click under an open menu changed no focus and left the overlay open |
+| Two viewers of different sizes, clicking alternately | 6 rounds, neither viewer's focus moved when the other clicked; the shared pointer leaked nothing |
+| A zoomed pane | A click anywhere kept the zoomed pane focused |
+| Coordinates at and past the edge: `(79,22)`, `(80,23)`, `(200,200)`, `u16::MAX`, `(0,0)` | All answered without error, no state change |
+| One-cell and tiny viewers: 1x1, 2x2, 1x80 | Clicks accepted, frames painted, server fine |
+| A viewer detaching mid-drag | The other viewer kept focusing and painting |
+| A resize between press and release | The release outside the shrunken viewer was absorbed |
+| A layout save and load between press and release | Focus and painting intact |
+| 12 rounds of split, click, close, click with no settling | No death, frames still painted |
+
+### The guards and the entity surface (area 3)
+
+| Attacked | Result |
+| --- | --- |
+| 9 entity-taking methods x 17 id classes, singly and in batches | 306 requests; the server survived every one |
+| `world.despawn_entity` on a resource entity, alone and in a batch | Refused, `-23501`, world untouched |
+| `world.mutate_components` on a despawned id | `entity_not_found`, as its siblings answer |
+| Inserting a component onto a resource entity | Accepted (this is finding 009's first step) |
+| Reparenting a resource entity under a tab, and a pane view under a resource entity | Accepted, no visible damage, server fine |
+| `ChildOf` naming a resource entity at spawn | Accepted, server fine |
+| Mutating `Settings` through `world.mutate_resources` | Accepted, server fine |
+| Removing the `Settings` resource | Server survives; frames stop painting. Raw resource removal is trusted low-level access, and this is what the README means by it |
+| Check-then-act between a guard and the stock handler | No window found: the guards resolve the entity and hand over inside one exclusive world access |
+
+### The limits (area 4)
+
+| Limit | At the boundary | Bypass attempted | Legitimate workload |
+| --- | --- | --- | --- |
+| `MAX_BODY` 4 MiB | 4194303 and 4194304 accepted, 4194305 refused with the limit named | Chunked transfer: cut off at exactly the limit, connection closed | A 1 MiB name and a 400 KiB escaped paste both fit |
+| `MAX_BATCH` 1024 | 1024 accepted, 1025 refused naming the count | Pipelining 50 requests on one connection: each answered separately, none pooled into one reply | 200 `world.query` in a batch: 23 KB |
+| `MAX_BATCH_RESPONSE` 8 MiB | 70 `registry.schema` = 7.84 MB accepted; at 100 the reply stops at 8.40 MB | — | An agent's plausible batches are three orders of magnitude below it |
+| `MAX_EVENT` 64 MiB | Not re-measured this hunt; hunt 6's measurement stands | — | — |
+
+A single large reply is not capped by `MAX_BATCH_RESPONSE`, by design: a
+4096x4096 `fux.frame` is answered whole, inside a batch or not.
+
+### Linux, beyond the findings (area 1)
+
+| Attacked | Result |
+| --- | --- |
+| Socket path length | 107 bytes accepted, 108 refused naming the limit; fux takes it from `libc` rather than assuming macOS's 104 |
+| `$XDG_RUNTIME_DIR` missing, root-owned 0755, another user's 0700, world-writable 0777, world-writable parent | Each refused with the reason; none served |
+| `$XDG_RUNTIME_DIR` on `/tmp` (1777 sticky), `/dev/shm`, `/run/user/1000` | Served |
+| `--socket /proc/self/fd/0` | Refused: not a socket owned by you |
+| A socket on a virtiofs host mount | Served |
+| Neither `$XDG_RUNTIME_DIR` nor `$TMPDIR` set | Refused with a clear message, which is right but undocumented |
+| Terminal restore after the EINTR exit and after the server was `SIGKILL`ed | Reset emitted, PTY back to cooked mode, both platforms |
+| A `sudo` pane terminated | `sudo` relayed the hangup, everything exited, status `exited 129`, server fine |
+| Repro scripts 001-008 and 009 | Same verdicts as macOS, except 006 (finding 012) |
+| Unit tests, `fmt`, clippy, fux-fuzz's own tests | Green on `aarch64` and `x86_64` |
+
+### The Linux difference the README should state
+
+Two behaviours differ from macOS and neither is documented: a server with
+neither `$XDG_RUNTIME_DIR` nor `$TMPDIR` refuses to start (finding 010's
+neighbour, harmless but surprising under `su`, `cron` and containers), and the
+socket path limit is 107 bytes rather than 103. The README names only the
+macOS number.
+
