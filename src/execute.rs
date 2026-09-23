@@ -2,7 +2,6 @@
 //! module that owns that part of the model.
 #[cfg(test)]
 mod tests;
-use crate::server::{first_leaf, spawn_pane};
 use crate::{
     assets::Settings,
     control::{Axis, Command, Order, Scope, Subject},
@@ -11,6 +10,7 @@ use crate::{
     layout::scene_io,
     model::*,
     presentation::Presentation,
+    server::{self, first_leaf, spawn_pane},
     terminal::Terminal,
 };
 use bevy_ecs::prelude::*;
@@ -289,7 +289,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
                 .max()
                 .unwrap_or(-1)
                 .saturating_add(1);
-            let root = crate::server::workspace(world, &title);
+            let root = server::workspace(world, &title);
             world.entity_mut(root).insert(WorkspaceOrder(order));
             let tab = world.spawn((Tab, Name::new("main"), ChildOf(root))).id();
             let leaf = spawn_pane(world, &settings, tab, None, None)?;

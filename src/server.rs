@@ -1,3 +1,7 @@
+//! The server plugin: the reflected types BRP can name, the observers and
+//! systems that run the session, startup's first workspace, and detaching a
+//! viewer whose frame watch closed. Commands, input routing, layouts and the
+//! method registry live in `execute`, `routing`, `layout` and `remote`.
 #[cfg(test)]
 mod tests;
 use crate::{
