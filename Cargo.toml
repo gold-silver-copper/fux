@@ -69,6 +69,11 @@ strip = true
 lto = "thin"
 codegen-units = 1
 
+[dev-dependencies]
+# Tests only: aiming a signal at one thread, to make an interrupted read
+# certain rather than a race (hunt 7 finding 010).
+nix = { version = "0.30", features = ["pthread"] }
+
 [lints.clippy]
 unwrap_used = "forbid"
 expect_used = "forbid"
