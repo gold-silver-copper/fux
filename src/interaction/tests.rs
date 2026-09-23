@@ -488,3 +488,52 @@ fn menu_titles_and_entries_keep_their_order() -> crate::testing::Outcome {
     }
     Ok(())
 }
+
+#[test]
+fn close_confirmation_names_the_subject_and_what_it_removes() -> crate::testing::Outcome {
+    let (world, _, target, _) = setup();
+    let tab = target.tab.need()?;
+    let leaf = target.leaf.need()?;
+    for (subject, heading, consequence) in [
+        (
+            Subject::Pane(leaf),
+            "Close pane ",
+            "Remove pane; stop if last view",
+        ),
+        (
+            Subject::Tab(tab),
+            "Close tab ",
+            "Remove all contained pane views",
+        ),
+        (
+            Subject::Workspace(target.workspace),
+            "Close workspace ",
+            "Remove all contained pane views",
+        ),
+    ] {
+        let overlay = Overlay {
+            serial: 0,
+            target,
+            mode: Mode::Confirm {
+                command: Command::Close { subject },
+            },
+        };
+        let rendered = lines(&world, &overlay, 24);
+        let text: Vec<&str> = rendered.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(text.first().need()?.starts_with(heading), "{subject:?}");
+        assert_eq!(text.get(1), Some(&consequence), "{subject:?}");
+    }
+    // A confirmation of anything that is not a close keeps the neutral wording.
+    let other = Overlay {
+        serial: 0,
+        target,
+        mode: Mode::Confirm {
+            command: Command::Zoom,
+        },
+    };
+    let rendered = lines(&world, &other, 24);
+    let text: Vec<&str> = rendered.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(text.first().need()?.starts_with("Close target "));
+    assert_eq!(text.get(1), Some(&"Remove all contained pane views"));
+    Ok(())
+}

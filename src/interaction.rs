@@ -764,18 +764,20 @@ pub fn lines(world: &World, overlay: &Overlay, rows: u16) -> Vec<(String, &'stat
     let mut lines = Vec::new();
     match &overlay.mode {
         Mode::Confirm { command } => {
-            let (kind, entity) = match command {
-                Command::Close { subject } => (subject.kind(), subject.entity()),
-                _ => ("target", Entity::PLACEHOLDER),
+            let subject = match command {
+                Command::Close { subject } => Some(*subject),
+                _ => None,
             };
+            let entity = subject.map_or(Entity::PLACEHOLDER, Subject::entity);
             let named = if world.get_entity(entity).is_ok() {
                 format!("{} #{}", label(world, entity), entity.to_bits())
             } else {
                 "removed target".into()
             };
+            let kind = subject.map_or("target", Subject::kind);
             lines.push((format!("Close {kind} {named}?"), "\x1b[1m"));
             lines.push((
-                if kind == "pane" {
+                if matches!(subject, Some(Subject::Pane(_))) {
                     "Remove pane; stop if last view"
                 } else {
                     "Remove all contained pane views"
