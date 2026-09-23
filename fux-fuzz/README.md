@@ -169,6 +169,45 @@ Successful case directories are removed after cleanup. Their plan, summary, meta
 - Signal only directly owned, unreaped server/frontend handles. Observe recorded child PIDs and original groups with signal 0; never kill a cached descendant PID or use broad process-name cleanup. Record remaining children/groups as cleanup failures rather than concealing them. If fux itself cannot clean its children before a forced server kill, the harness reports that limitation; it is not a descendant-containment service.
 - The job-propagation fixture explicitly execs `/bin/bash --noprofile --norc -i`. Ubuntu's dash `/bin/sh` does not provide bash's background-job SIGHUP propagation. No claim is made about disowned jobs or other groups that ignore hangup, nor about terminal restoration after SIGKILL.
 
+## Linux
+
+fux is developed on macOS and published for both. `linux/run.sh` runs anything
+in this repository inside a Debian 12 container, as an ordinary user, because
+root ignores the socket permissions that are fux's access control:
+
+```sh
+fux-fuzz/linux/run.sh arm64 cargo test --locked
+fux-fuzz/linux/run.sh amd64 sh -c 'cd fux-fuzz && cargo test --locked'
+fux-fuzz/linux/run.sh arm64 sh -c '/target/debug/fux-fuzz --fux /target/debug/fux --seconds 600'
+```
+
+`arm64` is native on an Apple-silicon host and `amd64` is emulated, which
+widens timing windows and has found things `arm64` did not. The checkout is
+mounted at `/src`; build output and the cargo registry live in named volumes
+per architecture, so repeated runs are incremental. The binaries are
+`/target/debug/fux` and `/target/debug/fux-fuzz`. Remove the volumes with
+`docker volume rm fux-linux-target-ARCH fux-linux-cargo-ARCH`.
+
+`linux/Dockerfile` installs `libasound2-dev` only because fux does not build
+on Linux without it; see hunt 7 finding 011 in `BREAKS.md`. Remove the package
+when that is fixed, and the build here is the check.
+
+## Tools
+
+`tools/wire-capture.py` records everything about a fux binary that a
+behaviour-preserving change must leave identical: `rpc.discover`,
+`registry.schema`, the painted help, prefix column and menus with their
+reflected components, and every action pressed through a binding on a fresh
+server, with and without a pane, with the notice, overlay and layout counts it
+leaves. Two runs against one binary produce the same bytes, so a diff between
+two binaries is only what differs between them:
+
+```sh
+python3 fux-fuzz/tools/wire-capture.py /path/to/old-fux /tmp/old.json
+python3 fux-fuzz/tools/wire-capture.py target/debug/fux /tmp/new.json
+diff /tmp/old.json /tmp/new.json && echo identical
+```
+
 ## Harness checks
 
 ```sh
