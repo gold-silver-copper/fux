@@ -1455,3 +1455,28 @@ silent.
 `Settings`, then asks for a frame and checks its chrome is still painted. Exit
 0 reproduced, 1 not, 2 setup; `NEGATIVE_CONTROL=1` removes an unrelated
 resource, which does not affect painting.
+
+## 016 — A scene file read is unbounded (class 5)
+
+**The break.** `load_layout` read its scene file with `std::fs::read_to_string`,
+which reads the whole file into a `String` with no bound. The path is the
+caller's choice and an absolute one is accepted, so `load_layout` on
+`/dev/zero` grew the server to 1.4 GB in a few seconds on the way to
+exhausting memory, and a large regular file did the same; parsing a huge one
+also blocks every session on the ECS thread while it runs.
+
+fux already bounds the request body a caller sends over the socket (`MAX_BODY`,
+hunt 6 finding 007) for exactly this reason. A scene file read from disk is
+another way to make the server hold whatever a caller likes.
+
+**Found by** the scene-hostility sweep of hunt 8's pass 1.
+
+**Fixed** in the 016 commit: `read_scene` refuses a regular file over
+`MAX_SCENE` (8 MiB) by its length, and caps the read itself at that many bytes
+so a file reporting no length -- a pipe, `/dev/zero` -- cannot grow the buffer
+without bound. A saved layout is a hierarchy of nodes, far below the bound;
+the round-trip save and load test is unaffected.
+
+**Reproduction.** `fux-fuzz/repro/016-scene-file-read-is-unbounded.sh` loads
+`/dev/zero` and watches the server's RSS pass 1 GB. Exit 0 reproduced, 1 not,
+2 setup; `NEGATIVE_CONTROL=1` loads a small missing file, refused at once.

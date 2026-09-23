@@ -173,3 +173,30 @@ fn arbitrary_layout_changes_invalidate_only_the_owning_workspace() -> crate::tes
     assert_eq!(scene(app.world_mut(), replacement)?.1.entities.len(), 1);
     Ok(())
 }
+
+/// Hunt 8 finding 016: `load_layout` read its scene file whole with no bound,
+/// so an endless or huge file grew the server without limit. `read_scene`
+/// refuses a file over `MAX_SCENE`, by its stated length and, for a file that
+/// reports none, by the bytes it yields.
+#[test]
+fn a_scene_file_over_the_limit_is_refused() -> crate::testing::Outcome {
+    let dir = std::env::temp_dir().join(format!("fux-scene-limit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    // A regular file just over the limit is refused by its length.
+    let big = dir.join("big.scn.ron");
+    std::fs::write(&big, vec![b'a'; (MAX_SCENE + 1) as usize])?;
+    let error = read_scene(big.to_str().need()?).err().need()?;
+    assert!(error.contains("limit"), "{error}");
+    // One exactly at the limit is read (its contents are not valid RON, but
+    // that is deserialize's job, not the reader's).
+    let ok = dir.join("ok.scn.ron");
+    std::fs::write(&ok, vec![b'a'; MAX_SCENE as usize])?;
+    assert!(read_scene(ok.to_str().need()?).is_ok());
+    // An endless file reports no length; the read is still capped.
+    if std::path::Path::new("/dev/zero").exists() {
+        let error = read_scene("/dev/zero").err().need()?;
+        assert!(error.contains("limit"), "{error}");
+    }
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
