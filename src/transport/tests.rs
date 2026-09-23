@@ -49,6 +49,19 @@ fn socket_paths_are_validated_with_their_source_named() {
     let error = checked(&over, "--socket").err().unwrap_or_default();
     assert!(error.contains(&format!("{limit}-byte limit")), "{error}");
     assert!(error.contains(&over), "{error}");
+    // The message counts the socket path, not the variable it came from: an
+    // over-long XDG_RUNTIME_DIR is reported as the socket path being too long,
+    // with the variable named as its source (hunt 7's small note).
+    let long_dir = format!("/tmp/{}", "d".repeat(limit));
+    let error = socket_path_from("XDG_RUNTIME_DIR", &long_dir)
+        .err()
+        .unwrap_or_default();
+    let socket = format!("{long_dir}/fux/{DEFAULT_NAME}");
+    assert!(
+        error.contains(&format!("the socket path is {} bytes", socket.len())),
+        "{error}"
+    );
+    assert!(error.contains("from XDG_RUNTIME_DIR"), "{error}");
     assert_eq!(
         socket_path(Some("/tmp/x/fux.sock")).ok(),
         Some(PathBuf::from("/tmp/x/fux.sock"))
