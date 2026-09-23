@@ -13,6 +13,7 @@ mod paste;
 mod presentation;
 mod protocol;
 mod remote;
+mod routing;
 mod selection;
 mod server;
 mod terminal;
