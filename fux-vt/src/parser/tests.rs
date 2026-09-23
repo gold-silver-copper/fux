@@ -20,7 +20,7 @@ fn measure_ascii_run_against_scalar_dispatch() -> Result<(), Error> {
         for chunk in std::hint::black_box(&input).chunks(8192) {
             scalar.screen.begin()?;
             for &byte in chunk {
-                scalar.byte(byte, &mut |_| {})?;
+                scalar.byte(byte, &mut Replies(|_: &[u8]| {}))?;
             }
         }
         let b = started.elapsed().as_micros();
@@ -75,7 +75,7 @@ fn ascii_run_path_equals_scalar_dispatch_on_the_permanent_corpus() -> Result<(),
                 fast.process_with_replies(&operation, |r| a.push(r.to_vec()))?;
                 scalar.screen.begin()?;
                 for byte in &operation {
-                    scalar.byte(*byte, &mut |r| b.push(r.to_vec()))?;
+                    scalar.byte(*byte, &mut Replies(|r: &[u8]| b.push(r.to_vec())))?;
                 }
                 assert_eq!(a, b);
                 let (a, b) = (fast.screen(), scalar.screen());

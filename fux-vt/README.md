@@ -18,6 +18,7 @@ is vt100 0.16.2 plus fux's existing reply callback, not every xterm feature.
 | Printable ASCII / UTF-8 | Printable runs bypass state dispatch in ground state; unicode-width 0.2 supplies widths; incomplete UTF-8 survives calls; invalid input and U+FFFD are discarded like the baseline | `text`, `chunking` |
 | C0 | BS subtracts a column; HT advances to next fixed eight-column stop, clamped; LF/VT/FF advance/scroll without CR; CR goes to column zero; BEL, SI/SO and other unhandled C0 have no visible effect | `controls` |
 | ESC 7 / 8 | Save/restore position, origin and drawing attributes; saved cursor is clamped after resize | `saved_cursor` |
+| ESC = / > | DECKPAM / DECKPNM set and clear `application_keypad()` (default off; reset clears it). State only: fux-vt encodes no keypad input | `opt_in::keypad_mode_is_tracked_and_reset` |
 | ESC M / c | Reverse index / full reset; reset clears both buffers and primary history, modes and attributes, but never restarts row identity allocation | `reset`, `scrolling` |
 | CSI A B C D E F G H d | Relative up/down/right/left, next/previous line, horizontal absolute, cursor position, vertical absolute; inherited margin clamping and origin semantics | `cursor` |
 | CSI @ P X | Insert/delete/erase characters, bounded to the row; no orphan wide halves; insertion/deletion blanks have default attributes; erase uses current attributes | `editing`, `wide_edits` |
@@ -33,8 +34,25 @@ is vt100 0.16.2 plus fux's existing reply callback, not every xterm feature.
 | CSI ? 1005 / 1006 h/l | UTF-8 / SGR encoding state, latest set wins and matching reset restores legacy; fux still emits legacy bytes for non-SGR, not a new UTF-8 encoder | `mouse` |
 | CSI m | 0/reset; 1/bold, 2/dim (mutually exclusive inherited intensity); 3/italic, 4/underline, 7/inverse; resets 22/23/24/27; 30–37/40–47, 90–97/100–107; 39/49 defaults; 38/48 indexed and RGB via semicolon or colon forms supported by baseline | `sgr` |
 | CSI 5n / 6n / 0c | Replies `ESC[0n`, absolute one-based cursor report, `ESC[?1;2c`; missing DA parameter is zero; preserve baseline reply coordinates, including parked cursor; no replies for intermediates/private variants | `replies` |
-| OSC / DCS / APC / PM / SOS | Consume without storing payload or drawing it; OSC accepts BEL or ST, others ST; cancellation/recovery follows parser state rules | `ignored_strings` |
+| OSC / DCS / APC / PM / SOS | Consume without storing payload or drawing it; OSC accepts BEL or ST, others ST; cancellation/recovery follows parser state rules. With `Options::events` only, OSC payloads are buffered (see "Opt-in outputs") | `ignored_strings` |
 | Other sequences | Safely parse and ignore; recognized C0 inside CSI still executes; no leakage of ignored string payloads | `ignored_sequences`, `parser_bounds` |
+
+## Opt-in outputs
+
+`Parser::new` uses `Options::default()`: everything below is off, and the
+behaviour is exactly the table above. `Parser::with_options` enables either
+part independently; `Parser::process_with` delivers to a `Sink` whose
+`reply`/`event` methods default to discarding.
+
+| Option | Contract | Tests |
+| --- | --- | --- |
+| `events` | OSC 0 → `IconName` then `Title`; OSC 1 → `IconName`; OSC 2 → `Title`; OSC 52 `Pc;Pd` → `Clipboard { selection, data }` unless `Pd` is `?` (a query); other OSC numbers produce nothing. BEL executed in ground, escape or CSI state → `Bell` (BEL terminating an OSC is not a bell). Payloads are raw bytes. An OSC string is terminated by BEL or by ESC (the start of ST); CAN/SUB cancel it without an event. At most `OSC_PAYLOAD_LIMIT` (64 KiB) payload bytes are buffered per string; a longer string is consumed with no event and its buffer is released immediately. Events are identical under any chunking | `opt_in::events_*`, `opt_in::osc_payloads_are_bounded_and_cancellable`, fuzz header bit `0x10` |
+| `extended_replies` | DECXCPR `CSI ? 6 n` → `CSI ? row ; col R` (same coordinates as DSR 6n, including a parked cursor); secondary DA `CSI > c` / `CSI > 0 c` → `CSI > 1 ; 10 ; 0 c`; DECRQM `CSI ? Ps $ p` → `CSI ? Ps ; Pm $ y` with `Pm` 1 set / 2 reset for modes 1, 6, 7, 25, 47, 1049, 9, 1000, 1002, 1003, 1005, 1006, 2004 and 0 (not recognized) otherwise; ANSI DECRQM `CSI Ps $ p` → `CSI Ps ; 0 $ y`. Primary DA and DSR 5n/6n are unchanged | `opt_in::extended_replies_*`, fuzz header bit `0x20` |
+
+`Cell::new`, `Cell::wide_continuation` and `Attributes::new`/`with_*` let a
+consumer that stores or transports screen contents rebuild cells exactly;
+`Cell::new` refuses contents over `Cell::CONTENTS_CAPACITY` (22) bytes. Parser
+output never goes through them.
 
 ### Deliberate boundary
 
@@ -46,10 +64,12 @@ XTerm(411) evidence from `../verification/fux-vt-xterm.py`. Upstream dispatches 
 the latter remain ignored rather than pretending all alternate-screen aliases
 are equivalent. ESC D/E/H, CSI f/s/u/g, CSI 3J, character-set designation and
 programmable tab stops are not implemented by the baseline and remain ignored.
-ESC =/> affects upstream's application-keypad getter, but fux never acts on
-that getter: there is no newly added keypad encoding. No window-title, bell,
-clipboard, or window-resize side effects from child output. In particular OSC
-52 from a child cannot bypass fux's clipboard policy.
+ESC =/> set the `application_keypad()` getter, as upstream's did, but fux
+never acts on it: there is no keypad encoding. By default there are no
+window-title, bell, clipboard, or window-resize side effects from child output,
+and no OSC payload is retained. In particular OSC 52 from a child cannot bypass
+fux's clipboard policy: fux never enables `Options::events`. Window resize from
+child output remains unsupported in every mode.
 
 Excluded: paragraph reflow; graphics protocols; kitty keyboard; grapheme
 segmentation beyond a base glyph plus combining marks; history beyond its

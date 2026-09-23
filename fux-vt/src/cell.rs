@@ -18,6 +18,43 @@ pub struct Attributes {
 }
 
 impl Attributes {
+    /// Plain attributes with the given colours; add styles with the `with_*`
+    /// builders. For consumers that store or transport cells.
+    pub const fn new(foreground: Color, background: Color) -> Self {
+        Self {
+            foreground,
+            background,
+            flags: 0,
+        }
+    }
+    const fn with_flag(mut self, bit: u8, on: bool) -> Self {
+        self.flags = if on {
+            self.flags | bit
+        } else {
+            self.flags & !bit
+        };
+        self
+    }
+    #[must_use]
+    pub const fn with_bold(self, on: bool) -> Self {
+        self.with_flag(1, on)
+    }
+    #[must_use]
+    pub const fn with_dim(self, on: bool) -> Self {
+        self.with_flag(2, on)
+    }
+    #[must_use]
+    pub const fn with_italic(self, on: bool) -> Self {
+        self.with_flag(4, on)
+    }
+    #[must_use]
+    pub const fn with_underline(self, on: bool) -> Self {
+        self.with_flag(8, on)
+    }
+    #[must_use]
+    pub const fn with_inverse(self, on: bool) -> Self {
+        self.with_flag(16, on)
+    }
     pub fn bold(self) -> bool {
         self.flags & 1 != 0
     }
@@ -45,6 +82,26 @@ pub struct Cell {
 }
 
 impl Cell {
+    /// The most UTF-8 bytes a cell stores.
+    pub const CONTENTS_CAPACITY: usize = 22;
+
+    /// A cell built by a consumer that stores or transports screen contents.
+    /// `None` if `contents` exceeds [`Cell::CONTENTS_CAPACITY`]. Parser output
+    /// never needs this; it exists so a copy can be reconstructed exactly.
+    pub fn new(contents: &str, wide: bool, attributes: Attributes) -> Option<Self> {
+        let bytes = contents.as_bytes();
+        if bytes.len() > Self::CONTENTS_CAPACITY {
+            return None;
+        }
+        let mut cell = Self::blank(attributes);
+        cell.text.get_mut(..bytes.len())?.copy_from_slice(bytes);
+        cell.length = bytes.len() as u8 | if wide { 128 } else { 0 };
+        Some(cell)
+    }
+    /// The trailing half of a wide glyph: empty, default attributes.
+    pub fn wide_continuation() -> Self {
+        Self::continuation()
+    }
     pub fn contents(&self) -> &str {
         // Every write uses encode_utf8, and length always ends on a scalar boundary.
         self.text
