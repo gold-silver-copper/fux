@@ -1032,3 +1032,53 @@ fux's own: `disconnected`, `Detach`, and anything later that despawns what a
 request named. A fix that only adds `IsResource` to `IsViewer` closes this
 script and leaves the class open.
 
+## 010 — A signal ends a request, and the attachment with it (class 2, Linux)
+
+**The break.** Resizing the terminal window while a key is in flight ends the
+attachment:
+
+```
+fux: io: Interrupted system call (os error 4)
+```
+
+The user is returned to their shell mid-session. The server is fine and the
+panes keep running, so nothing is lost but the session; the point is that
+resizing a window is not a hostile act, and it is the one interaction
+guaranteed to raise a signal.
+
+**Where it comes from.** `UnixTransport::await_input` in `src/unix_http.rs`
+does one `read` and treats anything that is not `WouldBlock` or `TimedOut` as
+a transport error:
+
+```rust
+let amount = timed(self.stream.read(input), &timeout)?;
+```
+
+A read on a socket with `SO_RCVTIMEO` set is not restarted after a signal
+handler runs: it fails with `EINTR` (signal(7), under "Interruption of system
+calls and library functions by signal handlers"). fux sets a read timeout on
+every request, because `agent()` takes a whole-call budget. The frontend
+installs a `SIGWINCH` handler through `signal-hook` and sends every key, paste
+and resize through that transport on its main thread, so the two meet.
+
+macOS restarts the read, so nothing happens there. Neither behaviour is in the
+README, and the retry that would fix it is three lines: `EINTR` is not a
+failed request, it is a read to repeat.
+
+**How wide the window is.** On Linux `aarch64`, a frontend being resized while
+typing lasted 3 to 13 rounds before it died, over three runs. On Linux
+`x86_64`, where emulation widens the window, **25 to 27 of fux's 56 integration
+tests fail**, every one of them on `EINTR` from this transport, which fux's own
+tests use as their client. macOS survived 7278 rounds of the same script and
+8104 of an earlier variant.
+
+This is not a regression from this PR: `origin/main` fails the same way on
+Linux `x86_64`, with the same error on the same methods.
+
+**Reproduction.**
+`fux-fuzz/repro/010-a-signal-ends-a-request-and-the-attachment.sh`, which
+drives a real `fux attach` in a pty and resizes it. Exit 0 reproduced, 1
+verified not reproduced, 2 setup failure or not Linux;
+`NEGATIVE_CONTROL=1` types for the same twenty seconds without resizing and
+must survive, which it does: 6347 rounds.
+
