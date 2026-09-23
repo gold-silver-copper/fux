@@ -7,7 +7,7 @@ mod parser;
 mod screen;
 
 pub use cell::{Attributes, Cell, Color};
-pub use parser::Parser;
+pub use parser::{Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
 
 /// A row identity, never recycled within one parser's lifetime.

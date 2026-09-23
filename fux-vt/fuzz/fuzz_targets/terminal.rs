@@ -1,17 +1,58 @@
 #![no_main]
-use fux_vt::Parser;
+use fux_vt::{Event, OSC_PAYLOAD_LIMIT, Options, Parser, Sink};
 use libfuzzer_sys::fuzz_target;
 #[path = "../../tests/corpus/invariants.rs"]
 mod invariants;
+
+/// Records replies and events so whole and byte-at-a-time processing can be
+/// compared; every event payload must respect the OSC bound.
+#[derive(Default, PartialEq, Debug)]
+struct Record(Vec<Vec<u8>>);
+impl Sink for Record {
+    fn reply(&mut self, bytes: &[u8]) {
+        self.0.push(bytes.to_vec());
+    }
+    fn event(&mut self, event: Event<'_>) {
+        let mut entry = vec![0xff];
+        match event {
+            Event::Title(t) => {
+                entry.push(b'T');
+                entry.extend_from_slice(t);
+            }
+            Event::IconName(t) => {
+                entry.push(b'I');
+                entry.extend_from_slice(t);
+            }
+            Event::Bell => entry.push(b'B'),
+            Event::Clipboard { selection, data } => {
+                assert!(selection.len() + data.len() < OSC_PAYLOAD_LIMIT);
+                entry.push(b'C');
+                entry.extend_from_slice(selection);
+                entry.push(0);
+                entry.extend_from_slice(data);
+            }
+            _ => entry.push(b'?'),
+        }
+        assert!(entry.len() <= OSC_PAYLOAD_LIMIT + 2);
+        self.0.push(entry);
+    }
+}
 
 fuzz_target!(|data: &[u8]| {
     let (Some(&r), Some(&c), Some(&history)) = (data.first(), data.get(1), data.get(2)) else {
         return;
     };
-    let Ok(mut whole) = Parser::new(
+    // Header bits above the history count opt into events (0x10) and extended
+    // replies (0x20), so the opt-in paths are fuzzed alongside the default.
+    let options = Options {
+        events: history & 0x10 != 0,
+        extended_replies: history & 0x20 != 0,
+    };
+    let Ok(mut whole) = Parser::with_options(
         1 + u16::from(r % 16),
         1 + u16::from(c % 24),
         usize::from(history % 16),
+        options,
     ) else {
         return;
     };
@@ -75,18 +116,13 @@ fuzz_target!(|data: &[u8]| {
             operation => {
                 let length = (usize::from(operation) + 1).min(input.len());
                 let bytes = input.get(..length).unwrap_or_default();
-                let mut a = Vec::new();
-                let mut b = Vec::new();
-                assert!(
-                    whole
-                        .process_with_replies(bytes, |r| a.push(r.to_vec()))
-                        .is_ok()
-                );
+                let mut a = Record::default();
+                let mut b = Record::default();
+                assert!(whole.process_with(bytes, &mut a).is_ok());
                 for byte in bytes {
                     assert!(
                         split
-                            .process_with_replies(std::slice::from_ref(byte), |r| b
-                                .push(r.to_vec()))
+                            .process_with(std::slice::from_ref(byte), &mut b)
                             .is_ok()
                     );
                 }
