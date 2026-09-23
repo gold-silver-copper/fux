@@ -1141,3 +1141,65 @@ fn an_endless_event_ends_the_attachment_and_restores_the_terminal() -> Outcome {
     assert!(peer.sent.load(Ordering::Relaxed) > 16 << 20);
     Ok(())
 }
+
+/// The control for the case above: the same peer sending the same volume as
+/// ordinary newline-terminated frames must keep working, so the bound is a
+/// bound on one unending event and not on how much a server may send.
+#[test]
+fn a_stream_of_ordinary_frames_is_not_bounded_away() -> Outcome {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    let peer = EndlessPeer::start(true)?;
+    let pair = native_pty_system().openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    })?;
+    let mut reader = pair.master.try_clone_reader()?;
+    let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
+    command.arg("attach");
+    command.env("FUX_SOCKET", &peer.socket);
+    command.env("TERM", "xterm-256color");
+    command.env_remove("FUX_ENDPOINT");
+    let mut child = {
+        let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
+        pair.slave.spawn_command(command)?
+    };
+    drop(pair.slave);
+    let drain = thread::spawn(move || {
+        let mut chunk = [0_u8; 1 << 16];
+        while let Ok(n) = reader.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+        }
+    });
+
+    // Well past the volume that ends the unbounded case, the frontend is still
+    // attached and painting.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while peer.sent.load(Ordering::Relaxed) < (96 << 20) {
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("the frontend exited early with {status:?}").into());
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let sent = peer.sent.load(Ordering::Relaxed);
+    assert!(
+        sent > 64 << 20,
+        "the peer only sent {sent} bytes, less than the bound being tested"
+    );
+    assert!(
+        child.try_wait()?.is_none(),
+        "the frontend stopped on a stream of ordinary frames"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(pair.master);
+    let _ = drain.join();
+    Ok(())
+}
