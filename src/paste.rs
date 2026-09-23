@@ -197,6 +197,97 @@ mod tests {
             Some(text.as_bytes())
         );
     }
+    /// A tiny deterministic PRNG, so a property failure reproduces from its seed.
+    fn lcg(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *state >> 33
+    }
+
+    /// Property: the events the decoder emits do not depend on how the same
+    /// bytes are split into chunks. This is the guarantee the fragmented-paste
+    /// design rests on, checked here over random adversarial byte streams
+    /// (escapes, partial and nested paste markers, control bytes, UTF-8
+    /// fragments) rather than one hand-written sequence. cargo-fuzz would need
+    /// a standalone target, but `paste.rs` pulls in bevy_ecs and four fux
+    /// modules, so a libfuzzer harness would compile all of fux; a property
+    /// test is the isolated tool and runs on stable in every CI run.
+    #[test]
+    fn chunking_never_changes_what_the_decoder_emits() -> crate::testing::Outcome {
+        // Bytes drawn to hit the parser's own alphabet often: paste markers,
+        // escapes, and a few multibyte leaders.
+        let alphabet: &[&[u8]] = &[
+            b"\x1b[200~",
+            b"\x1b[201~",
+            b"\x1b",
+            b"[",
+            b"2",
+            b"0",
+            b"~",
+            b"a",
+            b"\x02",
+            b"\r",
+            b"\n",
+            b"\x00",
+            b"\xe7\x95\x8c",
+            b"\xff",
+            b"z",
+        ];
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        for _ in 0..2000 {
+            let mut bytes = Vec::new();
+            for _ in 0..(lcg(&mut seed) % 40) {
+                let index = (lcg(&mut seed) as usize) % alphabet.len();
+                if let Some(piece) = alphabet.get(index) {
+                    bytes.extend_from_slice(piece);
+                }
+            }
+            // The reference: everything at once, then a timeout to flush.
+            let mut whole = Decoder::default();
+            let mut expected = Vec::new();
+            whole.bytes(&bytes, |event| expected.push(event));
+            whole.timeout(|event| expected.push(event));
+            // The same bytes split at random boundaries must emit the same.
+            let mut split = Decoder::default();
+            let mut got = Vec::new();
+            let mut rest = bytes.as_slice();
+            while !rest.is_empty() {
+                let take = 1 + (lcg(&mut seed) as usize) % rest.len();
+                let (head, tail) = rest.split_at(take);
+                split.bytes(head, |event| got.push(event));
+                rest = tail;
+            }
+            split.timeout(|event| got.push(event));
+            assert_eq!(
+                describe(&got),
+                describe(&expected),
+                "chunking changed the events for {bytes:?}"
+            );
+            // And the pending paste buffer is always bounded.
+            assert!(
+                split
+                    .paste
+                    .as_ref()
+                    .is_none_or(|paste| paste.len() <= LIMIT + 1)
+            );
+        }
+        Ok(())
+    }
+
+    /// Inputs compared by shape and payload, since `Input` is not `PartialEq`.
+    fn describe(events: &[Input]) -> Vec<String> {
+        events
+            .iter()
+            .map(|event| match event {
+                Input::PasteBegin => "begin".to_owned(),
+                Input::Paste { text } => format!("paste:{text:?}"),
+                Input::Key { key, modifiers } => format!("key:{key:?}:{modifiers:?}"),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
     #[test]
     fn oversized_paste_is_bounded_and_drains_before_following_keys() -> crate::testing::Outcome {
         let mut decoder = Decoder::default();
