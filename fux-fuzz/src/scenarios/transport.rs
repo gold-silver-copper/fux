@@ -62,9 +62,6 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     })?;
 
     let discover = r#"{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}"#;
-    let watch = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"fux.frame+watch","params":{{"viewer":{viewer}}}}}"#
-    );
 
     // (payload, must the reply mention this?) -- None where no reply is owed.
     let mut cases: Vec<(String, Vec<u8>, Option<&str>)> = vec![
@@ -353,12 +350,15 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         "application: the driver stopped painting after a refused batch watch",
     )?;
 
-    // A watch opened and dropped without reading detaches only its own viewer.
+    // A watch opened and dropped without reading detaches its own viewer. It
+    // is aimed at the spare, which has no frontend: detaching the driver's
+    // viewer would exit the driver's frontend, and an exited frontend is what
+    // every other case here is checking has not happened.
     let before = s.query("fux::model::Viewer")?.len();
     {
         let mut stream = UnixStream::connect(s.socket())?;
         stream.set_read_timeout(Some(READ))?;
-        stream.write_all(&post(&watch))?;
+        stream.write_all(&post(&spare_watch))?;
         stream.flush()?;
         // Read the stream's first bytes, so the request is dispatched before
         // the connection goes away.
@@ -369,5 +369,9 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
         Ok(s.query("fux::model::Viewer")?.len() < before)
     })?;
     s.healthy()?;
+    ensure(
+        !s.frame(viewer, 24, 80)?.is_empty(),
+        "application: the driver stopped painting after another viewer detached",
+    )?;
     Ok(())
 }
