@@ -84,7 +84,11 @@ jobs:
           # and skips every fux-vt test.
           cargo fmt --all --check 2>&1 | tee "$CI_LOGS/fmt.log"
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/clippy.log"
-          cargo test --workspace --locked 2>&1 | tee "$CI_LOGS/test.log"
+          # --test-threads=2: the integration tests drive real servers, PTYs and
+          # frontends whose internal deadlines need CPU headroom. Running the
+          # whole suite at the runner's full width starved them and flaked
+          # timing-sensitive cases; two keeps each responsive on a small runner.
+          cargo test --workspace --locked -- --test-threads=2 2>&1 | tee "$CI_LOGS/test.log"
 
       - name: fux-fuzz gates
         working-directory: fux-fuzz
@@ -92,7 +96,7 @@ jobs:
           set -euo pipefail
           cargo fmt --all --check 2>&1 | tee "$CI_LOGS/fuzz-fmt.log"
           cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/fuzz-clippy.log"
-          cargo test --locked 2>&1 | tee "$CI_LOGS/fuzz-test.log"
+          cargo test --locked -- --test-threads=2 2>&1 | tee "$CI_LOGS/fuzz-test.log"
 
       - name: Repro scripts give their recorded verdicts
         # fux-fuzz/repro/expected.tsv holds the exit code each script must give
