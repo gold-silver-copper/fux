@@ -1024,3 +1024,29 @@ fn frame_requests_for_impossible_entity_ids_are_refused() -> Outcome {
     assert!(!server.screen(viewer)?.is_empty());
     Ok(())
 }
+
+/// Hunt 8 finding 015: fux reads `Settings` with `World::resource` from many
+/// systems, so removing it over BRP left a server that answered every request
+/// but painted nothing, silently. Removal now restores the default and logs,
+/// so the frontend keeps working.
+#[test]
+fn removing_settings_over_brp_keeps_the_server_painting() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+    assert!(server.screen(viewer)?.contains("main"));
+    // The workspace exists before the removal.
+    assert_eq!(server.query("fux::model::Workspace")?.rows().count(), 1);
+    server.rpc(
+        "world.remove_resources",
+        json!({"resource": "fux::assets::Settings"}),
+    )?;
+    // A frame still paints its chrome, and a command that reads Settings runs.
+    let painted = server.screen(viewer)?;
+    assert!(
+        painted.contains("main"),
+        "frame stopped painting: {painted:?}"
+    );
+    server.split(viewer, "horizontal", Some("exec /bin/cat"))?;
+    assert_eq!(server.query("fux::model::PaneView")?.rows().count(), 2);
+    Ok(())
+}

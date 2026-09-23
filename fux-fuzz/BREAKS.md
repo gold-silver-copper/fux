@@ -1409,3 +1409,30 @@ numbers; it exits 2 where none is available. Locally,
 `FUX_LINUX_TMP=ext4 fux-fuzz/linux/run.sh` gives the container an ext4
 `TMPDIR` like the runner's, which is new in this run for exactly this reason.
 `NEGATIVE_CONTROL=1` runs it on `/dev/shm`, a tmpfs, where it passes.
+
+## 015 — Removing the `Settings` resource stops painting, silently (class 6)
+
+**The break.** `world.remove_resources` on `fux::assets::Settings` left a
+server that answered `rpc.discover` and `world.query` but painted nothing. fux
+reads `Settings` with `World::resource` from about a dozen systems -- the bar,
+command execution, spawning a pane -- and that method panics when the resource
+is absent, so every `fux.frame` failed inside the fallback error handler,
+logged and swallowed, with nothing said to the attached session.
+
+**Found by** the resource-entity sweep carried over from hunt 7's clean-areas
+table, which had recorded "removing the Settings resource: server survives;
+frames stop painting" without filing it. It is a finding: the README calls raw
+resource mutation trusted low-level access, but a server that stops serving
+without a notice or a log is a silent failure, not a documented trade-off.
+
+**Fixed** in `remote::remove_resources`: the guard delegates to the stock
+handler, then, if `Settings` is now gone, restores it to its default and logs
+a warning. Removal stays a real operation for every other resource; only the
+one resource fux cannot run without is restored, and the restoration is not
+silent.
+
+**Reproduction.**
+`fux-fuzz/repro/015-removing-settings-stops-painting-silently.sh` removes
+`Settings`, then asks for a frame and checks its chrome is still painted. Exit
+0 reproduced, 1 not, 2 setup; `NEGATIVE_CONTROL=1` removes an unrelated
+resource, which does not affect painting.
