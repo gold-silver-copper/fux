@@ -1082,6 +1082,14 @@ verified not reproduced, 2 setup failure or not Linux;
 `NEGATIVE_CONTROL=1` types for the same twenty seconds without resizing and
 must survive, which it does: 6347 rounds.
 
+**It is also why the Linux smoke has three failures.** `resize` and
+`adversarial` fail with "premature frontend exit" or "viewer disappeared while
+resizing", and `origin/main` fails the same two scenarios on the same
+platform. The harness drives real frontends and resizes them, which is exactly
+the collision above. The third, `history`, passes when run alone and failed
+once in a full smoke on an observation deadline; that one is timing under
+load, not this.
+
 ## 011 — fux does not build on Linux without ALSA headers (class: platform)
 
 **The break.** `cargo build` fails on a clean Debian 12 with only a Rust
