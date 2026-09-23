@@ -374,3 +374,41 @@ Stream convergence (`STREAM-TIMES`, five measured runs each, final frame
 equal in every run): catch-up 1 ms both versions; advancing 13 ms before /
 12 ms after; convergence 130 ms before / 129 ms after
 (`paired-performance-1`).
+
+## fux-vt 0.1.1: opt-in outputs for koh (branch `feat/fux-vt-for-koh`)
+
+Additive, opt-in API for a consumer that mirrors a terminal elsewhere (koh):
+`Options { events, extended_replies }`, `Event`/`Sink`/`process_with`,
+`Screen::application_keypad`, and `Cell::new`/`Cell::wide_continuation`/
+`Attributes::new`+`with_*`. Contract rows: README "Opt-in outputs" and the
+ESC =/> row. `Parser::new` keeps `Options::default()`; fux never enables either
+option, so fux's replies, events (none) and retained payloads (none) are
+unchanged.
+
+Evidence (macOS arm64, Rust 1.98.1, nightly 2026-09-20 for fuzzing):
+
+- `tests/opt_in.rs` (7 tests): defaults, events, chunk invariance, the 64 KiB
+  OSC bound and cancellation, extended replies, keypad state, exact cell
+  reconstruction. `cargo test --workspace --locked`: 176 passed, 0 failed.
+- Fuzz target: header bits 0x10/0x20 enable the options; events join the
+  whole-vs-byte comparison. Two clean 600-second runs (391,478 and 445,601
+  executions): `/tmp/fux-vt-evidence/fuzz-optin-600.log`, `fuzz-final-600.log`.
+- `fux-vt-checks.py`: every check through `dependency-tree` passes. The
+  `source-audit` check fails only on the pre-existing `vt100` crates.io keyword in
+  `fux-vt/Cargo.toml` (also fails on `main`); `root-test-audit`, history-copy
+  oracle, memory plateau, parser and row-reuse measurements pass when run
+  individually.
+- `fux-vt-xterm.py`: all nine cases byte-identical to the recorded results.
+- `fux-vt-gates.py`: scenarios 7/7, traces 24/24, stress 4/4. The 600-second
+  smoke run had one failure, case 46 (`scale`, `timeout: global` at 405 s under
+  heavy machine load; diagnostics and cleanup OK). Rerun alone, `scale` passed
+  on this branch (282 s) and on `main` (541 s).
+- `tests/remote_lifecycle.rs::blocked_terminal_paint_does_not_block_stream_drain`
+  is timing-sensitive under load: it failed once in a loaded full run, and
+  under saturation it failed 1/30 on `main` and 0/30 on this branch. Otherwise
+  it passes.
+- Performance: one paired run (`/tmp/fux-vt-evidence/performance`) converged
+  every stream (median convergence 127 ms before / 129 ms after) and flagged
+  small, noisy scale-median deltas in both directions (sum of medians 1903 ms
+  before / 1820 ms after). The noise rerun was stopped at the user's request
+  (the machine was busy), so no performance claim is made here.
