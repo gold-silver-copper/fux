@@ -939,3 +939,27 @@ the specific places where the result should be expected to differ:
    the request body, refused with a typed error (007), and a bound on the
    frontend's SSE line, frame and paint, which ends the attachment with a
    message rather than growing (008). (Findings 007, 008.)
+
+---
+
+# Where fux breaks under hostile input (hunt 7)
+
+> **Status: findings, not fixes.** This run finds and records; the fixes are a
+> later PR. Everything below is reproducible on the commit this section was
+> added in.
+
+This hunt attacked what changed after hunt 6: the guards that replaced two
+stock BRP methods, the UI hit test rebuilt on `bevy_picking` when
+`bevy_ui::Interaction` became unusable in Bevy 0.20, the four new size limits,
+and Linux, which no hunt had run on and which fux 0.12.0 is nonetheless
+published for.
+
+Severity classes are hunt 5's, unchanged. Two additions for this run: a
+behaviour difference between macOS and Linux that the README does not state,
+and a limit that refuses a legitimate workload.
+
+Linux runs are in a container built by `fux-fuzz/linux/Dockerfile`, driven by
+`fux-fuzz/linux/run.sh`: Debian 12, glibc 2.36, Rust 1.98.1, kernel 7.0.14
+(OrbStack), `aarch64` and `x86_64`, as an ordinary user (uid 1000), because
+root ignores the socket permissions that are fux's access control.
+
