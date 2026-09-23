@@ -5,6 +5,10 @@ edition = "2024"
 rust-version = "1.95"
 license = "MIT"
 description = "Bounded terminal emulation for fux"
+repository = "https://github.com/gold-silver-copper/fux"
+readme = "README.md"
+keywords = ["terminal", "vt100", "ansi", "emulator", "parser"]
+categories = ["command-line-interface", "parser-implementations"]
 
 [dependencies]
 unicode-width = "0.2"
