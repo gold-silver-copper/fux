@@ -1,0 +1,259 @@
+name: CI
+
+# fux is developed on macOS and published for both platforms, and the two
+# differ in ways that have hidden real defects (hunt 7 findings 010-013), so
+# every change runs on both.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # The long checks: the full fux-fuzz smoke, every trace, and the fuzzers.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The pi SDK the agent-exercise harness loads; pinned to the version the
+  # recorded campaigns ran on. Its tests make no model calls.
+  PI_VERSION: 0.87.1
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        # bevy_remote pulls bevy_dev_tools, bevy_audio and through them
+        # alsa-sys, which needs these to build: hunt 7 finding 011.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev
+
+      - name: Platform and pinned toolchain
+        run: |
+          set -euo pipefail
+          CI_LOGS="$RUNNER_TEMP/fux-ci"
+          echo "CI_LOGS=$CI_LOGS" >> "$GITHUB_ENV"
+          mkdir -p "$CI_LOGS"
+          {
+            uname -a
+            if [[ "$RUNNER_OS" == macOS ]]; then sw_vers; else cat /etc/os-release; fi
+            ls -l /bin/sh
+            ulimit -n
+            rustup show
+            rustc -Vv
+            cargo -V
+          } 2>&1 | tee "$CI_LOGS/platform.log"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: verify-${{ matrix.os }}
+          workspaces: |
+            . -> target
+            fux-fuzz -> target
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Workspace gates (fux and fux-vt)
+        run: |
+          set -euo pipefail
+          # --workspace matters: without it cargo runs only the root package
+          # and skips every fux-vt test.
+          cargo fmt --all --check 2>&1 | tee "$CI_LOGS/fmt.log"
+          cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/clippy.log"
+          cargo test --workspace --locked 2>&1 | tee "$CI_LOGS/test.log"
+
+      - name: fux-fuzz gates
+        working-directory: fux-fuzz
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check 2>&1 | tee "$CI_LOGS/fuzz-fmt.log"
+          cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/fuzz-clippy.log"
+          cargo test --locked 2>&1 | tee "$CI_LOGS/fuzz-test.log"
+
+      - name: Repro scripts give their recorded verdicts
+        # fux-fuzz/repro/expected.tsv holds the exit code each script must give
+        # on each platform; a fixed finding that comes back turns this red.
+        run: |
+          set -euo pipefail
+          cargo build --locked
+          sh fux-fuzz/repro/check.sh target/debug/fux 2>&1 | tee "$CI_LOGS/repros.log"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Agent-exercise harness tests (no model calls)
+        run: |
+          set -euo pipefail
+          cargo build --release --locked
+          npm install --global "@earendil-works/pi-coding-agent@${PI_VERSION}"
+          cd fux-agent-exercises
+          node --test --test-concurrency=1 "tests/*.test.ts" 2>&1 | tee "$CI_LOGS/exercises.log"
+
+      - name: Packaging
+        # fux depends on the fux-vt beside it, so the two are packaged
+        # together: `-p fux` alone fails whenever fux needs a fux-vt that is
+        # not yet on crates.io.
+        run: |
+          set -euo pipefail
+          cargo publish --dry-run --workspace --locked 2>&1 | tee "$CI_LOGS/package.log"
+
+      - name: Whitespace in the committed range
+        if: runner.os == 'Linux'
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          git diff --check
+          if [[ "$EVENT" != pull_request && "$EVENT" != push ]]; then
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$HEAD"
+          if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+            BASE=$(git hash-object -t tree /dev/null)
+          else
+            git fetch --no-tags --depth=1 origin "$BASE"
+          fi
+          git diff --check "$BASE" "$HEAD"
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-failure-${{ matrix.os }}
+          path: ${{ runner.temp }}/fux-ci/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  smoke:
+    name: smoke and traces (${{ matrix.os }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: smoke-${{ matrix.os }}
+          workspaces: |
+            . -> target
+            fux-fuzz -> target
+          save-if: false
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cargo build --locked
+          (cd fux-fuzz && cargo build --locked)
+
+      - name: Every trace
+        run: |
+          set -euo pipefail
+          failed=0
+          for trace in fux-fuzz/traces/*.json; do
+            if ! fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --replay "$trace" \
+                --seconds 600 --output "$RUNNER_TEMP/fux-fuzz"; then
+              echo "::error::trace failed: $trace"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Full smoke
+        run: |
+          fux-fuzz/target/debug/fux-fuzz --fux target/debug/fux --seconds 600 \
+            --output "$RUNNER_TEMP/fux-fuzz"
+
+      - name: Upload failed bundles
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: smoke-failure-${{ matrix.os }}
+          path: ${{ runner.temp }}/fux-fuzz/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  fuzz:
+    name: fuzz targets
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # libFuzzer needs a nightly compiler; the targets exercise pure parsers,
+    # so one platform is enough for them.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Nightly toolchain and cargo-fuzz
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Run each target
+        run: |
+          set -euo pipefail
+          # Every crate with a cargo-fuzz directory beside it.
+          for crate in fux-vt .; do
+            [ -f "$crate/fuzz/Cargo.toml" ] || continue
+            for target in $(cd "$crate" && cargo +nightly fuzz list); do
+              echo "::group::$crate $target"
+              (cd "$crate" && cargo +nightly fuzz run "$target" -- -max_total_time=300)
+              echo "::endgroup::"
+            done
+          done
+
+      - name: Upload crashes
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-artifacts
+          path: "**/fuzz/artifacts/"
+          retention-days: 30
+          if-no-files-found: ignore
