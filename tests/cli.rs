@@ -203,3 +203,26 @@ fn ls_json_and_list_keys_have_their_documented_shapes() -> Outcome {
     assert!(help.stdout.contains("capture-pane"));
     Ok(())
 }
+
+/// A shell setup that writes during its startup and then discards pending
+/// input (as some line editors and plugins do) must not lose a typed
+/// command: fux types it only once the output has gone quiet. The stand-in
+/// "shell" prints a line every 20 ms for about 200 ms, flushes the
+/// terminal's pending input partway through, and then starts sh.
+#[test]
+fn a_typed_command_survives_a_startup_that_writes_then_discards_input() -> Outcome {
+    let shell = "set shell /bin/sh -c \"(for i in 1 2 3 4 5 6 7 8 9 10; do echo starting-\\$i; sleep 0.02; done) & sleep 0.1; python3 -c 'import termios; termios.tcflush(0, termios.TCIFLUSH)'; wait; exec /bin/sh\"";
+    let server = Server::start(shell)?;
+    server.ok(&["split", "-h", "-t", "%1", "--", "echo", "typed-after-quiet"])?;
+    let result = eventually("the typed command's output", || {
+        let screen = server.ok(&["capture-pane", "-t", "%2"])?;
+        Ok(screen.lines().any(|l| l == "typed-after-quiet"))
+    });
+    if result.is_err() {
+        return Err(format!(
+            "the typed command was lost; %2 shows:\n{}",
+            server.ok(&["capture-pane", "-t", "%2"])?
+        ));
+    }
+    Ok(())
+}
