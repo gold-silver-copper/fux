@@ -974,14 +974,16 @@ impl Session {
                 let Some(p) = self.panes.get_mut(&pane) else {
                     return Err(format!("no pane {pane}"));
                 };
+                // Each argument is a key name (`C-c`, `Enter`, `a`), or, as in
+                // tmux, text sent as it is; `-l` makes every argument text.
                 let mut bytes = Vec::new();
-                if literal {
-                    bytes = keys.join(" ").into_bytes();
-                } else {
-                    let application = p.screen().application_cursor();
-                    for key in &keys {
-                        let press: KeyPress = key.parse()?;
-                        bytes.extend(crate::encode::key_bytes(press, application));
+                let application = p.screen().application_cursor();
+                for key in &keys {
+                    match key.parse::<KeyPress>() {
+                        Ok(press) if !literal => {
+                            bytes.extend(crate::encode::key_bytes(press, application))
+                        }
+                        _ => bytes.extend_from_slice(key.as_bytes()),
                     }
                 }
                 p.input.push(bytes)?;
