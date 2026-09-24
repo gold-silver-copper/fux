@@ -394,7 +394,18 @@ impl Session {
         self.next_client += 1;
         let mut view = View::new(id, rows.clamp(1, 4096), cols.clamp(1, 4096), ws);
         if let Some(error) = &self.config_error {
-            view.error(format!("config: {error}"));
+            // The bar is narrow: the file's name, not its whole path, which
+            // the server's log has.
+            let shown = match &self.config_path {
+                Some(path) => {
+                    let name = path
+                        .file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    error.replacen(&path.display().to_string(), &name, 1)
+                }
+                None => error.clone(),
+            };
+            view.error(format!("config: {shown}"));
         }
         self.views.insert(id, view);
         self.settle();
