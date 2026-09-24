@@ -424,7 +424,8 @@ impl Terminal {
     /// The reflected state this terminal publishes. The sync system copies it
     /// every update; `terminate` also publishes it in the step that ends the
     /// process, as Launch removal does, so a caller never reads a process that
-    /// is already reaped as running.
+    /// is already reaped as running, and a frame publishes the size it gives
+    /// the PTY (`published`).
     pub(crate) fn state(&self) -> ProcessState {
         let (rows, cols) = self.published_size;
         ProcessState {
@@ -433,6 +434,13 @@ impl Terminal {
             status: self.status.clone(),
             revision: self.revision,
         }
+    }
+
+    /// Takes the emulator's current size as the published one and returns
+    /// the state to publish.
+    pub(crate) fn published(&mut self) -> ProcessState {
+        self.published_size = self.parser.screen().size();
+        self.state()
     }
 
     /// Terminates the owned process group, reaps its leader, and retains the screen.
@@ -773,9 +781,9 @@ fn update_terminals(
             let _ = terminal.finish(live, Some(observed));
             terminal.revision = terminal.revision.wrapping_add(1);
         }
-        terminal.published_size = terminal.parser.screen().size();
+        let published = terminal.published();
         let Some(state) = &mut state else { continue };
-        state.set_if_neq(terminal.state());
+        state.set_if_neq(published);
     }
     if remaining_output {
         notify.wake.notify();
