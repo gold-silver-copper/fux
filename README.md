@@ -159,6 +159,7 @@ tab and workspace.
 | `fux reload` | run the config file again over the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
 | `fux list-keys` | key names, and the current bindings |
+| `fux help`, `fux --version` | usage, and the version |
 | `fux detach [-c CLIENT]` | detach a client |
 
 These act on one client's screen. From a key or the `:` prompt they act on
