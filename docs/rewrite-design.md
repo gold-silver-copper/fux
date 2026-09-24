@@ -25,7 +25,10 @@ tree, a socket and a render loop.
 | Detach and reattach | Yes: a server outlives the terminal that started it. |
 | Several clients on one server | Yes, each with an **independent view**, as today. |
 | Save and load layouts | No. |
-| Mouse and copy mode | Yes, in the first version. |
+| Mouse | **None.** fux never enables mouse reporting; the outer terminal keeps its own mouse behaviour. |
+| Selecting and copying | A keyboard **copy/select mode**: a movable cursor over the pane and its history. |
+| Menus | The navigable command column, tab and workspace choosers, and pane/tab/workspace action menus, all keyboard-driven. |
+| Configuration | A file of fux commands. Zero dependencies. |
 | Control surface | The `fux` CLI only. No RPC, HTTP or JSON-RPC. |
 | Bevy | None. No async runtime either. |
 | System calls | `rustix`, not `nix`. `portable-pty` is replaced by rustix's PTY API. |
@@ -41,12 +44,12 @@ touched.
 
 | From | What | Bevy/nix today |
 | --- | --- | --- |
-| `src/encode.rs` | Key and mouse encoding for panes (application cursor, SGR mouse) | none |
+| `src/encode.rs` | Key encoding for panes (application cursor, modifiers); its mouse half is dropped | none |
 | `src/paste.rs` | Bracketed-paste decoding, bounded to 64 KiB | trivial |
 | `src/transport.rs` | Socket path rules, 0700 directory checks, lock, stale-socket replacement, inode pin (014) | nix → rustix |
 | `src/terminal.rs` | Session hangup on close (013), stopped ≠ exited (020), byte-bounded input (021), bounded drain, EINTR retry (010) | nix/portable-pty → rustix |
-| `src/selection.rs` | Copy-mode selection over fux-vt row IDs | light |
-| `src/chrome.rs` | The bottom bar | light |
+| `src/selection.rs` | Selection over fux-vt row IDs, surviving output and scrolling | light |
+| `src/chrome.rs`, `src/interaction.rs`, `src/actions.rs` | The bottom bar, the command column, choosers, action menus, prompts; the action list with labels, groups and availability | light to moderate |
 
 **Deleted:** `src/`, `tests/`, `fux-fuzz/` (a BRP-driven harness), and
 `fux-agent-exercises/` (BRP-driven agent campaigns). Also deleted:
@@ -139,7 +142,8 @@ Each attached client has its own view:
 - its size, and its current workspace;
 - per workspace, the selected tab; per tab, the focused and last-focused pane;
 - zoom, and scrollback per pane;
-- its mode: normal, prefix, prompt, confirm, copy (with selection) or help;
+- its mode: normal, command column, chooser, action menu, prompt, confirm, or
+  copy/select (with its cursor and selection);
 - its last sent frame, used for diffing.
 
 A PTY's size is the smallest rectangle it has among the clients currently
@@ -149,23 +153,25 @@ Every change is published at once. There is no "next update".
 ### Input
 
 The client is a dumb pipe. It puts the outer terminal in raw mode, enables
-SGR mouse (1000/1002/1003/1006), bracketed paste and focus events, and
-forwards raw bytes. The server decodes them, per client:
+bracketed paste and focus events, and forwards raw bytes. It never enables
+mouse reporting. The server decodes the bytes, per client:
 
-1. **Decoding:** keys (CSI/SS3, UTF-8, a lone Escape after 35 ms), SGR mouse,
-   and bracketed-paste envelopes, bounded as before.
+1. **Decoding:** keys (CSI/SS3, UTF-8, a lone Escape after 35 ms) and
+   bracketed-paste envelopes, bounded as before. Mouse sequences, which a
+   correctly configured outer terminal never sends, are dropped.
 2. **Routing by mode:**
-   - Prefix, prompt, confirm, copy and help modes own their input.
+   - The command column, choosers, menus, prompts, confirmations and
+     copy/select mode own their input.
    - The prefix key twice sends it literally.
    - Pastes never become commands.
    - Otherwise the input goes to the focused pane, re-encoded for that pane's
      modes by the ported `encode.rs`.
-3. **Mouse:**
-   - Click to focus; click a tab in the bar to select it.
-   - Wheel and drag scroll or select, unless the application asked for the
-     mouse. Shift overrides that.
-   - Application mouse events get pane-relative coordinates.
-   - Separators and the bar never click through to a pane.
+
+**No mouse, deliberately.** Programs in panes that ask for the mouse (`vim`
+with `mouse=a`, `htop`) get nothing, because the outer terminal is never put
+in a mouse mode. Its wheel and text selection keep working natively, over
+what is on screen. Selecting across history, or within one pane of a split,
+is what copy/select mode is for.
 
 Decoding on the server means one decoder and no key protocol to version, and
 input can be tested without a PTY.
@@ -184,13 +190,70 @@ Per client, on a 16 ms coalescing tick:
    drains again, send one full repaint. A slow client never grows the server
    and never stalls the loop.
 
-### Copy mode and clipboard
+### Menus and overlays
 
-- Keyboard copy mode (`h/j/k/l`, `u/d`, Space, `y`/Enter, `q`/Esc) and mouse
-  drag selection, over fux-vt row IDs, ported from `selection.rs`.
-- Copying emits OSC 52 to the client that copied. It is off by default and
-  enabled by `clipboard = "write-only"`, bounded as today. Nothing ever reads
-  the clipboard.
+All of these are keyboard-driven, drawn by the same renderer above the bar,
+and private to the client that opened them:
+
+- **The command column:** opened by the prefix key. It lists every binding,
+  grouped (Panes, Focus, Tabs, Workspaces, Session, Other).
+  - Up/Down or `j/k`, PageUp/PageDown and Home/End navigate; Enter runs the
+    selected command; Esc cancels.
+  - Pressing a bound key runs that binding directly.
+  - Unavailable commands are dimmed, and running one explains why.
+  - The list scrolls with `▲ n more` / `▼ n more` markers.
+  - This is the only help surface.
+- **Choosers:** a tab chooser and a workspace chooser, listing each item with
+  its panes and the current one marked. Enter selects; `r` renames; `x` closes
+  (with confirmation).
+- **Action menus** for the focused pane, the current tab and the current
+  workspace:
+  - they hold what has no default key (terminate, reorder, swap, move to an
+    existing or new tab or workspace, rename, close);
+  - a menu acts on the item it was opened for, even if focus changes;
+  - a disappeared item is never retargeted.
+- **The command prompt** (`:`): type any fux command, with the same grammar as
+  the CLI and the config file. Its output or error shows as a notice.
+- **Prompts and confirmations:** a one-line editor (rename) and y/n
+  confirmations for interactive closes.
+
+### Copy/select mode
+
+A keyboard cursor over the focused pane, which is frozen for this client while
+the mode is on. Output keeps arriving, and other clients see it live.
+
+- **Enter it:** prefix `c`. The cursor starts at the pane's text cursor. The
+  bar shows `COPY` with the cursor's line in history.
+- **Move:**
+  - `h j k l` or the arrows;
+  - `w b e` and `W B E` by word;
+  - `0 ^ $` within a line;
+  - `H M L` within the view;
+  - `g` and `G` to the top of history and to the live bottom;
+  - Ctrl-U/D half a page, PageUp/PageDown a page.
+
+  The view scrolls when the cursor leaves it.
+- **Search:** `/` and `?`, then `n` and `N`, over the whole history.
+- **Select:** `v` characters, `V` lines, Ctrl-V a block (rectangle); `o` swaps
+  the selection's ends; `v` again clears it.
+- **Copy:** `y` or Enter copies and leaves the mode. `q` or Esc leaves without
+  copying.
+- **Where copies go:**
+  - into fux's paste buffers, the last 16 by default, on the server; prefix
+    `P` pastes the newest into the focused pane (bracketed if the pane asked
+    for it);
+  - `fux list-buffers`, `fux show-buffer` and `fux paste-buffer -t %N` work
+    from scripts;
+  - and, when `clipboard write-only` is set, to the copying client's own
+    terminal as OSC 52.
+- **Selection rules:**
+  - rows are tracked by fux-vt row ID, as today, so new output and scrolling
+    do not break a selection over rows that did not change;
+  - wide glyphs and combining marks are kept whole;
+  - soft-wrapped rows join without an invented newline, and trailing blanks
+    are trimmed;
+  - a copy is capped at 262,144 cells, and the clipboard at 1 MiB encoded;
+  - nothing ever reads the clipboard.
 
 ### Security
 
@@ -254,58 +317,80 @@ command run inside a pane targets that pane without flags, like `TMUX_PANE`.
 | `fux resize-pane -t %N -L\|-R\|-U\|-D [N]` | Adjust weights |
 | `fux send-keys -t %N [-l] KEYS…` | Keys (`C-c`, `Enter`, …) or literal text |
 | `fux capture-pane -t %N [-S -N] [--json]` | Screen text, optionally with history |
-| `fux reload` | Re-read the config |
+| `fux set OPTION VALUE`, `fux bind [-g GROUP] KEY CMD…`, `fux unbind KEY`, `fux unbind-all` | Change the running configuration |
+| `fux reload` | Re-run the config file against the defaults |
+| `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | Paste buffers |
 | `fux detach [-c CLIENT]` | Detach a client |
+
+Some commands act on a client's screen rather than on shared state:
+`command-column`, `choose-tab`, `choose-workspace`, `menu pane|tab|workspace`,
+`command-prompt`, `copy-mode`, `rename-prompt`, `confirm-close`, `zoom`,
+`select-tab`, `select-pane`. From a binding or the `:` prompt, they act on
+the client that pressed the key. From the command line they need `-c CLIENT`
+(`fux ls` lists clients). Without it they fail with a message naming the
+flag.
 
 Exit status 0 means done; 1 means the command failed, with the reason on
 stderr; 2 means usage. `--json` output is for scripts and agents.
 
 ## Configuration
 
-A TOML file, `--config`, else `$XDG_CONFIG_HOME/fux/config.toml`, else
-`~/.config/fux/config.toml`. It is optional; missing fields keep their
-defaults.
+The config file is a list of fux commands, one per line, as in `tmux.conf`. It
+lives at `--config`, else `$XDG_CONFIG_HOME/fux/fux.conf`, else
+`~/.config/fux/fux.conf`, and is optional.
 
-```toml
-prefix = "C-b"
-shell = ["/bin/sh"]       # default: $SHELL, else /bin/sh
-history_lines = 10000
-clipboard = "off"         # or "write-only"
+```sh
+# ~/.config/fux/fux.conf
+set prefix C-b
+set shell /bin/zsh -l            # default: $SHELL, else /bin/sh
+set history-lines 10000
+set clipboard write-only         # default: off
+set buffers 16
 
-[bindings]                # after the prefix; replaces the default table when present
-h = "split -h"
-v = "split -v"
-d = "detach"
+unbind-all                       # optional: start from an empty key table
+bind h split -h
+bind v split -v
+bind d detach
+bind -g Tabs T choose-tab        # -g puts it under a command-column group
 ```
 
-A binding's value is a CLI command line. Keybindings and the CLI therefore
-share one command set, and there is no second action vocabulary. `fux reload`
-applies a changed file, and an invalid file keeps the previous one.
+No dependency is needed, and it is the right format here anyway:
+
+- There is **one grammar** for the CLI, keybindings, the `:` prompt and the
+  config. A line is split into words like a shell (whitespace, `'…'` and
+  `"…"` quoting, backslash escapes, `#` comments), and a binding's command is
+  the rest of its line.
+- **`set`, `bind` and `unbind` are ordinary commands**, so
+  `fux bind x kill-pane` or `:set clipboard off` change a running server the
+  same way the file does.
+- **`fux reload`** runs the file again against the defaults. On any error it
+  names the file and line and keeps the previous configuration whole, never
+  half-applied.
+- The tokenizer is about 100 lines and gets its own tests and fuzz target.
+
+TOML was the alternative. It needs `toml` and `serde` (with `toml`'s own
+dependencies), and it would still need this command grammar for binding
+values.
 
 ## Default keys (after `C-b`)
 
-These are the current defaults, less the choosers and context menus (deferred,
-below):
+These are the current defaults. The prefix alone opens the command column,
+which lists all of them.
 
 - `[` `]` tabs; `{` `}` workspaces; Tab / Shift-Tab / Backspace pane focus;
   Alt-arrows directional focus;
-- `t` new tab; `w` new workspace; `h` `v` split; `z` zoom; `r` rename;
-  `x` close (confirm `y`);
+- `t` new tab; `T` tab chooser; `w` new workspace; `W` workspace chooser;
+- `p` `s` `S` pane, tab and workspace action menus;
+- `h` `v` split; `z` zoom; `r` rename; `x` close (confirm `y`);
 - Ctrl-arrows resize; Shift-arrows move;
-- `c` copy mode; `y` copy visible; `?` help (a read-only list of bindings);
+- `c` copy/select mode; `P` paste the newest buffer; `:` command prompt;
   `d` detach.
 
-## Deferred
+## Not included
 
-Not in the first version:
-
-- the command column with navigation;
-- tab and workspace choosers;
-- right-click context menus;
-- config hot reload by file watching (use `fux reload`).
-
-Everything those did is reachable through bindings or the CLI. They can come
-back later as overlays drawn by the same renderer.
+- **Mouse support of any kind**, by decision (see Input).
+- **Saving and loading layouts**, by decision.
+- **Watching the config file**: run `fux reload` instead.
 
 ## Dependencies
 
@@ -314,16 +399,19 @@ back later as overlays drawn by the same renderer.
 | `fux-vt` (path, 0.1.1) | Emulator |
 | `rustix` 1.x (`pty`, `termios`, `process`, `event`, `fs`, `net`, `stdio`) | PTYs, processes, poll, sockets, terminal modes |
 | `signal-hook` | Signal → self-pipe (rustix does not install handlers) |
-| `unicode-width` | Bar and overlay layout |
-| `toml` + `serde` | Config |
-| `serde_json` | `--json` output only |
-| `lexopt` | Argument parsing, small and dependency-free |
+| `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |
 | `libc` (macOS only) | `proc_listallpids` for session hangup, `getpeereid` for the peer check; rustix has neither on macOS |
+
+Written in fux instead of depended on, each small and tested:
+
+- the command tokenizer and grammar (the CLI, the config, bindings and `:`);
+- the `--json` writer (output only, about 80 lines);
+- base64 for OSC 52 (about 20 lines).
 
 Gone: 17 `bevy_*` crates, `nix`, `portable-pty`, `termina`, `hyper`,
 `smol-hyper`, `http-body-util`, `ureq`, `async-io`, `async-channel`,
-`parking_lot`, `ron` and `base64` (OSC 52 base64 is about 20 lines). No build
-dependency on ALSA; no async.
+`parking_lot`, `ron`, `base64`, `serde` and `serde_json`. No build dependency
+on ALSA, and no async.
 
 ## Testing
 
@@ -335,7 +423,12 @@ dependency on ALSA; no async.
   - paste bounds;
   - render diffs (the diff applied to the old grid equals the new grid);
   - the protocol codec (caps, truncation);
-  - the config.
+  - the command tokenizer and grammar, and the config (every error names its
+    line, and a failed reload changes nothing);
+  - copy/select motions and search over a known screen and history, and
+    selection text (wide glyphs, wraps, blocks);
+  - overlays (command column scrolling, choosers, menus acting on the item
+    they were opened for).
 - **Integration tests:** a real server, real PTYs, real `fux` CLI calls, and a
   scripted attach client. The fork race that corrupted the last suite's
   captures is avoided by opening PTYs and forking only under one lock.
@@ -344,7 +437,8 @@ dependency on ALSA; no async.
   during attach (010); descriptor pressure (012); an oversized frame is
   refused (007/008); a reused socket inode is not deleted (014, ext4 in CI).
 - **Fuzzing:**
-  - `cargo-fuzz` targets for the decoder and the protocol codec;
+  - `cargo-fuzz` targets for the decoder, the protocol codec and the command
+    tokenizer;
   - later, a black-box harness driving the CLI and attach clients, as fux-fuzz
     did over BRP.
 - **CI:** the current workflow minus the ALSA step, the agent-exercise job and
@@ -364,18 +458,29 @@ dependency on ALSA; no async.
 3. The layout: splits, focus, resize, zoom, the bar.
 4. Workspaces and tabs, and independent views for several clients.
 5. The full CLI, with `--json`.
-6. Input modes: prefix, bindings, prompt, confirm, help.
-7. Copy mode, the clipboard, the mouse.
-8. The lesson tests, and the fuzz targets.
-9. Merge `rewrite` into `main` when it is usable daily; publish 0.13.0.
+6. The config file, bindings, and the command grammar shared by all four
+   surfaces.
+7. Overlays: the command column, choosers, action menus, the `:` prompt,
+   prompts and confirmations.
+8. Copy/select mode, paste buffers, the clipboard.
+9. The lesson tests, and the fuzz targets.
+10. Merge `rewrite` into `main` when it is usable daily; publish 0.13.0.
 
 Each step lands with its tests, and `main` keeps the Bevy version until
-step 9.
+step 10.
 
 ## Estimate
 
-About 6–8k lines of Rust, including tests: the server loop and panes (~1.5k),
-layout (~0.6k), input decoding and encoding (~1k), rendering and bar (~1k),
-copy mode (~0.6k), CLI, protocol, socket and config (~1.2k), and the client
-(~0.3k). The current `src/` is 14.4k lines, not counting its Bevy
+About 8–10k lines of Rust, including tests:
+
+| Part | Lines |
+| --- | --- |
+| The server loop and panes | ~1.5k |
+| Layout | ~0.6k |
+| Input decoding and encoding | ~0.8k |
+| Rendering and the bar | ~1k |
+| Overlays (command column, choosers, menus, prompts) | ~1.5k |
+| Copy/select mode and buffers | ~1k |
+| The command grammar, CLI, config, protocol, socket and JSON | ~1.5k |
+| The client | ~0.3k | The current `src/` is 14.4k lines, not counting its Bevy
 dependencies.
