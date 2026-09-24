@@ -552,7 +552,7 @@ which lists all of them.
 | `rustix` 1.x (`pty`, `termios`, `process`, `event`, `fs`, `net`, `stdio`) | PTYs, processes, poll, sockets, terminal modes |
 | `signal-hook` | Signal → self-pipe (rustix does not install handlers) |
 | `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |
-| `libc` (macOS only) | `proc_listallpids` for session hangup, `getpeereid` for the peer check; rustix has neither on macOS |
+| `libc` (macOS only) | `proc_listallpids` for session hangup, `getpeereid` for the peer check, `proc_pidinfo` for a new pane's working directory; rustix has none of them on macOS. Also `getsid` and `tcgetpgrp`: rustix builds a `Pid` from their result unchecked, and a result of 0 is undefined behaviour there (on Linux, where kernel threads have session 0, fux reads `/proc/PID/stat` instead) |
 
 The lints stay as today: clippy forbids `unwrap`, `expect`, `panic!`,
 `unreachable!`, `todo!` and `unimplemented!`, and warns on
