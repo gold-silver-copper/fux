@@ -92,8 +92,16 @@ fn size_terminals(world: &mut World) {
         }
     }
     for (pane, (rows, cols)) in sizes {
-        if let Some(mut terminal) = world.get_mut::<Terminal>(pane) {
-            let _ = terminal.resize(rows, cols);
+        let Some(mut terminal) = world.get_mut::<Terminal>(pane) else {
+            continue;
+        };
+        let _ = terminal.resize(rows, cols);
+        // Published in the step that resizes, as `terminate` publishes an
+        // ended process: a query after this frame reads the PTY's new size,
+        // not the size from before it.
+        let published = terminal.published();
+        if let Some(mut state) = world.get_mut::<ProcessState>(pane) {
+            state.set_if_neq(published);
         }
     }
 }

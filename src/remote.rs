@@ -6,17 +6,41 @@ use bevy_remote::RemotePlugin;
 
 pub fn remote() -> RemotePlugin {
     use bevy_remote::builtin_methods::{
-        BRP_DESPAWN_COMPONENTS_METHOD, BRP_MUTATE_COMPONENTS_METHOD,
+        BRP_DESPAWN_COMPONENTS_METHOD, BRP_MUTATE_COMPONENTS_METHOD, BRP_REMOVE_RESOURCE_METHOD,
     };
-    // Registered after the stock methods, so these two replace them by name.
-    // The registry stays unfiltered: each guard answers for the entity the
-    // request names and then hands the request to the stock handler.
+    // Registered after the stock methods, so these replace them by name. The
+    // registry stays unfiltered: each guard answers for what the request
+    // names and then hands it to the stock handler.
     RemotePlugin::default()
         .with_method_main(BRP_MUTATE_COMPONENTS_METHOD, mutate_components)
         .with_method_main(BRP_DESPAWN_COMPONENTS_METHOD, despawn_entity)
+        .with_method_main(BRP_REMOVE_RESOURCE_METHOD, remove_resources)
         .with_method_main("fux.attach", frame::attach)
         .with_method_main("fux.frame", frame::frame)
         .with_watching_method_main("fux.frame+watch", frame::frame_watch)
+}
+
+/// Stock `world.remove_resources`, restoring `Settings` if it was the target.
+/// fux reads `Settings` from a dozen systems with `World::resource`, which
+/// panics when it is absent, so removing it left a server that answered every
+/// request but painted nothing, with no notice and no log (hunt 8 finding
+/// 015). Removal stays a real operation for every other resource; `Settings`
+/// is restored to its default and the removal is logged, so the server keeps
+/// working and says what happened rather than failing in silence.
+fn remove_resources(
+    In(params): In<Option<serde_json::Value>>,
+    world: &mut World,
+) -> bevy_remote::BrpResult {
+    let had_settings = world.contains_resource::<crate::assets::Settings>();
+    let result =
+        bevy_remote::builtin_methods::process_remote_remove_resources_request(In(params), world);
+    if had_settings && !world.contains_resource::<crate::assets::Settings>() {
+        world.init_resource::<crate::assets::Settings>();
+        bevy_log::warn!(
+            "world.remove_resources removed fux::assets::Settings, which fux requires; it has been restored to its default."
+        );
+    }
+    result
 }
 
 /// The entity a stock request names in `params.entity`, if it parses as one.

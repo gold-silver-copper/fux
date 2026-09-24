@@ -87,18 +87,7 @@ pub fn socket_path(flag: Option<&str>) -> Result<PathBuf, String> {
             let value = value
                 .into_string()
                 .map_err(|_| format!("{base} is not valid UTF-8"))?;
-            if value.is_empty() {
-                return Err(format!(
-                    "{base} is set but empty; set it to a directory or set FUX_SOCKET"
-                ));
-            }
-            if !Path::new(&value).is_absolute() {
-                return Err(format!(
-                    "{base} is {value:?}, not an absolute path; fix it or set FUX_SOCKET"
-                ));
-            }
-            let path = Path::new(&value).join("fux").join(DEFAULT_NAME);
-            return checked(&path.to_string_lossy(), base);
+            return socket_path_from(base, &value);
         }
     }
     Err(
@@ -114,6 +103,25 @@ pub fn max_path_bytes() -> usize {
     // SAFETY: sockaddr_un is a plain C struct; all-zero is a valid value.
     let address: nix::libc::sockaddr_un = unsafe { std::mem::zeroed() };
     std::mem::size_of_val(&address.sun_path) - 1
+}
+
+/// The socket path under a directory variable such as `XDG_RUNTIME_DIR`, and
+/// its validation. Split out so a test can drive it without setting the
+/// environment, and so the length error counts the socket path rather than the
+/// directory it was built from.
+fn socket_path_from(base: &str, value: &str) -> Result<PathBuf, String> {
+    if value.is_empty() {
+        return Err(format!(
+            "{base} is set but empty; set it to a directory or set FUX_SOCKET"
+        ));
+    }
+    if !Path::new(value).is_absolute() {
+        return Err(format!(
+            "{base} is {value:?}, not an absolute path; fix it or set FUX_SOCKET"
+        ));
+    }
+    let path = Path::new(value).join("fux").join(DEFAULT_NAME);
+    checked(&path.to_string_lossy(), base)
 }
 
 fn checked(value: &str, source: &str) -> Result<PathBuf, String> {
@@ -143,8 +151,8 @@ fn checked(value: &str, source: &str) -> Result<PathBuf, String> {
     let limit = max_path_bytes();
     if value.len() > limit {
         return Err(format!(
-            "{source} is {} bytes, longer than the {limit}-byte limit for a Unix socket \
-             path on this platform: {value}",
+            "the socket path is {} bytes, longer than the {limit}-byte limit for a Unix \
+             domain socket on this platform (from {source}): {value}",
             value.len()
         ));
     }
@@ -253,12 +261,57 @@ fn identity(meta: &fs::Metadata) -> (u64, u64) {
     (meta.dev(), meta.ino())
 }
 
+/// A socket file's identity, held so that it keeps meaning that file.
+///
+/// `(device, inode)` names a file only while its inode is allocated. ext4
+/// hands a freed inode number to the next file created, 200 times out of 200
+/// in a socket's case, so once the listener closes, a socket another program
+/// binds at the same path can carry the same pair, and a check by identity
+/// would remove it (hunt 8 finding 014). On Linux an `O_PATH` descriptor keeps
+/// the inode allocated for as long as this is held, so its number cannot be
+/// reused. APFS numbers files from a 64-bit counter and does not reuse them,
+/// and macOS has no `O_PATH`; there the identity alone is sound.
+struct Pinned {
+    identity: (u64, u64),
+    #[cfg(target_os = "linux")]
+    _inode: std::os::fd::OwnedFd,
+}
+
+impl Pinned {
+    #[cfg(target_os = "linux")]
+    fn new(path: &Path) -> io::Result<Self> {
+        use nix::fcntl::{OFlag, open};
+        let inode = open(
+            path,
+            OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            nix::sys::stat::Mode::empty(),
+        )?;
+        let stat = nix::sys::stat::fstat(&inode)?;
+        Ok(Self {
+            identity: (stat.st_dev, stat.st_ino),
+            _inode: inode,
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn new(path: &Path) -> io::Result<Self> {
+        fs::symlink_metadata(path).map(|meta| Self {
+            identity: identity(&meta),
+        })
+    }
+
+    /// Whether the file at `path` is still the one pinned.
+    fn still_at(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok_and(|meta| identity(&meta) == self.identity)
+    }
+}
+
 /// The bound socket. Owns the lock that makes this server the socket's only
 /// owner for its whole life. Dropping it removes the socket, if the file at
 /// the path is still the one this server bound, then releases the lock.
 pub struct Endpoint {
     path: PathBuf,
-    socket: (u64, u64),
+    socket: Pinned,
     _lock: Flock<File>,
 }
 
@@ -270,7 +323,7 @@ impl Endpoint {
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
-        if fs::symlink_metadata(&self.path).is_ok_and(|meta| identity(&meta) == self.socket) {
+        if self.socket.still_at(&self.path) {
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -328,11 +381,14 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
             format!("locking {}: {errno}", lock_path.display())
         }
     })?;
+    // Pinned before the probe, so the file the probe found dead is the one
+    // removed, even where inode numbers are reused.
+    let stale = Pinned::new(path);
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("{shown}: {error}")),
         Ok(meta) if foreign(&meta) => return Err(refused()),
-        Ok(meta) => match probe(path) {
+        Ok(_) => match probe(path) {
             Ok(()) => {
                 return Err(format!(
                     "another fux server is already listening on {shown}"
@@ -342,7 +398,7 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
                 // Nothing listens: a server that died without cleanup left it.
                 // The lock excludes every fux starting on this path, and the
                 // private directory every other user, so it is still ours.
-                if fs::symlink_metadata(path).is_ok_and(|now| identity(&now) == identity(&meta)) {
+                if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
                     fs::remove_file(path)
                         .map_err(|error| format!("removing stale socket {shown}: {error}"))?;
                 }
@@ -370,10 +426,9 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
     let address = UnixAddr::new(path).map_err(|error| format!("{shown}: {error}"))?;
     bind(std::os::fd::AsRawFd::as_raw_fd(&fd), &address)
         .map_err(|error| format!("binding {shown}: {error}"))?;
-    let created = fs::symlink_metadata(path).map_err(|error| format!("{shown}: {error}"))?;
     let endpoint = Endpoint {
         path: path.to_owned(),
-        socket: identity(&created),
+        socket: Pinned::new(path).map_err(|error| format!("{shown}: {error}"))?,
         _lock: lock,
     };
     // From here a failure drops `endpoint`, which removes the bound socket.
@@ -497,15 +552,20 @@ pub fn serve(
                         }
                         Some(_) => {}
                     }
-                    // Spend the reserve to accept one waiting connection and
-                    // close it at once. That drains the backlog, so a client
-                    // gets a prompt refusal instead of waiting on a listener
-                    // that cannot answer, and the loop keeps making progress.
+                    // Spend the reserve to drain every connection already
+                    // waiting, closing each at once. Accepting one per tick
+                    // left a client behind up to a backlog (128) of others,
+                    // one shed every 50 ms, so on Linux the first client under
+                    // pressure waited about six seconds; the whole backlog is
+                    // waiting now, so drain it now (hunt 7 finding 012). Each
+                    // shed frees the descriptor again, so this is bounded by
+                    // the listener's backlog and ends when nothing waits.
                     if let Some(held) = spare.take() {
                         drop(held);
-                        // The listener is non-blocking, so this only takes a
-                        // connection that is already waiting.
-                        if let Ok((shed, _)) = listener.get_ref().accept() {
+                        // The listener is non-blocking, so accept takes only a
+                        // connection already waiting and returns WouldBlock
+                        // once the backlog is empty.
+                        while let Ok((shed, _)) = listener.get_ref().accept() {
                             drop(shed);
                         }
                         spare = reserve();

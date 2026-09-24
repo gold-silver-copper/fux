@@ -337,7 +337,33 @@ impl Grid {
     ) -> Result<Self, Error> {
         Self::check_size(rows, cols, self.history_limit)?;
         let history = self.history_len();
-        let stride = (0..history)
+        // Reflow around the cursor so the line it is on stays visible (hunt 8
+        // finding 017). A shrink drops rows below the cursor first, and only
+        // then scrolls rows above it into history: a screen with its content at
+        // the top keeps it, and a full screen keeps its bottom line. A grow
+        // pulls rows back from history above, as xterm does, and pads the rest
+        // with blank rows below. history_limit bounds history, oldest first.
+        let old_retained = history + usize::from(self.rows);
+        let cursor_row = usize::from(self.cursor.0);
+        let live_top = if rows <= self.rows {
+            let below = usize::from(self.rows) - 1 - cursor_row;
+            history + usize::from(self.rows - rows).saturating_sub(below)
+        } else {
+            history - usize::from(rows - self.rows).min(history)
+        };
+        let new_history = live_top.min(self.history_limit);
+        let base = live_top - new_history;
+        let keep_total = new_history + usize::from(rows);
+        // Both cursors move with the rows they sit on.
+        let shifted = |row: u16| {
+            let row = (history + usize::from(row)).saturating_sub(live_top);
+            u16::try_from(row.min(usize::from(rows) - 1)).unwrap_or(rows - 1)
+        };
+        // History rows keep their old width, so the stride covers exactly the
+        // rows that become history -- including live rows a shrink scrolls up,
+        // which old history alone would under-size. Live rows take `cols`; a
+        // wider stride would carry a narrowed pane's old width forever.
+        let stride = (base..base + new_history)
             .filter_map(|i| self.row_at(i))
             .map(|r| r.cells.len())
             .max()
@@ -351,9 +377,9 @@ impl Grid {
             rows,
             cols,
             history_limit: self.history_limit,
-            cursor: (self.cursor.0.min(rows - 1), self.cursor.1.min(cols - 1)),
+            cursor: (shifted(self.cursor.0), self.cursor.1.min(cols - 1)),
             saved_cursor: (
-                self.saved_cursor.0.min(rows - 1),
+                shifted(self.saved_cursor.0),
                 self.saved_cursor.1.min(cols - 1),
             ),
             origin: self.origin,
@@ -368,26 +394,26 @@ impl Grid {
         if replacement.top > replacement.bottom {
             replacement.top = 0;
         }
-        replacement.reserve_rows(history + usize::from(rows))?;
-        for i in 0..history + usize::from(rows) {
-            let old = self
-                .row_at(i)
-                .filter(|_| i < history + usize::from(self.rows.min(rows)));
+        replacement.reserve_rows(keep_total)?;
+        for p in 0..keep_total {
+            let source = base + p;
+            let old = self.row_at(source).filter(|_| source < old_retained);
+            let is_history = p < new_history;
             let id = match old {
                 Some(r) => r.id,
                 None => next_id(next)?,
             };
-            let width = if i < history {
+            let width = if is_history {
                 old.map_or(cols, |r| r.cells.len() as u16)
             } else {
                 cols
             };
             let start = replacement.cells.len();
             replacement.cells.resize(start + stride, Cell::default());
-            let wrapped = old.is_some_and(|r| r.wrapped) && i < history;
+            let wrapped = old.is_some_and(|r| r.wrapped) && is_history;
             replacement.meta.push(Meta {
                 id,
-                version: if i < history {
+                version: if is_history {
                     old.map_or(version, |r| r.version)
                 } else {
                     version
@@ -395,7 +421,7 @@ impl Grid {
                 width,
                 wrapped,
             });
-            replacement.order.push_back(i);
+            replacement.order.push_back(p);
             if let Some(old) = old {
                 let len = old.cells.len().min(usize::from(width));
                 if let (Some(dst), Some(src)) = (
@@ -404,7 +430,7 @@ impl Grid {
                 ) {
                     dst.copy_from_slice(src);
                 }
-                repair_wide(replacement.slice_mut(i));
+                repair_wide(replacement.slice_mut(p));
             }
         }
         Ok(replacement)

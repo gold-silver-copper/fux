@@ -1,5 +1,5 @@
 use super::*;
-use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty};
 use std::io::{Read, Write};
 
 #[test]
@@ -16,12 +16,7 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
         }
     }
     let s = Server::start()?;
-    let pair = native_pty_system().openpty(PtySize {
-        rows: 13,
-        cols: 47,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair = open_pty(13, 47)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut writer = pair.master.take_writer()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
@@ -81,7 +76,17 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
     drop(writer);
     attached.master.take();
     let bytes = capture.join().map_err(|_| "capture thread panicked")??;
-    assert!(bytes.ends_with(b"\x1b[?1049l"));
+    // The frontend's last output is its terminal-restore sequence. (A stray
+    // `\r\n` after it was the harness, not fux: see `SPAWN`.)
+    assert!(
+        bytes.ends_with(b"\x1b[?1049l"),
+        "frontend did not end by leaving the alternate screen: {:?}",
+        String::from_utf8_lossy(
+            bytes
+                .get(bytes.len().saturating_sub(24)..)
+                .unwrap_or(&bytes)
+        )
+    );
     if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
         fs::write(PathBuf::from(&directory).join("frontend.ansi"), bytes)?;
         fs::write(

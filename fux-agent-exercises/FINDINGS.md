@@ -719,9 +719,10 @@ more runs (campaign 05). What remains:
    that names a vanished pane answers `null` while the explanation goes to
    `Viewer.notice`. Worth a fux discussion about whether a command's outcome should be
    visible in its own response; not redesigned here.
-5. **Resource entities in the README** — campaign 06 measured the exposure (53 of 99
-   entities in an unfiltered query) and found no agent using it. One documentation
-   sentence, and hunt 7 finding 009's fix, close it before an agent does.
+5. **Resource entities in the README** — done. The hunt 8 branch adds the sentence
+   campaign 06 recommended (a query with no component filter answers with far more
+   than the session's own entities; filter by component), and hunt 7 finding 009 is
+   fixed there, so a raw edit on a resource entity can no longer harm the server.
 
 ## After the Unix-socket transport change
 

@@ -9,9 +9,44 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
-// Serialize server spawns with outer-PTY spawns, so a concurrent fork never
-// inherits a descriptor another fixture is about to hand to its child.
+// Every fork in this binary, and every PTY it opens, holds this lock. A
+// concurrent fork must never inherit a descriptor another fixture is about to
+// hand to its child -- and `openpty` returns its pair without close-on-exec,
+// which portable-pty sets only afterwards. A fork in that window kept a
+// frontend PTY's slave open in some unrelated server, so the slave outlived
+// the frontend: on Linux, dropping portable-pty's writer then echoed its
+// newline (`\n` plus EOF, sent on drop) back as `\r\n` after the frontend's
+// restore sequence, and a capture could not end until that server did.
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `Command::spawn`, forking under `SPAWN`.
+fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
+    command.spawn()
+}
+
+/// `Command::output`, forking under `SPAWN` and waiting without it.
+fn output(command: &mut Command) -> std::io::Result<std::process::Output> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    spawn(command)?.wait_with_output()
+}
+
+/// A PTY pair opened under `SPAWN`, so no fork inherits it before
+/// portable-pty marks it close-on-exec.
+fn open_pty(rows: u16, cols: u16) -> Result<portable_pty::PtyPair, Fail> {
+    let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
+    Ok(
+        portable_pty::native_pty_system().openpty(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?,
+    )
+}
 
 mod brp;
 mod design;
@@ -85,12 +120,20 @@ fn server_command(directory: &Path, args: &[&std::ffi::OsStr]) -> Command {
 
 impl Server {
     fn start() -> Result<Self, Fail> {
+        Self::start_with_shell("/bin/sh")
+    }
+
+    /// A server whose panes run `shell`, for behaviour that differs between
+    /// shells: `/bin/sh` is bash on macOS and dash on Debian and Ubuntu.
+    fn start_with_shell(shell: &str) -> Result<Self, Fail> {
         let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
         let (directory, socket) = fixture()?;
         let config = directory.join("fux.json");
         fs::write(
             &config,
-            r#"{"shell":["/bin/sh"],"history_lines":100,"clipboard":"write-only"}"#,
+            serde_json::to_vec(&json!({
+                "shell": [shell], "history_lines": 100, "clipboard": "write-only"
+            }))?,
         )?;
         let child = server_command(
             &directory,
@@ -465,6 +508,84 @@ fn interactive_background_jobs_hang_up_when_pane_terminates() -> Outcome {
     Ok(())
 }
 
+/// Hunt 7 finding 013: a background job lives in its own process group, so
+/// hanging up and killing the pane's group never reaches it; it died only if
+/// the shell forwarded the hangup, which bash and zsh do and dash does not.
+/// Ending a pane is a terminal hanging up: every job in its session gets the
+/// hangup, whichever shell started it, whether the pane is terminated or
+/// closed. A job that ignores the hangup, as `nohup` arranges, has asked to
+/// outlive its terminal and does.
+#[test]
+fn a_panes_background_jobs_end_with_it_under_any_shell() -> Outcome {
+    for (shell, how) in [("/bin/dash", "terminate"), ("/bin/dash", "close")] {
+        if !Path::new(shell).exists() {
+            continue;
+        }
+        let server = Server::start_with_shell(shell)?;
+        let viewer = server.attach()?;
+        let state = server.query("fux::model::ProcessState")?;
+        let shell_pid = state
+            .at(0)
+            .at("components")
+            .at("fux::model::ProcessState")
+            .at("status")
+            .at("pid")
+            .as_i64()
+            .need()? as i32;
+        let pid_file = server.directory.join("background.pid");
+        // Two jobs: an ordinary one, and one that ignores the hangup.
+        server.input(
+            viewer,
+            json!({"kind":"paste","text":format!(
+                "sleep 600 & echo $! > '{}'; (trap '' HUP; exec sleep 601) & echo $! >> '{}'",
+                pid_file.display(),
+                pid_file.display()
+            )}),
+        )?;
+        server.enter(viewer)?;
+        eventually(|| {
+            Ok(fs::read_to_string(&pid_file).is_ok_and(|text| text.lines().count() == 2))
+        })?;
+        let jobs: Vec<i32> = fs::read_to_string(&pid_file)?
+            .lines()
+            .map(str::parse)
+            .collect::<Result<_, _>>()?;
+        for job in &jobs {
+            assert_ne!(
+                nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(*job)))?.as_raw(),
+                shell_pid,
+                "{shell}: the job must be in its own group for this to test anything"
+            );
+        }
+        if how == "terminate" {
+            server.command(viewer, "terminate")?;
+        } else {
+            let pane = server
+                .query("fux::model::PaneView")?
+                .at(0)
+                .at("entity")
+                .as_u64()
+                .need()?;
+            server.control(viewer, json!({"kind":"close","subject":{"pane":pane}}))?;
+        }
+        let (ordinary, nohup) = (jobs.first().copied().need()?, jobs.get(1).copied().need()?);
+        let outcome = eventually(|| Ok(!alive(shell_pid) && !alive(ordinary)));
+        let kept = alive(nohup);
+        for job in &jobs {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(*job),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+        outcome.map_err(|error| format!("{shell} {how}: {error}"))?;
+        assert!(
+            kept,
+            "{shell} {how}: a job that ignores the hangup outlives the pane"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn layout_mapping_and_prompt_paste_preserve_live_process_identity() -> Outcome {
     let server = Server::start()?;
@@ -656,7 +777,7 @@ fn repeated_copy_effects_are_not_replaceable_paints() -> Outcome {
 
 #[test]
 fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
-    use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
+    use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty};
     use std::io::Read;
 
     struct SlowTerminal {
@@ -672,12 +793,7 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
     }
 
     let server = Server::start()?;
-    let pair = native_pty_system().openpty(PtySize {
-        rows: 24,
-        cols: 80,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair = open_pty(24, 80)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");
@@ -936,5 +1052,31 @@ fn frame_requests_for_impossible_entity_ids_are_refused() -> Outcome {
         assert!(server.rpc("rpc.discover", Value::Null).is_ok());
     }
     assert!(!server.screen(viewer)?.is_empty());
+    Ok(())
+}
+
+/// Hunt 8 finding 015: fux reads `Settings` with `World::resource` from many
+/// systems, so removing it over BRP left a server that answered every request
+/// but painted nothing, silently. Removal now restores the default and logs,
+/// so the frontend keeps working.
+#[test]
+fn removing_settings_over_brp_keeps_the_server_painting() -> Outcome {
+    let server = Server::start()?;
+    let viewer = server.attach()?;
+    assert!(server.screen(viewer)?.contains("main"));
+    // The workspace exists before the removal.
+    assert_eq!(server.query("fux::model::Workspace")?.rows().count(), 1);
+    server.rpc(
+        "world.remove_resources",
+        json!({"resource": "fux::assets::Settings"}),
+    )?;
+    // A frame still paints its chrome, and a command that reads Settings runs.
+    let painted = server.screen(viewer)?;
+    assert!(
+        painted.contains("main"),
+        "frame stopped painting: {painted:?}"
+    );
+    server.split(viewer, "horizontal", Some("exec /bin/cat"))?;
+    assert_eq!(server.query("fux::model::PaneView")?.rows().count(), 2);
     Ok(())
 }

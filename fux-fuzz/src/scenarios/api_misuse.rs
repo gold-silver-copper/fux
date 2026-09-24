@@ -169,7 +169,27 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     })
     .map_err(|e| format!("application: restoring a zero viewport did not repaint: {e}"))?;
 
-    // Oversized resizes clamp to the documented 4096.
+    // Oversized resizes clamp to the documented 4096. The attached frontend
+    // then gets a 4096x4096 paint, and every request waits behind it: 2.7-9.5 s
+    // for the first such frame in a debug build on a loaded Mac, 0.2-0.3 s in
+    // release. As in `walk` and `limits`, allow for it while the viewer is that
+    // large -- here 15 s, with the worst measured at 9.5 s.
+    let ordinary = s.request_timeout;
+    s.request_timeout = std::time::Duration::from_secs(15);
+    let oversized = oversized_resize(s, v);
+    s.request_timeout = ordinary;
+    oversized?;
+
+    // Every probe left the process and the frontend alone.
+    ensure(
+        pids.iter().all(|p| alive(*p)),
+        "application: API misuse terminated a process",
+    )?;
+    s.healthy()?;
+    Ok(())
+}
+
+fn oversized_resize(s: &mut Server, v: u64) -> Result<()> {
     user_input(s, v, json!({"kind":"resize","rows":65535,"cols":65535}))?;
     s.wait("oversized resize clamped", |s| {
         let st = viewer_state(s, v)?;
@@ -179,13 +199,5 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     user_input(s, v, json!({"kind":"resize","rows":24,"cols":80}))?;
     s.wait("viewport restored again", |s| {
         Ok(s.frame(v, 24, 80)?.contains("DEFAULT-SHELL"))
-    })?;
-
-    // Every probe left the process and the frontend alone.
-    ensure(
-        pids.iter().all(|p| alive(*p)),
-        "application: API misuse terminated a process",
-    )?;
-    s.healthy()?;
-    Ok(())
+    })
 }

@@ -233,9 +233,14 @@ pub type NotLayout = (
     Without<PaneView>,
 );
 /// A genuine viewer. Every pass that treats viewers as viewers selects these,
-/// so a `Viewer` on a layout node is never repaired or painted, even in the
-/// moment before normalization removes it.
-pub type IsViewer = (With<Viewer>, NotLayout);
+/// so a `Viewer` on a layout node or a resource entity is never repaired,
+/// painted or detached, even in the moment before normalization removes it
+/// (hunt 7 finding 009).
+pub type IsViewer = (
+    With<Viewer>,
+    NotLayout,
+    Without<bevy_ecs::resource::IsResource>,
+);
 
 #[derive(Component, Reflect, Clone, Serialize, Deserialize)]
 #[reflect(Component, Serialize, Deserialize)]

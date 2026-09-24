@@ -28,7 +28,7 @@ use bevy_text::TextPlugin;
 use bevy_time::{Real, Time};
 use bevy_ui::{FocusPolicy, UiPlugin, UiStack, picking_backend::ui_picking, prelude::*};
 use bevy_window::{PrimaryWindow, Window, WindowRef};
-use bevy_world_serialization::DynamicWorld;
+use bevy_world_serialization::{DynamicEntity, DynamicWorld};
 
 use crate::{
     chrome::at,
@@ -36,6 +36,71 @@ use crate::{
     protocol::PaneRect,
 };
 use std::collections::BTreeMap;
+
+/// The scene cut down to the workspace root and one tab's subtree. `None` --
+/// keep the whole scene -- when that tab is not the root's child or the
+/// focused entity lies outside it, which only raw hierarchy edits produce.
+fn viewed_tab(
+    scene: &DynamicWorld,
+    root: Entity,
+    tab: Entity,
+    focus: Option<Entity>,
+) -> Option<DynamicWorld> {
+    let parent = |entity: &DynamicEntity| {
+        entity
+            .components
+            .iter()
+            .find(|component| component.represents::<ChildOf>())
+            .and_then(|component| ChildOf::from_reflect(component.as_partial_reflect()))
+            .map(|child_of| child_of.parent())
+    };
+    let mut children = EntityHashMap::<Vec<Entity>>::default();
+    let mut tab_parent = None;
+    for entity in &scene.entities {
+        if let Some(parent) = parent(entity) {
+            children.entry(parent).or_default().push(entity.entity);
+            if entity.entity == tab {
+                tab_parent = Some(parent);
+            }
+        }
+    }
+    if tab_parent != Some(root) {
+        return None;
+    }
+    let mut keep = bevy_ecs::entity::EntityHashSet::from_iter([root, tab]);
+    let mut pending = vec![tab];
+    while let Some(entity) = pending.pop() {
+        for child in children.get(&entity).into_iter().flatten() {
+            if keep.insert(*child) {
+                pending.push(*child);
+            }
+        }
+    }
+    if focus.is_some_and(|focus| !keep.contains(&focus)) {
+        return None;
+    }
+    let entities = scene
+        .entities
+        .iter()
+        .filter(|entity| keep.contains(&entity.entity))
+        .map(|entity| {
+            let components = entity
+                .components
+                .iter()
+                .map(|component| component.to_dynamic())
+                .collect::<Result<_, _>>()
+                .ok()?;
+            Some(DynamicEntity {
+                entity: entity.entity,
+                components,
+            })
+        })
+        .collect::<Option<_>>()?;
+    Some(DynamicWorld {
+        resources: Vec::new(),
+        entities,
+    })
+}
 
 /// Registers ordinary UI scene types, not a scene component allowlist. Additional
 /// registered components are instantiated unchanged by DynamicWorld.
@@ -211,6 +276,12 @@ impl Presentation {
             }
             self.source_to_local.clear();
             self.local_to_source.clear();
+            // Write only the tab this viewer shows. Inactive tabs were written
+            // just to be hidden below, which changed nothing a frame shows but
+            // made every rebuild -- one per control that changes the workspace
+            // -- cost O(tabs): 424 ms a move at a thousand tabs in debug.
+            let viewed = tab.and_then(|tab| viewed_tab(scene, root, tab, focus));
+            let scene = viewed.as_ref().unwrap_or(scene);
             // Relationship targets must exist before the scene inserts PaneView.
             // These inert entities represent external live-process references.
             for component in scene.entities.iter().flat_map(|entity| &entity.components) {

@@ -1,5 +1,5 @@
 use super::*;
-use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 
 struct Frontend {
@@ -11,12 +11,7 @@ struct Frontend {
 }
 impl Frontend {
     fn start(server: &Server) -> Result<Self, Fail> {
-        let pair = native_pty_system().openpty(PtySize {
-            rows: 18,
-            cols: 70,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        let pair = open_pty(18, 70)?;
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));

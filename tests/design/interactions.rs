@@ -22,6 +22,8 @@ fn hidden_tabs_stop_constraining_pty_size_even_before_the_switching_viewer_paint
             state.at("cols").as_u64().need()?,
         ))
     };
+    // The small viewer's paint resized the PTY and published its size in the
+    // same step, so the query reads it at once.
     assert_eq!(dimensions()?, (7, 25));
     s.tab_new(small, Some("hidden-from-large"))?;
     s.screen(large)?;

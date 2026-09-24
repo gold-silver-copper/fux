@@ -944,10 +944,11 @@ the specific places where the result should be expected to differ:
 
 # Where fux breaks under hostile input (hunt 7)
 
-> **Status: five findings, none fixed.** This run finds and records; the fixes
-> are a later PR, ranked at the end. 009 is class 1 and the one to fix first on
-> merits; 010 is the one to fix first if CI is going to run on Linux.
-> Reproduced on macOS arm64 and Linux arm64/x86_64 as each finding states.
+> **Status: fixed in the hunt 8 branch, except 011.** Each finding's "Fixed"
+> line names what closed it; 009, 010, 012 and 013 are closed with tests that
+> failed first, and 011 is the documented exception (the ALSA chain is
+> `bevy_remote`'s, not fux's to cut). The analysis below is the state when the
+> findings were made.
 
 This hunt attacked what changed after hunt 6: the guards that replaced two
 stock BRP methods, the UI hit test rebuilt on `bevy_picking` when
@@ -1020,6 +1021,11 @@ process running where it would otherwise abort. It does not stop the world
 from being wrong: the resource is gone either way, and what follows is a
 server that cannot run its main schedule.
 
+**Fixed** in the hunt 8 branch, as the class: `reject_viewer_on_layout` strips
+fux components off a resource entity as off a layout node, `IsViewer` excludes
+`IsResource`, and `navigation::detach_if_viewer` is the one checked path both
+`disconnected` and `Detach` despawn through. Repro now exits 1 on both.
+
 **Reproduction.**
 `fux-fuzz/repro/009-viewer-on-a-resource-entity-ends-the-server.sh`, exit 0
 reproduced, exit 1 verified not reproduced, exit 2 setup failure;
@@ -1076,6 +1082,10 @@ tests use as their client. macOS survived 7278 rounds of the same script and
 This is not a regression from this PR: `origin/main` fails the same way on
 Linux `x86_64`, with the same error on the same methods.
 
+**Fixed** in the hunt 8 branch: `uninterrupted` in `src/unix_http.rs` retries
+a read the signal interrupted; the integration tests pass on emulated x86_64
+and the repro exits 1 on Linux.
+
 **Reproduction.**
 `fux-fuzz/repro/010-a-signal-ends-a-request-and-the-attachment.sh`, which
 drives a real `fux attach` in a pty and resizes it. Exit 0 reproduced, 1
@@ -1089,15 +1099,13 @@ resizing", and `origin/main` fails the same two scenarios on the same
 platform. The harness drives real frontends and resizes them, which is exactly
 the collision above.
 
-The third is not this, and not a finding either: the `history` scenario, and
-the `owned-terminal-tiny-child-geometry` trace that replays it, fail on Linux
-about a third of the time with "short-history pane painted: observation
-deadline exceeded". It is the harness's five-second observation bound, not a
-fux defect: `origin/main` fails it too, 1 run in 6 against this branch's 2 in
-4, both small samples of the same flake. It does not reproduce on macOS. A
-later run should either widen that bound on Linux or find what makes a short
-history slow to paint there; this hunt only establishes that it predates the
-branch.
+The third was not the signal finding and not a flake. The `history` scenario,
+and the `owned-terminal-tiny-child-geometry` trace that replays it, wait for a
+freshly split pane -- running a program that prints more lines than the pane
+is tall and ends without a trailing newline -- to paint its last line. Hunt 7
+recorded it as a settling race that polling converged on; hunt 8 first called
+it that too. It is finding 017 below: the emulator's resize cut the bottom row,
+and one frame taken after a fixed wait shows it every time, on both platforms.
 
 ## 011 — fux does not build on Linux without ALSA headers (class: platform)
 
@@ -1128,11 +1136,12 @@ already installed. The released binary links `libasound.so.2`, a sound library
 a terminal multiplexer has no use for. On Bevy 0.19.1 the chain did not exist:
 `e794df0`'s lockfile has no `alsa-sys`, and `0286346`'s does.
 
-**Not fux's to fix in fux.** The options are upstream (`bevy_dev_tools`
-gaining a feature that does not pull `bevy_audio`, or `bevy_remote` depending
-on it more narrowly) or dropping `bevy_remote`'s schedule methods. What fux
-can do now is say so in the README, where the dependency boundary is already
-described, and list the two packages a Linux build needs.
+**Not fux's to fix in fux, confirmed.** `bevy_dev_tools` is an unconditional
+dependency of `bevy_remote`, and `bevy_audio` an unconditional dependency of
+`bevy_dev_tools`, so no feature selection in fux's manifest removes the chain.
+This is the run's one open finding: the README states the two packages a Linux
+build needs, CI installs them, and the upstream issue text is in the PR. Repro
+011 stays at exit 0.
 
 **Reproduction.** `fux-fuzz/repro/011-a-linux-build-needs-alsa.sh`, which asks
 the resolved dependency graph for a Linux target rather than building, so it
@@ -1179,6 +1188,9 @@ time, so the queue the new client joins is shorter and it waits about 3.0 s.
 connection, bounded by the number waiting, so the wait is one tick rather than
 one tick per queued connection. The reserved descriptor already makes this
 possible; it is only spent once per tick.
+
+**Fixed** in the hunt 8 branch: the loop drains the whole waiting backlog per
+tick, so the slowest wait fell to about 0.02 s on Linux and the repro exits 1.
 
 **Reproduction.**
 `fux-fuzz/repro/012-descriptor-shedding-drains-one-connection-a-tick.sh`,
@@ -1232,6 +1244,11 @@ why this has never been visible.
 **What it is not.** Not a leak of fux's own making: the process is reparented
 to init and reachable by the user. The README says a pane's process is
 terminated with the pane, and under `dash` a job it started is not.
+
+**Fixed** in the hunt 8 branch: ending a pane hangs up every process in the
+pane's session, whichever shell started it; a `nohup` or `setsid` job survives
+as it would a closed terminal. The repro exits 1 on both platforms and the
+integration test passes on Linux.
 
 **Reproduction.**
 `fux-fuzz/repro/013-terminate-leaves-a-dash-background-job.sh`, which names
@@ -1358,3 +1375,435 @@ macOS number.
 - Probe scripts were first written under `target/`, which something on the
   machine cleans; they were rewritten outside it. The tools meant to last are
   in `fux-fuzz/tools/` and `fux-fuzz/linux/`.
+
+---
+
+# Hunt 8: every known defect fixed, then everything hunted until a pass finds nothing
+
+> **Status: complete. Eight findings, all fixed.** 014 (found by CI's first
+> run), 015 and 016 (pass 1), 017 and 018 (the first nightly smoke, once CI
+> ran it), 019 (pass 3, in 018's own fix), and 020 and 021 (pass 4). Each has
+> a repro that reproduced on the unfixed code and a test that failed first;
+> each repro now exits 1, and `fux-fuzz/repro/expected.tsv` records it. Pass 2
+> found nothing, but the nightly runs had not been read yet; the finishing run
+> added passes 3 to 5, and pass 5 found nothing new, so the run stopped there.
+> The smoke's other failures were the harness's, and are recorded below with
+> their causes, as are the three test mitigations that were replaced.
+
+Hunt 8 runs with CI for the first time (`.github/workflows/ci.yml`:
+`ubuntu-24.04` and `macos-15`), and the fixes to hunt 7's findings 009–013 land
+in the same branch. The ranked list at the end of hunt 7 is the order they
+were taken in.
+
+## 014 — Socket cleanup trusts a reused inode number (class 6), Linux on ext4
+
+**Found by** the first run of CI, before any hunting: fux's own unit test
+`transport::tests::cleanup_leaves_a_socket_that_replaced_its_own` failed on
+`ubuntu-24.04` with `NotFound`, where it had passed on macOS, in the Linux
+container, and on every earlier run.
+
+**The break.** A fux server removes its socket at shutdown only if the file at
+the path is still the one it bound, because another program may have replaced
+it. It decided that by comparing `(device, inode)` with the pair recorded at
+bind. That pair names a file only while its inode is allocated: once the
+listener closes, the inode is freed, and ext4 gives a freed inode number to
+the next file created. Bound, unlinked and rebound at one path:
+
+| Filesystem | Inode number reused |
+| --- | --- |
+| ext4 (loop mount, and GitHub's `/tmp`) | 200 of 200 |
+| APFS (macOS) | 0 of 200 |
+| tmpfs, btrfs, overlayfs (the Linux container) | 0 of 200 each |
+
+So on ext4 a socket bound at fux's path after fux's listener closed carries
+fux's old pair, and fux removes it. The stale-socket path in `bind_socket` had
+the same weakness between its probe and its removal.
+
+**Reach.** Through the binary it needs a race: the replacement has to land
+between the listener closing and the endpoint being dropped during shutdown,
+and the lock excludes another fux, so it takes a different program. Rare. But
+the unit test states the guarantee, and on the most common Linux filesystem
+the guarantee did not hold.
+
+**Reproduction.**
+`fux-fuzz/repro/014-socket-cleanup-trusts-a-reused-inode-number.sh` runs that
+unit test with `TMPDIR` on a filesystem it has first checked reuses inode
+numbers; it exits 2 where none is available. Locally,
+`FUX_LINUX_TMP=ext4 fux-fuzz/linux/run.sh` gives the container an ext4
+`TMPDIR` like the runner's, which is new in this run for exactly this reason.
+`NEGATIVE_CONTROL=1` runs it on `/dev/shm`, a tmpfs, where it passes.
+
+## 015 — Removing the `Settings` resource stops painting, silently (class 6)
+
+**The break.** `world.remove_resources` on `fux::assets::Settings` left a
+server that answered `rpc.discover` and `world.query` but painted nothing. fux
+reads `Settings` with `World::resource` from about a dozen systems -- the bar,
+command execution, spawning a pane -- and that method panics when the resource
+is absent, so every `fux.frame` failed inside the fallback error handler,
+logged and swallowed, with nothing said to the attached session.
+
+**Found by** the resource-entity sweep carried over from hunt 7's clean-areas
+table, which had recorded "removing the Settings resource: server survives;
+frames stop painting" without filing it. It is a finding: the README calls raw
+resource mutation trusted low-level access, but a server that stops serving
+without a notice or a log is a silent failure, not a documented trade-off.
+
+**Fixed** in `remote::remove_resources`: the guard delegates to the stock
+handler, then, if `Settings` is now gone, restores it to its default and logs
+a warning. Removal stays a real operation for every other resource; only the
+one resource fux cannot run without is restored, and the restoration is not
+silent.
+
+**Reproduction.**
+`fux-fuzz/repro/015-removing-settings-stops-painting-silently.sh` removes
+`Settings`, then asks for a frame and checks its chrome is still painted. Exit
+0 reproduced, 1 not, 2 setup; `NEGATIVE_CONTROL=1` removes an unrelated
+resource, which does not affect painting.
+
+## 016 — A scene file read is unbounded (class 5)
+
+**The break.** `load_layout` read its scene file with `std::fs::read_to_string`,
+which reads the whole file into a `String` with no bound. The path is the
+caller's choice and an absolute one is accepted, so `load_layout` on
+`/dev/zero` grew the server to 1.4 GB in a few seconds on the way to
+exhausting memory, and a large regular file did the same; parsing a huge one
+also blocks every session on the ECS thread while it runs.
+
+fux already bounds the request body a caller sends over the socket (`MAX_BODY`,
+hunt 6 finding 007) for exactly this reason. A scene file read from disk is
+another way to make the server hold whatever a caller likes.
+
+**Found by** the scene-hostility sweep of hunt 8's pass 1.
+
+**Fixed** in the 016 commit: `read_scene` refuses a regular file over
+`MAX_SCENE` (8 MiB) by its length, and caps the read itself at that many bytes
+so a file reporting no length -- a pipe, `/dev/zero` -- cannot grow the buffer
+without bound. A saved layout is a hierarchy of nodes, far below the bound;
+the round-trip save and load test is unaffected.
+
+**Reproduction.** `fux-fuzz/repro/016-scene-file-read-is-unbounded.sh` loads
+`/dev/zero` and watches the server's RSS pass 1 GB. Exit 0 reproduced, 1 not,
+2 setup; `NEGATIVE_CONTROL=1` loads a small missing file, refused at once.
+
+## 017 — A resized pane loses its bottom line (class 6)
+
+**The break.** A pane whose output overflows its height and whose last line has
+no trailing newline lost that line when the pane was resized smaller. Every new
+pane is: its PTY starts at one size and the first frame's `size_terminals`
+resizes it to the pane's rectangle. The frame then showed the row above, so the
+newest output -- a prompt, a program's final line -- was missing, and no later
+frame brought it back, because the row was gone from the emulator.
+
+**Found by** the nightly smoke and traces: the `history` scenario and the
+`owned-terminal-tiny-child-geometry` trace wait for a split pane to paint its
+last line, and timed out on Linux. Hunts 7 and 8 first recorded it as a
+settling race, because frames requested in a polling loop seemed to converge.
+One `fux.frame` taken after a fixed wait shows it deterministically: 3 of 3 on
+macOS against `origin/main`, and the same on Linux.
+
+**Root cause.** `fux_vt::grid::Grid::resized` kept the first `history + rows`
+rows, so a shrink dropped rows off the *bottom* of the live area -- the cursor
+line -- instead of scrolling the top into history. `Screen::window`,
+`terminal::rows::snapshot` and the frame path were correct: before the resize
+the window's last row is the newline-less line, after it the row above.
+
+**Fixed** in `fux-vt`: `resized` reflows around the cursor. A shrink drops rows
+below the cursor first and only then scrolls rows above it into history, so a
+screen whose content is at the top keeps it and a full screen keeps its bottom
+line; a grow pulls rows back from history, as xterm does, so shrinking and
+growing again restores the screen. Both cursors move with their rows. The
+storage stride covers exactly the rows that become history.
+
+Two wrong versions came first, and each is now pinned by a test. Keeping the
+bottom rows regardless of the cursor pushed every new pane's first line into
+history -- the shell's banner vanished and 38 smoke cases failed under a CPU
+limit -- and taking the stride over every old row kept a narrowed pane's
+widest width forever, which doubled the 200-pane `scale` scenario's time.
+
+`fux-vt`'s public API is unchanged, so it stays 0.1.1; the change is to its
+resize behaviour. One `fux-vt` test, `resize_rejects_bad_capacity_without_mutating_state`,
+had asserted the old behaviour -- after `resize(2, 3)` it expected the upper
+two rows, with the cursor's row dropped -- and now expects the cursor's row and
+the one above it. koh's 220 library tests pass against the fixed `fux-vt`.
+
+**Tests.** `fux-vt`: `shrink_keeps_the_newline_less_bottom_line`,
+`shrink_drops_blank_rows_below_the_cursor_first`,
+`grow_restores_rows_a_shrink_scrolled_away` and the grid unit test
+`narrowing_live_rows_uses_the_new_width_as_stride`. fux:
+`terminal::rows::tests::a_resized_pane_paints_its_newline_less_last_line`
+(the `Terminal` and `rows` level) and
+`design::a_split_pane_paints_its_newline_less_last_line` (one frame over the
+socket). Each failed before its fix.
+
+**Reproduction.** `fux-fuzz/repro/017-a-split-pane-hides-its-last-line.sh`
+splits with a program that prints forty lines and then `ENDMARK` without a
+newline, waits two seconds, and takes one `fux.frame`. Exit 0 reproduced (no
+`ENDMARK`), 1 not, 2 setup; `NEGATIVE_CONTROL=1` ends the output with a
+newline and exits 1.
+
+## 018 — A blocking scene read stalls the whole server (class 2)
+
+**The break.** `load_layout` reads its scene file with a blocking
+`std::fs::read_to_string` (`read_scene`) inside a task on Bevy's `IoTaskPool`.
+That pool is one thread on a two-core machine and at most four on any, and it
+also runs the BRP serving loop and every pane's PTY I/O. A load whose file is
+slow to produce bytes -- a named pipe, or a large scene -- blocks a pool
+thread; enough concurrent such loads block every pool thread; and then the
+server answers nothing until the reads finish.
+
+**Found by** the nightly smoke, on a two-core runner: the `race`, `churn` and
+`scene_refs` scenarios, which use named pipes to hold a load in flight, timed
+out with `timeout: global` on both `ubuntu-24.04` and `macos-15`. Reproduced
+under `docker run --cpus 2`, on `origin/main` too: it is pre-existing, from
+before the finding-016 bound, which kept the read blocking.
+
+**Fixed** in the 018 commit: `scene_io`'s task runs the blocking read or write
+on a dedicated `std::thread` and awaits the result over a channel, so it holds
+no pool thread while the file is slow. The serving loop and PTY I/O keep
+running. The `race`, `churn` and `scene_refs` scenarios pass under `--cpus 2`.
+Those threads needed a bound of their own: finding 019.
+
+**Reproduction.**
+`fux-fuzz/repro/018-a-blocking-scene-read-stalls-the-server.sh` opens eight
+concurrent `load_layout` requests, each naming a FIFO nothing writes -- more
+than the pool's ceiling -- then asks `rpc.discover`. Exit 0 reproduced, 1 not,
+2 setup; `NEGATIVE_CONTROL=1` sends harmless requests instead.
+
+## 019 — Scene file threads are unbounded, and the OS limit panics (class 1)
+
+**The break.** Finding 018's fix gave each scene load or save its own thread.
+Nothing bounded them, and a read of a named pipe that nobody writes never ends:
+each such `load_layout` kept one more thread for the life of the server, even
+after a later load on the same viewer replaced the pending task. At the OS's
+thread limit -- `RLIMIT_NPROC`, a pids cgroup, systemd's `TasksMax` --
+`std::thread::spawn` panicked inside the pool task, and `scene_completions`
+then panicked on the main thread every update, polling the dead task ("Task
+polled after completion").
+
+**Found by** hunt 8's pass over its own fixes. In a Linux container with
+`--pids-limit 512`, 1000 such loads left the server at 508 threads, and its
+stderr showed both panics. On macOS (16384 threads a process) 5000 loads left
+5019 threads, and the server kept answering. `origin/main` is not affected: it
+had no scene threads, and 018 hung it instead.
+
+**Fixed** in the 019 commit: at most `MAX_SCENE_IO` (16) scene file operations
+run at once. A request past the bound gets the notice "16 scene files are
+already being read or written; try again later" and starts nothing. The thread
+starts on the ECS thread through `thread::Builder`, so the OS refusing it is a
+notice too, not a panic. Each thread gives its place back when it ends. Pipes
+that are never written can still hold all sixteen places until the server
+exits: that is the requester's own choice, and the server keeps answering.
+
+**Test.** `layout::tests::scene_file_threads_are_bounded` starts 17 loads of
+unwritten pipes and requires 16 held, the 17th refused with the notice and
+nothing pending, and every place back once the pipes are released. It failed
+first: all 17 were held.
+
+**Reproduction.** `fux-fuzz/repro/019-scene-file-threads-are-unbounded.sh`
+fires 64 loads naming unwritten FIFOs and counts the server's threads. Exit 0
+reproduced (a thread for every load), 1 not, 2 setup; `NEGATIVE_CONTROL=1`
+names missing files, whose loads fail at once. Measured: 64 threads before the
+fix, 16 after; 0 for the control, both builds.
+
+## 020 — A stopped pane process reads as exited on macOS (class 6)
+
+**The break.** fux waits for a pane's leader with
+`waitid(P_PID, pid, WEXITED | WNOWAIT)`. macOS's `waitid` also reports a child
+that has only stopped, although only `WEXITED` was asked for (`si_code`
+`CLD_STOPPED`, status 17), and `WNOWAIT` leaves that report in place. fux read
+it as an exit, 128 + SIGSTOP = 145: the pane's `ProcessState` said `exited`,
+the runtime was torn down, and the process group was killed although the
+process was only stopped. `kill -STOP`, or Ctrl-Z in a pane that runs a
+program directly with no job-control shell, was enough. Linux's `waitid`
+reports nothing for a stop here (checked with the same C program in the Linux
+container), so Linux was never affected. Pre-existing: `wait_unreaped` is
+unchanged since fux's first commit.
+
+**Found by** hunt 8's finishing run, while pausing a pane's program to test how
+fux queues input for a program that is not reading.
+
+**Fixed** in the 020 commit: a report whose `si_code` is not `CLD_EXITED`,
+`CLD_KILLED` or `CLD_DUMPED` means the leader is alive. The non-blocking probe
+returns "live"; the blocking waiter waits on, sleeping 20 ms between reports so
+a stopped leader cannot make it spin. A stopped pane now stays a stopped,
+running pane on both platforms, as it already did on Linux.
+
+**Test.** `terminal::tests::a_stopped_leader_is_not_an_exited_one` stops a
+child, then requires the probe to say live, the blocking waiter to still be
+waiting 300 ms later, the probe to say live after SIGCONT, and the waiter to
+report 128 + SIGKILL once the child is killed. It failed first on macOS:
+`Ok(145)` for the stopped child.
+
+**Reproduction.** `fux-fuzz/repro/020-a-stopped-pane-process-reads-as-exited.sh`
+stops a pane's `cat` and reads its `ProcessState` a second later. Exit 0
+reproduced (not running), 1 not, 2 setup; `NEGATIVE_CONTROL=1` does not stop
+it. macOS: 0 before the fix, 1 after; Linux: 1 either way.
+
+## 021 — Input past sixteen pieces is lost while a pane's writer lags (class 6)
+
+**The break.** Input for a pane -- typed keys, pastes, mouse reports and
+terminal replies -- waited for the PTY writer in a queue of sixteen pieces,
+whatever their size. When the PTY's own buffer was full, because the program
+was busy, stopped or slower than the input, every piece past the sixteenth was
+refused, with the notice "sending into a full channel", and lost. A typed key
+is one piece, so seventeen keys were enough. Sixteen pieces of up to 64 KiB
+could wait, but not a seventeenth key. Pre-existing.
+
+**Found by** the finishing run's pass over its own evidence: pausing a pane's
+`cat` and sending it 3000 single keys over the socket delivered 1040 --
+macOS's PTY buffer plus sixteen -- and the rest were lost.
+
+**Fixed** in the 021 commit: the queue is bounded by bytes, not pieces.
+Each piece is charged its length plus 64 bytes, up to 16 times the largest
+accepted input (the old ceiling). The writer gives back each piece's charge as
+it passes it to the PTY. Terminal replies are charged the same way. A single
+input is still bounded to the largest paste, and a program that reads nothing
+can still fill the queue, when fux says so: "the pane's program is not
+reading its input".
+
+**Test.** `terminal::tests::keys_wait_for_a_slow_reader_instead_of_being_lost`
+stops a live pane's `cat`, sends 3000 single keys, resumes it and requires
+none refused and all 3000 received in order. It failed first: 2870 refused.
+`replies_remain_byte_exact_nonblocking_and_bounded` now bounds replies by cost
+and releases each as the writer would.
+
+**Reproduction.** `fux-fuzz/repro/021-input-past-sixteen-pieces-is-lost.sh`
+stops a pane's `cat`, sends eighty 2000-byte pastes, resumes it, and compares
+what arrived. Exit 0 reproduced, 1 not, 2 setup; `NEGATIVE_CONTROL=1` leaves
+`cat` running. Before the fix 36,000 (macOS) and 48,000 (Linux) of 160,000
+bytes arrived; after it all of them, on both.
+
+## The nightly smoke, and what each failure was
+
+The first nightly dispatch (run 35914442080, at `655d8db`) was red on both
+runners; every trace and fuzz target passed. Local runs that imitate a runner
+(`docker run --cpus`, a shared and loaded Mac) found three more. Each failure,
+by cause:
+
+| Case | Scenario | Cause | Resolution |
+| --- | --- | --- | --- |
+| 21 | `history` | Finding 017: the resize dropped the pane's last line | Fixed in `fux-vt` |
+| 29, 39, 40 | `race`, `churn`, `scene_refs` | Finding 018: a blocking scene read stalled the I/O pool | Fixed; its bound is 019 |
+| 47 | `adversarial` | The harness. On macos-15 the stream was still arriving 8.8 s in: 160 sleeps of 20 ms, each overshooting, forked or not. Paced faster, its end marker landed while the viewer was 2x2 and wrapped as EN/DE/D on ubuntu-24.04, which a non-reflowing emulator keeps. fux read the stream as fast as it was written; through a fux pane with the scenario's resizes it took 3.9 s against 3.8 s for the pacing alone, the same on `origin/main`. | Paced by deadline; marker gated on the pane being 23x80. Seen at 3.87-4.03 s. |
+| 36 | `api_misuse` (local) | The harness. The Viewer query after a 65535x65535 resize waited behind the attached frontend's first 4096x4096 paint: 2.7-9.5 s in a debug build on a loaded Mac, 0.2-0.3 s in release. Profiles of the branch and `origin/main` match. Failures: 1 of 10 on macOS for each; on Linux 6 of 31 on the branch, 1 of 20 on `655d8db`. | 15 s allowance while that viewer exists, as `walk` and `limits` already had. 0 of 25 since. |
+| 18 | `history` (local, macOS) | The harness. The scenario typed a 774-byte command through the frontend, one request per key; with other builds loading the Mac, its echo grew at about 10 ms a key and was at LINE-048 of 60 when the 5 s stage ended. Nothing was lost: no refusal notice, steady progress, 15 of 15 in isolation. | The same lines printed from a shell loop, 136 typed bytes |
+| 48 | `concurrent` (local) | The smoke's global 600 s budget ran out behind `scale`, which took 464 s on a Mac at load 40-50 | The presentation writes only the viewed tab; see below |
+
+**`scale`'s cost was mostly fux's, and is now mostly fixed.** Its thousand
+moves to new tabs cost O(tabs) each: every control re-synced the viewer's
+presentation by writing the whole workspace scene -- every tab -- into the
+inert presentation world and laying it out, only to hide all but one tab. A
+move took 424 ms at 1000 tabs on ubuntu-24.04, so `scale` was 365 s of that
+runner's 497 s smoke (192-216 s on macos-15), and a loaded machine could not
+finish the smoke in 600 s. Side by side under the same load, this branch and
+`655d8db` took 441 and 444 s, then 409 and 409 s: it predates the branch.
+Every request still returned inside its bound, so it was a cost, not a class 2
+finding. The presentation now holds only the viewed tab: 800 moves in 44 s
+instead of 118 s on the same host, the 800th in 97 ms instead of 241 ms. What
+still grows with the tab count is the workspace's own layout scene, rebuilt
+when the workspace changes.
+
+**Three test mitigations were replaced by their causes.**
+
+- `--test-threads=2` on CI's test steps is gone. Each flake it hid had a
+  timing assumption, now fixed: the PTY size a frame set was published a frame
+  late (the frame now publishes it); two design tests printed their READY
+  marker before the mouse modes it was meant to confirm; and a frontend PTY's
+  slave could be inherited by a concurrent fork (below). The workspace passes
+  at full width: 5 of 5 in the Linux container, and on both CI runners.
+- `hidden_tabs_stop_constraining_pty_size...` has its strict first assertion
+  back: `size_terminals` publishes `ProcessState` in the step that resizes, as
+  `terminate` does. `frame::tests::a_frame_publishes_the_pty_size_it_sets`
+  failed first ((24, 80) published for an (11, 40) PTY).
+- The frontend restore test ends with the strict `ends_with(b"\e[?1049l")`
+  again. The `\r\n` it had tolerated was the harness's: portable-pty's master
+  writer sends `\n` plus EOF when dropped, and when a concurrent test's fork
+  had inherited the frontend PTY's slave -- `openpty` returns it without
+  close-on-exec, which portable-pty sets afterwards, outside the lock -- the
+  slave outlived the frontend and Linux echoed that newline in cooked mode.
+  Holding one stray slave descriptor reproduces the exact bytes 10 of 10 on
+  Linux, never on macOS. Every PTY and fork in the test binary now holds the
+  `SPAWN` lock.
+
+## Passes, and what each attacked
+
+**Pass 1** attacked every area; three findings.
+
+- **The phase 2 fixes** (009, 010, 012, 013): other routes to a resource-entity
+  despawn, other signals, backlog fills, jobs leaving the session. Solid.
+- **Entity-taking BRP methods** (eight of them) x sixteen id classes, single
+  and batched, 256 requests: no death.
+- **Configuration**: empty, non-JSON, million-byte prefix, empty keys, huge
+  history, deeply nested, a thousand bindings, unknown fields. Each fell back
+  to a usable configuration; the server answered every time.
+- **The transport**: partial headers, no content-length, a 200 KB header, a
+  bad method, HTTP/0.9, a slow drip, a negative content-length, ten thousand
+  newlines, twenty unread connections. Robust.
+- **Scenes**: malformed, empty, deeply nested, binary, and huge files.
+  **Finding 016**: an unbounded read. Fixed.
+- **Resource growth**: 120 panes with real PTYs (+20 MB), 5000 spawned
+  entities (no leak), three unread watches against a flooding pane (bounded).
+- **`fux-vt` in both modes** (fux's and koh's `events`/`extended_replies`):
+  99,511 `cargo-fuzz` runs, no crash.
+- **Resource methods and every `Input` kind at its bounds**: a partial
+  `Settings`, a huge `history_lines`, `resize` to 65535 and to 0, `mouse` at
+  65535, a 700 KB paste, an unpaired surrogate key. No death; a 0x0 viewer
+  paints empty and recovers when resized back.
+- **`Settings` removal** (carried from hunt 7's clean-areas note): **finding
+  015**. Fixed.
+
+**Pass 2** re-attacked every area and the code the fixes added -- a symlink to
+`/dev/zero` past the scene bound, mutating `Settings` to break painting, a
+`Focused` relationship pointing at a resource entity, and the entity, config,
+transport and scene sweeps again. Nothing new. The first run stopped here.
+
+**Pass 3** attacked what the finishing run changed; one finding.
+
+- **The 017 reflow**, in both of `fux-vt`'s modes (the fuzzer's header bits
+  switch `events` and `extended_replies`): 132,455 `cargo-fuzz` runs, no crash.
+  Shrinks and grows with the cursor at the top, the middle and the bottom; the
+  alternate screen, which keeps no history; the saved cursor; a pane scrolled
+  back 36 rows, and to the top of its history, while a grow pulled history
+  into the live area -- the view kept its bottom row or clamped to the oldest
+  rows, and returned to live output. koh's full test suite against the change.
+- **The 018 scene thread**: a thousand loads of unwritten pipes. **Finding
+  019**. Fixed.
+- **The frame-published size**: reflected dimension edits on a pane in a
+  hidden tab still resize its PTY and stick, as on `origin/main`; visible
+  again, one frame sizes and publishes it.
+- **The harness changes**: each was forced into the failure it guards against
+  (the READY/mode split, a stray PTY slave, the marker at 2x2) and shown to
+  pass with it.
+
+**Pass 4** re-attacked 019's fix and everything above. 24 viewers issuing
+mixed loads and saves of unwritten pipes: 16 held, 8 refused with the notice;
+8 viewers detached while their I/O was blocked; every pipe released, then
+every place came back and a new load ran. The server answered throughout,
+with no panic. 202,339 more `cargo-fuzz` runs on the final `fux-vt`, no crash.
+The presentation that holds only the viewed tab: `walk`, `concurrent`, `raw`,
+`tabless`, `repair`, `identity`, `layout` and `nav` on seeds 1-3, all passing;
+and its fallbacks by raw edit -- zoom with the focus moved into a hidden tab,
+the viewed tab reparented under a pane and back, the viewed tab closed by
+another viewer -- each painting exactly as before the change. Chasing the
+macOS smoke's case 18 then found two: **finding 020** (pausing a pane's
+program made macOS report it exited) and **finding 021** (input past sixteen
+queued pieces was lost). Both fixed.
+
+**Pass 5** attacked 020's and 021's fixes. A stopped pane leader for 5 s: no
+measurable server CPU (the waiter sleeps between macOS's repeated reports);
+closing the pane while it is stopped leaves no process. Ctrl-Z of a job under
+an interactive bash stops the job, not the pane; `fg` and Ctrl-C bring it back
+and end it. A program that never reads its input, flooded: fifteen 64 KiB
+pastes queued (983,040 bytes), the sixteenth refused with the new notice, 50
+single keys still accepted within the bound, server RSS +2.2 MiB (the old
+queue: +2.1 MiB); resumed, it received every accepted byte, and input worked
+again. A program asking for the cursor position endlessly without reading its
+replies: bounded, still running, the server answering, no panic. Nothing new.
+The run stopped.
+
+## Ranked, for reference
+
+All eight hunt 8 findings are fixed in this branch. The one finding still open
+across all hunts is 011 (the ALSA build chain), documented above as
+`bevy_remote`'s to cut, not fux's. `scale`'s O(tabs) cost per control is
+recorded above; its presentation part, most of it, is fixed.

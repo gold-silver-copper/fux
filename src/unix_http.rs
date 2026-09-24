@@ -56,7 +56,7 @@ impl Connector<()> for UnixConnector {
         details: &ConnectionDetails,
         _chained: Option<()>,
     ) -> Result<Option<Self::Out>, Error> {
-        let stream = UnixStream::connect(&self.0).map_err(|error| {
+        let stream = uninterrupted(|| UnixStream::connect(&self.0)).map_err(|error| {
             Error::Io(io::Error::new(
                 error.kind(),
                 format!("{}: {error}", self.0.display()),
@@ -102,6 +102,20 @@ impl fmt::Debug for UnixTransport {
     }
 }
 
+/// Repeats a call a signal handler interrupted. `EINTR` is not a failed
+/// request: a read on a socket with a receive timeout is never restarted after
+/// a signal handler runs on Linux, and every request here has a timeout, so
+/// without this the frontend's own `SIGWINCH` handler ended the attachment
+/// whenever a window was resized mid keystroke (hunt 7 finding 010).
+fn uninterrupted<T>(mut call: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    loop {
+        match call() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
 /// Mirrors ureq's TCP transport: a would-block from a timed socket is a timeout.
 fn timed<T>(result: io::Result<T>, timeout: &NextTimeout) -> Result<T, Error> {
     match result {
@@ -140,7 +154,7 @@ impl Transport for UnixTransport {
             self.read_timeout = wanted;
         }
         let input = self.buffers.input_append_buf();
-        let amount = timed(self.stream.read(input), &timeout)?;
+        let amount = timed(uninterrupted(|| self.stream.read(input)), &timeout)?;
         self.buffers.input_appended(amount);
         Ok(amount > 0)
     }
@@ -152,7 +166,7 @@ impl Transport for UnixTransport {
             return false;
         }
         let open = matches!(
-            self.stream.read(&mut [0]),
+            uninterrupted(|| self.stream.read(&mut [0])),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock
         );
         open && self.stream.set_nonblocking(false).is_ok()

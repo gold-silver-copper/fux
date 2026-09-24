@@ -107,8 +107,13 @@ rows retain their IDs. Recycled slots receive new IDs. Cell mutations change
 row versions rather than row identities. Reset and history clearing invalidate
 removed IDs. Identity exhaustion must be an explicit error, never wrap/reuse.
 
-Resize is not reflow: retained live rows keep their upper-left cells, extra
-bottom rows/columns are discarded, growth is blank, and saved cursors clamp.
+Resize is not paragraph reflow: rows keep their upper-left cells and columns
+past the new width are discarded. Rows move around the cursor, so the line it
+is on stays visible: a shrink first discards rows below the cursor, then moves
+rows above it into history (bounded by the history limit; the alternate
+screen keeps none, so they are discarded); a grow first pulls rows back from
+history above, then adds blank rows below. Both cursors move with their rows
+and clamp.
 History rows retain their original column extent; window reads pad/clip them
 without modifying history. Every effective resize clears live soft-wrap metadata, matching the inherited
 resize contract; historical wrap metadata is retained.

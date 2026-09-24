@@ -193,14 +193,14 @@ fn settle_remote_requests(receiver: Res<bevy_remote::BrpReceiver>, wake: Res<Wak
 /// here rather than only where the watch was registered, because the world can
 /// change in between: the id may have been despawned and its index reused by an
 /// entity of another kind.
-fn disconnected(mut commands: Commands, closed: Res<Disconnected>, viewers: Query<(), IsViewer>) {
+fn disconnected(mut commands: Commands, closed: Res<Disconnected>) {
     while let Ok(entity) = closed.0.try_recv() {
-        if viewers.contains(entity) {
-            commands.entity(entity).try_despawn();
-        } else {
-            bevy_log::debug!(
-                "A frame-watch connection for entity {entity} closed, but that entity is not a viewer; nothing was detached."
-            );
-        }
+        commands.queue(move |world: &mut World| {
+            if !crate::navigation::detach_if_viewer(world, entity) {
+                bevy_log::debug!(
+                    "A frame-watch connection for entity {entity} closed, but that entity is not a viewer; nothing was detached."
+                );
+            }
+        });
     }
 }

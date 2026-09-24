@@ -292,3 +292,50 @@ fn repair_absorbs_requests_made_during_a_pass_and_is_bounded() -> Outcome {
     assert_consistent(&world, b, root, tab)?;
     Ok(())
 }
+
+/// Hunt 7 finding 009, as a class: a resource is an entity in 0.20, and a raw
+/// insert can put a `Viewer` on one. It must not become a viewer, and fux's
+/// own viewer despawns must refuse it, so that neither a closed watch nor a
+/// `Detach` takes the resource with it.
+#[test]
+fn a_resource_entity_is_never_a_viewer_and_is_never_detached() -> crate::testing::Outcome {
+    #[derive(bevy_ecs::resource::Resource)]
+    struct Marker;
+    let mut world = World::new();
+    observe(&mut world);
+    // A real resource entity, found by the marker every resource carries.
+    world.insert_resource(Marker);
+    let resource = world
+        .query_filtered::<Entity, With<bevy_ecs::resource::IsResource>>()
+        .iter(&world)
+        .next()
+        .need()?;
+    world.entity_mut(resource).insert(viewer_component());
+    // The insert is rejected the moment it lands, as it is on a layout node.
+    assert!(
+        world.get::<Viewer>(resource).is_none(),
+        "a Viewer on a resource entity must be stripped"
+    );
+    // Even if one is forced past the observer, no pass treats it as a viewer.
+    world.entity_mut(resource).insert(viewer_component());
+    world.entity_mut(resource).remove::<Viewer>();
+    world.entity_mut(resource).insert(viewer_component());
+    // detach_if_viewer refuses it, so a closed watch or a Detach cannot despawn it.
+    assert!(!detach_if_viewer(&mut world, resource));
+    assert!(world.get_entity(resource).is_ok(), "the resource survives");
+    // A layout component on a resource entity is stripped the same way, so a
+    // layout pass cannot despawn the resource either.
+    world.entity_mut(resource).insert(Workspace);
+    assert!(
+        world.get::<Workspace>(resource).is_none(),
+        "a Workspace on a resource entity must be stripped"
+    );
+    world.entity_mut(resource).insert(Split);
+    assert!(world.get::<Split>(resource).is_none());
+    // A genuine viewer is still detached.
+    let root = world.spawn(Workspace).id();
+    let real = world.spawn((viewer_component(), Viewing(root))).id();
+    assert!(detach_if_viewer(&mut world, real));
+    assert!(world.get_entity(real).is_err());
+    Ok(())
+}
