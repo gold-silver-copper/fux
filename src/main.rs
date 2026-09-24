@@ -6,6 +6,7 @@ mod encode;
 mod execute;
 mod frame;
 mod interaction;
+mod invariants;
 mod layout;
 mod model;
 mod navigation;
