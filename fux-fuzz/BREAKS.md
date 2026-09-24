@@ -1380,14 +1380,14 @@ macOS number.
 
 # Hunt 8: every known defect fixed, then everything hunted until a pass finds nothing
 
-> **Status: complete. Six findings, all fixed.** 014 (found by CI's first
+> **Status: complete. Eight findings, all fixed.** 014 (found by CI's first
 > run), 015 and 016 (pass 1), 017 and 018 (the first nightly smoke, once CI
-> ran it), and 019 (pass 3, in 018's own fix). Each has a repro that
-> reproduced on the unfixed code and a test that failed first; each repro now
-> exits 1, and `fux-fuzz/repro/expected.tsv` records it. Pass 2 found nothing,
-> but the nightly runs had not been read yet; the finishing run added passes 3
-> and 4, and pass 4 found nothing new, so the run stopped there. The smoke's
-> other nightly failures were the harness's, and are recorded below with
+> ran it), 019 (pass 3, in 018's own fix), and 020 and 021 (pass 4). Each has
+> a repro that reproduced on the unfixed code and a test that failed first;
+> each repro now exits 1, and `fux-fuzz/repro/expected.tsv` records it. Pass 2
+> found nothing, but the nightly runs had not been read yet; the finishing run
+> added passes 3 to 5, and pass 5 found nothing new, so the run stopped there.
+> The smoke's other failures were the harness's, and are recorded below with
 > their causes, as are the three test mitigations that were replaced.
 
 Hunt 8 runs with CI for the first time (`.github/workflows/ci.yml`:
@@ -1677,7 +1677,7 @@ bytes arrived; after it all of them, on both.
 
 The first nightly dispatch (run 35914442080, at `655d8db`) was red on both
 runners; every trace and fuzz target passed. Local runs that imitate a runner
-(`docker run --cpus`, a shared and loaded Mac) found two more. Each failure,
+(`docker run --cpus`, a shared and loaded Mac) found three more. Each failure,
 by cause:
 
 | Case | Scenario | Cause | Resolution |
@@ -1686,6 +1686,7 @@ by cause:
 | 29, 39, 40 | `race`, `churn`, `scene_refs` | Finding 018: a blocking scene read stalled the I/O pool | Fixed; its bound is 019 |
 | 47 | `adversarial` | The harness. On macos-15 the stream was still arriving 8.8 s in: 160 sleeps of 20 ms, each overshooting, forked or not. Paced faster, its end marker landed while the viewer was 2x2 and wrapped as EN/DE/D on ubuntu-24.04, which a non-reflowing emulator keeps. fux read the stream as fast as it was written; through a fux pane with the scenario's resizes it took 3.9 s against 3.8 s for the pacing alone, the same on `origin/main`. | Paced by deadline; marker gated on the pane being 23x80. Seen at 3.87-4.03 s. |
 | 36 | `api_misuse` (local) | The harness. The Viewer query after a 65535x65535 resize waited behind the attached frontend's first 4096x4096 paint: 2.7-9.5 s in a debug build on a loaded Mac, 0.2-0.3 s in release. Profiles of the branch and `origin/main` match. Failures: 1 of 10 on macOS for each; on Linux 6 of 31 on the branch, 1 of 20 on `655d8db`. | 15 s allowance while that viewer exists, as `walk` and `limits` already had. 0 of 25 since. |
+| 18 | `history` (local, macOS) | The harness. The scenario typed a 774-byte command through the frontend, one request per key; with other builds loading the Mac, its echo grew at about 10 ms a key and was at LINE-048 of 60 when the 5 s stage ended. Nothing was lost: no refusal notice, steady progress, 15 of 15 in isolation. | The same lines printed from a shell loop, 136 typed bytes |
 | 48 | `concurrent` (local) | The smoke's global 600 s budget ran out behind `scale`, which took 464 s on a Mac at load 40-50 | The presentation writes only the viewed tab; see below |
 
 **`scale`'s cost was mostly fux's, and is now mostly fixed.** Its thousand
@@ -1783,12 +1784,26 @@ The presentation that holds only the viewed tab: `walk`, `concurrent`, `raw`,
 `tabless`, `repair`, `identity`, `layout` and `nav` on seeds 1-3, all passing;
 and its fallbacks by raw edit -- zoom with the focus moved into a hidden tab,
 the viewed tab reparented under a pane and back, the viewed tab closed by
-another viewer -- each painting exactly as before the change. Nothing new. The
-run stopped.
+another viewer -- each painting exactly as before the change. Chasing the
+macOS smoke's case 18 then found two: **finding 020** (pausing a pane's
+program made macOS report it exited) and **finding 021** (input past sixteen
+queued pieces was lost). Both fixed.
+
+**Pass 5** attacked 020's and 021's fixes. A stopped pane leader for 5 s: no
+measurable server CPU (the waiter sleeps between macOS's repeated reports);
+closing the pane while it is stopped leaves no process. Ctrl-Z of a job under
+an interactive bash stops the job, not the pane; `fg` and Ctrl-C bring it back
+and end it. A program that never reads its input, flooded: fifteen 64 KiB
+pastes queued (983,040 bytes), the sixteenth refused with the new notice, 50
+single keys still accepted within the bound, server RSS +2.2 MiB (the old
+queue: +2.1 MiB); resumed, it received every accepted byte, and input worked
+again. A program asking for the cursor position endlessly without reading its
+replies: bounded, still running, the server answering, no panic. Nothing new.
+The run stopped.
 
 ## Ranked, for reference
 
-All six hunt 8 findings are fixed in this branch. The one finding still open
+All eight hunt 8 findings are fixed in this branch. The one finding still open
 across all hunts is 011 (the ALSA build chain), documented above as
 `bevy_remote`'s to cut, not fux's. `scale`'s O(tabs) cost per control is
 recorded above; its presentation part, most of it, is fixed.
