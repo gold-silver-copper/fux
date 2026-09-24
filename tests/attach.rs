@@ -220,3 +220,107 @@ fn exiting_the_last_shell_stops_the_server_and_tells_the_client() -> Outcome {
     assert!(!server.socket.exists());
     Ok(())
 }
+
+#[test]
+fn focus_events_reach_a_pane_that_asked_and_cursor_shapes_pass_through() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    // A pane that did not ask gets nothing.
+    client.keys("cat -v\r")?;
+    client.send(b"\x1b[I")?;
+    client.keys("before\r")?;
+    client.wait("cat's echo", |t| t.lines().any(|l| l == "before"))?;
+    assert!(!client.text().contains("^[[I"), "{}", client.text());
+    client.keys("\x03")?;
+    // Typing before the prompt is back would race the interrupt's flush.
+    client.wait("the prompt again", |t| {
+        // The last line is the bar; the prompt is the last one above it.
+        t.lines()
+            .rev()
+            .skip(1)
+            .find(|l| !l.is_empty())
+            .is_some_and(|l| l == "$")
+    })?;
+    // One that turns on ?1004 hears focus in and out.
+    client.keys("printf '\\033[?1004h\\033[5 q'; cat -v\r")?;
+    client.wait("cat running", |t| t.lines().last().is_some())?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    client.send(b"\x1b[I")?;
+    client.send(b"\x1b[O")?;
+    client.keys("\r")?;
+    client.wait("the reports", |t| t.lines().any(|l| l == "^[[I^[[O"))?;
+    // Its cursor shape reaches the client's terminal.
+    let painted = String::from_utf8_lossy(&client.painted).into_owned();
+    assert!(painted.contains("\x1b[5 q"), "DECSCUSR 5 was passed on");
+    client.keys("\x03")?;
+    Ok(())
+}
+
+#[test]
+fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
+    use std::io::{Read, Write};
+    let server = Server::start("")?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+    let hello = fux::protocol::Frame::Hello {
+        protocol: 999,
+        version: "0.0.0".into(),
+        role: fux::protocol::Role::Attach,
+    };
+    stream.write_all(&hello.encode()?).map_err(e)?;
+    stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
+    let mut decoder = fux::protocol::Decoder::default();
+    let mut buffer = [0u8; 4096];
+    let mut frames = Vec::new();
+    while let Ok(n) = stream.read(&mut buffer) {
+        if n == 0 {
+            break;
+        }
+        decoder.push(buffer.get(..n).unwrap_or_default());
+        while let Some(frame) = decoder.frame()? {
+            frames.push(frame);
+        }
+    }
+    let exit = frames.iter().find_map(|f| match f {
+        fux::protocol::Frame::Exit(reason) => Some(reason.clone()),
+        _ => None,
+    });
+    let reason = exit.ok_or("no Exit frame")?;
+    assert!(
+        reason.contains("protocol 1") && reason.contains("fux kill-server"),
+        "{reason}"
+    );
+    // kill-server works whatever the version.
+    assert_eq!(server.fux(&["kill-server"])?.status, 0);
+    Ok(())
+}
+
+/// A pane's program ignores no signal fux ignores: the Rust runtime ignores
+/// SIGPIPE and signal-hook catches others, and neither reaches the program.
+/// Dispositions fux itself inherited ignored (a container's, say) pass on,
+/// as they would to any child, so the baseline is what a plain child of
+/// this test inherits. Linux reports dispositions in /proc.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_panes_program_ignores_no_signal_fux_ignores() -> Outcome {
+    let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let baseline = std::process::Command::new("sh")
+        .args(["-c", "grep SigIgn /proc/self/status"])
+        .output()
+        .map_err(e)?;
+    let baseline = squash(&String::from_utf8_lossy(&baseline.stdout));
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    client.keys("sh -c 'grep SigIgn /proc/self/status'\r")?;
+    client.wait("the dispositions", |t| {
+        t.lines().any(|l| l.starts_with("SigIgn:"))
+    })?;
+    let pane = client
+        .lines()
+        .into_iter()
+        .find(|l| l.starts_with("SigIgn:"))
+        .unwrap_or_default();
+    assert_eq!(squash(&pane), baseline);
+    Ok(())
+}

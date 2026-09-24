@@ -41,7 +41,8 @@ pub enum Outgoing {
 /// A process being ended: hung up, and killed and reaped at the deadline.
 pub struct Dying {
     pub pid: Pid,
-    pub master: OwnedFd,
+    /// Closed before the group is killed.
+    pub master: Option<OwnedFd>,
     pub deadline: Instant,
 }
 
@@ -625,7 +626,7 @@ impl Session {
             crate::process::hangup(child.pid);
             self.dying.push(Dying {
                 pid: child.pid,
-                master: child.master,
+                master: Some(child.master),
                 deadline: Instant::now() + GRACE,
             });
         }
