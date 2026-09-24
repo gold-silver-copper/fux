@@ -11,10 +11,11 @@ fn shift_drag_and_keyboard_copy_mode_do_not_leak_application_mouse_bytes() -> Ou
     let v = s.attach()?;
     s.screen(v)?;
     let input = s.directory.join("mouse-selection.bin");
+    // Modes before the marker, so seeing READY means mouse reporting is on.
     s.run(
         v,
         &format!(
-            r"stty raw -echo; printf '\033[2J\033[HREADY\033[?1003h\033[?1006h'; cat > '{}'",
+            r"stty raw -echo; printf '\033[?1003h\033[?1006h\033[2J\033[HREADY'; cat > '{}'",
             input.display()
         ),
     )?;
