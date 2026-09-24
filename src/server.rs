@@ -207,10 +207,8 @@ impl Server {
         for dying in &self.session.dying {
             sooner(dying.deadline);
         }
-        for pane in self.session.panes.values() {
-            if let Some((_, at)) = pane.typed {
-                sooner(at);
-            }
+        if let Some(at) = self.session.next_typing() {
+            sooner(at);
         }
         if let Some((since, _)) = &self.stopping {
             sooner(*since + STOP_WAIT);

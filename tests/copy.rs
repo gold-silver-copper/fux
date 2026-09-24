@@ -160,7 +160,9 @@ fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
     watcher.wait_for("second")?;
     copy_mode(&mut copier)?;
     server.ok(&["send-keys", "-t", "%1", "seq 100 140", "Enter"])?;
-    watcher.wait_for("140")?;
+    // A line that is exactly 140: the echoed command contains "140" too, and
+    // would match before any output.
+    watcher.wait("the output's end", |t| t.lines().any(|l| l == "140"))?;
     std::thread::sleep(std::time::Duration::from_millis(100));
     copier.pump()?;
     // Forty lines of output would have scrolled "first" away; for the
@@ -174,7 +176,7 @@ fn the_pane_holds_still_for_the_copying_client_only() -> Outcome {
     );
     // G goes to the live bottom; leaving returns to the live screen.
     copier.keys("G")?;
-    copier.wait_for("140")?;
+    copier.wait("the live bottom", |t| t.lines().any(|l| l == "140"))?;
     copier.keys("q")?;
     copier.wait("live", |t| {
         t.contains("140") && t.lines().last().is_some_and(|b| !b.contains("COPY"))

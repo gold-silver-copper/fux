@@ -75,7 +75,8 @@ pub struct Outcome {
 
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
-/// How long a typed command waits for the shell's first output.
+/// The longest a typed command waits for the new shell to write and then
+/// go quiet (`pane::QUIET`): a shell that writes nothing still gets it.
 pub const TYPE_WAIT: Duration = Duration::from_secs(1);
 /// The size a pane gets when no client shows it yet.
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
@@ -339,7 +340,11 @@ impl Session {
             if typed.len() + crate::pane::ENTRY_COST > crate::pane::INPUT_BYTES {
                 return Err("the command line is too long to type".into());
             }
-            pane.typed = Some((typed, Instant::now() + TYPE_WAIT));
+            pane.typed = Some(crate::pane::Typed {
+                line: typed,
+                deadline: Instant::now() + TYPE_WAIT,
+                last_output: None,
+            });
             if pane.child.is_none() {
                 pane.type_now();
             }
@@ -749,17 +754,29 @@ impl Session {
         }
     }
 
-    /// Types held command lines whose wait is over; the next such deadline.
+    /// Types held command lines whose wait is over; the next moment one is
+    /// due.
     pub fn type_due(&mut self, now: Instant) -> Option<Instant> {
         let mut next: Option<Instant> = None;
         for pane in self.panes.values_mut() {
-            match pane.typed {
-                Some((_, at)) if at <= now => pane.type_now(),
-                Some((_, at)) => next = Some(next.map_or(at, |n| n.min(at))),
-                None => {}
+            let Some(at) = pane.typed.as_ref().map(crate::pane::Typed::due_at) else {
+                continue;
+            };
+            if at <= now {
+                pane.type_now();
+            } else {
+                next = Some(next.map_or(at, |n| n.min(at)));
             }
         }
         next
+    }
+
+    /// The next moment a held command line is due, for the poll timeout.
+    pub fn next_typing(&self) -> Option<Instant> {
+        self.panes
+            .values()
+            .filter_map(|p| p.typed.as_ref().map(crate::pane::Typed::due_at))
+            .min()
     }
 
     /// Everything the server shuts down: every pane is hung up.

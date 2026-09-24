@@ -197,10 +197,36 @@ pub struct Pane {
     pub reply_dropped: bool,
     /// The shell's program, to quote a typed command for it.
     pub shell: String,
-    /// A command line waiting to be typed into the shell, and when to type
-    /// it anyway: it is held until the shell's first output, normally its
-    /// prompt, so it is not echoed by the terminal before the shell reads it.
-    pub typed: Option<(Vec<u8>, std::time::Instant)>,
+    /// A command line waiting to be typed into the shell.
+    pub typed: Option<Typed>,
+}
+
+/// After the shell's output has been quiet this long, it is taken to be
+/// waiting at its prompt. Output within one burst -- a prompt drawn in
+/// pieces, lines of a startup message -- comes much closer together than
+/// this, while a person notices nothing shorter.
+pub const QUIET: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A command line held until the new shell is ready for it: until its output
+/// has been quiet for `QUIET` after it first wrote, or at `deadline` if it
+/// writes nothing. Typed earlier, the terminal would echo the line before the
+/// shell had drawn its prompt, and a shell whose startup writes and then
+/// discards pending input would lose it.
+pub struct Typed {
+    pub line: Vec<u8>,
+    pub deadline: std::time::Instant,
+    /// When the shell last wrote, once it has.
+    pub last_output: Option<std::time::Instant>,
+}
+
+impl Typed {
+    /// The moment the line is to be typed, as things stand.
+    pub fn due_at(&self) -> std::time::Instant {
+        match self.last_output {
+            Some(at) => (at + QUIET).min(self.deadline),
+            None => self.deadline,
+        }
+    }
 }
 
 impl Pane {
@@ -251,7 +277,9 @@ impl Pane {
         if let Some(title) = title {
             self.title = title;
         }
-        self.type_now();
+        if let Some(typed) = &mut self.typed {
+            typed.last_output = Some(std::time::Instant::now());
+        }
         if !replies.is_empty() && self.input.push(replies).is_err() && !self.reply_dropped {
             self.reply_dropped = true;
             return true;
@@ -261,9 +289,9 @@ impl Pane {
 
     /// Types a held command line into the shell now.
     pub fn type_now(&mut self) {
-        if let Some((line, _)) = self.typed.take() {
+        if let Some(typed) = self.typed.take() {
             // The queue is empty this early, so the line fits.
-            let _ = self.input.push(line);
+            let _ = self.input.push(typed.line);
         }
     }
 
@@ -353,6 +381,49 @@ mod tests {
         assert_eq!(modes.cursor_shape, 0);
         modes.feed(b"\x1b[?1004h\x1bc");
         assert!(!modes.focus_reporting);
+    }
+
+    #[test]
+    fn a_typed_line_waits_for_quiet_output_or_the_deadline() {
+        let t0 = std::time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        let mut typed = Typed {
+            line: b"echo hi\r".to_vec(),
+            deadline: t0 + ms(1000),
+            last_output: None,
+        };
+        // Nothing written yet: only the deadline.
+        assert_eq!(typed.due_at(), t0 + ms(1000));
+        // Output keeps pushing it back while it keeps coming within QUIET.
+        typed.last_output = Some(t0 + ms(100));
+        assert_eq!(typed.due_at(), t0 + ms(150));
+        typed.last_output = Some(t0 + ms(140));
+        assert_eq!(typed.due_at(), t0 + ms(190));
+        // Never past the deadline, however long the output lasts.
+        typed.last_output = Some(t0 + ms(990));
+        assert_eq!(typed.due_at(), t0 + ms(1000));
+    }
+
+    #[test]
+    fn output_records_when_the_shell_wrote_and_types_nothing_itself() -> Result<(), String> {
+        let mut pane = Pane::new(PaneId(1), "sh".into(), "/bin/sh".into(), 5, 20, 10)?;
+        let before = std::time::Instant::now();
+        pane.typed = Some(Typed {
+            line: b"x\r".to_vec(),
+            deadline: before + std::time::Duration::from_secs(1),
+            last_output: None,
+        });
+        pane.output(b"$ ");
+        assert!(
+            pane.typed
+                .as_ref()
+                .is_some_and(|t| t.last_output.is_some_and(|at| at >= before))
+        );
+        assert!(pane.input.is_empty(), "output alone types nothing");
+        pane.type_now();
+        assert_eq!(pane.input.drain_all(), b"x\r");
+        assert!(pane.typed.is_none());
+        Ok(())
     }
 
     #[test]
