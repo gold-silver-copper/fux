@@ -1380,11 +1380,15 @@ macOS number.
 
 # Hunt 8: every known defect fixed, then everything hunted until a pass finds nothing
 
-> **Status: complete. Three findings, all fixed.** 014 (found by CI's first
-> run), 015 and 016 (pass 1), each with a repro that reproduced on the
-> unfixed code and a test that failed first. Pass 2 re-attacked every area and
-> the new code and found nothing, so the run stopped after two passes. Each
-> finding's repro exits 1 and `fux-fuzz/repro/expected.tsv` records it.
+> **Status: complete. Six findings, all fixed.** 014 (found by CI's first
+> run), 015 and 016 (pass 1), 017 and 018 (the first nightly smoke, once CI
+> ran it), and 019 (pass 3, in 018's own fix). Each has a repro that
+> reproduced on the unfixed code and a test that failed first; each repro now
+> exits 1, and `fux-fuzz/repro/expected.tsv` records it. Pass 2 found nothing,
+> but the nightly runs had not been read yet; the finishing run added passes 3
+> and 4, and pass 4 found nothing new, so the run stopped there. The smoke's
+> other nightly failures were the harness's, and are recorded below with
+> their causes, as are the three test mitigations that were replaced.
 
 Hunt 8 runs with CI for the first time (`.github/workflows/ci.yml`:
 `ubuntu-24.04` and `macos-15`), and the fixes to hunt 7's findings 009–013 land
@@ -1601,6 +1605,57 @@ reproduced (a thread for every load), 1 not, 2 setup; `NEGATIVE_CONTROL=1`
 names missing files, whose loads fail at once. Measured: 64 threads before the
 fix, 16 after; 0 for the control, both builds.
 
+## The nightly smoke, and what each failure was
+
+The first nightly dispatch (run 35914442080, at `655d8db`) was red on both
+runners; every trace and fuzz target passed. Local runs that imitate a runner
+(`docker run --cpus`, a shared and loaded Mac) found two more. Each failure,
+by cause:
+
+| Case | Scenario | Cause | Resolution |
+| --- | --- | --- | --- |
+| 21 | `history` | Finding 017: the resize dropped the pane's last line | Fixed in `fux-vt` |
+| 29, 39, 40 | `race`, `churn`, `scene_refs` | Finding 018: a blocking scene read stalled the I/O pool | Fixed; its bound is 019 |
+| 47 | `adversarial` | The harness. On macos-15 the stream was still arriving 8.8 s in: 160 sleeps of 20 ms, each overshooting, forked or not. Paced faster, its end marker landed while the viewer was 2x2 and wrapped as EN/DE/D on ubuntu-24.04, which a non-reflowing emulator keeps. fux read the stream as fast as it was written; through a fux pane with the scenario's resizes it took 3.9 s against 3.8 s for the pacing alone, the same on `origin/main`. | Paced by deadline; marker gated on the pane being 23x80. Seen at 3.87-4.03 s. |
+| 36 | `api_misuse` (local) | The harness. The Viewer query after a 65535x65535 resize waited behind the attached frontend's first 4096x4096 paint: 2.7-9.5 s in a debug build on a loaded Mac, 0.2-0.3 s in release. Profiles of the branch and `origin/main` match. Failures: 1 of 10 on macOS for each; on Linux 6 of 31 on the branch, 1 of 20 on `655d8db`. | 15 s allowance while that viewer exists, as `walk` and `limits` already had. 0 of 25 since. |
+| 48 | `concurrent` (local) | The smoke's global 600 s budget ran out behind `scale`, which took 464 s on a Mac at load 40-50 | The presentation writes only the viewed tab; see below |
+
+**`scale`'s cost was mostly fux's, and is now mostly fixed.** Its thousand
+moves to new tabs cost O(tabs) each: every control re-synced the viewer's
+presentation by writing the whole workspace scene -- every tab -- into the
+inert presentation world and laying it out, only to hide all but one tab. A
+move took 424 ms at 1000 tabs on ubuntu-24.04, so `scale` was 365 s of that
+runner's 497 s smoke (192-216 s on macos-15), and a loaded machine could not
+finish the smoke in 600 s. Side by side under the same load, this branch and
+`655d8db` took 441 and 444 s, then 409 and 409 s: it predates the branch.
+Every request still returned inside its bound, so it was a cost, not a class 2
+finding. The presentation now holds only the viewed tab: 800 moves in 44 s
+instead of 118 s on the same host, the 800th in 97 ms instead of 241 ms. What
+still grows with the tab count is the workspace's own layout scene, rebuilt
+when the workspace changes.
+
+**Three test mitigations were replaced by their causes.**
+
+- `--test-threads=2` on CI's test steps is gone. Each flake it hid had a
+  timing assumption, now fixed: the PTY size a frame set was published a frame
+  late (the frame now publishes it); two design tests printed their READY
+  marker before the mouse modes it was meant to confirm; and a frontend PTY's
+  slave could be inherited by a concurrent fork (below). The workspace passes
+  at full width: 5 of 5 in the Linux container, and on both CI runners.
+- `hidden_tabs_stop_constraining_pty_size...` has its strict first assertion
+  back: `size_terminals` publishes `ProcessState` in the step that resizes, as
+  `terminate` does. `frame::tests::a_frame_publishes_the_pty_size_it_sets`
+  failed first ((24, 80) published for an (11, 40) PTY).
+- The frontend restore test ends with the strict `ends_with(b"\e[?1049l")`
+  again. The `\r\n` it had tolerated was the harness's: portable-pty's master
+  writer sends `\n` plus EOF when dropped, and when a concurrent test's fork
+  had inherited the frontend PTY's slave -- `openpty` returns it without
+  close-on-exec, which portable-pty sets afterwards, outside the lock -- the
+  slave outlived the frontend and Linux echoed that newline in cooked mode.
+  Holding one stray slave descriptor reproduces the exact bytes 10 of 10 on
+  Linux, never on macOS. Every PTY and fork in the test binary now holds the
+  `SPAWN` lock.
+
 ## Passes, and what each attacked
 
 **Pass 1** attacked every area; three findings.
@@ -1631,10 +1686,41 @@ fix, 16 after; 0 for the control, both builds.
 **Pass 2** re-attacked every area and the code the fixes added -- a symlink to
 `/dev/zero` past the scene bound, mutating `Settings` to break painting, a
 `Focused` relationship pointing at a resource entity, and the entity, config,
-transport and scene sweeps again. Nothing new. The run stopped.
+transport and scene sweeps again. Nothing new. The first run stopped here.
+
+**Pass 3** attacked what the finishing run changed; one finding.
+
+- **The 017 reflow**, in both of `fux-vt`'s modes (the fuzzer's header bits
+  switch `events` and `extended_replies`): 132,455 `cargo-fuzz` runs, no crash.
+  Shrinks and grows with the cursor at the top, the middle and the bottom; the
+  alternate screen, which keeps no history; the saved cursor; a pane scrolled
+  back 36 rows, and to the top of its history, while a grow pulled history
+  into the live area -- the view kept its bottom row or clamped to the oldest
+  rows, and returned to live output. koh's full test suite against the change.
+- **The 018 scene thread**: a thousand loads of unwritten pipes. **Finding
+  019**. Fixed.
+- **The frame-published size**: reflected dimension edits on a pane in a
+  hidden tab still resize its PTY and stick, as on `origin/main`; visible
+  again, one frame sizes and publishes it.
+- **The harness changes**: each was forced into the failure it guards against
+  (the READY/mode split, a stray PTY slave, the marker at 2x2) and shown to
+  pass with it.
+
+**Pass 4** re-attacked 019's fix and everything above. 24 viewers issuing
+mixed loads and saves of unwritten pipes: 16 held, 8 refused with the notice;
+8 viewers detached while their I/O was blocked; every pipe released, then
+every place came back and a new load ran. The server answered throughout,
+with no panic. 202,339 more `cargo-fuzz` runs on the final `fux-vt`, no crash.
+The presentation that holds only the viewed tab: `walk`, `concurrent`, `raw`,
+`tabless`, `repair`, `identity`, `layout` and `nav` on seeds 1-3, all passing;
+and its fallbacks by raw edit -- zoom with the focus moved into a hidden tab,
+the viewed tab reparented under a pane and back, the viewed tab closed by
+another viewer -- each painting exactly as before the change. Nothing new. The
+run stopped.
 
 ## Ranked, for reference
 
-All three hunt 8 findings are fixed in this branch. The one finding still open
+All six hunt 8 findings are fixed in this branch. The one finding still open
 across all hunts is 011 (the ALSA build chain), documented above as
-`bevy_remote`'s to cut, not fux's.
+`bevy_remote`'s to cut, not fux's. `scale`'s O(tabs) cost per control is
+recorded above; its presentation part, most of it, is fixed.
