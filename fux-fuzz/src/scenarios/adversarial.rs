@@ -120,15 +120,22 @@ pub(super) fn run(s: &mut Server, seed: u64) -> Result<()> {
     s.journal
         .record("stream", json!({"seed":seed,"bytes":bytes.len()}))?;
     // Trickle the stream in 1 KiB pieces so resizes and scrolls interleave
-    // with it, then end with a clean marker on a fresh screen. One process
-    // paces it: a shell loop forking `dd` and `sleep` 160 times each made the
-    // stream's length the runner's fork speed -- 4.7-5.5 s for 3.2 s of
-    // sleeping on a loaded Mac, and past this scenario's 8.8 s window on the
-    // macos-15 runner -- while the pieces reach fux the same either way.
+    // with it, then end with a clean marker on a fresh screen.
+    //
+    // Two things about that are the runner's, not fux's, and the command
+    // controls both. Its length: 160 sleeps of 20 ms took past this
+    // scenario's 8.8 s window on macos-15, forked (`dd` and `sleep`) or not,
+    // because each sleep overshoots and the overshoots add up; pacing every
+    // piece against its deadline from the start bounds the stream at about
+    // 3.2 s plus fux's reading. And the marker's size: printed while the
+    // viewer was still 2x2 it wrapped as EN/DE/D, which a non-reflowing
+    // emulator keeps after the resize back (ubuntu-24.04). So the marker waits
+    // for the `resized` file this scenario writes once the pane is 23x80.
+    let streaming = std::time::Instant::now();
     child_command(
         s,
         f,
-        "stty raw -echo; perl -e 'open(my $f, \"<\", \"stream.bin\") or die; binmode $f; binmode STDOUT; $| = 1; while (read($f, my $b, 1024)) { print $b; select(undef, undef, undef, 0.02) }'; E=EN; printf \"\\033[r\\033[?6l\\033[?7h\\033[?1049l\\033[0m\\033[2J\\033[H${E}DED\"; exec cat > /dev/null",
+        "stty raw -echo; perl -MTime::HiRes=time,sleep -e 'open(my $f, \"<\", \"stream.bin\") or die; binmode $f; binmode STDOUT; $| = 1; my $t = time; my $i = 0; while (read($f, my $b, 1024)) { print $b; $i++; my $w = $t + $i * 0.02 - time; sleep($w) if $w > 0 }'; while [ ! -e resized ]; do sleep 0.05; done; E=EN; printf \"\\033[r\\033[?6l\\033[?7h\\033[?1049l\\033[0m\\033[2J\\033[H${E}DED\"; exec cat > /dev/null",
     )?;
     let sizes = [
         (24u16, 80u16),
@@ -166,9 +173,21 @@ pub(super) fn run(s: &mut Server, seed: u64) -> Result<()> {
     }
     s.resize(f, 24, 80)?;
     s.send(f, b"x")?; // return to live output
+    // A frame sizes the pane's PTY and publishes it; release the marker once
+    // the pane is 23x80 (the bar takes the last row).
+    s.wait("pane back to 23x80", |s| {
+        s.frame(v, 24, 80)?;
+        Ok(states(s)?.iter().all(|(_, st)| {
+            st.get("rows") == Some(&json!(23)) && st.get("cols") == Some(&json!(80))
+        }))
+    })?;
+    fs::write(s.directory.join("resized"), b"")?;
     s.wait("stream ended", |s| {
         Ok(s.frame(v, 24, 80)?.contains("ENDED"))
     })?;
+    let timing = json!({"marker_seen_ms": streaming.elapsed().as_millis()});
+    println!("ADVERSARIAL-STREAM {timing}");
+    s.journal.record("stream_timing", timing)?;
     inspect_now(s, v, 24, 80, "after the stream")?;
     let mut server_view = String::new();
     let mut front_view = String::new();
