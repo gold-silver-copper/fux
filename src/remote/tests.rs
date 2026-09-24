@@ -444,3 +444,38 @@ fn fux_policy_serves_the_table() -> Outcome {
     assert_eq!(rows.len(), crate::policy::table(app.world()).len());
     Ok(())
 }
+
+/// The guard names the entity a spawn creates with Bevy's placeholder. A
+/// client that sends the placeholder's bits as a reference must not be taken
+/// to mean that entity: it names nothing, and is refused like any missing one.
+#[test]
+fn the_placeholder_is_not_a_reference() -> Outcome {
+    let mut app = fixture()?;
+    let world = app.world_mut();
+    let placeholder = bits(Entity::PLACEHOLDER);
+    let plain = call(
+        world,
+        "world.spawn_entity",
+        Some(json!({"components":{"bevy_ecs::name::Name":"plain"}})),
+    )?;
+    let plain = plain.get("entity").cloned().need()?;
+    refused(
+        world,
+        "world.insert_components",
+        json!({"entity":plain,"components":{"bevy_ecs::hierarchy::ChildOf":placeholder}}),
+        "does not exist",
+    )?;
+    refused(
+        world,
+        "world.spawn_entity",
+        json!({"components":{"bevy_ecs::name::Name":"x","bevy_ecs::hierarchy::ChildOf":placeholder}}),
+        "does not exist",
+    )?;
+    refused(
+        world,
+        "world.reparent_entities",
+        json!({"entities":[plain],"parent":placeholder}),
+        "not found",
+    )?;
+    Ok(())
+}

@@ -331,7 +331,19 @@ impl<'w> Plan<'w> {
     }
 
     fn is_container(&self, entity: Entity) -> bool {
-        self.has::<Tab>(entity) || self.has::<Split>(entity)
+        entity != NEW && (self.has::<Tab>(entity) || self.has::<Split>(entity))
+    }
+
+    /// The kind of an entity a request refers to. The placeholder stands for
+    /// the entity a spawn creates, but as a reference it names nothing: a
+    /// client could send its bits, and Bevy would then relate to an entity
+    /// that was never spawned.
+    fn target_kind(&self, entity: Entity) -> Kind {
+        if entity == NEW {
+            Kind::Missing
+        } else {
+            self.kind(entity)
+        }
     }
 
     /// The pane a view shows, after the request.
@@ -411,7 +423,7 @@ impl<'w> Plan<'w> {
         }
         // Where it sits.
         let parent = self.parent(entity);
-        let parent_kind = parent.map(|p| self.kind(p));
+        let parent_kind = parent.map(|p| self.target_kind(p));
         if parent_kind == Some(Kind::Missing) {
             return Err(format!("{shown} would have a parent that does not exist"));
         }
@@ -487,7 +499,7 @@ impl<'w> Plan<'w> {
         // A view shows a process.
         if kind == Kind::Pane {
             let pane = self.pane_of(entity).ok_or("a pane view without a pane")?;
-            if self.kind(pane) != Kind::Process {
+            if self.target_kind(pane) != Kind::Process {
                 return Err(format!(
                     "pane view {shown} must show a process; {pane} is not one"
                 ));
@@ -506,7 +518,7 @@ impl<'w> Plan<'w> {
             .map(|v| v.0)
             .or_else(|| self.world.get::<Viewing>(viewer).map(|v| v.0));
         if let Some(target) = self.added::<Viewing>(viewer).map(|v| v.0)
-            && self.kind(target) != Kind::Workspace
+            && self.target_kind(target) != Kind::Workspace
         {
             return Err(format!(
                 "viewer {viewer} can only view a workspace; {target} is not one"
@@ -517,7 +529,7 @@ impl<'w> Plan<'w> {
             .map(|t| t.0)
             .or_else(|| self.world.get::<OnTab>(viewer).map(|t| t.0));
         if let Some(target) = self.added::<OnTab>(viewer).map(|t| t.0)
-            && (self.kind(target) != Kind::Tab || self.parent(target) != workspace)
+            && (self.target_kind(target) != Kind::Tab || self.parent(target) != workspace)
         {
             return Err(format!(
                 "viewer {viewer} can only be on a tab of its workspace"
@@ -538,7 +550,7 @@ impl<'w> Plan<'w> {
                 }
                 cursor = self.parent(entity);
             }
-            if self.kind(target) != Kind::Pane || !inside {
+            if self.target_kind(target) != Kind::Pane || !inside {
                 return Err(format!("viewer {viewer} can only focus a pane of its tab"));
             }
         }

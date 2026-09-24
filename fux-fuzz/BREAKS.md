@@ -1810,7 +1810,7 @@ recorded above; its presentation part, most of it, is fixed.
 
 # The BRP policy work: every request through one guard
 
-> **Status: findings 022–029 fixed by one guard.** A property test that drives
+> **Status: findings 022–030 fixed by one guard.** A property test that drives
 > every BRP method in-process found them against the code as it stood after
 > hunt 8. None ends the server -- Bevy 0.20 catches a panicking request system
 > -- but each either answers without saying why or leaves the world in a state
@@ -1900,6 +1900,18 @@ workspace can be projected". Repro:
 `029-an-unprojectable-workspace-drops-every-command.sh`.
 
 
+## 030 — The placeholder entity, sent as a reference, passes the guard (class 6)
+
+Found in the hunt pass against the guard itself. The guard plans a spawn with
+Bevy's placeholder entity (bits `1`) standing for the entity the spawn will
+create, and asked "does this entity exist?" of the plan. A client that sent
+`1` as a reference -- `ChildOf(1)` on a plain entity -- was taken to mean that
+new entity, so the insert was accepted and the entity was left related to one
+that was never spawned, with Bevy logging failed commands. The placeholder now
+names nothing as a reference, and the invariant check gained "every `ChildOf`
+names an entity that exists", which the property test would have reported.
+Repro: `030-the-placeholder-passed-as-a-reference.sh`.
+
 ## How the guard fixes them, and what it keeps
 
 Every write is checked before anything changes, so a request applies whole or
@@ -1925,6 +1937,8 @@ not at all, and a refusal names the rule. By finding:
 - **029:** only layout nodes go under layout nodes, and viewer relationships
   only on viewers. Past the guard, a viewer that cannot act is now told why
   ("cannot act here: …") instead of losing its commands silently.
+- **030:** a reference to the placeholder entity is refused like any other
+  entity that does not exist.
 
 Denied deliberately, which some clients may have relied on:
 
