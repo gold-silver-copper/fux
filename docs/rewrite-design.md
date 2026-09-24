@@ -4,6 +4,14 @@ Status: agreed with the user on 2026-09-23. Nothing here is implemented yet.
 This is the specification; `docs/prompt-rewrite-without-bevy.md` is how to
 build it.
 
+**Scope of the first version (decided 2026-09-24): functionality only.** It
+builds everything below that a user sees and uses: panes, tabs, workspaces,
+independent views, the command column, choosers and menus, copy/select, the
+CLI and the config file. Each part lands with the ordinary unit and
+integration tests that show it works. Fuzzing, benchmarks, a black-box
+harness, lesson-by-lesson regression tests and long CI jobs are left for a
+later version; see "Later, not in the first version".
+
 ## Why
 
 Bevy and its remote protocol (BRP) caused most of what hunts 5–8 found:
@@ -61,11 +69,10 @@ touched.
 **Deleted:** `src/`, `tests/`, `fux-fuzz/` (a BRP-driven harness), and
 `fux-agent-exercises/` (BRP-driven agent campaigns). Also deleted:
 `verification/` and the BRP-specific docs. They stay retrievable at the tag
-`bevy-final` (`f86dee7`). `fux-fuzz/BREAKS.md` and the repro scripts are the
-record of mistakes not to repeat. A short `docs/lessons.md` replaces them in
-the tree: one line per finding, saying whether it still applies and which new
-test covers it. The lessons that still apply become tests, listed under
-Testing.
+`bevy-final` (`e2b114f`, `main` after PR #52). `fux-fuzz/BREAKS.md` and the
+repro scripts there are the record of mistakes not to repeat; the behaviour
+each still-relevant finding led to is written into this design (the numbers
+in parentheses), so building to the design avoids them.
 
 ## Architecture
 
@@ -466,7 +473,7 @@ No dependency is needed, and it is the right format here anyway:
   attaches, until a reload succeeds.
 - `set` and `bind` inside the file affect only the configuration, not
   workspaces or panes. Layout commands in the config file are an error.
-- The tokenizer is about 100 lines and gets its own tests and fuzz target.
+- The tokenizer is about 100 lines and gets its own tests.
 
 TOML was the alternative. It needs `toml` and `serde` (with `toml`'s own
 dependencies), and it would still need this command grammar for binding
@@ -525,55 +532,57 @@ on ALSA, and no async.
 
 ## Testing
 
+Ordinary tests, written with each part:
+
 - **Unit tests, no PTY:**
   - the layout (rectangles, minimums, directional focus, collapse);
-  - the input decoder (every sequence, split at every byte, the Escape
-    deadline);
-  - encoding (ported with its property tests);
-  - paste bounds;
+  - the input decoder (the sequences fux uses, a sequence split across
+    reads, the Escape deadline);
+  - encoding (ported with its tests);
   - render diffs (the diff applied to the old grid equals the new grid);
-  - the protocol codec (caps, truncation);
-  - the command tokenizer and grammar, and the config (every error names its
+  - the protocol codec;
+  - the command tokenizer and grammar, and the config (errors name their
     line, and a failed reload changes nothing);
   - copy/select motions and search over a known screen and history, and
     selection text (wide glyphs, wraps, blocks);
   - overlays (command column scrolling, choosers, menus acting on the item
     they were opened for).
 - **Integration tests:** a real server, real PTYs, real `fux` CLI calls, and a
-  scripted attach client. The fork race that corrupted the last suite's
-  captures is avoided by opening PTYs and forking only under one lock.
-- **Lessons as tests:**
-  - hangup of a dash background job (013);
-  - stopped ≠ exited (020);
-  - 3000 keys to a stopped program all arrive (021);
-  - a signal during attach (010);
-  - descriptor pressure (012);
-  - an oversized frame is refused (007/008);
-  - a reused socket inode is not deleted (014, ext4 in CI);
-  - a resized pane keeps its last line (017, through fux-vt);
-  - a pane's program inherits only stdio and default signal state;
-  - a slow client does not grow the server.
+  scripted attach client, covering each milestone's usable end state. The
+  fork race that corrupted the last suite's captures is avoided by opening
+  PTYs and forking only under one lock.
+- **CI:** the `verify` job only (fmt, clippy `-D warnings` and tests, on
+  `macos-15` and `ubuntu-24.04`), without the ALSA step, the fux-fuzz and
+  repro steps and the agent-exercise step. The smoke, trace, fuzz and
+  property jobs go with the code they ran.
 
-  Each is shown to catch its bug: break the code on purpose, watch the test
-  fail, then restore it.
-- **Fuzzing:**
-  - `cargo-fuzz` targets for the decoder, the protocol codec and the command
-    tokenizer;
-  - later, a black-box harness driving the CLI and attach clients, as fux-fuzz
-    did over BRP.
-- **CI:** the current workflow minus the ALSA step, the agent-exercise job and
-  the BRP repro table.
+## Later, not in the first version
+
+Hardening, once the functionality is in use:
+
+- tests that each prove a lesson from `bevy-final:fux-fuzz/BREAKS.md` (for
+  example a dash background job hung up on close (013), 3000 keys to a
+  stopped program (021), a reused socket inode on ext4 (014), descriptor
+  pressure (012)), each shown to fail against its bug;
+- `cargo-fuzz` targets for the decoder, the protocol codec and the command
+  tokenizer, and a black-box harness driving the CLI and attach clients;
+- benchmarks (key-to-echo latency, heavy output, idle CPU, memory) against
+  the Bevy version;
+- Linux runs beyond CI (ext4 `/tmp`, amd64).
 
 ## Plan
 
-0. Tag `bevy-final` at `f86dee7` and push the tag.
+0. Tag `bevy-final` at `e2b114f` and push the tag.
 1. On branch `rewrite`:
    - delete the directories listed above;
    - make the workspace fux-vt plus a new `fux` crate at 0.13.0;
    - reduce the README to what exists;
-   - trim CI;
+   - trim CI to the `verify` job;
    - add the skeleton: CLI parsing, socket, protocol, and a server that
-     answers `ls`.
+     answers `ls`;
+   - open a draft PR from `rewrite` to `main`. CI runs only on pull
+     requests to `main` (and on `main`), so without it no milestone is
+     checked by CI.
 2. One pane: spawn, attach, detach and reattach, render and resize.
 3. The layout: splits, focus, resize, zoom, the bar.
 4. Workspaces and tabs, and independent views for several clients.
@@ -583,9 +592,8 @@ on ALSA, and no async.
 7. Overlays: the command column, choosers, action menus, the `:` prompt,
    prompts and confirmations.
 8. Copy/select mode, paste buffers, the clipboard.
-9. The lesson tests, and the fuzz targets.
-10. Open a PR from `rewrite` to `main`. The user decides when to merge it and
-    when to publish 0.13.0.
+9. Mark the PR ready. The user tries it by hand and decides when to merge it
+   and when to publish 0.13.0.
 
 Each step lands with its tests, and `main` keeps the Bevy version until that
 PR is merged.
