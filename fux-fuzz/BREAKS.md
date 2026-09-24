@@ -1807,3 +1807,67 @@ All eight hunt 8 findings are fixed in this branch. The one finding still open
 across all hunts is 011 (the ALSA build chain), documented above as
 `bevy_remote`'s to cut, not fux's. `scale`'s O(tabs) cost per control is
 recorded above; its presentation part, most of it, is fixed.
+
+# The BRP policy work: every request through one guard
+
+> **Status: in progress.** A property test that drives every BRP method
+> in-process found findings 022–027 against the code as it stood after hunt 8.
+> None ends the server -- Bevy 0.20 catches a panicking request system -- but
+> each either answers without saying why or leaves the world in a state fux
+> has no rules for. `docs/prompt-brp-policy.md` in the user's checkout is the
+> plan: declare an access policy per type, put one guard in front of every
+> method, validate before committing, and repair inside the request.
+
+How they were found: `remote::property::no_brp_request_breaks_the_server`
+generates requests for every method from real serialized values -- live
+components, defaults and examples of fux's events -- then mutates them
+(boundaries, wrong types, missing and extra fields, entity IDs of every class)
+and calls the method registry the server uses, with no HTTP. After each request
+it requires no panic, no broken invariant (`invariants::violations`, also
+served as `fux.invariants`) and a frame for every viewer. 16,000 requests over
+four seeds found every class below; 300 requests find most of them.
+
+## 022 — A panicking request answers "receiving from an empty and closed channel" (class 6)
+
+Three stock handlers panic on requests a client can simply send:
+`world.mutate_components` on a relationship component (`ChildOf`, `Focused`,
+`Viewing`, `OnTab`, `PaneView` are immutable, and the handler calls
+`reflect_mut` regardless); `world.reparent_entities` naming an entity that does
+not exist; and `world.trigger_event` of `Control` or `UserInput` with a value
+`from_reflect_with_fallback` cannot build (the event form of agent finding F1).
+Bevy catches the panic, logs "System panicked" and keeps serving, so the server
+lives -- but the client is told only that a channel closed, and a batch can be
+applied halfway. Repro: `022-a-panicking-brp-request-answers-a-closed-channel.sh`.
+
+## 023 — Closing a view despawns whatever entity it names (class 6, destructive)
+
+`PaneView.pane` could be written to name any entity, and closing the last view
+of a "process" despawns it. Pointing a view at a second workspace and closing
+that pane in the ordinary way deleted the whole workspace, its tabs and its
+panes. Repro: `023-closing-a-view-despawns-whatever-it-names.sh`.
+
+## 024 — Raw hierarchy edits orphan layout and its processes (class 6)
+
+Reparenting, inserting or removing `ChildOf`, `Tab`, `Split` or `Workspace`
+could leave tabs outside every workspace, splits and pane views with no
+container, workspaces nested under panes and tabs under splits. fux moved its
+viewers off an orphaned tab, but the tab's processes kept running where no
+command can show them again. Repro: `024-raw-edits-orphan-layout-and-its-processes.sh`.
+
+## 025 — A workspace's order can be missing or shared (class 6)
+
+`WorkspaceOrder` orders the workspace list and is what reordering swaps. A
+workspace spawned over BRP had none, and two could share one. Repro:
+`025-workspace-order-can-be-missing-or-shared.sh`.
+
+## 026 — A viewed process can lose its state or get an impossible size (class 6)
+
+`ProcessState` could be removed from a live process, which then had no status
+or size to report, and its size set outside the 1..=4096 fux uses everywhere
+else. Repro: `026-a-viewed-process-can-lose-its-state.sh`.
+
+## 027 — A viewer created over BRP is never repaired (class 6)
+
+A `Viewer` spawned or inserted over BRP got no workspace, tab or focus -- only
+`fux.attach` gives those -- and no repair pass ran for it: it viewed nothing
+and could not be painted. Repro: `027-a-raw-viewer-is-never-repaired.sh`.
