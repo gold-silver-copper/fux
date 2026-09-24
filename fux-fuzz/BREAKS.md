@@ -1811,7 +1811,7 @@ recorded above; its presentation part, most of it, is fixed.
 # The BRP policy work: every request through one guard
 
 > **Status: in progress.** A property test that drives every BRP method
-> in-process found findings 022–027 against the code as it stood after hunt 8.
+> in-process found findings 022–029 against the code as it stood after hunt 8.
 > None ends the server -- Bevy 0.20 catches a panicking request system -- but
 > each either answers without saying why or leaves the world in a state fux
 > has no rules for. `docs/prompt-brp-policy.md` in the user's checkout is the
@@ -1825,7 +1825,9 @@ components, defaults and examples of fux's events -- then mutates them
 and calls the method registry the server uses, with no HTTP. After each request
 it requires no panic, no broken invariant (`invariants::violations`, also
 served as `fux.invariants`) and a frame for every viewer. 16,000 requests over
-four seeds found every class below; 300 requests find most of them.
+four seeds found 022–027; 300 requests find most of them. 028 and 029 came
+from asking why fux sometimes ignored a command in that run, and the property
+test now checks for both.
 
 ## 022 — A panicking request answers "receiving from an empty and closed channel" (class 6)
 
@@ -1871,3 +1873,25 @@ else. Repro: `026-a-viewed-process-can-lose-its-state.sh`.
 A `Viewer` spawned or inserted over BRP got no workspace, tab or focus -- only
 `fux.attach` gives those -- and no repair pass ran for it: it viewed nothing
 and could not be painted. Repro: `027-a-raw-viewer-is-never-repaired.sh`.
+
+## 028 — Despawning fux's observers silences it (class 6)
+
+In Bevy 0.20 observers and registered systems are entities. `world.list_components`
+on nearby IDs finds them (`bevy_ecs::observer::distributed_storage::Observer`)
+and `world.despawn_entity` removes them. fux routes every `Control` and
+`UserInput` through observers, so afterwards it kept answering and painting --
+every invariant held -- but ignored every command. A rule of "only reflected
+types are writable" would not have stopped it: `Observer` is reflected. The
+property test now also checks that fux still obeys a `Control` and a
+`UserInput` after each request. Repro: `028-despawning-fux-observers-silences-it.sh`.
+
+## 029 — An unprojectable workspace drops every command without a word (class 6)
+
+fux projects a workspace into each viewer's presentation before acting on a
+command or key, and drops the event if that fails. One entity with no layout
+role under a tab -- here a plain entity carrying interaction state -- made the
+workspace unprojectable: frames painted the reason in the bar, but every
+command and key for its viewers vanished, with no notice, so not even closing
+the offending pane was possible. The invariant check now includes "every
+workspace can be projected". Repro:
+`029-an-unprojectable-workspace-drops-every-command.sh`.

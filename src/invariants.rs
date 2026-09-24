@@ -10,7 +10,7 @@
 mod tests;
 
 use crate::{assets::Settings, model::*};
-use bevy_ecs::{prelude::*, resource::IsResource};
+use bevy_ecs::{prelude::*, reflect::AppTypeRegistry, resource::IsResource};
 
 /// The largest viewer or PTY dimension fux accepts (`fux.attach` clamps to it).
 pub const MAX_DIMENSION: u16 = 4096;
@@ -24,8 +24,33 @@ pub fn violations(world: &mut World) -> Vec<String> {
     hierarchy(world, &mut v);
     processes(world, &mut v);
     workspace_order(world, &mut v);
+    projection(world, &mut v);
     viewers(world, &mut v);
     v
+}
+
+/// Every workspace can be projected into a viewer's presentation. When one
+/// cannot, fux paints the reason in the bar but can act on nothing in it:
+/// every command and key for its viewers is dropped (finding 029).
+fn projection(world: &mut World, v: &mut Vec<String>) {
+    if !world.contains_resource::<AppTypeRegistry>() {
+        return;
+    }
+    // The cached projection is stale until invalidation has seen the latest
+    // changes; fux runs the same system before every projection.
+    if let Err(error) = world.run_system_cached(crate::layout::invalidate_layouts) {
+        v.push(format!("layout invalidation could not run: {error}"));
+        return;
+    }
+    let roots: Vec<Entity> = world
+        .query_filtered::<Entity, With<Workspace>>()
+        .iter(world)
+        .collect();
+    for root in roots {
+        if let Err(error) = crate::layout::scene(world, root) {
+            v.push(format!("workspace {root} cannot be projected: {error}"));
+        }
+    }
 }
 
 fn parent(world: &World, entity: Entity) -> Option<Entity> {

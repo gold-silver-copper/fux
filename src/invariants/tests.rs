@@ -5,6 +5,21 @@ use crate::testing::*;
 fn world() -> (World, Layout) {
     let mut world = World::new();
     world.insert_resource(Settings::default());
+    let registry = AppTypeRegistry::default();
+    {
+        let mut types = registry.write();
+        types.register::<Workspace>();
+        types.register::<Tab>();
+        types.register::<Split>();
+        types.register::<PaneView>();
+        types.register::<WorkspaceOrder>();
+        types.register::<Name>();
+        types.register::<ChildOf>();
+        types.register::<Children>();
+        types.register::<bevy_ui::Node>();
+        types.register::<crate::interaction::Prefix>();
+    }
+    world.insert_resource(registry);
     let workspace = world.spawn((Workspace, WorkspaceOrder(0))).id();
     let tab = world.spawn((Tab, ChildOf(workspace))).id();
     let split = world.spawn((Split, ChildOf(tab))).id();
@@ -187,6 +202,17 @@ fn resource_entities_are_never_layout_nodes() -> Outcome {
     has(
         &mut world,
         &format!("resource entity {resource} is a layout node"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_workspace_that_cannot_be_projected_is_reported() -> Outcome {
+    let (mut world, l) = world();
+    world.spawn((crate::interaction::Prefix::default(), ChildOf(l.tab)));
+    has(
+        &mut world,
+        &format!("workspace {} cannot be projected", l.workspace),
     )?;
     Ok(())
 }

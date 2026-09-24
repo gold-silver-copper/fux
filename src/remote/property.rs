@@ -701,12 +701,72 @@ fn check(world: &mut World) -> Result<(), String> {
         .query_filtered::<Entity, IsViewer>()
         .iter(world)
         .collect();
-    for viewer in viewers {
+    for &viewer in &viewers {
         let frame = call(world, "fux.frame", Some(json!({"viewer":bits(viewer)})))
             .map_err(|error| format!("fux.frame for viewer {viewer}: {error}"))?;
         if frame.get("paint").and_then(Value::as_str).is_none() {
             return Err(format!("fux.frame for viewer {viewer} has no paint"));
         }
+    }
+    obeys(world, &viewers)
+}
+
+/// fux still acts on its events: a `Control` opens the command column and a
+/// `UserInput` resize changes the viewer. Every invariant can hold while fux
+/// ignores commands -- despawning its observers did exactly that (028).
+fn obeys(world: &mut World, viewers: &[Entity]) -> Result<(), String> {
+    use crate::interaction::{Overlay, Prefix};
+    // A viewer large enough to show a column, with no modal state: an open
+    // column, overlay or copy mode owns input and may consume the probe.
+    let Some(&viewer) = viewers.iter().find(|v| {
+        world
+            .get::<Viewer>(**v)
+            .is_some_and(|v| v.rows >= 4 && v.cols >= 4)
+    }) else {
+        return Ok(());
+    };
+    world
+        .entity_mut(viewer)
+        .remove::<(Prefix, Overlay, crate::selection::Selection)>();
+    world.trigger(Control {
+        viewer,
+        command: Command::Help,
+    });
+    world.flush();
+    if world.get::<Prefix>(viewer).is_none() {
+        let notice = world.get::<Viewer>(viewer).and_then(|v| v.notice.clone());
+        let components: Vec<String> = world
+            .inspect_entity(viewer)
+            .map(|infos| {
+                infos
+                    .map(|info| info.name().shortname().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Err(format!(
+            "fux ignored a Control event for viewer {viewer} (notice {:?}; components {components:?})",
+            notice.map(|n| n.text)
+        ));
+    }
+    world.entity_mut(viewer).remove::<Prefix>();
+    let (rows, cols) = world
+        .get::<Viewer>(viewer)
+        .map(|v| (v.rows, v.cols))
+        .ok_or("the viewer has no Viewer")?;
+    let other = if rows == 7 { 8 } else { 7 };
+    world.trigger(UserInput {
+        viewer,
+        input: Input::Resize { rows: other, cols },
+    });
+    world.flush();
+    let resized = world.get::<Viewer>(viewer).map(|v| v.rows) == Some(other);
+    world.trigger(UserInput {
+        viewer,
+        input: Input::Resize { rows, cols },
+    });
+    world.flush();
+    if !resized {
+        return Err(format!("fux ignored a UserInput event for viewer {viewer}"));
     }
     Ok(())
 }
