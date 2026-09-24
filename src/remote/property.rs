@@ -483,9 +483,11 @@ fn mutate(rng: &mut Rng, pools: &Pools, value: &mut Value, depth: u32) {
             }
         }
         Value::Number(n) => {
-            // A large integer is likely an entity: swap in one of any class.
+            // Any integer may be an entity -- one of generation 0 has bits
+            // below 2^32 -- so sometimes swap in one of any class, and more
+            // often for one that can only be an entity.
             let entity_like = n.as_u64().is_some_and(|n| n > u64::from(u32::MAX));
-            if entity_like && rng.chance(60) {
+            if (entity_like && rng.chance(60)) || (n.as_u64().is_some() && rng.chance(25)) {
                 *value = pools.entity(rng);
             } else if let Some(&number) = rng.pick(NUMBERS) {
                 *value = if number.fract() == 0.0 && number.abs() < 1e18 && rng.chance(70) {

@@ -70,6 +70,20 @@ fn is_container(world: &World, entity: Entity) -> bool {
 }
 
 fn hierarchy(world: &mut World, v: &mut Vec<String>) {
+    // Every parent exists, on any entity: a relationship to an entity that
+    // was never spawned dangles, and Bevy's hooks fail on it (finding 030).
+    let parented: Vec<(Entity, Entity)> = world
+        .query::<(Entity, &ChildOf)>()
+        .iter(world)
+        .map(|(e, c)| (e, c.parent()))
+        .collect();
+    for (entity, parent) in parented {
+        if world.get_entity(parent).is_err() {
+            v.push(format!(
+                "{entity} has ChildOf {parent}, which does not exist"
+            ));
+        }
+    }
     let layout: Vec<Entity> = world
         .query_filtered::<Entity, LayoutRole>()
         .iter(world)
