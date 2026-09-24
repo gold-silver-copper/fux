@@ -1,5 +1,5 @@
 use super::*;
-use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty};
 use std::io::{Read, Write};
 
 #[test]
@@ -16,12 +16,7 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
         }
     }
     let s = Server::start()?;
-    let pair = native_pty_system().openpty(PtySize {
-        rows: 13,
-        cols: 47,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair = open_pty(13, 47)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut writer = pair.master.take_writer()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
@@ -81,21 +76,16 @@ fn actual_attached_frontend_renders_bottom_chrome_and_consumes_prefix_keys() -> 
     drop(writer);
     attached.master.take();
     let bytes = capture.join().map_err(|_| "capture thread panicked")??;
-    // The frontend's last output is the terminal-restore sequence, which ends
-    // by leaving the alternate screen. The PTY line discipline may append a
-    // bare CR/LF after it once cooked mode is restored -- benign, and captured
-    // only when it flushes before EOF, which is why a strict `ends_with` on the
-    // raw bytes flaked under load. Ignore a trailing newline; require the
-    // restore to be the last escape sequence the frontend emits.
-    let trimmed = bytes
-        .iter()
-        .rposition(|&b| b != b'\r' && b != b'\n')
-        .map_or(0, |i| i + 1);
-    let last = bytes.get(..trimmed).unwrap_or(&bytes);
+    // The frontend's last output is its terminal-restore sequence. (A stray
+    // `\r\n` after it was the harness, not fux: see `SPAWN`.)
     assert!(
-        last.ends_with(b"\x1b[?1049l"),
+        bytes.ends_with(b"\x1b[?1049l"),
         "frontend did not end by leaving the alternate screen: {:?}",
-        last.get(last.len().saturating_sub(24)..).unwrap_or(last)
+        String::from_utf8_lossy(
+            bytes
+                .get(bytes.len().saturating_sub(24)..)
+                .unwrap_or(&bytes)
+        )
     );
     if let Ok(directory) = std::env::var("FUX_DESIGN_CAPTURE") {
         fs::write(PathBuf::from(&directory).join("frontend.ansi"), bytes)?;

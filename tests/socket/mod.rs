@@ -93,16 +93,12 @@ fn stop(socket: &Path) -> Result<(), Fail> {
 /// work first, by finding the server's own Unix socket, so an empty answer is
 /// evidence rather than a failed tool.
 fn internet_sockets(pid: u32, socket: &Path) -> Result<String, Fail> {
-    let unix = Command::new("lsof")
-        .args(["-nP", "-a", "-p", &pid.to_string(), "-U"])
-        .output()?;
+    let unix = output(Command::new("lsof").args(["-nP", "-a", "-p", &pid.to_string(), "-U"]))?;
     let listed = String::from_utf8_lossy(&unix.stdout);
     if !listed.contains(&*socket.to_string_lossy()) {
         return Err(format!("lsof could not see the server's own socket: {listed}").into());
     }
-    let inet = Command::new("lsof")
-        .args(["-nP", "-a", "-p", &pid.to_string(), "-i"])
-        .output()?;
+    let inet = output(Command::new("lsof").args(["-nP", "-a", "-p", &pid.to_string(), "-i"]))?;
     // lsof exits 1 when it finds nothing to list; anything else must list rows.
     if !inet.status.success() && inet.status.code() != Some(1) {
         return Err(format!("lsof -i failed: {inet:?}").into());
@@ -163,7 +159,7 @@ fn fux(args: &[&str], env: &[(&str, &str)]) -> Result<Output, Fail> {
     for (key, value) in env {
         command.env(key, value);
     }
-    Ok(command.output()?)
+    Ok(output(&mut command)?)
 }
 
 #[test]
@@ -233,13 +229,14 @@ fn retired_and_invalid_transport_settings_fail_naming_the_change() -> Outcome {
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("--socket PATH"));
     // Without XDG_RUNTIME_DIR, TMPDIR decides; an empty one is an error.
-    let empty = Command::new(env!("CARGO_BIN_EXE_fux"))
-        .args(["rpc", "rpc.discover"])
-        .env_remove("FUX_SOCKET")
-        .env_remove("FUX_ENDPOINT")
-        .env_remove("XDG_RUNTIME_DIR")
-        .env("TMPDIR", "")
-        .output()?;
+    let empty = output(
+        Command::new(env!("CARGO_BIN_EXE_fux"))
+            .args(["rpc", "rpc.discover"])
+            .env_remove("FUX_SOCKET")
+            .env_remove("FUX_ENDPOINT")
+            .env_remove("XDG_RUNTIME_DIR")
+            .env("TMPDIR", ""),
+    )?;
     assert!(String::from_utf8_lossy(&empty.stderr).contains("TMPDIR is set but empty"));
     // A location that is unsafe or occupied is refused and left as it was.
     let open = directory.join("open");
@@ -1057,15 +1054,10 @@ fn serve_peer(
 /// buffered without bound: 5.3 GB in sixty seconds, climbing at 95 MB/s.
 #[test]
 fn an_endless_event_ends_the_attachment_and_restores_the_terminal() -> Outcome {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use portable_pty::CommandBuilder;
 
     let peer = EndlessPeer::start(false)?;
-    let pair = native_pty_system().openpty(PtySize {
-        rows: 24,
-        cols: 80,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair = open_pty(24, 80)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");
@@ -1147,15 +1139,10 @@ fn an_endless_event_ends_the_attachment_and_restores_the_terminal() -> Outcome {
 /// bound on one unending event and not on how much a server may send.
 #[test]
 fn a_stream_of_ordinary_frames_is_not_bounded_away() -> Outcome {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use portable_pty::CommandBuilder;
 
     let peer = EndlessPeer::start(true)?;
-    let pair = native_pty_system().openpty(PtySize {
-        rows: 24,
-        cols: 80,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair = open_pty(24, 80)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");

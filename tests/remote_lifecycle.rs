@@ -9,9 +9,44 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
-// Serialize server spawns with outer-PTY spawns, so a concurrent fork never
-// inherits a descriptor another fixture is about to hand to its child.
+// Every fork in this binary, and every PTY it opens, holds this lock. A
+// concurrent fork must never inherit a descriptor another fixture is about to
+// hand to its child -- and `openpty` returns its pair without close-on-exec,
+// which portable-pty sets only afterwards. A fork in that window kept a
+// frontend PTY's slave open in some unrelated server, so the slave outlived
+// the frontend: on Linux, dropping portable-pty's writer then echoed its
+// newline (`\n` plus EOF, sent on drop) back as `\r\n` after the frontend's
+// restore sequence, and a capture could not end until that server did.
 static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `Command::spawn`, forking under `SPAWN`.
+fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
+    command.spawn()
+}
+
+/// `Command::output`, forking under `SPAWN` and waiting without it.
+fn output(command: &mut Command) -> std::io::Result<std::process::Output> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    spawn(command)?.wait_with_output()
+}
+
+/// A PTY pair opened under `SPAWN`, so no fork inherits it before
+/// portable-pty marks it close-on-exec.
+fn open_pty(rows: u16, cols: u16) -> Result<portable_pty::PtyPair, Fail> {
+    let _spawn = SPAWN.lock().unwrap_or_else(|error| error.into_inner());
+    Ok(
+        portable_pty::native_pty_system().openpty(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?,
+    )
+}
 
 mod brp;
 mod design;
@@ -742,7 +777,7 @@ fn repeated_copy_effects_are_not_replaceable_paints() -> Outcome {
 
 #[test]
 fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
-    use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty, PtySize, native_pty_system};
+    use portable_pty::{Child as PtyChild, CommandBuilder, MasterPty};
     use std::io::Read;
 
     struct SlowTerminal {
@@ -758,12 +793,7 @@ fn blocked_terminal_paint_does_not_block_stream_drain() -> Outcome {
     }
 
     let server = Server::start()?;
-    let pair = native_pty_system().openpty(PtySize {
-        rows: 24,
-        cols: 80,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair = open_pty(24, 80)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");
