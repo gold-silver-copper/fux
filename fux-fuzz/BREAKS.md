@@ -1639,6 +1639,40 @@ stops a pane's `cat` and reads its `ProcessState` a second later. Exit 0
 reproduced (not running), 1 not, 2 setup; `NEGATIVE_CONTROL=1` does not stop
 it. macOS: 0 before the fix, 1 after; Linux: 1 either way.
 
+## 021 — Input past sixteen pieces is lost while a pane's writer lags (class 6)
+
+**The break.** Input for a pane -- typed keys, pastes, mouse reports and
+terminal replies -- waited for the PTY writer in a queue of sixteen pieces,
+whatever their size. When the PTY's own buffer was full, because the program
+was busy, stopped or slower than the input, every piece past the sixteenth was
+refused, with the notice "sending into a full channel", and lost. A typed key
+is one piece, so seventeen keys were enough. Sixteen pieces of up to 64 KiB
+could wait, but not a seventeenth key. Pre-existing.
+
+**Found by** the finishing run's pass over its own evidence: pausing a pane's
+`cat` and sending it 3000 single keys over the socket delivered 1040 --
+macOS's PTY buffer plus sixteen -- and the rest were lost.
+
+**Fixed** in the 021 commit: the queue is bounded by bytes, not pieces.
+Each piece is charged its length plus 64 bytes, up to 16 times the largest
+accepted input (the old ceiling). The writer gives back each piece's charge as
+it passes it to the PTY. Terminal replies are charged the same way. A single
+input is still bounded to the largest paste, and a program that reads nothing
+can still fill the queue, when fux says so: "the pane's program is not
+reading its input".
+
+**Test.** `terminal::tests::keys_wait_for_a_slow_reader_instead_of_being_lost`
+stops a live pane's `cat`, sends 3000 single keys, resumes it and requires
+none refused and all 3000 received in order. It failed first: 2870 refused.
+`replies_remain_byte_exact_nonblocking_and_bounded` now bounds replies by cost
+and releases each as the writer would.
+
+**Reproduction.** `fux-fuzz/repro/021-input-past-sixteen-pieces-is-lost.sh`
+stops a pane's `cat`, sends eighty 2000-byte pastes, resumes it, and compares
+what arrived. Exit 0 reproduced, 1 not, 2 setup; `NEGATIVE_CONTROL=1` leaves
+`cat` running. Before the fix 36,000 (macOS) and 48,000 (Linux) of 160,000
+bytes arrived; after it all of them, on both.
+
 ## The nightly smoke, and what each failure was
 
 The first nightly dispatch (run 35914442080, at `655d8db`) was red on both

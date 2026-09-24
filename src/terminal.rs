@@ -5,7 +5,7 @@ use std::{
     os::fd::BorrowedFd,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
 };
@@ -32,10 +32,60 @@ mod rows;
 
 const CHUNK: usize = 8192;
 const OUTPUT_SLOTS: usize = 16;
-const INPUT_SLOTS: usize = 16;
 /// One write must fit the largest accepted paste plus its bracketed envelope,
 /// so a paste the policy layer accepts is never dropped by the transport.
 const MAX_INPUT: usize = crate::paste::LIMIT + crate::paste::ENVELOPE;
+/// Input may wait for the PTY writer up to this many bytes -- the ceiling the
+/// old sixteen slots of `MAX_INPUT` had -- however many pieces it came in.
+const INPUT_BYTES: usize = 16 * MAX_INPUT;
+/// What one queued piece costs beyond its bytes: its allocation and its node.
+const ENTRY_COST: usize = 64;
+
+/// Input and terminal replies waiting for the PTY writer, bounded by what they
+/// cost rather than by how many pieces they came in (hunt 8 finding 021). The
+/// old bound was sixteen pieces, so once the PTY's own buffer was full every
+/// key past the sixteenth was refused and lost, however few bytes waited.
+#[derive(Clone)]
+struct InputQueue {
+    tx: Sender<Vec<u8>>,
+    queued: Arc<AtomicUsize>,
+    capacity: usize,
+}
+
+impl InputQueue {
+    fn new(capacity: usize) -> (Self, async_channel::Receiver<Vec<u8>>) {
+        let (tx, rx) = async_channel::unbounded();
+        let queue = Self {
+            tx,
+            queued: Arc::default(),
+            capacity,
+        };
+        (queue, rx)
+    }
+
+    fn push(&self, bytes: Vec<u8>) -> Result<(), String> {
+        let cost = bytes.len() + ENTRY_COST;
+        self.queued
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                queued
+                    .checked_add(cost)
+                    .filter(|total| *total <= self.capacity)
+            })
+            .map_err(|_| {
+                "the pane's program is not reading its input; nothing more is queued until it does"
+                    .to_owned()
+            })?;
+        self.tx.try_send(bytes).map_err(|error| {
+            self.written(cost - ENTRY_COST);
+            error.to_string()
+        })
+    }
+
+    /// The writer has passed a piece of `len` bytes to the PTY.
+    fn written(&self, len: usize) {
+        self.queued.fetch_sub(len + ENTRY_COST, Ordering::AcqRel);
+    }
+}
 const UPDATE_BYTES: usize = 65536;
 
 pub struct TerminalPlugin;
@@ -90,7 +140,7 @@ enum Runtime {
 }
 struct Live {
     job: Job,
-    input: Sender<Vec<u8>>,
+    input: InputQueue,
     writer: Task<()>,
     reader_stop: Sender<()>,
 }
@@ -162,10 +212,7 @@ impl Terminal {
             ));
         }
         match &self.runtime {
-            Runtime::Live(live) => live
-                .input
-                .try_send(bytes.to_vec())
-                .map_err(|e| e.to_string()),
+            Runtime::Live(live) => live.input.push(bytes.to_vec()),
             Runtime::Stopped => Err("process has exited".into()),
         }
     }
@@ -281,7 +328,8 @@ impl Terminal {
                 return Err(error.to_string());
             }
         };
-        let (input, input_rx) = async_channel::bounded::<Vec<u8>>(INPUT_SLOTS);
+        let (input, input_rx) = InputQueue::new(INPUT_BYTES);
+        let released = input.clone();
         let (output_tx, output) = async_channel::bounded(OUTPUT_SLOTS);
         let (reader_stop, stop_rx) = async_channel::bounded(1);
         let reader_notify = notify.clone();
@@ -367,6 +415,7 @@ impl Terminal {
                     }
                     yield_now().await;
                 }
+                released.written(bytes.len());
             }
         });
         Ok(Self {
@@ -476,7 +525,7 @@ impl Terminal {
             writer,
             reader_stop,
         } = live;
-        input.close();
+        input.tx.close();
         drop(writer);
         let result = match observed {
             Some(observed) => job.finish().and(observed),
@@ -807,14 +856,14 @@ fn update_terminals(
 
 fn process_output(
     parser: &mut fux_vt::Parser,
-    input: Option<&Sender<Vec<u8>>>,
+    input: Option<&InputQueue>,
     bytes: &[u8],
 ) -> Result<(), String> {
     let mut reply_error = None;
     parser
         .process_with_replies(bytes, |reply| {
             if let Some(input) = input
-                && let Err(error) = input.try_send(reply.to_vec())
+                && let Err(error) = input.push(reply.to_vec())
             {
                 reply_error = Some(format!("terminal reply: {error}"));
             }
@@ -908,19 +957,79 @@ mod tests {
         Ok(())
     }
 
+    // Hunt 8 finding 021. Input was queued for the PTY writer in 16 slots,
+    // one per input, so once the pane's PTY buffer was full every key past
+    // the sixteenth was refused ("sending into a full channel") and lost,
+    // however few bytes were waiting. A program that reads slowly must get
+    // every key, in order; only a byte bound refuses input.
+    #[test]
+    fn keys_wait_for_a_slow_reader_instead_of_being_lost() -> Outcome {
+        let mut app = App::new();
+        app.add_plugins(bevy_app::TaskPoolPlugin::default());
+        let notify = Notify {
+            wake: Wake(thread::current()),
+            pending: Arc::default(),
+        };
+        let directory =
+            std::env::temp_dir().join(format!("fux-slow-reader-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)?;
+        let got = directory.join("got");
+        let recipe = Launch {
+            argv: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!("stty raw -echo; exec cat > '{}'", got.display()),
+            ],
+            cwd: String::new(),
+            history_lines: 4,
+        };
+        let mut terminal = Terminal::spawn(&recipe, 24, 80, notify)?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let pid = match &terminal.runtime {
+            Runtime::Live(live) => live.job.pid,
+            Runtime::Stopped => return Err("child not running".into()),
+        };
+        let raw = Pid::from_raw(i32::try_from(pid)?);
+        nix::sys::signal::kill(raw, Signal::SIGSTOP)?;
+        let sent: Vec<u8> = (b'a'..=b'j').cycle().take(3000).collect();
+        let refused = sent
+            .iter()
+            .filter(|key| terminal.input(std::slice::from_ref(*key)).is_err())
+            .count();
+        nix::sys::signal::kill(raw, Signal::SIGCONT)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut received = Vec::new();
+        while std::time::Instant::now() < deadline {
+            received = std::fs::read(&got).unwrap_or_default();
+            if received.len() >= sent.len() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = terminal.stop();
+        std::fs::remove_dir_all(&directory)?;
+        assert_eq!(refused, 0);
+        assert_eq!(received, sent);
+        Ok(())
+    }
+
     #[test]
     fn replies_remain_byte_exact_nonblocking_and_bounded() -> Outcome {
         let mut parser = fux_vt::Parser::new(2, 2, 0)?;
-        let (tx, rx) = async_channel::bounded(3);
-        process_output(&mut parser, Some(&tx), b"AB\x1b[5n\x1b[6n\x1b[c")?;
-        assert_eq!(rx.try_recv()?, b"\x1b[0n");
-        assert_eq!(rx.try_recv()?, b"\x1b[1;3R");
-        assert_eq!(rx.try_recv()?, b"\x1b[?1;2c");
-        assert!(process_output(&mut parser, Some(&tx), &b"\x1b[5n".repeat(1000)).is_err());
+        // Room for exactly the three replies below (17 bytes); the bound is
+        // on queued cost, released as the writer passes each reply on.
+        let (queue, rx) = InputQueue::new(3 * ENTRY_COST + 17);
+        process_output(&mut parser, Some(&queue), b"AB\x1b[5n\x1b[6n\x1b[c")?;
+        for expected in [&b"\x1b[0n"[..], b"\x1b[1;3R", b"\x1b[?1;2c"] {
+            let reply = rx.try_recv()?;
+            assert_eq!(reply, expected);
+            queue.written(reply.len());
+        }
+        assert!(process_output(&mut parser, Some(&queue), &b"\x1b[5n".repeat(1000)).is_err());
         assert_eq!(rx.len(), 3);
         rx.close();
         assert!(
-            process_output(&mut parser, Some(&tx), b"\x1b[5n")
+            process_output(&mut parser, Some(&queue), b"\x1b[5n")
                 .err()
                 .need()?
                 .starts_with("terminal reply:")
