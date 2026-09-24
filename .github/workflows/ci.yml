@@ -100,7 +100,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked
-          sh fux-fuzz/repro/check.sh target/debug/fux 2>&1 | tee "$CI_LOGS/repros.log"
+          # Strict: GitHub's /tmp is ext4, so 014 must give its verdict here.
+          FUX_REPRO_STRICT=1 sh fux-fuzz/repro/check.sh target/debug/fux 2>&1 | tee "$CI_LOGS/repros.log"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

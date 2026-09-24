@@ -5,6 +5,13 @@
 # Exit 0 when every script gives the expected verdict three ways (see
 # expected.tsv), 1 when any differs, 2 on a setup problem. Prints one line per
 # script, and the output of any script that surprised it.
+#
+# Some findings depend on more than the platform: 014 needs a filesystem that
+# reuses inode numbers (ext4), which a container's overlayfs is not. A script
+# that cannot show its finding here says so on a line starting NOT-APPLICABLE:
+# and exits 2; that is reported as "n/a here" rather than a mismatch. With
+# FUX_REPRO_STRICT=1, as CI sets on runners whose /tmp is ext4, it is a
+# mismatch, so the table's verdict is still required where it can be shown.
 set -u
 FUX="${1:?usage: $0 /path/to/fux}"
 [ -x "$FUX" ] || { echo "not executable: $FUX" >&2; exit 2; }
@@ -41,6 +48,9 @@ for script in "$HERE"/[0-9][0-9][0-9]-*.sh; do
 
   if [ "$reproduce" = "$expected" ] && [ "$control" = "$control_expected" ] && [ "$bad" = 2 ]; then
     echo "$number: ok ($reproduce/$control/$bad)"
+  elif [ "$reproduce" = 2 ] && [ "${FUX_REPRO_STRICT:-0}" != 1 ] && [ "$bad" = 2 ] &&
+    reason="$(grep -m1 '^NOT-APPLICABLE:' "$OUT/reproduce")"; then
+    echo "$number: n/a here (${reason#NOT-APPLICABLE: }), wanted $expected where it applies"
   else
     echo "$number: UNEXPECTED $reproduce/$control/$bad, wanted $expected/$control_expected/2"
     for part in reproduce control bad; do
