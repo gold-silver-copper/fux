@@ -78,12 +78,27 @@ impl Plugin for ServerPlugin {
         .register_type::<crate::protocol::Direction>()
         .register_type::<crate::protocol::Token>();
         presentation::register_types(app);
+        app.register_type::<Settings>()
+            .register_type::<ChildOf>()
+            .register_type::<bevy_ui::Node>();
+        crate::policy::register(app);
         crate::navigation::observe(app.world_mut());
         app.add_plugins(TerminalPlugin)
             .add_observer(route_control)
             .add_observer(route_input)
+            // A removed Viewer is a detach: the entity keeps no viewer-only
+            // state, so it cannot be half a viewer that repair or BRP's guard
+            // would have to reason about.
             .add_observer(|removed: On<Remove<Viewer>>, mut commands: Commands| {
-                commands.entity(removed.entity).try_remove::<Presentation>();
+                commands.entity(removed.entity).try_remove::<(
+                    Presentation,
+                    Viewing,
+                    OnTab,
+                    Focused,
+                    crate::interaction::Prefix,
+                    crate::interaction::Overlay,
+                    crate::selection::Selection,
+                )>();
             })
             .add_observer(|_: On<Shutdown>, mut exits: MessageWriter<AppExit>| {
                 exits.write(AppExit::Success);

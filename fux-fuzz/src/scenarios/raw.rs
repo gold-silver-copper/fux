@@ -204,7 +204,32 @@ pub(super) fn mutate(
     s.request_timeout = std::time::Duration::from_secs(5);
     let outcome = mutate_with(s, walker, kind, index, w);
     s.request_timeout = ordinary;
-    outcome
+    match outcome {
+        Err(error)
+            if REFUSED_BY_DESIGN.contains(&(kind % KINDS)) && guard_refusal(&error.to_string()) =>
+        {
+            s.journal.record(
+                "raw_refused",
+                json!({"kind":kind % KINDS,"reason":error.to_string()}),
+            )?;
+            Ok(("refused".into(), json!({"kind":kind % KINDS})))
+        }
+        other => other,
+    }
+}
+
+/// The raw edits fux's BRP guard refuses by design (docs/prompt-brp-policy.md):
+/// removing a WorkspaceOrder or a Children, unlinking a tab, a Viewing at a
+/// dead entity or at a pane, a tab under a pane, removing a PaneView from a
+/// placed view, a tab as its own parent, a Focused at a tab, an OnTab at a
+/// tab of another workspace, and partial payloads. For these a refusal with
+/// the guard's error, and a world left as it was, is the expected outcome;
+/// every other kind must still be applied and repaired.
+const REFUSED_BY_DESIGN: [u8; 11] = [7, 8, 9, 10, 11, 14, 17, 18, 20, 21, 22];
+
+/// Whether an RPC error is the guard's refusal (JSON-RPC invalid params).
+fn guard_refusal(error: &str) -> bool {
+    error.contains("-32602")
 }
 fn mutate_with(
     s: &mut Server,

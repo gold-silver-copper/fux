@@ -116,13 +116,95 @@ The selected JSON file is a native Bevy asset, watched in its parent directory. 
 
 Scene pane references resolve to existing process entities in the same server. Explicit `load_layout` `mapping` pairs map `[saved_process_entity, existing_process_entity]`; all references are validated before creating layout entities. Missing processes fail without replacing the current layout. Loading never launches a process. IDs and scene formats are not stable across server runs or Bevy versions.
 
-## Unrestricted remote control
+## Controlling fux over BRP
 
 `fux rpc METHOD '[JSON]'` sends a stock JSON-RPC request over the server's socket and prints its result. Any HTTP client that can dial a Unix socket works the same way, for example `curl --unix-socket PATH http://fux/ -d '{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}'`.
 
-Access control is the socket's file permissions: only your user (and root) can open a mode-0600 socket in a mode-0700 directory. There is still no authentication step for a caller who can open it, so every same-user process remains fully trusted. The server opens no TCP or UDP socket, so a web page cannot reach it at all: browser JavaScript cannot dial a Unix socket, which removes the cross-origin "simple request" exposure of the former loopback port by construction. A TCP proxy or native bridge you put in front of the socket would reintroduce that exposure. `rpc.discover` lists no server URL.
+Access control is the socket's file permissions -- a mode-0600 socket in a mode-0700 directory -- and a check on every connection that the connecting process runs as the server's own user; root is refused too. There is no authentication beyond that, so every same-user process remains fully trusted. The server opens no TCP or UDP socket, so a web page cannot reach it at all: browser JavaScript cannot dial a Unix socket, which removes the cross-origin "simple request" exposure of the former loopback port by construction. A TCP proxy or native bridge you put in front of the socket would reintroduce that exposure. `rpc.discover` lists no server URL.
 
-There is no application authorization step:
+Anyone who can open the socket can run anything as you -- `split` runs a program, and so does spawning a `Launch` -- exactly as with tmux's socket. What BRP cannot do is put fux in a state it does not understand. Every stock method runs behind one guard: a request names only live entities, never a resource entity or an entity fux or Bevy keeps internally (an observer, a system); it changes only types the policy below opens, in the ways it opens them; every new value is validated, and so is the layout as it would be afterwards (parents, kinds, cycles, what a view shows, a viewer's workspace, tab and focus); then fux repairs and settles the world before it answers, and checks every structural invariant: a release build logs one a request broke, with the request, and a debug build also fails the request. A request either applies whole or changes nothing, and a refusal says why. Reads and watches are answered by the stock handlers, with the same entity rules.
+
+There are two ways to drive fux, and the first is the one to prefer:
+
+- **Intent:** trigger `fux::control::Control` and `fux::control::UserInput` events (below). These are the same commands and input a key would produce, checked and reported the same way.
+- **Data:** edit components directly, within the policy. This is the power tool: layout geometry, names, the hierarchy, processes, a viewer's size and place.
+
+`fux.policy` returns this table in machine form; `fux.invariants` returns every structural rule the world currently breaks (an empty list means consistent). The table lists every type fux registers; any other registered type (Bevy's own) is read-only: clients may query and watch it, and nothing else.
+
+<!-- policy-table -->
+| Type | Read | Write | Spawn | Remove | Trigger | Required | Rules |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `bevy_camera::visibility::Visibility` | ✓ | ✓ | ✓ | ✓ |  |  | whether a layout node is shown |
+| `bevy_ecs::hierarchy::ChildOf` | ✓ | ✓ | ✓ | ✓ |  |  | the hierarchy; the layout rules apply |
+| `bevy_ecs::hierarchy::Children` | ✓ |  |  |  |  |  | the other side of ChildOf; change ChildOf or reparent |
+| `bevy_ecs::name::Name` | ✓ | ✓ | ✓ | ✓ |  |  | a name; at most 4096 bytes, no control characters |
+| `bevy_input_focus::tab_navigation::TabGroup` | ✓ |  |  |  |  |  | fux's chrome focus group; kept by fux |
+| `bevy_input_focus::tab_navigation::TabIndex` | ✓ |  |  |  |  |  | fux's chrome focus order; kept by fux |
+| `bevy_text::text::TextColor` | ✓ |  |  |  |  |  | not painted by fux |
+| `bevy_text::text::TextFont` | ✓ |  |  |  |  |  | not painted by fux |
+| `bevy_text::text::TextLayout` | ✓ |  |  |  |  |  | not painted by fux |
+| `bevy_ui::focus::FocusPolicy` | ✓ |  |  |  |  |  | not used by fux's layout |
+| `bevy_ui::ui_node::BackgroundColor` | ✓ |  |  |  |  |  | not painted by fux |
+| `bevy_ui::ui_node::BorderColor` | ✓ |  |  |  |  |  | not painted by fux |
+| `bevy_ui::ui_node::BorderRadius` | ✓ |  |  |  |  |  | not painted by fux |
+| `bevy_ui::ui_node::BoxShadow` | ✓ |  |  |  |  |  | not painted by fux |
+| `bevy_ui::ui_node::GlobalZIndex` | ✓ |  |  |  |  |  | not used by fux's layout |
+| `bevy_ui::ui_node::LayoutConfig` | ✓ |  |  |  |  |  | not used by fux's layout |
+| `bevy_ui::ui_node::Node` | ✓ | ✓ | ✓ | ✓ |  |  | layout geometry; every number finite and within 1e6 |
+| `bevy_ui::ui_node::Outline` | ✓ |  |  |  |  |  | not painted by fux |
+| `bevy_ui::ui_node::ScrollPosition` | ✓ |  |  |  |  |  | not used by fux's layout |
+| `bevy_ui::ui_node::ZIndex` | ✓ |  |  |  |  |  | not used by fux's layout |
+| `bevy_ui::ui_transform::UiTransform` | ✓ |  |  |  |  |  | not used by fux's layout |
+| `bevy_ui::widget::image::ImageNode` | ✓ |  |  |  |  |  | not painted by fux |
+| `bevy_ui::widget::text::Text` | ✓ |  |  |  |  |  | chrome text in a viewer's presentation; kept by fux |
+| `bevy_world_serialization::components::DynamicWorldRoot` | ✓ |  |  |  |  |  | a loaded layout scene's root; kept by fux |
+| `bevy_world_serialization::components::WorldAssetRoot` | ✓ |  |  |  |  |  | a loaded layout scene's root; kept by fux |
+| `fux::actions::Action` | ✓ |  |  |  |  |  | a bindable action; part of Command and Binding |
+| `fux::actions::Target` | ✓ |  |  |  |  |  | what an action acts on; part of Command |
+| `fux::assets::Binding` | ✓ |  |  |  |  |  | a key binding; part of Settings |
+| `fux::assets::BindingAction` | ✓ |  |  |  |  |  | part of Binding |
+| `fux::assets::ClipboardPolicy` | ✓ |  |  |  |  |  | part of Settings |
+| `fux::assets::LayoutReload` | ✓ |  |  |  |  |  | a layout file being reloaded; kept by fux |
+| `fux::assets::Settings` | ✓ | ✓ |  |  |  | ✓ | the configuration; checked as a configuration file is |
+| `fux::control::Axis` | ✓ |  |  |  |  |  | part of Command |
+| `fux::control::Chooser` | ✓ |  |  |  |  |  | part of Command |
+| `fux::control::Command` | ✓ |  |  |  |  |  | a command; part of Control |
+| `fux::control::Control` |  |  |  |  | ✓ |  | a command for a viewer; complete, or refused; ignored if the viewer is gone |
+| `fux::control::Order` | ✓ |  |  |  |  |  | part of Command |
+| `fux::control::Scope` | ✓ |  |  |  |  |  | part of Command |
+| `fux::control::Shutdown` |  |  |  |  | ✓ |  | ends the server |
+| `fux::control::Subject` | ✓ |  |  |  |  |  | part of Command |
+| `fux::control::UserInput` |  |  |  |  | ✓ |  | input for a viewer; complete, or refused; ignored if the viewer is gone |
+| `fux::interaction::Entry` | ✓ |  |  |  |  |  | an overlay's entry; part of Overlay |
+| `fux::interaction::Mode` | ✓ |  |  |  |  |  | what an overlay is doing; part of Overlay |
+| `fux::interaction::MoveTo` | ✓ |  |  |  |  |  | a move target; part of Command |
+| `fux::interaction::Overlay` | ✓ |  |  |  |  |  | an open menu, prompt or chooser; use Control and UserInput |
+| `fux::interaction::Prefix` | ✓ |  |  |  |  |  | a viewer waiting for a command key; use UserInput |
+| `fux::interaction::Run` | ✓ |  |  |  |  |  | what an overlay's entry runs; part of Overlay |
+| `fux::model::Focused` | ✓ | ✓ |  | ✓ |  |  | a viewer's focus; a pane view of its tab; a removed one is chosen again |
+| `fux::model::Launch` | ✓ | ✓ | ✓ | ✓ |  |  | a process recipe; argv names a program; history within what a terminal holds; removing it ends the process |
+| `fux::model::Notice` | ✓ |  |  |  |  |  | a notice in a viewer's bar; part of Viewer |
+| `fux::model::OnTab` | ✓ | ✓ |  | ✓ |  |  | a viewer's tab; a tab of its workspace; a removed one is chosen again |
+| `fux::model::PaneView` | ✓ | ✓ | ✓ |  |  |  | a layout leaf; its pane is a process; placed in a tab or split, or new and unplaced; removed only by despawning |
+| `fux::model::PaneViews` | ✓ |  |  |  |  |  | the views showing a process; kept by fux |
+| `fux::model::ProcessState` | ✓ | ✓ | ✓ |  |  | ✓ | a process's state; spawned only with its Launch, to choose the size; clients change only rows and cols, within 1..=4096 |
+| `fux::model::Split` | ✓ | ✓ | ✓ | ✓ |  |  | a split container; its parent is a tab or a split; removable while its children stay placed |
+| `fux::model::Status` | ✓ |  |  |  |  |  | a process's lifecycle; part of ProcessState |
+| `fux::model::Tab` | ✓ | ✓ | ✓ |  |  |  | a tab; placed in a workspace, or new and unplaced; removed only by despawning |
+| `fux::model::Viewer` | ✓ | ✓ |  | ✓ |  |  | a viewer; created only by fux.attach; removing it detaches; rows and cols at most 4096; scrollback is clamped to the pane's history when painted |
+| `fux::model::Viewing` | ✓ | ✓ |  | ✓ |  |  | a viewer's workspace; a removed one is chosen again |
+| `fux::model::Workspace` | ✓ | ✓ | ✓ |  |  |  | a workspace; it has no parent and gets a WorkspaceOrder when spawned without one; removed only by despawning |
+| `fux::model::WorkspaceOrder` | ✓ | ✓ | ✓ |  |  | ✓ | a workspace's position; every workspace has one, all distinct |
+| `fux::protocol::Direction` | ✓ |  |  |  |  |  | part of Input |
+| `fux::protocol::Input` | ✓ |  |  |  |  |  | a key, mouse, paste or resize; part of UserInput |
+| `fux::protocol::Key` | ✓ |  |  |  |  |  | part of Input |
+| `fux::protocol::Modifiers` | ✓ |  |  |  |  |  | part of Input |
+| `fux::protocol::MouseAction` | ✓ |  |  |  |  |  | part of Input |
+| `fux::protocol::MouseButton` | ✓ |  |  |  |  |  | part of Input |
+| `fux::protocol::Token` | ✓ |  |  |  |  |  | a key as written in configuration; part of Settings |
+<!-- /policy-table -->
+
+"Write" is `world.insert_components` on an existing entity and the `mutate` methods; relationships (`ChildOf`, `Viewing`, `OnTab`, `Focused`, `PaneView`) are immutable, so they are replaced with an insert rather than mutated. "Required" means fux cannot run without it where it is present, so it is never removed. Messages (`world.write_message`) are all read-only.
 
 ```sh
 fux rpc rpc.discover
@@ -136,7 +218,7 @@ fux rpc world.remove_components '{"entity":ENTITY,"components":["bevy_ecs::name:
 fux rpc world.despawn_entity '{"entity":ENTITY}'
 ```
 
-Native extensions are only `fux.attach`, `fux.frame` and the SSE watch `fux.frame+watch`. `fux.attach` accepts `{workspace?, rows, cols}` and returns a `viewer` entity. The others accept `{viewer}`. Closing a frame-watch connection detaches that viewer, and only a viewer: an id that names anything else is ignored rather than despawned. A non-streaming API caller should explicitly detach it.
+Native extensions are `fux.attach`, `fux.frame`, the SSE watch `fux.frame+watch`, and the read-only `fux.policy` and `fux.invariants`. `fux.attach` accepts `{workspace?, rows, cols}` and returns a `viewer` entity. The others accept `{viewer}`. Closing a frame-watch connection detaches that viewer, and only a viewer: an id that names anything else is ignored rather than despawned. A non-streaming API caller should explicitly detach it.
 
 Requests are bounded, and passing a bound is a JSON-RPC error naming it rather than a dropped connection: a request body may be up to 4 MiB, one batch may hold up to 1024 requests, and a batch reply is capped at 8 MiB, after which the remaining requests in that batch are answered with an error instead of being run. The largest request fux itself sends is a paste, bounded by 64 KiB of payload. A layout scene loaded from disk is bounded too, at 8 MiB, so a path pointing at a huge or endless file cannot grow the server without limit.
 
@@ -164,7 +246,7 @@ fux rpc world.trigger_event '{"event":"fux::control::UserInput","value":{"viewer
 
 The uppercase IDs above are placeholders to substitute, not literal JSON values. `UserInput` accepts `key {key,ctrl,alt,shift}` where `key` is a single character or one of `enter`, `tab`, `escape`, `backspace`, `delete`, `insert`, `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `f1`..`f12`; `paste_begin` followed by `paste {text}` (ownership-preserving fragmented paste); atomic `paste {text}`; `resize {rows,cols}`; and `mouse {action,button,x,y,ctrl,alt,shift}` with `action` one of `press`, `release`, `move`, `scroll_up`, `scroll_down` and `button` one of `left`, `middle`, `right`, `none`. Mouse coordinates are zero-based viewer cells. Control and file-operation errors appear in the reflected `Viewer.notice`, an object `{text, error}` or null; asynchronous scene completion changes that notice.
 
-The layout hierarchy itself is Bevy's own `bevy_ecs::hierarchy::ChildOf` (a pane view's or tab's parent, serialized as the bare entity ID) and `bevy_ecs::hierarchy::Children` (an ordered array of entity IDs); read them by those full paths, for example `world.get_components '{"entity":PANE_VIEW,"components":["bevy_ecs::hierarchy::ChildOf"]}'`. A viewer's place in the layout is three relationship components on the viewer entity, each serialized as the bare entity ID: `fux::model::Viewing` (its workspace), `fux::model::OnTab` (its tab) and `fux::model::Focused` (its pane view). Bevy removes a relationship when its target despawns and fux then restores it from viewer memory or the first available entity, so these never dangle. `Viewer` itself holds only `rows`, `cols`, `zoom`, `scrollback` and `notice`. The existing `fux::interaction::Prefix` and `fux::interaction::Overlay` components are also reflected: `Prefix.scroll` is the selected command-column row; `Overlay` contains its serial, captured `Target`, and `Mode`. `Mode` is a native reflected enum: `{"List":{"title":…, "entries":…, "selected":…}}`, `{"Text":{"action":…, "buffer":…}}` or `{"Confirm":{"command":…}}`. Entries contain a label and `Run` (`Action` or `Command`). Native reflected action variants use Rust names such as `RenamePane`; nested `Command` retains its existing tagged JSON shape. These are the actual interaction components, not snapshots. Their presence/absence tracks opening/closing; the serial is paste-ownership bookkeeping, not a durable operation receipt.
+The layout hierarchy itself is Bevy's own `bevy_ecs::hierarchy::ChildOf` (a pane view's or tab's parent, serialized as the bare entity ID) and `bevy_ecs::hierarchy::Children` (an ordered array of entity IDs); read them by those full paths, for example `world.get_components '{"entity":PANE_VIEW,"components":["bevy_ecs::hierarchy::ChildOf"]}'`. A viewer's place in the layout is three relationship components on the viewer entity, each serialized as the bare entity ID: `fux::model::Viewing` (its workspace), `fux::model::OnTab` (its tab) and `fux::model::Focused` (its pane view). Bevy removes a relationship when its target despawns and fux then restores it from viewer memory or the first available entity, so these never dangle. `Viewer` itself holds only `rows`, `cols`, `zoom`, `scrollback` and `notice`. The `fux::interaction::Prefix` and `fux::interaction::Overlay` components are reflected and read-only: open, move through and close them with `Control` and `UserInput`, and read them to see where a viewer is. `Prefix.scroll` is the selected command-column row; `Overlay` contains its serial, captured `Target`, and `Mode`. `Mode` is a native reflected enum: `{"List":{"title":…, "entries":…, "selected":…}}`, `{"Text":{"action":…, "buffer":…}}` or `{"Confirm":{"command":…}}`. Entries contain a label and `Run` (`Action` or `Command`). Native reflected action variants use Rust names such as `RenamePane`; nested `Command` retains its existing tagged JSON shape. These are the actual interaction components, not snapshots. Their presence/absence tracks opening/closing; the serial is paste-ownership bookkeeping, not a durable operation receipt.
 
 ```sh
 # Substitute a viewer ID returned by fux.attach for VIEWER:
@@ -175,7 +257,7 @@ fux rpc world.list_components '{"entity":VIEWER}'
 fux rpc registry.schema
 ```
 
-This Bevy stores its resources as entities, so a `world.query` with no component filter answers with far more entities than the session's own -- most of them resources -- and an id you did not get from a filtered query may be a resource rather than a viewer, pane or tab. Filter by component, and get ids from those results. fux refuses the operations that would let a raw edit on a resource entity harm the server, but querying blindly still wastes a turn.
+This Bevy stores its resources as entities, so a `world.query` with no component filter answers with far more entities than the session's own -- most of them resources -- and an id you did not get from a filtered query may be a resource rather than a viewer, pane or tab. Filter by component, and get ids from those results. The guard refuses any change to a resource entity, but querying blindly still wastes a turn.
 
 Default non-strict `world.get_components` returns separate `components` and `errors` maps, so an absent overlay is not a failed request. Stock `world.get_components+watch` supports component change/removal observation through the native watching transport. No fux-specific inspection method is added.
 

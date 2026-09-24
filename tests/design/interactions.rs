@@ -156,6 +156,17 @@ fn nested_swap_and_existing_tab_workspace_moves_keep_process_identity_and_histor
     s.split(v, "vertical", None)?;
     s.screen(v)?;
     let c = s.focused(v)?.as_u64().need()?;
+    // The pid is published when a process starts, asynchronously after the
+    // split; compare pids only once every process has one.
+    eventually(|| {
+        Ok(s.query("fux::model::ProcessState")?.rows().all(|p| {
+            !p.at("components")
+                .at("fux::model::ProcessState")
+                .at("status")
+                .at("pid")
+                .is_null()
+        }))
+    })?;
     let before = s.query("fux::model::ProcessState")?;
     s.control(v, json!({"kind":"swap","with":a}))?;
     s.screen(v)?;

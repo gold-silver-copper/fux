@@ -187,11 +187,17 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     })
     .map_err(|e| format!("application: unstartable launch: {last}: {e}"))?;
     s.journal.record("failed_launch", json!(last))?;
-    let empty = spawn_launch(s, &[], 100)?;
-    s.wait("empty argv reported", |s| {
-        Ok(state_of(s, empty)?.pointer("/status/kind") == Some(&json!("failed")))
-    })
-    .map_err(|e| format!("application: empty argv launch: {e}"))?;
+    // A launch with no program is refused before it exists: fux's policy
+    // validates a Launch's argv (it used to spawn and report failed).
+    let refused = spawn_launch(s, &[], 100)
+        .err()
+        .ok_or("application: a launch with an empty argv was accepted")?;
+    ensure(
+        refused
+            .to_string()
+            .contains("argv must start with a program"),
+        &format!("application: empty argv launch: {refused}"),
+    )?;
 
     // Natural exit retains the final screen and status; input then reports.
     focus(s, v, shell_leaf)?;

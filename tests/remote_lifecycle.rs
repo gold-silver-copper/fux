@@ -380,7 +380,12 @@ fn partial_component_payloads_are_rejected_without_ending_the_server() -> Outcom
         json!({"cols":80,"zoom":false,"scrollback":0,"notice":null}),
         "rows",
     )?;
-    rejected(viewer, "fux::interaction::Prefix", json!({}), "scroll")?;
+    // Interaction state is read-only over BRP, so a partial Prefix is refused
+    // before its payload is even read.
+    let refused = insert(viewer, "fux::interaction::Prefix", json!({}))
+        .err()
+        .need()?;
+    assert!(refused.contains("read-only"), "{refused}");
 
     let pid_file = server.directory.join("child.pid");
     let argv = json!([
@@ -449,20 +454,19 @@ fn partial_component_payloads_are_rejected_without_ending_the_server() -> Outcom
         .need()?;
     assert!(error.contains("missing field `pane`"), "{error}");
 
-    // `Overlay` keeps its reflect encoding and falls back to its default: an
-    // empty list whose placeholder target execution validates like a capture.
-    insert(viewer, "fux::interaction::Overlay", json!({}))?;
-    assert!(!server.screen(viewer)?.is_empty());
-    server.enter(viewer)?;
-    server.input(
-        viewer,
-        json!({"kind":"key","key":"escape","ctrl":false,"alt":false,"shift":false}),
-    )?;
-    eventually(|| {
-        Ok(server
+    // `Overlay` is interaction state, read-only over BRP: even the empty
+    // payload that once fell back to a default is refused, and no overlay
+    // appears.
+    let refused = insert(viewer, "fux::interaction::Overlay", json!({}))
+        .err()
+        .need()?;
+    assert!(refused.contains("read-only"), "{refused}");
+    assert!(
+        server
             .relation(viewer, "fux::interaction::Overlay")?
-            .is_null())
-    })?;
+            .is_null()
+    );
+    assert!(!server.screen(viewer)?.is_empty());
 
     server.rpc("rpc.discover", Value::Null)?;
     assert!(!server.screen(viewer)?.is_empty());
@@ -935,7 +939,12 @@ fn viewer_value() -> Value {
 
 /// Hunt 5 finding 001: a `Viewer` on a layout entity, then any viewer
 /// relationship inserted on a real viewer, overflowed the stack and aborted
-/// the server. Each combination runs on a fresh server, bounded by `eventually`.
+/// the server; fux later stripped the mixed roles after the fact. The BRP
+/// guard now refuses every way of mixing them before anything is written:
+/// a `Viewer` inserted on a layout node, a layout role inserted on a viewer,
+/// or both spawned together. Each refusal names why, the entity keeps the
+/// one role it had, and the viewer relationship that followed still works.
+/// Each combination runs on a fresh server.
 fn viewer_on_layout_entity(layout: &str) -> Outcome {
     for relation in ["Viewing", "OnTab", "Focused"] {
         for order in ["viewer_first", "layout_last", "both"] {
@@ -951,7 +960,9 @@ fn viewer_on_layout_entity(layout: &str) -> Outcome {
                 "fux::model::PaneView" => json!({"pane":process}),
                 _ => json!({}),
             };
-            let node = match order {
+            let context = format!("{layout} {relation} {order}");
+            // (entity, whether it is the viewer) of what the refused request named.
+            let (node, is_viewer, refusal) = match order {
                 "viewer_first" => {
                     let node = match layout {
                         "fux::model::Workspace" => server.workspace_of(viewer)?,
@@ -966,29 +977,41 @@ fn viewer_on_layout_entity(layout: &str) -> Outcome {
                             .as_u64()
                             .need()?,
                     };
-                    server.rpc(
+                    let refusal = server.rpc(
                         "world.insert_components",
                         json!({"entity":node,"components":{VIEWER:viewer_value()}}),
-                    )?;
-                    node
+                    );
+                    (Some(node), false, refusal)
                 }
                 "layout_last" => {
                     let second = server.attach()?;
-                    server.rpc(
+                    let refusal = server.rpc(
                         "world.insert_components",
                         json!({"entity":second,"components":{layout:layout_value}}),
-                    )?;
-                    second
+                    );
+                    (Some(second), true, refusal)
                 }
-                _ => server
-                    .rpc(
+                _ => (
+                    None,
+                    false,
+                    server.rpc(
                         "world.spawn_entity",
                         json!({"components":{layout:layout_value,VIEWER:viewer_value()}}),
-                    )?
-                    .at("entity")
-                    .as_u64()
-                    .need()?,
+                    ),
+                ),
             };
+            let error = refusal
+                .err()
+                .ok_or_else(|| format!("{context}: mixing roles was accepted"))?;
+            assert!(
+                error.contains("fux.attach") || error.contains("more than one of"),
+                "{context}: {error}"
+            );
+            if let Some(node) = node {
+                let left = components(&server, node, &[VIEWER, layout])?;
+                assert_eq!(left.get(VIEWER).is_some(), is_viewer, "{context}: {left}");
+                assert_eq!(left.get(layout).is_some(), !is_viewer, "{context}: {left}");
+            }
             let value = match relation {
                 "Viewing" => json!(server.workspace_of(viewer)?),
                 "OnTab" => server.on_tab(viewer)?,
@@ -999,12 +1022,8 @@ fn viewer_on_layout_entity(layout: &str) -> Outcome {
                 "world.insert_components",
                 json!({"entity":viewer,"components":{component:value}}),
             )?;
-            let context = format!("{layout} {relation} {order}");
             eventually(|| Ok(server.rpc("rpc.discover", Value::Null).is_ok()))
                 .map_err(|e| format!("{context}: {e}"))?;
-            let left = components(&server, node, &[VIEWER, layout])?;
-            assert!(left.get(VIEWER).is_none(), "{context}: Viewer kept");
-            assert!(left.get(layout).is_some(), "{context}: layout role lost");
             assert_viewer_consistent(&server, viewer).map_err(|e| format!("{context}: {e}"))?;
             assert!(!server.screen(viewer)?.is_empty(), "{context}");
         }
@@ -1057,8 +1076,9 @@ fn frame_requests_for_impossible_entity_ids_are_refused() -> Outcome {
 
 /// Hunt 8 finding 015: fux reads `Settings` with `World::resource` from many
 /// systems, so removing it over BRP left a server that answered every request
-/// but painted nothing, silently. Removal now restores the default and logs,
-/// so the frontend keeps working.
+/// but painted nothing, silently. Removal was then restored after the fact;
+/// the BRP guard now refuses it, because `Settings` is required, and the
+/// frontend keeps working.
 #[test]
 fn removing_settings_over_brp_keeps_the_server_painting() -> Outcome {
     let server = Server::start()?;
@@ -1066,10 +1086,16 @@ fn removing_settings_over_brp_keeps_the_server_painting() -> Outcome {
     assert!(server.screen(viewer)?.contains("main"));
     // The workspace exists before the removal.
     assert_eq!(server.query("fux::model::Workspace")?.rows().count(), 1);
-    server.rpc(
-        "world.remove_resources",
-        json!({"resource": "fux::assets::Settings"}),
-    )?;
+    // Hunt 8 finding 015 restored Settings after the removal; the BRP guard
+    // now refuses it (Settings is required), saying so.
+    let refused = server
+        .rpc(
+            "world.remove_resources",
+            json!({"resource": "fux::assets::Settings"}),
+        )
+        .err()
+        .need()?;
+    assert!(refused.contains("cannot be removed"), "{refused}");
     // A frame still paints its chrome, and a command that reads Settings runs.
     let painted = server.screen(viewer)?;
     assert!(
