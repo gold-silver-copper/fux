@@ -181,10 +181,10 @@ There are two ways to drive fux, and the first is the one to prefer:
 | `fux::interaction::Overlay` | ✓ |  |  |  |  |  | an open menu, prompt or chooser; use Control and UserInput |
 | `fux::interaction::Prefix` | ✓ |  |  |  |  |  | a viewer waiting for a command key; use UserInput |
 | `fux::interaction::Run` | ✓ |  |  |  |  |  | what an overlay's entry runs; part of Overlay |
-| `fux::model::Focused` | ✓ | ✓ |  |  |  |  | a viewer's focus; a pane view of its tab |
+| `fux::model::Focused` | ✓ | ✓ |  | ✓ |  |  | a viewer's focus; a pane view of its tab; a removed one is chosen again |
 | `fux::model::Launch` | ✓ | ✓ | ✓ | ✓ |  |  | a process recipe; argv names a program; history within what a terminal holds; removing it ends the process |
 | `fux::model::Notice` | ✓ |  |  |  |  |  | a notice in a viewer's bar; part of Viewer |
-| `fux::model::OnTab` | ✓ | ✓ |  |  |  |  | a viewer's tab; a tab of its workspace |
+| `fux::model::OnTab` | ✓ | ✓ |  | ✓ |  |  | a viewer's tab; a tab of its workspace; a removed one is chosen again |
 | `fux::model::PaneView` | ✓ | ✓ | ✓ |  |  |  | a layout leaf; its pane is a process; placed in a tab or split, or new and unplaced; removed only by despawning |
 | `fux::model::PaneViews` | ✓ |  |  |  |  |  | the views showing a process; kept by fux |
 | `fux::model::ProcessState` | ✓ | ✓ | ✓ |  |  | ✓ | a process's state; spawned only with its Launch, to choose the size; clients change only rows and cols, within 1..=4096 |
@@ -192,7 +192,7 @@ There are two ways to drive fux, and the first is the one to prefer:
 | `fux::model::Status` | ✓ |  |  |  |  |  | a process's lifecycle; part of ProcessState |
 | `fux::model::Tab` | ✓ | ✓ | ✓ |  |  |  | a tab; placed in a workspace, or new and unplaced; removed only by despawning |
 | `fux::model::Viewer` | ✓ | ✓ |  | ✓ |  |  | a viewer; created only by fux.attach; removing it detaches; rows and cols at most 4096; scrollback is clamped to the pane's history when painted |
-| `fux::model::Viewing` | ✓ | ✓ |  |  |  |  | a viewer's workspace |
+| `fux::model::Viewing` | ✓ | ✓ |  | ✓ |  |  | a viewer's workspace; a removed one is chosen again |
 | `fux::model::Workspace` | ✓ | ✓ | ✓ |  |  |  | a workspace; it has no parent and gets a WorkspaceOrder when spawned without one; removed only by despawning |
 | `fux::model::WorkspaceOrder` | ✓ | ✓ | ✓ |  |  | ✓ | a workspace's position; every workspace has one, all distinct |
 | `fux::protocol::Direction` | ✓ |  |  |  |  |  | part of Input |

@@ -632,3 +632,27 @@ fn a_tab_spawned_into_a_workspace_is_its_tab() -> Outcome {
     }
     Ok(())
 }
+
+/// Removing a viewer's workspace, tab or focus is kept: fux chooses again.
+#[test]
+fn a_viewer_relationship_removed_is_chosen_again() -> Outcome {
+    let mut app = fixture()?;
+    let world = app.world_mut();
+    let viewer = viewer(world)?;
+    for relationship in [
+        "fux::model::Focused",
+        "fux::model::OnTab",
+        "fux::model::Viewing",
+    ] {
+        call(
+            world,
+            "world.remove_components",
+            Some(json!({"entity":bits(viewer),"components":[relationship]})),
+        )?;
+        assert!(world.get::<Viewing>(viewer).is_some(), "{relationship}");
+        assert!(world.get::<OnTab>(viewer).is_some(), "{relationship}");
+        assert!(world.get::<Focused>(viewer).is_some(), "{relationship}");
+        check(world)?;
+    }
+    Ok(())
+}

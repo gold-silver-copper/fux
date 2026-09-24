@@ -157,12 +157,14 @@ policies! {
         "a process's state; spawned only with its Launch, to choose the size; clients change only rows and cols, within 1..=4096";
     Viewer => access(true, false, true, false), false,
         "a viewer; created only by fux.attach; removing it detaches; rows and cols at most 4096; scrollback is clamped to the pane's history when painted";
-    Viewing => access(true, false, false, false), false,
-        "a viewer's workspace";
-    OnTab => access(true, false, false, false), false,
-        "a viewer's tab; a tab of its workspace";
-    Focused => access(true, false, false, false), false,
-        "a viewer's focus; a pane view of its tab";
+    // Removable, unlike the prompt's table: fux repairs a viewer that lost
+    // one (the raw fuzz scenario checks it), so the removal endangers nothing.
+    Viewing => access(true, false, true, false), false,
+        "a viewer's workspace; a removed one is chosen again";
+    OnTab => access(true, false, true, false), false,
+        "a viewer's tab; a tab of its workspace; a removed one is chosen again";
+    Focused => access(true, false, true, false), false,
+        "a viewer's focus; a pane view of its tab; a removed one is chosen again";
     Name => access(true, true, true, false), false,
         "a name; at most 4096 bytes, no control characters";
     ChildOf => access(true, true, true, false), false,
