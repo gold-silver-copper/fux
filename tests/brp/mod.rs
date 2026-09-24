@@ -44,19 +44,18 @@ fn stock_brp_inspects_existing_interactions_and_raw_indices() -> Outcome {
     assert_eq!(component(&server, viewer, PREFIX)?.at("scroll"), 1);
     assert_eq!(server.query(PREFIX)?.rows().count(), 1);
     assert!(component(&server, other, PREFIX).is_err());
-    server.rpc(
-        "world.insert_components",
-        json!({"entity":viewer,"components":{PREFIX:{"scroll":usize::MAX}}}),
-    )?;
-    server.screen(viewer)?;
-    key(&server, viewer, "down")?;
-    assert!(
-        component(&server, viewer, PREFIX)?
-            .at("scroll")
-            .as_u64()
-            .need()?
-            < 1000
-    );
+    // Interaction state is read-only over BRP: the command column is driven
+    // through events, and a raw write -- here an absurd scroll -- is refused
+    // with the reason, leaving the column as it was.
+    let refused = server
+        .rpc(
+            "world.insert_components",
+            json!({"entity":viewer,"components":{PREFIX:{"scroll":usize::MAX}}}),
+        )
+        .err()
+        .need()?;
+    assert!(refused.contains("read-only"), "{refused}");
+    assert_eq!(component(&server, viewer, PREFIX)?.at("scroll"), 1);
     key(&server, viewer, "escape")?;
     assert!(component(&server, viewer, PREFIX).is_err());
 
@@ -81,30 +80,24 @@ fn stock_brp_inspects_existing_interactions_and_raw_indices() -> Outcome {
         1
     );
 
-    // Native reflected insertion retains the real component, not a snapshot.
-    // Exercise each increment and painting with an arbitrary maximum index.
-    for input in [
-        json!({"kind":"key","key":"down","ctrl":false,"alt":false,"shift":false}),
-        json!({"kind":"key","key":"pagedown","ctrl":false,"alt":false,"shift":false}),
-        json!({"kind":"mouse","action":"scroll_down","button":"none","x":0,"y":0,"ctrl":false,"alt":false,"shift":false}),
-    ] {
-        *overlay.pointer_mut("/mode/List/selected").need()? = json!(usize::MAX);
-        server.rpc(
+    // Overlays are read-only too: a raw write of an arbitrary index is
+    // refused, and the overlay keeps the selection the keys gave it.
+    *overlay.pointer_mut("/mode/List/selected").need()? = json!(usize::MAX);
+    let refused = server
+        .rpc(
             "world.insert_components",
             json!({"entity":viewer,"components":{OVERLAY:overlay}}),
-        )?;
-        server.screen(viewer)?;
-        server.input(viewer, input)?;
-        assert!(
-            component(&server, viewer, OVERLAY)?
-                .at("mode")
-                .at("List")
-                .at("selected")
-                .as_u64()
-                .need()?
-                < 1000
-        );
-    }
+        )
+        .err()
+        .need()?;
+    assert!(refused.contains("read-only"), "{refused}");
+    assert_eq!(
+        component(&server, viewer, OVERLAY)?
+            .at("mode")
+            .at("List")
+            .at("selected"),
+        1
+    );
     key(&server, viewer, "escape")?;
 
     // Human prefix bindings open the real text prompt and confirmation.

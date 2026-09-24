@@ -95,6 +95,14 @@ fn missing_settings_is_reported() -> Outcome {
 fn hierarchy_kinds_are_checked() -> Outcome {
     let (mut world, l) = world();
     let loose_tab = world.spawn((Tab, ChildOf(l.split))).id();
+    // An unplaced tab (no parent at all) is allowed; a misplaced one is not.
+    let unplaced = world.spawn(Tab).id();
+    assert!(
+        !violations(&mut world)
+            .iter()
+            .any(|v| v.contains(&unplaced.to_string()))
+    );
+    world.despawn(unplaced);
     has(&mut world, &format!("tab {loose_tab} has parent"))?;
     world.despawn(loose_tab);
     let stray = world.spawn(ProcessState::default()).id();
