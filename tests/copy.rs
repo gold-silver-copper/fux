@@ -71,10 +71,20 @@ fn a_word_a_line_and_a_block_are_copied() -> Outcome {
     // Columns 6..=9 of "alpha beta gamma", "second line here", "third row x",
     // each line's trailing blanks trimmed.
     eventually("a block", || Ok(buffer(&server)? == "beta\n lin\nrow"))?;
+    // One character is one character.
+    copy_mode(&mut client)?;
+    client.keys("kkk0vy")?;
+    client.wait("the singular", |t| {
+        t.lines()
+            .last()
+            .is_some_and(|b| b.contains("copied 1 character") && !b.contains("characters"))
+    })?;
+    server.ok(&["show-buffer", "-b", "1"])?;
     // Buffers keep the newest first.
     let list = server.ok(&["list-buffers"])?;
-    assert!(list.starts_with("0: 13 bytes: beta"), "{list}");
-    assert!(list.contains("2: 5 bytes: alpha"), "{list}");
+    assert!(list.starts_with("0: 1 bytes: a"), "{list}");
+    assert!(list.contains("1: 13 bytes: beta"), "{list}");
+    assert!(list.contains("3: 5 bytes: alpha"), "{list}");
     Ok(())
 }
 
