@@ -105,8 +105,47 @@ pub fn resize(master: impl AsFd, rows: u16, cols: u16) {
 }
 
 /// The pid of the PTY's foreground process group, if there is one.
+#[cfg(not(target_os = "macos"))]
 pub fn foreground(master: impl AsFd) -> Option<Pid> {
+    // rustix turns a group of 0 into an error on Linux.
     rustix::termios::tcgetpgrp(master).ok()
+}
+
+/// The pid of the PTY's foreground process group, if there is one.
+#[cfg(target_os = "macos")]
+pub fn foreground(master: impl AsFd) -> Option<Pid> {
+    use std::os::fd::AsRawFd;
+    // rustix builds its `Pid` from the result unchecked, and 0 would be
+    // undefined behaviour; libc returns the number as it is.
+    // SAFETY: the descriptor is valid for the call.
+    let group = unsafe { libc::tcgetpgrp(master.as_fd().as_raw_fd()) };
+    Pid::from_raw(group)
+}
+
+/// A process's session ID, read without trusting it to be non-zero: kernel
+/// threads have session 0, and rustix's `getsid` builds its `Pid` from the
+/// result unchecked, which for 0 panics in debug builds and is undefined
+/// behaviour in release ones.
+#[cfg(target_os = "linux")]
+pub(crate) fn session(pid: Pid) -> Option<i32> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_nonzero())).ok()?;
+    // `pid (comm) state ppid pgrp session …`; comm may hold spaces and
+    // parentheses, so fields are counted after the last `)`.
+    let rest = stat.get(stat.rfind(')')? + 1..)?;
+    rest.split_whitespace().nth(3)?.parse().ok()
+}
+
+/// A process's session ID.
+#[cfg(target_os = "macos")]
+pub(crate) fn session(pid: Pid) -> Option<i32> {
+    // SAFETY: getsid takes a plain number and touches no memory of ours.
+    let sid = unsafe { libc::getsid(pid.as_raw_nonzero().get()) };
+    (sid >= 0).then_some(sid)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn session(_pid: Pid) -> Option<i32> {
+    None
 }
 
 /// Whether `pid` has exited, without reaping it: its exit status, or `None`
@@ -143,7 +182,7 @@ pub fn exited(pid: Pid) -> Option<i32> {
 pub fn hangup(leader: Pid) {
     let _ = rustix::process::kill_process_group(leader, Signal::HUP);
     let in_session =
-        |pid: Pid| pid != leader && rustix::process::getsid(Some(pid)).ok() == Some(leader);
+        |pid: Pid| pid != leader && session(pid) == Some(leader.as_raw_nonzero().get());
     for pid in processes().into_iter().filter(|pid| in_session(*pid)) {
         // Re-checked just before the signal: a process that left is skipped.
         if in_session(pid) {
@@ -221,7 +260,7 @@ pub fn cwd(_pid: Pid) -> Option<std::path::PathBuf> {
 
 /// Every process id the system lists, as candidates for `hangup`.
 #[cfg(target_os = "linux")]
-fn processes() -> Vec<Pid> {
+pub(crate) fn processes() -> Vec<Pid> {
     std::fs::read_dir("/proc")
         .map(|entries| {
             entries
@@ -234,7 +273,7 @@ fn processes() -> Vec<Pid> {
 
 /// Every process id the system lists, as candidates for `hangup`.
 #[cfg(target_os = "macos")]
-fn processes() -> Vec<Pid> {
+pub(crate) fn processes() -> Vec<Pid> {
     // SAFETY: a null buffer asks only for the count.
     let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     let Ok(count) = usize::try_from(count) else {
@@ -249,6 +288,25 @@ fn processes() -> Vec<Pid> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn processes() -> Vec<Pid> {
+pub(crate) fn processes() -> Vec<Pid> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every listed process's session can be asked for: on a Linux host the
+    /// list includes kernel threads, whose session is 0, and asking through
+    /// rustix's `getsid` panicked there (CI run 36031171126).
+    #[test]
+    fn every_process_session_can_be_read() {
+        let pids = processes();
+        assert!(!pids.is_empty());
+        let own = Pid::from_raw(std::process::id() as i32).and_then(session);
+        assert!(own.is_some_and(|sid| sid > 0));
+        for pid in pids {
+            let _ = session(pid);
+        }
+    }
 }
