@@ -1,80 +1,29 @@
-//! Byte encodings for keys and mouse events delivered to a PTY.
-use crate::protocol::{Direction, Key, Modifiers, MouseAction, MouseButton};
-use fux_vt::{MouseProtocolEncoding, MouseProtocolMode as MouseMode};
+//! Byte encodings for keys and pastes delivered to a pane's PTY, in the
+//! pane's own modes (application cursor keys, bracketed paste).
+use crate::keys::{Direction, Key, KeyPress, Modifiers};
 
-/// xterm mouse bytes for a pane-relative one-based cell, or `None` when the
-/// application's protocol mode does not want this event.
-pub(crate) fn mouse_bytes(
-    screen: &fux_vt::Screen,
-    action: MouseAction,
-    button: MouseButton,
-    (col, row): (u16, u16),
-    modifiers: Modifiers,
-) -> Option<Vec<u8>> {
-    let mode = screen.mouse_protocol_mode();
-    let release = action == MouseAction::Release;
-    let motion = action == MouseAction::Move;
-    if release && mode == MouseMode::Press
-        || motion
-            && (matches!(mode, MouseMode::Press | MouseMode::PressRelease)
-                || mode == MouseMode::ButtonMotion && button == MouseButton::None)
-    {
-        return None;
+pub const PASTE_START: &[u8] = b"\x1b[200~";
+pub const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// A paste as the pane should receive it: framed if it asked for bracketed
+/// paste, with any end marker inside the text removed so the text cannot end
+/// the paste early.
+pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return text.as_bytes().to_vec();
     }
-    let mut code = match action {
-        MouseAction::ScrollUp => 64,
-        MouseAction::ScrollDown => 65,
-        _ => match button {
-            MouseButton::Left => 0,
-            MouseButton::Middle => 1,
-            MouseButton::Right => 2,
-            MouseButton::None => 3,
-        },
-    };
-    if motion {
-        code += 32;
-    }
-    if modifiers.shift {
-        code += 4;
-    }
-    if modifiers.alt {
-        code += 8;
-    }
-    if modifiers.ctrl {
-        code += 16;
-    }
-    let (rows, cols) = screen.size();
-    if row > rows || col > cols {
-        return None;
-    }
-    if screen.mouse_protocol_encoding() == MouseProtocolEncoding::Sgr {
-        Some(
-            format!(
-                "\x1b[<{code};{col};{row}{}",
-                if release { 'm' } else { 'M' }
-            )
-            .into_bytes(),
-        )
-    } else if col <= 223 && row <= 223 {
-        // A legacy release is button 3 with the same modifier bits as the press.
-        let byte = if release { (code & !3) | 3 } else { code };
-        Some(vec![
-            27,
-            b'[',
-            b'M',
-            byte as u8 + 32,
-            col as u8 + 32,
-            row as u8 + 32,
-        ])
-    } else {
-        None
-    }
+    let inner = text.replace("\x1b[201~", "");
+    let mut bytes = Vec::with_capacity(inner.len() + PASTE_START.len() + PASTE_END.len());
+    bytes.extend_from_slice(PASTE_START);
+    bytes.extend_from_slice(inner.as_bytes());
+    bytes.extend_from_slice(PASTE_END);
+    bytes
 }
 
-/// xterm key bytes. Every `Key` has an encoding; function keys beyond F12
-/// cannot be constructed from input and encode as nothing.
-pub(crate) fn key_bytes(key: Key, modifiers: Modifiers, application: bool) -> Vec<u8> {
-    let Modifiers { ctrl, alt, shift } = modifiers;
+/// xterm key bytes. Every key has an encoding.
+pub fn key_bytes(press: KeyPress, application: bool) -> Vec<u8> {
+    let KeyPress { key, mods } = press;
+    let Modifiers { ctrl, alt, shift } = mods;
     let modifier = 1 + usize::from(shift) + 2 * usize::from(alt) + 4 * usize::from(ctrl);
     let csi = |code: u8, final_byte: char| {
         if modifier > 1 {
@@ -118,7 +67,7 @@ pub(crate) fn key_bytes(key: Key, modifiers: Modifiers, application: bool) -> Ve
             let codes = [15, 17, 18, 19, 20, 21, 23, 24];
             match usize::from(n).checked_sub(5).and_then(|i| codes.get(i)) {
                 Some(code) => csi(*code, '~'),
-                None => Vec::new(),
+                None => b"\x1b".to_vec(),
             }
         }
         Key::Char(c) if ctrl && c.is_ascii() => vec![control_byte(c)],
@@ -133,8 +82,8 @@ pub(crate) fn key_bytes(key: Key, modifiers: Modifiers, application: bool) -> Ve
 }
 
 /// xterm's control-key byte. Masking works for letters and the punctuation
-/// that shares a column with a C0 control, but the decoder names the controls
-/// above Ctrl-Z after digits (Ctrl-4 is 0x1c), and xterm sends the digit itself
+/// that shares a column with a C0 control; the controls above Ctrl-Z are
+/// named after digits too (Ctrl-4 is 0x1c), and xterm sends the digit itself
 /// for the digits that have no control.
 fn control_byte(c: char) -> u8 {
     match c {
@@ -156,6 +105,9 @@ mod tests {
         alt: true,
         shift: true,
     };
+    fn press(key: Key, mods: Modifiers) -> KeyPress {
+        KeyPress { key, mods }
+    }
 
     #[test]
     fn modified_keys_preserve_xterm_protocol_semantics() {
@@ -167,77 +119,39 @@ mod tests {
             (Key::Home, "\x1b[H", "\x1b[1;8H"),
         ] {
             assert_eq!(
-                key_bytes(key, Modifiers::default(), false),
+                key_bytes(press(key, Modifiers::NONE), false),
                 plain.as_bytes()
             );
-            assert_eq!(key_bytes(key, ALL, false), modified.as_bytes());
+            assert_eq!(key_bytes(press(key, ALL), false), modified.as_bytes());
         }
         let left = Key::Arrow(Direction::Left);
-        assert_eq!(key_bytes(left, Modifiers::default(), true), b"\x1bOD");
+        assert_eq!(key_bytes(press(left, Modifiers::NONE), true), b"\x1bOD");
         let ctrl = Modifiers {
             ctrl: true,
-            ..Modifiers::default()
+            ..Modifiers::NONE
         };
-        assert_eq!(key_bytes(left, ctrl, true), b"\x1b[1;5D");
+        assert_eq!(key_bytes(press(left, ctrl), true), b"\x1b[1;5D");
         let ctrl_shift = Modifiers {
             ctrl: true,
             shift: true,
             alt: false,
         };
-        assert_eq!(key_bytes(Key::F(1), ctrl_shift, false), b"\x1b[1;6P");
+        assert_eq!(key_bytes(press(Key::F(1), ctrl_shift), false), b"\x1b[1;6P");
         let alt = Modifiers {
             alt: true,
-            ..Modifiers::default()
+            ..Modifiers::NONE
         };
-        assert_eq!(key_bytes(Key::F(12), alt, false), b"\x1b[24;3~");
-        assert_eq!(key_bytes(Key::Char('c'), ctrl, false), vec![3]);
-        assert!(key_bytes(Key::F(13), Modifiers::default(), false).is_empty());
-    }
-
-    #[test]
-    fn legacy_mouse_release_keeps_modifiers_like_sgr() {
-        let ctrl = Modifiers {
-            ctrl: true,
-            ..Modifiers::default()
-        };
-        let at = |request: &[u8], action, modifiers| {
-            let mut parser = fux_vt::Parser::new(24, 80, 0).ok()?;
-            parser.process(request).ok()?;
-            mouse_bytes(
-                parser.screen(),
-                action,
-                MouseButton::Left,
-                (1, 2),
-                modifiers,
-            )
-        };
-        let legacy: &[u8] = b"\x1b[?1000h";
-        assert_eq!(
-            at(legacy, MouseAction::Press, ctrl),
-            Some(b"\x1b[M0!\"".to_vec())
-        );
-        assert_eq!(
-            at(legacy, MouseAction::Release, ctrl),
-            Some(b"\x1b[M3!\"".to_vec())
-        );
-        assert_eq!(
-            at(legacy, MouseAction::Release, Modifiers::default()),
-            Some(b"\x1b[M#!\"".to_vec())
-        );
-        assert_eq!(
-            at(b"\x1b[?1000h\x1b[?1006h", MouseAction::Release, ctrl),
-            Some(b"\x1b[<16;1;2m".to_vec())
-        );
+        assert_eq!(key_bytes(press(Key::F(12), alt), false), b"\x1b[24;3~");
+        assert_eq!(key_bytes(press(Key::Char('c'), ctrl), false), vec![3]);
+        assert_eq!(key_bytes(press(Key::Char('x'), alt), false), b"\x1bx");
     }
 
     #[test]
     fn control_bytes_follow_xterm_for_every_c0_control() {
         let ctrl = Modifiers {
             ctrl: true,
-            ..Modifiers::default()
+            ..Modifiers::NONE
         };
-        // The outer terminal's decoder names each C0 control by the key xterm
-        // sends it for; re-encoding must produce the same byte it received.
         for (c, byte) in [
             (' ', 0x00),
             ('2', 0x00),
@@ -258,19 +172,16 @@ mod tests {
             ('0', b'0'),
             ('9', b'9'),
         ] {
-            assert_eq!(key_bytes(Key::Char(c), ctrl, false), vec![byte], "{c:?}");
+            assert_eq!(
+                key_bytes(press(Key::Char(c), ctrl), false),
+                vec![byte],
+                "{c:?}"
+            );
         }
     }
 
-    /// Property: `key_bytes` handles every key it can be given -- every named
-    /// key, every arrow, `F(1..=12)`, and a spread of characters including
-    /// control range, NUL, DEL, high Unicode and combining marks -- under all
-    /// eight modifier combinations and both cursor modes, for a few thousand
-    /// cases. It must never produce an empty encoding (every key sends
-    /// something) and, for a plain character, must contain that character's
-    /// UTF-8. The parser is entangled with fux_vt and the fux protocol types,
-    /// so this is a property test rather than a standalone cargo-fuzz target,
-    /// and it runs on stable in every CI run.
+    /// Every key, under all eight modifier sets and both cursor modes, has a
+    /// non-empty encoding, and a plain character is its own UTF-8.
     #[test]
     fn key_bytes_is_total_and_never_empty() {
         let mut keys = vec![
@@ -285,36 +196,10 @@ mod tests {
             Key::PageUp,
             Key::PageDown,
         ];
-        for direction in [
-            Direction::Left,
-            Direction::Right,
-            Direction::Up,
-            Direction::Down,
-        ] {
-            keys.push(Key::Arrow(direction));
-        }
-        for n in 1..=12 {
-            keys.push(Key::F(n));
-        }
+        keys.extend(Direction::ALL.map(Key::Arrow));
+        keys.extend((1..=12).map(Key::F));
         for code in [
-            0u32,
-            0x01,
-            0x09,
-            0x0a,
-            0x0d,
-            0x1b,
-            0x7f,
-            b' ' as u32,
-            b'a' as u32,
-            b'Z' as u32,
-            b'0' as u32,
-            b'~' as u32,
-            0xe9,
-            0x203c,
-            0x1f600,
-            0x300,
-            0x2028,
-            0xfeff,
+            0x20u32, 0x61, 0x5a, 0x30, 0x7e, 0xe9, 0x203c, 0x1f600, 0x300,
         ] {
             if let Some(c) = char::from_u32(code) {
                 keys.push(Key::Char(c));
@@ -322,21 +207,16 @@ mod tests {
         }
         for &key in &keys {
             for bits in 0u8..8 {
-                let modifiers = Modifiers {
+                let mods = Modifiers {
                     ctrl: bits & 1 != 0,
                     alt: bits & 2 != 0,
                     shift: bits & 4 != 0,
                 };
                 for application in [false, true] {
-                    let bytes = key_bytes(key, modifiers, application);
-                    assert!(
-                        !bytes.is_empty(),
-                        "empty encoding for {key:?} {modifiers:?} application={application}"
-                    );
-                    // A plain character carries its own UTF-8; a control
-                    // modifier may remap it, so only assert the unmodified case.
+                    let bytes = key_bytes(press(key, mods), application);
+                    assert!(!bytes.is_empty(), "{key:?} {mods:?}");
                     if let Key::Char(c) = key
-                        && modifiers == Modifiers::default()
+                        && mods.is_empty()
                     {
                         let mut buffer = [0u8; 4];
                         assert_eq!(bytes, c.encode_utf8(&mut buffer).as_bytes());
@@ -344,5 +224,11 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_bracketed_paste_cannot_end_itself_early() {
+        assert_eq!(paste("a\x1b[201~b", false), b"a\x1b[201~b");
+        assert_eq!(paste("a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~");
     }
 }

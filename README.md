@@ -1,292 +1,277 @@
 # fux
 
-A small, trusted terminal multiplexer built on Bevy 0.20 (currently the 0.20.0-rc.1 release candidate). One server owns real PTYs; terminal viewers share their processes while keeping independent layout sizes, focus, zoom and scrollback.
+A small terminal multiplexer. One server keeps your shells running in
+workspaces, tabs and split panes; `fux` attaches a terminal to it, and every
+other `fux` command changes it. Several terminals can attach at once, each
+with its own view. Everything is driven from the keyboard: there is no mouse
+support at all, by design.
 
-**The API is unrestricted same-user command execution.** Stock Bevy BRP is served over HTTP on a Unix domain socket, without credentials, capability tokens, component filters or a method allowlist. The socket's file permissions are the only access control. Do not expose this server to callers you do not trust.
-
-## Build and run
-
-Rust 1.98.1 is pinned in `rust-toolchain.toml` and `Cargo.toml` declares a minimum supported version of 1.95.
-
-Every `bevy_*` crate is pinned to `=0.20.0-rc.1` from crates.io, the 0.20 release candidate; the 0.20.0 release should be a version bump.
-
-On Linux the build needs `pkg-config` and the ALSA headers (`libasound2-dev` on Debian and Ubuntu). fux has no use for audio, but `bevy_remote` depends on `bevy_dev_tools` for its schedule methods and `bevy_dev_tools` depends unconditionally on `bevy_audio`, which links ALSA; the chain is not one fux can cut from its own manifest. macOS needs nothing extra.
+fux is one binary with no runtime dependencies beyond the system: it needs a
+Unix (macOS or Linux), and builds with Rust 1.95 or later.
 
 ```sh
-cargo build --release --locked
-./target/release/fux server                   # foreground, on $XDG_RUNTIME_DIR/fux/server.sock or $TMPDIR/fux/server.sock
-# In another terminal:
-./target/release/fux attach                   # or: attach WORKSPACE
-./target/release/fux stop
+cargo install --locked --path .       # or: cargo build --release --locked
+fux                                   # attach, starting a server if none runs
 ```
 
-Server options: `--socket PATH`, `--config FILE`. The server listens only on a Unix domain socket: `--socket`, else `FUX_SOCKET`, else `$XDG_RUNTIME_DIR/fux/server.sock`, else `$TMPDIR/fux/server.sock` (per-user on macOS). Clients (`attach`, `rpc`, `stop`) use `FUX_SOCKET`, else the same default. Paths must be absolute and fit the platform's socket-path limit (103 bytes on macOS, 107 on Linux); the message counts the socket path, naming the variable it came from. An empty variable or a URL is an error, never a silent fallback. On a system where neither `$XDG_RUNTIME_DIR` nor `$TMPDIR` is set -- some Linux `su`, `cron` and container environments -- there is no default location and the server refuses to start rather than guess; set `FUX_SOCKET` there.
+## Using it
 
-The socket's directory must be owned by you with mode 0700, and must not be reachable through a directory other users can rewrite; the default `fux` directory is created that way, and nothing that already exists is modified. The socket itself is created with mode 0600 before the server accepts a connection. A lock beside the socket makes one server its only owner, so a second server on the same path refuses to start, and a socket left by a killed server is replaced only after nothing answers on it. Graceful shutdown removes the socket.
+`fux` (or `fux attach`) attaches this terminal to the server, starting one in
+the background if none answers. A new server starts with one workspace, one
+tab and one shell. `C-b d` detaches; the shells keep running, and `fux`
+attaches again. `fux attach -t NAME` attaches to a workspace by name.
+Running `fux` inside a fux pane is refused, since it would show fux inside
+itself; `--nested` does it anyway.
 
-Migrating from the TCP endpoint: `--address` and `--port` are gone, and a set `FUX_ENDPOINT` makes `attach`, `rpc`, `stop` and `server` fail with a message rather than reach whichever server owns the default socket. Use `fux server --socket PATH` and `FUX_SOCKET=PATH`; raw HTTP clients use the socket directly, for example `curl --unix-socket "$FUX_SOCKET" http://fux/ -d '{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}'` (the host name is not contacted). SIGINT, SIGTERM and SIGHUP stop the server; graceful viewer signals restore its terminal and detach. A forcibly killed viewer cannot restore its terminal, but does not kill the shared process.
+The server keeps running until `fux kill-server`, SIGTERM, SIGINT or SIGHUP,
+or until its last pane closes. Then it hangs up every pane, tells each
+attached terminal why, and removes its socket.
 
-No configuration file is required: the default command is `$SHELL` or `/bin/sh`, in the server's working directory. The first pane waits for initial configuration loading to succeed or fail, so a valid configured shell applies from startup. Missing or invalid configuration is logged; usable defaults/the previous valid configuration remain active.
+Every pane runs your shell (`set shell`, else `$SHELL`, else `/bin/sh`). A
+command given to `split`, `new-tab` or `new-workspace` after `--` is typed
+into that shell once it shows its prompt, as if you had typed it: it runs with your aliases and
+shell setup, lands in the shell's history, and when it ends, the prompt is
+back in the same pane. A pane closes when its shell exits (`exit`, `C-d`),
+and its viewers are told the exit status. A tab closes with its last pane,
+and a workspace with its last tab; a tab emptied by moving its panes out
+stays, showing how to split or close it.
 
-## Controls
+The bottom row is the bar: the workspace and its tabs on the left (the
+selected tab highlighted), and on the right the focused pane's number and
+title (a program's OSC 0/2 title, else the pane's name), a notice, or copy
+mode's position.
 
-Press **Ctrl-B** to open the command column, then a configured shortcut or navigate to an action and press Enter. Ctrl-B twice sends a literal Ctrl-B; Esc cancels, and unknown shortcut keys leave the column open. There is no timeout. Every shortcut below follows the prefix, never intercepting ordinary application input.
+### Keys
 
-| Key after prefix | Action |
+Every key below follows the prefix, `C-b` by default. The prefix alone opens
+the **command column**, which lists every binding, grouped: Up/Down or `j`/`k`,
+PageUp/PageDown and Home/End move through it, Enter runs the selected
+command, a bound key runs its command directly, and Esc closes it. Commands
+that cannot run now are dimmed, and running one says why. The prefix twice
+sends it to the pane. This column is the only help screen.
+
+| Key | Command | Does |
+| --- | --- | --- |
+| `h` / `v` | `split -h` / `split -v` | split side by side / stacked |
+| `x` | `confirm-close pane` | close the pane (asks `y`/`n`) |
+| `z` | `zoom` | zoom the focused pane, or restore |
+| `r` | `rename-prompt pane` | rename the pane |
+| `p` | `menu pane` | pane actions |
+| `c` | `copy-mode` | copy and select |
+| `P` | `paste-buffer` | paste the newest copy |
+| `C-Left` … `C-Down` | `resize-pane -L` … `-D` | move a border by one cell |
+| `S-Left` … `S-Down` | `move-pane -L` … `-D` | move the pane beside its neighbour that way |
+| Tab / `BTab` / `BSpace` | `select-pane --next` / `--previous` / `--last` | focus the next, previous or last pane |
+| `M-Left` … `M-Down` | `select-pane -L` … `-D` | focus the pane that way |
+| `t` / `T` | `new-tab` / `choose-tab` | new tab / tab chooser |
+| `]` / `[` | `select-tab --next` / `--previous` | next / previous tab |
+| `s` | `menu tab` | tab actions |
+| `w` / `W` | `new-workspace` / `choose-workspace` | new workspace / workspace chooser |
+| `}` / `{` | `select-workspace --next` / `--previous` | next / previous workspace |
+| `S` | `menu workspace` | workspace actions |
+| `:` | `command-prompt` | type any fux command |
+| `d` | `detach` | detach this terminal |
+
+**Choosers** (`T`, `W`) list each tab or workspace with its panes, the current
+one marked. Enter selects, `r` renames, `x` closes (after asking), Esc or `q`
+cancels; Up/Down, `j`/`k`, PageUp/PageDown and Home/End move.
+
+**Action menus** (`p`, `s`, `S`) hold what has no key of its own: rename,
+close, terminate the running command, swap, move to another or a new tab or
+workspace, reorder. A menu acts on the item it was opened for, even if focus
+changes meanwhile; if that item is gone, the menu closes and says so.
+
+**The command prompt** (`:`) takes any fux command, in the same grammar as the
+command line and the config file, for example `:split -v -- htop`. Its output
+or error shows in the bar.
+
+Directional focus picks, among the panes beyond the focused pane's edge, the
+one whose centre is closest across the direction, then along it, then the
+lowest number.
+
+### Copy and select
+
+`C-b c` puts a keyboard cursor on the focused pane, starting at its text
+cursor. For your terminal the pane holds still while you look, even as output
+continues (other terminals see it live); the bar shows `COPY` and the
+cursor's line in the history.
+
+| Keys | Do |
 | --- | --- |
-| `[` / `]` | Previous / next tab |
-| `{` / `}` | Previous / next workspace (Shift-modified tab cycling) |
-| Tab / Shift+Tab | Next / previous pane |
-| Backspace | Last-focused pane |
-| Alt+Left/Right/Up/Down | Directional pane focus |
-| `t` / `T` | New tab / tab chooser |
-| `w` / `W` | New workspace / workspace chooser |
-| `p` / `s` / `S` | Pane / current tab / current workspace actions |
-| `h` / `v` | Split side-by-side / stacked; also open a pane in an empty tab. Refused with a notice when the pane cannot hold two panes and a separator |
-| `z` | Viewer-local zoom |
-| `r` | Rename pane |
-| `x` | Confirm pane close |
-| Ctrl+Left/Right | Shrink/grow width at the nearest horizontal container |
-| Ctrl+Up/Down | Grow/shrink height at the nearest vertical container |
-| Shift+Left/Right/Up/Down | Move pane in that direction |
-| `c` | Enter history/copy mode |
-| `y` | Copy visible text using OSC 52 |
-| `d` | Detach, preserving processes |
+| `h` `j` `k` `l`, arrows | move |
+| `w` `b` `e`, `W` `B` `E` | by word, or by space-separated word |
+| `0` `^` `$`, Home, End | start of line, first non-blank, last non-blank |
+| `H` `M` `L` | top, middle, bottom of the view |
+| `g` / `G` | top of the history / the live bottom |
+| `C-u` / `C-d`, PageUp / PageDown (`C-b` / `C-f`) | half a page / a page |
+| `/` `?` then `n` `N` | search forward or back, again, the other way |
+| `v` / `V` / `C-v` | select characters / lines / a block; again to clear |
+| `o` | swap the selection's ends |
+| `y` or Enter | copy and leave |
+| `q` or Esc | leave without copying |
 
-In the prefix column, choosers and action menus: **Up/Down** select an action and scroll it into view, **PageUp/PageDown** move a page, **Home/End** select first/last, **Enter** executes, and **Esc** cancels. Wheel scrolling moves the selection; headings and overflow indicators are skipped. Selection is reversed, unavailable actions remain dimmed, and invoking one explains why without acting. Left/Right are reserved no-ops in these vertical lists. Context menus do not dispatch prefix shortcuts behind themselves; chooser/context lists additionally accept `j/k` and `q`. The prefix column is the only help surface; the `help` action opens it.
+Search is literal (not a regular expression) over the whole history, and
+ignores case unless the query has a capital letter. A selection keeps wide
+characters and combining marks whole, joins soft-wrapped lines without an
+invented newline, and trims trailing blanks. One copy is at most 262,144
+cells.
 
-Unmodified navigation keys, Enter and Esc belong to the menu **before configured bindings**. Custom arrow bindings remain listed and can be selected with Enter, but cannot resize panes while navigating. Nonreserved shortcuts (including modified arrows) still execute directly from the prefix column. The configured prefix itself retains doubled-prefix literal forwarding. Text prompts retain editing semantics; confirmations retain their explicit confirmation keys; pasted text never becomes menu commands.
+A copy goes into fux's paste buffers (the newest 16, `set buffers`), where
+`C-b P` pastes the newest into the focused pane, bracketed if the pane asked
+for bracketed paste. It is also sent to your terminal's clipboard as OSC 52,
+up to 1 MiB encoded, unless `set clipboard off`; your terminal must allow
+OSC 52 writes (many do; some ask first or need an option). fux never reads
+the clipboard.
 
-Defaults changed deliberately; user-supplied binding lists and hot reload are preserved, not migrated or overwritten. Actions losing default shortcuts remain in context menus or available for custom bindings. Pane actions include termination, sibling reorder, swaps, history scrolling and moves to existing/new tabs/workspaces. Tab/workspace actions include rename, reorder and confirmed close. Workspace actions also include save/load layout.
+## Commands
 
-| Previous default | Replacement |
+Every command runs from the command line (`fux COMMAND …`), from a key
+binding, from the `:` prompt, and, for `set`/`bind`/`unbind`, from the config
+file. Targets: a pane is `%N`, a tab `@N`, a workspace `+N` or its name (`$N`
+is avoided because the shell would expand it). A client is `cN`.
+
+Inside a pane, `FUX_PANE` names it and `FUX_SOCKET` names the server, so
+commands there target that pane without `-t`. A command that needs a target
+and has neither `-t` nor `FUX_PANE` fails with a message naming `-t`; it never
+guesses. From a key or the `:` prompt, commands act on your focused pane,
+tab and workspace.
+
+| Command | Does |
 | --- | --- |
-| `{` / `]` previous/next tab | `[` / `]` |
-| `P` / `w` previous/next workspace | `{` / `}` |
-| `c` new workspace; `[` copy mode | `w` new workspace; `c` copy mode |
-| `n` / `u` / `!` next/previous/last pane | Tab / Shift+Tab / Backspace |
-| Bare arrows resize | Ctrl+arrows; bare arrows navigate menus |
-| Shift+Left/Right sibling reorder | Pane actions; Shift+arrows now move directionally |
-| `;` / `'` / backtick context menus | `p` / `s` / `S` |
-| `k` terminate; `p` move workspace | Pane actions |
-| `R` rename workspace; `s` / `l` save/load | Workspace actions |
-| Prefix PageUp/PageDown history | Copy mode PageUp/PageDown, or pane actions |
-| Copy-mode Esc clears first, exits second | One Esc exits; `c` clears without exiting |
+| `fux` / `fux attach [-t WS] [--nested]` | attach, starting a server if none answers |
+| `fux server [--socket PATH] [--config FILE]` | run a server in the foreground |
+| `fux kill-server` | stop the server (hangs up every pane) |
+| `fux ls [--json]` | workspaces, tabs, panes and clients |
+| `fux new-workspace [-n NAME] [-- CMD…]` | a workspace with a shell, CMD typed into it |
+| `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | a tab with a shell, CMD typed into it |
+| `fux split -h\|-v [-t %N] [-- CMD…]` | split a pane: `-h` side by side, `-v` stacked |
+| `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | close, without asking |
+| `fux rename -t TARGET NAME` | rename a pane, tab or workspace |
+| `fux move-pane [-t %N] --to @N\|+N\|new-tab\|new-workspace` | move a pane (to a workspace: its first tab) |
+| `fux move-pane [-t %N] -L\|-R\|-U\|-D` | move a pane beside its neighbour that way |
+| `fux swap-pane [-t %N] %M` or `-L\|-R\|-U\|-D` | swap two panes, anywhere |
+| `fux resize-pane [-t %N] -L\|-R\|-U\|-D [CELLS]` | move the nearest border that way (default one cell) |
+| `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | move one place in its order |
+| `fux terminate [-t %N]` | SIGTERM to what runs in the pane's foreground, not the shell |
+| `fux send-keys [-t %N] [-l] KEYS…` | send keys (`C-c`, `Enter`, …); an argument that is not a key name is sent as text, and `-l` sends every argument as text |
+| `fux capture-pane [-t %N] [-S -LINES] [--json]` | the pane's screen text, with LINES of history before it |
+| `fux set OPTION VALUE`, `fux bind [-g GROUP] KEY CMD…`, `fux unbind KEY`, `fux unbind-all` | change the running configuration |
+| `fux reload` | run the config file again over the defaults |
+| `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
+| `fux list-keys` | key names, and the current bindings |
+| `fux help`, `fux --version` | usage, and the version |
+| `fux detach [-c CLIENT]` | detach a client |
 
-Workspaces contain ordered tabs, each containing its own split/pane tree. Viewers independently remember the selected tab per workspace and the focused/last-focused pane per tab. Next/previous pane use native tab navigation; directional focus ranks Bevy-computed pane centers by cross-axis distance, then forward distance, then entity ID, without wrapping at an edge. Switching tabs or moving panes exits zoom; zoom never changes another viewer. Removed or hidden targets get a deterministic surviving focus. Processes and history survive switches.
+These act on one client's screen. From a key or the `:` prompt they act on
+yours; from the command line they need `-c CLIENT`:
+`command-column`, `command-prompt`, `copy-mode`, `zoom`,
+`choose-tab [--move]`, `choose-workspace [--move]`, `choose-pane [-t %N]`
+(swap), `menu pane|tab|workspace [-t TARGET]`,
+`rename-prompt [pane|tab|workspace] [-t TARGET]`,
+`confirm-close [pane|tab|workspace] [-t TARGET]`,
+`select-pane -t %N|--next|--previous|--last|-L|-R|-U|-D`,
+`select-tab -t @N|--next|--previous`, `select-workspace -t WS|--next|--previous`.
 
-Choosers and menus use Up/Down or `j/k`, PageUp/PageDown, Home/End, Enter, and Esc/`q`. A selected row remains reachable even when only one overlay row fits. Pane menus act on the pane they opened on, not a later focus. Tab/workspace menus provide creation, rename, reorder, and close. Directional move nests the source beside the nearest directional pane; swap exchanges pane positions. Moving to a workspace uses its first tab. Empty split containers collapse bottom-up. New tabs/workspaces created by a move reuse the original process instead of launching a shell.
+Exit status: 0 done; 1 the command failed, with the reason on stderr; 2 a
+usage error.
 
-Interactive pane/tab/workspace closes require `y`; `n` or Esc cancels. Confirmations capture entity identities, revalidate them, and never retarget a disappeared item. Closing a tab/workspace removes its contained views, terminating only processes with no surviving references. Closing the last tab retains one empty tab; closing a workspace selects the first surviving workspace for its viewers, or detaches them if none remain; the next attach then recreates the initial workspace and shell. Direct API close actions are explicit and noninteractive. Natural process exit still retains the final screen.
+Key names, for `bind`, `send-keys` and the prefix, are tmux's: `C-x`, `M-x`,
+`S-Left`, `Enter`, `Tab`, `BTab`, `Escape`, `Space`, `BSpace`, `Up`, `Down`,
+`Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`, `Delete`,
+`F1`–`F12` (also `PgUp`, `PgDn`, `NPage`, `PPage`, `IC`, `DC`), plus any single
+character. A character carries its own shift (`T`, not `S-t`). `fux list-keys`
+prints them. The Kitty keyboard protocol is not supported: keys use xterm
+encodings.
 
-Click to focus; click a tab to select it. Right-click a pane/tab or click the workspace name for its action menu. When an application requests mouse input, pane events remain application-owned; Shift-right-click opens fux's menu instead. Wheel and drag browse/select the pane under the pointer when the application does not request mouse input, or when Shift is held. Application events keep pane-relative coordinates, including first/last content cells. Bars, separators and modal overlays never click through to the PTY. Overlay lists are keyboard-operated, with wheel navigation; list entries are not clickable.
+### `--json`
 
-Copy mode: arrows or `h/j/k/l` move, `u/d` or PageUp/PageDown browse history, Home/End move within a row, Space anchors a selection, `c` clears it, `y` or Enter copies it and returns to live output, `g` returns to live without copying, `q` exits, and Esc clears the selection and exits in one press. Mouse drag selects; `y`/Enter copies after release. Selection is viewer-private and limited to the displayed viewport, including its wrapped rows. Wide-glyph continuations normalize to the leading cell; combining marks remain attached; wrapped rows join without an invented newline. Blank padding at hard line ends is trimmed.
-
-`clipboard` is **disabled by default**. Set `"clipboard":"write-only"` to permit bounded OSC 52 writes; the outer terminal must also allow them. Copy never reads the system clipboard. Each encoded effect is at most 1 MiB, with at most 16 queued effects. A copy viewport is capped at 262144 cells. Failure and success are reported in the bar.
-
-Selections follow `fux-vt` row IDs and columns. Ordinary output and scrolling preserve unchanged retained selected text; the copying viewer follows those rows while other viewers remain independent. Row versions skip unchanged data, and changed versions validate the selected spans, including every interior row and soft line break. Unrelated cells and style-only updates do not clear a selection. Overwritten text, a lost/reordered required row, reset, buffer switches, backing resize, viewport clipping changes, or explicit browsing to a different window clear it with a notice. Losing an unselected row is safe if the selection still fits in one viewport. Changing focus ends copy mode; pane removal or a replaced process (row IDs are per terminal instance) ends it with a notice. No second history or paragraph reflow is retained.
-
-Prefix, prompts, confirmations, menus and copy mode own their input. The frontend sends a paste-start marker before buffering a fragmented bracketed paste, retaining its original owner until the end marker. Cancellation, prompt replacement, or a focus switch cannot redirect that paste to a PTY. Paste is bounded to 64 KiB; oversized content is drained and discarded. Termina still decodes ordinary keys/mouse; a lone Escape uses a 35 ms disambiguation deadline. Ordinary nonmodal keys and complete pastes go to the focused PTY.
-
-Panes are borderless: content starts at the top-left cell, with one shared thin separator between default split siblings. Separators next to focus are bold; others are muted. The last row is always a full-width, gray-background bar: workspace and ordered tabs on the left (active tab reversed), focused process `id: name`/exit status on the right. Notices replace the right zone (yellow; errors red) until subsequent input clears them. Zoom/history indicators stay compact. Unfocused exited panes retain a small dim marker, not a title strip.
-
-The command/help list grows upward from the bottom-right, directly above the bar, one configured binding per row, grouped into Panes, Focus, Tabs, Workspaces and Session while preserving configuration order within groups. Unknown custom actions are listed under Other. Unavailable commands are dimmed and explain why when invoked. A bold heading, contrasting background and minimal padding distinguish it without a border. Hidden rows are marked `▲ n more` / `▼ n more` when space permits; narrow labels use cell-aware ellipsis. Rename, scene-path prompts, choosers, confirmations and context menus use the same corner surface; editable text is reversed and its tail stays visible. Closing an overlay restores the pane and cursor. A one-row viewer shows only the bar; zero-sized views paint no content. The active tab remains in the overflow window; at one or two columns it takes priority over the workspace label.
-
-A PTY has one real size: the smallest visible content height/width across its viewers, with an exact 1×1 backing minimum, including the child's real PTY geometry. Pane layout nodes independently retain their 2×2 usability minimum whatever their flex weight, so shrinking never squeezes a sibling to nothing; a viewer too small for a tab's panes overflows at the end of the axis and clips there. Tiny viewers still paint only their actual available cells, never partial wide glyphs or invented rows. Larger viewers retain their own layout and leave surplus content cells blank. Resizing follows the documented [`fux-vt` screen/history contract](fux-vt/README.md), not paragraph reflow. Detached processes keep their last size. Closing the last layout reference terminates that pane; removing a layout hierarchy directly does not own or resurrect its referenced processes.
-
-## Configuration and scenes
-
-The selected JSON file is a native Bevy asset, watched in its parent directory. Omitted fields retain defaults; supplying `bindings` replaces the binding list.
+`fux ls --json` prints one object:
 
 ```json
-{
-  "prefix": "ctrl-b",
-  "shell": ["/bin/sh"],
-  "history_lines": 10000,
-  "clipboard": "write-only",
-  "bindings": [
-    {"key": "h", "action": "split_horizontal"},
-    {"key": "d", "action": "detach"}
-  ]
-}
+{"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
+  "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242}]}]}],
+ "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}]}
 ```
 
-`layout: "layout.scn.ron"` optionally loads/watches a native `DynamicWorld` asset relative to the configuration directory. It replaces the workspace with the same saved name, or adds that workspace if no matching name exists. Use distinct workspace names when using this convenience path. Interactive/API save and load paths instead resolve relative to the server's working directory. Saved scenes contain the layout hierarchy and registered UI components, not PTYs, terminal history or process recipes. Borderless defaults do not rewrite loaded Nodes: native flex/grid, visibility, spacing and other registered components remain intact. Only actual one-cell gaps between visible siblings of `Split` containers receive separator glyphs; custom margins and wider gaps remain blank. Tabless scenes from PR #20 are wrapped into a `main` tab: their complete root layout Node moves into that tab under a neutral workspace wrapper, so grid tracks, padding and margins apply once. Existing child entities and process references are retained. New tabbed scenes preserve native Nodes unchanged. Tabs must be direct workspace children; viewer/runtime state is not scene content.
+`fux capture-pane --json` prints
+`{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":[…]}`, where
+`lines` is the history asked for with `-S` followed by the screen, each line's
+trailing blanks trimmed. These shapes are part of fux's interface: changing
+one is a breaking change.
 
-Scene pane references resolve to existing process entities in the same server. Explicit `load_layout` `mapping` pairs map `[saved_process_entity, existing_process_entity]`; all references are validated before creating layout entities. Missing processes fail without replacing the current layout. Loading never launches a process. IDs and scene formats are not stable across server runs or Bevy versions.
+## Configuration
 
-## Controlling fux over BRP
-
-`fux rpc METHOD '[JSON]'` sends a stock JSON-RPC request over the server's socket and prints its result. Any HTTP client that can dial a Unix socket works the same way, for example `curl --unix-socket PATH http://fux/ -d '{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}'`.
-
-Access control is the socket's file permissions -- a mode-0600 socket in a mode-0700 directory -- and a check on every connection that the connecting process runs as the server's own user; root is refused too. There is no authentication beyond that, so every same-user process remains fully trusted. The server opens no TCP or UDP socket, so a web page cannot reach it at all: browser JavaScript cannot dial a Unix socket, which removes the cross-origin "simple request" exposure of the former loopback port by construction. A TCP proxy or native bridge you put in front of the socket would reintroduce that exposure. `rpc.discover` lists no server URL.
-
-Anyone who can open the socket can run anything as you -- `split` runs a program, and so does spawning a `Launch` -- exactly as with tmux's socket. What BRP cannot do is put fux in a state it does not understand. Every stock method runs behind one guard: a request names only live entities, never a resource entity or an entity fux or Bevy keeps internally (an observer, a system); it changes only types the policy below opens, in the ways it opens them; every new value is validated, and so is the layout as it would be afterwards (parents, kinds, cycles, what a view shows, a viewer's workspace, tab and focus); then fux repairs and settles the world before it answers, and checks every structural invariant: a release build logs one a request broke, with the request, and a debug build also fails the request. A request either applies whole or changes nothing, and a refusal says why. Reads and watches are answered by the stock handlers, with the same entity rules.
-
-There are two ways to drive fux, and the first is the one to prefer:
-
-- **Intent:** trigger `fux::control::Control` and `fux::control::UserInput` events (below). These are the same commands and input a key would produce, checked and reported the same way.
-- **Data:** edit components directly, within the policy. This is the power tool: layout geometry, names, the hierarchy, processes, a viewer's size and place.
-
-`fux.policy` returns this table in machine form; `fux.invariants` returns every structural rule the world currently breaks (an empty list means consistent). The table lists every type fux registers; any other registered type (Bevy's own) is read-only: clients may query and watch it, and nothing else.
-
-<!-- policy-table -->
-| Type | Read | Write | Spawn | Remove | Trigger | Required | Rules |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `bevy_camera::visibility::Visibility` | ✓ | ✓ | ✓ | ✓ |  |  | whether a layout node is shown |
-| `bevy_ecs::hierarchy::ChildOf` | ✓ | ✓ | ✓ | ✓ |  |  | the hierarchy; the layout rules apply |
-| `bevy_ecs::hierarchy::Children` | ✓ |  |  |  |  |  | the other side of ChildOf; change ChildOf or reparent |
-| `bevy_ecs::name::Name` | ✓ | ✓ | ✓ | ✓ |  |  | a name; at most 4096 bytes, no control characters |
-| `bevy_input_focus::tab_navigation::TabGroup` | ✓ |  |  |  |  |  | fux's chrome focus group; kept by fux |
-| `bevy_input_focus::tab_navigation::TabIndex` | ✓ |  |  |  |  |  | fux's chrome focus order; kept by fux |
-| `bevy_text::text::TextColor` | ✓ |  |  |  |  |  | not painted by fux |
-| `bevy_text::text::TextFont` | ✓ |  |  |  |  |  | not painted by fux |
-| `bevy_text::text::TextLayout` | ✓ |  |  |  |  |  | not painted by fux |
-| `bevy_ui::focus::FocusPolicy` | ✓ |  |  |  |  |  | not used by fux's layout |
-| `bevy_ui::ui_node::BackgroundColor` | ✓ |  |  |  |  |  | not painted by fux |
-| `bevy_ui::ui_node::BorderColor` | ✓ |  |  |  |  |  | not painted by fux |
-| `bevy_ui::ui_node::BorderRadius` | ✓ |  |  |  |  |  | not painted by fux |
-| `bevy_ui::ui_node::BoxShadow` | ✓ |  |  |  |  |  | not painted by fux |
-| `bevy_ui::ui_node::GlobalZIndex` | ✓ |  |  |  |  |  | not used by fux's layout |
-| `bevy_ui::ui_node::LayoutConfig` | ✓ |  |  |  |  |  | not used by fux's layout |
-| `bevy_ui::ui_node::Node` | ✓ | ✓ | ✓ | ✓ |  |  | layout geometry; every number finite and within 1e6 |
-| `bevy_ui::ui_node::Outline` | ✓ |  |  |  |  |  | not painted by fux |
-| `bevy_ui::ui_node::ScrollPosition` | ✓ |  |  |  |  |  | not used by fux's layout |
-| `bevy_ui::ui_node::ZIndex` | ✓ |  |  |  |  |  | not used by fux's layout |
-| `bevy_ui::ui_transform::UiTransform` | ✓ |  |  |  |  |  | not used by fux's layout |
-| `bevy_ui::widget::image::ImageNode` | ✓ |  |  |  |  |  | not painted by fux |
-| `bevy_ui::widget::text::Text` | ✓ |  |  |  |  |  | chrome text in a viewer's presentation; kept by fux |
-| `bevy_world_serialization::components::DynamicWorldRoot` | ✓ |  |  |  |  |  | a loaded layout scene's root; kept by fux |
-| `bevy_world_serialization::components::WorldAssetRoot` | ✓ |  |  |  |  |  | a loaded layout scene's root; kept by fux |
-| `fux::actions::Action` | ✓ |  |  |  |  |  | a bindable action; part of Command and Binding |
-| `fux::actions::Target` | ✓ |  |  |  |  |  | what an action acts on; part of Command |
-| `fux::assets::Binding` | ✓ |  |  |  |  |  | a key binding; part of Settings |
-| `fux::assets::BindingAction` | ✓ |  |  |  |  |  | part of Binding |
-| `fux::assets::ClipboardPolicy` | ✓ |  |  |  |  |  | part of Settings |
-| `fux::assets::LayoutReload` | ✓ |  |  |  |  |  | a layout file being reloaded; kept by fux |
-| `fux::assets::Settings` | ✓ | ✓ |  |  |  | ✓ | the configuration; checked as a configuration file is |
-| `fux::control::Axis` | ✓ |  |  |  |  |  | part of Command |
-| `fux::control::Chooser` | ✓ |  |  |  |  |  | part of Command |
-| `fux::control::Command` | ✓ |  |  |  |  |  | a command; part of Control |
-| `fux::control::Control` |  |  |  |  | ✓ |  | a command for a viewer; complete, or refused; ignored if the viewer is gone |
-| `fux::control::Order` | ✓ |  |  |  |  |  | part of Command |
-| `fux::control::Scope` | ✓ |  |  |  |  |  | part of Command |
-| `fux::control::Shutdown` |  |  |  |  | ✓ |  | ends the server |
-| `fux::control::Subject` | ✓ |  |  |  |  |  | part of Command |
-| `fux::control::UserInput` |  |  |  |  | ✓ |  | input for a viewer; complete, or refused; ignored if the viewer is gone |
-| `fux::interaction::Entry` | ✓ |  |  |  |  |  | an overlay's entry; part of Overlay |
-| `fux::interaction::Mode` | ✓ |  |  |  |  |  | what an overlay is doing; part of Overlay |
-| `fux::interaction::MoveTo` | ✓ |  |  |  |  |  | a move target; part of Command |
-| `fux::interaction::Overlay` | ✓ |  |  |  |  |  | an open menu, prompt or chooser; use Control and UserInput |
-| `fux::interaction::Prefix` | ✓ |  |  |  |  |  | a viewer waiting for a command key; use UserInput |
-| `fux::interaction::Run` | ✓ |  |  |  |  |  | what an overlay's entry runs; part of Overlay |
-| `fux::model::Focused` | ✓ | ✓ |  | ✓ |  |  | a viewer's focus; a pane view of its tab; a removed one is chosen again |
-| `fux::model::Launch` | ✓ | ✓ | ✓ | ✓ |  |  | a process recipe; argv names a program; history within what a terminal holds; removing it ends the process |
-| `fux::model::Notice` | ✓ |  |  |  |  |  | a notice in a viewer's bar; part of Viewer |
-| `fux::model::OnTab` | ✓ | ✓ |  | ✓ |  |  | a viewer's tab; a tab of its workspace; a removed one is chosen again |
-| `fux::model::PaneView` | ✓ | ✓ | ✓ |  |  |  | a layout leaf; its pane is a process; placed in a tab or split, or new and unplaced; removed only by despawning |
-| `fux::model::PaneViews` | ✓ |  |  |  |  |  | the views showing a process; kept by fux |
-| `fux::model::ProcessState` | ✓ | ✓ | ✓ |  |  | ✓ | a process's state; spawned only with its Launch, to choose the size; clients change only rows and cols, within 1..=4096 |
-| `fux::model::Split` | ✓ | ✓ | ✓ | ✓ |  |  | a split container; its parent is a tab or a split; removable while its children stay placed |
-| `fux::model::Status` | ✓ |  |  |  |  |  | a process's lifecycle; part of ProcessState |
-| `fux::model::Tab` | ✓ | ✓ | ✓ |  |  |  | a tab; placed in a workspace, or new and unplaced; removed only by despawning |
-| `fux::model::Viewer` | ✓ | ✓ |  | ✓ |  |  | a viewer; created only by fux.attach; removing it detaches; rows and cols at most 4096; scrollback is clamped to the pane's history when painted |
-| `fux::model::Viewing` | ✓ | ✓ |  | ✓ |  |  | a viewer's workspace; a removed one is chosen again |
-| `fux::model::Workspace` | ✓ | ✓ | ✓ |  |  |  | a workspace; it has no parent and gets a WorkspaceOrder when spawned without one; removed only by despawning |
-| `fux::model::WorkspaceOrder` | ✓ | ✓ | ✓ |  |  | ✓ | a workspace's position; every workspace has one, all distinct |
-| `fux::protocol::Direction` | ✓ |  |  |  |  |  | part of Input |
-| `fux::protocol::Input` | ✓ |  |  |  |  |  | a key, mouse, paste or resize; part of UserInput |
-| `fux::protocol::Key` | ✓ |  |  |  |  |  | part of Input |
-| `fux::protocol::Modifiers` | ✓ |  |  |  |  |  | part of Input |
-| `fux::protocol::MouseAction` | ✓ |  |  |  |  |  | part of Input |
-| `fux::protocol::MouseButton` | ✓ |  |  |  |  |  | part of Input |
-| `fux::protocol::Token` | ✓ |  |  |  |  |  | a key as written in configuration; part of Settings |
-<!-- /policy-table -->
-
-"Write" is `world.insert_components` on an existing entity and the `mutate` methods; relationships (`ChildOf`, `Viewing`, `OnTab`, `Focused`, `PaneView`) are immutable, so they are replaced with an insert rather than mutated. "Required" means fux cannot run without it where it is present, so it is never removed. Messages (`world.write_message`) are all read-only.
+The config file is a list of fux commands, one per line, as in `tmux.conf`:
+`--config`, else `$XDG_CONFIG_HOME/fux/fux.conf`, else
+`~/.config/fux/fux.conf`. It is optional.
 
 ```sh
-fux rpc rpc.discover
-fux rpc registry.schema
-fux rpc world.query '{"data":{"components":["fux::model::Workspace"]}}'
-fux rpc world.query '{"data":{"components":["fux::model::ProcessState"]}}'
-fux rpc world.spawn_entity '{"components":{"bevy_ecs::name::Name":"scratch"}}'
-# Substitute IDs returned by the server:
-fux rpc world.insert_components '{"entity":ENTITY,"components":{"bevy_ecs::name::Name":"renamed"}}'
-fux rpc world.remove_components '{"entity":ENTITY,"components":["bevy_ecs::name::Name"]}'
-fux rpc world.despawn_entity '{"entity":ENTITY}'
+# ~/.config/fux/fux.conf
+set prefix C-a
+set shell /bin/zsh -l            # default: $SHELL, else /bin/sh
+set history-lines 10000          # per pane
+set clipboard off                # default: on (OSC 52 writes)
+set buffers 16                   # paste buffers kept
+
+unbind-all                       # optional: start from no bindings
+bind h split -h
+bind v split -v
+bind d detach
+bind -g Tools g split -v -- lazygit   # -g puts it under a column group
 ```
 
-Native extensions are `fux.attach`, `fux.frame`, the SSE watch `fux.frame+watch`, and the read-only `fux.policy` and `fux.invariants`. `fux.attach` accepts `{workspace?, rows, cols}` and returns a `viewer` entity. The others accept `{viewer}`. Closing a frame-watch connection detaches that viewer, and only a viewer: an id that names anything else is ignored rather than despawned. A non-streaming API caller should explicitly detach it.
+A line is split into words like a shell: whitespace separates, `'…'` is
+literal, `"…"` allows backslash escapes, a backslash escapes outside quotes,
+and `#` starts a comment. A binding's command is the rest of its line. `set`,
+`bind` and `unbind` are ordinary commands, so `fux bind x kill-pane` or
+`:set clipboard off` change a running server the same way.
 
-Requests are bounded, and passing a bound is a JSON-RPC error naming it rather than a dropped connection: a request body may be up to 4 MiB, one batch may hold up to 1024 requests, and a batch reply is capped at 8 MiB, after which the remaining requests in that batch are answered with an error instead of being run. The largest request fux itself sends is a paste, bounded by 64 KiB of payload. A layout scene loaded from disk is bounded too, at 8 MiB, so a path pointing at a huge or endless file cannot grow the server without limit.
+`fux reload` runs the file again over the defaults. On any error it names the
+file and line and keeps the previous configuration whole. At startup an
+invalid file does not stop the server: it runs on the defaults, logs the
+error, and shows it to each terminal that attaches until a reload succeeds.
+Only `set`, `bind`, `unbind` and `unbind-all` may appear in the file.
 
-Use stock `world.trigger_event` for `fux::control::Control`, `fux::control::UserInput` and `fux::control::Shutdown`. `Control` and `UserInput` are entity events: `viewer` names the viewer entity and the rest is one tagged `command` or `input`. A `Command` is an object with a `kind` and exactly the fields that command needs; a request whose kind or fields do not match is rejected when it deserializes, with a JSON-RPC error rather than a notice. The full shape is `registry.schema` for `fux::control::Command`. Subjects are explicit: `{"pane":ID}`, `{"tab":ID}` or `{"workspace":ID}`. A command that names an entity of the wrong kind reports a notice; a command that names a missing entity reports "target no longer exists". Close commands are noninteractive over the API; interactive bindings add confirmation. Do not use raw hierarchy despawn as a substitute for a close: native hierarchy removal does not own shared processes. `split` runs `/bin/sh -lc PROGRAM` when `program` is a string and the configured command when it is null. `menu` and `choose` open the same interactive lists a binding would.
+Options: `prefix` (a key), `shell` (a program and its arguments),
+`history-lines` (0 to 1,000,000), `clipboard` (`on` or `off`), `buffers` (1
+to 1000).
 
-Tab/workspace operations share `scope: "tab" | "workspace"`: `select {scope, entity}`, `next {scope}`, `previous {scope}` and `reorder {scope, order}`. `order` is `"previous"` or `"next"`; `reorder_pane {order}` reorders the focused pane instead. `scroll {order}` moves the focused pane's history by half the viewer's rows: `previous` shows older output, `next` newer, clamped to the retained history. The reflected `Viewer.scrollback` is the resulting offset in lines above the live bottom; zero is live output. All close scopes use `close {subject}`. Pane moves use `move {to}`, where `to` is `{"kind":"tab","tab":ID}`, `{"kind":"workspace","workspace":ID}`, `{"kind":"new_tab","name":null|"…"}` or `{"kind":"new_workspace","name":null|"…"}`. The former paired command kinds (`tab_select`, `workspace_next`, `move_to_tab`, and so on) are no longer accepted; configured action names such as `tab_next` are unchanged.
+## Security
 
-```sh
-fux rpc fux.attach '{"rows":24,"cols":80}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"split","axis":"horizontal","program":"exec /bin/sh"}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"close","subject":{"pane":PANE_VIEW}}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"rename","subject":{"tab":TAB},"name":"logs"}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"focus","pane":PANE_VIEW}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"select","scope":"tab","entity":TAB}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"next","scope":"workspace"}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"previous","scope":"tab"}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"reorder","scope":"tab","order":"next"}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"reorder_pane","order":"previous"}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"scroll","order":"previous"}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"move","to":{"kind":"workspace","workspace":WORKSPACE}}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"load_layout","workspace":WORKSPACE,"path":"layout.scn.ron","mapping":[[OLD_PANE,LIVE_PANE]]}}}'
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"detach"}}}'
-fux rpc world.trigger_event '{"event":"fux::control::UserInput","value":{"viewer":VIEWER,"input":{"kind":"key","key":"enter","ctrl":false,"alt":false,"shift":false}}}'
-```
+The server listens only on a Unix domain socket: `FUX_SOCKET`, else
+`$XDG_RUNTIME_DIR/fux/server.sock`, else `$TMPDIR/fux/server.sock`
+(`fux server --socket PATH` overrides it). The socket's directory must be
+yours with mode 0700, reached only through directories no other user can
+change; the default `fux` directory is created that way, and nothing that
+already exists is modified. The socket is created with mode 0600 before any
+connection is accepted. A lock file beside it makes one server its only
+owner; a socket left by a killed server is replaced only when nothing
+answers on it; and at exit the server removes the socket only if it is still
+the one it bound. Every connection's peer must run as the server's own user
+(checked with `SO_PEERCRED` on Linux, `getpeereid` on macOS); others,
+including root, are refused. An auto-started server logs to `fux.log` beside
+the socket.
 
-The uppercase IDs above are placeholders to substitute, not literal JSON values. `UserInput` accepts `key {key,ctrl,alt,shift}` where `key` is a single character or one of `enter`, `tab`, `escape`, `backspace`, `delete`, `insert`, `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `f1`..`f12`; `paste_begin` followed by `paste {text}` (ownership-preserving fragmented paste); atomic `paste {text}`; `resize {rows,cols}`; and `mouse {action,button,x,y,ctrl,alt,shift}` with `action` one of `press`, `release`, `move`, `scroll_up`, `scroll_down` and `button` one of `left`, `middle`, `right`, `none`. Mouse coordinates are zero-based viewer cells. Control and file-operation errors appear in the reflected `Viewer.notice`, an object `{text, error}` or null; asynchronous scene completion changes that notice.
+Anyone who can open the socket can run anything as you: `split -- CMD` and
+`send-keys` exist for exactly that. The socket's permissions are the access
+control, as with tmux. Every message is length-prefixed and at most 1 MiB,
+and the whole interface is the fixed command list above.
 
-The layout hierarchy itself is Bevy's own `bevy_ecs::hierarchy::ChildOf` (a pane view's or tab's parent, serialized as the bare entity ID) and `bevy_ecs::hierarchy::Children` (an ordered array of entity IDs); read them by those full paths, for example `world.get_components '{"entity":PANE_VIEW,"components":["bevy_ecs::hierarchy::ChildOf"]}'`. A viewer's place in the layout is three relationship components on the viewer entity, each serialized as the bare entity ID: `fux::model::Viewing` (its workspace), `fux::model::OnTab` (its tab) and `fux::model::Focused` (its pane view). Bevy removes a relationship when its target despawns and fux then restores it from viewer memory or the first available entity, so these never dangle. `Viewer` itself holds only `rows`, `cols`, `zoom`, `scrollback` and `notice`. The `fux::interaction::Prefix` and `fux::interaction::Overlay` components are reflected and read-only: open, move through and close them with `Control` and `UserInput`, and read them to see where a viewer is. `Prefix.scroll` is the selected command-column row; `Overlay` contains its serial, captured `Target`, and `Mode`. `Mode` is a native reflected enum: `{"List":{"title":…, "entries":…, "selected":…}}`, `{"Text":{"action":…, "buffer":…}}` or `{"Confirm":{"command":…}}`. Entries contain a label and `Run` (`Action` or `Command`). Native reflected action variants use Rust names such as `RenamePane`; nested `Command` retains its existing tagged JSON shape. These are the actual interaction components, not snapshots. Their presence/absence tracks opening/closing; the serial is paste-ownership bookkeeping, not a durable operation receipt.
+## How it works
 
-```sh
-# Substitute a viewer ID returned by fux.attach for VIEWER:
-fux rpc world.trigger_event '{"event":"fux::control::Control","value":{"viewer":VIEWER,"command":{"kind":"help"}}}'
-fux rpc world.get_components '{"entity":VIEWER,"components":["fux::interaction::Prefix","fux::interaction::Overlay"]}'
-fux rpc world.query '{"data":{"components":["fux::interaction::Overlay"]}}'
-fux rpc world.list_components '{"entity":VIEWER}'
-fux rpc registry.schema
-```
+One server thread runs a `poll` loop over the socket, every client and every
+pane's PTY; there are no other threads and no async runtime. Each pane has a
+PTY and a [`fux-vt`](fux-vt) terminal emulator. Layout is a tree of weighted
+splits per tab; each client gets its own rectangles for its own size, and a
+PTY's size is the smallest rectangle any client shows it in. A client is a
+dumb pipe: its keystrokes go to the server as raw bytes and are decoded
+there, and the server paints each client's screen from a cell grid, sending
+only what changed, at most once per 16 ms, inside synchronized output. A
+client that stops reading gets nothing more queued until it catches up, then
+one full repaint.
 
-This Bevy stores its resources as entities, so a `world.query` with no component filter answers with far more entities than the session's own -- most of them resources -- and an id you did not get from a filtered query may be a resource rather than a viewer, pane or tab. Filter by component, and get ids from those results. The guard refuses any change to a resource entity, but querying blindly still wastes a turn.
+The previous, Bevy-based fux is kept at the tag `bevy-final`.
 
-Default non-strict `world.get_components` returns separate `components` and `errors` maps, so an absent overlay is not a failed request. Stock `world.get_components+watch` supports component change/removal observation through the native watching transport. No fux-specific inspection method is added.
+## License
 
-Exposure boundary: workspace/tab/pane/process state, viewer relationships, settings, controls and input were already reflected. This additionally registers `Prefix`, `Overlay`, `Mode`, `Entry`, `Run` and `actions::Target`. Copy-mode `Selection` remains unreflected because it owns a captured cell grid and emulator row identities; reflecting that storage would expose a large buffer and its invariants merely to obtain metadata. Component listing can identify its presence; painted frames remain the copy-mode display. Viewer memory, paste ownership, presentation/layout caches, tasks, PTY handles and the emulator runtime remain unreflected. BRP exposes registered reflection, not arbitrary Rust methods such as `Terminal::copy_text`; `fux.frame` remains the terminal-display interface. No second history or observation state is maintained.
-
-Use `Control` and `UserInput` for normal interactions, validation and side effects. Raw component insertion/mutation/removal is trusted low-level access, not a safe interaction protocol: it can bypass normal transitions and paste bookkeeping. Out-of-range list increments saturate and entry lookup is checked, but raw edits do not gain human-action semantics. Runtime `Prefix`/`Overlay` components are rejected by fux layout save/load validation even if attached to a layout entity; they never become supported scene content.
-
-For exact argv/cwd, stock-spawn a `fux::model::Launch` component, then a `PaneView` referring to its returned entity, and reparent that view under a tab using `world.reparent_entities`. `Launch` is a creation recipe (`argv`, `cwd`, `history_lines`), not an automatic restart controller. Its required `ProcessState` reports dimensions, a revision and one `status`: `{"kind":"starting"}`, `{"kind":"running","pid":N,"error":null|"…"}`, `{"kind":"exited","code":N}` or `{"kind":"failed","error":"…"}`; reflected dimension edits resize the real PTY, and a frame that resizes the PTY publishes its new dimensions in the same step, as terminating a pane publishes its end. Despawning the process or removing `Launch` terminates it. Terminating or closing a pane hangs up every process in the pane's session, whichever shell started it, so a shell that does not forward the hangup (Debian's `/bin/sh` is dash, which does not) still does not strand a background job; a job that ignores the hangup (`nohup`) or leaves the session (`setsid`) survives, as it would when a real terminal closes. Configured bindings map a key token such as `ctrl-b` or `shift-tab` to an action name; an unknown name is kept, listed under Other in help, and reports itself when pressed. All registered operational and UI components remain available to stock inspection/mutation; resource/schedule/event/schema methods are not filtered. Some stock methods are guarded rather than filtered, each then handing the request to the stock handler unchanged: `world.mutate_components` answers `entity_not_found` for an entity that is not alive, where the stock handler panics; `world.despawn_entity` refuses an entity that holds a Bevy resource, since despawning one leaves the ECS inconsistent; and `world.remove_resources` restores `fux::assets::Settings` to its default, with a log, if that was the resource removed, because fux reads it from many systems and cannot run without it. Resources are entities in this Bevy, so a raw insert can put a `Viewer` or a layout component on a resource entity; fux strips it, as it strips a `Viewer` off a layout node, so no later pass despawns the resource with it.
-
-## Architecture and dependency boundary
-
-- `actions.rs` names the bindable actions with their labels, groups and availability, and turns a bound action into the `Command` it means for the viewer's current workspace, tab and pane. `control.rs` is the wire: `Command` is one tagged enum whose variants carry only their own fields, and `Control`/`UserInput` are entity events targeting the viewer. `interaction.rs` stores overlays (confirmations, prompts, choosers, menus) and the open prefix column as components on the viewer; a completed overlay produces a `Command`. `selection.rs` stores only one bounded viewport per copying viewer, never a second history. `protocol.rs` types every key, modifier, mouse action and direction; unsupported names cannot be constructed. Prefix/overlay state and its nested action types are reflected for stock BRP inspection; copy-mode storage remains unreflected. Runtime interaction state is excluded from scenes.
-- `model.rs`: reflected ECS components; `ChildOf`/`Children` own layout hierarchies. `Workspace`, `Tab`, `PaneView` and `Split` require their default layout `Node`; explicit scene/spawn Nodes take precedence, including column-split overrides. The native `PaneView`/`PaneViews` relationship references a separate process entity without linked despawn. A viewer's workspace, tab and focused pane are the `Viewing`, `OnTab` and `Focused` relationships; their targets (`Viewers`, `TabViewers`, `FocusedBy`) are unreflected bookkeeping on layout entities that the layout cache ignores. `Status` is one process lifecycle and `Notice` one bar message, so neither can be half-set.
-- `server.rs` sets Bevy's fallback error handler to log: a command that fails reports it rather than ending the process, because one request must not be able to end every session. `navigation.rs`: hierarchy normalization and viewer memory. Component hooks record the tab per workspace and the focused and previously focused pane per tab as relationships change, and queue repair on insertion/removal. Server-scoped observers still prune dead memory entries and normalize hierarchy changes: a workspace that loses its last tab gets one back, a child placed directly under a workspace is wrapped into a tab, a `ChildOf` that points into the entity's own subtree is rejected like self-parenting rather than left as a cycle, a `Viewer` inserted onto a layout node (`Workspace`, `Tab`, `Split` or `PaneView`), or a layout component inserted onto a viewer, loses the `Viewer` and its viewer-only state because the layout role wins, and a tab unlinked from its workspace or parented elsewhere has its viewers repaired onto a listed tab. Passes over viewers select only entities with `Viewer` and no layout component. A repair pass queues no further repair for its own relationship insertions; a request made while it runs is answered by another pass, at most sixteen in all. Normalization/pruning observers are not installed in inert presentation worlds. Nothing scans for dangling IDs on a schedule.
-- Operations are direct typed Bevy observers, queries/resources and scheduled systems, split across small modules: `execute.rs` is one match over `Command` that either changes the world or calls the module that owns that part of the model, `routing.rs` the two routed observers and terminal input, `layout.rs` the scene cache, scene files and split collapse, and `remote.rs` the BRP method registry and its guards; `server.rs` keeps the plugin, startup and the closed-watch detach. There is no forwarding between layers. Scene preparation, sizing and ordinary frame formatting use exclusive world access; synchronization snapshots Viewer inputs before borrowing its presentation, and painting copies rectangle values before mutating terminals. Independent `Presentation` components own inert Worlds, holding only the tab their viewer shows, and retain native focus isolation; a viewer whose workspace cannot be projected, which only raw hierarchy edits produce, gets a frame whose bar names the failure rather than a failed request. A causal settling update lets stock `RemoteLast` mutations reach lifecycle/layout systems even when idle. Workspace-owned layout caches follow arbitrary component change ticks, component-set changes and native hierarchy membership, not a component allowlist. Unrelated workspace projections remain cached; removing a Viewer also removes its presentation context. A scene save or load is a `Task<CommandQueue>` component on the requesting viewer, polled once per update with `check_ready` and dropped with the viewer; the queue applies the completion on the ECS thread. The file read or write itself runs on its own thread, at most 16 at once, so a slow file -- a named pipe, a huge scene -- never holds an I/O-pool thread; a request past the bound gets a notice. Pane geometry is `bevy_math::URect`.
-- `presentation.rs`: one inert native scene projection per viewer, sharing the type registry. After plugin setup, its extracted World runs `Main` and clears trackers; the viewer component also owns paint throttling and pending clipboard delivery. `UiPlugin`, native flex/grid layout, visibility, `InputFocus` and the stock `bevy_picking` UI backend own geometry, focus and hit-testing; a mouse event is picked by driving that backend over one synthetic pointer, not a hand-written rectangle test. No hand-written layout solver, OS window or GPU renderer is installed. The cell painter renders borderless pane surfaces and computed shared separators, not a general Bevy image/text/shader renderer. `chrome.rs` paints the bottom bar and content-sized corner overlays; modal wheel input follows the selected list, without cached overlay hit-test bounds or a second picking system.
-- `assets.rs`: `AssetServer`, native file watchers, asset events, `DynamicWorld` serialization and native entity maps. File reads/writes run on Bevy's I/O task pool. No parallel configuration or persistence engine.
-- `terminal.rs`: each authoritative process entity owns an unreflected `Terminal` runtime component, accessed through typed queries rather than a separate entity-keyed registry; only shared wake/coalescing state is a resource. Its runtime is a two-state type, `Live` with the PTY, child, waiter and I/O tasks or `Stopped`, so input after exit is a type error rather than a check on optional fields; only the draining reader outlives the process. Scheduled Launch removal publishes final status before removing the runtime, while entity despawn and explicit pre-join shutdown drop it. Inert scenes never construct or serialize runtimes. `portable-pty` owns native PTYs/processes; the workspace-owned `fux-vt` owns its DEC ANSI parser, bounded row-major grids/history, row identities and non-destructive change tracking. Its only production dependency is `unicode-width`; the independent `fux-fuzz` harness retains the upstream oracle. Immutable history windows never change parser state. Per-process row extraction is keyed by row ID/version and visible width, not terminal revision or a single viewer's offset. The cache holds at most 4096 entries / 4 MiB of serialized rows, plus the current explicitly sized frame's row references; a row too large for the cache is rendered without retaining a cache entry. Multiple widths/windows can coexist. A bounded index of the eight most recently served windows, keyed by the emulator's non-destructive change mark plus offset/height/width, lets an unchanged window skip per-row lookups; viewers do not evict each other's windows, and any emulator change (including cursor-only) falls back to row reuse. Every frame still emits ALL its relocatable SGR-only rows; cursor and modes come directly from the emulator. Bounded DSR/CPR/DA replies go synchronously to the existing nonblocking input queue, with saturation reported as an I/O error. Readiness-driven `async-io` tasks on Bevy's I/O pool handle bounded I/O (16 × 8 KiB output slots; 64 KiB consumed per pane/update; one input queue bounded by bytes, not pieces -- 16 times the largest accepted paste plus its bracketed-paste envelope, charging 64 bytes per queued piece -- so any number of keys can wait for a program that reads slowly, while a single input is still bounded to that paste size). One blocking native waiter per child preserves its unreaped PID while cleanup signals its group; a stopped child is not an exited one, though macOS reports stops to that wait. Shutdown first hangs up every process in the pane's session -- the group signal reaches the shell and its foreground job, the session signal reaches a background job the shell did not forward the hangup to -- then allows 100 ms for propagation, closes the master, hard-kills the owned original group and reaps its leader. A job that ignored the hangup or left the session survives, as under a real terminal. Closing the master before the blocking reap also releases a dying writer's queued PTY output on macOS. A final drain is bounded to 128 KiB.
-- `transport.rs`: the BRP serving loop, which fux owns because `bevy_remote` binds its HTTP server to a TCP listener and offers no way to supply another. It is the stock loop with `Async<UnixListener>` in place of the TCP listener, and HTTP/1 on top unchanged: `hyper`, `smol-hyper` and `http-body-util` (already in the graph through the crate's `http` feature, which is no longer enabled) serve single and batch requests and `+watch` server-sent events, and requests enter the stock `BrpSender` mailbox. What stays stock is everything above the listener: the method registry, the BRP request/response/error types and the watching bookkeeping. The module also owns the socket's location, private directory and permissions, the lock that makes one server its owner, stale-socket recovery and removal on shutdown. It adds no authentication and no method filtering. A closed watch connection still closes its response channel, which detaches that viewer even when idle; the entity named by a watch is despawned only if it is a viewer, so a watch is not a despawn of the caller's choosing. Request bodies, batch sizes and batch replies are bounded (see above), and a streaming request inside a batch is refused before it is dispatched, so a refused request leaves the world alone. `accept` failing for want of descriptors is told apart from a peer that aborted: the condition is reported once and then at intervals rather than every 50 ms, and a reserved descriptor is spent to accept and close one waiting connection so the backlog drains and a client fails promptly. A server with no descriptors still cannot serve a new client; what it does is fail fast, say so, and recover by itself when the pressure clears.
-- `viewer.rs`: `termina` supplies key/mouse decoding, terminal modes/dimensions/restoration; `paste.rs` adds bounded paste-envelope detection on a readiness-driven Unix input loop, with native SIGWINCH resize handling and an explicit stop socket; Each server-sent event is read through a bound (64 MiB, about five times the densest frame a 4096x4096 viewer can produce), and passing it ends the attachment with a message rather than buffering without limit. `ureq` consumes the HTTP/SSE through `unix_http.rs`, a connector that dials only the server's Unix socket, with no DNS, proxy or redirect path back to TCP (`ureq` is pinned exactly because that connector uses its `unversioned` transport API). The maintained HTTP Agent is reused. Paints coalesce, while explicit clipboard effects are delivered separately; the server queues up to 16 pending copies per viewer and reports overflow in `Viewer.notice`. The stream reader does not hold its paint slot lock during terminal writes. Stock Bevy's watching bookkeeping closes full watch response channels; fux drains/coalesces frames without replacing it. `signal-hook` handles graceful termination. `nix`, `parking_lot`, channels, serde/RON, Base64 and Unicode cell widths cover the remaining narrow native/protocol needs.
-
-The runner parks without an idle tick; PTY data/exit, requests, disconnections, signals and asset notifications wake it. Streamed paints coalesce behind a 16 ms minimum interval, using an on-demand one-shot I/O-pool timer; idle viewers have no recurring paint timer. Direct `fux.frame` snapshots are immediate. While native asset loads are pending the runner uses a 25 ms settling deadline. Scene/UI projections are caches, never process/session authorities. Transitive Bevy rendering-related types are dependencies of native UI/camera APIs; renderer plugins are not running.
-
-## Scope and verification
-
-[`fux-fuzz`](fux-fuzz/README.md) is an unpublished, opt-in black-box harness for replayable startup, resize, paste, key round-trip, mouse forwarding, copy, history, zoom, layout lifecycle, process lifecycle, navigation, scenes, configuration reload, overlays, limits, chrome, selection, concurrency races, viewer memory, reorder, scene mapping, mouse edge cases, clipboard queueing, pane resizing, API misuse, scene fidelity, tabless scenes, configuration churn, scene process references, a repetition soak, relationship repair, terminal edge cases, frontend stream, and generated random-walk (driven over BRP and through a real frontend, under viewer resizes, exiting children, configuration rewrites and a second frontend), scale, adversarial-output, concurrent-walk, raw-mutation-walk and scene-file-fuzzing scenarios with automatic trace minimization. It runs separately from the normal tests and CI; its documentation covers resource bounds, replay and verification.
-
-Tested on macOS arm64; see [verification/keybinding-consistency.md](verification/keybinding-consistency.md) for the current binding/menu verification, [verification/interaction-restoration.md](verification/interaction-restoration.md) for this interaction pass and intentional differences from original main, [verification/design-restoration.md](verification/design-restoration.md) for the current visual/input verification and captured renders, [verification/REFINEMENT.md](verification/REFINEMENT.md) for historical comparable measurements and the capability audit, and [verification/VERIFICATION.md](verification/VERIFICATION.md) for preserved baseline evidence. Linux and other Unix systems are unvalidated; this is not a Windows/mobile implementation.
-
-Owned direct children and their original process groups are cleaned up and reaped. Ordinary interactive-shell job groups receive the shell's hangup propagation. Deliberately detached/disowned descendants, or descendants in other groups that ignore hangup, are not a process-containment guarantee; fux does not enumerate and signal potentially recycled descendant PIDs. macOS zombie-only group `EPERM` is distinguished by native membership inspection, not ignored for live groups.
-
-Intentionally excluded: authentication (the transport is a Unix socket whose permissions admit only your user; no credential is checked beyond that), method filtering, remote-host catalogs/tunnels, task/provider policy, crash recovery, process resurrection, automatic restart, plugin installation, durable input receipts, graphics protocols, IME and broad editor/dashboard features. No cross-version API or saved-scene compatibility promise.
+MIT
