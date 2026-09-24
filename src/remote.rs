@@ -31,8 +31,8 @@ fn invariants(In(_): In<Option<serde_json::Value>>, world: &mut World) -> bevy_r
     )))
 }
 
-/// `fux.policy`: what clients may do with each type fux opened, the same table
-/// as the README's. Every other registered type is read-only.
+/// `fux.policy`: what clients may do with each type fux registers, the same
+/// table as the README's. Every other registered type is read-only.
 fn policy(In(_): In<Option<serde_json::Value>>, world: &mut World) -> bevy_remote::BrpResult {
     let rows: Vec<serde_json::Value> = crate::policy::table(world)
         .into_iter()
