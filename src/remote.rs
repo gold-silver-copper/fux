@@ -1,6 +1,9 @@
 //! The BRP method registry fux serves: every stock method, two of them guarded,
 //! and the fux extensions.
 use crate::frame;
+
+#[cfg(test)]
+mod property;
 use bevy_ecs::prelude::*;
 use bevy_remote::RemotePlugin;
 
