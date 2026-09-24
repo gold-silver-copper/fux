@@ -233,3 +233,13 @@ fn cleanup_leaves_a_socket_that_replaced_its_own() -> Outcome {
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+/// The peer check reads the connecting process's user: over a socket pair it
+/// is this process's own, the one uid the server accepts.
+#[test]
+fn a_peer_is_identified_by_its_uid() -> crate::testing::Outcome {
+    let (a, b) = std::os::unix::net::UnixStream::pair()?;
+    assert_eq!(peer_uid(&a)?, nix::unistd::geteuid().as_raw());
+    assert_eq!(peer_uid(&b)?, nix::unistd::geteuid().as_raw());
+    Ok(())
+}

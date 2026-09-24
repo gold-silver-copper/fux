@@ -659,7 +659,9 @@ test("a partial component payload is rejected and the server survives (F1 regres
     assert.equal(jsonOf(seen[0]).result, null, `viewer minus notice must be accepted: ${seen[0]}`);
     assert.match(seen[1], /missing field `rows`/);
     assert.match(seen[2], /missing field `pane`/);
-    assert.match(seen[3], /missing field `scroll`/);
+    // Interaction state is read-only over BRP (fux's policy guard), so the
+    // partial Prefix is refused before its payload is read.
+    assert.match(seen[3], /read-only over BRP/);
     assert.ok(jsonOf(seen[4]).result, "the server must still answer rpc.discover");
     const artifact = JSON.parse(readFileSync(result.artifactPath, "utf8"));
     assert.equal(artifact.serverCrashed, false);

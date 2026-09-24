@@ -22,7 +22,6 @@ pub(super) struct World {
     pub parents: Vec<(u64, u64)>,
     /// (parent, children)
     pub children: Vec<(u64, Vec<u64>)>,
-    pub orders: Vec<(u64, i64)>,
     pub viewers: Vec<u64>,
     /// (pane entity, state)
     pub states: Vec<(u64, Value)>,
@@ -66,17 +65,6 @@ impl World {
                 Some((id(r).ok()?, list))
             })
             .collect();
-        let orders = s
-            .query(ORDER)?
-            .iter()
-            .filter_map(|r| {
-                Some((
-                    id(r).ok()?,
-                    r.pointer("/components/fux::model::WorkspaceOrder")?
-                        .as_i64()?,
-                ))
-            })
-            .collect();
         Ok(Self {
             workspaces: ids(s, WORKSPACE)?,
             tabs: ids(s, TAB)?,
@@ -84,13 +72,9 @@ impl World {
             views,
             parents,
             children,
-            orders,
             viewers: ids(s, VIEWER)?,
             states: states(s)?,
         })
-    }
-    pub fn parent(&self, e: u64) -> Option<u64> {
-        self.parents.iter().find(|(c, _)| *c == e).map(|(_, p)| *p)
     }
     pub fn leaves(&self) -> Vec<u64> {
         self.views.iter().map(|(l, _)| *l).collect()
@@ -334,79 +318,15 @@ pub(super) fn violations(
     process_cap: usize,
     skip_paint: &[u64],
 ) -> Result<Vec<String>> {
-    let mut v = Vec::new();
-    for t in &w.tabs {
-        match w.parent(*t) {
-            Some(p) if w.workspaces.contains(&p) => {}
-            p => v.push(format!("tab {t} has parent {p:?}, not a workspace")),
-        }
-    }
-    for (leaf, pane) in &w.views {
-        match w.states.iter().find(|(e, _)| e == pane) {
-            None => v.push(format!(
-                "view {leaf} refers to pane {pane} with no process state"
-            )),
-            Some((_, st)) => {
-                if st.pointer("/status/kind") == Some(&json!("running"))
-                    && let Ok(p) = pid(st)
-                    && !alive(p)
-                {
-                    v.push(format!("pane {pane} reports running pid {p} which is dead"));
-                }
-            }
-        }
-    }
-    let mut orders: Vec<i64> = w.orders.iter().map(|(_, o)| *o).collect();
-    let n = orders.len();
-    orders.sort_unstable();
-    orders.dedup();
-    if orders.len() != n {
-        v.push("duplicate WorkspaceOrder values".into());
-    }
-    if w.workspaces.len() != w.orders.len() {
-        v.push(format!(
-            "{} workspaces but {} WorkspaceOrder components",
-            w.workspaces.len(),
-            w.orders.len()
-        ));
-    }
-    for (parent, kids) in &w.children {
-        for k in kids {
-            if w.parent(*k) != Some(*parent) {
-                v.push(format!(
-                    "{parent} lists child {k} whose ChildOf is {:?}",
-                    w.parent(*k)
-                ));
-            }
-        }
-    }
-    for (child, parent) in &w.parents {
-        let listed = w
-            .children
-            .iter()
-            .find(|(p, _)| p == parent)
-            .is_some_and(|(_, kids)| kids.contains(child));
-        if !listed {
-            v.push(format!(
-                "{child} has ChildOf {parent} but is not in its Children"
-            ));
-        }
-    }
-    for split in &w.splits {
-        if w.tabs.contains(split) || w.workspaces.contains(split) {
-            continue;
-        }
-        let count = w
-            .children
-            .iter()
-            .find(|(p, _)| p == split)
-            .map_or(0, |(_, k)| k.len());
-        if count < 2 {
-            v.push(format!(
-                "split container {split} has {count} children and did not collapse"
-            ));
-        }
-    }
+    // The world-level rules are fux's own (`fux.invariants`); the harness
+    // adds only what needs a black box: paints, and walk-only rules.
+    let mut v: Vec<String> = s
+        .rpc("fux.invariants", json!(null))?
+        .as_array()
+        .ok_or("fux.invariants returned no list")?
+        .iter()
+        .map(|line| line.as_str().unwrap_or("?").to_owned())
+        .collect();
     // A process nobody views can never be shown again; only a raw hierarchy
     // despawn, which the walks never issue, may leave one behind.
     for (pane, st) in &w.states {
@@ -419,7 +339,6 @@ pub(super) fn violations(
             ));
         }
     }
-    let leaves = w.leaves();
     // Layout nodes of containers and leaves only: a scale layout has
     // thousands of tabs whose nodes would exceed the response bound.
     let mut nodes = nodes_with(s, SPLIT)?;
@@ -427,35 +346,14 @@ pub(super) fn violations(
     for viewer in &w.viewers {
         let viewing = s.relation(*viewer, "fux::model::Viewing");
         let on_tab = s.relation(*viewer, "fux::model::OnTab");
-        let focused = s.relation(*viewer, "fux::model::Focused");
-        let mut tab_leaves = Vec::new();
-        match viewing {
-            Ok(ws) if w.workspaces.contains(&ws) => match on_tab {
-                Ok(t) if w.tabs.contains(&t) => {
-                    if w.parent(t) != Some(ws) {
-                        v.push(format!(
-                            "viewer {viewer} is on tab {t} outside its workspace {ws}"
-                        ));
-                    }
-                    tab_leaves = w.leaves_under(t);
-                    match focused {
-                        Ok(f) if tab_leaves.contains(&f) => {}
-                        Ok(f) if leaves.contains(&f) => v.push(format!(
-                            "viewer {viewer} focuses {f} which is not in its tab {t}"
-                        )),
-                        Ok(f) => v.push(format!("viewer {viewer} Focused {f} dangles")),
-                        Err(_) if tab_leaves.is_empty() => {}
-                        Err(_) => v.push(format!(
-                            "viewer {viewer} has no focus although tab {t} has panes"
-                        )),
-                    }
-                }
-                Ok(t) => v.push(format!("viewer {viewer} OnTab {t} dangles")),
-                Err(_) => v.push(format!("viewer {viewer} has no tab")),
-            },
-            Ok(ws) => v.push(format!("viewer {viewer} Viewing {ws} dangles")),
-            Err(_) => v.push(format!("viewer {viewer} has no workspace")),
-        }
+        // Relationship consistency is reported by `fux.invariants`; here the
+        // tab's leaves only set how many panes the paint should show.
+        let tab_leaves = match (viewing, &on_tab) {
+            (Ok(ws), Ok(t)) if w.workspaces.contains(&ws) && w.tabs.contains(t) => {
+                w.leaves_under(*t)
+            }
+            _ => Vec::new(),
+        };
         match s.rpc("fux.frame", json!({"viewer":viewer})) {
             Ok(frame) => match frame.get("paint").and_then(Value::as_str) {
                 None => v.push(format!("viewer {viewer}: fux.frame returned no paint")),

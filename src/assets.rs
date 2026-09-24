@@ -80,6 +80,24 @@ pub struct Settings {
     pub layout: Option<String>,
 }
 
+impl Settings {
+    /// What a usable configuration needs, from a file or from BRP alike.
+    pub fn check(&self) -> Result<(), String> {
+        if self.prefix.is_empty()
+            || self.shell.first().is_none_or(String::is_empty)
+            || self.bindings.iter().any(|b| {
+                b.key.is_empty()
+                    || matches!(&b.action, BindingAction::Custom(name) if name.is_empty())
+            })
+        {
+            return Err(
+                "prefix, shell executable, binding keys and actions must not be empty".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let bindings = [
@@ -157,17 +175,7 @@ impl AssetLoader for SettingsLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let settings: Settings = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
-        if settings.prefix.is_empty()
-            || settings.shell.first().is_none_or(String::is_empty)
-            || settings.bindings.iter().any(|b| {
-                b.key.is_empty()
-                    || matches!(&b.action, BindingAction::Custom(name) if name.is_empty())
-            })
-        {
-            return Err(std::io::Error::other(
-                "prefix, shell executable, binding keys and actions must not be empty",
-            ));
-        }
+        settings.check().map_err(std::io::Error::other)?;
         Ok(settings)
     }
 
