@@ -1,7 +1,0 @@
- Commands
- Panes
-    h  split sid…
-    v  split sta…
-    x  close pane
- ▼ 41 more
- m…  mai…│ …7: sh
