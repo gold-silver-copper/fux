@@ -1,6 +1,8 @@
 # fux without Bevy: design
 
-Status: proposal. Nothing here is implemented yet.
+Status: agreed with the user on 2026-09-23. Nothing here is implemented yet.
+This is the specification; `docs/prompt-rewrite-without-bevy.md` is how to
+build it.
 
 ## Why
 
@@ -29,6 +31,7 @@ tree, a socket and a render loop.
 | Selecting and copying | A keyboard **copy/select mode**: a movable cursor over the pane and its history. |
 | Menus | The navigable command column, tab and workspace choosers, and pane/tab/workspace action menus, all keyboard-driven. |
 | Configuration | A file of fux commands. Zero dependencies. |
+| Clipboard | OSC 52 writes **on by default** (`set clipboard off` disables). Nothing ever reads the clipboard. |
 | Control surface | The `fux` CLI only. No RPC, HTTP or JSON-RPC. |
 | Bevy | None. No async runtime either. |
 | System calls | `rustix`, not `nix`. `portable-pty` is replaced by rustix's PTY API. |
@@ -36,7 +39,11 @@ tree, a socket and a render loop.
 ## What stays, what goes
 
 **Stays, unchanged:** `fux-vt`, published as 0.1.1. It is the emulator, with
-no dependency but `unicode-width`, and koh depends on it. The branch
+no dependency but `unicode-width`, and koh depends on it. The rewrite uses its
+public API as it is. A fux-vt change is allowed only as a bug fix with a
+failing test, must keep every item koh uses (`Parser`, `Options`, `Event`,
+`Sink`, `Screen`, `Cell`, `Color`, the mouse enums, `Error`, and their
+meanings), and is checked against koh in a throwaway clone. The branch
 `feat/fux-vt-for-koh` also stays: koh pins fux-vt to it by git, and koh is not
 touched.
 
@@ -55,8 +62,10 @@ touched.
 `fux-agent-exercises/` (BRP-driven agent campaigns). Also deleted:
 `verification/` and the BRP-specific docs. They stay retrievable at the tag
 `bevy-final` (`f86dee7`). `fux-fuzz/BREAKS.md` and the repro scripts are the
-record of mistakes not to repeat. The lessons that still apply become tests
-here, listed under Testing.
+record of mistakes not to repeat. A short `docs/lessons.md` replaces them in
+the tree: one line per finding, saying whether it still applies and which new
+test covers it. The lessons that still apply become tests, listed under
+Testing.
 
 ## Architecture
 
@@ -85,34 +94,65 @@ There are no threads, locks, channels or task pools, and nothing blocks the
 loop. The only blocking call is `fork`/`exec`, which is quick. The config file
 is read once, bounded, at startup and on `fux reload`.
 
+**Lifetime.**
+- `fux` or `fux attach` with no server answering starts one: it runs itself as
+  `fux server`, in a new session with stdio on `/dev/null`, logging to
+  `fux.log` beside the socket. It then connects, retrying for up to 2 s. Two
+  racing starts are settled by the lock: the loser exits and both clients
+  connect to the winner.
+- The server runs until `fux kill-server`, SIGTERM, SIGINT or SIGHUP, or until
+  it has no panes left. Then it hangs up every pane, tells each client why,
+  removes its socket and exits.
+- A new server starts with one workspace, holding one tab with one shell.
+  Tabs and workspaces can be left empty by moving their panes out; an empty
+  tab shows a hint to split or close it.
+
 ### Panes and processes
 
 A pane owns:
 
-- a PTY: `openpt(RDWR | NOCTTY | CLOEXEC)`, `grantpt`, `unlockpt`,
-  `ptsname`, `tcsetwinsize`;
+- a PTY: `openpt(RDWR | NOCTTY)`, `grantpt`, `unlockpt`, `ptsname`,
+  `tcsetwinsize`. rustix offers `OpenptFlags::CLOEXEC` only on Linux and the
+  BSDs, so the master is set close-on-exec with `fcntl_setfd` straight after,
+  on every platform. The slave is opened `O_CLOEXEC` too. The server has one
+  thread, so no fork can happen in between. Every descriptor the server holds
+  is close-on-exec, and a test checks that a pane's program inherits only
+  stdio;
 - a `fux_vt::Parser`;
 - a child process, started through `std::process::Command` with the slave as
-  stdio. A `pre_exec` hook calls `setsid` and `ioctl_tiocsctty`, both
-  async-signal-safe.
+  stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and `FUX_SOCKET`. A `pre_exec`
+  hook calls `setsid` and `ioctl_tiocsctty`, both async-signal-safe, and
+  resets the signal mask. std already restores SIGPIPE, and `exec` resets the
+  handlers signal-hook installed. A test checks that a pane's program starts
+  with default dispositions and an empty mask.
 
 Each pane also has an ID, `%N`, which only increases, and a name.
 
 Process lifecycle, from the lessons:
 
-- **Exit:** on SIGCHLD, every live pane is probed with
-  `waitid(Pid, EXITED | NOHANG | NOWAIT)`. Only an exited, killed or dumped
-  status counts as an exit. macOS also reports stops here (020), so a stop is
-  ignored. The status is kept, and the pane stays with its last screen.
+- **Exit:** on SIGCHLD, and on EOF or EIO from the master, every live pane is
+  probed with `waitid(Pid, EXITED | NOHANG | NOWAIT)`. Signals coalesce, so
+  every pane is probed, not only one. Only an exited, killed or dumped status
+  counts as an exit. macOS also reports stops here (020), so a stop is
+  ignored.
+
+  Once exited, the group is cleaned up (below) and the leader reaped. Then
+  `remain-on-exit` decides:
+  - `off` (the default, as in tmux): the pane closes, and its clients see a
+    notice with the exit status;
+  - `on`: the pane stays, showing its last screen and status, until closed.
 - **Close:** SIGHUP to the leader's group and to every process in its session.
   The session is found through `/proc` on Linux and `proc_listallpids` on macOS
   (013), so a job started by dash survives only if it ignores the hangup, as
-  under a real terminal. After 100 ms, close the master, SIGKILL the group,
-  and reap.
+  under a real terminal. Then a 100 ms timer on the loop, never a sleep, closes
+  the master, SIGKILLs the group and reaps the leader. Only IDs of unreaped
+  children are ever signalled: the leader stays unreaped until then, so its
+  PID and PGID cannot be reused.
 - **Input:** a per-pane queue bounded by bytes (each piece costs its length
   plus 64; 16 × 64 KiB in total). It is never bounded by piece count (021).
 - **Output:** read into the parser, with terminal replies (DSR, DA) appended
-  to the same bounded input queue.
+  to the same bounded input queue. When the queue is full, the program is not
+  reading, the reply is dropped, and the pane records it once as a notice.
 
 ### Layout
 
@@ -133,7 +173,15 @@ A plain tree of IDs is enough; nothing needs an ECS.
   then forward distance, then ID, as today.
 - An empty split collapses upward.
 - A pane lives in exactly one tab. Moving a pane moves its process, and
-  closing its last reference ends it.
+  closing it ends the process.
+- A command from any client or from the CLI can remove what another client is
+  looking at. Each view then repairs itself deterministically:
+  - focus goes to the last-focused surviving pane, else the first in tree
+    order;
+  - a closed tab selects its neighbour, a closed workspace the first
+    remaining;
+  - overlays and copy mode that referred to something removed close with a
+    notice, and never act on a different item.
 
 ### Independent views
 
@@ -141,20 +189,36 @@ Each attached client has its own view:
 
 - its size, and its current workspace;
 - per workspace, the selected tab; per tab, the focused and last-focused pane;
-- zoom, and scrollback per pane;
+- zoom, and a scroll position per pane, anchored to a fux-vt row ID so that
+  new output does not move what a scrolled-back client is reading;
 - its mode: normal, command column, chooser, action menu, prompt, confirm, or
   copy/select (with its cursor and selection);
 - its last sent frame, used for diffing.
 
 A PTY's size is the smallest rectangle it has among the clients currently
-showing it, with a 1×1 minimum. A pane nobody shows keeps its last size.
-Every change is published at once. There is no "next update".
+showing it, with a 1×1 minimum. A pane nobody shows keeps its last size. A
+client whose rectangle is larger than the PTY sees the pane at the top left,
+with the rest blank. Every change is published at once, and `fux ls` never
+reports a size from before the last change. A client's size is clamped to
+1..=4096 in each dimension.
 
 ### Input
 
-The client is a dumb pipe. It puts the outer terminal in raw mode, enables
-bracketed paste and focus events, and forwards raw bytes. It never enables
-mouse reporting. The server decodes the bytes, per client:
+The client is a dumb pipe:
+
+- It puts the outer terminal in raw mode, on the alternate screen, with normal
+  (not application) cursor and keypad modes, so that each key has one
+  encoding.
+- It enables bracketed paste and focus events, and never mouse reporting.
+- It forwards raw bytes in frames of at most 64 KiB.
+- On every exit path it restores the terminal: detach, server gone, a signal,
+  or a panic, through a panic hook. That means leaving the alternate screen,
+  showing the cursor, turning off the modes it set, and restoring termios.
+  SIGWINCH sends `Resize`; SIGTERM, SIGHUP and SIGINT detach.
+- Running `fux attach` inside a fux pane (`FUX_PANE` set) is refused, because
+  it would nest the view inside itself. `--nested` overrides that.
+
+The server decodes the bytes, per client:
 
 1. **Decoding:** keys (CSI/SS3, UTF-8, a lone Escape after 35 ms) and
    bracketed-paste envelopes, bounded as before. Mouse sequences, which a
@@ -166,6 +230,9 @@ mouse reporting. The server decodes the bytes, per client:
    - Pastes never become commands.
    - Otherwise the input goes to the focused pane, re-encoded for that pane's
      modes by the ported `encode.rs`.
+   - Focus-in and focus-out go to that client's focused pane, only if the pane
+     enabled focus reporting (`?1004`).
+   - The Kitty keyboard protocol is not supported. Keys use xterm encodings.
 
 **No mouse, deliberately.** Programs in panes that ask for the mouse (`vim`
 with `mouse=a`, `htop`) get nothing, because the outer terminal is never put
@@ -186,9 +253,13 @@ Per client, on a 16 ms coalescing tick:
 2. Diff it against the client's last grid, and emit only the changed runs,
    wrapped in synchronized output (`?2026`). Cursor position and shape come
    from the focused pane.
-3. If a client's socket stops draining, stop queueing paints for it. Once it
-   drains again, send one full repaint. A slow client never grows the server
-   and never stalls the loop.
+3. If a client's socket stops draining, stop queueing paints for it. Each
+   client's output buffer is capped at 4 MiB. Once it drains again, send one
+   full repaint. A slow client never grows the server and never stalls the
+   loop.
+
+Pane titles (OSC 0/2) are shown in the bar, not passed to the outer terminal.
+Bells are not passed on either.
 
 ### Menus and overlays
 
@@ -219,8 +290,10 @@ and private to the client that opened them:
 
 ### Copy/select mode
 
-A keyboard cursor over the focused pane, which is frozen for this client while
-the mode is on. Output keeps arriving, and other clients see it live.
+A keyboard cursor over the focused pane. For this client the pane holds
+still while the mode is on: its rows are anchored by row ID, as scrolling is.
+Output keeps arriving, and other clients see it live. The mode ends with a
+notice if the pane closes or its history drops the anchored rows.
 
 - **Enter it:** prefix `c`. The cursor starts at the pane's text cursor. The
   bar shows `COPY` with the cursor's line in history.
@@ -233,7 +306,9 @@ the mode is on. Output keeps arriving, and other clients see it live.
   - Ctrl-U/D half a page, PageUp/PageDown a page.
 
   The view scrolls when the cursor leaves it.
-- **Search:** `/` and `?`, then `n` and `N`, over the whole history.
+- **Search:** `/` and `?`, then `n` and `N`, over the whole history. It is
+  literal (not a regex) and smart-case: case-insensitive unless the query has
+  a capital.
 - **Select:** `v` characters, `V` lines, Ctrl-V a block (rectangle); `o` swaps
   the selection's ends; `v` again clears it.
 - **Copy:** `y` or Enter copies and leaves the mode. `q` or Esc leaves without
@@ -244,8 +319,9 @@ the mode is on. Output keeps arriving, and other clients see it live.
     for it);
   - `fux list-buffers`, `fux show-buffer` and `fux paste-buffer -t %N` work
     from scripts;
-  - and, when `clipboard write-only` is set, to the copying client's own
-    terminal as OSC 52.
+  - and to the copying client's own terminal as OSC 52, unless
+    `set clipboard off`. The outer terminal must allow OSC 52 writes; many do
+    by default, and some ask first or need an option.
 - **Selection rules:**
   - rows are tracked by fux-vt row ID, as today, so new output and scrolling
     do not break a selection over rows that did not change;
@@ -267,8 +343,12 @@ A socket with the same rules as today:
 
 Also:
 
-- The peer's UID is checked on accept: rustix's `socket_peercred` on Linux,
-  `getpeereid` through `libc` on macOS.
+- The peer's UID is checked on accept, and anyone but the server's own user
+  is refused: rustix's `socket_peercred` on Linux, `getpeereid` through
+  `libc` on macOS.
+- The same user can run anything through fux (`split -- CMD`, `send-keys`).
+  That is the design: the socket's permissions are the access control, as in
+  tmux, and the README says so.
 - Every message is length-prefixed with a hard size cap (007/008). Reads
   retry on `EINTR` (010).
 - The whole surface is the fixed command list below. There is nothing like
@@ -277,9 +357,12 @@ Also:
 ## Protocol
 
 It is private between one `fux` binary and itself. Frames are
-`u32 length | u8 kind | payload`, with a 1 MiB cap. The first frame is `Hello`
-with the exact binary version; any mismatch is refused with "server is
-version X; restart it".
+`u32 length | u8 kind | payload`, with a 1 MiB cap on a frame; longer
+payloads (a large paint, `capture-pane` of the whole history) are split
+across frames. The first frame is `Hello` with `PROTOCOL`, an integer bumped
+on any change to the protocol, and the crate version. A `PROTOCOL` mismatch
+is refused with "server speaks protocol N (fux X); restart it with
+`fux kill-server`".
 
 | Direction | Frame |
 | --- | --- |
@@ -288,7 +371,7 @@ version X; restart it".
 | client → server | `Input(bytes)`, `Resize { rows, cols }`, `Detach` |
 | client → server | `Command { argv, cwd, pane? }` |
 | server → client | `Paint(bytes)`, `Exit(reason)` |
-| server → client | `Result { status, stdout, stderr }` |
+| server → client | `Stdout(bytes)`, `Stderr(bytes)` (repeated as needed), then `Done { status }` |
 
 The server parses a command's argv, so there is one grammar, one binary, and
 no command encoding to version.
@@ -301,15 +384,18 @@ command run inside a pane targets that pane without flags, like `TMUX_PANE`.
 
 - a pane: `%N`;
 - a tab: `@N`;
-- a workspace: `$N` or its name.
+- a workspace: `+N` or its name. Not `$N`, which the shell would expand.
+
+A command that needs a target and has neither `-t` nor `FUX_PANE` fails with
+a message naming `-t`. It never guesses a "current" pane.
 
 | Command | Does |
 | --- | --- |
-| `fux` / `fux attach [-t WS]` | Attach, starting a server if none answers |
+| `fux` / `fux attach [-t WS] [--nested]` | Attach, starting a server if none answers |
 | `fux server [--socket P] [--config F]` | Run a server in the foreground |
 | `fux kill-server` | Stop the server (hangs up every pane) |
 | `fux ls [--json]` | Workspaces, tabs, panes, clients |
-| `fux new-workspace [-n NAME]`, `fux new-tab [-t WS] [-n NAME]` | Create |
+| `fux new-workspace [-n NAME] [-- CMD…]`, `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | Create, with a shell or CMD |
 | `fux split -h\|-v [-t %N] [-- CMD…]` | Split, optionally running a command |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | Close (no confirmation from the CLI) |
 | `fux rename -t TARGET NAME` | Rename a pane, tab or workspace |
@@ -331,7 +417,15 @@ the client that pressed the key. From the command line they need `-c CLIENT`
 flag.
 
 Exit status 0 means done; 1 means the command failed, with the reason on
-stderr; 2 means usage. `--json` output is for scripts and agents.
+stderr; 2 means usage. `--json` output is for scripts and agents; its shape is
+documented in the README, and changing it is a breaking change.
+
+Key names, for `bind` and `send-keys`, are:
+- the tmux ones: `C-x`, `M-x`, `S-Left`, `Enter`, `Tab`, `BTab`, `Escape`,
+  `Space`, `BSpace`, `Up`, `Home`, `PageUp`, `F1`–`F12`, …;
+- plus any single character.
+
+`encode.rs`'s key set defines the full list, and `fux list-keys` prints it.
 
 ## Configuration
 
@@ -344,7 +438,8 @@ lives at `--config`, else `$XDG_CONFIG_HOME/fux/fux.conf`, else
 set prefix C-b
 set shell /bin/zsh -l            # default: $SHELL, else /bin/sh
 set history-lines 10000
-set clipboard write-only         # default: off
+set remain-on-exit off           # default: off
+set clipboard off                # default: write-only (OSC 52 on)
 set buffers 16
 
 unbind-all                       # optional: start from an empty key table
@@ -366,6 +461,11 @@ No dependency is needed, and it is the right format here anyway:
 - **`fux reload`** runs the file again against the defaults. On any error it
   names the file and line and keeps the previous configuration whole, never
   half-applied.
+- At startup, an invalid file does not stop the server. It runs on the
+  defaults, logs the error, and shows it as a notice to each client that
+  attaches, until a reload succeeds.
+- `set` and `bind` inside the file affect only the configuration, not
+  workspaces or panes. Layout commands in the config file are an error.
 - The tokenizer is about 100 lines and gets its own tests and fuzz target.
 
 TOML was the alternative. It needs `toml` and `serde` (with `toml`'s own
@@ -384,13 +484,17 @@ which lists all of them.
 - `h` `v` split; `z` zoom; `r` rename; `x` close (confirm `y`);
 - Ctrl-arrows resize; Shift-arrows move;
 - `c` copy/select mode; `P` paste the newest buffer; `:` command prompt;
-  `d` detach.
+  `d` detach;
+- the prefix twice sends it to the pane.
 
 ## Not included
 
 - **Mouse support of any kind**, by decision (see Input).
 - **Saving and loading layouts**, by decision.
 - **Watching the config file**: run `fux reload` instead.
+- **Keybindings without the prefix** (tmux's `bind -n`).
+- **Passing pane titles and bells to the outer terminal**, or the Kitty
+  keyboard protocol.
 
 ## Dependencies
 
@@ -401,6 +505,12 @@ which lists all of them.
 | `signal-hook` | Signal → self-pipe (rustix does not install handlers) |
 | `unicode-width` | Bar and overlay layout (already in the graph through fux-vt) |
 | `libc` (macOS only) | `proc_listallpids` for session hangup, `getpeereid` for the peer check; rustix has neither on macOS |
+
+The lints stay as today: clippy forbids `unwrap`, `expect`, `panic!`,
+`unreachable!`, `todo!` and `unimplemented!`, and warns on
+`indexing_slicing`. CI runs clippy with `-D warnings` on macOS and Linux.
+`unsafe` appears only for `pre_exec` and the macOS `libc` calls, each with a
+`SAFETY:` comment. The toolchain pin stays in `rust-toolchain.toml`.
 
 Written in fux instead of depended on, each small and tested:
 
@@ -432,10 +542,20 @@ on ALSA, and no async.
 - **Integration tests:** a real server, real PTYs, real `fux` CLI calls, and a
   scripted attach client. The fork race that corrupted the last suite's
   captures is avoided by opening PTYs and forking only under one lock.
-- **Lessons as tests:** hangup of a dash background job (013); stopped ≠
-  exited (020); 3000 keys to a stopped program all arrive (021); a signal
-  during attach (010); descriptor pressure (012); an oversized frame is
-  refused (007/008); a reused socket inode is not deleted (014, ext4 in CI).
+- **Lessons as tests:**
+  - hangup of a dash background job (013);
+  - stopped ≠ exited (020);
+  - 3000 keys to a stopped program all arrive (021);
+  - a signal during attach (010);
+  - descriptor pressure (012);
+  - an oversized frame is refused (007/008);
+  - a reused socket inode is not deleted (014, ext4 in CI);
+  - a resized pane keeps its last line (017, through fux-vt);
+  - a pane's program inherits only stdio and default signal state;
+  - a slow client does not grow the server.
+
+  Each is shown to catch its bug: break the code on purpose, watch the test
+  fail, then restore it.
 - **Fuzzing:**
   - `cargo-fuzz` targets for the decoder, the protocol codec and the command
     tokenizer;
@@ -464,10 +584,11 @@ on ALSA, and no async.
    prompts and confirmations.
 8. Copy/select mode, paste buffers, the clipboard.
 9. The lesson tests, and the fuzz targets.
-10. Merge `rewrite` into `main` when it is usable daily; publish 0.13.0.
+10. Open a PR from `rewrite` to `main`. The user decides when to merge it and
+    when to publish 0.13.0.
 
-Each step lands with its tests, and `main` keeps the Bevy version until
-step 10.
+Each step lands with its tests, and `main` keeps the Bevy version until that
+PR is merged.
 
 ## Estimate
 
@@ -482,5 +603,6 @@ About 8–10k lines of Rust, including tests:
 | Overlays (command column, choosers, menus, prompts) | ~1.5k |
 | Copy/select mode and buffers | ~1k |
 | The command grammar, CLI, config, protocol, socket and JSON | ~1.5k |
-| The client | ~0.3k | The current `src/` is 14.4k lines, not counting its Bevy
-dependencies.
+| The client | ~0.3k |
+
+The current `src/` is 14.4k lines, not counting its Bevy dependencies.
