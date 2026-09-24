@@ -1,9 +1,0 @@
-{
-  "version": 4,
-  "seed": 1,
-  "actions": [
-    {
-      "scenario": "hostile"
-    }
-  ]
-}

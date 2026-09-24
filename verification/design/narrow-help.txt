@@ -1,7 +1,0 @@
- Commands
-    h  split hor…
-    v  split ver…
-    x  close
-    k  terminate
- ▼ 20 more
- main│ …67209: sh

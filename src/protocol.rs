@@ -1,343 +1,403 @@
-use bevy_ecs::prelude::*;
-use bevy_math::{URect, UVec2};
-use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
-use serde::{Deserialize, Serialize};
-use std::fmt;
+//! The private protocol between a `fux` client and its server.
+//!
+//! A frame is `u32 length | u8 kind | payload`, big-endian, where `length`
+//! counts the kind byte and the payload. A frame is at most `MAX_FRAME`; a
+//! longer paint or output is split across frames by the sender.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PaneRect {
-    /// IDs in the authoritative server World, not the presentation World.
-    pub leaf: Entity,
-    pub pane: Entity,
-    /// Content cells, half-open: `min` is the first cell, `max` one past the
-    /// last. No border or title inset; the final viewer row is chrome.
-    pub rect: URect,
-}
+/// Bumped on any change to the frames below.
+pub const PROTOCOL: u32 = 1;
+/// The largest frame, kind byte included.
+pub const MAX_FRAME: usize = 1 << 20;
+/// The largest payload one frame carries.
+pub const MAX_PAYLOAD: usize = MAX_FRAME - 1;
 
-impl PaneRect {
-    pub fn x(&self) -> u16 {
-        self.rect.min.x as u16
-    }
-    pub fn y(&self) -> u16 {
-        self.rect.min.y as u16
-    }
-    pub fn width(&self) -> u16 {
-        self.rect.width() as u16
-    }
-    pub fn height(&self) -> u16 {
-        self.rect.height() as u16
-    }
-    /// Half-open containment; `URect::contains` includes the far edge.
-    pub fn covers(&self, x: u16, y: u16) -> bool {
-        let point = UVec2::new(u32::from(x), u32::from(y));
-        point.cmpge(self.rect.min).all() && point.cmplt(self.rect.max).all()
-    }
-    /// The cell inside this pane, zero-based `(row, column)`, clamped to it.
-    pub fn local(&self, x: u16, y: u16) -> (u16, u16) {
-        (
-            y.saturating_sub(self.y())
-                .min(self.height().saturating_sub(1)),
-            x.saturating_sub(self.x())
-                .min(self.width().saturating_sub(1)),
-        )
-    }
+/// What a connecting client is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// An interactive client: `Attach`, then input.
+    Attach,
+    /// One command, then its output.
+    Command,
+    /// Stop the server. Accepted whatever the protocol version, so that
+    /// `fux kill-server` can always stop a server from another fux version.
+    Kill,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
-#[reflect(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Direction {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-/// A key as the outer terminal names it. The wire form is the configuration
-/// spelling: one character for `Char`, `enter`, `up`, `f5` and so on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
-#[reflect(Serialize, Deserialize)]
-#[serde(into = "String", try_from = "String")]
-pub enum Key {
-    Char(char),
-    Enter,
-    Tab,
-    Escape,
-    Backspace,
-    Delete,
-    Insert,
-    Arrow(Direction),
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    /// Only `1..=12` deserializes; `convert` never produces others.
-    F(u8),
-}
-
-impl fmt::Display for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Char(c) => write!(f, "{c}"),
-            Self::Enter => f.write_str("enter"),
-            Self::Tab => f.write_str("tab"),
-            Self::Escape => f.write_str("escape"),
-            Self::Backspace => f.write_str("backspace"),
-            Self::Delete => f.write_str("delete"),
-            Self::Insert => f.write_str("insert"),
-            Self::Arrow(Direction::Left) => f.write_str("left"),
-            Self::Arrow(Direction::Right) => f.write_str("right"),
-            Self::Arrow(Direction::Up) => f.write_str("up"),
-            Self::Arrow(Direction::Down) => f.write_str("down"),
-            Self::Home => f.write_str("home"),
-            Self::End => f.write_str("end"),
-            Self::PageUp => f.write_str("pageup"),
-            Self::PageDown => f.write_str("pagedown"),
-            Self::F(n) => write!(f, "f{n}"),
-        }
-    }
-}
-impl From<Key> for String {
-    fn from(key: Key) -> String {
-        key.to_string()
-    }
-}
-impl std::str::FromStr for Key {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, String> {
-        let mut chars = s.chars();
-        if let (Some(c), None) = (chars.next(), chars.next()) {
-            return Ok(Self::Char(c));
-        }
-        Ok(match s {
-            "enter" => Self::Enter,
-            "tab" => Self::Tab,
-            "escape" => Self::Escape,
-            "backspace" => Self::Backspace,
-            "delete" => Self::Delete,
-            "insert" => Self::Insert,
-            "left" => Self::Arrow(Direction::Left),
-            "right" => Self::Arrow(Direction::Right),
-            "up" => Self::Arrow(Direction::Up),
-            "down" => Self::Arrow(Direction::Down),
-            "home" => Self::Home,
-            "end" => Self::End,
-            "pageup" => Self::PageUp,
-            "pagedown" => Self::PageDown,
-            _ => {
-                let number = s.strip_prefix('f').and_then(|n| n.parse::<u8>().ok());
-                match number {
-                    Some(n) if (1..=12).contains(&n) => Self::F(n),
-                    _ => return Err(format!("unsupported key {s}")),
-                }
-            }
-        })
-    }
-}
-impl TryFrom<String> for Key {
-    type Error = String;
-    fn try_from(s: String) -> Result<Self, String> {
-        s.parse()
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
-#[reflect(Serialize, Deserialize)]
-pub struct Modifiers {
-    pub ctrl: bool,
-    pub alt: bool,
-    pub shift: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, Serialize, Deserialize)]
-#[reflect(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MouseAction {
-    Press,
-    Release,
-    Move,
-    ScrollUp,
-    ScrollDown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, Serialize, Deserialize)]
-#[reflect(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MouseButton {
-    Left,
-    Middle,
-    Right,
-    None,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
-#[reflect(Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Input {
-    Key {
-        key: Key,
-        #[serde(flatten)]
-        modifiers: Modifiers,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Frame {
+    /// Both ways: the first frame from each side.
+    Hello {
+        protocol: u32,
+        version: String,
+        role: Role,
     },
-    /// Capture the current input owner before a fragmented bracketed paste.
-    PasteBegin,
-    Paste {
-        text: String,
+    /// client → server.
+    Attach {
+        rows: u16,
+        cols: u16,
+        workspace: Option<String>,
     },
-    Mouse {
-        action: MouseAction,
-        button: MouseButton,
-        x: u16,
-        y: u16,
-        #[serde(flatten)]
-        modifiers: Modifiers,
-    },
+    Input(Vec<u8>),
     Resize {
         rows: u16,
         cols: u16,
     },
+    Detach,
+    Command {
+        argv: Vec<String>,
+        cwd: String,
+        pane: Option<String>,
+    },
+    /// server → client.
+    Paint(Vec<u8>),
+    Exit(String),
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Done {
+        status: u8,
+    },
 }
 
-/// A binding as written in configuration: `ctrl-alt-shift-key`. Shift is only
-/// spelled out for named keys; a shifted character is itself.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Reflect, Serialize, Deserialize)]
-#[reflect(Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Token(String);
-
-impl Token {
-    pub fn new(key: Key, modifiers: Modifiers) -> Self {
-        Self(format!(
-            "{}{}{}{key}",
-            if modifiers.ctrl { "ctrl-" } else { "" },
-            if modifiers.alt { "alt-" } else { "" },
-            if modifiers.shift && !matches!(key, Key::Char(_)) {
-                "shift-"
-            } else {
-                ""
-            },
-        ))
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-impl From<&str> for Token {
-    fn from(text: &str) -> Self {
-        Self(text.to_owned())
-    }
-}
-impl fmt::Display for Token {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl Input {
-    /// The binding token for a key event, as written in configuration.
-    pub fn token(&self) -> Option<Token> {
+impl Frame {
+    fn kind(&self) -> u8 {
         match self {
-            Input::Key { key, modifiers } => Some(Token::new(*key, *modifiers)),
-            _ => None,
+            Frame::Hello { .. } => 1,
+            Frame::Attach { .. } => 2,
+            Frame::Input(_) => 3,
+            Frame::Resize { .. } => 4,
+            Frame::Detach => 5,
+            Frame::Command { .. } => 6,
+            Frame::Paint(_) => 7,
+            Frame::Exit(_) => 8,
+            Frame::Stdout(_) => 9,
+            Frame::Stderr(_) => 10,
+            Frame::Done { .. } => 11,
+        }
+    }
+
+    /// The encoded frame, or an error if its payload exceeds `MAX_PAYLOAD`.
+    pub fn encode(&self) -> Result<Vec<u8>, String> {
+        let mut payload = Vec::new();
+        match self {
+            Frame::Hello {
+                protocol,
+                version,
+                role,
+            } => {
+                payload.extend_from_slice(&protocol.to_be_bytes());
+                payload.push(match role {
+                    Role::Attach => 0,
+                    Role::Command => 1,
+                    Role::Kill => 2,
+                });
+                put_bytes(&mut payload, version.as_bytes());
+            }
+            Frame::Attach {
+                rows,
+                cols,
+                workspace,
+            } => {
+                payload.extend_from_slice(&rows.to_be_bytes());
+                payload.extend_from_slice(&cols.to_be_bytes());
+                put_option(&mut payload, workspace.as_deref());
+            }
+            Frame::Input(bytes)
+            | Frame::Paint(bytes)
+            | Frame::Stdout(bytes)
+            | Frame::Stderr(bytes) => {
+                payload.extend_from_slice(bytes);
+            }
+            Frame::Resize { rows, cols } => {
+                payload.extend_from_slice(&rows.to_be_bytes());
+                payload.extend_from_slice(&cols.to_be_bytes());
+            }
+            Frame::Detach => {}
+            Frame::Command { argv, cwd, pane } => {
+                put_len(&mut payload, argv.len());
+                for arg in argv {
+                    put_bytes(&mut payload, arg.as_bytes());
+                }
+                put_bytes(&mut payload, cwd.as_bytes());
+                put_option(&mut payload, pane.as_deref());
+            }
+            Frame::Exit(reason) => payload.extend_from_slice(reason.as_bytes()),
+            Frame::Done { status } => payload.push(*status),
+        }
+        if payload.len() > MAX_PAYLOAD {
+            return Err(format!(
+                "a frame of {} bytes exceeds the {MAX_PAYLOAD}-byte limit",
+                payload.len()
+            ));
+        }
+        let length = u32::try_from(payload.len() + 1).map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(payload.len() + 5);
+        out.extend_from_slice(&length.to_be_bytes());
+        out.push(self.kind());
+        out.extend_from_slice(&payload);
+        Ok(out)
+    }
+
+    /// Frames carrying `bytes` split so each fits, for paint and output.
+    pub fn chunked(make: fn(Vec<u8>) -> Frame, bytes: &[u8]) -> Vec<Frame> {
+        bytes
+            .chunks(MAX_PAYLOAD)
+            .map(|chunk| make(chunk.to_vec()))
+            .collect()
+    }
+}
+
+fn put_len(out: &mut Vec<u8>, len: usize) {
+    out.extend_from_slice(&u32::try_from(len).unwrap_or(u32::MAX).to_be_bytes());
+}
+fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    put_len(out, bytes.len());
+    out.extend_from_slice(bytes);
+}
+fn put_option(out: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            put_bytes(out, value.as_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
+/// A cursor over a payload being decoded.
+struct Reader<'a>(&'a [u8]);
+impl Reader<'_> {
+    fn take(&mut self, n: usize) -> Result<&[u8], String> {
+        if self.0.len() < n {
+            return Err("truncated frame".into());
+        }
+        let (head, rest) = self.0.split_at(n);
+        self.0 = rest;
+        Ok(head)
+    }
+    fn u8(&mut self) -> Result<u8, String> {
+        self.take(1)?
+            .first()
+            .copied()
+            .ok_or_else(|| "truncated frame".into())
+    }
+    fn u16(&mut self) -> Result<u16, String> {
+        let b = self.take(2)?;
+        Ok(u16::from_be_bytes([
+            b.first().copied().unwrap_or(0),
+            b.get(1).copied().unwrap_or(0),
+        ]))
+    }
+    fn u32(&mut self) -> Result<u32, String> {
+        let b = self.take(4)?;
+        let mut a = [0u8; 4];
+        a.copy_from_slice(b);
+        Ok(u32::from_be_bytes(a))
+    }
+    fn string(&mut self) -> Result<String, String> {
+        let len = self.u32()? as usize;
+        let bytes = self.take(len)?;
+        String::from_utf8(bytes.to_vec()).map_err(|_| "a frame string is not UTF-8".into())
+    }
+    fn option(&mut self) -> Result<Option<String>, String> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.string()?)),
+            _ => Err("bad option marker in frame".into()),
+        }
+    }
+    fn end(&self) -> Result<(), String> {
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err("trailing bytes in frame".into())
         }
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Frame {
-    pub paint: String,
-    pub detach: bool,
+fn decode_frame(kind: u8, payload: &[u8]) -> Result<Frame, String> {
+    let mut r = Reader(payload);
+    let frame = match kind {
+        1 => {
+            let protocol = r.u32()?;
+            let role = match r.u8()? {
+                0 => Role::Attach,
+                1 => Role::Command,
+                2 => Role::Kill,
+                other => return Err(format!("unknown client role {other}")),
+            };
+            let version = r.string()?;
+            Frame::Hello {
+                protocol,
+                version,
+                role,
+            }
+        }
+        2 => Frame::Attach {
+            rows: r.u16()?,
+            cols: r.u16()?,
+            workspace: r.option()?,
+        },
+        3 => return Ok(Frame::Input(payload.to_vec())),
+        4 => Frame::Resize {
+            rows: r.u16()?,
+            cols: r.u16()?,
+        },
+        5 => Frame::Detach,
+        6 => {
+            let count = r.u32()? as usize;
+            // Each argument takes at least its 4-byte length.
+            if count > payload.len() / 4 {
+                return Err("bad argument count in frame".into());
+            }
+            let mut argv = Vec::with_capacity(count);
+            for _ in 0..count {
+                argv.push(r.string()?);
+            }
+            Frame::Command {
+                argv,
+                cwd: r.string()?,
+                pane: r.option()?,
+            }
+        }
+        7 => return Ok(Frame::Paint(payload.to_vec())),
+        8 => {
+            return String::from_utf8(payload.to_vec())
+                .map(Frame::Exit)
+                .map_err(|_| "an exit reason is not UTF-8".into());
+        }
+        9 => return Ok(Frame::Stdout(payload.to_vec())),
+        10 => return Ok(Frame::Stderr(payload.to_vec())),
+        11 => Frame::Done { status: r.u8()? },
+        other => return Err(format!("unknown frame kind {other}")),
+    };
+    r.end()?;
+    Ok(frame)
+}
+
+/// Accumulates bytes from a stream and yields whole frames. A frame header
+/// claiming more than `MAX_FRAME` is refused before anything is buffered for
+/// it, so a peer cannot make the reader grow.
+#[derive(Default)]
+pub struct Decoder {
+    buffer: Vec<u8>,
+}
+
+impl Decoder {
+    pub fn push(&mut self, bytes: &[u8]) {
+        self.buffer.extend_from_slice(bytes);
+    }
+
+    /// The next whole frame, `Ok(None)` if more bytes are needed, or an error
+    /// for a frame that is oversized or malformed; the stream is then unusable.
+    pub fn frame(&mut self) -> Result<Option<Frame>, String> {
+        let Some(header) = self.buffer.get(..4) else {
+            return Ok(None);
+        };
+        let mut length = [0u8; 4];
+        length.copy_from_slice(header);
+        let length = u32::from_be_bytes(length) as usize;
+        if length == 0 {
+            return Err("an empty frame".into());
+        }
+        if length > MAX_FRAME {
+            return Err(format!(
+                "a frame of {length} bytes exceeds the {MAX_FRAME}-byte limit"
+            ));
+        }
+        let Some(body) = self.buffer.get(4..4 + length) else {
+            return Ok(None);
+        };
+        let kind = body.first().copied().unwrap_or(0);
+        let frame = decode_frame(kind, body.get(1..).unwrap_or(&[]));
+        self.buffer.drain(..4 + length);
+        frame.map(Some)
+    }
+
+    /// Bytes held for a frame not yet complete.
+    pub fn buffered(&self) -> usize {
+        self.buffer.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::*;
 
-    fn key(key: &str, ctrl: bool, alt: bool, shift: bool) -> Result<Input, String> {
-        Ok(Input::Key {
-            key: key.parse()?,
-            modifiers: Modifiers { ctrl, alt, shift },
-        })
-    }
-
-    #[test]
-    fn binding_tokens_match_configuration_spelling() -> crate::testing::Outcome {
-        assert_eq!(key("b", false, false, false)?.token().need()?.as_str(), "b");
-        assert_eq!(
-            key("b", true, false, false)?.token().need()?.as_str(),
-            "ctrl-b"
-        );
-        assert_eq!(
-            key("left", false, true, false)?.token().need()?.as_str(),
-            "alt-left"
-        );
-        assert_eq!(
-            key("tab", false, false, true)?.token().need()?.as_str(),
-            "shift-tab"
-        );
-        assert_eq!(key("T", false, false, true)?.token().need()?.as_str(), "T");
-        assert_eq!(
-            key("up", true, true, true)?.token().need()?.as_str(),
-            "ctrl-alt-shift-up"
-        );
-        assert!(Input::PasteBegin.token().is_none());
-        assert!(Input::Resize { rows: 1, cols: 1 }.token().is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn every_key_round_trips_and_bad_names_are_rejected() -> crate::testing::Outcome {
-        let mut keys = vec![
-            Key::Char('a'),
-            Key::Char('界'),
-            Key::Enter,
-            Key::Tab,
-            Key::Escape,
-            Key::Backspace,
-            Key::Delete,
-            Key::Insert,
-            Key::Home,
-            Key::End,
-            Key::PageUp,
-            Key::PageDown,
-        ];
-        keys.extend(
-            [
-                Direction::Left,
-                Direction::Right,
-                Direction::Up,
-                Direction::Down,
-            ]
-            .map(Key::Arrow),
-        );
-        keys.extend((1..=12).map(Key::F));
-        for key in keys {
-            let json = serde_json::to_string(&key)?;
-            assert_eq!(serde_json::from_str::<Key>(&json)?, key);
-            assert_eq!(key.to_string().parse::<Key>()?, key);
-        }
-        assert_eq!(serde_json::to_string(&Key::F(5))?, "\"f5\"");
-        for bad in ["f0", "f13", "", "fno", "unknown"] {
-            assert!(bad.parse::<Key>().is_err(), "{bad}");
-        }
-        let input: Input = serde_json::from_str(
-            r#"{"kind":"key","key":"enter","ctrl":true,"alt":false,"shift":false}"#,
-        )?;
-        assert!(matches!(
-            input,
-            Input::Key {
-                key: Key::Enter,
-                modifiers: Modifiers {
-                    ctrl: true,
-                    alt: false,
-                    shift: false
-                }
+    fn round_trip(frame: Frame) {
+        let bytes = frame.encode().unwrap_or_default();
+        // Byte by byte, as a slow socket would deliver it.
+        let mut decoder = Decoder::default();
+        let mut out = Vec::new();
+        for byte in &bytes {
+            decoder.push(&[*byte]);
+            while let Ok(Some(frame)) = decoder.frame() {
+                out.push(frame);
             }
-        ));
-        Ok(())
+        }
+        assert_eq!(out, vec![frame]);
+        assert_eq!(decoder.buffered(), 0);
+    }
+
+    #[test]
+    fn every_frame_round_trips_in_any_chunking() {
+        round_trip(Frame::Hello {
+            protocol: PROTOCOL,
+            version: "0.13.0".into(),
+            role: Role::Command,
+        });
+        round_trip(Frame::Attach {
+            rows: 24,
+            cols: 80,
+            workspace: Some("main".into()),
+        });
+        round_trip(Frame::Attach {
+            rows: 1,
+            cols: 1,
+            workspace: None,
+        });
+        round_trip(Frame::Input(b"\x1b[A".to_vec()));
+        round_trip(Frame::Resize {
+            rows: 50,
+            cols: 200,
+        });
+        round_trip(Frame::Detach);
+        round_trip(Frame::Command {
+            argv: vec!["split".into(), "-h".into(), "".into(), "界".into()],
+            cwd: "/tmp".into(),
+            pane: Some("%3".into()),
+        });
+        round_trip(Frame::Paint(vec![0, 1, 2, 255]));
+        round_trip(Frame::Exit("detached".into()));
+        round_trip(Frame::Stdout(b"out".to_vec()));
+        round_trip(Frame::Stderr(Vec::new()));
+        round_trip(Frame::Done { status: 2 });
+    }
+
+    #[test]
+    fn oversized_frames_are_refused_on_both_sides() {
+        assert!(Frame::Paint(vec![0; MAX_PAYLOAD + 1]).encode().is_err());
+        assert!(Frame::Paint(vec![0; MAX_PAYLOAD]).encode().is_ok());
+        let mut decoder = Decoder::default();
+        decoder.push(&((MAX_FRAME + 1) as u32).to_be_bytes());
+        assert!(decoder.frame().is_err());
+        let chunks = Frame::chunked(Frame::Paint, &vec![7; MAX_PAYLOAD * 2 + 3]);
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks.iter().all(|f| f.encode().is_ok()));
+    }
+
+    #[test]
+    fn malformed_frames_are_errors_not_panics() {
+        for bytes in [
+            vec![0, 0, 0, 1, 99],
+            vec![0, 0, 0, 1, 11],
+            vec![0, 0, 0, 3, 11, 0, 0],
+            vec![0, 0, 0, 5, 6, 255, 255, 255, 255],
+            vec![0, 0, 0, 0],
+            vec![0, 0, 0, 2, 8, 0xff],
+        ] {
+            let mut decoder = Decoder::default();
+            decoder.push(&bytes);
+            assert!(decoder.frame().is_err(), "{bytes:?}");
+        }
     }
 }
