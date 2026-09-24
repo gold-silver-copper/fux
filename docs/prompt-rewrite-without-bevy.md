@@ -47,11 +47,11 @@ Re-check each point; this is context, not proof.
   - the full keyboard command column, choosers and action menus;
   - the config as a file of fux commands, with zero dependencies;
   - OSC 52 clipboard writes on by default;
+  - a pane always runs the user's shell, and a `-- CMD` is typed into it;
+    a pane closes only when its shell exits;
   - functionality only in this first version.
-- Two defaults are mine, not the user's. List them in the PR description as
-  open to change:
-  - `remain-on-exit off`: a pane closes when its program exits;
-  - the server exits when its last pane closes.
+- One default is mine, not the user's. List it in the PR description as open
+  to change: the server exits when its last pane closes.
 
 ## Rules
 
@@ -138,6 +138,8 @@ behaviour and its tests, not Bevy's structure.
   with `fcntl_setfd`.
 - A test that waits for a marker must print the marker after the state it
   confirms: the modes first, then `READY`.
+- Tests that type into a shell should start it without the user's rc files
+  (`sh`, or `bash --norc`), and set a known prompt, so output is predictable.
 
 ## Work, in order
 
@@ -165,7 +167,7 @@ Then Plan steps 2–8, each a milestone that ends usable:
 | 2 | `fux` attaches to one shell; detach and reattach; resize works; `capture-pane` shows the screen |
 | 3 | Splits, focus (next, previous, last, directional), resize by weight, zoom, the bar |
 | 4 | Workspaces and tabs; two clients with independent views; PTY size is the minimum across viewers |
-| 5 | The whole CLI table, `--json` on `ls` and `capture-pane`, targets and their errors |
+| 5 | The whole CLI table, `--json` on `ls` and `capture-pane`, targets and their errors; `split -- CMD` (and `new-tab`, `new-workspace`) types CMD into the new shell: its output shows, then the prompt is back and takes more input, and an argument with a control character is refused |
 | 6 | The config file, `set`, `bind`, `unbind`, `reload` with all-or-nothing errors, the prefix key |
 | 7 | The command column, the choosers, action menus, the `:` prompt, rename, confirmations |
 | 8 | Copy/select mode (motions, search, char/line/block selection), paste buffers, OSC 52 |
@@ -200,7 +202,7 @@ All of these, checked at the final head of `rewrite`:
   - what was built;
   - what was dropped, and why;
   - what is deferred to a later version;
-  - the two defaults above;
+  - the default above;
   - anything known and unfixed;
   - how it was verified.
 
