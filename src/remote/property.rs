@@ -120,7 +120,11 @@ const METHODS: &[(&str, usize)] = &[
     ("fux.invariants", 1),
 ];
 
-fn call(world: &mut World, method: &str, params: Option<Value>) -> Result<Value, String> {
+pub(super) fn call(
+    world: &mut World,
+    method: &str,
+    params: Option<Value>,
+) -> Result<Value, String> {
     let handler = world
         .resource::<RemoteMethods>()
         .get(method)
@@ -147,7 +151,7 @@ fn bits(entity: Entity) -> Value {
 
 /// The starting world: a server with its first workspace, a split, a second
 /// tab and workspace, and two viewers of different sizes. Panes run `sleep`.
-fn fixture() -> Result<App, String> {
+pub(super) fn fixture() -> Result<App, String> {
     let mut app = App::new();
     app.insert_resource(Wake(std::thread::current()));
     app.insert_resource(Settings {
@@ -692,7 +696,7 @@ fn sample_at(value: &Value, path: &str) -> Option<Value> {
 }
 
 /// What the property requires after each request.
-fn check(world: &mut World) -> Result<(), String> {
+pub(super) fn check(world: &mut World) -> Result<(), String> {
     let broken = crate::invariants::violations(world);
     if !broken.is_empty() {
         return Err(format!("invariants: {}", broken.join("; ")));
@@ -836,7 +840,6 @@ fn run(seed: u64, cases: u64, collect: bool) -> Result<Vec<String>, String> {
 }
 
 #[test]
-#[ignore = "fails until the BRP guard lands: findings 022-027"]
 fn no_brp_request_breaks_the_server() -> Outcome {
     let cases = env("FUX_BRP_CASES").unwrap_or(2_000);
     let seed = env("FUX_BRP_SEED").unwrap_or(0x5eed_f00d);

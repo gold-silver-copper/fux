@@ -14,10 +14,23 @@ use crate::{
 };
 use bevy_ecs::prelude::*;
 
+/// A viewer whose workspace cannot be projected cannot act, but it is told
+/// why: dropping the event silently left no way to learn it (finding 029).
+/// A viewer that is gone has no notice to set, and `notify` does nothing.
+fn unprojected(world: &mut World, viewer: Entity, error: &str) {
+    notify(
+        world,
+        viewer,
+        Notice::error(format!("cannot act here: {error}")),
+    );
+    world.resource::<Wake>().notify();
+}
+
 pub(crate) fn route_control(event: On<Control>, mut commands: Commands) {
     let (viewer, command) = (event.event_target(), event.command.clone());
     commands.queue(move |world: &mut World| {
-        if sync_view(world, viewer).is_err() {
+        if let Err(error) = sync_view(world, viewer) {
+            unprojected(world, viewer, &error);
             return;
         }
         if let Err(error) = execute(world, viewer, command) {
@@ -30,7 +43,8 @@ pub(crate) fn route_control(event: On<Control>, mut commands: Commands) {
 pub(crate) fn route_input(event: On<UserInput>, mut commands: Commands) {
     let event = event.event().clone();
     commands.queue(move |world: &mut World| {
-        if sync_view(world, event.viewer).is_err() {
+        if let Err(error) = sync_view(world, event.viewer) {
+            unprojected(world, event.viewer, &error);
             return;
         }
         if crate::paste::input(world, event.viewer, &event.input) {

@@ -11,6 +11,7 @@ mod layout;
 mod model;
 mod navigation;
 mod paste;
+mod policy;
 mod presentation;
 mod protocol;
 mod remote;

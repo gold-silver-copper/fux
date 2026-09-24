@@ -1810,13 +1810,16 @@ recorded above; its presentation part, most of it, is fixed.
 
 # The BRP policy work: every request through one guard
 
-> **Status: in progress.** A property test that drives every BRP method
-> in-process found findings 022–029 against the code as it stood after hunt 8.
-> None ends the server -- Bevy 0.20 catches a panicking request system -- but
-> each either answers without saying why or leaves the world in a state fux
-> has no rules for. `docs/prompt-brp-policy.md` in the user's checkout is the
-> plan: declare an access policy per type, put one guard in front of every
-> method, validate before committing, and repair inside the request.
+> **Status: findings 022–029 fixed by one guard.** A property test that drives
+> every BRP method in-process found them against the code as it stood after
+> hunt 8. None ends the server -- Bevy 0.20 catches a panicking request system
+> -- but each either answers without saying why or leaves the world in a state
+> fux has no rules for. Every stock method now runs behind one guard
+> (`src/remote/guard.rs`) that checks a declared per-type policy
+> (`src/policy.rs`, the README table, `fux.policy`), validates values and the
+> hierarchy as it would be after the request, and settles the world before it
+> answers. Each repro exits 1; the property test passes 32,000 requests over
+> eight seeds with no failure.
 
 How they were found: `remote::property::no_brp_request_breaks_the_server`
 generates requests for every method from real serialized values -- live
@@ -1895,3 +1898,52 @@ command and key for its viewers vanished, with no notice, so not even closing
 the offending pane was possible. The invariant check now includes "every
 workspace can be projected". Repro:
 `029-an-unprojectable-workspace-drops-every-command.sh`.
+
+
+## How the guard fixes them, and what it keeps
+
+Every write is checked before anything changes, so a request applies whole or
+not at all, and a refusal names the rule. By finding:
+
+- **022:** mutating an immutable relationship is refused ("replace it with
+  world.insert_components"); every entity a request names must exist; an event
+  must deserialize into a complete value. No request reaches a handler that
+  panics.
+- **023:** a `PaneView`'s pane must be a process.
+- **024:** a tab's parent is a workspace, a split's or view's a tab or split,
+  a workspace has none, nothing sits inside its own subtree, and one entity
+  has one layout role. A placed tab or view cannot be unplaced.
+- **025:** a spawned workspace without an order gets the next one; a duplicate
+  is refused; the order cannot be removed.
+- **026:** `ProcessState` cannot be removed; clients change only its rows and
+  cols, within 1..=4096.
+- **027:** a `Viewer` is created only by `fux.attach`; removing one is a clean
+  detach, and fux strips its viewer-only state.
+- **028:** a client may change only fux's own kinds of entity and entities made
+  entirely of types clients may spawn -- never an observer, a system or a
+  resource entity.
+- **029:** only layout nodes go under layout nodes, and viewer relationships
+  only on viewers. Past the guard, a viewer that cannot act is now told why
+  ("cannot act here: …") instead of losing its commands silently.
+
+Denied deliberately, which some clients may have relied on:
+
+- writing interaction state (`Prefix`, `Overlay`, `Mode`, `Entry`, `Run`) --
+  drive the command column and overlays through `Control` and `UserInput`;
+- removing `Settings` (hunt 8 finding 015 restored it afterwards; it is now
+  refused) and writing any other resource;
+- writing the other Bevy UI and text types (`Text`, `BackgroundColor`, …),
+  which fux does not paint from, and every message;
+- putting a child without a layout role under a workspace, which fux used to
+  wrap into a new tab.
+
+Kept, because fux or its clients use them: the two-step way of adding a pane
+or a tab (spawn it unplaced, then reparent it), resizing a PTY through
+`ProcessState`, removing `Viewer` to detach, hiding a node with `Visibility`,
+events for a viewer that has just detached (a frontend's input races its own
+detach; refusing them made the frontend exit abnormally, found by the `race`
+scenario), and a `Launch` that cannot start (it reports `Failed`).
+
+The `raw` fuzz scenario, whose edits are deliberately hostile, now accepts the
+guard's refusal as the outcome for the kinds of edit refused by design, and
+only for those; every other kind must still be applied and repaired.

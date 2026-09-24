@@ -99,9 +99,14 @@ fn hierarchy(world: &mut World, v: &mut Vec<String>) {
                 v.push(format!("workspace {entity} has a parent {p}"));
             }
         } else if world.get::<Tab>(entity).is_some() {
-            if !up.is_some_and(|p| world.get::<Workspace>(p).is_some()) {
+            // A tab with no parent is unplaced: spawned and not yet put in a
+            // workspace, as clients add tabs in two requests.
+            if up.is_some_and(|p| world.get::<Workspace>(p).is_none()) {
                 v.push(format!("tab {entity} has parent {up:?}, not a workspace"));
             }
+        } else if world.get::<PaneView>(entity).is_some() && up.is_none() {
+            // An unplaced view: spawned and not yet put under a tab, as the
+            // README's way of showing a custom process does in two requests.
         } else if !up.is_some_and(|p| is_container(world, p)) {
             let kind = if world.get::<PaneView>(entity).is_some() {
                 "pane view"
