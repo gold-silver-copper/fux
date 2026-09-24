@@ -72,7 +72,7 @@ FS="$(stat -f -c %T "$SCRATCH" 2>/dev/null)"
 echo "TMPDIR $SCRATCH ($FS): a freed socket inode number was reused $REUSED times in 20"
 
 if [ "${NEGATIVE_CONTROL:-0}" != "1" ] && [ "$REUSED" -eq 0 ]; then
-  echo "this filesystem does not reuse inode numbers, so it cannot show the finding" >&2
+  echo "NOT-APPLICABLE: $FS does not reuse inode numbers, so it cannot show the finding" >&2
   echo "run on ext4, e.g. FUX_LINUX_TMP=ext4 fux-fuzz/linux/run.sh" >&2
   exit 2
 fi
