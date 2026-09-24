@@ -678,6 +678,21 @@ fn wait_unreaped(pid: u32, nonblocking: bool) -> Result<i32, String> {
         if unsafe { info.si_pid() } == 0 {
             return Ok(-1);
         }
+        // macOS reports a stopped, traced or continued child even though only
+        // WEXITED was asked for, and WNOWAIT leaves the report in place (hunt 8
+        // finding 020). A stop is not an exit: the leader is alive. The probe
+        // says so; the blocking waiter waits on, without spinning on the
+        // repeated report. Linux never reports these here.
+        if !matches!(
+            info.si_code,
+            libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
+        ) {
+            if nonblocking {
+                return Ok(-1);
+            }
+            thread::sleep(std::time::Duration::from_millis(20));
+            continue;
+        }
         let code = unsafe { info.si_status() };
         return Ok(if info.si_code == libc::CLD_EXITED {
             code
@@ -854,6 +869,44 @@ impl Style {
 mod tests {
     use super::*;
     use crate::testing::*;
+
+    // Hunt 8 finding 020. macOS's waitid reports a stopped child even when
+    // asked only for WEXITED, so a stopped pane leader read as exited (128 +
+    // SIGSTOP) and fux ended the pane. A stop is not an exit: the probe must
+    // report the leader live and the blocking waiter must keep waiting.
+    #[test]
+    fn a_stopped_leader_is_not_an_exited_one() -> Outcome {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let pid = child.id();
+        let raw = Pid::from_raw(i32::try_from(pid)?);
+        // Observe everything first, then end the child, then assert: a failed
+        // assertion must not leave a stopped process behind.
+        let observed = (|| -> Result<_, Box<dyn std::error::Error>> {
+            nix::sys::signal::kill(raw, Signal::SIGSTOP)?;
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let probe_stopped = wait_unreaped(pid, true);
+            let waiter = thread::spawn(move || wait_unreaped(pid, false));
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let still_waiting = !waiter.is_finished();
+            nix::sys::signal::kill(raw, Signal::SIGCONT)?;
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let probe_continued = wait_unreaped(pid, true);
+            Ok((probe_stopped, waiter, still_waiting, probe_continued))
+        })();
+        let _ = nix::sys::signal::kill(raw, Signal::SIGKILL);
+        let (probe_stopped, waiter, still_waiting, probe_continued) = observed?;
+        let ended = waiter.join().map_err(|_| "waiter panicked")?;
+        child.wait()?;
+        assert_eq!(probe_stopped, Ok(-1));
+        assert!(still_waiting, "the blocking waiter returned for a stop");
+        assert_eq!(probe_continued, Ok(-1));
+        assert_eq!(ended, Ok(128 + Signal::SIGKILL as i32));
+        Ok(())
+    }
 
     #[test]
     fn replies_remain_byte_exact_nonblocking_and_bounded() -> Outcome {

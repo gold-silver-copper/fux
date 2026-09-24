@@ -1605,6 +1605,40 @@ reproduced (a thread for every load), 1 not, 2 setup; `NEGATIVE_CONTROL=1`
 names missing files, whose loads fail at once. Measured: 64 threads before the
 fix, 16 after; 0 for the control, both builds.
 
+## 020 — A stopped pane process reads as exited on macOS (class 6)
+
+**The break.** fux waits for a pane's leader with
+`waitid(P_PID, pid, WEXITED | WNOWAIT)`. macOS's `waitid` also reports a child
+that has only stopped, although only `WEXITED` was asked for (`si_code`
+`CLD_STOPPED`, status 17), and `WNOWAIT` leaves that report in place. fux read
+it as an exit, 128 + SIGSTOP = 145: the pane's `ProcessState` said `exited`,
+the runtime was torn down, and the process group was killed although the
+process was only stopped. `kill -STOP`, or Ctrl-Z in a pane that runs a
+program directly with no job-control shell, was enough. Linux's `waitid`
+reports nothing for a stop here (checked with the same C program in the Linux
+container), so Linux was never affected. Pre-existing: `wait_unreaped` is
+unchanged since fux's first commit.
+
+**Found by** hunt 8's finishing run, while pausing a pane's program to test how
+fux queues input for a program that is not reading.
+
+**Fixed** in the 020 commit: a report whose `si_code` is not `CLD_EXITED`,
+`CLD_KILLED` or `CLD_DUMPED` means the leader is alive. The non-blocking probe
+returns "live"; the blocking waiter waits on, sleeping 20 ms between reports so
+a stopped leader cannot make it spin. A stopped pane now stays a stopped,
+running pane on both platforms, as it already did on Linux.
+
+**Test.** `terminal::tests::a_stopped_leader_is_not_an_exited_one` stops a
+child, then requires the probe to say live, the blocking waiter to still be
+waiting 300 ms later, the probe to say live after SIGCONT, and the waiter to
+report 128 + SIGKILL once the child is killed. It failed first on macOS:
+`Ok(145)` for the stopped child.
+
+**Reproduction.** `fux-fuzz/repro/020-a-stopped-pane-process-reads-as-exited.sh`
+stops a pane's `cat` and reads its `ProcessState` a second later. Exit 0
+reproduced (not running), 1 not, 2 setup; `NEGATIVE_CONTROL=1` does not stop
+it. macOS: 0 before the fix, 1 after; Linux: 1 either way.
+
 ## The nightly smoke, and what each failure was
 
 The first nightly dispatch (run 35914442080, at `655d8db`) was red on both
