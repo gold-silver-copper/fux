@@ -1818,8 +1818,10 @@ recorded above; its presentation part, most of it, is fixed.
 > (`src/remote/guard.rs`) that checks a declared per-type policy
 > (`src/policy.rs`, the README table, `fux.policy`), validates values and the
 > hierarchy as it would be after the request, and settles the world before it
-> answers. Each repro exits 1; the property test passes 32,000 requests over
-> eight seeds with no failure.
+> answers. Each repro exits 1; the property test passes 1,000,000 requests
+> (four seeds of 250,000) with no failure.
+
+030 and 031 came from the hunt passes over the guard, below.
 
 How they were found: `remote::property::no_brp_request_breaks_the_server`
 generates requests for every method from real serialized values -- live
@@ -1955,24 +1957,119 @@ not at all, and a refusal names the rule. By finding:
   entity that does not exist.
 - **031:** a request's `ChildOf` is inserted after its other components.
 
-Denied deliberately, which some clients may have relied on:
+Denied deliberately. Before the guard every one of these was accepted; each
+either crashed, corrupted or wedged fux (the finding is named), or is a
+default of the prompt's policy table that no documented use needs:
 
-- writing interaction state (`Prefix`, `Overlay`, `Mode`, `Entry`, `Run`) --
-  drive the command column and overlays through `Control` and `UserInput`;
-- removing `Settings` (hunt 8 finding 015 restored it afterwards; it is now
-  refused) and writing any other resource;
-- writing the other Bevy UI and text types (`Text`, `BackgroundColor`, …),
-  which fux does not paint from, and every message;
-- putting a child without a layout role under a workspace, which fux used to
-  wrap into a new tab.
+- writing any type the table keeps read-only: interaction state (`Prefix`,
+  `Overlay`, `Mode`, `Entry`, `Run`) -- drive it with `Control` and
+  `UserInput` (029's route) -- `PaneViews`, `Children`, and the Bevy UI and
+  text types fux does not paint from (`Text`, `BackgroundColor`, …); any
+  other registered type is read-only by default (028);
+- resources other than `Settings`, and removing `Settings` (hunt 8 finding
+  015 restored it afterwards; now refused before it happens); a `Settings`
+  that fails the configuration file's own check;
+- `world.write_message`, for every message, and triggering any event but
+  `Control`, `UserInput` and `Shutdown`, or one that is not complete (022);
+- naming a resource entity in any entity method, reads included (hunt 7
+  finding 004/009; the resource methods reach resources by type), and
+  changing an entity internal to fux or Bevy, such as an observer (028);
+- naming an entity that does not exist, anywhere -- a target, a pane, a
+  parent, the placeholder (022, 030);
+- hierarchy edits that break the layout rules: a tab outside a workspace, a
+  split or view outside a tab or split, a workspace with a parent, a cycle,
+  two layout roles, a role-less child under a layout node (which fux used to
+  wrap into a new tab), unplacing a placed tab or view, a viewer or process
+  with a parent, removing a split that still holds panes (024, 029);
+- removing `Workspace`, `Tab` or `PaneView` from their entity -- despawn it
+  instead (024);
+- spawning or inserting a `Viewer` (only `fux.attach` creates one), a viewer
+  larger than 4096, a viewer relationship on a non-viewer or pointing outside
+  its workspace or tab (027, 029);
+- removing `ProcessState` or `WorkspaceOrder`, changing a process's status or
+  revision, a size outside 1..=4096, a duplicate order, a `ProcessState`
+  spawned without its `Launch` (025, 026);
+- a `Launch` with no program, or a history no terminal can hold (the table's
+  rule; a program that does not exist still starts and reports `Failed`);
+- a `Name` over 4096 bytes or with a control character (it is painted into
+  every viewer's bar), and a `Node` number that is not finite or beyond 1e6;
+- `world.mutate_components` on an immutable component, a relationship: its
+  handler panicked (022).
 
-Kept, because fux or its clients use them: the two-step way of adding a pane
-or a tab (spawn it unplaced, then reparent it), resizing a PTY through
-`ProcessState`, removing `Viewer` to detach, hiding a node with `Visibility`,
-events for a viewer that has just detached (a frontend's input races its own
-detach; refusing them made the frontend exit abnormally, found by the `race`
-scenario), and a `Launch` that cannot start (it reports `Failed`).
+Kept, because fux or its clients use them, even where the prompt's table
+started stricter: the two-step way of adding a pane or a tab (spawn it
+unplaced, then reparent it); resizing a PTY through `ProcessState`; removing
+`Viewer` to detach; removing a viewer's `Viewing`, `OnTab` or `Focused`
+(fux chooses again; the `raw` scenario checks it); hiding a node with
+`Visibility`; removing `Node` (nothing breaks without it); a `Viewer`
+scrollback past the history (painting clamps it; the agent F1 evidence sets
+one); spawning `ProcessState` with its `Launch` to choose the size; events
+for a viewer that has just detached (a frontend's input races its own
+detach; refusing them made the frontend exit abnormally, found by the
+`race` scenario); and a `Launch` whose program cannot start.
+
+## The policy layer, and what it rules out
+
+Before the guard, safety over BRP was three special cases added after crashes
+(005, 004, 015). Now every request passes one path, and the finding classes
+below cannot recur through BRP without the guard itself being wrong:
+
+- **Class 1 (the server ends) and the panics of 022.** No request reaches a
+  stock handler with an entity that does not exist, a resource entity, an
+  immutable component to mutate, or an incomplete value. Bevy 0.20 catches a
+  panicking request system, so these ended the request rather than the server,
+  but each was a crash in the handler.
+- **Class 6 (a silent invariant break) through BRP: 023–027, 029–031.** The
+  guard checks the world as it would be after the request against the same
+  structural rules `fux.invariants` serves, before writing, and checks them
+  again after writing: a debug build fails the request that broke one, a
+  release build logs it with the request.
+- **Class 8 (a refused input changes state).** Everything is checked before
+  anything is written, so a refused request changes nothing -- a spawn with
+  one denied component spawns nothing, a reparent batch with one bad entry
+  moves nothing.
+
+How the property test shows it: `no_brp_request_breaks_the_server` runs every
+method against a real world, with values from live components and events
+mutated to boundaries, wrong types, missing fields and entity IDs of every
+class, and after each request requires no panic, `violations` empty and a
+frame for every viewer. Against the code before the guard it failed within
+300 requests (22 distinct failures in 16,000); after the guard it passes a
+million, and CI runs 2,000 on every push and 200,000 every night from a new
+seed.
 
 The `raw` fuzz scenario, whose edits are deliberately hostile, now accepts the
 guard's refusal as the outcome for the kinds of edit refused by design, and
 only for those; every other kind must still be applied and repaired.
+
+## Hunt passes over the guard
+
+**Pass 1** (after the guard and the peer check were committed):
+- Manual edges: a spawn with one denied component, an insert with one
+  invalid component, a reparent batch with one bad entry, mutations through
+  paths into relationship vectors, a watch on an entity despawned mid-watch.
+  Each applied whole or not at all. Probing references found 030.
+- The property test at 1,000,000 requests found 031, and that two seeds in
+  every pair gave the same stream (`seed | 1`); seeds are now mixed.
+- The smoke found the table's defaults denying two things in use:
+  `process` spawned a `Launch` with an empty argv (the refusal is kept, and
+  the scenario asserts it), and `raw` removed a viewer's relationships (made
+  removable again: fux repairs them).
+- Reads, watches and the schedule methods were not yet behind the guard,
+  and not every type fux registers had a declared policy; both are fixed.
+
+**Pass 2** (at `52f6e9a`), which found nothing new:
+- Property test: 1,000,000 requests, four release runs of 250,000 (seeds
+  201-204), no failure. It now also drives `world.observe+watch`,
+  `schedule.list` and `schedule.graph`.
+- fux-fuzz: the smoke (65 cases) and all 24 traces on macOS, Linux arm64 and
+  Linux arm64 with ext4 `/tmp`; `identity`, `raw`, `hostile`, `api_misuse`
+  and `walk` on seeds 2-4 on macOS.
+- Manual edges, again and on the new surfaces: the five above;
+  `world.observe+watch` of `Control`, of a component, of an unknown type,
+  and on the placeholder (a resource entity is covered by
+  `remote::tests::every_method_is_guarded`); `schedule.graph` with an
+  empty and a 100,000-byte label; an insert of only `ChildOf`; an empty
+  insert. Every answer was a result or a refusal that says why; invariants
+  held; nothing panicked.
+
