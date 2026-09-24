@@ -1810,7 +1810,7 @@ recorded above; its presentation part, most of it, is fixed.
 
 # The BRP policy work: every request through one guard
 
-> **Status: findings 022–030 fixed by one guard.** A property test that drives
+> **Status: findings 022–031 fixed by one guard.** A property test that drives
 > every BRP method in-process found them against the code as it stood after
 > hunt 8. None ends the server -- Bevy 0.20 catches a panicking request system
 > -- but each either answers without saying why or leaves the world in a state
@@ -1912,6 +1912,20 @@ names nothing as a reference, and the invariant check gained "every `ChildOf`
 names an entity that exists", which the property test would have reported.
 Repro: `030-the-placeholder-passed-as-a-reference.sh`.
 
+## 031 — A tab spawned into a workspace in one request nests in another tab (class 6)
+
+Found by the property test at 250,000 requests a seed, after the guard. The
+natural way to add a tab -- one `world.spawn_entity` with `Tab`, `ChildOf` the
+workspace and a `Name` -- produced a tab inside a new tab about half the time,
+and a workspace that could not be projected (029's effect). The stock handler
+inserts a request's components one at a time, in the order of a hash map that
+is random per request, and flushes commands after each. When `ChildOf` came
+first, fux's `normalize_on_child_added` saw a child with no role under a
+workspace and wrapped it in a new tab "main"; then `Tab` arrived. It predates
+the guard: the build before it reproduces it too. The guard now inserts
+`ChildOf` after a request's other components, so everything fux reacts to sees
+the entity whole. Repro: `031-a-tab-spawned-into-a-workspace-nests.sh`.
+
 ## How the guard fixes them, and what it keeps
 
 Every write is checked before anything changes, so a request applies whole or
@@ -1939,6 +1953,7 @@ not at all, and a refusal names the rule. By finding:
   ("cannot act here: …") instead of losing its commands silently.
 - **030:** a reference to the placeholder entity is refused like any other
   entity that does not exist.
+- **031:** a request's `ChildOf` is inserted after its other components.
 
 Denied deliberately, which some clients may have relied on:
 

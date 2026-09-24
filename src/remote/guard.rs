@@ -11,10 +11,13 @@
 //! 5. delegates to the stock handler, or for mutations, applies a value it
 //!    validated on a copy;
 //! 6. settles: flushes, collapses emptied splits and repairs viewers before
-//!    the response goes out, so no client sees an intermediate state.
+//!    the response goes out, so no client sees an intermediate state, then
+//!    checks every structural invariant: a debug build fails the request if
+//!    one is broken, and a release build logs it with the request.
 //!
 //! A request either passes every check and is applied whole, or changes
-//! nothing and gets an error that says why.
+//! nothing and gets an error that says why. Reads and watches pass through
+//! with only their entities resolved.
 use crate::{
     invariants,
     model::*,
@@ -35,12 +38,54 @@ use serde_json::Value;
 use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 
+/// Every stock method, each of which the guard replaces. A test checks that
+/// the server registers no other method but fux's own.
+#[cfg(test)]
+pub const GUARDED: &[&str] = {
+    use stock::*;
+    &[
+        BRP_GET_COMPONENTS_METHOD,
+        BRP_QUERY_METHOD,
+        BRP_LIST_COMPONENTS_METHOD,
+        BRP_GET_COMPONENTS_AND_WATCH_METHOD,
+        BRP_LIST_COMPONENTS_AND_WATCH_METHOD,
+        BRP_GET_RESOURCE_METHOD,
+        BRP_LIST_RESOURCES_METHOD,
+        BRP_REGISTRY_SCHEMA_METHOD,
+        BRP_OBSERVE_METHOD,
+        BRP_SCHEDULE_LIST,
+        BRP_SCHEDULE_GRAPH,
+        RPC_DISCOVER_METHOD,
+        BRP_SPAWN_ENTITY_METHOD,
+        BRP_INSERT_COMPONENTS_METHOD,
+        BRP_REMOVE_COMPONENTS_METHOD,
+        BRP_DESPAWN_COMPONENTS_METHOD,
+        BRP_REPARENT_ENTITIES_METHOD,
+        BRP_MUTATE_COMPONENTS_METHOD,
+        BRP_INSERT_RESOURCE_METHOD,
+        BRP_REMOVE_RESOURCE_METHOD,
+        BRP_MUTATE_RESOURCE_METHOD,
+        BRP_TRIGGER_EVENT_METHOD,
+        BRP_WRITE_MESSAGE_METHOD,
+    ]
+};
+
 /// Replaces every stock method with its guarded form.
 pub fn guard(plugin: RemotePlugin) -> RemotePlugin {
     use stock::*;
     plugin
         .with_method_main(BRP_GET_COMPONENTS_METHOD, get_components)
+        .with_method_main(BRP_QUERY_METHOD, query)
         .with_method_main(BRP_LIST_COMPONENTS_METHOD, list_components)
+        .with_watching_method_main(BRP_GET_COMPONENTS_AND_WATCH_METHOD, get_components_watch)
+        .with_watching_method_main(BRP_LIST_COMPONENTS_AND_WATCH_METHOD, list_components_watch)
+        .with_method_main(BRP_GET_RESOURCE_METHOD, get_resources)
+        .with_method_main(BRP_LIST_RESOURCES_METHOD, list_resources)
+        .with_method_main(BRP_REGISTRY_SCHEMA_METHOD, registry_schema)
+        .with_watching_method_main(BRP_OBSERVE_METHOD, observe_watch)
+        .with_method_main(BRP_SCHEDULE_LIST, schedules)
+        .with_method_main(BRP_SCHEDULE_GRAPH, schedule)
+        .with_method_main(RPC_DISCOVER_METHOD, discover)
         .with_method_main(BRP_SPAWN_ENTITY_METHOD, spawn_entity)
         .with_method_main(BRP_INSERT_COMPONENTS_METHOD, insert_components)
         .with_method_main(BRP_REMOVE_COMPONENTS_METHOD, remove_components)
@@ -111,6 +156,13 @@ fn allowed(registration: &TypeRegistration, op: Op) -> Result<(), BrpError> {
             "`{path}` is read-only over BRP; see `fux.policy` for what clients may change"
         )));
     };
+    let open = policy.access;
+    if !(open.write || open.spawn || open.remove || open.trigger) {
+        return Err(refused(format!(
+            "`{path}` is read-only over BRP ({}); see `fux.policy` for what clients may change",
+            policy.note
+        )));
+    }
     let (ok, verb) = match op {
         Op::Write => (policy.access.write, "written"),
         Op::Spawn => (policy.access.spawn, "spawned"),
@@ -172,12 +224,18 @@ fn fux_kind(entity: &EntityRef) -> bool {
         || entity.contains::<ProcessState>()
 }
 
-/// An entity a request may name at all: it exists.
-fn alive(world: &World, entity: Entity) -> Result<(), BrpError> {
-    world
+/// An entity a request may name at all: it exists, and it is not a resource,
+/// which the resource methods reach by type.
+fn readable(world: &World, entity: Entity) -> Result<(), BrpError> {
+    let entity_ref = world
         .get_entity(entity)
-        .map(|_| ())
-        .map_err(|_| BrpError::entity_not_found(entity))
+        .map_err(|_| BrpError::entity_not_found(entity))?;
+    if entity_ref.contains::<IsResource>() {
+        return Err(refused(format!(
+            "{entity} holds a resource; use the resource methods"
+        )));
+    }
+    Ok(())
 }
 
 /// An entity a client may change: alive, not a resource, and either one of
@@ -560,49 +618,131 @@ impl<'w> Plan<'w> {
 
 // ----------------------------------------------------------------- settle
 
-/// Brings the world to rest before the response: pending commands, emptied
-/// splits, viewer repair. Under tests, or with `FUX_CHECK_INVARIANTS=1`, the
-/// invariants are then checked, and a violation is logged with the request.
-fn settle(world: &mut World, method: &str) {
+/// Brings the world to rest before the response -- pending commands, emptied
+/// splits, viewer repair -- and checks every structural invariant. A broken
+/// one is a bug in the guard: it is logged at error level with the request
+/// that caused it, and a debug build (and every test) also fails the request,
+/// so tests and fuzzing cannot miss it. A release build answers as usual.
+fn settle(world: &mut World, method: &str, params: &Value) -> Result<(), BrpError> {
     world.flush();
     if let Err(error) = world.run_system_cached(crate::layout::collapse_layout) {
         bevy_log::error!("collapsing layout after {method}: {error}");
     }
     crate::navigation::repair(world);
     world.flush();
-    // Checking every invariant costs a pass over the whole world, which a
-    // large one pays on every request; it is a diagnostic, so it runs only
-    // under tests or when asked for.
-    if cfg!(test) || check_invariants() {
-        let broken = invariants::violations(world);
-        if !broken.is_empty() {
-            bevy_log::error!(
-                "{method} left the world inconsistent: {}",
-                broken.join("; ")
-            );
-        }
+    let broken = invariants::structural(world);
+    if broken.is_empty() {
+        return Ok(());
+    }
+    let mut request = params.to_string();
+    if request.len() > 2048 {
+        let cut = (0..=2048)
+            .rev()
+            .find(|i| request.is_char_boundary(*i))
+            .unwrap_or(0);
+        request.truncate(cut);
+        request.push('…');
+    }
+    let message = format!(
+        "{method} left the world inconsistent, a bug in fux: {}; request: {request}",
+        broken.join("; ")
+    );
+    bevy_log::error!("{message}");
+    if cfg!(debug_assertions) {
+        Err(BrpError::internal(message))
+    } else {
+        Ok(())
     }
 }
 
-/// `FUX_CHECK_INVARIANTS=1` makes the server check every invariant after each
-/// write and log what a request broke.
-fn check_invariants() -> bool {
-    static CHECK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CHECK.get_or_init(|| std::env::var_os("FUX_CHECK_INVARIANTS").is_some_and(|v| v == "1"))
+/// A write's own result, unless settling found it broke an invariant.
+fn settled(result: BrpResult, world: &mut World, method: &str, params: &Value) -> BrpResult {
+    let checked = settle(world, method, params);
+    let value = result?;
+    checked.map(|()| value)
 }
 
 // ------------------------------------------------------------------ reads
 
 fn get_components(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
     let checked: stock::BrpGetComponentsParams = parse(params.clone())?;
-    alive(world, checked.entity)?;
+    readable(world, checked.entity)?;
     stock::process_remote_get_components_request(In(params), world)
 }
 
 fn list_components(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
     let checked: stock::BrpListComponentsParams = parse(params.clone())?;
-    alive(world, checked.entity)?;
+    readable(world, checked.entity)?;
     stock::process_remote_list_components_request(In(params), world)
+}
+
+// A stock watching handler keeps removal cursors in a `Local` between polls.
+// Run as a cached system it keeps them the same way, once per method, as it
+// would registered directly.
+fn get_components_watch(
+    In(params): In<Option<Value>>,
+    world: &mut World,
+) -> BrpResult<Option<Value>> {
+    let checked: stock::BrpGetComponentsParams = parse(params.clone())?;
+    readable(world, checked.entity)?;
+    world
+        .run_system_cached_with(
+            stock::process_remote_get_components_watching_request,
+            params,
+        )
+        .map_err(|error| BrpError::internal(error.to_string()))?
+}
+
+fn list_components_watch(
+    In(params): In<Option<Value>>,
+    world: &mut World,
+) -> BrpResult<Option<Value>> {
+    let checked: stock::BrpListComponentsParams = parse(params.clone())?;
+    readable(world, checked.entity)?;
+    world
+        .run_system_cached_with(
+            stock::process_remote_list_components_watching_request,
+            params,
+        )
+        .map_err(|error| BrpError::internal(error.to_string()))?
+}
+
+/// Observing spawns an observer, scoped to the entity if one is named, so the
+/// entity must be one a client may name.
+fn observe_watch(In(params): In<Option<Value>>, world: &mut World) -> BrpResult<Option<Value>> {
+    let checked: stock::BrpObserveParams = parse(params.clone())?;
+    if let Some(entity) = checked.entity {
+        readable(world, entity)?;
+    }
+    stock::process_remote_observe_watching_request(In(params), world)
+}
+
+fn query(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    stock::process_remote_query_request(In(params), world)
+}
+
+fn get_resources(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    stock::process_remote_get_resources_request(In(params), world)
+}
+
+fn list_resources(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    stock::process_remote_list_resources_request(In(params), world)
+}
+
+fn registry_schema(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    stock::export_registry_types(In(params), world)
+}
+
+fn schedules(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    stock::schedule_list(In(params), world)
+}
+
+fn schedule(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    stock::schedule_graph(In(params), world)
+}
+
+fn discover(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    stock::process_remote_list_methods_request(In(params), world)
 }
 
 // ----------------------------------------------------------------- writes
@@ -619,6 +759,23 @@ fn next_order(world: &mut World) -> i64 {
 
 const ORDER_PATH: &str = "fux::model::WorkspaceOrder";
 const WORKSPACE_PATH: &str = "fux::model::Workspace";
+const CHILD_OF_PATH: &str = "bevy_ecs::hierarchy::ChildOf";
+
+/// Gives `entity` its parent after the rest of a request's components. The
+/// stock handlers insert components one at a time, in hash order, and flush
+/// after each: a `ChildOf` under a workspace that arrived before `Tab` found a
+/// child with no role, and fux wrapped it in a new tab before `Tab` came -- a
+/// tab inside a tab (finding 031). Parenting last, everything fux reacts to
+/// sees the entity whole.
+fn parent_last(world: &mut World, entity: &Value, parent: Option<Value>) -> BrpResult {
+    let Some(parent) = parent else {
+        return Ok(Value::Null);
+    };
+    let mut components = serde_json::Map::new();
+    components.insert(CHILD_OF_PATH.to_owned(), parent);
+    let params = serde_json::json!({"entity": entity, "components": components});
+    stock::process_remote_insert_components_request(In(Some(params)), world)
+}
 
 /// Checks the components a spawn or insert would add to `entity`.
 fn check_components<'a>(
@@ -654,6 +811,7 @@ fn check_components<'a>(
 }
 
 fn spawn_entity(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let mut request: stock::BrpSpawnEntityParams = parse(params)?;
     // A workspace needs an order; a spawn that leaves it out gets the next.
     if request.components.contains_key(WORKSPACE_PATH)
@@ -678,13 +836,24 @@ fn spawn_entity(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
         )?;
         plan.check()?;
     }
+    let parent = request.components.remove(CHILD_OF_PATH);
     let params = serde_json::to_value(&request).map_err(|e| BrpError::internal(e.to_string()))?;
-    let result = stock::process_remote_spawn_entity_request(In(Some(params)), world);
-    settle(world, "world.spawn_entity");
-    result
+    let mut result = stock::process_remote_spawn_entity_request(In(Some(params)), world);
+    if let Ok(spawned) = &result
+        && let Some(entity) = spawned.get("entity").cloned()
+        && let Err(error) = parent_last(world, &entity, parent)
+    {
+        // Validated beforehand, so this is not expected; keep it all or nothing.
+        if let Some(entity) = entity.as_u64().and_then(Entity::try_from_bits) {
+            world.despawn(entity);
+        }
+        result = Err(error);
+    }
+    settled(result, world, "world.spawn_entity", &logged)
 }
 
 fn insert_components(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let mut request: stock::BrpInsertComponentsParams = parse(params)?;
     let registry = registry(world)?;
     {
@@ -714,13 +883,22 @@ fn insert_components(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
         )?;
         plan.check()?;
     }
+    let parent = request.components.remove(CHILD_OF_PATH);
+    let entity =
+        serde_json::to_value(request.entity).map_err(|e| BrpError::internal(e.to_string()))?;
     let params = serde_json::to_value(&request).map_err(|e| BrpError::internal(e.to_string()))?;
-    let result = stock::process_remote_insert_components_request(In(Some(params)), world);
-    settle(world, "world.insert_components");
-    result
+    let mut result = Ok(Value::Null);
+    if !request.components.is_empty() {
+        result = stock::process_remote_insert_components_request(In(Some(params)), world);
+    }
+    if result.is_ok() {
+        result = parent_last(world, &entity, parent);
+    }
+    settled(result, world, "world.insert_components", &logged)
 }
 
 fn remove_components(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let request: stock::BrpRemoveComponentsParams = parse(params.clone())?;
     let registry = registry(world)?;
     {
@@ -744,11 +922,11 @@ fn remove_components(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
         plan.check()?;
     }
     let result = stock::process_remote_remove_components_request(In(params), world);
-    settle(world, "world.remove_components");
-    result
+    settled(result, world, "world.remove_components", &logged)
 }
 
 fn despawn_entity(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let request: stock::BrpDespawnEntityParams = parse(params.clone())?;
     {
         let registry = registry(world)?;
@@ -756,11 +934,11 @@ fn despawn_entity(In(params): In<Option<Value>>, world: &mut World) -> BrpResult
         writable(world, &registry, request.entity)?;
     }
     let result = stock::process_remote_despawn_entity_request(In(params), world);
-    settle(world, "world.despawn_entity");
-    result
+    settled(result, world, "world.despawn_entity", &logged)
 }
 
 fn reparent_entities(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let request: stock::BrpReparentEntitiesParams = parse(params.clone())?;
     {
         let registry = registry(world)?;
@@ -779,8 +957,7 @@ fn reparent_entities(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
         plan.check()?;
     }
     let result = stock::process_remote_reparent_entities_request(In(params), world);
-    settle(world, "world.reparent_entities");
-    result
+    settled(result, world, "world.reparent_entities", &logged)
 }
 
 /// Applies a reflect path to a copy of a value, returning the new value.
@@ -854,6 +1031,7 @@ fn mutate_on(
 }
 
 fn mutate_components(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let request: stock::BrpMutateComponentsParams = parse(params)?;
     let registry = registry(world)?;
     let registry = registry.read();
@@ -869,7 +1047,7 @@ fn mutate_components(In(params): In<Option<Value>>, world: &mut World) -> BrpRes
         &request.value,
     )?;
     drop(registry);
-    settle(world, "world.mutate_components");
+    settle(world, "world.mutate_components", &logged)?;
     Ok(Value::Null)
 }
 
@@ -902,6 +1080,7 @@ fn resource_registration<'r>(
 }
 
 fn insert_resources(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let request: stock::BrpInsertResourcesParams = parse(params.clone())?;
     {
         let registry = registry(world)?;
@@ -920,11 +1099,11 @@ fn insert_resources(In(params): In<Option<Value>>, world: &mut World) -> BrpResu
         validate(registration, new.as_ref(), old, &check)?;
     }
     let result = stock::process_remote_insert_resources_request(In(params), world);
-    settle(world, "world.insert_resources");
-    result
+    settled(result, world, "world.insert_resources", &logged)
 }
 
 fn remove_resources(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let request: stock::BrpRemoveResourcesParams = parse(params.clone())?;
     {
         let registry = registry(world)?;
@@ -933,11 +1112,11 @@ fn remove_resources(In(params): In<Option<Value>>, world: &mut World) -> BrpResu
         allowed(registration, Op::Remove)?;
     }
     let result = stock::process_remote_remove_resources_request(In(params), world);
-    settle(world, "world.remove_resources");
-    result
+    settled(result, world, "world.remove_resources", &logged)
 }
 
 fn mutate_resources(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let request: stock::BrpMutateResourcesParams = parse(params)?;
     let registry = registry(world)?;
     let registry = registry.read();
@@ -954,11 +1133,12 @@ fn mutate_resources(In(params): In<Option<Value>>, world: &mut World) -> BrpResu
         &request.value,
     )?;
     drop(registry);
-    settle(world, "world.mutate_resources");
+    settle(world, "world.mutate_resources", &logged)?;
     Ok(Value::Null)
 }
 
 fn trigger_event(In(params): In<Option<Value>>, world: &mut World) -> BrpResult {
+    let logged = params.clone().unwrap_or(Value::Null);
     let request: stock::BrpTriggerEventParams = parse(params.clone())?;
     {
         let registry = registry(world)?;
@@ -990,8 +1170,7 @@ fn trigger_event(In(params): In<Option<Value>>, world: &mut World) -> BrpResult 
         validate(registration, new.as_ref(), None, &check)?;
     }
     let result = stock::process_remote_trigger_event_request(In(params), world);
-    settle(world, "world.trigger_event");
-    result
+    settled(result, world, "world.trigger_event", &logged)
 }
 
 fn write_message(In(params): In<Option<Value>>, _world: &mut World) -> BrpResult {

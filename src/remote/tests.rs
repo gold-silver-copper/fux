@@ -151,11 +151,24 @@ fn the_hierarchy_cannot_be_broken() -> Outcome {
         json!({"entity":bits(focus),"components":{"fux::model::Tab":{}}}),
         "more than one layout role",
     )?;
+    // Layout roles go with their entity; a split's may go while what it holds
+    // stays placed, which it cannot while it holds panes.
     refused(
         world,
         "world.remove_components",
         json!({"entity":bits(tab),"components":["fux::model::Tab"]}),
-        "cannot be a child of a workspace|must be a child of a tab or a split",
+        "removed only by despawning",
+    )?;
+    let split = world
+        .query_filtered::<Entity, (With<Split>, With<Children>, Without<Tab>)>()
+        .iter(world)
+        .next()
+        .need()?;
+    refused(
+        world,
+        "world.remove_components",
+        json!({"entity":bits(split),"components":["fux::model::Split"]}),
+        "must be a child of a tab or a split",
     )?;
     refused(
         world,
@@ -477,5 +490,145 @@ fn the_placeholder_is_not_a_reference() -> Outcome {
         json!({"entities":[plain],"parent":placeholder}),
         "not found",
     )?;
+    Ok(())
+}
+
+/// The guard is the only way in: the server registers the guarded form of
+/// every stock method and fux's own methods, and nothing else.
+#[test]
+fn every_method_is_guarded() -> Outcome {
+    let app = fixture()?;
+    let mut served = app
+        .world()
+        .resource::<bevy_remote::RemoteMethods>()
+        .methods();
+    served.sort();
+    let mut expected: Vec<String> = super::guard::GUARDED
+        .iter()
+        .chain(&[
+            "fux.policy",
+            "fux.invariants",
+            "fux.attach",
+            "fux.frame",
+            "fux.frame+watch",
+        ])
+        .map(|m| (*m).to_owned())
+        .collect();
+    expected.sort();
+    assert_eq!(served, expected);
+    // Each stock name runs the guard's system, not the stock one: the guard
+    // refuses a resource entity even for a read, which stock answers.
+    let resource = app
+        .world()
+        .iter_entities()
+        .find(|e| e.contains::<bevy_ecs::resource::IsResource>())
+        .map(|e| e.id())
+        .need()?;
+    let mut app = app;
+    let world = app.world_mut();
+    for method in [
+        "world.get_components",
+        "world.list_components",
+        "world.get_components+watch",
+        "world.list_components+watch",
+    ] {
+        refused(
+            world,
+            method,
+            json!({"entity":bits(resource),"components":["fux::model::Viewer"]}),
+            "holds a resource",
+        )?;
+    }
+    refused(
+        world,
+        "world.observe+watch",
+        json!({"event":"fux::control::Control","entity":bits(resource)}),
+        "holds a resource",
+    )?;
+    Ok(())
+}
+
+/// A Launch names a program and a history a terminal can hold.
+#[test]
+fn launch_and_viewer_values_are_bounded() -> Outcome {
+    let mut app = fixture()?;
+    let world = app.world_mut();
+    for (launch, reason) in [
+        (
+            json!({"argv":[],"cwd":"/","history_lines":0}),
+            "argv must start with a program",
+        ),
+        (
+            json!({"argv":[""],"cwd":"/","history_lines":0}),
+            "argv must start with a program",
+        ),
+        (
+            json!({"argv":["sleep","600"],"cwd":"/","history_lines":u64::MAX}),
+            "more than a terminal can hold",
+        ),
+    ] {
+        refused(
+            world,
+            "world.spawn_entity",
+            json!({"components":{"fux::model::Launch":launch}}),
+            reason,
+        )?;
+    }
+    let spawned = call(
+        world,
+        "world.spawn_entity",
+        Some(
+            json!({"components":{"fux::model::Launch":{"argv":["sleep","600"],"cwd":"/","history_lines":100}}}),
+        ),
+    )?;
+    let process = spawned.get("entity").cloned().need()?;
+    refused(
+        world,
+        "world.mutate_components",
+        json!({"entity":process,"component":"fux::model::Launch","path":".argv[0]","value":""}),
+        "argv must start with a program",
+    )?;
+    // Scrollback past the history is kept, and painting clamps it.
+    let viewer = viewer(world)?;
+    call(
+        world,
+        "world.mutate_components",
+        Some(
+            json!({"entity":bits(viewer),"component":"fux::model::Viewer","path":".scrollback","value":1_000_000_000u64}),
+        ),
+    )?;
+    check(world)?;
+    Ok(())
+}
+
+/// 031: a tab spawned straight into a workspace, in one request, is a tab of
+/// that workspace. The stock handler inserts a request's components one at a
+/// time in hash order, and when `ChildOf` came first, fux wrapped the still
+/// roleless entity in a new tab before `Tab` arrived: a tab inside a tab.
+#[test]
+fn a_tab_spawned_into_a_workspace_is_its_tab() -> Outcome {
+    let mut app = fixture()?;
+    let world = app.world_mut();
+    let viewer = viewer(world)?;
+    let workspace = world.get::<Viewing>(viewer).need()?.0;
+    for n in 0..24 {
+        let spawned = call(
+            world,
+            "world.spawn_entity",
+            Some(json!({"components":{
+                "fux::model::Tab":{},
+                "bevy_ecs::hierarchy::ChildOf":bits(workspace),
+                "bevy_ecs::name::Name":format!("tab {n}"),
+            }})),
+        )?;
+        let tab = spawned.get("entity").and_then(Value::as_u64).need()?;
+        let tab = Entity::try_from_bits(tab).need()?;
+        assert_eq!(
+            world.get::<ChildOf>(tab).map(ChildOf::parent),
+            Some(workspace),
+            "tab {n}"
+        );
+        check(world)?;
+    }
     Ok(())
 }
