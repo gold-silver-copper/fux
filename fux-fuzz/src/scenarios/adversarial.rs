@@ -120,11 +120,15 @@ pub(super) fn run(s: &mut Server, seed: u64) -> Result<()> {
     s.journal
         .record("stream", json!({"seed":seed,"bytes":bytes.len()}))?;
     // Trickle the stream in 1 KiB pieces so resizes and scrolls interleave
-    // with it, then end with a clean marker on a fresh screen.
+    // with it, then end with a clean marker on a fresh screen. One process
+    // paces it: a shell loop forking `dd` and `sleep` 160 times each made the
+    // stream's length the runner's fork speed -- 4.7-5.5 s for 3.2 s of
+    // sleeping on a loaded Mac, and past this scenario's 8.8 s window on the
+    // macos-15 runner -- while the pieces reach fux the same either way.
     child_command(
         s,
         f,
-        "stty raw -echo; i=0; while [ $i -lt 160 ]; do dd if=stream.bin bs=1024 skip=$i count=1 2>/dev/null; i=$((i+1)); sleep 0.02; done; E=EN; printf \"\\033[r\\033[?6l\\033[?7h\\033[?1049l\\033[0m\\033[2J\\033[H${E}DED\"; exec cat > /dev/null",
+        "stty raw -echo; perl -e 'open(my $f, \"<\", \"stream.bin\") or die; binmode $f; binmode STDOUT; $| = 1; while (read($f, my $b, 1024)) { print $b; select(undef, undef, undef, 0.02) }'; E=EN; printf \"\\033[r\\033[?6l\\033[?7h\\033[?1049l\\033[0m\\033[2J\\033[H${E}DED\"; exec cat > /dev/null",
     )?;
     let sizes = [
         (24u16, 80u16),
