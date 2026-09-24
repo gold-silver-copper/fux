@@ -216,6 +216,38 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  brp-property:
+    name: BRP property (200,000 requests)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # The in-process BRP property test (src/remote/property.rs) at nightly
+    # depth. `verify` runs 2,000 requests on every push; this runs 200,000 in
+    # a release build, from a seed that changes every night, so each run
+    # explores new requests. A failure prints its seed and case for replay.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev
+
+      - name: Property test
+        env:
+          FUX_BRP_CASES: "200000"
+          FUX_BRP_SEED: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          echo "seed $FUX_BRP_SEED"
+          cargo test --release --locked --bin fux no_brp_request_breaks_the_server
+
   fuzz:
     name: fuzz targets
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
