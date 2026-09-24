@@ -490,3 +490,19 @@ fn grow_restores_rows_a_shrink_scrolled_away() -> Result {
     assert_eq!(p.screen().cursor_position(), (3, 1));
     Ok(())
 }
+
+// The alternate screen keeps no history, so a shrink that must lose rows
+// above the cursor discards them; the primary screen is untouched.
+#[test]
+fn alternate_screen_shrink_discards_rows_above_the_cursor() -> Result {
+    let mut p = Parser::new(4, 10, 100)?;
+    p.process(b"main")?;
+    p.process(b"\x1b[?1049h\x1b[Ha\r\nb\r\nc\r\nd")?;
+    p.resize(2, 10)?;
+    assert_eq!(lines(&p), ["c", "d"]);
+    assert_eq!(p.screen().cursor_position(), (1, 1));
+    p.process(b"\x1b[?1049l")?;
+    assert_eq!(lines(&p), ["main", ""]);
+    assert_eq!(p.screen().history_len(), 0);
+    Ok(())
+}
