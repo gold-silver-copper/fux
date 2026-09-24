@@ -9,7 +9,7 @@ fn a_client_sees_the_shell_and_types_into_it() -> Outcome {
     let mut client = server.attach(10, 40)?;
     client.wait_for("$")?;
     client.keys("echo one-two\r")?;
-    client.wait(&"the echo's output", |t| t.lines().any(|l| l == "one-two"))?;
+    client.wait("the echo's output", |t| t.lines().any(|l| l == "one-two"))?;
     let bar = client.bar();
     assert!(bar.contains("main"), "{bar}");
     assert!(bar.contains("%1 sh"), "{bar}");
@@ -26,17 +26,17 @@ fn detach_and_reattach_keep_the_shell_and_its_screen() -> Outcome {
     let mut client = server.attach(10, 40)?;
     client.wait_for("$")?;
     client.keys("echo before-detach\r")?;
-    client.wait(&"output", |t| t.lines().any(|l| l == "before-detach"))?;
+    client.wait("output", |t| t.lines().any(|l| l == "before-detach"))?;
     client.keys("\x02d")?;
     assert_eq!(client.wait_exit()?, "detached");
     let ls = server.ok(&["ls"])?;
     assert!(!ls.contains("client"), "the client is gone: {ls}");
     let mut again = server.attach(10, 40)?;
-    again.wait(&"the old output", |t| {
+    again.wait("the old output", |t| {
         t.lines().any(|l| l == "before-detach")
     })?;
     again.keys("echo after\r")?;
-    again.wait(&"new output", |t| t.lines().any(|l| l == "after"))?;
+    again.wait("new output", |t| t.lines().any(|l| l == "after"))?;
     // detach from the command line needs the client.
     let out = server.fux(&["detach", "-c", "c2"])?;
     assert_eq!(out.status, 0, "{}", out.stderr);
@@ -51,7 +51,7 @@ fn a_resize_reaches_the_program() -> Outcome {
     client.wait_for("$")?;
     client.resize(20, 60)?;
     client.keys("stty size\r")?;
-    client.wait(&"the new size", |t| t.lines().any(|l| l == "19 60"))?;
+    client.wait("the new size", |t| t.lines().any(|l| l == "19 60"))?;
     assert!(server.ok(&["ls"])?.contains("%1 sh 60x19"));
     // Clamped to 1..=4096 each way; a one-row client has no room for panes.
     client.resize(1, 5000)?;
@@ -67,7 +67,7 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     let mut client = server.attach(6, 30)?;
     client.wait_for("$")?;
     client.keys("for i in 1 2 3 4 5 6 7 8; do echo line$i; done\r")?;
-    client.wait(&"the loop", |t| t.lines().any(|l| l == "line8"))?;
+    client.wait("the loop", |t| t.lines().any(|l| l == "line8"))?;
     let screen = server.ok(&["capture-pane", "-t", "%1"])?;
     assert!(screen.contains("line8"), "{screen}");
     assert!(
@@ -185,7 +185,7 @@ fn a_panes_program_inherits_only_stdio_and_a_clean_signal_mask() -> Outcome {
     client.wait_for("$")?;
     // Descriptors 3..9, whatever the server holds there, are not open here.
     client.keys("for n in 3 4 5 6 7 8 9; do (: >&$n) 2>/dev/null && echo fd$n-open; done; echo fds-checked\r")?;
-    client.wait(&"the check", |t| t.lines().any(|l| l == "fds-checked"))?;
+    client.wait("the check", |t| t.lines().any(|l| l == "fds-checked"))?;
     let open: Vec<String> = client
         .lines()
         .into_iter()
@@ -193,7 +193,7 @@ fn a_panes_program_inherits_only_stdio_and_a_clean_signal_mask() -> Outcome {
         .collect();
     assert!(open.is_empty(), "{open:?}");
     client.keys("ps -o sigmask= -p $$ | tr -d ' 0'; echo mask-checked\r")?;
-    client.wait(&"the mask", |t| t.lines().any(|l| l == "mask-checked"))?;
+    client.wait("the mask", |t| t.lines().any(|l| l == "mask-checked"))?;
     let lines = client.lines();
     let at = lines.iter().position(|l| l == "mask-checked").unwrap_or(0);
     assert_eq!(
