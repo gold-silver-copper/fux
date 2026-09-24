@@ -203,3 +203,48 @@ fn ls_json_and_list_keys_have_their_documented_shapes() -> Outcome {
     assert!(help.stdout.contains("capture-pane"));
     Ok(())
 }
+
+/// A shell setup that writes during its startup and then discards pending
+/// input (as some line editors and plugins do) must not lose a typed
+/// command: fux types it only once the output has gone quiet. The stand-in
+/// startup is one Python process -- so no process start opens a gap in its
+/// output -- that prints a line every 5 ms for about 200 ms and flushes the
+/// terminal's pending input after the tenth line, some 50 ms in; then sh
+/// starts.
+#[test]
+fn a_typed_command_survives_a_startup_that_writes_then_discards_input() -> Outcome {
+    let script = std::env::temp_dir()
+        .canonicalize()
+        .map_err(e)?
+        .join(format!("fux-noisy-startup-{}.py", std::process::id()));
+    std::fs::write(
+        &script,
+        "import termios, time\n\
+         for i in range(40):\n\
+         \x20   print('starting-%d' % i, flush=True)\n\
+         \x20   time.sleep(0.005)\n\
+         \x20   if i == 10:\n\
+         \x20       termios.tcflush(0, termios.TCIFLUSH)\n",
+    )
+    .map_err(e)?;
+    let shell = format!(
+        "set shell /bin/sh -c \"python3 {}; exec /bin/sh\"",
+        script.display()
+    );
+    let server = Server::start(&shell)?;
+    server.ok(&["split", "-h", "-t", "%1", "--", "echo", "typed-after-quiet"])?;
+    let result = eventually("the typed command's output", || {
+        let screen = server.ok(&["capture-pane", "-t", "%2"])?;
+        Ok(screen.lines().any(|l| l == "typed-after-quiet"))
+    });
+    let screen = server.ok(&["capture-pane", "-t", "%2"])?;
+    let _ = std::fs::remove_file(&script);
+    if result.is_err() {
+        return Err(format!("the typed command was lost; %2 shows:\n{screen}"));
+    }
+    assert!(
+        screen.contains("starting-39"),
+        "the startup ran whole: {screen}"
+    );
+    Ok(())
+}
