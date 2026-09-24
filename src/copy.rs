@@ -793,7 +793,10 @@ fn yank(session: &mut Session, client: ClientId) {
     let characters = copied.chars().count();
     session.buffers.push_front(copied.clone());
     session.buffers.truncate(session.config.buffers);
-    let mut note = format!("copied {characters} characters");
+    let mut note = format!(
+        "copied {characters} character{}",
+        if characters == 1 { "" } else { "s" }
+    );
     if session.config.clipboard {
         let encoded = crate::json::base64(copied.as_bytes());
         if encoded.len() <= MAX_CLIPBOARD {
