@@ -510,7 +510,8 @@ pub fn enter(session: &mut Session, client: ClientId) -> Result<String, String> 
     };
     let view = session.views.get_mut(&client).ok_or("no such client")?;
     view.mode = Mode::Copy(Box::new(copy));
-    view.info("copy: move with hjkl, select with v V C-v, y copies, q leaves");
+    // The bar shows COPY and the cursor's line; a notice would hide it.
+    view.notice = None;
     Ok(String::new())
 }
 
