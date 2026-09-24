@@ -211,7 +211,11 @@ fn exiting_the_last_shell_stops_the_server_and_tells_the_client() -> Outcome {
     client.wait_for("$")?;
     client.keys("exit 3\r")?;
     let reason = client.wait_exit()?;
-    assert!(reason.contains("the last pane closed"), "{reason}");
+    assert!(
+        reason.contains("the last pane closed"),
+        "{reason}; the server log:\n{}",
+        server.log()
+    );
     assert!(server.wait_exit()?.success());
     assert!(!server.socket.exists());
     Ok(())

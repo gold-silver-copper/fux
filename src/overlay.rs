@@ -445,7 +445,10 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
     };
     let page = list_capacity(view.rows);
     let last = len.saturating_sub(1);
-    let new = match plain(press) {
+    // The column navigates with unmodified keys only: modified arrows are
+    // bindings (S-Left moves a pane, C-Left resizes, M-Left focuses).
+    let unmodified = press.mods.is_empty().then_some(press.key);
+    let new = match unmodified {
         _ if press == prefix => {
             // The prefix twice sends it to the pane.
             view.mode = Mode::Normal;
