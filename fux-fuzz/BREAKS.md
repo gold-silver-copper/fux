@@ -1557,12 +1557,49 @@ before the finding-016 bound, which kept the read blocking.
 on a dedicated `std::thread` and awaits the result over a channel, so it holds
 no pool thread while the file is slow. The serving loop and PTY I/O keep
 running. The `race`, `churn` and `scene_refs` scenarios pass under `--cpus 2`.
+Those threads needed a bound of their own: finding 019.
 
 **Reproduction.**
 `fux-fuzz/repro/018-a-blocking-scene-read-stalls-the-server.sh` opens eight
 concurrent `load_layout` requests, each naming a FIFO nothing writes -- more
 than the pool's ceiling -- then asks `rpc.discover`. Exit 0 reproduced, 1 not,
 2 setup; `NEGATIVE_CONTROL=1` sends harmless requests instead.
+
+## 019 — Scene file threads are unbounded, and the OS limit panics (class 1)
+
+**The break.** Finding 018's fix gave each scene load or save its own thread.
+Nothing bounded them, and a read of a named pipe that nobody writes never ends:
+each such `load_layout` kept one more thread for the life of the server, even
+after a later load on the same viewer replaced the pending task. At the OS's
+thread limit -- `RLIMIT_NPROC`, a pids cgroup, systemd's `TasksMax` --
+`std::thread::spawn` panicked inside the pool task, and `scene_completions`
+then panicked on the main thread every update, polling the dead task ("Task
+polled after completion").
+
+**Found by** hunt 8's pass over its own fixes. In a Linux container with
+`--pids-limit 512`, 1000 such loads left the server at 508 threads, and its
+stderr showed both panics. On macOS (16384 threads a process) 5000 loads left
+5019 threads, and the server kept answering. `origin/main` is not affected: it
+had no scene threads, and 018 hung it instead.
+
+**Fixed** in the 019 commit: at most `MAX_SCENE_IO` (16) scene file operations
+run at once. A request past the bound gets the notice "16 scene files are
+already being read or written; try again later" and starts nothing. The thread
+starts on the ECS thread through `thread::Builder`, so the OS refusing it is a
+notice too, not a panic. Each thread gives its place back when it ends. Pipes
+that are never written can still hold all sixteen places until the server
+exits: that is the requester's own choice, and the server keeps answering.
+
+**Test.** `layout::tests::scene_file_threads_are_bounded` starts 17 loads of
+unwritten pipes and requires 16 held, the 17th refused with the notice and
+nothing pending, and every place back once the pipes are released. It failed
+first: all 17 were held.
+
+**Reproduction.** `fux-fuzz/repro/019-scene-file-threads-are-unbounded.sh`
+fires 64 loads naming unwritten FIFOs and counts the server's threads. Exit 0
+reproduced (a thread for every load), 1 not, 2 setup; `NEGATIVE_CONTROL=1`
+names missing files, whose loads fail at once. Measured: 64 threads before the
+fix, 16 after; 0 for the control, both builds.
 
 ## Passes, and what each attacked
 

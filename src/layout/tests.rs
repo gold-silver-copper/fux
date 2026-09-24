@@ -81,6 +81,80 @@ fn scene_tasks_complete_on_deadline_and_report_io_failures() -> crate::testing::
     Ok(())
 }
 
+// Hunt 8 finding 019. Each scene file operation has its own thread (018), and
+// a read of a named pipe nobody writes never ends. Unbounded, every such load
+// kept a thread, until the OS refused one: `std::thread::spawn` then panicked
+// in the pool task, and `scene_completions` panicked every update polling it.
+// Past the bound a request is refused with a notice and spawns nothing.
+#[test]
+fn scene_file_threads_are_bounded() -> crate::testing::Outcome {
+    let mut app = App::new();
+    app.insert_resource(Wake(std::thread::current()));
+    app.add_plugins(bevy_app::TaskPoolPlugin::default());
+    let world = app.world_mut();
+    let root = world.spawn(Workspace).id();
+    world.spawn((Tab, ChildOf(root)));
+    let viewer = || Viewer {
+        rows: 24,
+        cols: 80,
+        zoom: false,
+        scrollback: 0,
+        notice: None,
+    };
+    let directory = std::env::temp_dir().join(format!("fux-scene-bound-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)?;
+    let mut pipes = Vec::new();
+    for i in 0..17 {
+        let pipe = directory.join(format!("pipe-{i}"));
+        let _ = std::fs::remove_file(&pipe);
+        nix::unistd::mkfifo(&pipe, nix::sys::stat::Mode::S_IRWXU)?;
+        pipes.push(pipe);
+    }
+    let mut viewers = Vec::new();
+    for pipe in &pipes {
+        let id = world.spawn(viewer()).id();
+        scene_io(
+            world,
+            id,
+            root,
+            pipe.to_str().need()?.to_owned(),
+            Some(Vec::new()),
+        );
+        viewers.push(id);
+    }
+    let last = *viewers.last().need()?;
+    let refused = world.get::<Viewer>(last).need()?.notice.clone();
+    let held = viewers
+        .iter()
+        .filter(|id| world.get::<PendingScene>(**id).is_some())
+        .count();
+    // Release every held reader before asserting, so no thread outlives the
+    // test: a blocking open for writing waits for that pipe's reader, and
+    // closing it ends the read. A refused load has no reader to wait for.
+    for (pipe, id) in pipes.iter().zip(&viewers) {
+        if world.get::<PendingScene>(*id).is_some() {
+            drop(std::fs::OpenOptions::new().write(true).open(pipe)?);
+        }
+    }
+    std::fs::remove_dir_all(&directory)?;
+    // Each finished thread gives its place back.
+    let running = world.resource::<SceneIo>().0.clone();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while running.load(std::sync::atomic::Ordering::Acquire) > 0 {
+        if std::time::Instant::now() >= deadline {
+            return Err("scene file threads kept their places".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(held, 16);
+    assert!(world.get::<PendingScene>(last).is_none());
+    assert_eq!(
+        refused,
+        Notice::error("16 scene files are already being read or written; try again later")
+    );
+    Ok(())
+}
+
 #[test]
 fn detaching_during_synchronous_scene_io_finishes_the_operation() -> crate::testing::Outcome {
     let mut app = App::new();
