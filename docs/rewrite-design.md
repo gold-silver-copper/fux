@@ -1,8 +1,9 @@
 # fux without Bevy: design
 
-Status: agreed with the user on 2026-09-23. Nothing here is implemented yet.
-This is the specification; `docs/prompt-rewrite-without-bevy.md` is how to
-build it.
+Status: agreed with the user on 2026-09-23, and being implemented on the
+branch `rewrite`. This is the specification; `docs/prompt-rewrite-without-bevy.md`
+is how to build it. Where the code had to depart from the first version of
+this document, the change is made here and its commit says why.
 
 **Scope of the first version (decided 2026-09-24): functionality only.** It
 builds everything below that a user sees and uses: panes, tabs, workspaces,
@@ -78,7 +79,7 @@ in parentheses), so building to the design avoids them.
 ## Architecture
 
 ```
-fux (one binary)
+fux (one binary, over a library crate so integration tests can speak the protocol)
  ├─ fux server         one thread, one poll loop
  ├─ fux attach         a thin client: raw bytes up, paint bytes down
  └─ fux <command>      one connection, one command, text (or --json) back
@@ -113,7 +114,9 @@ is read once, bounded, at startup and on `fux reload`.
   removes its socket and exits.
 - A new server starts with one workspace, holding one tab with one shell.
   Tabs and workspaces can be left empty by moving their panes out; an empty
-  tab shows a hint to split or close it.
+  tab shows a hint to split or close it. A pane that closes (its shell
+  exits, or it is killed) takes its tab with it when it was the tab's last
+  pane, and a workspace goes with its last tab.
 
 ### Panes and processes
 
@@ -224,8 +227,11 @@ Each attached client has its own view:
 
 - its size, and its current workspace;
 - per workspace, the selected tab; per tab, the focused and last-focused pane;
-- zoom, and a scroll position per pane, anchored to a fux-vt row ID so that
-  new output does not move what a scrolled-back client is reading;
+- zoom;
+- in copy/select mode, a scroll position for the pane it is on, anchored to a
+  fux-vt row ID so that new output does not move what a scrolled-back client
+  is reading. Leaving copy mode returns to the live screen, so this is the
+  only scroll position a view keeps;
 - its mode: normal, command column, chooser, action menu, prompt, confirm, or
   copy/select (with its cursor and selection);
 - its last sent frame, used for diffing.
@@ -266,7 +272,9 @@ The server decodes the bytes, per client:
    - Otherwise the input goes to the focused pane, re-encoded for that pane's
      modes by the ported `encode.rs`.
    - Focus-in and focus-out go to that client's focused pane, only if the pane
-     enabled focus reporting (`?1004`).
+     enabled focus reporting (`?1004`). fux-vt does not track that mode, nor
+     the cursor shape (DECSCUSR), so fux scans each pane's output for those
+     two itself, leaving fux-vt unchanged.
    - The Kitty keyboard protocol is not supported. Keys use xterm encodings.
 
 **No mouse, deliberately.** Programs in panes that ask for the mouse (`vim`
@@ -397,11 +405,12 @@ payloads (a large paint, `capture-pane` of the whole history) are split
 across frames. The first frame is `Hello` with `PROTOCOL`, an integer bumped
 on any change to the protocol, and the crate version. A `PROTOCOL` mismatch
 is refused with "server speaks protocol N (fux X); restart it with
-`fux kill-server`".
+`fux kill-server`". The `kill` role is accepted whatever the version, so
+that advice always works.
 
 | Direction | Frame |
 | --- | --- |
-| client → server | `Hello { version, role }` |
+| client → server | `Hello { protocol, version, role: attach\|command\|kill }` |
 | client → server | `Attach { rows, cols, workspace? }` |
 | client → server | `Input(bytes)`, `Resize { rows, cols }`, `Detach` |
 | client → server | `Command { argv, cwd, pane? }` |
@@ -434,7 +443,10 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux split -h\|-v [-t %N] [-- CMD…]` | Split, with a shell; CMD, if given, is typed into it |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | Close (no confirmation from the CLI) |
 | `fux rename -t TARGET NAME` | Rename a pane, tab or workspace |
-| `fux move-pane -t %N --to @N\|$N\|new-tab`, `fux swap-pane -t %A %B` | Rearrange |
+| `fux move-pane -t %N --to @N\|+N\|new-tab\|new-workspace`, `fux move-pane -t %N -L\|-R\|-U\|-D` | Move a pane (to a workspace: its first tab; with a direction: beside that neighbour, as `S-arrows` do) |
+| `fux swap-pane -t %A %B`, `fux swap-pane -t %A -L\|-R\|-U\|-D` | Swap two panes, anywhere |
+| `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | Move one place in order (for the action menus) |
+| `fux terminate [-t %N]` | SIGTERM to the pane's foreground process group, never its shell (the pane menu's "terminate") |
 | `fux resize-pane -t %N -L\|-R\|-U\|-D [N]` | Adjust weights |
 | `fux send-keys -t %N [-l] KEYS…` | Keys (`C-c`, `Enter`, …) or literal text |
 | `fux capture-pane -t %N [-S -N] [--json]` | Screen text, optionally with history |
@@ -442,11 +454,13 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux reload` | Re-run the config file against the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | Paste buffers |
 | `fux detach [-c CLIENT]` | Detach a client |
+| `fux list-keys` | Key names and the current bindings |
 
 Some commands act on a client's screen rather than on shared state:
 `command-column`, `choose-tab`, `choose-workspace`, `menu pane|tab|workspace`,
 `command-prompt`, `copy-mode`, `rename-prompt`, `confirm-close`, `zoom`,
-`select-tab`, `select-pane`. From a binding or the `:` prompt, they act on
+`select-tab`, `select-pane`, `select-workspace` (for `{` and `}`), and
+`choose-pane` (the pane menu's "swap with…"). From a binding or the `:` prompt, they act on
 the client that pressed the key. From the command line they need `-c CLIENT`
 (`fux ls` lists clients). Without it they fail with a message naming the
 flag.
