@@ -153,7 +153,7 @@ tab and workspace.
 | `fux resize-pane [-t %N] -L\|-R\|-U\|-D [CELLS]` | move the nearest border that way (default one cell) |
 | `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | move one place in its order |
 | `fux terminate [-t %N]` | SIGTERM to what runs in the pane's foreground, not the shell |
-| `fux send-keys [-t %N] [-l] KEYS…` | send keys (`C-c`, `Enter`, …), or literal text with `-l` |
+| `fux send-keys [-t %N] [-l] KEYS…` | send keys (`C-c`, `Enter`, …); an argument that is not a key name is sent as text, and `-l` sends every argument as text |
 | `fux capture-pane [-t %N] [-S -LINES] [--json]` | the pane's screen text, with LINES of history before it |
 | `fux set OPTION VALUE`, `fux bind [-g GROUP] KEY CMD…`, `fux unbind KEY`, `fux unbind-all` | change the running configuration |
 | `fux reload` | run the config file again over the defaults |

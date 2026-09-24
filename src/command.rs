@@ -1,6 +1,6 @@
 //! The command grammar: the one set of commands that the CLI, key bindings,
 //! the `:` prompt and the config file all speak.
-use crate::keys::{Direction, KeyPress};
+use crate::keys::Direction;
 use crate::layout::{Axis, PaneId};
 
 /// A tab's number, `@N`.
@@ -577,11 +577,6 @@ pub fn parse(argv: &[String]) -> Result<Command, Usage> {
             if keys.is_empty() {
                 return usage("send-keys needs keys to send");
             }
-            if !literal {
-                for key in &keys {
-                    key.parse::<KeyPress>().map_err(Usage)?;
-                }
-            }
             return Ok(Command::SendKeys {
                 target,
                 literal,
@@ -1004,7 +999,6 @@ mod tests {
             "resize-pane -t %1",
             "resize-pane -L zero",
             "send-keys -t %1",
-            "send-keys Nope",
             "select-pane",
             "select-pane --next -L",
             "ls extra",
