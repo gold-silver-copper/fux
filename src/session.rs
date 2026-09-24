@@ -74,6 +74,8 @@ pub struct Outcome {
 
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
+/// How long a typed command waits for the shell's first output.
+pub const TYPE_WAIT: Duration = Duration::from_secs(1);
 /// The size a pane gets when no client shows it yet.
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
 
@@ -333,7 +335,13 @@ impl Session {
         if let Some(line) = line {
             let mut typed = line.into_bytes();
             typed.push(b'\r');
-            pane.input.push(typed)?;
+            if typed.len() + crate::pane::ENTRY_COST > crate::pane::INPUT_BYTES {
+                return Err("the command line is too long to type".into());
+            }
+            pane.typed = Some((typed, Instant::now() + TYPE_WAIT));
+            if pane.child.is_none() {
+                pane.type_now();
+            }
         }
         self.next_pane += 1;
         self.panes.insert(id, pane);
@@ -738,6 +746,19 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Types held command lines whose wait is over; the next such deadline.
+    pub fn type_due(&mut self, now: Instant) -> Option<Instant> {
+        let mut next: Option<Instant> = None;
+        for pane in self.panes.values_mut() {
+            match pane.typed {
+                Some((_, at)) if at <= now => pane.type_now(),
+                Some((_, at)) => next = Some(next.map_or(at, |n| n.min(at))),
+                None => {}
+            }
+        }
+        next
     }
 
     /// Everything the server shuts down: every pane is hung up.
