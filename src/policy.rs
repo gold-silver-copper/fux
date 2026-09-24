@@ -252,7 +252,8 @@ fn register_validation(app: &mut App) {
         .register_type_data::<Shutdown, ReflectValidate>();
 }
 
-/// Every opened type's policy, by type path, for `fux.policy` and the README.
+/// The policy of every type fux registers, by type path, for `fux.policy` and
+/// the README.
 pub fn table(world: &World) -> Vec<(String, ReflectPolicy)> {
     let Some(registry) = world.get_resource::<AppTypeRegistry>() else {
         return Vec::new();
