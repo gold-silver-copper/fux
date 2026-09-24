@@ -756,3 +756,156 @@ pub fn kind_of(target: &AnyRef) -> Kind {
         AnyRef::Workspace(_) => Kind::Workspace,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::ClientId;
+    use crate::config::Config;
+    use crate::view::Mode;
+
+    type Outcome = Result<(), String>;
+
+    /// A session without processes, one client attached.
+    fn session() -> Result<(Session, ClientId), String> {
+        let mut session = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
+        session.start()?;
+        let client = session.attach(30, 100, None)?;
+        Ok((session, client))
+    }
+
+    fn run(session: &mut Session, line: &str) -> Outcome {
+        let outcome = session.run(&crate::words::split(line)?, &Ctx::default());
+        if outcome.status == 0 {
+            Ok(())
+        } else {
+            Err(outcome.stderr)
+        }
+    }
+
+    fn mode(session: &Session, client: ClientId) -> String {
+        match session.views.get(&client).map(|v| &v.mode) {
+            Some(Mode::Normal) => "normal".into(),
+            Some(Mode::Column { selected }) => format!("column {selected}"),
+            Some(Mode::List(list)) => format!("list {} {}", list.title, list.selected),
+            Some(Mode::Prompt(prompt)) => format!("prompt {}|{}", prompt.text, prompt.cursor),
+            Some(Mode::Confirm(confirm)) => format!("confirm {}", confirm.question),
+            Some(Mode::Copy(_)) => "copy".into(),
+            None => "gone".into(),
+        }
+    }
+
+    fn notice(session: &Session, client: ClientId) -> String {
+        session
+            .views
+            .get(&client)
+            .and_then(|v| v.notice.clone())
+            .map(|n| n.text)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_column_scrolls_within_its_bindings() -> Outcome {
+        let (mut s, c) = session()?;
+        let last = s.config.bindings.len() - 1;
+        s.input(c, b"\x02");
+        assert_eq!(mode(&s, c), "column 0");
+        s.input(c, &b"\x1b[B".repeat(100));
+        assert_eq!(
+            mode(&s, c),
+            format!("column {last}"),
+            "Down stops at the last binding"
+        );
+        s.input(c, b"\x1b[H");
+        assert_eq!(mode(&s, c), "column 0");
+        s.input(c, b"\x1b[6~");
+        assert_eq!(mode(&s, c), format!("column {}", list_capacity(30)));
+        s.input(c, b"kkj");
+        assert_eq!(mode(&s, c), format!("column {}", list_capacity(30) - 1));
+        s.input(c, b"\x1b[F");
+        assert_eq!(mode(&s, c), format!("column {last}"));
+        // The rows are headings and bindings; the selection counts bindings.
+        let bindings = column_rows(&s)
+            .iter()
+            .filter(|r| matches!(r, ColumnRow::Binding { .. }))
+            .count();
+        assert_eq!(bindings, last + 1);
+        assert_eq!(
+            column_selected(&s, 0),
+            Some(vec!["split".to_owned(), "-h".to_owned()])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_menu_acts_on_the_item_it_was_opened_for() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, "select-pane -c c1 -t %2")?;
+        s.input(c, b"\x02p");
+        assert!(mode(&s, c).starts_with("list pane %2"), "{}", mode(&s, c));
+        // Focus moves; the menu still means %2: its "close" asks about %2.
+        run(&mut s, "select-pane -c c1 -t %1")?;
+        s.input(c, b"\x1b[B\r");
+        assert!(
+            mode(&s, c).starts_with("confirm close pane %2"),
+            "{}",
+            mode(&s, c)
+        );
+        s.input(c, b"y");
+        assert!(!s.panes.contains_key(&crate::layout::PaneId(2)));
+        assert!(s.panes.contains_key(&crate::layout::PaneId(1)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_list_whose_item_disappears_closes_and_never_retargets() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "split -h -t %1")?;
+        run(&mut s, "select-pane -c c1 -t %2")?;
+        s.input(c, b"\x02p");
+        run(&mut s, "kill-pane -t %2")?;
+        assert_eq!(mode(&s, c), "normal");
+        assert!(notice(&s, c).contains("%2 is gone"), "{}", notice(&s, c));
+        Ok(())
+    }
+
+    #[test]
+    fn choosers_mark_the_current_item_and_start_on_it() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "new-tab -t +1 -n second")?;
+        run(&mut s, "select-tab -c c1 -t @2")?;
+        s.input(c, b"\x02T");
+        let Some(Mode::List(list)) = s.views.get(&c).map(|v| &v.mode) else {
+            return Err(mode(&s, c));
+        };
+        assert_eq!(list.selected, 1);
+        let current: Vec<bool> = list.items.iter().map(|i| i.current).collect();
+        assert_eq!(current, [false, true]);
+        assert!(list.items.iter().all(|i| i.label.contains("— %")));
+        Ok(())
+    }
+
+    #[test]
+    fn a_prompt_edits_one_line() -> Outcome {
+        let (mut s, c) = session()?;
+        s.input(c, b"\x02:");
+        s.input(c, "abc界".as_bytes());
+        assert_eq!(mode(&s, c), "prompt abc界|4");
+        s.input(c, b"\x1b[D\x1b[D\x7fX");
+        assert_eq!(mode(&s, c), "prompt aXc界|2");
+        s.input(c, b"\x1b[3~");
+        assert_eq!(mode(&s, c), "prompt aX界|2");
+        s.input(c, b"\x01Y\x05Z");
+        assert_eq!(mode(&s, c), "prompt YaX界Z|5");
+        s.input(c, b"\x15");
+        assert_eq!(mode(&s, c), "prompt |0");
+        s.input(c, b"\x1b[200~one\ntwo\x1b[201~");
+        assert_eq!(mode(&s, c), "prompt one|3");
+        s.input(c, b"\x1b");
+        std::thread::sleep(crate::decode::ESCAPE_DELAY);
+        s.escape(c);
+        assert_eq!(mode(&s, c), "normal");
+        Ok(())
+    }
+}

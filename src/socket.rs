@@ -22,11 +22,8 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 const DEFAULT_NAME: &str = "server.sock";
-/// How long a probe of an existing socket may take before it counts as in use.
-const PROBE: Duration = Duration::from_secs(1);
 
 /// The socket a command uses: `flag` (a `--socket`), else `FUX_SOCKET`, else
 /// the default under `XDG_RUNTIME_DIR` or `TMPDIR`.
@@ -266,16 +263,22 @@ impl Drop for Endpoint {
     }
 }
 
-/// Connects with a deadline, so a probe can never hang startup.
+/// Whether something listens on `path`, without waiting: a nonblocking
+/// connect answers at once. A listener with a full backlog refuses with
+/// `EAGAIN`, and counts as alive.
 fn probe(path: &Path) -> io::Result<()> {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let target = path.to_owned();
-    std::thread::spawn(move || {
-        let _ = sender.send(UnixStream::connect(target).map(drop));
-    });
-    receiver
-        .recv_timeout(PROBE)
-        .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "probe timed out")))
+    let fd = rustix::net::socket(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::STREAM,
+        None,
+    )?;
+    rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC)?;
+    rustix::io::ioctl_fionbio(&fd, true)?;
+    let address = rustix::net::SocketAddrUnix::new(path)?;
+    match rustix::net::connect(&fd, &address) {
+        Ok(()) | Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INPROGRESS) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Takes ownership of `path` and binds it. Refuses a live server's socket and

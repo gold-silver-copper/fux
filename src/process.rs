@@ -191,20 +191,25 @@ pub fn hangup(leader: Pid) {
     }
 }
 
-/// Ends the leader's group and reaps the leader. Called after `hangup` and a
-/// grace period, with the master already closed.
+/// Ends the leader's group and reaps the leader, without waiting: `None`
+/// if the leader has not exited yet, to try again shortly. Called after
+/// `hangup` and a grace period, with the master already closed.
 pub fn finish(leader: Pid) -> Option<i32> {
     let _ = rustix::process::kill_process_group(leader, Signal::KILL);
     loop {
-        match rustix::process::waitpid(Some(leader), WaitOptions::empty()) {
+        match rustix::process::waitpid(Some(leader), WaitOptions::NOHANG) {
             Ok(Some((_, status))) => {
-                return status
-                    .exit_status()
-                    .or_else(|| status.terminating_signal().map(|s| 128 + s));
+                return Some(
+                    status
+                        .exit_status()
+                        .or_else(|| status.terminating_signal().map(|s| 128 + s))
+                        .unwrap_or(0),
+                );
             }
             Ok(None) => return None,
             Err(rustix::io::Errno::INTR) => continue,
-            Err(_) => return None,
+            // Already reaped, or not ours: nothing left to wait for.
+            Err(_) => return Some(0),
         }
     }
 }

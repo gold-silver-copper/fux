@@ -135,7 +135,10 @@ A pane owns:
   hook calls `setsid` and `ioctl_tiocsctty`, both async-signal-safe, and
   resets the signal mask. std already restores SIGPIPE, and `exec` resets the
   handlers signal-hook installed. A test checks that a pane's program starts
-  with default dispositions and an empty mask.
+  with an empty mask and ignores no signal fux ignores (on Linux, where
+  /proc shows dispositions). A disposition fux itself inherited as ignored
+  passes on, as to any child: resetting every signal would need
+  `sigaction`, which the dependencies here do not offer on Linux.
 
 Each pane also has an ID, `%N`, which only increases, and a name.
 
@@ -201,7 +204,7 @@ State that everyone shares, owned by the server:
 
 ```
 Server
- └─ Workspace $N (name)          ordered
+ └─ Workspace +N (name)          ordered
      └─ Tab @N (name)            ordered
          └─ Node = Split { axis, children: [(weight, Node)] } | Pane %N
 ```
@@ -477,7 +480,7 @@ Key names, for `bind` and `send-keys`, are:
   `Space`, `BSpace`, `Up`, `Home`, `PageUp`, `F1`–`F12`, …;
 - plus any single character.
 
-`encode.rs`'s key set defines the full list, and `fux list-keys` prints it.
+`keys.rs` defines the full list, and `fux list-keys` prints it.
 
 ## Configuration
 

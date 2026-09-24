@@ -645,11 +645,26 @@ impl Server {
             .into_iter()
             .partition(|d| all || d.deadline <= now);
         self.session.dying = rest;
-        for dying in due {
-            let pid = dying.pid;
+        for mut dying in due {
             // The master closes first: a dying writer can hold on to it.
-            drop(dying.master);
-            crate::process::finish(pid);
+            dying.master = None;
+            if crate::process::finish(dying.pid).is_none() {
+                // Killed but not yet exited: reaped on a later tick. When the
+                // server itself is stopping, it waits for it here instead.
+                if all {
+                    // At most a second: a process stuck in the kernel is
+                    // left to init rather than hold the exit.
+                    for _ in 0..500 {
+                        if crate::process::finish(dying.pid).is_some() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                } else {
+                    dying.deadline = now + Duration::from_millis(10);
+                    self.session.dying.push(dying);
+                }
+            }
         }
     }
 }
