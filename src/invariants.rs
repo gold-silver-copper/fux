@@ -17,6 +17,15 @@ pub const MAX_DIMENSION: u16 = 4096;
 
 /// Every broken rule, one line each. Empty means the world is consistent.
 pub fn violations(world: &mut World) -> Vec<String> {
+    let mut v = structural(world);
+    liveness(world, &mut v);
+    v
+}
+
+/// Every rule a request could break. It leaves out whether each running
+/// process is still alive: a process can exit at any moment, and fux notices
+/// on its next tick, so that one can be briefly false through no one's fault.
+pub fn structural(world: &mut World) -> Vec<String> {
     let mut v = Vec::new();
     if !world.contains_resource::<Settings>() {
         v.push("the Settings resource is missing".into());
@@ -195,9 +204,20 @@ fn processes(world: &mut World, v: &mut Vec<String>) {
                 state.rows, state.cols
             ));
         }
-        if let Status::Running { pid, .. } = state.status
-            && !alive(pid)
-        {
+    }
+}
+
+fn liveness(world: &mut World, v: &mut Vec<String>) {
+    let running: Vec<(Entity, u32)> = world
+        .query::<(Entity, &ProcessState)>()
+        .iter(world)
+        .filter_map(|(e, s)| match s.status {
+            Status::Running { pid, .. } => Some((e, pid)),
+            _ => None,
+        })
+        .collect();
+    for (pane, pid) in running {
+        if !alive(pid) {
             v.push(format!(
                 "process {pane} reports running pid {pid}, which is dead"
             ));

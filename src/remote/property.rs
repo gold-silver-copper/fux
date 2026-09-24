@@ -55,6 +55,14 @@ impl Rng {
     }
 }
 
+/// One step of splitmix64: spreads a seed over all 64 bits.
+fn splitmix(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
 fn env(name: &str) -> Option<u64> {
     std::env::var(name)
         .ok()
@@ -118,6 +126,9 @@ const METHODS: &[(&str, usize)] = &[
     ("fux.frame", 2),
     ("fux.frame+watch", 1),
     ("fux.invariants", 1),
+    ("world.observe+watch", 2),
+    ("schedule.list", 1),
+    ("schedule.graph", 1),
 ];
 
 pub(super) fn call(
@@ -671,6 +682,26 @@ fn request(world: &mut World, rng: &mut Rng, pools: &Pools) -> (String, Option<V
             Some(json!({"rows":rows,"cols":cols}))
         }
         "fux.frame" | "fux.frame+watch" => Some(json!({"viewer":pools.entity(rng)})),
+        "world.observe+watch" => {
+            let event = if rng.chance(80) {
+                rng.pick(&pools.events).cloned().unwrap_or_default()
+            } else {
+                pools.component(rng)
+            };
+            if rng.chance(50) {
+                Some(json!({"event":event,"entity":pools.entity(rng)}))
+            } else {
+                Some(json!({"event":event}))
+            }
+        }
+        "schedule.list" => None,
+        "schedule.graph" => {
+            let label = rng
+                .pick(&["Update", "Last", "Main", "PostUpdate", "", "nonsense"])
+                .copied()
+                .unwrap_or_default();
+            Some(json!({"schedule_label":label}))
+        }
         _ => None,
     };
     (method.to_owned(), params)
@@ -788,7 +819,9 @@ fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
 /// Runs `cases` requests from `seed`. Returns every distinct failure (all of
 /// them when `collect`, else only the first).
 fn run(seed: u64, cases: u64, collect: bool) -> Result<Vec<String>, String> {
-    let mut rng = Rng(seed | 1);
+    // Mixed, so that every seed gives its own stream: `seed | 1` gave seeds
+    // 2n and 2n+1 the same one.
+    let mut rng = Rng(splitmix(seed).max(1));
     let mut failures: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut app = fixture()?;

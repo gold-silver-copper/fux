@@ -39,6 +39,7 @@ fn policy(In(_): In<Option<serde_json::Value>>, world: &mut World) -> bevy_remot
         .map(|(path, policy)| {
             serde_json::json!({
                 "type": path,
+                "read": policy.access.read,
                 "write": policy.access.write,
                 "spawn": policy.access.spawn,
                 "remove": policy.access.remove && !policy.required,
@@ -49,7 +50,7 @@ fn policy(In(_): In<Option<serde_json::Value>>, world: &mut World) -> bevy_remot
         })
         .collect();
     Ok(serde_json::json!({
-        "default": "read-only: query and watch, nothing else",
+        "default": "any other registered type is read-only: query and watch, nothing else",
         "types": rows,
     }))
 }

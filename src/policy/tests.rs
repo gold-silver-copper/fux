@@ -32,7 +32,8 @@ fn the_readme_table_is_the_policy() -> Outcome {
         .into_iter()
         .map(|(path, p)| {
             format!(
-                "| `{path}` | {} | {} | {} | {} | {} | {} |",
+                "| `{path}` | {} | {} | {} | {} | {} | {} | {} |",
+                yes(p.access.read),
                 yes(p.access.write),
                 yes(p.access.spawn),
                 yes(p.access.remove && !p.required),
@@ -46,11 +47,41 @@ fn the_readme_table_is_the_policy() -> Outcome {
     Ok(())
 }
 
+/// Every type fux registers has a declared policy, so the table covers all of
+/// them and none is open by accident.
+#[test]
+fn every_fux_type_has_a_policy() -> Outcome {
+    let mut app = App::new();
+    app.insert_resource(Wake(std::thread::current()));
+    app.add_plugins((
+        bevy_app::TaskPoolPlugin::default(),
+        bevy_asset::AssetPlugin::default(),
+        crate::server::ServerPlugin,
+    ));
+    let registry = app.world().resource::<AppTypeRegistry>().read();
+    let missing: Vec<&str> = registry
+        .iter()
+        .map(|r| r.type_info().type_path())
+        .filter(|path| path.starts_with("fux::"))
+        .filter(|path| {
+            registry
+                .get_with_type_path(path)
+                .is_none_or(|r| r.data::<ReflectPolicy>().is_none())
+        })
+        .collect();
+    assert!(missing.is_empty(), "no policy for {missing:?}");
+    Ok(())
+}
+
 /// Opening a type is deliberate: every opened type is fux's own or one the
 /// layout needs, and nothing else Bevy registers is writable.
 #[test]
 fn only_deliberate_types_are_open() -> Outcome {
-    let opened: Vec<String> = served().into_iter().map(|(path, _)| path).collect();
+    let opened: Vec<String> = served()
+        .into_iter()
+        .filter(|(_, p)| p.access.write || p.access.spawn || p.access.remove || p.access.trigger)
+        .map(|(path, _)| path)
+        .collect();
     for path in &opened {
         assert!(
             path.starts_with("fux::")
