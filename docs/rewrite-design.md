@@ -38,6 +38,7 @@ tree, a socket and a render loop.
 | Mouse | **None.** fux never enables mouse reporting; the outer terminal keeps its own mouse behaviour. |
 | Selecting and copying | A keyboard **copy/select mode**: a movable cursor over the pane and its history. |
 | Menus | The navigable command column, tab and workspace choosers, and pane/tab/workspace action menus, all keyboard-driven. |
+| A pane's program | **Always the user's shell.** A command given with `-- CMD` is typed into that shell, as if the user had typed it; when it ends, the prompt is back. A pane closes only when its shell exits. |
 | Configuration | A file of fux commands. Zero dependencies. |
 | Clipboard | OSC 52 writes **on by default** (`set clipboard off` disables). Nothing ever reads the clipboard. |
 | Control surface | The `fux` CLI only. No RPC, HTTP or JSON-RPC. |
@@ -126,14 +127,41 @@ A pane owns:
   is close-on-exec, and a test checks that a pane's program inherits only
   stdio;
 - a `fux_vt::Parser`;
-- a child process, started through `std::process::Command` with the slave as
-  stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and `FUX_SOCKET`. A `pre_exec`
+- a child process: the configured shell (`set shell`), always, started
+  through `std::process::Command` with the slave as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and `FUX_SOCKET`. A `pre_exec`
   hook calls `setsid` and `ioctl_tiocsctty`, both async-signal-safe, and
   resets the signal mask. std already restores SIGPIPE, and `exec` resets the
   handlers signal-hook installed. A test checks that a pane's program starts
   with default dispositions and an empty mask.
 
 Each pane also has an ID, `%N`, which only increases, and a name.
+
+**A command for a new pane** (`split`, `new-tab`, `new-workspace` with
+`-- CMD…`) is typed into its shell, not run in place of it:
+
+- Straight after the shell is spawned, fux puts the command line and a
+  carriage return into the pane's input queue, as keystrokes. The PTY holds
+  them until the shell reads its input, so there is no need to wait for a
+  prompt. It is not wrapped in bracketed paste.
+- So the command runs in the user's interactive shell (aliases, functions,
+  the PATH from its rc files), lands in its history (Up runs it again), and
+  when it ends, or is interrupted with Ctrl-C, the prompt is back in the same
+  pane.
+- The line is built from the argv: each argument is kept bare if it has only
+  `A–Z a–z 0–9 _ @ % + = : , . / -`, and otherwise put in single quotes, with
+  each `'` written as `'\''`. That is literal in sh, dash, bash and zsh.
+  fish (recognised by the shell's file name) also treats `\` inside single
+  quotes as an escape, so for fish each `\` inside them is doubled.
+  Arguments are joined with spaces.
+- An argument with a control character (newline, tab, escape, …) is refused
+  with an error naming it: a shell's line editor would act on it as a key
+  (tab completes, newline runs a partial line). So is a line larger than the
+  input queue.
+- The command gets no exit status of its own from fux: `split -- CMD` returns
+  once the pane exists, and the result shows in the pane like any command's.
+- A known risk: a shell setup that discards input typed during its startup
+  would lose the command. If that shows up in use, the fix is to hold the
+  line until the pane's first output. It is not part of the first version.
 
 Process lifecycle, from the lessons:
 
@@ -143,11 +171,11 @@ Process lifecycle, from the lessons:
   counts as an exit. macOS also reports stops here (020), so a stop is
   ignored.
 
-  Once exited, the group is cleaned up (below) and the leader reaped. Then
-  `remain-on-exit` decides:
-  - `off` (the default, as in tmux): the pane closes, and its clients see a
-    notice with the exit status;
-  - `on`: the pane stays, showing its last screen and status, until closed.
+  Once exited, the group is cleaned up (below), the leader reaped, and the
+  pane closes; its clients see a notice with the exit status. The pane's
+  program is its shell, so this happens when the user leaves the shell
+  (`exit`, Ctrl-D) or something kills it, never merely because a command
+  run in it ended.
 - **Close:** SIGHUP to the leader's group and to every process in its session.
   The session is found through `/proc` on Linux and `proc_listallpids` on macOS
   (013), so a job started by dash survives only if it ignores the hangup, as
@@ -402,8 +430,8 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux server [--socket P] [--config F]` | Run a server in the foreground |
 | `fux kill-server` | Stop the server (hangs up every pane) |
 | `fux ls [--json]` | Workspaces, tabs, panes, clients |
-| `fux new-workspace [-n NAME] [-- CMD…]`, `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | Create, with a shell or CMD |
-| `fux split -h\|-v [-t %N] [-- CMD…]` | Split, optionally running a command |
+| `fux new-workspace [-n NAME] [-- CMD…]`, `fux new-tab [-t WS] [-n NAME] [-- CMD…]` | Create, with a shell; CMD, if given, is typed into it |
+| `fux split -h\|-v [-t %N] [-- CMD…]` | Split, with a shell; CMD, if given, is typed into it |
 | `fux kill-pane\|kill-tab\|kill-workspace [-t …]` | Close (no confirmation from the CLI) |
 | `fux rename -t TARGET NAME` | Rename a pane, tab or workspace |
 | `fux move-pane -t %N --to @N\|$N\|new-tab`, `fux swap-pane -t %A %B` | Rearrange |
@@ -445,7 +473,6 @@ lives at `--config`, else `$XDG_CONFIG_HOME/fux/fux.conf`, else
 set prefix C-b
 set shell /bin/zsh -l            # default: $SHELL, else /bin/sh
 set history-lines 10000
-set remain-on-exit off           # default: off
 set clipboard off                # default: write-only (OSC 52 on)
 set buffers 16
 
