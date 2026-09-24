@@ -148,6 +148,12 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // Test output is shown only for a failing test, so the server's log
+        // is always printed; it explains a failure the assertion cannot.
+        eprintln!(
+            "--- server log ---\n{}--- end of server log ---",
+            self.log()
+        );
         if let Some(mut child) = self.child.take() {
             let _ = Command::new(FUX)
                 .arg("kill-server")
