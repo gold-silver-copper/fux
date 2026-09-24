@@ -2072,4 +2072,3 @@ only for those; every other kind must still be applied and repaired.
   empty and a 100,000-byte label; an insert of only `ChildOf`; an empty
   insert. Every answer was a result or a refusal that says why; invariants
   held; nothing panicked.
-
