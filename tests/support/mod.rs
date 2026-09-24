@@ -356,3 +356,160 @@ pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) ->
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+/// The real `fux attach`, on a PTY of its own, and a fux-vt screen of what it
+/// shows.
+pub struct Terminal {
+    pub master: std::os::fd::OwnedFd,
+    pub child: Child,
+    pub screen: fux_vt::Parser,
+    pub output: Vec<u8>,
+}
+
+impl Terminal {
+    pub fn attach(
+        server: &Server,
+        rows: u16,
+        cols: u16,
+        args: &[&str],
+    ) -> Result<Terminal, String> {
+        let (master, slave) = fux::process::open_pty(rows, cols)?;
+        let stdio = |fd: &std::os::fd::OwnedFd| fd.try_clone().map(Stdio::from).map_err(e);
+        let child = {
+            let _guard = SPAWN.lock().map_err(e)?;
+            let mut command = Command::new(FUX);
+            command
+                .arg("attach")
+                .args(args)
+                .env("FUX_SOCKET", &server.socket)
+                .env("TERM", "xterm-256color")
+                .env_remove("FUX_PANE")
+                .stdin(stdio(&slave)?)
+                .stdout(stdio(&slave)?)
+                .stderr(stdio(&slave)?);
+            // SAFETY: setsid and TIOCSCTTY are async-signal-safe system calls.
+            unsafe {
+                use std::os::unix::process::CommandExt;
+                command.pre_exec(|| {
+                    rustix::process::setsid().map_err(std::io::Error::from)?;
+                    rustix::process::ioctl_tiocsctty(rustix::stdio::stdin())
+                        .map_err(std::io::Error::from)?;
+                    Ok(())
+                });
+            }
+            command.spawn().map_err(e)?
+        };
+        drop(slave);
+        Ok(Terminal {
+            master,
+            child,
+            screen: fux_vt::Parser::new(rows, cols, 0).map_err(e)?,
+            output: Vec::new(),
+        })
+    }
+
+    pub fn pump(&mut self) {
+        let mut buffer = [0u8; 65536];
+        while let Ok(n) = rustix::io::read(&self.master, &mut buffer) {
+            if n == 0 {
+                break;
+            }
+            let bytes = buffer.get(..n).unwrap_or_default();
+            self.output.extend_from_slice(bytes);
+            let _ = self.screen.process(bytes);
+        }
+    }
+
+    pub fn text(&self) -> String {
+        let screen = self.screen.screen();
+        let (rows, cols) = screen.size();
+        let window = screen.window(0, rows, cols);
+        (0..rows)
+            .map(|y| {
+                window
+                    .row(y)
+                    .map(|r| {
+                        let mut line = String::new();
+                        for cell in r.cells {
+                            if !cell.is_wide_continuation() {
+                                line.push_str(if cell.has_contents() {
+                                    cell.contents()
+                                } else {
+                                    " "
+                                });
+                            }
+                        }
+                        line.trim_end().to_owned()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn wait_for(&mut self, needle: &str) -> Outcome {
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            self.pump();
+            if self.text().contains(needle)
+                || String::from_utf8_lossy(&self.output).contains(needle)
+            {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "waited for {needle:?}; the terminal shows:\n{}",
+                    self.text()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    pub fn type_bytes(&mut self, bytes: &[u8]) -> Outcome {
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            match rustix::io::write(&self.master, rest) {
+                Ok(n) => rest = rest.get(n..).unwrap_or_default(),
+                Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => {
+                    std::thread::sleep(Duration::from_millis(1))
+                }
+                Err(error) => return Err(e(error)),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Outcome {
+        fux::process::resize(&self.master, rows, cols);
+        self.screen = fux_vt::Parser::new(rows, cols, 0).map_err(e)?;
+        // The kernel signals the foreground group of the PTY: the client.
+        Ok(())
+    }
+
+    /// Waits for the client to exit; its status.
+    pub fn wait_exit(&mut self) -> Result<std::process::ExitStatus, String> {
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            self.pump();
+            if let Some(status) = self.child.try_wait().map_err(e)? {
+                self.pump();
+                return Ok(status);
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "the client did not exit; it shows:\n{}",
+                    self.text()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}

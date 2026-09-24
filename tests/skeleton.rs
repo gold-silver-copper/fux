@@ -16,7 +16,8 @@ fn a_server_answers_ls_and_stops_on_kill_server() -> Outcome {
         "{json}"
     );
     assert!(json.contains("\"clients\":[]"), "{json}");
-    assert_eq!(server.fux(&["kill-server"])?.status, 0);
+    let killed = server.fux(&["kill-server"])?;
+    assert_eq!(killed.status, 0, "{}", killed.stderr);
     assert!(server.wait_exit()?.success());
     assert!(!server.socket.exists(), "the socket is removed");
     assert!(
