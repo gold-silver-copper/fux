@@ -29,7 +29,7 @@ attached terminal why, and removes its socket.
 
 Every pane runs your shell (`set shell`, else `$SHELL`, else `/bin/sh`). A
 command given to `split`, `new-tab` or `new-workspace` after `--` is typed
-into that shell, as if you had typed it: it runs with your aliases and
+into that shell once it shows its prompt, as if you had typed it: it runs with your aliases and
 shell setup, lands in the shell's history, and when it ends, the prompt is
 back in the same pane. A pane closes when its shell exits (`exit`, `C-d`),
 and its viewers are told the exit status. A tab closes with its last pane,

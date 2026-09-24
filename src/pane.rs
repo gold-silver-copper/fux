@@ -197,6 +197,10 @@ pub struct Pane {
     pub reply_dropped: bool,
     /// The shell's program, to quote a typed command for it.
     pub shell: String,
+    /// A command line waiting to be typed into the shell, and when to type
+    /// it anyway: it is held until the shell's first output, normally its
+    /// prompt, so it is not echoed by the terminal before the shell reads it.
+    pub typed: Option<(Vec<u8>, std::time::Instant)>,
 }
 
 impl Pane {
@@ -227,6 +231,7 @@ impl Pane {
             input: InputQueue::default(),
             reply_dropped: false,
             shell,
+            typed: None,
         })
     }
 
@@ -246,11 +251,20 @@ impl Pane {
         if let Some(title) = title {
             self.title = title;
         }
+        self.type_now();
         if !replies.is_empty() && self.input.push(replies).is_err() && !self.reply_dropped {
             self.reply_dropped = true;
             return true;
         }
         false
+    }
+
+    /// Types a held command line into the shell now.
+    pub fn type_now(&mut self) {
+        if let Some((line, _)) = self.typed.take() {
+            // The queue is empty this early, so the line fits.
+            let _ = self.input.push(line);
+        }
     }
 
     /// Resizes the screen and the PTY.

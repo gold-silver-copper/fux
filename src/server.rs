@@ -155,6 +155,7 @@ impl Server {
                 }
             }
             self.escapes(now);
+            self.session.type_due(now);
             self.finish_dying(false);
             self.conns
                 .retain(|c| !(c.dead || c.closing && c.out.is_empty()));
@@ -205,6 +206,11 @@ impl Server {
         }
         for dying in &self.session.dying {
             sooner(dying.deadline);
+        }
+        for pane in self.session.panes.values() {
+            if let Some((_, at)) = pane.typed {
+                sooner(at);
+            }
         }
         if let Some((since, _)) = &self.stopping {
             sooner(*since + STOP_WAIT);

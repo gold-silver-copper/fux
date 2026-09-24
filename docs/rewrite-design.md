@@ -142,10 +142,14 @@ Each pane also has an ID, `%N`, which only increases, and a name.
 **A command for a new pane** (`split`, `new-tab`, `new-workspace` with
 `-- CMD…`) is typed into its shell, not run in place of it:
 
-- Straight after the shell is spawned, fux puts the command line and a
-  carriage return into the pane's input queue, as keystrokes. The PTY holds
-  them until the shell reads its input, so there is no need to wait for a
-  prompt. It is not wrapped in bracketed paste.
+- fux puts the command line and a carriage return into the pane's input
+  queue, as keystrokes, when the shell first writes output (normally its
+  prompt), or after one second if it writes nothing. It is not wrapped in
+  bracketed paste. Typing straight after the spawn was the first version of
+  this: the terminal then echoed the line before the shell had drawn its
+  prompt, so dash printed the command's output on the prompt's line (CI's
+  Linux runner caught it in the milestone 5 tests), and bash and zsh showed
+  the line twice.
 - So the command runs in the user's interactive shell (aliases, functions,
   the PATH from its rc files), lands in its history (Up runs it again), and
   when it ends, or is interrupted with Ctrl-C, the prompt is back in the same
@@ -162,9 +166,8 @@ Each pane also has an ID, `%N`, which only increases, and a name.
   input queue.
 - The command gets no exit status of its own from fux: `split -- CMD` returns
   once the pane exists, and the result shows in the pane like any command's.
-- A known risk: a shell setup that discards input typed during its startup
-  would lose the command. If that shows up in use, the fix is to hold the
-  line until the pane's first output. It is not part of the first version.
+- A remaining risk: a shell setup that writes output early in its startup
+  and then discards pending input would still lose the command.
 
 Process lifecycle, from the lessons:
 
