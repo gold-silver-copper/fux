@@ -62,6 +62,7 @@ impl Server {
                 .arg("--config")
                 .arg(&config_path)
                 .env("PS1", "$ ")
+                .env("SHELL", "/bin/sh")
                 .env("ENV", "/dev/null")
                 .env("HOME", &dir)
                 .env_remove("FUX_PANE")
