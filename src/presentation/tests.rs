@@ -214,3 +214,61 @@ fn extracted_world_matches_app_across_scene_resize_focus_and_removal() -> Outcom
     assert!(reference.world().resource::<Messages<Probe>>().is_empty());
     Ok(())
 }
+
+// Only the viewed tab is written into the projection. Inactive tabs were only
+// ever written to be hidden, and writing them made every rebuild cost O(tabs):
+// 424 ms a move at a thousand tabs in fux-fuzz's `scale` on ubuntu-24.04.
+#[test]
+fn a_rebuild_writes_only_the_viewed_tab() -> Outcome {
+    let mut source = App::new();
+    source
+        .register_type::<Workspace>()
+        .register_type::<Tab>()
+        .register_type::<PaneView>();
+    register_types(&mut source);
+    let registry = source.world().resource::<AppTypeRegistry>().clone();
+    let root = source.world_mut().spawn((Workspace, Node::default())).id();
+    let mut tabs = Vec::new();
+    for _ in 0..5 {
+        let process = source.world_mut().spawn_empty().id();
+        let tab = source
+            .world_mut()
+            .spawn((Tab, Node::default(), ChildOf(root)))
+            .id();
+        let leaf = source
+            .world_mut()
+            .spawn((PaneView { pane: process }, Node::default(), ChildOf(tab)))
+            .id();
+        tabs.push((tab, leaf));
+    }
+    let scene = crate::assets::extract_layout(source.world(), root)?;
+    let viewer = Viewer {
+        rows: 24,
+        cols: 80,
+        zoom: false,
+        scrollback: 0,
+        notice: None,
+    };
+    let tab_count = |view: &mut Presentation| {
+        view.world
+            .query_filtered::<(), With<Tab>>()
+            .iter(&view.world)
+            .count()
+    };
+    let (tab, leaf) = *tabs.get(2).need()?;
+    let mut view = Presentation::new(registry.clone());
+    view.sync(&scene, 1, root, &viewer, (Some(tab), Some(leaf)))?;
+    assert_eq!(tab_count(&mut view), 1);
+    assert!(view.source_to_local.contains_key(&leaf));
+    assert!(
+        tabs.iter()
+            .all(|(t, l)| *t == tab || !view.source_to_local.contains_key(l))
+    );
+    // A focus outside the viewed tab, which only raw edits produce, keeps the
+    // whole scene rather than failing the frame.
+    let (_, elsewhere) = *tabs.first().need()?;
+    let mut view = Presentation::new(registry);
+    view.sync(&scene, 1, root, &viewer, (Some(tab), Some(elsewhere)))?;
+    assert_eq!(tab_count(&mut view), 5);
+    Ok(())
+}

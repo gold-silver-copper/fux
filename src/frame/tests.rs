@@ -192,3 +192,42 @@ fn one_viewer_without_a_layout_does_not_fail_another_viewer_frame() -> Outcome {
     let _ = (pane, tab);
     Ok(())
 }
+
+// The frame that resizes a pane's PTY publishes its size in the same step, as
+// `terminate` publishes an ended process: a query right after the frame must
+// not read the size from before it. The sync system used to republish it only
+// on the next update, so a test querying straight after a paint raced it.
+#[test]
+fn a_frame_publishes_the_pty_size_it_sets() -> Outcome {
+    let mut app = bevy_app::App::new();
+    app.insert_resource(Wake(std::thread::current()));
+    app.insert_resource(crate::assets::Settings::default());
+    app.add_plugins(crate::server::ServerPlugin);
+    let world = app.world_mut();
+    let root = world.spawn(Workspace).id();
+    let tab = world.spawn((Tab, ChildOf(root))).id();
+    let terminal = Terminal::for_test(fux_vt::Parser::new(24, 80, 0)?);
+    let published = terminal.state();
+    let process = world.spawn((terminal, published)).id();
+    let leaf = world.spawn((PaneView { pane: process }, ChildOf(tab))).id();
+    let id = world
+        .spawn((
+            Viewer {
+                rows: 12,
+                cols: 40,
+                zoom: false,
+                scrollback: 0,
+                notice: None,
+            },
+            Viewing(root),
+            OnTab(tab),
+            Focused(leaf),
+        ))
+        .id();
+    make_frame(world, id)?;
+    let size = world.get::<Terminal>(process).need()?.screen().size();
+    assert_eq!(size, (11, 40));
+    let state = world.get::<ProcessState>(process).need()?;
+    assert_eq!((state.rows, state.cols), size);
+    Ok(())
+}

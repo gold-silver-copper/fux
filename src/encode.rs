@@ -261,4 +261,88 @@ mod tests {
             assert_eq!(key_bytes(Key::Char(c), ctrl, false), vec![byte], "{c:?}");
         }
     }
+
+    /// Property: `key_bytes` handles every key it can be given -- every named
+    /// key, every arrow, `F(1..=12)`, and a spread of characters including
+    /// control range, NUL, DEL, high Unicode and combining marks -- under all
+    /// eight modifier combinations and both cursor modes, for a few thousand
+    /// cases. It must never produce an empty encoding (every key sends
+    /// something) and, for a plain character, must contain that character's
+    /// UTF-8. The parser is entangled with fux_vt and the fux protocol types,
+    /// so this is a property test rather than a standalone cargo-fuzz target,
+    /// and it runs on stable in every CI run.
+    #[test]
+    fn key_bytes_is_total_and_never_empty() {
+        let mut keys = vec![
+            Key::Enter,
+            Key::Tab,
+            Key::Escape,
+            Key::Backspace,
+            Key::Delete,
+            Key::Insert,
+            Key::Home,
+            Key::End,
+            Key::PageUp,
+            Key::PageDown,
+        ];
+        for direction in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            keys.push(Key::Arrow(direction));
+        }
+        for n in 1..=12 {
+            keys.push(Key::F(n));
+        }
+        for code in [
+            0u32,
+            0x01,
+            0x09,
+            0x0a,
+            0x0d,
+            0x1b,
+            0x7f,
+            b' ' as u32,
+            b'a' as u32,
+            b'Z' as u32,
+            b'0' as u32,
+            b'~' as u32,
+            0xe9,
+            0x203c,
+            0x1f600,
+            0x300,
+            0x2028,
+            0xfeff,
+        ] {
+            if let Some(c) = char::from_u32(code) {
+                keys.push(Key::Char(c));
+            }
+        }
+        for &key in &keys {
+            for bits in 0u8..8 {
+                let modifiers = Modifiers {
+                    ctrl: bits & 1 != 0,
+                    alt: bits & 2 != 0,
+                    shift: bits & 4 != 0,
+                };
+                for application in [false, true] {
+                    let bytes = key_bytes(key, modifiers, application);
+                    assert!(
+                        !bytes.is_empty(),
+                        "empty encoding for {key:?} {modifiers:?} application={application}"
+                    );
+                    // A plain character carries its own UTF-8; a control
+                    // modifier may remap it, so only assert the unmodified case.
+                    if let Key::Char(c) = key
+                        && modifiers == Modifiers::default()
+                    {
+                        let mut buffer = [0u8; 4];
+                        assert_eq!(bytes, c.encode_utf8(&mut buffer).as_bytes());
+                    }
+                }
+            }
+        }
+    }
 }

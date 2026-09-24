@@ -210,6 +210,30 @@ fn native_splits_junctions_focus_zoom_and_no_margin_chrome() -> Outcome {
     Ok(())
 }
 
+// Hunt 8 finding 017. A new pane's PTY starts at one size and the first frame
+// resizes it to its rectangle; the emulator's resize used to cut the bottom
+// row, so a program whose output overflows the pane and ends without a
+// newline lost its last line. One frame after a fixed wait, never a polling
+// loop: each request wakes the runner, and polling is what hid this.
+#[test]
+fn a_split_pane_paints_its_newline_less_last_line() -> Outcome {
+    let s = Server::start()?;
+    let v = s.attach()?;
+    s.split(
+        v,
+        "horizontal",
+        Some(
+            "i=1; while [ $i -le 40 ]; do echo LINE-$i; i=$((i+1)); done; \
+             printf ENDMARK; exec sleep 100",
+        ),
+    )?;
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let screen = plain(&s.painted(v, 24, 80)?);
+    assert!(screen.contains("LINE-40"), "{screen}");
+    assert!(screen.contains("ENDMARK"), "{screen}");
+    Ok(())
+}
+
 #[test]
 fn command_column_prefix_policy_scroll_prompts_and_repaint() -> Outcome {
     let s = Server::start()?;

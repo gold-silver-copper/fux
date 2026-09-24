@@ -225,3 +225,27 @@ fn sustained_output_plateaus_cache_and_grid_storage_after_eviction() -> Outcome 
     );
     Ok(())
 }
+
+// Hunt 8 finding 017: a pane's PTY starts at one size and its first frame
+// resizes it to the pane's rectangle. The rows that frame paints must be what
+// the resized emulator shows -- here the program's last line, which has no
+// newline, not the line above it.
+#[test]
+fn a_resized_pane_paints_its_newline_less_last_line() -> Outcome {
+    let mut parser = Parser::new(24, 80, 100)?;
+    let mut output = String::new();
+    for i in 1..=40 {
+        output.push_str(&format!("LINE-{i}\r\n"));
+    }
+    output.push_str("ENDMARK");
+    parser.process(output.as_bytes())?;
+    let mut terminal = crate::terminal::Terminal::for_test(parser);
+    terminal.resize(23, 80)?;
+    let painted = Rows::default()
+        .snapshot(terminal.screen(), 0, 23, 80)
+        .to_vec();
+    let contents = decoded(&painted, 80)?.screen().contents();
+    let last: Vec<&str> = contents.lines().rev().take(2).collect();
+    assert_eq!(last, ["ENDMARK", "LINE-40"]);
+    Ok(())
+}

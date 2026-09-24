@@ -59,11 +59,15 @@ pub(super) fn run(s: &mut Server) -> Result<()> {
     let va = s.frontend(a)?.viewer;
     // Sixty numbered lines and a final marker without a trailing newline, so
     // the live view shows LINE-039..LINE-060 and READY, with 38 lines of history.
-    let body: String = (1..=LINES).map(|n| format!("{}\\r\\n", line(n))).collect();
+    // A loop, not the 774 literal bytes it prints: the frontend forwards a
+    // typed key per request, and on a loaded Mac (~10 ms a key) typing the
+    // literal text outlasted the stage's 5 s wait.
     child_command(
         s,
         a,
-        &format!("stty raw -echo; printf '\\033[2J\\033[H{body}READY'; exec cat"),
+        &format!(
+            "stty raw -echo; printf '\\033[2J\\033[H'; i=1; while [ $i -le {LINES} ]; do printf 'LINE-%03d\\r\\n' $i; i=$((i+1)); done; printf READY; exec cat"
+        ),
     )?;
     let first_visible = LINES + 1 - CONTENT_ROWS + 1; // 39
     s.wait("history source painted", |s| {

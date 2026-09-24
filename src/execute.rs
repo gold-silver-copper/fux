@@ -122,10 +122,19 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             let pane = focus
                 .and_then(|leaf| pane_of(world, leaf))
                 .ok_or("no pane")?;
-            world
-                .get_mut::<Terminal>(pane)
-                .ok_or("process is not running")?
-                .stop()?;
+            let (stopped, published) = {
+                let mut terminal = world
+                    .get_mut::<Terminal>(pane)
+                    .ok_or("process is not running")?;
+                let stopped = terminal.stop();
+                (stopped, terminal.state())
+            };
+            // Published now, not on the next update: the process is already
+            // reaped, and a query in between must not read it as running.
+            if let Some(mut state) = world.get_mut::<ProcessState>(pane) {
+                state.set_if_neq(published);
+            }
+            stopped?;
         }
         Zoom => {
             focus.ok_or("no pane")?;
@@ -319,7 +328,7 @@ pub(crate) fn execute(world: &mut World, id: Entity, command: Command) -> Result
             world.entity_mut(id).insert(Prefix::default());
         }
         Detach => {
-            world.despawn(id);
+            crate::navigation::detach_if_viewer(world, id);
         }
         Menu { subject } => interaction::menu(world, id, target, subject)?,
         Choose { chooser } => interaction::choose(world, id, target, chooser)?,

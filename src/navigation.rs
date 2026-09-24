@@ -325,9 +325,38 @@ pub(crate) fn repair_later(mut world: DeferredWorld, _: HookContext) {
 pub(crate) fn reject_viewer_on_layout(
     inserted: On<Insert<(Viewer, LayoutNode)>>,
     mixed: Query<(), (With<Viewer>, LayoutRole)>,
+    resource: Query<(), With<bevy_ecs::resource::IsResource>>,
     mut commands: Commands,
 ) {
     let entity = inserted.entity;
+    // A resource is an entity in Bevy 0.20, and a raw insert can put fux
+    // components on one. It must stay only a resource: a pass over viewers or
+    // a layout collapse that despawned it would take the resource with it
+    // (hunt 7 finding 009). So a resource entity keeps neither role.
+    if resource.contains(entity) {
+        bevy_log::warn!(
+            "Entity {entity} is a resource and cannot also be a viewer or a layout node. The fux components have been removed."
+        );
+        commands.entity(entity).try_remove::<(
+            Viewer,
+            Viewing,
+            OnTab,
+            Focused,
+            Memory,
+            crate::paste::Ownership,
+            crate::presentation::Presentation,
+            crate::interaction::Prefix,
+            crate::interaction::Overlay,
+            crate::selection::Selection,
+            Workspace,
+            Tab,
+            Split,
+            PaneView,
+            WorkspaceOrder,
+        )>();
+        return;
+    }
+    // The viewer role loses to the layout role, whichever arrives second.
     if !mixed.contains(entity) {
         return;
     }
@@ -404,6 +433,27 @@ pub(crate) fn forget<C: Component>(
 }
 
 /// Registers the observers that keep viewer relationships and memory valid.
+/// Despawns `entity` only if it is a genuine viewer: it carries `Viewer`, it
+/// is not a layout node, and it is not a resource. fux despawns viewers in its
+/// own code -- a closed `fux.frame+watch` and the `Detach` command -- and a
+/// caller names the entity, so both routes check the same thing the BRP
+/// despawn guard checks (hunt 7 finding 009). Returns whether it despawned.
+pub(crate) fn detach_if_viewer(world: &mut World, entity: Entity) -> bool {
+    let Ok(entity_ref) = world.get_entity(entity) else {
+        return false;
+    };
+    let genuine = entity_ref.contains::<Viewer>()
+        && !entity_ref.contains::<bevy_ecs::resource::IsResource>()
+        && !entity_ref.contains::<Workspace>()
+        && !entity_ref.contains::<Tab>()
+        && !entity_ref.contains::<Split>()
+        && !entity_ref.contains::<PaneView>();
+    if genuine {
+        world.despawn(entity);
+    }
+    genuine
+}
+
 pub(crate) fn observe(world: &mut World) {
     world.add_observer(reject_viewer_on_layout);
     world.add_observer(normalize_on_tab_removed);

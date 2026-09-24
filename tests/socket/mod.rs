@@ -93,16 +93,12 @@ fn stop(socket: &Path) -> Result<(), Fail> {
 /// work first, by finding the server's own Unix socket, so an empty answer is
 /// evidence rather than a failed tool.
 fn internet_sockets(pid: u32, socket: &Path) -> Result<String, Fail> {
-    let unix = Command::new("lsof")
-        .args(["-nP", "-a", "-p", &pid.to_string(), "-U"])
-        .output()?;
+    let unix = output(Command::new("lsof").args(["-nP", "-a", "-p", &pid.to_string(), "-U"]))?;
     let listed = String::from_utf8_lossy(&unix.stdout);
     if !listed.contains(&*socket.to_string_lossy()) {
         return Err(format!("lsof could not see the server's own socket: {listed}").into());
     }
-    let inet = Command::new("lsof")
-        .args(["-nP", "-a", "-p", &pid.to_string(), "-i"])
-        .output()?;
+    let inet = output(Command::new("lsof").args(["-nP", "-a", "-p", &pid.to_string(), "-i"]))?;
     // lsof exits 1 when it finds nothing to list; anything else must list rows.
     if !inet.status.success() && inet.status.code() != Some(1) {
         return Err(format!("lsof -i failed: {inet:?}").into());
@@ -163,7 +159,7 @@ fn fux(args: &[&str], env: &[(&str, &str)]) -> Result<Output, Fail> {
     for (key, value) in env {
         command.env(key, value);
     }
-    Ok(command.output()?)
+    Ok(output(&mut command)?)
 }
 
 #[test]
@@ -233,13 +229,14 @@ fn retired_and_invalid_transport_settings_fail_naming_the_change() -> Outcome {
     assert!(help.status.success());
     assert!(String::from_utf8_lossy(&help.stdout).contains("--socket PATH"));
     // Without XDG_RUNTIME_DIR, TMPDIR decides; an empty one is an error.
-    let empty = Command::new(env!("CARGO_BIN_EXE_fux"))
-        .args(["rpc", "rpc.discover"])
-        .env_remove("FUX_SOCKET")
-        .env_remove("FUX_ENDPOINT")
-        .env_remove("XDG_RUNTIME_DIR")
-        .env("TMPDIR", "")
-        .output()?;
+    let empty = output(
+        Command::new(env!("CARGO_BIN_EXE_fux"))
+            .args(["rpc", "rpc.discover"])
+            .env_remove("FUX_SOCKET")
+            .env_remove("FUX_ENDPOINT")
+            .env_remove("XDG_RUNTIME_DIR")
+            .env("TMPDIR", ""),
+    )?;
     assert!(String::from_utf8_lossy(&empty.stderr).contains("TMPDIR is set but empty"));
     // A location that is unsafe or occupied is refused and left as it was.
     let open = directory.join("open");
@@ -1057,15 +1054,10 @@ fn serve_peer(
 /// buffered without bound: 5.3 GB in sixty seconds, climbing at 95 MB/s.
 #[test]
 fn an_endless_event_ends_the_attachment_and_restores_the_terminal() -> Outcome {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use portable_pty::CommandBuilder;
 
     let peer = EndlessPeer::start(false)?;
-    let pair = native_pty_system().openpty(PtySize {
-        rows: 24,
-        cols: 80,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair = open_pty(24, 80)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");
@@ -1147,15 +1139,10 @@ fn an_endless_event_ends_the_attachment_and_restores_the_terminal() -> Outcome {
 /// bound on one unending event and not on how much a server may send.
 #[test]
 fn a_stream_of_ordinary_frames_is_not_bounded_away() -> Outcome {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use portable_pty::CommandBuilder;
 
     let peer = EndlessPeer::start(true)?;
-    let pair = native_pty_system().openpty(PtySize {
-        rows: 24,
-        cols: 80,
-        pixel_width: 0,
-        pixel_height: 0,
-    })?;
+    let pair = open_pty(24, 80)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_fux"));
     command.arg("attach");
@@ -1201,5 +1188,79 @@ fn a_stream_of_ordinary_frames_is_not_bounded_away() -> Outcome {
     let _ = child.wait();
     drop(pair.master);
     let _ = drain.join();
+    Ok(())
+}
+
+/// A signal that lands while a request waits for its reply must not fail the
+/// request (hunt 7 finding 010). Linux never restarts a read on a socket with
+/// a receive timeout after a signal handler runs, and the transport sets a
+/// timeout on every request, so the read comes back `EINTR`. The frontend's
+/// own `SIGWINCH` handler did exactly this whenever a window was resized mid
+/// keystroke. The handler here is installed without `SA_RESTART`, which makes
+/// every platform return `EINTR`, and the signal is aimed at this thread while
+/// a fake server holds back its reply, so the interruption is certain rather
+/// than a race.
+#[test]
+fn a_signal_during_a_request_does_not_fail_it() -> Outcome {
+    use nix::sys::{
+        pthread::{pthread_kill, pthread_self},
+        signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction},
+    };
+    use std::os::unix::net::UnixListener;
+    extern "C" fn ignore(_: nix::libc::c_int) {}
+
+    let (directory, _) = fixture()?;
+    let path = directory.join("slow.sock");
+    let listener = UnixListener::bind(&path)?;
+    let server = thread::spawn(move || -> Result<(), std::io::Error> {
+        let (mut client, _) = listener.accept()?;
+        let mut request = Vec::new();
+        let mut byte = [0; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            if client.read(&mut byte)? == 0 {
+                return Ok(());
+            }
+            request.extend_from_slice(&byte);
+        }
+        // Hold the reply long enough for every signal below to land in the
+        // client's read.
+        thread::sleep(Duration::from_millis(600));
+        client.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+    });
+
+    // SAFETY: the handler does nothing, so it is async-signal-safe.
+    let previous = unsafe {
+        sigaction(
+            Signal::SIGUSR2,
+            &SigAction::new(
+                SigHandler::Handler(ignore),
+                SaFlags::empty(),
+                SigSet::empty(),
+            ),
+        )?
+    };
+    let waiting = pthread_self();
+    let signaller = thread::spawn(move || {
+        for _ in 0..4 {
+            thread::sleep(Duration::from_millis(100));
+            let _ = pthread_kill(waiting, Signal::SIGUSR2);
+        }
+    });
+    let reply = unix_http::agent(&path, Some(Duration::from_secs(5)))
+        .get(unix_http::URL)
+        .call()
+        .map_err(|error| error.to_string())
+        .and_then(|mut response| {
+            response
+                .body_mut()
+                .read_to_string()
+                .map_err(|error| error.to_string())
+        });
+    let _ = signaller.join();
+    // SAFETY: restoring the disposition this test replaced.
+    unsafe { sigaction(Signal::SIGUSR2, &previous)? };
+    let _ = server.join();
+    let _ = fs::remove_dir_all(&directory);
+    assert_eq!(reply?, "{}");
     Ok(())
 }

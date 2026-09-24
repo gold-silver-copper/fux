@@ -10,6 +10,7 @@ use bevy_ecs::{
     world::{CommandQueue, EntityRefExcept},
 };
 use bevy_world_serialization::DynamicWorld;
+use std::io::Read;
 use std::sync::Arc;
 
 /// A scene save or load in flight for the viewer that asked. Detaching the
@@ -197,6 +198,71 @@ pub(crate) fn scene(world: &mut World, root: Entity) -> Result<(u32, Arc<Dynamic
 
 /// Serializes on the World (only native scene serialization needs it), then
 /// reads or writes the file on the task pool and returns through ECS.
+/// The largest scene file `load_layout` will read. A saved layout is a
+/// hierarchy of nodes, not history or output, so even a workspace of a
+/// thousand panes is far below this; the bound exists because the path is a
+/// caller's choice and `read_to_string` had none, so pointing it at `/dev/zero`
+/// or a huge file grew the server without limit and parsing a huge one blocked
+/// every session (hunt 8 finding 016). It matches the transport's other reply
+/// bound rather than being tuned to a measured maximum, because no legitimate
+/// layout comes close.
+pub const MAX_SCENE: u64 = 8 << 20;
+
+/// Reads a scene file, refusing one larger than `MAX_SCENE` before holding it
+/// whole, and reading at most that many bytes so an endless file such as
+/// `/dev/zero` cannot grow the buffer without bound.
+fn read_scene(path: &str) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    if let Ok(meta) = file.metadata()
+        && meta.is_file()
+        && meta.len() > MAX_SCENE
+    {
+        return Err(format!(
+            "scene file is {} bytes, over the {MAX_SCENE}-byte limit",
+            meta.len()
+        ));
+    }
+    // A non-regular file (a pipe, /dev/zero) reports no length, so cap the read
+    // itself: one byte past the limit is enough to tell it was exceeded.
+    let mut text = String::new();
+    let read = file
+        .take(MAX_SCENE + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| error.to_string())?;
+    if read as u64 > MAX_SCENE {
+        return Err(format!("scene file exceeds the {MAX_SCENE}-byte limit"));
+    }
+    Ok(text)
+}
+
+/// At most this many scene file operations run at once, each on its own
+/// thread. A read of a named pipe nobody writes never ends, so without a bound
+/// every such load kept a thread until the OS refused one (hunt 8 finding 019).
+pub(crate) const MAX_SCENE_IO: usize = 16;
+
+/// Scene file threads still running, shared with each thread's `SceneIoSlot`.
+#[derive(Resource, Default)]
+pub(crate) struct SceneIo(Arc<std::sync::atomic::AtomicUsize>);
+
+/// One of `MAX_SCENE_IO` places, released when its thread ends.
+struct SceneIoSlot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl SceneIo {
+    fn take(&self) -> Option<SceneIoSlot> {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        self.0
+            .fetch_update(AcqRel, Acquire, |n| (n < MAX_SCENE_IO).then_some(n + 1))
+            .ok()
+            .map(|_| SceneIoSlot(self.0.clone()))
+    }
+}
+
+impl Drop for SceneIoSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 pub(crate) fn scene_io(
     world: &mut World,
     id: Entity,
@@ -210,15 +276,43 @@ pub(crate) fn scene_io(
     };
     let mapping = load.unwrap_or_default();
     let wake = world.resource::<Wake>().clone();
-    let task = bevy_tasks::IoTaskPool::get().spawn(async move {
-        let result = serialized.and_then(|text| match text {
-            Some(text) => std::fs::write(&path, text)
-                .map(|_| None)
-                .map_err(|e| e.to_string()),
-            None => std::fs::read_to_string(&path)
-                .map(Some)
-                .map_err(|e| e.to_string()),
+    let Some(slot) = world.get_resource_or_init::<SceneIo>().take() else {
+        let busy = format!(
+            "{MAX_SCENE_IO} scene files are already being read or written; try again later"
+        );
+        notify(world, id, Notice::error(busy));
+        return;
+    };
+    // The file work runs on its own thread, not an IoTaskPool thread. That
+    // pool is one thread on a two-core machine, at most four, and also runs
+    // the BRP serving loop and every pane's PTY I/O; a blocking read of a slow
+    // file -- a named pipe, a huge scene -- would otherwise stall the whole
+    // server (hunt 8 finding 018). The task awaits the result, so it holds no
+    // pool thread while the read blocks. The thread is started here, not in
+    // the task, so a refusal from the OS is a notice rather than a panic.
+    let (done, ready) = async_channel::bounded(1);
+    let started = std::thread::Builder::new()
+        .name("fux scene file".into())
+        .spawn(move || {
+            let _slot = slot;
+            let result = serialized.and_then(|text| match text {
+                Some(text) => std::fs::write(&path, text)
+                    .map(|_| None)
+                    .map_err(|e| e.to_string()),
+                None => read_scene(&path).map(Some),
+            });
+            let _ = done.send_blocking((path, result));
         });
+    if let Err(error) = started {
+        let failed = format!("cannot start the scene file thread: {error}");
+        notify(world, id, Notice::error(failed));
+        return;
+    }
+    let task = bevy_tasks::IoTaskPool::get().spawn(async move {
+        let (path, result) = match ready.recv().await {
+            Ok(pair) => pair,
+            Err(_) => (String::new(), Err("scene I/O thread stopped".to_owned())),
+        };
         let mut queue = CommandQueue::default();
         queue.push(move |world: &mut World| {
             let result = match result {

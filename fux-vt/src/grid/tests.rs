@@ -40,3 +40,16 @@ fn measured_storage_plateau_and_transactional_resize_peak_include_metadata() -> 
     );
     Ok(())
 }
+
+// Narrowing a pane whose rows all stay live must not keep the old width as the
+// storage stride: that multiplied every later copy of the grid by the widest
+// width it ever had, and doubled the smoke's 200-pane `scale` run.
+#[test]
+fn narrowing_live_rows_uses_the_new_width_as_stride() -> Result<(), Error> {
+    let mut next = 0;
+    let wide = Grid::new(24, 400, 100, &mut next, 0)?;
+    let narrow = wide.resized(23, 10, &mut next, 1)?;
+    assert_eq!(narrow.history_len(), 0);
+    assert_eq!(narrow.stride, 10);
+    Ok(())
+}

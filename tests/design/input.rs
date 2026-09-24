@@ -73,10 +73,13 @@ fn mouse_edges_literal_prefix_and_modal_input_are_byte_exact() -> Outcome {
     s.resize(v, 6, 12)?;
     s.painted(v, 6, 12)?;
     let input = s.directory.join("input.bin");
+    // The modes come before the marker: the emulator applies output in order,
+    // so seeing READY means mouse reporting is on. With the marker first, a
+    // PTY read that split the two let the first press go out unreported.
     s.run(
         v,
         &format!(
-            r"stty raw -echo; printf '\033[2J\033[HREADY\033[?1003h\033[?1006h'; cat > '{}'",
+            r"stty raw -echo; printf '\033[?1003h\033[?1006h\033[2J\033[HREADY'; cat > '{}'",
             input.display()
         ),
     )?;
