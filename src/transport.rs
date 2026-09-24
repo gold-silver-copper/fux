@@ -496,6 +496,19 @@ pub const MAX_BATCH: usize = 1024;
 /// instead of a result, so the reply keeps its shape.
 pub const MAX_BATCH_RESPONSE: usize = 8 << 20;
 
+/// The effective user ID of the process at the other end of `stream`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) fn peer_uid(stream: &std::os::unix::net::UnixStream) -> nix::Result<u32> {
+    nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)
+        .map(|credentials| credentials.uid())
+}
+
+/// The effective user ID of the process at the other end of `stream`.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub(crate) fn peer_uid(stream: &std::os::unix::net::UnixStream) -> nix::Result<u32> {
+    nix::unistd::getpeereid(stream).map(|(uid, _)| uid.as_raw())
+}
+
 /// Serves BRP on `listener` until the returned task is dropped. A fatal accept
 /// error is passed to `failed`, which must make the server exit.
 pub fn serve(
@@ -516,6 +529,25 @@ pub fn serve(
                             "BRP socket accept recovered after {:.1?} of descriptor pressure.",
                             since.elapsed()
                         );
+                    }
+                    // Only the user who runs the server may drive it. The
+                    // directory's 0700 mode already keeps others out; this
+                    // holds even if that mode is changed, and refuses root.
+                    match peer_uid(client.get_ref()) {
+                        Ok(uid) if uid == geteuid().as_raw() => {}
+                        Ok(uid) => {
+                            bevy_log::warn!(
+                                "Refused a BRP connection from uid {uid}; only uid {} may use this server.",
+                                geteuid().as_raw()
+                            );
+                            continue;
+                        }
+                        Err(error) => {
+                            bevy_log::warn!(
+                                "Refused a BRP connection whose peer could not be identified: {error}"
+                            );
+                            continue;
+                        }
                     }
                     let requests = requests.clone();
                     IoTaskPool::get()
