@@ -98,7 +98,12 @@ impl Decoder {
         while !self.pending.is_empty() && self.paste.is_none() {
             match decode(&self.pending, flush) {
                 Step::Done(n, input) => {
-                    self.pending.drain(..n.min(self.pending.len()));
+                    // Nearly always the whole sequence; else what follows it.
+                    if n >= self.pending.len() {
+                        self.pending.clear();
+                    } else {
+                        self.pending = self.pending.get(n..).unwrap_or_default().to_vec();
+                    }
                     if input.as_ref() == Some(&Input::Paste(String::new())) {
                         // The start marker: switch to paste mode.
                         self.paste = Some(Vec::new());
@@ -429,7 +434,7 @@ mod tests {
             ]
         );
         for split in 1..stream.len() {
-            let (a, b) = stream.split_at(split);
+            let (a, b) = stream.split_at_checked(split).unwrap_or((stream, &[]));
             let mut d = Decoder::default();
             let mut out = Vec::new();
             d.bytes(a, &mut out);

@@ -1,5 +1,6 @@
 //! The server: one thread, one `poll` loop over the listening socket, a
 //! signal pipe, every client and every pane's PTY.
+use crate::bytes::ByteQueue;
 use crate::command::ClientId;
 use crate::config::Config;
 use crate::layout::PaneId;
@@ -24,7 +25,7 @@ const STOP_WAIT: Duration = Duration::from_millis(500);
 struct Conn {
     stream: UnixStream,
     decoder: Decoder,
-    out: Vec<u8>,
+    out: ByteQueue,
     role: Option<Role>,
     client: Option<ClientId>,
     /// What the client's terminal shows, for diffing.
@@ -40,7 +41,7 @@ struct Conn {
 impl Conn {
     fn send(&mut self, frame: &Frame) {
         match frame.encode() {
-            Ok(bytes) => self.out.extend_from_slice(&bytes),
+            Ok(bytes) => self.out.push(&bytes),
             Err(_) => self.dead = true,
         }
     }
@@ -360,7 +361,7 @@ impl Server {
                     self.conns.push(Conn {
                         stream,
                         decoder: Decoder::default(),
-                        out: Vec::new(),
+                        out: ByteQueue::default(),
                         role: None,
                         client: None,
                         shown: None,
@@ -395,13 +396,13 @@ impl Server {
             return;
         };
         while !conn.out.is_empty() {
-            match conn.stream.write(&conn.out) {
+            match conn.stream.write(conn.out.as_slice()) {
                 Ok(0) => {
                     conn.dead = true;
                     break;
                 }
                 Ok(n) => {
-                    conn.out.drain(..n);
+                    conn.out.take(n);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == ErrorKind::Interrupted => continue,
