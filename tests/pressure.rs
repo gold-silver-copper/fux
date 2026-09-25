@@ -174,7 +174,7 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     let mut expected = Vec::new();
 
     // Keys, one piece each.
-    signal(cat, rustix::process::Signal::STOP);
+    signal(cat, fuxix::process::Signal::Stop);
     for i in 0..3000u32 {
         let key = b'a'.saturating_add(u8::try_from(i % 26).map_err(e)?);
         client.send(&[key])?;
@@ -187,21 +187,21 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     }
     client.pump()?;
     assert!(!client.bar().contains("not reading"), "{}", client.bar());
-    signal(cat, rustix::process::Signal::CONT);
+    signal(cat, fuxix::process::Signal::Cont);
     received(&out, &expected)?;
 
     // Eighty pastes of 2000 bytes.
-    signal(cat, rustix::process::Signal::STOP);
+    signal(cat, fuxix::process::Signal::Stop);
     for i in 0..80 {
         let text = pasted(i, 2000);
         client.send(&paste(&text))?;
         expected.extend(text);
     }
-    signal(cat, rustix::process::Signal::CONT);
+    signal(cat, fuxix::process::Signal::Cont);
     received(&out, &expected)?;
 
     // Past the bound: pastes of 60,000 bytes, more than fit.
-    signal(cat, rustix::process::Signal::STOP);
+    signal(cat, fuxix::process::Signal::Stop);
     let mut pastes = Vec::new();
     for i in 0..20 {
         let text = pasted(i, 60_000);
@@ -216,7 +216,7 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     // Nothing more is queued until the program reads: not even a key.
     client.send(b"Z")?;
     std::thread::sleep(Duration::from_millis(200));
-    signal(cat, rustix::process::Signal::CONT);
+    signal(cat, fuxix::process::Signal::Cont);
     // What arrives is whole pastes, in order, and the key is not among them.
     let before = expected.len();
     // Until the file stops growing.

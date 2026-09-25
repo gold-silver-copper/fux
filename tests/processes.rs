@@ -1,7 +1,7 @@
 //! What becomes of a pane's processes: background jobs when the pane
 //! closes, and a leader that is stopped rather than exited.
 mod support;
-use rustix::process::Signal;
+use fuxix::process::Signal;
 use std::time::Duration;
 use support::*;
 
@@ -108,7 +108,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     eventually("a prompt", || {
         Ok(server.ok(&["capture-pane", "-t", &pane])?.contains('$'))
     })?;
-    signal(leader, Signal::STOP);
+    signal(leader, Signal::Stop);
     std::thread::sleep(Duration::from_secs(1));
     assert!(alive(leader), "the stopped shell is gone");
     assert!(
@@ -118,7 +118,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     );
     client.pump()?;
     assert!(!client.bar().contains("exited"), "{}", client.bar());
-    signal(leader, Signal::CONT);
+    signal(leader, Signal::Cont);
     server.type_line(&pane, "echo alive-$((1+1))")?;
     eventually("the shell answers", || {
         Ok(server
@@ -126,7 +126,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
             .contains("alive-2"))
     })?;
     // A kill closes it, with the signal's status: 128 + 9.
-    signal(leader, Signal::KILL);
+    signal(leader, Signal::Kill);
     eventually("the pane closed", || {
         Ok(!server.panes()?.iter().any(|(id, _)| *id == pane))
     })?;

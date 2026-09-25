@@ -451,10 +451,10 @@ pub fn cpu_seconds(pid: u32) -> Result<f64, String> {
 /// Whether a process exists and has not exited: a zombie, which lingers
 /// until its parent reaps it, counts as gone.
 pub fn alive(pid: i32) -> bool {
-    let Some(p) = rustix::process::Pid::from_raw(pid) else {
+    let Some(p) = fuxix::process::Pid::from_raw(pid) else {
         return false;
     };
-    if rustix::process::test_kill_process(p).is_err() {
+    if !fuxix::process::exists(p) {
         return false;
     }
     Command::new("ps")
@@ -468,9 +468,9 @@ pub fn alive(pid: i32) -> bool {
 }
 
 /// Sends a signal to a process, if it is there.
-pub fn signal(pid: i32, signal: rustix::process::Signal) {
-    if let Some(p) = rustix::process::Pid::from_raw(pid) {
-        let _ = rustix::process::kill_process(p, signal);
+pub fn signal(pid: i32, signal: fuxix::process::Signal) {
+    if let Some(p) = fuxix::process::Pid::from_raw(pid) {
+        let _ = fuxix::process::kill(p, signal);
     }
 }
 
@@ -482,7 +482,7 @@ pub struct Reap(pub Vec<i32>);
 impl Drop for Reap {
     fn drop(&mut self) {
         for pid in &self.0 {
-            signal(*pid, rustix::process::Signal::KILL);
+            signal(*pid, fuxix::process::Signal::Kill);
         }
     }
 }
@@ -611,7 +611,7 @@ impl Terminal {
             return;
         };
         let mut buffer = vec![0u8; 64 * 1024];
-        while let Ok(n) = rustix::io::read(master, buffer.as_mut_slice()) {
+        while let Ok(n) = fuxix::io::read(master, buffer.as_mut_slice()) {
             if n == 0 {
                 break;
             }
@@ -671,9 +671,9 @@ impl Terminal {
         let master = self.master.as_ref().ok_or("the terminal is closed")?;
         let mut rest = bytes;
         while !rest.is_empty() {
-            match rustix::io::write(master, rest) {
+            match fuxix::io::write(master, rest) {
                 Ok(n) => rest = rest.get(n..).unwrap_or_default(),
-                Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => {
+                Err(fuxix::Errno::AGAIN | fuxix::Errno::INTR) => {
                     std::thread::sleep(Duration::from_millis(1))
                 }
                 Err(error) => return Err(e(error)),
