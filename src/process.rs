@@ -137,10 +137,20 @@ pub fn launch<S: AsRef<OsStr>>(
 /// stdin and stderr on a PTY slave and its stdout on the pipe that reports a
 /// failure. It returns only if the program could not start.
 pub fn launched(argv: &[String]) -> u8 {
+    // Whatever the server inherited without close-on-exec, from a shell that
+    // leaks descriptors or a thread that raced its parent's spawn, it passed
+    // on to here: marked, it goes no further, and the program gets stdio and
+    // nothing else.
+    let marked = fuxix::io::cloexec_from(3);
     // A close-on-exec copy, so a successful `exec` closes the pipe; the
     // program's stdout is the PTY.
     let report = std::io::stdout().as_fd().try_clone_to_owned();
-    let failure = become_program(argv);
+    let failure = match marked {
+        Ok(()) => become_program(argv),
+        Err(errno) => std::io::Error::other(format!(
+            "marking inherited descriptors close-on-exec: {errno}"
+        )),
+    };
     if let Ok(report) = report {
         let _ = std::fs::File::from(report).write_all(failure.to_string().as_bytes());
     }

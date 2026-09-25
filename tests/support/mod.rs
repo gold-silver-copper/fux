@@ -55,6 +55,24 @@ impl Server {
 
     /// The same, with at most `open_files` descriptors (`ulimit -n`).
     pub fn start_limited(config: &str, open_files: Option<u32>) -> Result<Server, String> {
+        Server::start_with(config, open_files, false).map(|(server, _)| server)
+    }
+
+    /// A server that inherits a descriptor without close-on-exec, as one
+    /// does whatever its parent leaked into it: the file `inherited` in its
+    /// directory, and the descriptor's number, which is the same in the
+    /// server. It is made while no other server can start, so only this one
+    /// inherits it.
+    pub fn start_inheriting(config: &str) -> Result<(Server, i32), String> {
+        let (server, held) = Server::start_with(config, None, true)?;
+        Ok((server, held.ok_or("a held descriptor")?))
+    }
+
+    fn start_with(
+        config: &str,
+        open_files: Option<u32>,
+        inherit: bool,
+    ) -> Result<(Server, Option<i32>), String> {
         let base = std::env::temp_dir().canonicalize().map_err(e)?;
         let dir = base.join(format!(
             "fux-t{}-{}",
@@ -68,8 +86,14 @@ impl Server {
         std::fs::write(&config_path, format!("set shell /bin/sh\n{config}\n")).map_err(e)?;
         let socket = dir.join("s").join("fux.sock");
         let log = std::fs::File::create(dir.join("server.log")).map_err(e)?;
-        let child = {
+        let (child, held) = {
             let _guard = SPAWN.lock().map_err(e)?;
+            let leaked = if inherit {
+                let file = std::fs::File::create(dir.join("inherited")).map_err(e)?;
+                Some(fuxix::io::duplicate_inheritable(&file).map_err(e)?)
+            } else {
+                None
+            };
             let mut command = match open_files {
                 // `exec` keeps the pid, so `pid()` is the server's.
                 Some(n) => {
@@ -81,7 +105,7 @@ impl Server {
                 }
                 None => Command::new(FUX),
             };
-            command
+            let child = command
                 .arg("server")
                 .arg("--socket")
                 .arg(&socket)
@@ -96,7 +120,10 @@ impl Server {
                 .stdout(Stdio::null())
                 .stderr(log)
                 .spawn()
-                .map_err(e)?
+                .map_err(e)?;
+            // Closed here once the server has its copy.
+            let held = leaked.as_ref().map(std::os::fd::AsRawFd::as_raw_fd);
+            (child, held)
         };
         let server = Server {
             dir,
@@ -110,7 +137,7 @@ impl Server {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        Ok(server)
+        Ok((server, held))
     }
 
     /// The server's process id, while it runs.
