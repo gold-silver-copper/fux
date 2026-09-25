@@ -1,9 +1,7 @@
 //! A pane's process: its PTY, how it starts, how its exit is noticed, and how
 //! it and its session are ended.
-use rustix::fs::{Mode, OFlags};
-use rustix::process::{Pid, Signal, WaitIdOptions, WaitOptions};
-use rustix::pty::OpenptFlags;
-use rustix::termios::Winsize;
+pub use fuxix::process::Pid;
+use fuxix::process::{Signal, Status};
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
@@ -17,37 +15,10 @@ pub struct Child {
     pub master: OwnedFd,
 }
 
-fn size(rows: u16, cols: u16) -> Winsize {
-    Winsize {
-        ws_row: rows.max(1),
-        ws_col: cols.max(1),
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    }
-}
-
 /// Opens a PTY pair. Both ends are close-on-exec; the master is nonblocking.
-/// rustix sets `CLOEXEC` at open only on Linux and the BSDs, so it is set
-/// again here on every platform. The server has one thread, so no fork can
-/// happen in between.
 pub fn open_pty(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd), String> {
-    let error = |what: &str, e: rustix::io::Errno| format!("{what}: {e}");
-    let master = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)
-        .map_err(|e| error("openpt", e))?;
-    rustix::io::fcntl_setfd(&master, rustix::io::FdFlags::CLOEXEC)
-        .map_err(|e| error("fcntl", e))?;
-    rustix::pty::grantpt(&master).map_err(|e| error("grantpt", e))?;
-    rustix::pty::unlockpt(&master).map_err(|e| error("unlockpt", e))?;
-    let name = rustix::pty::ptsname(&master, Vec::new()).map_err(|e| error("ptsname", e))?;
-    let slave = rustix::fs::open(
-        name.as_c_str(),
-        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|e| error("opening the PTY slave", e))?;
-    rustix::termios::tcsetwinsize(&master, size(rows, cols))
-        .map_err(|e| error("tcsetwinsize", e))?;
-    rustix::io::ioctl_fionbio(&master, true).map_err(|e| error("fionbio", e))?;
+    let (master, slave) = fuxix::pty::open(rows, cols).map_err(|e| e.to_string())?;
+    fuxix::io::set_nonblocking(&master, true).map_err(|e| format!("nonblocking: {e}"))?;
     Ok((master, slave))
 }
 
@@ -71,10 +42,7 @@ pub fn spawn(
     })
     .map_err(|e| format!("starting {program}: {e}"))?;
     drop(slave);
-    let pid = i32::try_from(child.id())
-        .ok()
-        .and_then(Pid::from_raw)
-        .ok_or("the child has no valid pid")?;
+    let pid = Pid::of(&child).ok_or("the child has no valid pid")?;
     // The std handle is dropped without waiting: fux reaps the pid itself, and
     // std never waits on a dropped child.
     drop(child);
@@ -167,11 +135,11 @@ fn become_program(argv: &[String]) -> std::io::Error {
     let Some((program, args)) = argv.split_first() else {
         return std::io::Error::other("no program to run");
     };
-    if let Err(errno) = rustix::process::setsid() {
+    if let Err(errno) = fuxix::process::setsid() {
         return errno.into();
     }
     let terminal = std::io::stdin();
-    if let Err(errno) = rustix::process::ioctl_tiocsctty(&terminal) {
+    if let Err(errno) = fuxix::terminal::make_controlling(&terminal) {
         return errno.into();
     }
     match terminal.as_fd().try_clone_to_owned() {
@@ -182,77 +150,30 @@ fn become_program(argv: &[String]) -> std::io::Error {
 
 /// Resizes a PTY; the kernel sends SIGWINCH to its foreground group.
 pub fn resize(master: impl AsFd, rows: u16, cols: u16) {
-    let _ = rustix::termios::tcsetwinsize(master, size(rows, cols));
+    let _ = fuxix::terminal::set_window_size(master, rows.max(1), cols.max(1));
 }
 
 /// The pid of the PTY's foreground process group, if there is one.
-#[cfg(not(target_os = "macos"))]
 pub fn foreground(master: impl AsFd) -> Option<Pid> {
-    // rustix turns a group of 0 into an error on Linux.
-    rustix::termios::tcgetpgrp(master).ok()
+    fuxix::terminal::foreground_group(master)
 }
 
-/// The pid of the PTY's foreground process group, if there is one.
-#[cfg(target_os = "macos")]
-pub fn foreground(master: impl AsFd) -> Option<Pid> {
-    // rustix builds its `Pid` from the result unchecked, and 0 would be
-    // undefined behaviour.
-    fuxix::terminal::foreground_group(master).and_then(|group| Pid::from_raw(group.as_raw()))
-}
-
-/// A process's session ID, read without trusting it to be non-zero: kernel
-/// threads have session 0, and rustix's `getsid` builds its `Pid` from the
-/// result unchecked, which for 0 panics in debug builds and is undefined
-/// behaviour in release ones.
-#[cfg(target_os = "linux")]
-pub(crate) fn session(pid: Pid) -> Option<i32> {
-    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_nonzero())).ok()?;
-    // `pid (comm) state ppid pgrp session …`; comm may hold spaces and
-    // parentheses, so fields are counted after the last `)`.
-    let (_, rest) = stat.rsplit_once(')')?;
-    rest.split_whitespace().nth(3)?.parse().ok()
-}
-
-/// A process's session ID.
-#[cfg(target_os = "macos")]
-pub(crate) fn session(pid: Pid) -> Option<i32> {
-    fuxix::process::Pid::from_raw(pid.as_raw_nonzero().get())
-        .and_then(fuxix::process::session)
-        .map(fuxix::process::Pid::as_raw)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn session(_pid: Pid) -> Option<i32> {
-    None
-}
-
-/// The status a shell reports for a process a signal ended: 128 plus the
-/// signal, whose numbers are small.
-fn signalled(signal: i32) -> i32 {
-    128i32.saturating_add(signal)
+/// The status a shell reports for a process: its exit code, or 128 plus the
+/// signal that killed it, whose numbers are small.
+fn shell_status(status: Status) -> i32 {
+    match status {
+        Status::Exited(code) => code,
+        Status::Signalled(signal) => 128i32.saturating_add(signal),
+    }
 }
 
 /// Whether `pid` has exited, without reaping it: its exit status, or `None`
-/// while it lives. Only an exited, killed or dumped report counts. macOS also
-/// reports stops here even when only exits are asked for (bevy-final finding
-/// 020), and a stopped process is alive.
+/// while it lives, stopped or not (bevy-final finding 020).
 pub fn exited(pid: Pid) -> Option<i32> {
     loop {
-        match rustix::process::waitid(
-            rustix::process::WaitId::Pid(pid),
-            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-        ) {
-            Ok(Some(status)) => {
-                if status.exited() {
-                    return Some(status.exit_status().unwrap_or(0));
-                }
-                if status.killed() || status.dumped() {
-                    return Some(signalled(status.terminating_signal().unwrap_or(0)));
-                }
-                return None;
-            }
-            Ok(None) => return None,
-            Err(rustix::io::Errno::INTR) => continue,
+        match fuxix::process::ended(pid) {
+            Ok(status) => return status.map(shell_status),
+            Err(fuxix::Errno::INTR) => continue,
             // Not our child any more (already reaped): treat as gone.
             Err(_) => return Some(0),
         }
@@ -264,13 +185,15 @@ pub fn exited(pid: Pid) -> Option<i32> {
 /// reach of the group signal, but stays in the session (bevy-final finding
 /// 013). The leader is unreaped, so its pid, pgid and sid cannot be reused.
 pub fn hangup(leader: Pid) {
-    let _ = rustix::process::kill_process_group(leader, Signal::HUP);
-    let in_session =
-        |pid: Pid| pid != leader && session(pid) == Some(leader.as_raw_nonzero().get());
-    for pid in processes().into_iter().filter(|pid| in_session(*pid)) {
+    let _ = fuxix::process::kill_group(leader, Signal::Hup);
+    let in_session = |pid: Pid| pid != leader && fuxix::process::session(pid) == Some(leader);
+    for pid in fuxix::process::processes()
+        .into_iter()
+        .filter(|pid| in_session(*pid))
+    {
         // Re-checked just before the signal: a process that left is skipped.
         if in_session(pid) {
-            let _ = rustix::process::kill_process(pid, Signal::HUP);
+            let _ = fuxix::process::kill(pid, Signal::Hup);
         }
     }
 }
@@ -279,19 +202,11 @@ pub fn hangup(leader: Pid) {
 /// if the leader has not exited yet, to try again shortly. Called after
 /// `hangup` and a grace period, with the master already closed.
 pub fn finish(leader: Pid) -> Option<i32> {
-    let _ = rustix::process::kill_process_group(leader, Signal::KILL);
+    let _ = fuxix::process::kill_group(leader, Signal::Kill);
     loop {
-        match rustix::process::waitpid(Some(leader), WaitOptions::NOHANG) {
-            Ok(Some((_, status))) => {
-                return Some(
-                    status
-                        .exit_status()
-                        .or_else(|| status.terminating_signal().map(signalled))
-                        .unwrap_or(0),
-                );
-            }
-            Ok(None) => return None,
-            Err(rustix::io::Errno::INTR) => continue,
+        match fuxix::process::reap(leader) {
+            Ok(status) => return status.map(shell_status),
+            Err(fuxix::Errno::INTR) => continue,
             // Already reaped, or not ours: nothing left to wait for.
             Err(_) => return Some(0),
         }
@@ -300,71 +215,10 @@ pub fn finish(leader: Pid) -> Option<i32> {
 
 /// Sends SIGTERM to a process group.
 pub fn terminate(group: Pid) -> Result<(), String> {
-    rustix::process::kill_process_group(group, Signal::TERM).map_err(|e| e.to_string())
+    fuxix::process::kill_group(group, Signal::Term).map_err(|e| e.to_string())
 }
 
 /// The current directory of a process, when the system says.
-#[cfg(target_os = "linux")]
 pub fn cwd(pid: Pid) -> Option<std::path::PathBuf> {
-    std::fs::read_link(format!("/proc/{}/cwd", pid.as_raw_nonzero())).ok()
-}
-
-/// The current directory of a process, when the system says.
-#[cfg(target_os = "macos")]
-pub fn cwd(pid: Pid) -> Option<std::path::PathBuf> {
-    fuxix::process::Pid::from_raw(pid.as_raw_nonzero().get()).and_then(fuxix::process::cwd)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub fn cwd(_pid: Pid) -> Option<std::path::PathBuf> {
-    None
-}
-
-/// Every process id the system lists, as candidates for `hangup`.
-#[cfg(target_os = "linux")]
-pub(crate) fn processes() -> Vec<Pid> {
-    std::fs::read_dir("/proc")
-        .map(|entries| {
-            entries
-                .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<i32>().ok())
-                .filter_map(Pid::from_raw)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Every process id the system lists, as candidates for `hangup`.
-#[cfg(target_os = "macos")]
-pub(crate) fn processes() -> Vec<Pid> {
-    fuxix::process::processes()
-        .into_iter()
-        .filter_map(|pid| Pid::from_raw(pid.as_raw()))
-        .collect()
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn processes() -> Vec<Pid> {
-    Vec::new()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every listed process's session can be asked for: on a Linux host the
-    /// list includes kernel threads, whose session is 0, and asking through
-    /// rustix's `getsid` panicked there (CI run 36031171126).
-    #[test]
-    fn every_process_session_can_be_read() {
-        let pids = processes();
-        assert!(!pids.is_empty());
-        let own = i32::try_from(std::process::id())
-            .ok()
-            .and_then(Pid::from_raw)
-            .and_then(session);
-        assert!(own.is_some_and(|sid| sid > 0));
-        for pid in pids {
-            let _ = session(pid);
-        }
-    }
+    fuxix::process::cwd(pid)
 }

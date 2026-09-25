@@ -8,8 +8,8 @@ use crate::json::Json;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::{self, Axis, Node, PaneId, Placement, Rect};
 use crate::pane::Pane;
+use crate::process::Pid;
 use crate::view::{Mode, View};
-use rustix::process::Pid;
 use std::collections::{BTreeMap, VecDeque};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -1718,7 +1718,7 @@ impl Session {
                             p.size.0,
                             p.child
                                 .as_ref()
-                                .map(|c| format!(" pid {}", c.pid.as_raw_nonzero()))
+                                .map(|c| format!(" pid {}", c.pid))
                                 .unwrap_or_default()
                         ));
                     }
@@ -1759,7 +1759,7 @@ impl Session {
                             (
                                 "pid",
                                 p.child.as_ref().map_or(Json::Null, |c| {
-                                    Json::Number(i64::from(c.pid.as_raw_nonzero().get()))
+                                    Json::Number(i64::from(c.pid.as_raw()))
                                 }),
                             ),
                         ])
