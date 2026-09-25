@@ -118,6 +118,7 @@ const VALUES: &[&str] = &[
     "1000",
     "1000001",
     "+5",
+    "'/My Shell/zsh'",
 ];
 
 fn pick<'a>(list: &[&'a str], b: u8) -> &'a str {
