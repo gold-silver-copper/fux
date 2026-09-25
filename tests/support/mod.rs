@@ -1,6 +1,9 @@
 //! A real server, real `fux` CLI calls, and scripted attach clients that
 //! speak the protocol and keep a fux-vt screen of what they were painted.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses a different part of this module"
+)]
 use fux::protocol::{Decoder, Frame, PROTOCOL, Role};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -252,7 +255,7 @@ impl Client {
 
     /// Reads whatever the server has sent.
     pub fn pump(&mut self) -> Outcome {
-        let mut buffer = [0u8; 65536];
+        let mut buffer = vec![0u8; 64 * 1024];
         loop {
             match self.stream.read(&mut buffer) {
                 Ok(0) => {
@@ -416,8 +419,8 @@ impl Terminal {
     }
 
     pub fn pump(&mut self) {
-        let mut buffer = [0u8; 65536];
-        while let Ok(n) = rustix::io::read(&self.master, &mut buffer) {
+        let mut buffer = vec![0u8; 64 * 1024];
+        while let Ok(n) = rustix::io::read(&self.master, buffer.as_mut_slice()) {
             if n == 0 {
                 break;
             }
