@@ -129,8 +129,14 @@ impl Frame {
                 payload.len()
             ));
         }
-        let length = u32::try_from(payload.len() + 1).map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(payload.len() + 5);
+        // The kind byte and the payload.
+        let length = payload
+            .len()
+            .checked_add(1)
+            .ok_or("a frame too large to count")
+            .and_then(|n| u32::try_from(n).map_err(|_| "a frame too large to count"))?;
+        // The length, then the frame; a capacity hint only.
+        let mut out = Vec::with_capacity(payload.len().saturating_add(5));
         out.extend_from_slice(&length.to_be_bytes());
         out.push(self.kind());
         out.extend_from_slice(&payload);

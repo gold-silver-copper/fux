@@ -27,14 +27,18 @@ impl InputQueue {
         if bytes.is_empty() {
             return Ok(());
         }
-        let cost = bytes.len() + ENTRY_COST;
-        if self.cost + cost > INPUT_BYTES {
+        let cost = bytes
+            .len()
+            .checked_add(ENTRY_COST)
+            .and_then(|cost| self.cost.checked_add(cost))
+            .filter(|cost| *cost <= INPUT_BYTES);
+        let Some(cost) = cost else {
             return Err(
                 "the pane's program is not reading its input; nothing more is queued until it does"
                     .into(),
             );
-        }
-        self.cost += cost;
+        };
+        self.cost = cost;
         self.pieces.push_back(bytes);
         Ok(())
     }
@@ -47,11 +51,15 @@ impl InputQueue {
     }
     /// `n` bytes of the front were written.
     pub fn advance(&mut self, n: usize) {
-        self.written += n;
+        // At most the front's length; past it all the same means done.
+        self.written = self.written.saturating_add(n);
         if let Some(front) = self.pieces.front()
             && self.written >= front.len()
         {
-            self.cost = self.cost.saturating_sub(front.len() + ENTRY_COST);
+            // What `push` added for it, which fitted.
+            self.cost = self
+                .cost
+                .saturating_sub(front.len().saturating_add(ENTRY_COST));
             self.pieces.pop_front();
             self.written = 0;
         }
@@ -166,7 +174,12 @@ struct Sink<'a> {
 
 impl fux_vt::Sink for Sink<'_> {
     fn reply(&mut self, bytes: &[u8]) {
-        if self.replies.len() + bytes.len() <= 4096 {
+        if self
+            .replies
+            .len()
+            .checked_add(bytes.len())
+            .is_some_and(|len| len <= 4096)
+        {
             self.replies.extend_from_slice(bytes);
         }
     }
@@ -223,7 +236,9 @@ impl Typed {
     /// The moment the line is to be typed, as things stand.
     pub fn due_at(&self) -> std::time::Instant {
         match self.last_output {
-            Some(at) => (at + QUIET).min(self.deadline),
+            Some(at) => at
+                .checked_add(QUIET)
+                .map_or(self.deadline, |quiet| quiet.min(self.deadline)),
             None => self.deadline,
         }
     }

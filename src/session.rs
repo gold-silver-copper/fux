@@ -309,6 +309,8 @@ impl Session {
             Some(crate::words::shell_line(cmd, fish)?)
         };
         let id = PaneId(self.next_pane);
+        let mut next_pane = self.next_pane;
+        advance(&mut next_pane, "pane")?;
         let name = cmd
             .first()
             .map(|c| basename(c))
@@ -337,27 +339,29 @@ impl Session {
         if let Some(line) = line {
             let mut typed = line.into_bytes();
             typed.push(b'\r');
-            if typed.len() + crate::pane::ENTRY_COST > crate::pane::INPUT_BYTES {
+            if typed
+                .len()
+                .checked_add(crate::pane::ENTRY_COST)
+                .is_none_or(|cost| cost > crate::pane::INPUT_BYTES)
+            {
                 return Err("the command line is too long to type".into());
             }
             pane.typed = Some(crate::pane::Typed {
                 line: typed,
-                deadline: Instant::now() + TYPE_WAIT,
+                deadline: crate::after(Instant::now(), TYPE_WAIT),
                 last_output: None,
             });
             if pane.child.is_none() {
                 pane.type_now();
             }
         }
-        self.next_pane += 1;
+        self.next_pane = next_pane;
         self.panes.insert(id, pane);
         Ok(id)
     }
 
-    fn new_tab_id(&mut self) -> TabId {
-        let id = TabId(self.next_tab);
-        self.next_tab += 1;
-        id
+    fn new_tab_id(&mut self) -> Result<TabId, String> {
+        advance(&mut self.next_tab, "tab").map(TabId)
     }
 
     fn create_workspace(
@@ -368,10 +372,13 @@ impl Session {
     ) -> Result<WsId, String> {
         let default_ctx = Ctx::default();
         let cwd = self.cwd_for(ctx.unwrap_or(&default_ctx), None);
+        // The IDs are taken before the pane starts, so that none can run out
+        // after, and are committed once it has.
+        let (mut next_ws, mut next_tab) = (self.next_ws, self.next_tab);
+        let id = WsId(advance(&mut next_ws, "workspace")?);
+        let tab = TabId(advance(&mut next_tab, "tab")?);
         let pane = self.new_pane(cmd, &cwd, DEFAULT_SIZE)?;
-        let id = WsId(self.next_ws);
-        self.next_ws += 1;
-        let tab = self.new_tab_id();
+        (self.next_ws, self.next_tab) = (next_ws, next_tab);
         let name = name.unwrap_or_else(|| format!("workspace-{}", id.0));
         self.workspaces.push(Workspace {
             id,
@@ -404,8 +411,7 @@ impl Session {
                 .map(|w| w.id)
                 .ok_or("the server has no workspace")?,
         };
-        let id = ClientId(self.next_client);
-        self.next_client += 1;
+        let id = ClientId(advance(&mut self.next_client, "client")?);
         let mut view = View::new(id, rows.clamp(1, 4096), cols.clamp(1, 4096), ws);
         if let Some(error) = &self.config_error {
             // The bar is narrow: the file's name, not its whole path, which
@@ -632,7 +638,7 @@ impl Session {
             self.dying.push(Dying {
                 pid: child.pid,
                 master: Some(child.master),
-                deadline: Instant::now() + GRACE,
+                deadline: crate::after(Instant::now(), GRACE),
             });
         }
     }
@@ -955,13 +961,17 @@ impl Session {
                     self.check_name(name)?;
                 }
                 let cwd = self.cwd_for(ctx, None);
+                // As for a workspace: the ID first, committed after the pane.
+                let mut next_tab = self.next_tab;
+                let id = TabId(advance(&mut next_tab, "tab")?);
                 let pane = self.new_pane(&cmd, &cwd, DEFAULT_SIZE)?;
-                let id = self.new_tab_id();
+                self.next_tab = next_tab;
                 let index = self.ws_index(ws).ok_or("the workspace is gone")?;
                 let Some(workspace) = self.workspaces.get_mut(index) else {
                     return Err("the workspace is gone".into());
                 };
-                let name = name.unwrap_or_else(|| format!("tab-{}", workspace.tabs.len() + 1));
+                let number = workspace.tabs.len().saturating_add(1);
+                let name = name.unwrap_or_else(|| format!("tab-{number}"));
                 workspace.tabs.push(Tab {
                     id,
                     name,
@@ -1405,7 +1415,7 @@ impl Session {
                 let tab = match first {
                     Some(tab) => tab,
                     None => {
-                        let id = self.new_tab_id();
+                        let id = self.new_tab_id()?;
                         let index = self.ws_index(ws).ok_or("the workspace is gone")?;
                         if let Some(w) = self.workspaces.get_mut(index) {
                             w.tabs.push(Tab {
@@ -1420,10 +1430,10 @@ impl Session {
                 (ws, tab)
             }
             MoveTo::NewTab => {
-                let id = self.new_tab_id();
+                let id = self.new_tab_id()?;
                 let index = self.ws_index(source_ws).ok_or("the workspace is gone")?;
                 if let Some(w) = self.workspaces.get_mut(index) {
-                    let name = format!("tab-{}", w.tabs.len() + 1);
+                    let name = format!("tab-{}", w.tabs.len().saturating_add(1));
                     w.tabs.push(Tab {
                         id,
                         name,
@@ -1433,9 +1443,8 @@ impl Session {
                 (source_ws, id)
             }
             MoveTo::NewWorkspace => {
-                let id = WsId(self.next_ws);
-                self.next_ws += 1;
-                let tab = self.new_tab_id();
+                let id = WsId(advance(&mut self.next_ws, "workspace")?);
+                let tab = self.new_tab_id()?;
                 self.workspaces.push(Workspace {
                     id,
                     name: format!("workspace-{}", id.0),
@@ -1480,7 +1489,7 @@ impl Session {
     fn reorder(&mut self, target: &AnyRef, forward: bool) -> Result<(), String> {
         let step = |index: usize, len: usize| -> Option<usize> {
             if forward {
-                (index + 1 < len).then_some(index + 1)
+                index.checked_add(1).filter(|next| *next < len)
             } else {
                 index.checked_sub(1)
             }
@@ -1539,11 +1548,7 @@ impl Session {
                 let index = current
                     .and_then(|c| panes.iter().position(|p| *p == c))
                     .unwrap_or(0);
-                let next = if matches!(pick, Pick::Next) {
-                    (index + 1) % panes.len()
-                } else {
-                    (index + panes.len() - 1) % panes.len()
-                };
+                let next = round(index, panes.len(), matches!(pick, Pick::Next));
                 panes.get(next).copied().ok_or("no pane")?
             }
             Pick::Last => view
@@ -1592,11 +1597,7 @@ impl Session {
                     .tab()
                     .and_then(|c| tabs.iter().position(|t| *t == c))
                     .unwrap_or(0);
-                let next = if matches!(pick, Pick::Next) {
-                    (index + 1) % tabs.len()
-                } else {
-                    (index + tabs.len() - 1) % tabs.len()
-                };
+                let next = round(index, tabs.len(), matches!(pick, Pick::Next));
                 tabs.get(next).copied().ok_or("no tab")?
             }
             Pick::Last | Pick::Toward(_) => {
@@ -1620,11 +1621,7 @@ impl Session {
                     return Err("only one workspace".into());
                 }
                 let index = self.ws_index(current).unwrap_or(0);
-                let next = if matches!(pick, Pick::Next) {
-                    (index + 1) % len
-                } else {
-                    (index + len - 1) % len
-                };
+                let next = round(index, len, matches!(pick, Pick::Next));
                 self.workspaces
                     .get(next)
                     .map(|w| w.id)
@@ -1773,6 +1770,27 @@ pub fn describe(target: &AnyRef) -> String {
     }
 }
 
+/// Takes the next ID from `counter`. IDs are never reused, so one that
+/// would wrap round is an error instead.
+fn advance(counter: &mut u32, what: &str) -> Result<u32, String> {
+    let id = *counter;
+    *counter = counter
+        .checked_add(1)
+        .ok_or_else(|| format!("no {what} IDs are left"))?;
+    Ok(id)
+}
+
+/// The index after `index` among `len`, or before it, going round.
+fn round(index: usize, len: usize, forward: bool) -> usize {
+    if forward {
+        index.checked_add(1).filter(|next| *next < len).unwrap_or(0)
+    } else {
+        index
+            .checked_sub(1)
+            .unwrap_or_else(|| len.saturating_sub(1))
+    }
+}
+
 /// The text of a pane's screen, and `history` lines before it.
 fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
     let screen = pane.screen();
@@ -1782,7 +1800,10 @@ fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
     let mut lines = Vec::new();
     // History rows above the screen, then the screen itself.
     for offset in (0..back).rev() {
-        if let Some(row) = screen.row_from_bottom(usize::from(rows) + offset) {
+        if let Some(row) = usize::from(rows)
+            .checked_add(offset)
+            .and_then(|i| screen.row_from_bottom(i))
+        {
             lines.push(row_text(row.cells));
         }
     }

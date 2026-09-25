@@ -456,9 +456,12 @@ pub fn column_key(session: &mut Session, client: ClientId, press: KeyPress) {
             return;
         }
         Some(Key::Arrow(Direction::Up)) | Some(Key::Char('k')) => selected.saturating_sub(1),
-        Some(Key::Arrow(Direction::Down)) | Some(Key::Char('j')) => (selected + 1).min(last),
+        // Moves stop at the first and last entries.
+        Some(Key::Arrow(Direction::Down)) | Some(Key::Char('j')) => {
+            selected.saturating_add(1).min(last)
+        }
         Some(Key::PageUp) => selected.saturating_sub(page),
-        Some(Key::PageDown) => (selected + page).min(last),
+        Some(Key::PageDown) => selected.saturating_add(page).min(last),
         Some(Key::Home) => 0,
         Some(Key::End) => last,
         Some(Key::Escape) => {
@@ -535,11 +538,12 @@ pub fn list_key(session: &mut Session, client: ClientId, press: KeyPress) {
         Some(Key::Arrow(Direction::Up)) | Some(Key::Char('k')) => {
             list.selected = list.selected.saturating_sub(1)
         }
+        // Moves stop at the first and last items.
         Some(Key::Arrow(Direction::Down)) | Some(Key::Char('j')) => {
-            list.selected = (list.selected + 1).min(last)
+            list.selected = list.selected.saturating_add(1).min(last)
         }
         Some(Key::PageUp) => list.selected = list.selected.saturating_sub(page),
-        Some(Key::PageDown) => list.selected = (list.selected + page).min(last),
+        Some(Key::PageDown) => list.selected = list.selected.saturating_add(page).min(last),
         Some(Key::Home) => list.selected = 0,
         Some(Key::End) => list.selected = last,
         Some(Key::Escape) | Some(Key::Char('q')) => close = true,
@@ -651,10 +655,10 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
             submit(session, client, prompt);
         }
         Key::Backspace => {
-            if prompt.cursor > 0 {
-                let at = byte(&prompt.text, prompt.cursor - 1);
+            if let Some(before) = prompt.cursor.checked_sub(1) {
+                let at = byte(&prompt.text, before);
                 prompt.text.remove(at);
-                prompt.cursor -= 1;
+                prompt.cursor = before;
             }
         }
         Key::Delete => {
@@ -664,13 +668,14 @@ pub fn prompt_key(session: &mut Session, client: ClientId, press: KeyPress) {
             }
         }
         Key::Arrow(Direction::Left) => prompt.cursor = prompt.cursor.saturating_sub(1),
-        Key::Arrow(Direction::Right) => prompt.cursor = (prompt.cursor + 1).min(len),
+        Key::Arrow(Direction::Right) => prompt.cursor = prompt.cursor.saturating_add(1).min(len),
         Key::Home => prompt.cursor = 0,
         Key::End => prompt.cursor = len,
         Key::Char(c) if !press.mods.alt && !c.is_control() && prompt.text.len() < 4096 => {
             let at = byte(&prompt.text, prompt.cursor);
             prompt.text.insert(at, c);
-            prompt.cursor += 1;
+            // Exact: the text is under 4096 bytes.
+            prompt.cursor = prompt.cursor.saturating_add(1);
         }
         Key::Char(_)
         | Key::Tab
@@ -700,9 +705,15 @@ pub fn prompt_paste(session: &mut Session, client: ClientId, text: &str) {
         .char_indices()
         .nth(prompt.cursor)
         .map_or(prompt.text.len(), |(i, _)| i);
-    if prompt.text.len() + line.len() <= 4096 {
+    if prompt
+        .text
+        .len()
+        .checked_add(line.len())
+        .is_some_and(|len| len <= 4096)
+    {
         prompt.text.insert_str(byte, &line);
-        prompt.cursor += line.chars().count();
+        // Exact: the text is at most 4096 bytes.
+        prompt.cursor = prompt.cursor.saturating_add(line.chars().count());
         view.dirty = true;
     }
 }
