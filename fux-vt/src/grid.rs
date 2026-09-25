@@ -403,10 +403,12 @@ impl Grid {
                 Some(r) => r.id,
                 None => next_id(next)?,
             };
-            let width = if is_history {
-                old.map_or(cols, |r| r.cells.len() as u16)
-            } else {
-                cols
+            let width = match old {
+                // A row is never wider than the u16 grid it was made in.
+                Some(r) if is_history => {
+                    u16::try_from(r.cells.len()).map_err(|_| Error::Capacity)?
+                }
+                Some(_) | None => cols,
             };
             let start = replacement.cells.len();
             replacement.cells.resize(start + stride, Cell::default());

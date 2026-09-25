@@ -90,7 +90,7 @@ impl Grid {
             if c.is_control() {
                 continue;
             }
-            let width = c.width().unwrap_or(0) as u16;
+            let width = cells(c);
             if width == 0 {
                 continue;
             }
@@ -123,13 +123,20 @@ const GRAY_BG: Color = Color::Idx(236);
 const BAR_FG: Color = Color::Idx(250);
 const PANEL_BG: Color = Color::Idx(238);
 
+/// A char's display width in cells.
+fn cells(c: char) -> u16 {
+    // Widths are 0, 1 or 2; a larger one could never fit, so it saturates.
+    c.width()
+        .map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
+}
+
 /// Display width of a string, controls dropped.
 pub fn width(text: &str) -> u16 {
     text.chars()
         .filter(|c| !c.is_control())
-        .map(|c| c.width().unwrap_or(0))
-        .sum::<usize>()
-        .min(4096) as u16
+        .map(cells)
+        .fold(0, u16::saturating_add)
+        .min(4096)
 }
 
 /// Cuts `text` to `cols` cells, with an ellipsis when cut.
@@ -143,7 +150,7 @@ pub fn fit(text: &str, cols: u16) -> String {
     let mut out = String::new();
     let mut room = cols - 1;
     for c in text.chars().filter(|c| !c.is_control()) {
-        let w = c.width().unwrap_or(0) as u16;
+        let w = cells(c);
         if w > room {
             break;
         }
@@ -333,8 +340,8 @@ fn separators(grid: &mut Grid, placement: &crate::layout::Placement, focus: Opti
     const HORIZONTAL: u8 = 2;
     let (rows, cols) = (grid.rows, grid.cols);
     let index = |x: i32, y: i32| -> Option<usize> {
-        (x >= 0 && y >= 0 && x < i32::from(cols) && y < i32::from(rows))
-            .then(|| y as usize * usize::from(cols) + x as usize)
+        let (x, y) = (usize::try_from(x).ok()?, usize::try_from(y).ok()?);
+        (x < usize::from(cols) && y < usize::from(rows)).then(|| y * usize::from(cols) + x)
     };
     let mut kind = vec![0u8; grid.cells.len()];
     let mut bits = vec![0u8; grid.cells.len()];
@@ -493,7 +500,10 @@ fn surface(grid: &mut Grid, view: &View, lines: &[(String, Attributes)]) {
     if available == 0 || view.cols == 0 || lines.is_empty() {
         return;
     }
-    let height = (lines.len() as u16).min(available);
+    // More lines than rows is the same as exactly as many.
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .min(available);
     let inner = lines.iter().map(|(t, _)| width(t)).max().unwrap_or(0);
     let w = inner.saturating_add(2).min(view.cols);
     let x = view.cols - w;
@@ -501,8 +511,7 @@ fn surface(grid: &mut Grid, view: &View, lines: &[(String, Attributes)]) {
     // On a short screen the last lines (the selection and help) matter
     // most, so the first lines give way.
     let skip = lines.len().saturating_sub(usize::from(height));
-    for (row, (text, attrs)) in lines.iter().skip(skip).enumerate() {
-        let y = top + row as u16;
+    for (y, (text, attrs)) in (top..available).zip(lines.iter().skip(skip)) {
         grid.fill(y, x, view.cols, *attrs);
         grid.text(
             y,

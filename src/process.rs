@@ -253,7 +253,7 @@ pub fn cwd(pid: Pid) -> Option<std::path::PathBuf> {
         .iter()
         .flatten()
         .take_while(|c| **c != 0)
-        .map(|c| *c as u8)
+        .map(|c| c.cast_unsigned())
         .collect();
     (!path.is_empty()).then(|| std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&path)))
 }
@@ -308,7 +308,10 @@ mod tests {
     fn every_process_session_can_be_read() {
         let pids = processes();
         assert!(!pids.is_empty());
-        let own = Pid::from_raw(std::process::id() as i32).and_then(session);
+        let own = i32::try_from(std::process::id())
+            .ok()
+            .and_then(Pid::from_raw)
+            .and_then(session);
         assert!(own.is_some_and(|sid| sid > 0));
         for pid in pids {
             let _ = session(pid);

@@ -306,7 +306,8 @@ pub fn bind_socket(path: &Path) -> Result<(Endpoint, UnixListener), String> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .custom_flags((OFlags::NOFOLLOW | OFlags::CLOEXEC).bits() as i32)
+        // The flags are C `int` bits; rustix keeps them unsigned.
+        .custom_flags((OFlags::NOFOLLOW | OFlags::CLOEXEC).bits().cast_signed())
         .open(&lock_path)
         .map_err(|error| format!("{}: {error}", lock_path.display()))?;
     rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|errno| {
