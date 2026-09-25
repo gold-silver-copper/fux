@@ -43,3 +43,10 @@ path = "fuzz_targets/layout.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false

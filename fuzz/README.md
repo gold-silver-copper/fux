@@ -14,9 +14,11 @@ cargo +nightly fuzz build --fuzz-dir fuzz
 cargo +nightly fuzz run TARGET --fuzz-dir fuzz -- -max_total_time=600 -max_len=4096 -rss_limit_mb=1024 -timeout=25
 ```
 
-`TARGET` is one of `protocol`, `keys`, `paint` or `layout`. `-timeout=25`
-makes a hang a failure within the run; libFuzzer's own default is 1200 s,
-longer than the run.
+`TARGET` is one of `protocol`, `keys`, `paint`, `layout`, `config` or
+`session`. `-timeout=25` makes a hang a failure within the run; libFuzzer's
+own default is 1200 s, longer than the run. `config` and `session` take a
+dictionary of their words and keys, after the `--`:
+`-dict=fuzz/config.dict` or `-dict=fuzz/session.dict`.
 
 ## Targets
 
@@ -68,6 +70,30 @@ the Escape deadline passing only at the end.
     fit, a split without room for its first child shows nothing, by design;
   - `neighbor` only names another placed pane.
 
+**`config`**: `set`, `bind`, `unbind` and `unbind-all` lines, into
+`Config::apply`, from the defaults.
+- Input: lines. A line starting with `0xff` is structured: its next byte picks
+  the command, and each byte after picks the word for the command's next
+  slot, from lists of keys (letters and not), groups, commands, options, and
+  values, including values that need quoting. Any other line is text, split
+  by `words::split` as a config file's lines are.
+- After every line:
+  - a line that fails changes nothing;
+  - a small model of `bind`, `unbind` and `unbind-all`, written from the
+    README's rules, accepts and refuses the same lines and holds the same
+    bindings in the same order. That covers each command's promise: after a
+    `bind`, one binding of its keys (in lower case), with its command, group
+    and repeat flag; after an `unbind K…`, none starting with `K…`, and a
+    failing `unbind` had nothing to remove;
+  - `split(&join(&words))` gives back the line's words.
+- After every line that changes the configuration:
+  - every binding has keys and a command; every key is a lower-case letter
+    without modifiers; no two bindings have the same keys, and no binding's
+    keys start another's;
+  - `describe()`'s lines, applied after `unbind-all`, give the same
+    configuration back, prefix, shell and options included. An unchanged
+    configuration was checked already, and the check is most of the cost.
+
 ## Corpus
 
 `corpus/TARGET/fixture-*` are the permanent seeds, taken from the unit tests
@@ -79,7 +105,12 @@ that state each property:
   paste cases;
 - `paint`: `a_diff_applied_to_the_old_grid_gives_the_new_one`,
   `painting_the_widest_last_column_ends`, a resize and combining marks;
-- `layout`: the split, nested, small-area and resize tests, and extremes.
+- `layout`: the split, nested, small-area and resize tests, and extremes;
+- `config`: the lines of `set_bind_and_unbind_change_the_configuration`,
+  `keys_are_a_command_or_a_layer_never_both`,
+  `keys_after_the_prefix_are_letters_stored_in_lower_case` and
+  `a_file_applies_whole_or_names_its_bad_line`, the default bindings as
+  `bind` lines, and one structured line of each kind.
 
 `corpus/TARGET/regression-*` are minimized inputs of fixed findings. Coverage
 growth stays local and ignored.

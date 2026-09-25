@@ -1,0 +1,5 @@
+# comment
+set prefix C-a
+
+bind q detach # trailing
+set prefix Nope
