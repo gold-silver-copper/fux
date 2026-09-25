@@ -191,6 +191,7 @@ tab and workspace.
 | `fux terminate [-t %N]` | SIGTERM to what runs in the pane's foreground, not the shell |
 | `fux send-keys [-t %N] [-l] KEYS…` | send keys (`C-c`, `Enter`, …); an argument that is not a key name is sent as text, and `-l` sends every argument as text |
 | `fux capture-pane [-t %N] [-S -LINES] [--json]` | the pane's screen text, with LINES of history before it |
+| `fux capture-client [-c CLIENT] [--json]` | what a client's terminal shows: the screen the server composes for it, bar and overlays included |
 | `fux set OPTION VALUE`, `fux bind [-g GROUP] [-r] KEY… CMD…`, `fux unbind KEY…`, `fux unbind-all` | change the running configuration |
 | `fux reload` | run the config file again over the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | paste buffers, newest `0` |
@@ -206,7 +207,8 @@ yours; from the command line they need `-c CLIENT`:
 `rename-prompt [pane|tab|workspace] [-t TARGET]`,
 `confirm-close [pane|tab|workspace] [-t TARGET]`,
 `select-pane -t %N|--next|--previous|--last|-L|-R|-U|-D`,
-`select-tab -t @N|--next|--previous`, `select-workspace -t WS|--next|--previous`.
+`select-tab -t @N|--next|--previous`, `select-workspace -t WS|--next|--previous`,
+`capture-client [--json]`.
 
 Exit status: 0 done; 1 the command failed, with the reason on stderr; 2 a
 usage error.
@@ -242,8 +244,14 @@ rule.
 `fux capture-pane --json` prints
 `{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":[…]}`, where
 `lines` is the history asked for with `-S` followed by the screen, each line's
-trailing blanks trimmed. These shapes are part of fux's interface: changing
-one is a breaking change.
+trailing blanks trimmed.
+
+`fux capture-client -c CLIENT --json` prints
+`{"client":"c1","rows":24,"cols":80,"cursor":[ROW,COL],"lines":[…]}`, where
+`lines` is every row the client shows, bar included, trailing blanks trimmed,
+and `cursor` is `null` while the terminal cursor is hidden.
+
+These shapes are part of fux's interface: changing one is a breaking change.
 
 ## Configuration
 

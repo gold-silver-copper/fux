@@ -938,6 +938,7 @@ impl Session {
                 | Command::ResizePane { .. }
                 | Command::SendKeys { .. }
                 | Command::CapturePane { .. }
+                | Command::CaptureClient { .. }
                 | Command::Reorder { .. }
                 | Command::Set { .. }
                 | Command::Bind { .. }
@@ -1139,6 +1140,12 @@ impl Session {
                     .get(&pane)
                     .ok_or_else(|| format!("no pane {pane}"))?;
                 Ok(capture(p, history, json))
+            }
+            Command::CaptureClient { client, json } => {
+                let client = self.client_target(client, ctx)?;
+                let grid = crate::render::compose(self, client)
+                    .ok_or_else(|| format!("no client {client}"))?;
+                Ok(capture_client(client, &grid, json))
             }
             Command::Terminate { target } => {
                 let pane = self.pane_target(target, ctx)?;
@@ -1883,6 +1890,33 @@ fn capture(pane: &Pane, history: Option<usize>, json: bool) -> String {
                     Json::Number(i64::from(cx)),
                 ]),
             ),
+            (
+                "lines",
+                Json::Array(lines.into_iter().map(Json::String).collect()),
+            ),
+        ])
+        .render();
+        text.push('\n');
+        return text;
+    }
+    let mut text = lines.join("\n");
+    text.push('\n');
+    text
+}
+
+/// What a client's terminal shows, row by row, as `capture-client` prints
+/// it.
+fn capture_client(client: ClientId, grid: &crate::render::Grid, json: bool) -> String {
+    let lines: Vec<String> = (0..grid.rows).map(|y| grid.row_text(y)).collect();
+    if json {
+        let cursor = grid.cursor.map_or(Json::Null, |(y, x)| {
+            Json::Array(vec![Json::Number(i64::from(y)), Json::Number(i64::from(x))])
+        });
+        let mut text = Json::Object(vec![
+            ("client", Json::str(client.to_string())),
+            ("rows", Json::Number(i64::from(grid.rows))),
+            ("cols", Json::Number(i64::from(grid.cols))),
+            ("cursor", cursor),
             (
                 "lines",
                 Json::Array(lines.into_iter().map(Json::String).collect()),
