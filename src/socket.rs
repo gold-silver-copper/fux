@@ -378,7 +378,7 @@ pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
 /// The effective user ID of the process at the other end of `stream`.
 #[cfg(target_os = "macos")]
 pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
-    fux_sys::peer_uid(stream)
+    fuxix::socket::peer_uid(stream).map_err(io::Error::from)
 }
 
 #[cfg(test)]
