@@ -1,8 +1,8 @@
 //! The clients: `fux attach`, a dumb pipe between a terminal and the server,
 //! and the one-shot command client every other `fux` command uses.
 use crate::protocol::{Decoder, Frame, PROTOCOL, Role};
+use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
-use rustix::event::{PollFd, PollFlags};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -287,8 +287,8 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
             PollFd::new(&winch, PollFlags::IN),
             PollFd::new(&stops, PollFlags::IN),
         ];
-        match rustix::event::poll(&mut fds, None) {
-            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+        match fuxix::poll::poll(&mut fds, None) {
+            Ok(_) | Err(fuxix::Errno::INTR) => {}
             Err(e) => return Err(format!("poll: {e}")),
         }
         let ready: Vec<PollFlags> = fds.iter().map(PollFd::revents).collect();
@@ -304,7 +304,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
             send(stream, &Frame::Resize { rows, cols })?;
         }
         if is(0) {
-            match rustix::io::read(&stdin, &mut buffer) {
+            match fuxix::io::read(&stdin, &mut buffer) {
                 Ok(0) => {
                     let _ = send(stream, &Frame::Detach);
                     return Ok("detached: the terminal closed".into());
@@ -313,7 +313,7 @@ fn pump(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<String, String
                     stream,
                     &Frame::Input(buffer.get(..n).unwrap_or_default().to_vec()),
                 )?,
-                Err(rustix::io::Errno::INTR | rustix::io::Errno::AGAIN) => {}
+                Err(fuxix::Errno::INTR | fuxix::Errno::AGAIN) => {}
                 Err(e) => return Err(format!("reading the terminal: {e}")),
             }
         }

@@ -70,18 +70,51 @@ impl<'fd> PollFd<'fd> {
 }
 
 /// Waits until one of `fds` is ready, or `timeout` passes (`None`: no
-/// timeout). How many are ready. The timeout is rounded up to a whole
-/// millisecond, so a short one does not become a busy loop.
+/// timeout). How many are ready. On Linux and Android the timeout is exact
+/// (`ppoll`); on macOS it is rounded up to a whole millisecond, so a short
+/// one does not become a busy loop.
 pub fn poll(fds: &mut [PollFd<'_>], timeout: Option<Duration>) -> Result<usize> {
     let count = libc::nfds_t::try_from(fds.len()).map_err(|_| Errno::INVAL)?;
+    let ready = wait(fds, count, timeout)?;
+    usize::try_from(ready).map_err(|_| Errno::INVAL)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn wait(
+    fds: &mut [PollFd<'_>],
+    count: libc::nfds_t,
+    timeout: Option<Duration>,
+) -> Result<libc::c_int> {
+    // The field types differ between platforms and C libraries, so they
+    // are inferred. Seconds past what a 32-bit field holds are 68 years.
+    let timespec = timeout.map(|t| libc::timespec {
+        tv_sec: t.as_secs().try_into().unwrap_or(i32::MAX.into()),
+        // Under a billion, so it fits an i32, and so every platform's type.
+        tv_nsec: i32::try_from(t.subsec_nanos()).unwrap_or(0).into(),
+    });
+    let limit = timespec
+        .as_ref()
+        .map_or(std::ptr::null(), std::ptr::from_ref);
+    // SAFETY: PollFd is repr(transparent) over pollfd, so `fds` is `count`
+    // pollfds, which the call reads and whose revents it writes; each
+    // descriptor is borrowed for the call. The timeout is null or a whole
+    // timespec, and no signal mask is passed.
+    check(unsafe { libc::ppoll(fds.as_mut_ptr().cast(), count, limit, std::ptr::null()) })
+}
+
+#[cfg(target_os = "macos")]
+fn wait(
+    fds: &mut [PollFd<'_>],
+    count: libc::nfds_t,
+    timeout: Option<Duration>,
+) -> Result<libc::c_int> {
     let millis = timeout.map_or(-1, |t| {
         libc::c_int::try_from(t.as_nanos().div_ceil(1_000_000)).unwrap_or(libc::c_int::MAX)
     });
     // SAFETY: PollFd is repr(transparent) over pollfd, so `fds` is `count`
     // pollfds, which the call reads and whose revents it writes; each
     // descriptor is borrowed for the call.
-    let ready = check(unsafe { libc::poll(fds.as_mut_ptr().cast(), count, millis) })?;
-    usize::try_from(ready).map_err(|_| Errno::INVAL)
+    check(unsafe { libc::poll(fds.as_mut_ptr().cast(), count, millis) })
 }
 
 #[cfg(test)]
@@ -95,7 +128,7 @@ mod tests {
         let (reader, mut writer) = std::io::pipe().map_err(|e| e.to_string())?;
         let start = Instant::now();
         let mut fds = [PollFd::new(&reader, Events::IN)];
-        // A tenth of a millisecond still waits, rounded up.
+        // A tenth of a millisecond still waits.
         assert_eq!(poll(&mut fds, Some(Duration::from_micros(100))), Ok(0));
         assert!(start.elapsed() >= Duration::from_micros(100));
         writer.write_all(b"x").map_err(|e| e.to_string())?;
